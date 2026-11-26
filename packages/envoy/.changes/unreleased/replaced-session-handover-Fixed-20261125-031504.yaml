@@ -10,10 +10,13 @@ body: |-
     claim replaces. Once such a claim lands, the claim route writes one handover record for the
     claimant and that session (`bus.HandoverSubject`, on the takeover lane), and answers `503` with
     `Retry-After: 1` when it did not store, the claim standing. The record's passes copy nothing
-    while the replaced session is `live`; otherwise, from its acknowledgement floor, they copy each
-    message to the session itself to the claimant's own agent subject and each role message of any
-    role to that role's kept lane, for the role's next live holder. Delivery is at least once: the
-    stream keeps one copy of each message for the claimant, and a copy keeps the message's event id.
+    while the replaced session is `live`, and a pass that finds it live moves the record's hour on
+    rather than finish it, so a session that stays live past the claim's hour and then stops is
+    handed over then; otherwise, from its acknowledgement floor, or with no floor known from the
+    first message the stream holds on its subject, they copy each message to the session itself to
+    the claimant's own agent subject and each role message of any role, of the last hour, to that
+    role's kept lane, for the role's next live holder. Delivery is at least once: the stream keeps
+    one copy of each message for the claimant, and a copy keeps the message's event id.
     A claim hands over only between sessions of one principal: the record is written only when the
     claim's credential, the claimant's last registration and the replaced session's last
     registration name one principal (a broker token's person, else its service, else an identity
@@ -36,9 +39,13 @@ body: |-
     known-session bucket is not open answer it `503` with `Retry-After: 1` with nothing admitted
     (so such a listener refuses every registration until its bucket opens). A registration whose
     record a listener's copy holds unchanged is skipped only where the leader confirms it holds its
-    principal too, and one whose write failed is answered the same `503` unless the leader confirms
-    the record names its principal, none recorded, or nothing; so the session registers again until
-    the record names its principal. A pass also reads, before each copy, whether the replaced
+    principal too. The registration's own write is a compare-and-swap at the leader that writes
+    only over a record naming its principal, none recorded, or nothing; a record naming another
+    principal, which a registration of the session as that principal wrote since this one was
+    admitted, is deleted instead and the registration answered the same `503`. One whose write
+    failed is answered the same `503` unless the leader confirms the record names its principal,
+    none recorded, or nothing; so the session registers again until the record names its
+    principal. A pass also reads, before each copy, whether the replaced
     session is `live` again, from the session bucket's leader where its own copy does not say so,
     so a registration through another listener ends the pass too. A direct
     message that names no event id is given one on its first

@@ -72,7 +72,10 @@ import (
 // and the publish route's own failures), so a copy stored later than the record's end is one its
 // sender is told failed. A record lives that long and not the stream's age, so the passes of the
 // three shared listeners read the previous holders' subjects of the last hour's takeovers alone,
-// not of three days' (TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning).
+// not of three days' (TestATakeoverRecordEndsWithinItsLifeWhilePassesKeepRunning). A handover
+// record's hour runs from the last pass that found its replaced session live (runTakeoverPass),
+// so it lives on while that session does; such a pass reads the role's claim and the session's
+// state, and none of its subject.
 const takeoverRecordLife = roleKeepWindow
 
 // takeoverRecordWindow bounds the write of a takeover record before a try of a claim's write. The
@@ -724,28 +727,31 @@ const takeoverRecordRefresh = 15 * time.Minute
 // finished.
 //
 // A handover record (bus.HandoverSubject, the claim of a session that named the one it replaces)
-// is passed the same way, with three differences. It copies nothing while the replaced session is
+// is passed the same way, with four differences. It copies nothing while the replaced session is
 // live as well as while the role's claim names it: a session that answers reads its own messages,
 // and a copy would hand a person's or an agent's messages to another session while it still reads
 // them. The pass reads it first (sessionLiveNow), and again the same way before each copy, after
 // the beforeCopy seam: this listener's cache, and the session bucket's leader where the cache does
 // not read it live, so a registration that lands while the pass runs, through this listener or
 // another one, ends it; such a pass sets the record back as one that finds the previous holder
-// holding the role does. A replaced session that stays live
-// until the record's life has passed is not one that was replaced, and the record finishes with
-// nothing copied. It copies nothing either, and sets the record back the same way, while the two
+// holding the role does. Its hour runs from the last pass that found the replaced session live
+// or holding the role (HolderSeenAt) where that is later than the claim, and such a pass never
+// finishes it: a replaced session that stays live past the claim's hour and then stops leaves
+// unread what it was sent before it stopped, which the record still hands over then. It copies
+// nothing either, and sets the record back the same way without moving its hour, while the two
 // sessions' last registrations do not name one principal (handoverStands), the rule the claim
 // route wrote the record under: a session that registered as another principal since is handed
 // nothing more. That is read from the bucket's leader at the start, and again from the leader as
 // the last step before each copy (handoverStillStands), so a registration as another principal
-// that lands while the pass runs ends it too. And it copies more of the replaced
+// that lands while the pass runs ends it too. It copies more of the replaced
 // session's subject (takenFrame): a role message of any role goes to that role's kept lane, for
 // the role's next live holder, a drain of each such lane starting once the pass ends; and a
 // message to the session itself goes to the successor's own agent subject (handOverDirectFrame),
 // however long before the claim it was stored past where the pass starts, since a message to a
-// session has no hour. Where the replaced
-// session's floor is unknown the pass starts an hour before the claim, as every record's does,
-// since copying all the stream holds would hand over three days of messages that session read.
+// session has no hour. And where the replaced session's floor is unknown its pass starts at the
+// first message the stream holds on that session's subject, not an hour before the claim: a
+// message to the session stored earlier and never read is handed over too, at the cost of
+// handing over again what the session read in the stream's retention.
 //
 // A read or a copy that failed ends the pass with the record written at the frame it stopped at,
 // under the same rule; a failed read of where to start ends it with nothing written, and the next
@@ -755,7 +761,11 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 	successor, handover := bus.TakeoverSuccessor(stored.Subject)
 	started := cfg.now()
 	claimedAt := time.UnixMilli(record.ClaimedAt)
-	lifeOver := started.Sub(claimedAt) > takeoverRecordLife
+	lifeFrom := claimedAt
+	if handover {
+		lifeFrom = time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt))
+	}
+	lifeOver := started.Sub(lifeFrom) > takeoverRecordLife
 	written := func(record bus.TakeoverRecord, done bool, err error) (bus.StoredTakeoverRecord, bool, error) {
 		sequence, writeErr := writeTakeoverRecord(ctx, cfg, stored, record)
 		if err := errors.Join(err, writeErr); err != nil {
@@ -779,6 +789,10 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 			return stored, false, fmt.Errorf("read %s's registration: %w", record.Previous, err)
 		}
 	}
+	// waiting is a pass that finds the previous holder holding the role again, or the replaced
+	// session of a handover live: its record is set back to wait for it, and a handover's hour
+	// runs on from this pass.
+	waiting := back
 	// principal is the principal both sessions of a handover record last registered as, read at
 	// the pass's start, which each copy is fenced on (handoverStillStands).
 	var principal string
@@ -798,21 +812,23 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 	}
 	if back {
 		switch {
-		case lifeOver:
+		case lifeOver && !(handover && waiting):
 			record.Finished = true
 		case record.Next != 0 || record.FloorMissed:
 			record.Next, record.FloorMissed = 0, false
 		case started.Sub(stored.Written) < takeoverRecordRefresh:
 			return stored, true, nil
 		}
-		record.HolderSeenAt = started.UnixMilli()
+		if waiting {
+			record.HolderSeenAt = started.UnixMilli()
+		}
 		return written(record, true, nil)
 	}
 	since := time.UnixMilli(max(record.ClaimedAt, record.HolderSeenAt)).Add(-roleKeepWindow)
 	agent := contracts.LegacyAgentSubject(record.Previous)
 	next := record.Next
 	if next == 0 {
-		start, missed, err := takeoverStart(ctx, cfg, record, agent, since)
+		start, missed, err := takeoverStart(ctx, cfg, record, agent, since, handover)
 		if err != nil {
 			return stored, false, err
 		}
@@ -824,8 +840,8 @@ func runTakeoverPass(ctx context.Context, cfg listenerDeliveryHandlerConfig, sto
 			return settle(record, true, nil)
 		}
 		if start == 0 {
-			// Nothing on the subject from the hour before the claim on: the end, with nothing
-			// to start from yet.
+			// Nothing on the subject from where an unknown floor starts on: the end, with
+			// nothing to start from yet.
 			record.Finished = lifeOver
 			return settle(record, true, nil)
 		}
@@ -928,7 +944,10 @@ scan:
 			slog.String("session_id", successor),
 			slog.Int("copied", copied),
 			slog.Int("handed_over", handed))
-		record.Next, record.FloorMissed, record.HolderSeenAt = 0, false, started.UnixMilli()
+		record.Next, record.FloorMissed = 0, false
+		if liveAgain {
+			record.HolderSeenAt = started.UnixMilli()
+		}
 		return written(record, true, nil)
 	}
 	record.Next = next
@@ -979,9 +998,10 @@ func sessionLiveNow(ctx context.Context, cfg listenerDeliveryHandlerConfig, sess
 // it deleted that consumer (bus.Client.SessionReadFloor). With neither, missed is set on a record
 // whose earlier pass did not miss yet, so the pass ends and the next one reads the consumer again;
 // and on one that did, the start is the first message stored at or after since on the subject (a
-// stored-message read by start time), or 0 for a subject that holds none: the floor is unknown,
-// and what the previous holder read in that hour is copied too.
-func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, record bus.TakeoverRecord, agent string, since time.Time) (uint64, bool, error) {
+// stored-message read by start time), or for a handover the first message the stream holds on the
+// subject at all, or 0 for a subject that holds none: the floor is unknown, and what the previous
+// holder read in that hour, or for a handover in the stream's retention, is copied too.
+func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, record bus.TakeoverRecord, agent string, since time.Time, handover bool) (uint64, bool, error) {
 	if refuse := cfg.takeoverFaults.faults().floorRead; refuse != nil {
 		if err := refuse(record.Previous); err != nil {
 			return 0, false, err
@@ -997,12 +1017,19 @@ func takeoverStart(ctx context.Context, cfg listenerDeliveryHandlerConfig, recor
 	if !record.FloorMissed {
 		return 0, true, nil
 	}
-	first, err := cfg.client.FirstStoredMessageSince(ctx, agent, since)
+	var first bus.StoredMessage
+	from := since.UTC().Format(time.RFC3339)
+	if handover {
+		from = "its first message"
+		first, err = cfg.client.NextStoredMessage(ctx, agent, 1)
+	} else {
+		first, err = cfg.client.FirstStoredMessageSince(ctx, agent, since)
+	}
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return 0, false, nil
 	}
 	if err != nil {
-		return 0, false, fmt.Errorf("read %s from %s: %w", agent, since.UTC().Format(time.RFC3339), err)
+		return 0, false, fmt.Errorf("read %s from %s: %w", agent, from, err)
 	}
 	return first.Sequence, false, nil
 }

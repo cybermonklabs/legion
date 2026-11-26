@@ -3695,16 +3695,19 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// refused a broker token naming any other session, so a principal is recorded only from
 		// this session's own credential or from one that acts for every session. A record naming
 		// another principal was cleared before the registration was admitted, and a store whose
-		// bucket is not open refused it there (session.KnownSessions.AdmitRegistration). A failed
-		// write is a WARN and nothing else, and the registration is answered whatever it did
-		// (session.KnownSessions), with one exception (session.ErrPrincipalUnrecorded): a failed
-		// write after which the bucket's leader does not confirm the record names this
-		// registration's principal, none recorded, or nothing - a registration of this session as
-		// another principal through another listener since the admission, or a leader that did not
-		// answer. The handover gate would read another principal as the one this session last
-		// registered as, so it is answered 503 with Retry-After: 1, and the client registers again
-		// until the record names the principal it registers as; everything this registration wrote
-		// before it stands, and its next attempt writes the same again.
+		// bucket is not open refused it there (session.KnownSessions.AdmitRegistration). The write
+		// is fenced at the bucket's leader: a record naming another principal now was written by a
+		// registration of this session as that principal since the admission, through any
+		// listener, and is deleted rather than written over, so the gate reads no principal for the
+		// session until one registers again. A failed write is a WARN and nothing else, and the
+		// registration is answered whatever it did (session.KnownSessions), with one exception
+		// (session.ErrPrincipalUnrecorded): that fenced write, and a failed write after which the
+		// bucket's leader does not confirm the record names this registration's principal, none
+		// recorded, or nothing, or does not answer. The handover gate would read another principal,
+		// or none, as the one this session last registered as, so it is answered 503 with
+		// Retry-After: 1, and the client registers again until the record names the principal it
+		// registers as; everything this registration wrote before it stands, and its next attempt
+		// writes the same again.
 		if err := d.known.RecordRegistrationWithin(ctx, session.KnownSession{
 			SessionID:    body.SessionID,
 			Title:        body.Title,

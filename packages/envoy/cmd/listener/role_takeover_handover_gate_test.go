@@ -748,3 +748,114 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 		})
 	}
 }
+
+// A handover record waits for its replaced session for as long as that session stays live: a pass
+// that finds it live sets the record back and moves the record's hour on (HolderSeenAt), and never
+// finishes it, so what the session leaves unread when it stops at last is handed over then. A
+// claim of one person's session names that person's other session while it is live, and the
+// claim's own handover is held (gateClaimDrainHeld); the sweep's pass runs past the record's hour
+// (takeoverRecordLife) while the replaced session stays live; then it stops with an unread direct
+// message, and the sweep's pass runs again. In the case the claimant receives that message; it
+// fails where a pass that finds the replaced session live past the record's hour finishes the
+// record. The control is the same with no pass past the hour, which hands the message over either
+// way.
+func TestAHandoverWaitsForAReplacedSessionThatStaysLivePastTheRecordsHour(t *testing.T) {
+	for _, row := range []struct {
+		name        string
+		pastTheHour bool
+	}{
+		{name: "case: the replaced session stays live past the record's hour, then stops", pastTheHour: true},
+		{name: "control: the replaced session stops inside the record's hour"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newGateRig(t)
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{skipClaimHandover: gateClaimDrainHeld})
+			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
+			rig.registerOn(t, rig.personToken(gateReplaced, gatePerson), gateReplaced)
+			read := rig.sendDirect(t, gateReplaced, "dispatch", copiesReadMark+"a message to "+gateReplaced+" it read")
+			unread := rig.sendDirect(t, gateReplaced, "dispatch", "an unread message to "+gateReplaced)
+			seqs := copiesSeqs(t, standIn.collect(t, 2, copiesWatchBound), read, unread)
+			awaitAckState(t, rig.consumers, gateReplaced, 1, seqs[read])
+
+			taker := startCopiesStandIn(t, rig.url, gateClaimant, answerDone)
+			token := rig.personToken(gateClaimant, gatePerson)
+			rig.registerOn(t, token, gateClaimant)
+			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
+				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
+			}
+			claimed := time.Now()
+			t.Cleanup(rig.listenerClock.unpin)
+			if row.pastTheHour {
+				rig.listenerClock.pin(claimed.Add(takeoverRecordLife + time.Minute))
+				rig.sweepPass()
+				if _, state := rig.harness.sessions.Lookup(gateReplaced); state != session.Live {
+					t.Fatalf("%s reads %s at the pass past the record's hour; the case needs it live", gateReplaced, state)
+				}
+			}
+			rig.crash(t, gateReplaced, standIn)
+			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
+			if row.pastTheHour {
+				rig.listenerClock.pin(claimed.Add(takeoverRecordLife + 2*time.Minute))
+			}
+			rig.sweepPass()
+			received := rig.watch(t, taker, gateClaimant, gateRole, unread)
+			copiesRequireEach(t, received, gateClaimant, unread)
+			copiesRequireNone(t, received, gateClaimant, read)
+		})
+	}
+}
+
+// Where the replaced session's floor is unknown - its session consumer gone with no record of
+// where it read to, as the server's removal of an inactive consumer leaves it - a handover's pass
+// starts at the first message the stream holds on that session's subject, not an hour before the
+// claim as a role takeover's does: a message to a session has no hour, and one stored more than an
+// hour before the claim and never read would otherwise never reach the claimant. The claim's own
+// handover is held (gateClaimDrainHeld), and the sweep's first pass finds no floor and leaves the
+// read of the consumer to its next. In the case the claim's time is two hours after the unread
+// message was stored, and the claimant receives it; it fails where the pass starts an hour before
+// the claim. The control is the same claim made at once, which both starts reach.
+func TestAHandoverWhoseFloorIsUnknownStartsAtTheFirstMessageTheStreamHolds(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		later time.Duration
+	}{
+		{name: "case: the claim comes two hours after the unread message", later: 2 * time.Hour},
+		{name: "control: the claim comes at once"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newGateRig(t)
+			setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{skipClaimHandover: gateClaimDrainHeld})
+			standIn := startCopiesStandIn(t, rig.url, gateReplaced, copiesHolderAnswer)
+			rig.registerOn(t, rig.personToken(gateReplaced, gatePerson), gateReplaced)
+			unread := rig.sendDirect(t, gateReplaced, "dispatch", "an unread message to "+gateReplaced)
+			copiesSeqs(t, standIn.collect(t, 1, copiesWatchBound), unread)
+			rig.crash(t, gateReplaced, standIn)
+			rig.sessionClock.advance(session.LiveWindow + 30*time.Second)
+			// The server's removal of an inactive consumer: a delete of the consumer itself, which
+			// records no floor.
+			name, _ := bus.SessionConsumerName(gateReplaced)
+			if err := rig.harness.client.JS().DeleteConsumer(bus.Stream, name); err != nil {
+				t.Fatalf("delete %s's consumer %s: %v", gateReplaced, name, err)
+			}
+			rig.awaitNoConsumer(t, gateReplaced)
+			if record, recorded := rig.resumeRecord(t, gateReplaced); recorded {
+				t.Fatalf("%s has a resume record %+v; the row needs none", gateReplaced, record)
+			}
+
+			taker := startCopiesStandIn(t, rig.url, gateClaimant, answerDone)
+			token := rig.personToken(gateClaimant, gatePerson)
+			rig.registerOn(t, token, gateClaimant)
+			t.Cleanup(rig.listenerClock.unpin)
+			if row.later > 0 {
+				rig.listenerClock.pin(time.Now().Add(row.later))
+			}
+			if warning, warned := gateWarning(rig.claimOn(t, token)); warned {
+				t.Fatalf("the claim of one person's session naming that person's other session warned %q", warning)
+			}
+			rig.sweepPass()
+			rig.sweepPass()
+			received := rig.watch(t, taker, gateClaimant, gateRole, unread)
+			copiesRequireEach(t, received, gateClaimant, unread)
+		})
+	}
+}

@@ -832,8 +832,19 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // registration of the session as another principal through another listener, and a skip on that
 // copy alone would leave the other principal standing as the one the session last registered as.
 //
-// A write that failed is ErrPrincipalUnrecorded unless the bucket's leader confirms the record it
-// holds is one the handover gate reads rightly (principalMayDiffer): one naming this
+// The write itself is fenced at the leader (writeWithin): it writes over the revision the leader
+// holds, and only while that revision names this principal, none recorded, or nothing. A record
+// naming another principal, recorded, is one a registration of the session as that principal
+// wrote since this registration was admitted (AdmitRegistration), through this listener or
+// another one; writing over it would leave this principal recorded while the other registration
+// can be the one whose entry, consumer and process stand, which the handover gate would then hand
+// this principal's sessions' messages to. So the write deletes that record at its revision instead
+// and is ErrPrincipalUnrecorded: the gate reads no record for the session, and refuses every
+// handover to or from it, until the next registration of the session, this one's retry or the
+// other's heartbeat, records its principal again.
+//
+// Any other write that failed is ErrPrincipalUnrecorded unless the bucket's leader confirms the
+// record it holds is one the handover gate reads rightly (principalMayDiffer): one naming this
 // registration's principal, recorded, one naming none recorded, or none at all, which the gate
 // refuses or cannot judge, so that failure costs only the record's topics and last_seen and is
 // the plain error. A record naming another principal, and a leader that did not answer, leave the
@@ -850,7 +861,7 @@ func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record Kno
 	}
 	record.PrincipalRecorded = true
 	err := s.writeWithin(ctx, record, true, false)
-	if err != nil && s.principalMayDiffer(ctx, record.SessionID, record.Principal) {
+	if err != nil && !errors.Is(err, ErrPrincipalUnrecorded) && s.principalMayDiffer(ctx, record.SessionID, record.Principal) {
 		return fmt.Errorf("%w: %w", ErrPrincipalUnrecorded, err)
 	}
 	return err
@@ -877,10 +888,14 @@ func (s *KnownSessions) RecordRegistrationWithin(ctx context.Context, record Kno
 // that could build no JetStream context at all and a test's, admits every registration, as each
 // of its writes answers nil.
 //
-// What no read here fences is a registration of the same session through another listener as a
-// third principal between this step and the registration's own write: its record then names that
-// principal, and this registration's failed write is RecordRegistrationWithin's
-// ErrPrincipalUnrecorded, answered after the admission.
+// A registration of the session as another principal that lands between this step and the
+// registration's own write, through this listener or another one, is fenced by that write
+// (RecordRegistrationWithin), which writes only over a record naming this principal, none
+// recorded, or nothing, and deletes one naming another. So of two registrations of one session as
+// two principals the later write deletes the earlier's record and answers 503, and the gate reads
+// no record until one registers again. What no step fences is a registration whose listener stops
+// between its entry's write and its record's write: the record another registration wrote since
+// this one was admitted then stands beside this one's entry, until its client registers again.
 func (s *KnownSessions) AdmitRegistration(ctx context.Context, sessionID, principal string) error {
 	if s == nil || sessionID == "" {
 		return nil
@@ -906,10 +921,12 @@ func (s *KnownSessions) AdmitRegistration(ctx context.Context, sessionID, princi
 
 // ErrPrincipalUnrecorded wraps a registration the known-session record may name another principal
 // for: one AdmitRegistration could not read or clear the record of before the registration was
-// admitted, and a registration's write that failed (RecordRegistrationWithin) while the bucket's
-// leader names another principal, recorded, than the one the session just registered as, or did
-// not answer. The registration route answers it 503 with Retry-After: 1 rather than 200, so the
-// client registers again until the record names its principal.
+// admitted, one whose own write found the record naming another principal a registration of the
+// session wrote since, and deleted it (writeWithin), and a registration's write that failed
+// (RecordRegistrationWithin) while the bucket's leader names another principal, recorded, than the
+// one the session just registered as, or did not answer. The registration route answers it 503
+// with Retry-After: 1 rather than 200, so the client registers again until the record names its
+// principal.
 var ErrPrincipalUnrecorded = errors.New("session: the registration's principal is not recorded, and the known-session record may name another")
 
 // principalMayDiffer reports whether sessionID's record, as the bucket's leader holds it, names a
@@ -929,7 +946,7 @@ func (s *KnownSessions) principalMayDiffer(ctx context.Context, sessionID, princ
 // RecordWithin's skip of an unchanged record younger than the refresh age; TouchWithin passes
 // false, since a clean stop is one write per session lifetime and the whole point of it is to move
 // last_seen. keepPrincipal is the keep of the stored principal for a record that carries none
-// (RecordWithin, TouchWithin); a registration's write passes false.
+// (RecordWithin, TouchWithin); a registration's write passes false, and is fenced instead.
 //
 // The skip of an unchanged record that carries its own principal - a registration's - is
 // confirmed at the bucket's leader (leaderRecords): the skip compares this listener's copy, which
@@ -940,10 +957,18 @@ func (s *KnownSessions) principalMayDiffer(ctx context.Context, sessionID, princ
 // RecordRegistrationWithin's to judge. A write that keeps the stored principal skips on the copy
 // alone, since it changes no principal.
 //
+// Both the keep and a registration's write read the record from the bucket's leader and write
+// over that very revision (a compare-and-swap), and a write another one beat reads the leader
+// again, up to knownKeepAttempts times. The keep writes the principal the leader holds. A
+// registration's write is fenced on it: one naming another principal, recorded, was written by a
+// registration of the session as that principal since this one was admitted, so the write deletes
+// it at its revision rather than write over it, and is ErrPrincipalUnrecorded
+// (RecordRegistrationWithin).
+//
 // No caller but the registration route fails its request over what this answers: a subscription
 // change (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the
-// error is for the call site's WARN. The registration route answers a registration whose failed
-// write leaves another principal recorded (ErrPrincipalUnrecorded) with a 503.
+// error is for the call site's WARN. The registration route answers a registration whose write
+// leaves another principal recorded, or found one (ErrPrincipalUnrecorded), with a 503.
 func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, throttled, keepPrincipal bool) error {
 	watcher := s.watch()
 	if watcher == nil || record.SessionID == "" {
@@ -953,6 +978,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		record.PrincipalRecorded = true
 	}
 	keep := keepPrincipal && !record.PrincipalRecorded
+	fenced := !keepPrincipal
 	held, ok := s.cached(record.SessionID)
 	if keep && ok {
 		record.Principal, record.PrincipalRecorded = held.Principal, held.PrincipalRecorded
@@ -982,14 +1008,25 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	kv, epoch := watcher.Handle()
 	for attempt := 1; ; attempt++ {
 		head := func(value []byte) (uint64, error) { return kv.Put(record.SessionID, value) }
-		if keep {
+		if keep || fenced {
 			stored, err := kv.ReadFromLeader(ctx, record.SessionID)
 			if err != nil {
+				if fenced {
+					return fmt.Errorf("session: read the known-session record of %s before the registration's write: %w", record.SessionID, err)
+				}
 				return fmt.Errorf("session: keep the principal of the known-session record of %s: %w", record.SessionID, err)
 			}
-			record.Principal, record.PrincipalRecorded = leaderPrincipal(stored)
-			if buf, err = json.Marshal(record); err != nil {
-				return err
+			if keep {
+				record.Principal, record.PrincipalRecorded = leaderPrincipal(stored)
+				if buf, err = json.Marshal(record); err != nil {
+					return err
+				}
+			} else if principal, recorded := leaderPrincipal(stored); recorded && principal != record.Principal {
+				// The message names no principal: the route answers it to the registering caller.
+				if _, err := kv.DeleteAt(ctx, record.SessionID, stored.Revision); err != nil {
+					return fmt.Errorf("%w: the known-session record of %s names another principal, which the session registered as since this registration was admitted, and its delete failed: %w", ErrPrincipalUnrecorded, record.SessionID, err)
+				}
+				return fmt.Errorf("%w: the known-session record of %s named another principal, which the session registered as since this registration was admitted; the record is deleted, so register again", ErrPrincipalUnrecorded, record.SessionID)
 			}
 			head = func(value []byte) (uint64, error) {
 				if stored.Kind == bus.LeaderAbsent {
@@ -1014,9 +1051,9 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 			return err
 		}
 		if !written.Stored {
-			// Another write of the record landed between the keep's read and its write.
+			// Another write of the record landed between the leader read and this write.
 			if attempt == knownKeepAttempts {
-				return fmt.Errorf("session: the known-session record of %s was written by another write before each of %d writes that keep its principal", record.SessionID, knownKeepAttempts)
+				return fmt.Errorf("session: the known-session record of %s was written by another write before each of %d writes over the revision the bucket's leader held", record.SessionID, knownKeepAttempts)
 			}
 			continue
 		}
@@ -1048,8 +1085,9 @@ func (s *KnownSessions) leaderRecords(ctx context.Context, watcher *kvwatch.Watc
 	return recorded && principal == record.Principal
 }
 
-// knownKeepAttempts bounds the writes that keep a record's principal (writeWithin) when another
-// write of the record lands between each one's read of the bucket's leader and its own write.
+// knownKeepAttempts bounds the writes over the revision the bucket's leader held - the keep's and
+// a registration's (writeWithin) - when another write of the record lands between each one's read
+// of the leader and its own write.
 const knownKeepAttempts = 3
 
 // leaderPrincipal is the principal the leader's newest message for a record names, and whether a

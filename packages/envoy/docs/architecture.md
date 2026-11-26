@@ -662,9 +662,12 @@ back as a pass that finds the previous holder holding the role does: a session t
 its own messages, and a person's direct messages go to no other session while that person's
 session answers. A pass reads the session's state before it starts and again before each copy,
 from the listener's cache and, where that does not read it live, from the session bucket's leader,
-so a registration that lands while it runs, through any listener, ends it, and a session that
-stays live through the record's hour is not handed over. They copy nothing either, and set the
-record back the same way, while the two sessions' last registrations, read from the known-session
+so a registration that lands while it runs, through any listener, ends it. A handover record's
+hour runs from the last pass that found the replaced session live, or holding the role, where
+that is later than the claim, and such a pass never finishes it: a session that stays live past
+the claim's hour and then stops is handed over then. They copy nothing either, and set the
+record back the same way without moving its hour, while the two sessions' last registrations,
+read from the known-session
 bucket's leader before the pass and again as the last step before each copy
 (`handoverStands`, `handoverStillStands`), do not name one principal: a session that registered
 as another principal since the claim, or while the pass runs, is handed nothing more. And they
@@ -680,7 +683,10 @@ sessions that each replaced the other copy a message to and fro once. A message 
 event id is given one on its first copy, drawn from the frame it was first read from
 (`handedOverEventID`), and every later copy keeps it. A direct message has no hour: it is copied
 however long before the claim it was stored, from the replaced session's floor on; with no floor
-known, a pass starts an hour before the claim, as every record's does. Delivery is at least once,
+known, a pass starts at the first message the stream holds on the replaced session's subject,
+not an hour before the claim as a takeover record's does, so a direct message stored earlier and
+never read is handed over too, along with what the session read in the stream's retention.
+Delivery is at least once,
 as for a takeover: a message the replaced session acknowledged out of order above its floor
 reaches the claimant too. A handover record's stored body names no role and no previous session,
 which its subject names, so a listener of the release before leaves it out as a record no pass
@@ -707,10 +713,18 @@ listener whose known-session bucket is not open answer the registration `503` wi
 `Retry-After: 1` (`session.ErrPrincipalUnrecorded`) with nothing of it admitted; such a listener
 refuses every registration, heartbeats included, until its bucket opens. A registration whose
 record a listener's copy holds unchanged inside the refresh age is skipped only where the leader
-confirms it holds its principal too, and a registration whose write failed is answered the same
+confirms it holds its principal too. The registration's own write is fenced at the leader too: it
+writes over the revision the leader holds only while that revision names its principal, none
+recorded, or nothing, and a record naming another principal - one a registration of the session
+as that principal wrote since this one was admitted, through any listener - is deleted at its
+revision instead and the registration answered the same `503`, so of two registrations of one
+session as two principals the later write leaves no record, and the gate refuses every handover
+of the session until one registers again. A registration whose write failed is answered the same
 `503` unless the leader confirms the record names its principal, none recorded, or nothing; so
-the session registers again until the record names the principal it registers as. One race is
-not fenced: two listeners admitting one session as two principals at the same moment. The claim
+the session registers again until the record names the principal it registers as. What no step
+fences is a registration whose listener stops between the session entry's write and the record's
+write: the record another registration wrote since stands beside its entry until its client
+registers again. The claim
 route writes the handover record
 only when the claim's credential, the claimant's last registration and the replaced session's
 last registration name one principal, none equal to none, each registration read from the

@@ -103,6 +103,11 @@ func TestKnownSessionsKeepThePrincipalAWriteDoesNotCarry(t *testing.T) {
 
 	t.Run("a registration on a credential that proves no principal records none", func(t *testing.T) {
 		before, _ := known.Get(sessionID)
+		// As the registration route does: the admission clears the record naming another
+		// principal, and the registration's fenced write then records its own.
+		if err := known.AdmitRegistration(ctx, sessionID, ""); err != nil {
+			t.Fatalf("admit the registration: %v", err)
+		}
 		if err := known.RecordRegistrationWithin(ctx, KnownSession{SessionID: sessionID, Topics: before.Topics}); err != nil {
 			t.Fatalf("record the registration: %v", err)
 		}
@@ -229,11 +234,19 @@ func (leaderSilent) NewestFromLeader(context.Context, string) (nats.KeyValueEntr
 	return nil, errors.New("the stream's leader did not answer")
 }
 
-// writesRefused is a bucket handle that refuses every put, as a bucket that takes no write does;
-// its reads are the embedded handle's.
+// writesRefused is a bucket handle that refuses every write - a put, a create and an update at a
+// revision - as a bucket that takes no write does; its reads are the embedded handle's.
 type writesRefused struct{ nats.KeyValue }
 
 func (writesRefused) Put(string, []byte) (uint64, error) {
+	return 0, errors.New("the bucket took no write")
+}
+
+func (writesRefused) Create(string, []byte) (uint64, error) {
+	return 0, errors.New("the bucket took no write")
+}
+
+func (writesRefused) Update(string, []byte, uint64) (uint64, error) {
 	return 0, errors.New("the bucket took no write")
 }
 
@@ -264,14 +277,16 @@ func behindCopy(t *testing.T, known *KnownSessions, sessionID string, topics []s
 
 // No write puts a principal back that the bucket's leader did not confirm, and nothing the leader
 // did not answer counts as its confirmation. A registration whose record this listener's copy
-// holds unchanged is still written where the leader holds another principal, or does not answer,
-// since the copy can be behind a registration through another listener; a write that keeps the
-// stored principal writes nothing where the leader does not answer, rather than the principal the
-// copy names; and a registration whose write failed says so (ErrPrincipalUnrecorded), for the
-// registration route's 503, unless the leader confirms it names the registration's own
-// principal. Each case fails where the store decides on its copy alone; each control is the same
-// write where the copy is not behind, or the leader answers, or confirms the registration's own
-// principal.
+// holds unchanged is still written where the leader holds no record of it any more - the
+// admission deleted the one naming another principal that the copy is behind - since a skip on
+// the copy alone would leave no record at all; a registration whose leader does not answer is
+// refused (ErrPrincipalUnrecorded) and writes nothing, since its write is fenced on the leader's
+// record; a write that keeps the stored principal writes nothing where the leader does not answer,
+// rather than the principal the copy names; and a registration whose write failed says so
+// (ErrPrincipalUnrecorded), for the registration route's 503, unless the leader confirms it names
+// the registration's own principal. Each case fails where the store decides on its copy alone;
+// each control is the same write where the copy is not behind, or the leader answers, or confirms
+// the registration's own principal.
 func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 	const (
 		person  = "ada@example.com"
@@ -288,11 +303,14 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 		return entry.Revision()
 	}
 
-	t.Run("case: a registration the copy holds unchanged is written where the leader holds another principal", func(t *testing.T) {
+	t.Run("case: a registration the copy holds unchanged is written where the admission deleted the leader's record of another principal", func(t *testing.T) {
 		known := openKnown(t, now)
 		const sessionID = "ses_confirm_registration_behind"
 		topics := []string{"notifications.team.confirm"}
 		behindCopy(t, known, sessionID, topics, clock.UnixMilli(), service, person)
+		if err := known.AdmitRegistration(t.Context(), sessionID, person); err != nil {
+			t.Fatalf("admit the registration: %v", err)
+		}
 		if err := known.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: topics, Principal: person}); err != nil {
 			t.Fatalf("record the registration: %v", err)
 		}
@@ -312,17 +330,18 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 			t.Errorf("the record is at revision %d after a registration of unchanged content; want it left at %d", got, revision)
 		}
 	})
-	t.Run("case: a registration the copy holds unchanged is written where the leader does not answer", func(t *testing.T) {
+	t.Run("case: a registration the copy holds unchanged is refused where the leader does not answer", func(t *testing.T) {
 		known := openKnown(t, now)
 		useKnownKV(t, known, leaderSilent{known.watch().KV().Legacy()})
 		const sessionID = "ses_confirm_registration_silent"
 		topics := []string{"notifications.team.confirm"}
 		behindCopy(t, known, sessionID, topics, clock.UnixMilli(), service, person)
-		if err := known.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: topics, Principal: person}); err != nil {
-			t.Fatalf("record the registration: %v", err)
+		err := known.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Topics: topics, Principal: person})
+		if !errors.Is(err, ErrPrincipalUnrecorded) {
+			t.Errorf("the registration answered %v while the leader was silent; want ErrPrincipalUnrecorded", err)
 		}
-		if stored := storedPrincipal(t, known, sessionID); stored != person {
-			t.Errorf("the bucket's record names %q after the session registered as %q while the leader was silent; want the registration's", stored, person)
+		if stored := storedPrincipal(t, known, sessionID); stored != service {
+			t.Errorf("the bucket's record names %q after a registration as %q the leader did not answer for; want the later registration's %q, untouched", stored, person, service)
 		}
 	})
 
@@ -356,7 +375,7 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 		registers       string
 		unrecorded      bool
 	}{
-		{"case: a registration's write fails while the leader names another principal", "ses_confirm_unrecorded_leader",
+		{"case: a registration's write finds the leader naming another principal", "ses_confirm_unrecorded_leader",
 			func(kv nats.KeyValue) nats.KeyValue { return writesRefused{kv} }, person, true},
 		{"case: a registration's write fails while the leader is silent and the copy names another principal", "ses_confirm_unrecorded_copy",
 			func(kv nats.KeyValue) nats.KeyValue { return leaderSilent{writesRefused{kv}} }, person, true},
@@ -455,6 +474,9 @@ func TestKnownSessionsARegistrationThroughAStoreNotOpenIsUnrecorded(t *testing.T
 		}
 	})
 	t.Run("control: the same registration through the open store", func(t *testing.T) {
+		if err := open.AdmitRegistration(t.Context(), sessionID, person); err != nil {
+			t.Errorf("the admission answered %v; want nil", err)
+		}
 		if err := open.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Principal: person}); err != nil {
 			t.Errorf("the registration answered %v; want nil", err)
 		}
@@ -525,6 +547,68 @@ func TestKnownSessionsAdmitARegistrationOnlyOnceNoRecordNamesAnotherPrincipal(t 
 				t.Errorf("the record is gone (%v); want it kept", getErr)
 			case !row.kept && row.stored != nil && held:
 				t.Errorf("the record %s stands; want it deleted before the registration is admitted", entry.Value())
+			}
+		})
+	}
+}
+
+// Two registrations of one session as two principals can each be admitted before either writes
+// its record: the admission reads the record before the registration changes anything, and the
+// registration writes its record last. So a registration's own write is fenced at the bucket's
+// leader too (writeWithin): a record naming another principal, recorded, is one a registration of
+// the session as that principal wrote since this one's admission, and the write deletes it and is
+// ErrPrincipalUnrecorded, for the registration route's 503, rather than write over it. A
+// service's registration of a session is admitted; a person's registration of the same session is
+// admitted and records its principal; then the service's registration writes its record. The case
+// fails where that write puts the service back over the person: the handover gate would then read
+// the service as the principal the session last registered as while the person's registration
+// can be the one whose process stands. The controls are the same interleaving as one principal,
+// and the service's registration alone, each of which writes its record and answers nil.
+func TestKnownSessionsARegistrationWritesNoPrincipalOverOneRegisteredSinceItsAdmission(t *testing.T) {
+	const (
+		sessionID = "ses_fenced_registration"
+		person    = "ada@example.com"
+		service   = "example-fleet"
+	)
+	for _, row := range []struct {
+		name    string
+		between string
+		refused bool
+	}{
+		{name: "case: a person registers the session between the service's admission and its write", between: person, refused: true},
+		{name: "control: the service registers the session again between the admission and the write", between: service},
+		{name: "control: nothing registers the session between the admission and the write"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			known := openKnown(t, time.Now)
+			if err := known.AdmitRegistration(t.Context(), sessionID, service); err != nil {
+				t.Fatalf("the service's admission answered %v; want nil", err)
+			}
+			if row.between != "" {
+				if err := known.AdmitRegistration(t.Context(), sessionID, row.between); err != nil {
+					t.Fatalf("the admission of the registration as %s answered %v; want nil", row.between, err)
+				}
+				if err := known.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Principal: row.between}); err != nil {
+					t.Fatalf("the registration as %s answered %v; want nil", row.between, err)
+				}
+			}
+			// The title differs from the record written between, so the write is no skip of an
+			// unchanged record.
+			err := known.RecordRegistrationWithin(t.Context(), KnownSession{SessionID: sessionID, Title: "the service's registration", Principal: service})
+			if !row.refused {
+				if err != nil {
+					t.Fatalf("the service's registration answered %v; want nil", err)
+				}
+				if stored := storedPrincipal(t, known, sessionID); stored != service {
+					t.Errorf("the bucket's record names %q; want %q", stored, service)
+				}
+				return
+			}
+			if !errors.Is(err, ErrPrincipalUnrecorded) {
+				t.Errorf("the service's registration answered %v; want ErrPrincipalUnrecorded", err)
+			}
+			if entry, getErr := known.watch().KV().Get(sessionID); getErr == nil {
+				t.Errorf("the bucket holds %s's record %s; want it deleted, naming neither principal", sessionID, entry.Value())
 			}
 		})
 	}
