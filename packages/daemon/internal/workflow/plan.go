@@ -46,17 +46,15 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	return node
 }
 
-// passOverEarlierOwners deletes each plan of issue that an earlier owner gave, before its first
-// step reads its plan, so the walk never takes one, and answers the versions it
-// passed over. An earlier owner's plan is the version in force of a generation whose giver is no
-// architect of the issue's tree now (record.Store's PlansOfEarlierOwners, record.ArchitectOfTree,
-// the rule the routes hold every architect's call to): the owner of an issue changes where an
-// orphan is admitted again as a root of its own and where an adoption moves a member to another
-// tree, and the plan the earlier owner gave is not the new owner's to run. The rows go in this
-// transaction, so the next first step finds none. An issue with no plan rows, or only its
-// owners', is read and nothing is written.
+// passOverEarlierOwners deletes each plan of issue that only earlier owners gave, before its first
+// step reads its plan, so the walk never takes one, and answers the versions it passed over: the
+// version in force of each generation of which no giver is an architect of the issue's tree now
+// (record.PlansOfEarlierOwners, record.GivenByEarlierOwners), judged through the engine's store,
+// the one a give of a plan before this step judges through too (versionRefusal), so the two read
+// one tree. The rows go in this transaction, so the next first step finds none. An issue with no
+// plan rows, or only its owners', is read and nothing is written.
 func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.PlanVersion, error) {
-	earlier, err := e.store.PlansOfEarlierOwners(ctx, tx, issue)
+	earlier, err := record.PlansOfEarlierOwners(ctx, e.store, tx, issue)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +93,7 @@ func takesNoPlan(group record.Assignment) bool {
 // (passOverEarlierOwners), so nothing below carries one. A run whose generation then holds plan
 // rows, the owner's own or a hand-over's carried plan, keeps them. One whose generation holds none
 // takes the newest plan its owner gave, of any generation, generation 0 among them, which holds a
-// plan given before the daemon recorded the issue (record.Store's OwnersNewestPlan), carried from
+// plan given before the daemon recorded the issue (record.OwnersNewestPlan), carried from
 // its start (CarryPlan without carried): each task waits at no act, and the transition starts the
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
@@ -130,7 +128,7 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return e.tellNotTaken(ctx, tx, issue, group, append(earlier, owners...))
 	}
 	if stored == nil {
-		if stored, err = e.store.OwnersNewestPlan(ctx, tx, issue); err != nil {
+		if stored, err = record.OwnersNewestPlan(ctx, e.store, tx, issue); err != nil {
 			return err
 		}
 	}
@@ -161,14 +159,14 @@ func (e *Engine) takeFirstPlan(ctx context.Context, tx pgx.Tx, issue record.Issu
 // passOverOwners deletes every plan of issue's owner that its first step could take, for an issue
 // whose group runs the project's default steps, and answers the versions it passed over, in the
 // order they were given, and the plan of the run's generation that stands after it (stored, as the
-// caller read it): the owner's plan in force at each generation (record.Store's PlansOfOwners), the
+// caller read it): the owner's plan in force at each generation (record.PlansOfOwners), the
 // run's own, generation 0, which holds a plan given before the daemon recorded and drew the issue,
 // and each copy a carry wrote to a later generation. A run that passed over the newest alone would
 // leave the copies before it to the next run's first step, which would tell the same version again.
 // A plan of the run's generation that no owner gave, a hand-over's carried default, stands. The
 // rows go in this transaction.
 func (e *Engine) passOverOwners(ctx context.Context, tx pgx.Tx, issue record.Issue, stored *record.StoredPlan) ([]record.PlanVersion, *record.StoredPlan, error) {
-	passed, err := e.store.PlansOfOwners(ctx, tx, issue)
+	passed, err := record.PlansOfOwners(ctx, e.store, tx, issue)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -216,12 +214,12 @@ func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Iss
 	}
 	ran, told := "default steps", "the default steps"
 	if runs.Source == record.PlanSourceOwner {
-		ran = describeVersion(runs)
+		ran = describeVersion(runs, runs.Givers())
 		told = ran
 	}
 	for _, version := range earlier {
 		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is not taken", "issue", issue.Key, "generation", version.Generation,
-			"version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy, "runs", ran)
+			"version", version.Version, "document", version.ArtifactID, "giver", giversOf(version), "runs", ran)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"The first step of %s took no plan of an earlier owner: %s. It runs %s. To run a plan it did not take, give it again with register_plan as your own.",
@@ -241,7 +239,7 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	for _, version := range passed {
 		e.logOnCommit(ctx, "workflow: a plan is not taken: the issue's group runs the project's default steps", "issue", issue.Key,
-			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy,
+			"generation", version.Generation, "version", version.Version, "document", version.ArtifactID, "giver", giversOf(version),
 			"experiment", group.Experiment, "variant", group.Variant)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
@@ -249,24 +247,77 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // namedOnce names the versions a first step passed over as its plan-not-taken notice names them:
-// each version once (describeVersion), in the order it was first passed over. A rerun carries the
-// owner's plan to its new generation with the time it was given (record.Store's CarryPlan), so the
-// versions passed over hold one copy of a version for each generation it ran, and the notice names
-// the version, not its copies.
+// each version of a document once, in the order it was first passed over, with the givers of all
+// its copies (describeVersion). A rerun carries the owner's plan to its new generation with its
+// givers and the time it was given (record.Store's CarryPlan), and a give of the version in force
+// by another owner adds that owner to the copy of its own generation alone (record.Store's
+// AddPlanGiver), so the versions passed over hold one copy of a version for each generation it
+// ran, whose givers can differ, and the notice names the version, not its copies.
 func namedOnce(versions []record.PlanVersion) string {
-	named := make([]string, 0, len(versions))
-	for _, version := range versions {
-		if described := describeVersion(version); !slices.Contains(named, described) {
-			named = append(named, described)
+	var named []string
+	for i, version := range versions {
+		if slices.ContainsFunc(versions[:i], func(earlier record.PlanVersion) bool { return sameDocumentVersion(earlier, version) }) {
+			continue
 		}
+		// Within one PlansInForce read the copies of one version come in the order the store gave
+		// them (given_at, then generation), so read backward they name the giver the store added
+		// last first, as one copy's givers do. tellPassedOver passes part of one read, in its order.
+		// tellNotTaken joins two, the earlier owners' and then its owner's, which need not keep that
+		// order, but its issue's group takes no plan. That group is drawn in the transaction that
+		// records the issue (drawExperiments), and from then on every give is refused PLAN_NOT_TAKEN
+		// (versionRefusal) and every stop_task too (taskStopped). So an owner's plan of such an issue
+		// was given before the record, at generation 0, and nothing carries it: its first step passes
+		// it over before it carries anything (planFirstStep). The joined list holds at most one copy
+		// of one version.
+		var givers []claim.Token
+		for _, copied := range slices.Backward(versions) {
+			if !sameDocumentVersion(copied, version) {
+				continue
+			}
+			for _, giver := range copied.Givers() {
+				if !slices.Contains(givers, giver) {
+					givers = append(givers, giver)
+				}
+			}
+		}
+		named = append(named, describeVersion(version, givers))
 	}
 	return strings.Join(named, "; ")
 }
 
+// sameDocumentVersion says whether a and b are copies of one version of one document.
+func sameDocumentVersion(a, b record.PlanVersion) bool {
+	return a.ArtifactID == b.ArtifactID && a.Version == b.Version
+}
+
 // describeVersion names an owner's version of a plan as a log line and a notice name it: its
-// version, its document and who gave it.
-func describeVersion(version record.PlanVersion) string {
-	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, version.GivenBy)
+// version, its document and who gave it, givers (namedGivers).
+func describeVersion(version record.PlanVersion, givers []claim.Token) string {
+	return fmt.Sprintf("version %d of document %s, given by %s", version.Version, version.ArtifactID, namedGivers(givers))
+}
+
+// giversOf names every giver of version (record.PlanVersion.Givers), the giver the store added
+// last first (namedGivers). Each log line of a version names its givers so, under the key giver.
+func giversOf(version record.PlanVersion) string {
+	return namedGivers(version.Givers())
+}
+
+// namedGivers names givers by their claims, as a sentence lists them (listed).
+func namedGivers(givers []claim.Token) string {
+	names := make([]string, len(givers))
+	for i, giver := range givers {
+		names[i] = string(giver)
+	}
+	return listed(names)
+}
+
+// listed joins words as a sentence lists them: one alone, two joined by "and", more by commas and
+// a last "and".
+func listed(words []string) string {
+	if len(words) < 2 {
+		return strings.Join(words, "")
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 }
 
 // WritePlan queues the plan node of issue's run (planNode), the plan it carries out, read from its

@@ -20,15 +20,15 @@ import (
 
 // TestTheApprovalPagePrintsTheProfilesScope: a record for a GitHub profile prints, beside the
 // name it asks for, the profile's source, its permissions, its accounts, its repositories, the
-// target the record's signed request narrows it to and the hosts its proxy block sends the
-// credential to, each read from the live profiles file and the record itself. Each is its own
-// row, so a page that leaves one of them out fails that row alone.
+// target the record's signed request narrows it to and the hosts its kind sends the credential to,
+// each read from the live policy and the record itself. Each is its own row, so a page that
+// leaves one of them out fails that row alone.
 func TestTheApprovalPagePrintsTheProfilesScope(t *testing.T) {
 	r := newRig(t)
 	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
 	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-	r.machine.Policy = policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(
-		`{"name": "GITHUB_WRITE", "source": "ADA_APP", "github": {"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/lean", "ada/proofs"], "permissions": {"pull_requests": "write", "contents": "write", "metadata": "read"}}, "proxy": {"hosts": ["api.github.com"]}}`,
+	r.machine.Policy = policytest.ProfiledCurrent(t, local, policytest.KindsFile(
+		`{"name": "GITHUB_WRITE", "source": "ADA_APP", "github": {"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/lean", "ada/proofs"], "permissions": {"pull_requests": "write", "contents": "write", "metadata": "read"}}, "proxy": "github"}`,
 	))
 	enrollmentID, key := r.benSession(t, "ben-box")
 	compact, err := record.Sign(key, r.url, []record.AuthorizationDetail{
@@ -55,7 +55,7 @@ func TestTheApprovalPagePrintsTheProfilesScope(t *testing.T) {
 		{"accounts", "GitHub accounts acme, ada"},
 		{"repositories", "Repositories acme/site, ada/lean, ada/proofs"},
 		{"target", "Target ada/proofs"},
-		{"proxy hosts", "Proxy hosts api.github.com"},
+		{"proxy hosts", "Proxy hosts api.github.com, github.com, uploads.github.com"},
 	} {
 		t.Run(row.field, func(t *testing.T) {
 			if !strings.Contains(block, row.want) {
@@ -105,6 +105,44 @@ func TestTheApprovalPagePrintsAGoogleProfilesScopes(t *testing.T) {
 		t.Run(row.field, func(t *testing.T) {
 			if !strings.Contains(block, row.want) {
 				t.Fatalf("the record's block does not print the profile's %s, %q:\n%s", row.field, row.want, block)
+			}
+		})
+	}
+	if strings.Contains(block, "Proxy hosts") {
+		t.Errorf("the block of a profile behind no kind prints proxy hosts:\n%s", block)
+	}
+}
+
+// TestTheApprovalPagePrintsTheHostsANarrowedProfileReaches: a profile whose own allow names a
+// host in every row sends its credential to those hosts alone, whatever else its kind binds, so
+// the page prints those, as the person approving it must read them: an administrator's token of
+// the github kind narrowed to api.github.com prints api.github.com and not github.com or
+// uploads.github.com. Control: the same profile with one row that names no host reaches every host
+// of its kind, and prints them all.
+func TestTheApprovalPagePrintsTheHostsANarrowedProfileReaches(t *testing.T) {
+	const rows = `{"method": "GET", "pathPrefix": "/enterprises/acme/audit-log/stream-key", "host": "api.github.com"}, ` +
+		`{"method": "PUT", "pathPrefix": "/enterprises/acme/actions/cache/storage-limit", "host": "api.github.com"}`
+	for _, c := range []struct {
+		name, allow, want string
+	}{
+		{"every row on api.github.com", rows, "Proxy hosts api.github.com"},
+		{"the control: one row on no host", rows + `, {"method": "GET", "pathPrefix": "/enterprises/acme/settings"}`, "Proxy hosts api.github.com, github.com, uploads.github.com"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t)
+			local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
+			local.Put(policytest.Narrowed(policytest.Proxied(policytest.Secret("ENTERPRISE_ADMIN", ada, policy.TierHuman, "enterprise-v1"), "github")))
+			r.machine.Policy = policytest.ProfiledCurrent(t, local, policytest.KindsFile(`{"name": "ENTERPRISE_ADMIN", "allow": [`+c.allow+`]}`))
+			enrollmentID, key := r.benSession(t, "ben-box")
+			p := r.request(t, enrollmentID, key, "raise the cache limit", nil, "", "ENTERPRISE_ADMIN")
+			b := r.browser(t)
+			b.SignIn(t, p.recordID, person(ada))
+			block := pageText(t, recordBlock(t, b.Page(t, p.recordID).Body, p.recordID))
+			if !strings.Contains(block, c.want) {
+				t.Fatalf("the record's block does not print %q:\n%s", c.want, block)
+			}
+			if c.want == "Proxy hosts api.github.com" && (strings.Contains(block, "uploads.github.com") || strings.Contains(block, "api.github.com, ")) {
+				t.Errorf("the block of a profile narrowed to api.github.com prints another host of its kind:\n%s", block)
 			}
 		})
 	}
