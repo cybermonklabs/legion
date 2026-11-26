@@ -1835,19 +1835,20 @@ describe("dispatchToolSpecs", () => {
     ]);
   });
 
-  test.each(
-    BODY_WRITING_TOOLS
-  )("%s says a decision block in its %s is refused, and where the question belongs", (name, field) => {
-    const fields = specFor(name).arguments(schemaApi) as unknown as Record<
-      string,
-      { description?: string; unwrap?: () => { description?: string } }
-    >;
-    const argument = fields[field];
-    const flag = argument?.description ?? argument?.unwrap?.().description ?? "";
-    expect(flag, `${name} --${field}`).toContain(DECISION_BLOCK_RULE);
-    const help = [specFor(name).description, ...argumentDescriptions(name)].join(" ");
-    expect(help, name).toContain(DECISION_BLOCK_RULE);
-  });
+  test.each(BODY_WRITING_TOOLS)(
+    "%s says a decision block in its %s is refused, and where the question belongs",
+    (name, field) => {
+      const fields = specFor(name).arguments(schemaApi) as unknown as Record<
+        string,
+        { description?: string; unwrap?: () => { description?: string } }
+      >;
+      const argument = fields[field];
+      const flag = argument?.description ?? argument?.unwrap?.().description ?? "";
+      expect(flag, `${name} --${field}`).toContain(DECISION_BLOCK_RULE);
+      const help = [specFor(name).description, ...argumentDescriptions(name)].join(" ");
+      expect(help, name).toContain(DECISION_BLOCK_RULE);
+    }
+  );
 
   // The Go hosts show the generated copy of these specs, so the rule reaches a session there
   // too; `bun run check:go` is what keeps the copy equal to the source above.
@@ -2085,40 +2086,40 @@ describe("the bounds and words each tool states beside its arguments", () => {
   // reason of U+FEFF. The tool refuses the same calls before anything is sent, in the rule its
   // field states, and takes what the route takes; JavaScript's trim would read U+0085 and U+FEFF
   // the other way.
-  test.each([
-    "dispatch_issue",
-    "dispatch_issue_update",
-  ] as const)("%s refuses the components parseIssueComponents refuses, in the rule its field states", (name) => {
-    const schema = schemaFor(name);
-    for (const components of [
-      { mode: "explicit" },
-      { mode: "none" },
-      { mode: "none", reason: " \n" },
-      { mode: "none", reason: "\u0085" },
-    ]) {
-      const result = schema.safeParse({ ...validCalls[name], components });
-      expect(result.success, JSON.stringify(components)).toBe(false);
-      expect(
-        result.error?.issues.map((issue) => issue.message),
-        JSON.stringify(components)
-      ).toEqual([COMPONENTS_RULE]);
+  test.each(["dispatch_issue", "dispatch_issue_update"] as const)(
+    "%s refuses the components parseIssueComponents refuses, in the rule its field states",
+    (name) => {
+      const schema = schemaFor(name);
+      for (const components of [
+        { mode: "explicit" },
+        { mode: "none" },
+        { mode: "none", reason: " \n" },
+        { mode: "none", reason: "\u0085" },
+      ]) {
+        const result = schema.safeParse({ ...validCalls[name], components });
+        expect(result.success, JSON.stringify(components)).toBe(false);
+        expect(
+          result.error?.issues.map((issue) => issue.message),
+          JSON.stringify(components)
+        ).toEqual([COMPONENTS_RULE]);
+      }
+      const empty = { mode: "explicit", ids: [] };
+      expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
+      for (const components of [
+        { mode: "inherit" },
+        { mode: "explicit", ids: ["web"] },
+        { mode: "none", reason: "hiring" },
+        { mode: "none", reason: "\uFEFF" },
+      ]) {
+        const result = schema.safeParse({ ...validCalls[name], components });
+        expect(result.success, JSON.stringify(components)).toBe(true);
+      }
+      const words = argumentDescriptions(name).join(" ");
+      expect(words).toContain(COMPONENTS_RULE);
+      expect(words).toContain("Required for mode explicit");
+      expect(words).toContain("Required for mode none");
     }
-    const empty = { mode: "explicit", ids: [] };
-    expect(schema.safeParse({ ...validCalls[name], components: empty }).success).toBe(false);
-    for (const components of [
-      { mode: "inherit" },
-      { mode: "explicit", ids: ["web"] },
-      { mode: "none", reason: "hiring" },
-      { mode: "none", reason: "\uFEFF" },
-    ]) {
-      const result = schema.safeParse({ ...validCalls[name], components });
-      expect(result.success, JSON.stringify(components)).toBe(true);
-    }
-    const words = argumentDescriptions(name).join(" ");
-    expect(words).toContain(COMPONENTS_RULE);
-    expect(words).toContain("Required for mode explicit");
-    expect(words).toContain("Required for mode none");
-  });
+  );
 
   // POST /api/v1/issues imports the GitHub issue an external reference names into the project the
   // create names: one already imported into that project answers its issue and creates nothing,

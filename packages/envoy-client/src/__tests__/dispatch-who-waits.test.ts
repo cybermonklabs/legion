@@ -413,12 +413,15 @@ test.each([
   ["issue-update", [THE_CHAIN, "waits on the project's default assignee"]],
   ["issue", [THE_CHAIN, "a new issue always has one"]],
   ["whoami", [THE_CHAIN, "every issue you create has an assignee"]],
-])("dispatch %s states the rule: a question reaches the project's default assignee behind the issue's assignee", async (command, phrases) => {
-  const text = await help(command);
+])(
+  "dispatch %s states the rule: a question reaches the project's default assignee behind the issue's assignee",
+  async (command, phrases) => {
+    const text = await help(command);
 
-  for (const phrase of phrases) expect(text).toContain(phrase);
-  for (const phrase of NO_PERSON_PHRASES) expect(text).not.toContain(phrase);
-});
+    for (const phrase of phrases) expect(text).toContain(phrase);
+    for (const phrase of NO_PERSON_PHRASES) expect(text).not.toContain(phrase);
+  }
+);
 
 /** A documentation page under `docs/site/src/content/docs/dispatch/`. */
 function page(name: string): string {
@@ -454,12 +457,15 @@ test.each([
       "Every project names one, so every new issue has an assignee.",
     ],
   ],
-])("dispatch/%s states the rule: a question reaches the project's default assignee", (name, phrases) => {
-  const text = page(name).replace(/\s+/g, " ");
+])(
+  "dispatch/%s states the rule: a question reaches the project's default assignee",
+  (name, phrases) => {
+    const text = page(name).replace(/\s+/g, " ");
 
-  for (const phrase of phrases) expect(text).toContain(phrase);
-  for (const phrase of NO_PERSON_PHRASES) expect(text).not.toContain(phrase);
-});
+    for (const phrase of phrases) expect(text).toContain(phrase);
+    for (const phrase of NO_PERSON_PHRASES) expect(text).not.toContain(phrase);
+  }
+);
 
 // The Legion texts that tell a person, or the controller writing to one, what becomes of the
 // questions of an issue nobody holds. Such an issue is still stored (an issue-update that clears
@@ -479,11 +485,14 @@ test.each([
   "docs/site/src/content/docs/legion/using-legion.md",
   "skills/legion-controller/references/triage.md",
   "skills/legion-controller/references/daily-report.md",
-])("%s states the rule: an unassigned issue's questions reach the project's default assignee, not nobody", (path) => {
-  const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
+])(
+  "%s states the rule: an unassigned issue's questions reach the project's default assignee, not nobody",
+  (path) => {
+    const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
 
-  for (const phrase of UNASSIGNED_REACHES_NOBODY_PHRASES) expect(text).not.toContain(phrase);
-});
+    for (const phrase of UNASSIGNED_REACHES_NOBODY_PHRASES) expect(text).not.toContain(phrase);
+  }
+);
 
 // The texts the rows above name are the ones a reader is sent to; the replaced rule could stand in
 // any other. So this row reads the tree: every text file git lists, tracked or untracked and not
@@ -764,10 +773,13 @@ test.each([
     "packages/envoy/cmd/dispatch/README.md",
     "for an assignee move the assignee the issue was taken from",
   ],
-])("states the rule: %s names the project's default on an assignee move's side that holds nobody", (path, opening) => {
-  const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
-  const at = text.indexOf(opening);
-  expect(at).toBeGreaterThanOrEqual(0);
-  const sentence = sentenceAt(text, at);
-  expect(sentence).toMatch(/default assignee/);
-});
+])(
+  "states the rule: %s names the project's default on an assignee move's side that holds nobody",
+  (path, opening) => {
+    const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
+    const at = text.indexOf(opening);
+    expect(at).toBeGreaterThanOrEqual(0);
+    const sentence = sentenceAt(text, at);
+    expect(sentence).toMatch(/default assignee/);
+  }
+);

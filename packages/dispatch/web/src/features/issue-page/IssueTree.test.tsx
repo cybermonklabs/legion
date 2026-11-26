@@ -4246,23 +4246,26 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
 test.each([
   ["isComposing", { isComposing: true }],
   ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const { editable, view } = await caretInStatement(user);
-  controlOutside();
-  await act(async () => {
-    pressIn(editable, "Tab", modifiers);
-  });
-  await nextFrame();
-  expect(
-    document.activeElement === editable,
-    "a Tab pressed in a composition moved the focus out of the row's editor"
-  ).toBe(true);
-  expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
-    "artifact-spec"
-  );
-});
+] as const)(
+  "a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were",
+  async (_mark, modifiers) => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const { editable, view } = await caretInStatement(user);
+    controlOutside();
+    await act(async () => {
+      pressIn(editable, "Tab", modifiers);
+    });
+    await nextFrame();
+    expect(
+      document.activeElement === editable,
+      "a Tab pressed in a composition moved the focus out of the row's editor"
+    ).toBe(true);
+    expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
+      "artifact-spec"
+    );
+  }
+);
 
 // What the node's own block draws is the node's: from the caret in a plan task's words, Tab stops
 // at the link the task's header draws, as the browser would, and the editing stays. Tab from that

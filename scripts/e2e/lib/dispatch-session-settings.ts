@@ -618,9 +618,15 @@ async function pickerRefusal(context: Context): Promise<void> {
     `the replay of ${S} carries no reported settings frame: ${JSON.stringify(settings ?? null)}`
   );
   const top = Math.max(...replay.map((frame) => frame.seq));
+  const models = settings?.models as string[] | undefined;
+  if (models === undefined) {
+    throw new Error(
+      `the reported settings frame of ${S} lists no models: ${JSON.stringify(settings)}`
+    );
+  }
   const injected = {
     ...settings,
-    models: [...(settings?.models as string[]), rig.unkeyedModel],
+    models: [...models, rig.unkeyedModel],
     seq: top + 1_000_000,
   };
   await services.publishFrame(S, injected);
@@ -628,7 +634,7 @@ async function pickerRefusal(context: Context): Promise<void> {
     h.modelOptions.includes(rig.unkeyedModel)
   );
   note(
-    `a bare bus client published on agentstream.${S}.frames a reported settings frame at seq ${injected.seq} (the replay's highest is ${top}) listing the session's ${(settings?.models as string[]).length} models and ${rig.unkeyedModel}`
+    `a bare bus client published on agentstream.${S}.frames a reported settings frame at seq ${injected.seq} (the replay's highest is ${top}) listing the session's ${models.length} models and ${rig.unkeyedModel}`
   );
   const want = `Failed to set model: No API key for ${rig.unkeyedModel}`;
   const picked = await pickAndAnswer(context, S, "model", rig.unkeyedModel, want);
