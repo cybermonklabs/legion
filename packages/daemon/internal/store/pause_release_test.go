@@ -262,6 +262,7 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 // the rest of its payload, and no other start changes. A start below the release's last row, a
 // phase's start, and the start of a role with no wake under the mark are no such start.
 func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)
@@ -331,6 +332,7 @@ func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.
 // So the release records count no return of a pod for a release that did not take it. The
 // resume keeps its kind and its seen release.
 func TestACancelWhileThePausedProjectHoldsAWakeTakenWhileTheProjectRan(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
 	openRunningTree(t, st)

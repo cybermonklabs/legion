@@ -170,6 +170,7 @@ func loggedLines(rig wakeRig, level, message string) []string {
 // minutes after its report records the take's time as the resume's time, so the stuck rule does
 // not count the wait.
 func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		kind string
@@ -600,6 +601,7 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 // role finds of its workspace in the words of WorkspaceAfterRelease: the release took the pod only
 // because the workspace held nothing that origin does not hold, and it kept no copy of any work.
 func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
+	t.Parallel()
 	preamble := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		WorkspaceAfterRelease + " Your session is as you left it. "
 

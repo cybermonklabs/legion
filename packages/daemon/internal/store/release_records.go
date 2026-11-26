@@ -137,6 +137,7 @@ type PodReleaseRecords struct {
 // seen_release and its times move, and the release measurements leave its wait out. The teardown
 // records the release before it clears the mark (internal/daemon's releaseIssue), so the mark is
 // there to read in this transaction. With no mark, or no such resume, the update changes nothing.
+// That rule of the resumes is one statement, which the settle shares (wakeTakenUnderMark).
 //
 // The same transaction retells the start of each such wake (PodRelease.WakeTask,
 // retellWakesUnderRelease). A wake of a role that a project's pause stopped, taken under the mark,
@@ -165,7 +166,8 @@ type PodReleaseRecords struct {
 // keeps the pause's words. While the project runs there is no open pause, and this lock locks
 // nothing. The record holds no lock when it locks the mark, and only the mark when it locks the
 // pause row, so it cannot deadlock with a take, a cancel or a resume; PodRecords.TakePodWake
-// gives the whole lock order.
+// gives the whole lock order. The mark's lock, the read of the record that names the mark and the
+// pause row's lock are one helper, which the settle shares (lockMarkForRecord).
 //
 // The record is also the mark's one-way step: the row it inserts names the release's mark
 // (pod_releases.issue_release_id). The teardown records the release once the runtime has answered
@@ -199,27 +201,13 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 	}
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		id, wrote = 0, false
-		var mark, last int64
-		err := tx.QueryRow(ctx, `select id, last_row from issue_releases where project = $1 and issue = $2 for update`,
-			rel.Project, rel.Issue).Scan(&mark, &last)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("lock the release mark: %w", err)
-		}
-		named := rel.Release
-		if named == 0 {
-			named = mark
-		}
-		if named != 0 {
-			err := tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, named).Scan(&id)
-			if err == nil {
-				return nil
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("read the record of the release's mark: %w", err)
-			}
-		}
-		if _, _, err := LockOpenPauseByTokenTx(ctx, tx, rel.Project); err != nil {
+		named, last, recorded, err := lockMarkForRecord(ctx, tx, rel.Project, rel.Issue, rel.Release)
+		if err != nil {
 			return err
+		}
+		if recorded != 0 {
+			id = recorded
+			return nil
 		}
 		err = tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes, issue_release_id)
 			values ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0))
@@ -233,8 +221,7 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 		}
 		rows, err := tx.Query(ctx, `with pointed as (update pod_resumes r set release_id = case when r.pause_id is null then $3::bigint else 0 end,
 			seen_release = $3, at = greatest(r.at, $4), clock_at = greatest(r.clock_at, $4)
-			from issue_releases m where m.project = $1 and m.issue = $2 and r.project = m.project and r.issue = m.issue
-			and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null
+			from issue_releases m where m.project = $1 and m.issue = $2 and `+wakeTakenUnderMark+`
 			returning r.role)
 			select distinct role from pointed`,
 			rel.Project, rel.Issue, id, rel.At)
@@ -288,7 +275,8 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 // pod is gone, ends every running hold streak of the pod, as the record does, records that the
 // teardown gave up on the record of the mark at at (recordReleaseGiveUp, pod_release_give_ups),
 // and then deletes the mark (deleteIssueRelease). With no mark, or no such resume, it changes no
-// resume, and with no mark it records no give-up.
+// resume, and with no mark it records no give-up. The rule of the resumes it settles is the
+// record's own (wakeTakenUnderMark).
 //
 // The settle, the retell, the give-up's row and the delete of the mark are one transaction, under
 // the mark's lock, so each wake of the issue is taken either before it or after it. A take locks
@@ -302,11 +290,11 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 // transaction or after it, and a wake of a role no pause stopped is told them because this release
 // stopped it.
 //
-// The transaction takes RecordPodRelease's lock order: the issue's release mark `for update`,
-// then, before it writes anything, the project's open pause row `for share`
-// (LockOpenPauseByTokenTx). So it orders against a take, a cancel and a project's resume as the
-// record does (PodRecords.TakePodWake gives the whole lock order), and it reads the record that
-// names the mark under the mark's lock.
+// The transaction takes RecordPodRelease's lock order, through the same steps (lockMarkForRecord):
+// the issue's release mark `for update`, then, before it writes anything, the project's open pause
+// row `for share` (LockOpenPauseByTokenTx). So it orders against a take, a cancel and a project's
+// resume as the record does (PodRecords.TakePodWake gives the whole lock order), and it reads the
+// record that names the mark under the mark's lock.
 func (s *Store) SettleUnrecordedRelease(ctx context.Context, project, issue string, release int64, at time.Time,
 	wakeTask func(kind, detail, task string) string) (recorded bool, err error) {
 	if project == "" || issue == "" {
@@ -314,34 +302,17 @@ func (s *Store) SettleUnrecordedRelease(ctx context.Context, project, issue stri
 	}
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		recorded = false
-		var mark, last int64
-		err := tx.QueryRow(ctx, `select id, last_row from issue_releases where project = $1 and issue = $2 for update`,
-			project, issue).Scan(&mark, &last)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("lock the release mark: %w", err)
-		}
-		named := release
-		if named == 0 {
-			named = mark
-		}
-		if named != 0 {
-			var id int64
-			err := tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, named).Scan(&id)
-			if err == nil {
-				recorded = true
-				return nil
-			}
-			if !errors.Is(err, pgx.ErrNoRows) {
-				return fmt.Errorf("read the record of the release's mark: %w", err)
-			}
-		}
-		if _, _, err := LockOpenPauseByTokenTx(ctx, tx, project); err != nil {
+		_, last, record, err := lockMarkForRecord(ctx, tx, project, issue, release)
+		if err != nil {
 			return err
+		}
+		if record != 0 {
+			recorded = true
+			return nil
 		}
 		rows, err := tx.Query(ctx, `with settled as (update pod_resumes r set release_id = 0,
 			at = greatest(r.at, $3), clock_at = greatest(r.clock_at, $3)
-			from issue_releases m where m.project = $1 and m.issue = $2 and r.project = m.project and r.issue = m.issue
-			and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null
+			from issue_releases m where m.project = $1 and m.issue = $2 and `+wakeTakenUnderMark+`
 			returning r.role)
 			select distinct role from settled`,
 			project, issue, at)
@@ -367,6 +338,48 @@ func (s *Store) SettleUnrecordedRelease(ctx context.Context, project, issue stri
 		return false, fmt.Errorf("settle the wakes of the unrecorded release of %s: %w", issue, err)
 	}
 	return recorded, nil
+}
+
+// wakeTakenUnderMark is the rule of which resumes are the wakes taken while a release stood, over
+// the outer tables pod_resumes `r` and issue_releases `m`, the release's mark: a resume of the
+// mark's issue above its wake_row, of a role in its suspended set, with no first turn and not
+// closed. The release's record points these resumes at itself (RecordPodRelease), and the
+// teardown that gives up on that record settles the same resumes (SettleUnrecordedRelease), so the
+// give-up settles exactly the set the record would have pointed at itself.
+const wakeTakenUnderMark = `r.project = m.project and r.issue = m.issue
+	and r.id > m.wake_row and r.role = any(m.suspended) and r.first_turn_at is null and r.closed_at is null`
+
+// lockMarkForRecord takes, through tx, the first steps of a release's record (RecordPodRelease)
+// and of the teardown that gives up on that record (SettleUnrecordedRelease), in their lock order.
+// It locks issue's release mark `for update` and answers its last_row as last (0 with no mark). It
+// answers as named the mark a record names: release, or, where that is zero, the issue's mark (0
+// where neither stands). Where a record of named stands, it answers that record's id as recorded
+// and locks nothing more. Otherwise, before the caller writes anything, it locks the project's open
+// pause row `for share` (LockOpenPauseByTokenTx), and recorded is 0, which no record's id is.
+func lockMarkForRecord(ctx context.Context, tx pgx.Tx, project, issue string, release int64) (named, last, recorded int64, err error) {
+	var mark int64
+	err = tx.QueryRow(ctx, `select id, last_row from issue_releases where project = $1 and issue = $2 for update`,
+		project, issue).Scan(&mark, &last)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, 0, fmt.Errorf("lock the release mark: %w", err)
+	}
+	named = release
+	if named == 0 {
+		named = mark
+	}
+	if named != 0 {
+		err := tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, named).Scan(&recorded)
+		if err == nil {
+			return named, last, recorded, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return 0, 0, 0, fmt.Errorf("read the record of the release's mark: %w", err)
+		}
+	}
+	if _, _, err := LockOpenPauseByTokenTx(ctx, tx, project); err != nil {
+		return 0, 0, 0, err
+	}
+	return named, last, 0, nil
 }
 
 // recordReleaseGiveUp records, through tx, that the teardown of issue's release gave up on its
@@ -403,16 +416,16 @@ func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, issue string, roles
 	if retell == nil || len(roles) == 0 {
 		return nil
 	}
-	return retellStarts(ctx, tx, issue, retell, `select outbox.id, outbox.payload->>'role', coalesce(outbox.payload->>'task', ''),
-		outbox.payload->>'wakeKind', outbox.payload->>'wakeDetail' from outbox
-		where outbox.issue = $1 and outbox.id > $2 and `+wakeStartRow+` and outbox.payload->>'role' = any($3)
-		order by outbox.id`, issue, last, roles)
+	return retellStarts(ctx, tx, issue, retell, `where outbox.issue = $1 and outbox.id > $2 and `+wakeStartRow+`
+		and outbox.payload->>'role' = any($3)`, issue, last, roles)
 }
 
-// retellStarts rewrites, through tx, the task of each start that query reads of the wakes taken
+// retellStarts rewrites, through tx, the task of each start that it reads of the wakes taken
 // while the release of issue stood: a cancel's (retellWakesOf) and the release's record's
-// (retellWakesUnderRelease). query reads, for each start, its outbox id, its role, its task (""
-// for none), the wake kind it carries (record.SuperviseRequest.WakeKind), and the wake's detail
+// (retellWakesUnderRelease). choose is the rest of the statement after `from outbox`, the joins
+// and the where clause that choose those starts, over args. The statement reads, for each start
+// in the order of its outbox id, its outbox id, its role, its task ("" for none), the wake kind it
+// carries (record.SuperviseRequest.WakeKind), and the wake's detail
 // (record.SuperviseRequest.WakeDetail), NULL where the payload carries none. That kind and that
 // detail are what WakeTask rendered the start's task with. retell answers the task the start
 // carries from now on: WakeTask of that kind and detail in other words, rendered again
@@ -424,12 +437,15 @@ func retellWakesUnderRelease(ctx context.Context, tx pgx.Tx, issue string, roles
 // carried the detail. Its task cannot be rendered again, and no words are cut out of it either. So
 // it keeps its task as it is, and the transaction logs why, once it commits (logStartWithoutDetail).
 // Its words are the words the earlier daemon chose for the state it saw. A start with no task, such
-// as a pause's owed launch, has nothing to retell. Each query reads only a wake's own start
+// as a pause's owed launch, has nothing to retell. Each caller chooses only a wake's own start
 // (wakeStartRow), which carries a wake kind. A start with a detail and no wake kind is no wake's
 // start: record's validateOutboxPayload refuses one when it is written and when it is read, and
-// no query here reads one, so its task is not rendered again either.
-func retellStarts(ctx context.Context, tx pgx.Tx, issue string, retell func(kind, detail, task string) string, query string, args ...any) error {
-	rows, err := tx.Query(ctx, query, args...)
+// no caller chooses one, so its task is not rendered again either.
+func retellStarts(ctx context.Context, tx pgx.Tx, issue string, retell func(kind, detail, task string) string, choose string, args ...any) error {
+	// startsToRetell is what the Scan below reads of each start, in the Scan's order.
+	const startsToRetell = `select outbox.id, outbox.payload->>'role', coalesce(outbox.payload->>'task', ''),
+		outbox.payload->>'wakeKind', outbox.payload->>'wakeDetail' from outbox `
+	rows, err := tx.Query(ctx, startsToRetell+choose+` order by outbox.id`, args...)
 	if err != nil {
 		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
 	}

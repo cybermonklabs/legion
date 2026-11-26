@@ -192,6 +192,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 // row is the control of the first: a record already names the mark, so the settle answers that,
 // writes nothing and leaves the mark, and the wake stays pointed at that record.
 func TestAnUnrecordedReleaseSettlesTheWakeUnderItsMarkUnlessARecordNamesIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		recorded bool

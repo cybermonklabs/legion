@@ -16,6 +16,7 @@ import (
 // the delivery after the retry's own delay, so JetStream delivers it again then, and logs the nak
 // at INFO. A retry that does not wait is still logged at WARN.
 func TestAWaitingRetryIsNakedAfterItsDelayAtInfo(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	at := strconv.FormatInt(time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC).UnixMilli(), 10)
 	for _, tc := range []struct {
@@ -68,6 +69,7 @@ func TestAWaitingRetryIsNakedAfterItsDelayAtInfo(t *testing.T) {
 // names is over. The control is the same retry that does not wait, whose delay at that delivery is
 // the doubled nak delay, 64 s, which is longer than its 30 s.
 func TestAWaitingRetryWaitsItsOwnDelayAtEveryDelivery(t *testing.T) {
+	t.Parallel()
 	spec, err := normalizedSpec(wakeSpec(&lockedBuffer{}))
 	if err != nil {
 		t.Fatal(err)

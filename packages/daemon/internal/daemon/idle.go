@@ -594,27 +594,36 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, release int
 }
 
 // recordGivenUp answers whether the teardown of a release gives up on its record, whose write
-// failed with failed (recordPodRelease). decision is the answer the teardown acts on. The record
-// is what tells each wake taken under the mark the release it ends, so a failed record is retried;
-// and a release that cannot finish must not run for ever, so the retries are bounded. R3's bound
+// failed (recordPodRelease). decision is the answer the teardown acts on. The record is what tells
+// each wake taken under the mark the release it ends, so a failed record is retried; and a release
+// that cannot finish must not run for ever, so the retries are bounded. R3's bound
 // (dispatch://INFRA-3589) is workflow.WakeHeldForRelease after the release's mark
 // (store.ReleaseDecision.MarkedAt), read on the outbox's clock, as the teardown's other steps
 // read it.
 //
-// Before the bound, it answers failed: the teardown fails, the mark stands, and the row runs again
-// on its backoff. At or past the bound, it answers that the teardown gives up, and nil: the
-// teardown finishes its later steps, and its last write is the settle, in place of the clear of
-// the mark (settleGivenUp). It makes no store call and logs nothing, so an attempt whose later
-// step fails before the settle writes nothing of the give-up and logs no line of it.
+// It answers whether that bound has passed. Before the bound, the teardown answers the record's
+// error: it fails, the mark stands, and the row runs again on its backoff. At or past the bound,
+// the teardown gives up on the record: it finishes its later steps, and its last write is the
+// settle, in place of the clear of the mark (clearOrSettleRelease, settleGivenUp). It makes no
+// store call and logs nothing, so an attempt whose later step fails before the settle writes
+// nothing of the give-up and logs no line of it.
 //
 // Each decision that reaches the record is the mark's own answer (store's releaseMark.decision),
 // so it carries the mark's time, a column that is never null (issue_releases.marked_at). A zero
 // time would read as a bound long past, so it would end the retries and never keep them for ever.
-func (r *outbox) recordGivenUp(decision store.ReleaseDecision, failed error) (bool, error) {
-	if r.now().UTC().Before(decision.MarkedAt.Add(workflow.WakeHeldForRelease)) {
-		return false, failed
+func (r *outbox) recordGivenUp(decision store.ReleaseDecision) bool {
+	return !r.now().UTC().Before(decision.MarkedAt.Add(workflow.WakeHeldForRelease))
+}
+
+// clearOrSettleRelease is the last write of a teardown of issue's release, whose mark is release.
+// unrecorded is the error of the record's write where the teardown gave up on it (recordGivenUp),
+// and nil otherwise. A teardown that gave up settles the release in place of the clear of the mark
+// (settleGivenUp); every other teardown clears the mark (store.Store.ClearIssueRelease).
+func (r *outbox) clearOrSettleRelease(ctx context.Context, issue string, release int64, unrecorded error) error {
+	if unrecorded != nil {
+		return r.settleGivenUp(ctx, issue, release, unrecorded)
 	}
-	return true, nil
+	return r.trees.ClearIssueRelease(ctx, r.project, issue)
 }
 
 // settleGivenUp is the last write of a teardown that gave up on the record of issue's release

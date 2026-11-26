@@ -182,6 +182,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 // in the pod it was in, told nothing about a release that did not happen, and no resume stands
 // for that release. A wake taken before the mark is no wake of this release, and it stays.
 func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -259,6 +260,7 @@ func TestACancelAfterAWakeOfARoleTheReleaseRecordedStartsTheRoleOnceWithNoWake(t
 // the wake's start and resume and queues the implementer's one resume. The control row has no
 // turn, and the architect's stop acts.
 func TestATurnAfterTheMarkCancelsTheReleaseAndStartsTheWokenRoleOnce(t *testing.T) {
+	t.Parallel()
 	for _, turned := range []bool{false, true} {
 		name := "no turn after the mark"
 		if turned {
@@ -328,6 +330,7 @@ func TestATurnAfterTheMarkCancelsTheReleaseAndStartsTheWokenRoleOnce(t *testing.
 // the mark records, taken in the same way: a cancel made while the project is paused keeps it as a
 // held wake of the pause (holdWakesUnderPause).
 func TestACancelPairsTheKeptWakeOfARoleItsMarkDoesNotRecordWithNoRelease(t *testing.T) {
+	t.Parallel()
 	for _, paused := range []bool{false, true} {
 		t.Run(map[bool]string{false: "the project runs", true: "the project is paused"}[paused], func(t *testing.T) {
 			st := migratedStore(t)
@@ -423,6 +426,7 @@ func architectsWake(t *testing.T, st *Store, at time.Time) func() int64 {
 // The control of that is a wake of the architect, whose stop the mark records, in the paused
 // rows: the paused cancel keeps it as a held wake of the pause (holdWakesUnderPause).
 func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name              string
 		takenOver, paused bool

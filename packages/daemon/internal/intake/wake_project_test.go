@@ -110,6 +110,7 @@ func consumeWake(t *testing.T, delivery *wakeDelivery, spec ConsumerSpec, pool s
 // a wake of its token. Named as a project and then the token, a role of another project is no
 // fact, and so is a role named under another project.
 func TestAWakeReportForAnotherProjectIsNoFact(t *testing.T) {
+	t.Parallel()
 	at := time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC)
 	millis := strconv.FormatInt(at.UnixMilli(), 10)
 	roleReport := func(token string) string { return `{"kind":"role_message","role":"` + token + `","at":` + millis + `}` }

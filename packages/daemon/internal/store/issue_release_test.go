@@ -1366,6 +1366,7 @@ func queueSupervise(t *testing.T, st *Store, req record.SuperviseRequest) int64 
 // boundary and has recorded its claim, an agent message wakes the implementer, and the
 // architect's stop comes after the wake.
 func TestAWakeOfARoleTheReleaseRecordedCancelsNeitherAStopNorTheTeardown(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// woken is a wake of the implementer taken after its stop recorded it, with the start

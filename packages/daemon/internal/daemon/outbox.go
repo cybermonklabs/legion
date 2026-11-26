@@ -3903,8 +3903,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// roles. The release line follows the record's first write, and a retry whose record was
 	// already written logs it no second time (recordPodRelease).
 	//
-	// givenUp is whether this teardown gave up on the record, and unrecorded is the record's error.
-	var givenUp bool
+	// unrecorded is the record's error where this teardown gave up on the record, and nil
+	// otherwise: the last write settles the release where it is set and clears the mark where it
+	// is nil (clearOrSettleRelease).
 	var unrecorded error
 	if records {
 		suspended := decision.Suspended
@@ -3913,10 +3914,10 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		}
 		wrote, err := r.recordPodRelease(ctx, row.Issue, decision.Release, payload.Generation, suspended)
 		if err != nil {
-			unrecorded = err
-			if givenUp, err = r.recordGivenUp(decision, err); err != nil {
+			if !r.recordGivenUp(decision) {
 				return err
 			}
+			unrecorded = err
 		}
 		switch {
 		case wrote && decision.SuspendsNoRole:
@@ -3957,10 +3958,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 			r.log.Info("outbox: the release found no Sandbox of the issue to release and released nothing",
 				"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation, "claims", claims)
 		}
-		if givenUp {
-			return r.settleGivenUp(ctx, row.Issue, decision.Release, unrecorded)
-		}
-		return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+		return r.clearOrSettleRelease(ctx, row.Issue, decision.Release, unrecorded)
 	}
 	// The pod is gone, so the backstop is armed now and not before: a release that stopped short
 	// left the pod standing and needs none. Arming cancels the previous release's backstops too,
@@ -3972,10 +3970,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if err := r.armBackstops(ctx, issue); err != nil {
 		return err
 	}
-	if givenUp {
-		return r.settleGivenUp(ctx, row.Issue, decision.Release, unrecorded)
-	}
-	return r.trees.ClearIssueRelease(ctx, r.project, row.Issue)
+	return r.clearOrSettleRelease(ctx, row.Issue, decision.Release, unrecorded)
 }
 
 // issueSandboxName is the name the runtime holds issue's Sandbox under, and "" where there is

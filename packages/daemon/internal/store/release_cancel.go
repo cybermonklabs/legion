@@ -506,12 +506,10 @@ func retellWakesOf(ctx context.Context, tx pgx.Tx, project, issue string, roles 
 	if retell == nil || len(roles) == 0 {
 		return nil
 	}
-	return retellStarts(ctx, tx, issue, retell, `select outbox.id, outbox.payload->>'role', coalesce(outbox.payload->>'task', ''),
-		outbox.payload->>'wakeKind', outbox.payload->>'wakeDetail' from outbox
-		join lateral (select 1 from pod_resumes r where r.project = $1 and r.issue = $2 and r.id > $3
+	return retellStarts(ctx, tx, issue, retell, `join lateral (select 1 from pod_resumes r where r.project = $1 and r.issue = $2 and r.id > $3
 			and r.role = outbox.payload->>'role' limit 1) woken on true
-		where outbox.issue = $2 and outbox.id > $5 and `+wakeStartRow+` and outbox.payload->>'role' = any($4)
-		order by outbox.id`, project, issue, wake, roles, last)
+		where outbox.issue = $2 and outbox.id > $5 and `+wakeStartRow+` and outbox.payload->>'role' = any($4)`,
+		project, issue, wake, roles, last)
 }
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):

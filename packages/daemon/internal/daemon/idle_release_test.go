@@ -439,6 +439,7 @@ func (r *idleRig) releasedArchitect(t *testing.T) *supervise.Machine {
 // (workflow.ReleasedWakeTask, which the teardown hands the store). The wake stays held by its
 // pause, and its resume pairs with no release.
 func TestARecordedReleaseTellsAHeldWakeThatTheReleaseTookItsPod(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -563,6 +564,7 @@ func TestABoundaryWhoseClaimRunsNothingStillAnswersADeliveryAroundTheMark(t *tes
 // came after the release recorded it: that wake's start already brings the worker back in the
 // new pod, and a backstop for it could never act (armBackstops).
 func TestAReleaseArmsNoBackstopForARoleAWakeIsBringingBack(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		woken     bool

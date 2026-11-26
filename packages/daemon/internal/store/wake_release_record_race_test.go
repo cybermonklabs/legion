@@ -31,6 +31,7 @@ import (
 // not read the take's resume, so the release would be recorded and its one resume would name
 // release 0.
 func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)
@@ -108,6 +109,7 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 // when the cancel runs must not leave its resume behind: that resume names no release that
 // happened, and the wake's own start beside it would tell the role its pod was released.
 func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)
@@ -194,6 +196,7 @@ func blockedBy(t *testing.T, st *Store, backend int32) bool {
 // resume, holds the mark while the wake runs. The close must wait for the record and read its
 // release: the old resume is closed, and the wake takes its own.
 func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)
@@ -315,6 +318,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 // release the teardown recorded, or the release before it where the teardown gave up on its record
 // (internal/daemon's recordGivenUp, SettleUnrecordedRelease).
 func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)
@@ -395,6 +399,7 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 // the release, and its time and its stuck clock become the release's time. A record that set the
 // release on it would fail the check, and the teardown with it.
 func TestARecordedReleaseKeepsAHeldWakeTakenUnderItsMarkPairedWithNoRelease(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)
@@ -444,6 +449,7 @@ func TestARecordedReleaseKeepsAHeldWakeTakenUnderItsMarkPairedWithNoRelease(t *t
 // stand-in, as in TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps. The daemon's
 // TestARecordedReleaseTellsAHeldWakeThatTheReleaseTookItsPod holds the workflow's own words.
 func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)
@@ -556,6 +562,7 @@ func TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark(t *testing.
 // rewrites it, which is the order that deadlocks. Both must commit, and the start must end in the
 // release's words.
 func TestARecordedReleaseAndAResumeOfThePauseAtOnceBothCommit(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)

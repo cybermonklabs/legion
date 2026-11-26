@@ -107,6 +107,7 @@ const (
 // start and a production check's look of such a role are the pod being given work, as a phase's
 // start is, and the teardown cancels the release for each.
 func TestATeardownReadsAnEntryStartOrACheckLookBesideAWakeAsWorkThePodWasGiven(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name        string
 		entry, look bool
@@ -137,6 +138,7 @@ func TestATeardownReadsAnEntryStartOrACheckLookBesideAWakeAsWorkThePodWasGiven(t
 // start and a production check's look are no wake's start: they stay as they were queued, and
 // neither task reaches the builder as the wake's.
 func TestACancelKeepsAnEntryStartAndACheckLookQueuedBesideAWake(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	wakesBesideWork(t, st, true, true)
 	told := map[claim.Role]string{}
@@ -170,6 +172,7 @@ func TestACancelKeepsAnEntryStartAndACheckLookQueuedBesideAWake(t *testing.T) {
 // The store does not import the workflow, so each rule here is a stand-in, as in
 // TestARecordedReleaseRetellsTheStartOfAHeldWakeTakenUnderItsMark.
 func TestARetellRewritesNoEntryStartAndNoCheckLook(t *testing.T) {
+	t.Parallel()
 	t.Run("the release's record", func(t *testing.T) {
 		st := migratedStore(t)
 		wakesBesideWork(t, st, true, true)
@@ -219,6 +222,7 @@ func TestARetellRewritesNoEntryStartAndNoCheckLook(t *testing.T) {
 // and the role would stay released when the look starts nothing. So StartQueued counts no look.
 // A cancel's resume of the same role at the same generation is such a start, and it counts.
 func TestAStartQueuedIsNoProductionChecksLook(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	records := podRecords(t, st)
@@ -252,6 +256,7 @@ func TestAStartQueuedIsNoProductionChecksLook(t *testing.T) {
 // acts on nothing. So StartQueued counts no start of news alone, as it counts no look. The
 // architect's entry start of the same generation brings the role back, and it counts.
 func TestAStartQueuedIsNoArchitectsStartOfNewsAlone(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	openRunningTree(t, st)
 	records := podRecords(t, st)
@@ -284,6 +289,7 @@ func TestAStartQueuedIsNoArchitectsStartOfNewsAlone(t *testing.T) {
 // with the release recorded before the wake, and the records count a pod return for that release.
 // The wake's own start stays, for the operator's resume to run.
 func TestACancelDeletesTheResumeOfAWakeWhoseClaimAnOperatorTookOver(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -324,6 +330,7 @@ func TestACancelDeletesTheResumeOfAWakeWhoseClaimAnOperatorTookOver(t *testing.T
 // import the workflow, so the rule here is a stand-in; the workflow's
 // TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease holds its words.
 func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testing.T) {
+	t.Parallel()
 	for _, paused := range []bool{false, true} {
 		t.Run(map[bool]string{false: "the project runs", true: "the project is paused"}[paused], func(t *testing.T) {
 			st := migratedStore(t)
@@ -373,6 +380,7 @@ func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testin
 // a claim of the release over, which cancels a release whose pod still stands. A cancel of such a
 // mark is refused and leaves the mark as it is.
 func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -416,6 +424,7 @@ func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
 // cancel of the committed mark is refused and leaves the mark. A read that does not act commits
 // nothing.
 func TestACommittedReleaseIsNeverCancelled(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -447,6 +456,7 @@ func TestACommittedReleaseIsNeverCancelled(t *testing.T) {
 // A runtime read that does not act commits nothing: the release whose claim an operator took over
 // before the runtime asked is cancelled, as a release that no runtime read committed is.
 func TestARuntimeReadThatDoesNotActCommitsNothing(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -474,6 +484,7 @@ func TestARuntimeReadThatDoesNotActCommitsNothing(t *testing.T) {
 // project's pause takes it for a role whose launch the pause owes, and that resume is the record
 // that the pause still owes it, which the pause's resume settles and a cancel does not.
 func TestACancelKeepsThePausesOwedLaunchOfARoleAnOperatorTookOver(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -507,6 +518,7 @@ func TestACancelKeepsThePausesOwedLaunchOfARoleAnOperatorTookOver(t *testing.T) 
 // answers NotReleased and records no resume. Once the claim is released again, the take takes
 // the wake.
 func TestADeliveryWakeTakesNothingForAClaimTheRecordHoldsLive(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -532,6 +544,7 @@ func TestADeliveryWakeTakesNothingForAClaimTheRecordHoldsLive(t *testing.T) {
 // nothing. A read with no lock would read the claim as released, take the wake and record a
 // resume, and the takeover would then commit over it.
 func TestADeliveryWakeWaitsForATakeoverOfItsClaimAndTakesNothing(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -619,6 +632,7 @@ func earlierDaemonsWakes(t *testing.T, st *Store) {
 // task, which the log then holds and no row does. The architect's start, which carries its
 // detail, is told again by each retell, and its dropped wake reaches the builder whole.
 func TestAStartAnEarlierDaemonQueuedWithNoDetailKeepsItsTask(t *testing.T) {
+	t.Parallel()
 	const kept = "store: the start of a wake that an earlier daemon queued carries no detail, so its task cannot be told again; its task is kept as it is"
 	retell := func(kind, detail, task string) string {
 		return "told again: " + kind + " wake of " + detail + ": " + task
@@ -769,6 +783,7 @@ func wakeOfAnotherKindUnderTheMark(t *testing.T, st *Store) string {
 // wake, and hands its builder the start's own kind (DroppedWake), which the builder renders the
 // task again with (workflow.CancelledWakeTask).
 func TestARetellRendersAWakesStartFromTheKindItsTaskWasRenderedWith(t *testing.T) {
+	t.Parallel()
 	const told = "told again"
 	retell := retoldWake("released", told)
 	retold := "implementer||" + renderedWake(pods.WakeChecks, settledHead, told) + roundSentences + "|" + pods.WakeChecks + "||"

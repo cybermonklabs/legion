@@ -292,11 +292,12 @@ func wakeWords(stop WakeStop) (preamble, away, backstop string) {
 // session an idle release stopped (StoppedByRelease) says that the pod was released, which the
 // cancel makes false. Its answer is WakeTask of the same wake for a release that did not finish
 // (stoppedByCancelledRelease), and then the rest of the task, so the review round's sentences the
-// queue appended stay. A task that begins with WakeTask of the wake for a session a project's
-// pause stopped (StoppedByPause) was taken while the release stood (store.PodRecords.PauseOfWake).
-// It says that the pod was kept. The cancel kept the pod, so those words stay true, and the
-// answer is that task as it is: the role must still read the settlement or the backstop. A task
-// that begins with neither is no task this daemon wrote for that wake, and answers "".
+// queue appended stay: the retell TakenOverWakeTask makes (retellWakeTask). A task that begins
+// with WakeTask of the wake for a session a project's pause stopped (StoppedByPause) was taken
+// while the release stood (store.PodRecords.PauseOfWake). It says that the pod was kept. The
+// cancel kept the pod, so those words stay true, and the answer is that task as it is: the role
+// must still read the settlement or the backstop. A task that begins with neither is no task this
+// daemon wrote for that wake, and answers "".
 //
 // Every other wake answers "": a message wake's message reaches the session anyway, so the
 // resume needs none of its text. The text of a message wake for a session a release stopped also
@@ -308,11 +309,10 @@ func CancelledWakeTask(kind, detail, task string) string {
 	if strings.HasPrefix(task, WakeTask(kind, detail, StoppedByPause)) {
 		return task
 	}
-	rest, ok := strings.CutPrefix(task, WakeTask(kind, detail, StoppedByRelease))
-	if !ok {
-		return ""
+	if told, ok := retellWakeTask(kind, detail, task, StoppedByRelease, stoppedByCancelledRelease); ok {
+		return told
 	}
-	return WakeTask(kind, detail, stoppedByCancelledRelease) + rest
+	return ""
 }
 
 // PausedWakeTask is the task of a wake that a cancel of an idle release keeps while the project
@@ -326,7 +326,8 @@ func CancelledWakeTask(kind, detail, task string) string {
 // stay. A task that does not begin with WakeTask of the wake for a session a release stopped is
 // answered as it is. ReleasedWakeTask is its inverse.
 func PausedWakeTask(kind, detail, task string) string {
-	return retellWakeTask(kind, detail, task, StoppedByRelease, StoppedByPause)
+	told, _ := retellWakeTask(kind, detail, task, StoppedByRelease, StoppedByPause)
+	return told
 }
 
 // ReleasedWakeTask is the task of a wake that a release's record retells (store.RecordPodRelease,
@@ -341,7 +342,8 @@ func PausedWakeTask(kind, detail, task string) string {
 // sentences that the queue appended stay. A task that does not begin with WakeTask of the wake for
 // a session the pause stopped is answered as it is. It is the inverse of PausedWakeTask.
 func ReleasedWakeTask(kind, detail, task string) string {
-	return retellWakeTask(kind, detail, task, StoppedByPause, StoppedByRelease)
+	told, _ := retellWakeTask(kind, detail, task, StoppedByPause, StoppedByRelease)
+	return told
 }
 
 // TakenOverWakeTask is the task of a wake's start that a cancel of an idle release keeps, paused
@@ -359,22 +361,23 @@ func ReleasedWakeTask(kind, detail, task string) string {
 // when it comes back. The review round's sentences that the queue appended stay too. A task that
 // does not begin with WakeTask of the wake for a session a release stopped is answered as it is.
 func TakenOverWakeTask(kind, detail, task string) string {
-	return retellWakeTask(kind, detail, task, StoppedByRelease, stoppedByCancelledRelease)
+	told, _ := retellWakeTask(kind, detail, task, StoppedByRelease, stoppedByCancelledRelease)
+	return told
 }
 
 // retellWakeTask is task, which WakeTask wrote for a wake of kind and detail whose session from
-// stopped, as WakeTask writes the same wake for a session that to stopped. It renders WakeTask
-// both ways and cuts no words out of a sentence: WakeTask(kind, detail, from) is cut from the
-// start of task as one prefix, WakeTask(kind, detail, to) takes its place, and what follows the
-// wake's own text, such as the review round's sentences, stays. A task that does not begin with
-// WakeTask(kind, detail, from) is answered as it is, so a new wake kind or new words of WakeTask
-// need nothing here.
-func retellWakeTask(kind, detail, task string, from, to WakeStop) string {
+// stopped, as WakeTask writes the same wake for a session that to stopped, and whether task begins
+// with WakeTask(kind, detail, from). It renders WakeTask both ways and cuts no words out of a
+// sentence: WakeTask(kind, detail, from) is cut from the start of task as one prefix,
+// WakeTask(kind, detail, to) takes its place, and what follows the wake's own text, such as the
+// review round's sentences, stays. A task that does not begin with WakeTask(kind, detail, from) is
+// answered as it is, with false, so a new wake kind or new words of WakeTask need nothing here.
+func retellWakeTask(kind, detail, task string, from, to WakeStop) (string, bool) {
 	rest, ok := strings.CutPrefix(task, WakeTask(kind, detail, from))
 	if !ok {
-		return task
+		return task, false
 	}
-	return WakeTask(kind, detail, to) + rest
+	return WakeTask(kind, detail, to) + rest, true
 }
 
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A

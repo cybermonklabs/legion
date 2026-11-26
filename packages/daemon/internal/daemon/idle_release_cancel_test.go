@@ -142,6 +142,7 @@ func (r *idleRig) wakePairs(t *testing.T, role claim.Role) []wakePair {
 // release. That earlier release did take the architect's pod, so its start's words that its pod
 // was released are true, and the cancel leaves that start's task exactly as it was.
 func TestACancelTellsTheWakeOfEachRoleItsReleaseStoppedInTheCancelsWords(t *testing.T) {
+	t.Parallel()
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. "
 	t.Run("a role the release stopped and its mark does not record", func(t *testing.T) {
 		rig := newIdleRig(t)
@@ -287,6 +288,7 @@ func TestACancelResumesOnlyTheRolesItsOwnReleaseSuspended(t *testing.T) {
 // a preamble that says the release did not finish, built by the outbox's own builder
 // (releaseResume), and nothing in it says that the pod was released.
 func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -368,6 +370,7 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 // outbox's cancel hands the store): the settlement's text under the pause's words, and no text
 // that says the pod was released. The woken role's wake text is true (dispatch://INFRA-3589).
 func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -449,6 +452,7 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 // start and keeps the look as it was queued. The cancel's own start tells the role the
 // settlement, and nothing of the look's task.
 func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)

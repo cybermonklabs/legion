@@ -345,6 +345,7 @@ func TestTakingAWakeRecordsItAgainstTheNewestReleaseOnce(t *testing.T) {
 // come back. Nothing else is pointed: not a wake of a role the release never recorded, not a wake
 // whose role has taken its first turn, and not a wake taken before the mark.
 func TestARecordedReleasePointsTheWakeTakenUnderItsMarkAtItself(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, store)

@@ -68,6 +68,7 @@ func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
 // words, with the sentences the queue appended after it, such as a reviewer's review round. A task
 // that does not begin with the release's words for that wake is left as it is.
 func TestAPausedWakeTaskIsTheTaskOfAWakeOfARoleThePauseStopped(t *testing.T) {
+	t.Parallel()
 	const appended = " The review round's two sentences follow the wake's task."
 	for _, tc := range []struct{ kind, detail string }{
 		{kind: pods.WakeChecks, detail: "head1 failed build"},
@@ -99,6 +100,7 @@ func TestAPausedWakeTaskIsTheTaskOfAWakeOfARoleThePauseStopped(t *testing.T) {
 // round. ReleasedWakeTask is the inverse of PausedWakeTask both ways. A task that does not begin
 // with the pause's words for that wake is left as it is.
 func TestAReleasedWakeTaskIsTheInverseOfAPausedWakeTask(t *testing.T) {
+	t.Parallel()
 	const appended = " The review round's two sentences follow the wake's task."
 	for _, tc := range []struct{ kind, detail string }{
 		{kind: pods.WakeChecks, detail: "head1 failed build"},
@@ -136,6 +138,7 @@ func TestAReleasedWakeTaskIsTheInverseOfAPausedWakeTask(t *testing.T) {
 // came while the session was stopped, and the wake's own sentences and those the queue appended
 // stay. A task that does not begin with the release's words for that wake is left as it is.
 func TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease(t *testing.T) {
+	t.Parallel()
 	const appended = " The review round's two sentences follow the wake's task."
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
@@ -184,6 +187,7 @@ func TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease(t *testing.T) {
 // the sentences the queue appended after it. A message wake still answers "": its message reaches
 // the session anyway.
 func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testing.T) {
+	t.Parallel()
 	const appended = " The review round's two sentences follow the wake's task."
 	for _, tc := range []struct{ kind, detail string }{
 		{kind: pods.WakeChecks, detail: "head1 failed build"},
@@ -195,7 +199,7 @@ func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testin
 				t.Errorf("CancelledWakeTask(%s, %q, %q) = %q, want the task as it is: the cancel kept the pod the pause kept", tc.kind, tc.detail, paused, got)
 			}
 			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
-			if got, want := CancelledWakeTask(tc.kind, tc.detail, released), cancelledWakePreamble+strings.TrimPrefix(released, wakePreamble); got != want {
+			if got, want := CancelledWakeTask(tc.kind, tc.detail, released), WakeTask(tc.kind, tc.detail, stoppedByCancelledRelease)+suffix; got != want {
 				t.Errorf("CancelledWakeTask(%s, %q, %q) = %q, want %q", tc.kind, tc.detail, released, got, want)
 			}
 		}
@@ -227,6 +231,7 @@ func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testin
 // Each kind of WakeTask, a kind still to come among them (its default), is told so by every
 // retell, with what the queue appended after it kept.
 func TestARetellRendersTheWakeAgainFromItsKindAndDetail(t *testing.T) {
+	t.Parallel()
 	const appended = " The review round's two sentences follow the wake's task."
 	const tricky = "legion-LEGION-208-implementer) while your pod was gone. (and more"
 	for _, kind := range []string{pods.WakeChecks, pods.WakeRoleMessage, pods.WakeAgentMessage, pods.WakeBackstop, pods.WakeDelivery} {

@@ -94,6 +94,7 @@ func (t clearRefusedOnce) ClearIssueRelease(ctx context.Context, project, issue 
 // resume the role in a pod that is gone. An attempt with nothing new would take the pod a second
 // time and record a second release.
 func TestATeardownThatFailsAfterItsPodIsGoneFinishesOnItsNextAttempt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		takeOver bool
@@ -155,6 +156,7 @@ func TestATeardownThatFailsAfterItsPodIsGoneFinishesOnItsNextAttempt(t *testing.
 // mark again would cancel a release whose pod was gone, and that cancel would resume the role in a
 // pod that is gone.
 func TestATeardownWhoseRuntimeFailsAfterItTookThePodFinishesOnItsNextAttempt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range teardownInterleavings {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newIdleRig(t)
@@ -194,6 +196,7 @@ func TestATeardownWhoseRuntimeFailsAfterItTookThePodFinishesOnItsNextAttempt(t *
 // read the mark again would cancel a release whose pod was gone, and that cancel would resume the
 // role in a pod that is gone.
 func TestATeardownWhoseRecordFailsOnceFinishesOnItsNextAttempt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range teardownInterleavings {
 		for _, restart := range []bool{false, true} {
 			name := tc.name
@@ -328,6 +331,7 @@ func refusePodReleaseRecordOnce(t *testing.T, pool *store.Pool) {
 //     row stays, the resume and the start are as the wake left them, and the role is not resumed
 //     in the pod the teardown took.
 func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
+	t.Parallel()
 	// holdEndRefused is the error of podEndFaults' refused end of the pod's hold.
 	const holdEndRefused = "the pause's hold on the pod cannot be read"
 	for _, tc := range []struct {

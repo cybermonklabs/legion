@@ -137,6 +137,7 @@ func TestADeliveryWakeMeetingAWakeWhoseStartIsQueuedLogsAtDebug(t *testing.T) {
 // teardown has recorded the release and cleared its mark, the next attempt takes the wake against
 // that release and resumes the role, in the new pod.
 func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)
@@ -202,6 +203,7 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 // wait, while the start is queued. The start resumes the role in the same pod, and the row's next
 // attempt finds the claim live and publishes, so the role still gets its delivery.
 func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	rig.w.releaseIdlePod(ctx, rig.issue.Key)

@@ -35,6 +35,7 @@ import (
 // 30-second retry comes, and on a loaded pod the retry comes after the release records the claim
 // and before the teardown.
 func TestAWakeTakenBeforeTheTeardownLeavesTheRoleInOneTrueState(t *testing.T) {
+	t.Parallel()
 	// wakeBeforeTheTeardown marks the release, stops the implementer and records its claim as
 	// released. The role stop is done, so its row is gone from the outbox, as a delivered row is.
 	// The teardown row is still queued, and the answer is its id. Then the wake report's retry

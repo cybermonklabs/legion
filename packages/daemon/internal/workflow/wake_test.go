@@ -911,6 +911,7 @@ func roleMessageTokens(t *testing.T, pool *pgxpool.Pool) []string {
 // return, which the queued start brings. The start here is the cancel's resume, written as the
 // daemon's builder writes it (a start of the role at the issue's generation, with no task).
 func TestAWakeOfARoleWhoseStartIsQueuedTakesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		wake func(t *testing.T, rig wakeRig)
