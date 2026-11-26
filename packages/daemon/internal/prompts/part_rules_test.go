@@ -15,7 +15,7 @@ import (
 func partText(t *testing.T, part string) string {
 	t.Helper()
 	if name, ok := strings.CutPrefix(part, "go/"); ok {
-		body, err := goParts.ReadFile("go/" + name)
+		body, err := texts.ReadFile("go/" + name)
 		if err != nil {
 			t.Fatalf("read go prompt part %s: %v", name, err)
 		}

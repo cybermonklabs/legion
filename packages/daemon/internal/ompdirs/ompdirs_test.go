@@ -275,6 +275,30 @@ func TestTheDataAndStateHomesMoveTheirOwnRootsAlone(t *testing.T) {
 	}
 }
 
+// The agent directory Oh My Pi reads its config.yml from is the `agent` of the profile's config
+// root, wherever an XDG data root moves the profile's data, and the environment it was given is
+// left as it was. A profile Oh My Pi refuses is refused here too.
+func TestConfigAgentDirIsTheConfigRootsAgentWhateverTheDataHome(t *testing.T) {
+	home, data := t.TempDir(), t.TempDir()
+	mkdir(t, filepath.Join(data, "omp", "profiles", "legion"))
+	env := map[string]string{"HOME": home, "XDG_DATA_HOME": data, "OMP_PROFILE": "legion"}
+	if root, _, err := ProfileRoot(env, home); err != nil || root != filepath.Join(data, "omp", "profiles", "legion") {
+		t.Fatalf("ProfileRoot = %s, %v, want the data home's, which this test needs to move the data root", root, err)
+	}
+	if dir, err := ConfigAgentDir(env, home); err != nil || dir != filepath.Join(home, ".omp", "profiles", "legion", "agent") {
+		t.Errorf("ConfigAgentDir = %s, %v, want the config root's %s", dir, err, filepath.Join(home, ".omp", "profiles", "legion", "agent"))
+	}
+	if env["XDG_DATA_HOME"] != data {
+		t.Errorf("ConfigAgentDir changed the environment it was given: XDG_DATA_HOME is %q", env["XDG_DATA_HOME"])
+	}
+	if dir, err := ConfigAgentDir(map[string]string{"HOME": home}, home); err != nil || dir != filepath.Join(home, ".omp", "agent") {
+		t.Errorf("ConfigAgentDir of the default profile = %s, %v, want %s", dir, err, filepath.Join(home, ".omp", "agent"))
+	}
+	if _, err := ConfigAgentDir(map[string]string{"HOME": home, "OMP_PROFILE": "Work"}, home); err == nil || !strings.Contains(err.Error(), `Invalid OMP profile "Work"`) {
+		t.Errorf("ConfigAgentDir of a profile Oh My Pi refuses = %v, want the invalid-profile refusal", err)
+	}
+}
+
 // A profile name Oh My Pi cannot use is refused in its words, naming the name as given, by each root
 // and by the state root's candidate.
 func TestProfileRootRefusesAProfileOhMyPiRefuses(t *testing.T) {

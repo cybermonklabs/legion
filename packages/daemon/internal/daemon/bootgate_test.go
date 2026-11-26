@@ -284,7 +284,9 @@ func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
 // missing or mismatched pi-envoy, whatever the release's own number is, on purpose: the gate
 // compares the number pi-legion speaks with the one pi-envoy publishes, never either with a
 // release. The yes-listing step is yes with, under the LEGION_PROMPT_LIST=1 the gate sets, the
-// lines of the file $LEGION_TEST_SHIPPED names: the probe's list of the names the launch ships.
+// lines of the file $LEGION_TEST_SHIPPED names: the probe's list of the names the launch ships;
+// yes-unlisted is yes with, under the same variable, the line of a discovery that could not list
+// them.
 type fakeOmp struct {
 	dir, path, prefix string
 }
@@ -319,6 +321,7 @@ with_envoy="LEGION_ENVOY_INTERFACE=1\nLEGION_ENVOY_LOADED_FROM=file://$envoy/dis
 case "$step" in
 yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 yes-listing) printf "$legion$with_envoy" >&2; [ "${LEGION_PROMPT_LIST:-}" != 1 ] || cat "$LEGION_TEST_SHIPPED" >&2; exit 0 ;;
+yes-unlisted) printf "$legion$with_envoy" >&2; [ "${LEGION_PROMPT_LIST:-}" != 1 ] || echo "LEGION_SHIPPED_UNRESOLVABLE=Cannot find module task/discovery" >&2; exit 0 ;;
 # A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
 # second or two, and far inside the rig's.
 yes-slowly) sleep 2; printf "$legion$with_envoy" >&2; exit 0 ;;
@@ -550,11 +553,11 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 }
 
 // The pane lane's gate answers the names the launch ships off its own load probe's stderr: every
-// agent and skill the probe lists under the LEGION_PROMPT_LIST=1 the gate sets on its run, here the
-// names a real Oh My Pi lists over both packed plugins (testdata/texts/shipped-names.txt), printed
-// in another order and one of them twice, read back sorted and each once. A probe that lists none,
-// one of an older shape, passes as before and leaves the names unknown: no refusal, and no empty
-// list a launch would read as an image that ships nothing.
+// agent and skill the probe lists under the LEGION_PROMPT_LIST=1 the gate sets on its load probe,
+// here the names a real Oh My Pi lists over both packed plugins (testdata/texts/shipped-names.txt),
+// printed in another order and one of them twice, read back sorted and each once. A probe that
+// lists none, one of an older shape, passes as before and leaves the names unknown: no refusal, no
+// empty list a launch would read as an image that ships nothing, and no warning.
 func TestTheBootGateReadsTheShippedNames(t *testing.T) {
 	t.Parallel()
 	agents, skills := shippedNamesFixture(t)
@@ -583,14 +586,65 @@ func TestTheBootGateReadsTheShippedNames(t *testing.T) {
 		t.Fatalf("the gate answered %+v, want the names of shipped-names.txt: agents %v, skills %v", shipped, agents, skills)
 	}
 	if env := envlisting.Vars(f.read(t, "env.1")); env["LEGION_PROMPT_LIST"] != "1" {
-		t.Errorf("the load probe ran with LEGION_PROMPT_LIST=%q, want 1: the gate asks every run for the list", env["LEGION_PROMPT_LIST"])
+		t.Errorf("the load probe ran with LEGION_PROMPT_LIST=%q, want 1: the gate's load probe asks for the list", env["LEGION_PROMPT_LIST"])
 	}
 
 	older := newFakeOmp(t, "yes")
-	gate, _ = gateUnder(t, older, contractCurrent)
+	gate, logged := gateUnder(t, older, contractCurrent)
 	shipped, err = gate.verify(context.Background())
 	if err != nil || shipped != nil {
 		t.Fatalf("the gate over a probe that lists no name = (%+v, %v), want a pass that knows no name", shipped, err)
+	}
+	if strings.Contains(logged.String(), "level=WARN") {
+		t.Errorf("the gate over a probe of an older shape warned, though its probe said nothing of a failed list:\n%s", logged.String())
+	}
+}
+
+// A load probe whose discovery could not list the names the launch ships says why, and the gate
+// passes knowing no name, as over a probe that lists none, and logs why at WARN, naming the lane:
+// the daemon's log under tmux, the image probe's stderr in a pod's lane.
+func TestTheBootGateLogsWhyItsProbeListedNoName(t *testing.T) {
+	t.Parallel()
+	f := newFakeOmp(t, "yes-unlisted")
+	gate, logged := gateUnder(t, f, contractCurrent)
+	shipped, err := gate.verify(context.Background())
+	if err != nil || shipped != nil {
+		t.Fatalf("the gate over a probe whose list failed = (%+v, %v), want a pass that knows no name", shipped, err)
+	}
+	for _, want := range []string{
+		`level=WARN msg="boot gate: the load probe's discovery listed no agent or skill names"`,
+		`lane="in a pane of OMP profile gate"`, `cause="Cannot find module task/discovery"`,
+	} {
+		if !strings.Contains(logged.String(), want) {
+			t.Errorf("the gate's log lacks %q:\n%s", want, logged.String())
+		}
+	}
+}
+
+// The controller probe keeps where pi-legion loaded from and nothing of a list, so its run is
+// not asked for one: `legion controller start` runs it at the operator's terminal, whose stderr
+// would otherwise show every name the launch ships. The fake lists under the variable alone.
+func TestTheControllerProbeAsksForNoList(t *testing.T) {
+	t.Parallel()
+	f := newFakeOmp(t, "yes-listing")
+	gate, _ := gateUnder(t, f, contractCurrent)
+	listed := filepath.Join(t.TempDir(), "listed")
+	if err := os.WriteFile(listed, []byte(shippedAgentMarker+"scout\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	gate.env["LEGION_TEST_SHIPPED"] = listed
+	err := ProbeController(context.Background(), ControllerProbe{
+		Omp: f.path, Prefix: []string{f.prefix}, Env: gate.env, WorkDir: gate.workDir, Contract: 3,
+		Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)),
+	})
+	if err != nil {
+		t.Fatalf("the controller probe refused a loaded plugin of its contract: %v", err)
+	}
+	if n := f.attempts(t); n != 1 {
+		t.Fatalf("Oh My Pi ran %d times, want once", n)
+	}
+	if value, set := envlisting.Vars(f.read(t, "env.1"))["LEGION_PROMPT_LIST"]; set {
+		t.Errorf("the controller probe ran with LEGION_PROMPT_LIST=%q, want it unset: nothing reads its list", value)
 	}
 }
 

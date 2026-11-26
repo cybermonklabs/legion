@@ -1,9 +1,11 @@
 // Package omprequest reads what a real Oh My Pi offers its model, for the tests that hold a launch
 // of a folder of texts to it: Read takes one request body apart, and Standin is a model stand-in
 // that records every body and answers a text turn or a tool call. It is a helper for tests, kept
-// out of a _test file so the untagged real Oh My Pi tests and the e2e driver alike import it, and
-// it imports only the standard library and the module's stable test helpers, since the e2e
-// control copies it into a checkout of main.
+// out of a _test file so other packages import it: the untagged real Oh My Pi tests of
+// internal/daemon run Oh My Pi against a Standin and read its requests with Read, and the e2e
+// driver reads the requests of its panes' own stand-ins with Read alone. It imports only the
+// standard library and the module's stable test helpers, since the e2e control copies its non-test
+// files into a checkout of main.
 package omprequest
 
 import (

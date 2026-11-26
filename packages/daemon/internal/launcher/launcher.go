@@ -1231,17 +1231,18 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 func prepareTexts(given shimwire.LauncherTexts, env []string) error {
 	folder, err := texts.Read(given.Folder)
 	if err != nil {
-		if fault := (*texts.Fault)(nil); errors.As(err, &fault) {
-			return fault
+		fault := texts.FaultOf(err)
+		if fault.Dir == "" {
+			fault.Dir = given.Folder
 		}
-		return &texts.Fault{Dir: given.Folder, Cause: texts.Unreadable, Detail: err.Error()}
+		return &fault
 	}
 	if folder.Fingerprint != given.Fingerprint {
 		return &texts.Fault{Dir: given.Folder, Cause: texts.Changed,
 			Detail: fmt.Sprintf("the daemon read it at fingerprint %s, and the launcher at %s", given.Fingerprint, folder.Fingerprint)}
 	}
-	if err := readablePluginTexts(given.EnvoyRoot, given.LegionRoot); err != nil {
-		return &texts.Fault{Dir: given.Folder, Cause: texts.Unreadable, Detail: err.Error()}
+	if err := texts.ReadablePlugins(given.EnvoyRoot, given.LegionRoot); err != nil {
+		return &texts.Fault{Dir: given.Folder, Cause: texts.Unreadable, Detail: "the plugin's texts cannot be read: " + err.Error()}
 	}
 	if faults := texts.CheckPlugins(folder, given.EnvoyRoot, given.LegionRoot); len(faults) > 0 {
 		return &faults[0]
@@ -1266,22 +1267,6 @@ func prepareTexts(given shimwire.LauncherTexts, env []string) error {
 	return nil
 }
 
-// readablePluginTexts is nil when the directories the root is built from and the check reads can
-// be read: pi-envoy's skills, and pi-legion's agents and skills. A plugin that is not there, or
-// whose pack is cut, would otherwise read as one that ships none of the folder's texts.
-func readablePluginTexts(envoyRoot, legionRoot string) error {
-	for _, dir := range []string{
-		filepath.Join(envoyRoot, "dist", "skills"),
-		filepath.Join(legionRoot, "agents"),
-		filepath.Join(legionRoot, "dist", "skills"),
-	} {
-		if _, err := os.ReadDir(dir); err != nil {
-			return fmt.Errorf("the plugin's texts cannot be read: %w", err)
-		}
-	}
-	return nil
-}
-
 // textsBase is the base of the settings layer of the root at root, the skills.ignoredSkills Oh My
 // Pi would read for the start without that layer (texts.BaseIgnoredSkills), for a child whose
 // environment is env: over the entries of its PI_CONFIG_FILES before the layer, which must be the
@@ -1289,11 +1274,10 @@ func readablePluginTexts(envoyRoot, legionRoot string) error {
 // hiding the plugins' copies of the skills it replaces); the project settings of the directory
 // the child starts in, which is this launcher's own working directory, since command sets none
 // and an issue pod's roles container works in the issue's workspace; and the agent directory of
-// the profile env resolves, the config root's `agent`, where its config.yml sits, resolved with
-// no XDG data home, which moves a profile's data and never its config.yml, as the tmux runtime
-// resolves it (internal/runtime/tmux's textsHost). Each file is read where the launcher's own view
-// of the container holds it, which for a file under a role's home is the image's, without what the
-// role wrote into its own home overlay.
+// the profile env resolves, the config root's `agent`, where its config.yml sits
+// (ompdirs.ConfigAgentDir), as the tmux runtime resolves it (internal/runtime/tmux's textsHost).
+// Each file is read where the launcher's own view of the container holds it, which for a file
+// under a role's home is the image's, without what the role wrote into its own home overlay.
 func textsBase(root string, env []string) ([]string, error) {
 	layer := filepath.Join(root, texts.SettingsLayerName)
 	var layers []string
@@ -1315,12 +1299,11 @@ func textsBase(root string, env []string) ([]string, error) {
 			values[name] = value
 		}
 	}
-	delete(values, "XDG_DATA_HOME")
-	profile, _, err := ompdirs.ProfileRoot(values, workDir)
+	agentDir, err := ompdirs.ConfigAgentDir(values, workDir)
 	if err != nil {
 		return nil, err
 	}
-	base, err := texts.BaseIgnoredSkills(layers[:len(layers)-1], workDir, filepath.Join(profile, "agent"))
+	base, err := texts.BaseIgnoredSkills(layers[:len(layers)-1], workDir, agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("the skills the settings layer of %s keeps ignoring: %w", root, err)
 	}

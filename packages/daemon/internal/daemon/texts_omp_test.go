@@ -369,11 +369,9 @@ func aTextsRootOnTheRealOhMyPi(t *testing.T, omp, envoy, legion string) {
 		writeTree(t, folderDir, map[string]string{filepath.FromSlash(p): text})
 		digests[p] = texts.Digest([]byte(original[p]))
 	}
-	manifest, err := json.Marshal(map[string]map[string]string{"files": digests})
-	if err != nil {
+	if err := texts.WriteManifest(folderDir, digests); err != nil {
 		t.Fatal(err)
 	}
-	writeTree(t, folderDir, map[string]string{texts.ManifestName: string(manifest)})
 	folder, err := texts.Read(folderDir)
 	if err != nil {
 		t.Fatalf("texts.Read of the folder = %v", err)
@@ -518,7 +516,7 @@ func aTextsRootOnTheRealOhMyPi(t *testing.T, omp, envoy, legion string) {
 		spec := runtime.SpawnSpec{Claim: "legion-omp-legion-43-tester", Role: claim.RoleTester,
 			Texts: &runtime.Texts{Folder: "/etc/legion/texts/shorter", Copy: copyDir, Experiment: "shorter", Variant: "folder"}}
 		fellBack := func(report runtime.TextsReport) { t.Errorf("the helper fell back: %+v", report.Fault) }
-		_, built, err := tmux.PrepareTexts(spec, tmux.Host{StateDir: filepath.Join(dir, "state")}, map[string]string{"HOME": home}, work, nil, fellBack)
+		_, built, err := tmux.PrepareTexts(spec, map[string]string{"HOME": home}, work, nil, fellBack)
 		if err != nil || built.Root == "" {
 			t.Fatalf("tmux.PrepareTexts over the installed plugins = %+v, %v; want the root built", built, err)
 		}

@@ -397,19 +397,25 @@ func replaceWithLink(t *testing.T, file, target string) {
 // and how a notice tells one cut of a folder from the next: SHA-256 over one line `<path>\t<sha256
 // of its bytes>\n` for each file, manifest.json included, in the order of their paths. So it is the
 // same for the same files wherever they sit and whatever their modes and times, and it changes
-// with every byte of every file, the manifest's own included, and with a file's path.
+// with every byte of every file, the manifest's own included, and with a file's path. The read
+// keeps each file's digest, which the fingerprint is built from, beside its bytes.
 func TestTheFingerprintChangesWithAnyFileAndOnlyThen(t *testing.T) {
 	paths := []string{"roles/reviewer.md", "go/reviewer.md", "agents/goal-red-team.md", "skills/legion-worker/SKILL.md"}
 	dir := writeFolder(t, paths...)
 	first := read(t, dir)
 
 	var lines strings.Builder
+	digests := map[string]string{}
 	for _, p := range slices.Sorted(maps.Keys(first.Files)) {
 		sum := sha256.Sum256(first.Files[p])
 		fmt.Fprintf(&lines, "%s\t%s\n", p, hex.EncodeToString(sum[:]))
+		digests[p] = "sha256:" + hex.EncodeToString(sum[:])
 	}
 	if sum := sha256.Sum256([]byte(lines.String())); first.Fingerprint != hex.EncodeToString(sum[:]) {
 		t.Errorf("the fingerprint is %s, want the SHA-256 of\n%s", first.Fingerprint, lines.String())
+	}
+	if !maps.Equal(first.Digests, digests) {
+		t.Errorf("the read keeps the digests %v, want each file's %v", first.Digests, digests)
 	}
 
 	// The same files: read again, at another path, at other modes and times.

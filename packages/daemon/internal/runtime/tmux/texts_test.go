@@ -1,9 +1,7 @@
 package tmux
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -16,6 +14,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
@@ -27,11 +26,11 @@ import (
 // at all) would make the plugin's copy the one the model reads. The order is the observable of the
 // requirement, so it is held at each place the command line is built: innerCommand, and the
 // launcher the daemon's live proofs call in place of a tmux pane (NewOmpLauncher's Launch, whose
-// inner command and pairs a local runtime runs Oh My Pi under). The installed plugins appear in no
-// flag, so the root is the one `--extension` of the command. The last subtest is the negative
-// control: the same check, run on a command with the root after the model flag, on one with no
-// root and on one with another root, fails, so a check that passed whatever the command said would
-// show here.
+// inner command and pairs a local runtime runs Oh My Pi under, with the root PrepareTexts built).
+// The installed plugins appear in no flag, so the root is the one `--extension` of the command.
+// The last subtest is the negative control: the same check, run on a command with the root after
+// the model flag, on one with no root and on one with another root, fails, so a check that passed
+// whatever the command said would show here.
 func TestATextsLaunchPutsItsRootBeforeTheInstalledPlugins(t *testing.T) {
 	const omp = "/opt/omp/bin/omp"
 	const promptFile = "/state/secrets/legion-omp-legion-43-tester-system-prompt.md"
@@ -71,13 +70,14 @@ func TestATextsLaunchPutsItsRootBeforeTheInstalledPlugins(t *testing.T) {
 		if err := rootBeforeTheModel(inner, root); err != nil {
 			t.Errorf("Launch's command %q: %v", inner, err)
 		}
-		if _, err := os.Stat(filepath.Join(root, "agents", "goal-red-team.md")); err != nil {
-			t.Errorf("the command names the root %s, but the launch built none holding the folder's agent: %v", root, err)
+		if got, err := os.ReadFile(filepath.Join(root, "agents", "goal-red-team.md")); err != nil || string(got) != armAgent {
+			t.Errorf("the command names the root %s, but PrepareTexts built none holding the folder's agent: %q, %v", root, got, err)
 		}
-		// The launch of no folder names no root: the command is innerCommand's own.
-		plain := spec
-		plain.Texts, plain.Variants = nil, nil
-		control, _, err := NewOmpLauncher(nil, omp).Launch(plain, host, promptFile)
+		// The launch of no folder, whose caller built no root, names none: the command is
+		// innerCommand's own.
+		plain, plainHost := spec, host
+		plain.Texts, plain.Variants, plainHost.TextsRoot = nil, nil, ""
+		control, _, err := NewOmpLauncher(nil, omp).Launch(plain, plainHost, promptFile)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,43 +140,28 @@ func rootBeforeTheModel(command, root string) error {
 	return nil
 }
 
-// textsLaunch is a spec for the tester's claim that carries a folder of texts, with the state
-// directory its launch writes under, the two plugins the pane has installed (each holding the one
-// text the folder replaces or none), and the extension root the launch builds beside the daemon's
-// copy of the folder: `<state>/texts/<claim>/<n>/root`, the copy being `<n>/folder`. The folder's
-// manifest records the digest of the plugin's agent, the Legion text its own agent replaces.
+// textsLaunch is a spec for the tester's claim that carries a folder of texts, the host its launch
+// names, and the extension root PrepareTexts built over the plugins a textsRig's profile has
+// installed, which the host names: `<state>/texts/<claim>/<n>/root`, beside the daemon's copy of
+// the folder, `<n>/folder`. The copy holds the arm's goal-red-team, and its manifest records the
+// digest of the plugin's, the Legion text it replaces.
 func textsLaunch(t *testing.T) (runtime.SpawnSpec, Host, string) {
 	t.Helper()
-	dir := t.TempDir()
-	state, envoy, legion := filepath.Join(dir, "state"), filepath.Join(dir, "pi-envoy"), filepath.Join(dir, "pi-legion")
-	write := func(path, content string) {
-		t.Helper()
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	agent := "---\nname: goal-red-team\ndescription: Goal red team.\n---\nReads the change against the goal.\n"
-	write(filepath.Join(envoy, "dist", "skills", "dispatch-first", "SKILL.md"), "---\nname: dispatch-first\ndescription: Use when a session has the dispatch command.\n---\nSearch first.\n")
-	write(filepath.Join(legion, "agents", "goal-red-team.md"), agent)
-	write(filepath.Join(legion, "dist", "skills", "legion-worker", "SKILL.md"), "---\nname: legion-worker\ndescription: Use when dispatched as a worker.\n---\nWork.\n")
-
+	rig := newTextsRig(t)
 	spec := testSpec()
-	spec.Variants = []runtime.Variant{{Experiment: "shorter-prompts", Name: "texts", Texts: "/etc/legion/texts/shorter"}}
-	folder := filepath.Join(state, "texts", string(spec.Claim), "1", "folder")
-	digest := sha256.Sum256([]byte(agent))
-	write(filepath.Join(folder, "agents", "goal-red-team.md"), "---\nname: goal-red-team\ndescription: Changed by the arm.\n---\nReads the change.\n")
-	write(filepath.Join(folder, "manifest.json"), `{"files":{"agents/goal-red-team.md":"sha256:`+hex.EncodeToString(digest[:])+`"}}`)
-	spec.Texts = &runtime.Texts{
-		Folder:      "/etc/legion/texts/shorter",
-		Fingerprint: strings.Repeat("ab", 32),
-		Copy:        folder,
-		Experiment:  "shorter-prompts",
-		Variant:     "texts",
+	spec.Variants = []runtime.Variant{{Experiment: "shorter", Name: "folder", Texts: folderPath}}
+	copyDir := filepath.Join(rig.state, "texts", string(spec.Claim), "1", "folder")
+	rig.writeFolder(t, copyDir, map[string]string{"agents/goal-red-team.md": armAgent},
+		map[string]string{"agents/goal-red-team.md": texts.Digest([]byte(pluginAgent))})
+	spec.Texts = &runtime.Texts{Folder: folderPath, Fingerprint: strings.Repeat("ab", 32), Copy: copyDir, Experiment: "shorter", Variant: "folder"}
+	_, built, err := PrepareTexts(spec, map[string]string{"HOME": rig.home}, t.TempDir(), nil, func(report runtime.TextsReport) {
+		t.Errorf("PrepareTexts fell back: %+v", report.Fault)
+	})
+	root := filepath.Join(filepath.Dir(copyDir), "root")
+	if err != nil || built.Root != root {
+		t.Fatalf("PrepareTexts over the rig's profile = %+v, %v; want the root %s built", built, err, root)
 	}
-	return spec, Host{StateDir: state, Legion: "/opt/legion/legion", EnvoyPlugin: envoy, LegionPlugin: legion}, filepath.Join(filepath.Dir(folder), "root")
+	return spec, Host{StateDir: rig.state, Legion: "/opt/legion/legion", TextsRoot: built.Root}, root
 }
 
 // folderPath is the folder the rig's arm names, as the operator wrote it; the daemon's copy of it
@@ -285,7 +270,6 @@ func (r *textsRig) specs(t *testing.T, f *fakeServerRuntime) (folder, control ru
 	}
 	folder.Texts = &runtime.Texts{
 		Folder: folderPath, Fingerprint: strings.Repeat("ab", 32), Copy: copyDir, Experiment: "shorter", Variant: "folder",
-		Skills:   []string{"legion-worker"},
 		Fallback: runtime.TextsFallback{Prompt: base.Prompt, Variants: control.Variants},
 	}
 	return folder, control, copyDir
@@ -313,11 +297,9 @@ func (r *textsRig) writeFolder(t *testing.T, dir string, files, manifest map[str
 	for p, content := range files {
 		rigWrite(t, filepath.Join(dir, filepath.FromSlash(p)), content)
 	}
-	raw, err := json.Marshal(map[string]map[string]string{"files": manifest})
-	if err != nil {
+	if err := texts.WriteManifest(dir, manifest); err != nil {
 		t.Fatal(err)
 	}
-	rigWrite(t, filepath.Join(dir, texts.ManifestName), string(raw))
 }
 
 // pairNamed is the value of the one pair of the pane named name, and how many pairs name it.
@@ -337,8 +319,9 @@ func pairNamed(pairs []string, name string) (value string, count int) {
 // all. The layer keeps the operator's ignored skill and adds the collision names of the skill the
 // folder replaces. The root holds every pi-legion agent and every pi-envoy skill with the folder's
 // files over them and no role part, a root an earlier launch of the generation left is replaced,
-// the prompt is the folder's role part and the arm's instructions, and the arm is named in the
-// spend attributes. The daemon is told of no fallback.
+// an earlier generation's directory of the claim, root and copy, is gone and the launch's own copy
+// stays, the prompt is the folder's role part and the arm's instructions, and the arm is named in
+// the spend attributes. The daemon is told of no fallback.
 func TestATextsLaunchNamesItsRootAndLayerInThePane(t *testing.T) {
 	rig := newTextsRig(t)
 	var reports []runtime.TextsReport
@@ -348,8 +331,18 @@ func TestATextsLaunchNamesItsRootAndLayerInThePane(t *testing.T) {
 	rig.writeFolder(t, copyDir, files, manifest)
 	root := filepath.Join(filepath.Dir(copyDir), "root")
 	rigWrite(t, filepath.Join(root, "agents", "left-by-an-earlier-launch.md"), "stale\n")
+	earlier := filepath.Join(filepath.Dir(filepath.Dir(copyDir)), "1")
+	rigWrite(t, filepath.Join(earlier, "root", "agents", "goal-red-team.md"), armAgent)
+	rigWrite(t, filepath.Join(earlier, "folder", "agents", "goal-red-team.md"), armAgent)
 
 	argv, pairs := newWindow(t, f, spec)
+
+	if _, err := os.Stat(earlier); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the launch kept the claim's earlier generation %s (%v), want it removed once no process of the claim runs", earlier, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(copyDir, "roles", "tester.md")); err != nil || string(got) != armRolePart {
+		t.Errorf("the launch's own copy holds %q (%v), want the folder's role part kept", got, err)
+	}
 
 	if value, count := pairNamed(pairs, "LEGION_TEXTS_ROOT"); count != 1 || value != root {
 		t.Errorf("the pane is told LEGION_TEXTS_ROOT %d times, as %q, want once, as %q", count, value, root)
@@ -403,6 +396,41 @@ func TestATextsLaunchNamesItsRootAndLayerInThePane(t *testing.T) {
 	}
 	if len(reports) != 0 {
 		t.Errorf("the daemon was told of %d fallbacks for a folder that passed every check: %+v", len(reports), reports)
+	}
+}
+
+// A launch the runtime refuses because a process of its claim may still run, here one it cannot
+// tell the state of, removes nothing of the claim's earlier generations, whose root that process
+// may load, and builds no root of its own: the build, and the removal with it, come only once the
+// refusal has passed.
+func TestARefusedTextsLaunchRemovesNoEarlierRoot(t *testing.T) {
+	rig := newTextsRig(t)
+	f := rig.runtime(func(report runtime.TextsReport) { t.Errorf("a refused launch reported a fallback: %+v", report) })
+	spec, _, copyDir := rig.specs(t, f)
+	files, manifest := rig.matching()
+	rig.writeFolder(t, copyDir, files, manifest)
+	loaded := filepath.Join(filepath.Dir(filepath.Dir(copyDir)), "1", "root", "agents", "goal-red-team.md")
+	rigWrite(t, loaded, armAgent)
+	f.track(runtime.Locator{
+		Runtime: runtime.RuntimeTmux, Claim: spec.Claim, Incarnation: "4242:7",
+		Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%7"},
+	}, spec.Issue, ghrepo.Repository{}, "")
+	answer := f.run
+	f.run = func(ctx context.Context, argv []string) (result, error) {
+		if verb(argv) == "list-panes" {
+			return result{exitCode: 1, stderr: "lost server"}, nil
+		}
+		return answer(ctx, argv)
+	}
+
+	if _, err := f.Spawn(context.Background(), spec); err == nil || !strings.Contains(err.Error(), "cannot tell whether the claim's process") {
+		t.Fatalf("Spawn over a process of the claim it cannot tell the state of = %v, want the refusal", err)
+	}
+	if got, err := os.ReadFile(loaded); err != nil || string(got) != armAgent {
+		t.Errorf("the refused launch left the earlier generation's root holding %q (%v), want it untouched", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(copyDir), "root")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the refused launch built a root (%v)", err)
 	}
 }
 

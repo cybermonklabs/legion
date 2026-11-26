@@ -106,7 +106,7 @@ func newTextsRigOf(t *testing.T, tree string, declared []config.Experiment) *tex
 		}
 	}
 	logs := &syncBuffer{}
-	shipped := texts.ShippedNames(shippedNamesFixture(t))
+	shipped := texts.NewShipped(shippedNamesFixture(t))
 	return &textsRig{t: t, logs: logs, tree: tree, launch: experiment.ForLaunch(declared, stateDir),
 		specs: specs{stateDir: stateDir, project: textsProject, prompts: composer, appOwners: noAppOwners,
 			shipped: func() texts.Shipped { return shipped },
@@ -661,7 +661,8 @@ func TestANewCausePostsANewNotice(t *testing.T) {
 
 // A claim whose role prompt is the operator's own file (`<state>/prompts/<token>.md`) keeps that
 // file as its whole role prompt, and still reads the folder for its agents and skills: the launch
-// carries the folder, and the daemon's copy holds the folder's agent and skill as it read them.
+// carries the folder, and the daemon's copy holds the folder's agent and skill as it read them, so
+// the root a runtime builds from the copy replaces both of the folder's skills.
 func TestAnOperatorPromptFileKeepsItsTextAndTakesTheFoldersAgents(t *testing.T) {
 	t.Parallel()
 	agent := "---\nname: goal-red-team\ndescription: The folder's red team.\n---\nRead the change against the goal.\n"
@@ -698,8 +699,20 @@ func TestAnOperatorPromptFileKeepsItsTextAndTakesTheFoldersAgents(t *testing.T) 
 	if spec.Texts == nil {
 		t.Fatalf("the launch carries no folder, want its agents and skills; logged %s", r.logs.String())
 	}
-	if !reflect.DeepEqual(spec.Texts.Skills, []string{"dispatch-first", "legion-worker"}) {
-		t.Errorf("the launch replaces the skills %q, want dispatch-first and legion-worker", spec.Texts.Skills)
+	copied, err := texts.Read(spec.Texts.Copy)
+	if err != nil {
+		t.Fatalf("texts.Read of the daemon's copy = %v", err)
+	}
+	plugins := t.TempDir()
+	envoy, legion := filepath.Join(plugins, "pi-envoy"), filepath.Join(plugins, "pi-legion")
+	writeTree(t, legion, map[string]string{
+		filepath.Join("agents", "goal-red-team.md"):                  "Legion's red team.\n",
+		filepath.Join("dist", "skills", "legion-worker", "SKILL.md"): "Legion's worker skill.\n",
+		filepath.Join("dist", "skills", "legion-worker", "notes.md"): "Legion's note.\n",
+	})
+	writeTree(t, envoy, map[string]string{filepath.Join("dist", "skills", "dispatch-first", "SKILL.md"): "Legion's dispatch-first.\n"})
+	if root, err := texts.BuildRoot(copied, envoy, legion, filepath.Join(plugins, "root")); err != nil || !reflect.DeepEqual(root.Touched, []string{"dispatch-first", "legion-worker"}) {
+		t.Errorf("the root built from the copy replaces the skills %q (%v), want dispatch-first and legion-worker", root.Touched, err)
 	}
 	if got, err := os.ReadFile(filepath.Join(spec.Texts.Copy, "agents", "goal-red-team.md")); err != nil || string(got) != agent {
 		t.Errorf("the copy's agent is %q (%v), want the folder's", got, err)
@@ -734,6 +747,48 @@ func TestTheLaunchReadsTheFolderAsItStandsThen(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Dir(first.Texts.Copy)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the first launch's copy outlives the second launch (%v)", err)
+	}
+}
+
+// A launch removes the copies the claim's earlier launches made and none of their roots: a process
+// of the claim may still load an earlier generation's root, and only the runtime knows, once its
+// refusal of a live claim has passed, that none does (tmux's checkedTexts.build). A launch at a
+// generation whose copy is already there writes that copy anew, so a file the folder no longer
+// holds is not left in it.
+func TestALaunchRemovesTheEarlierCopiesAndLeavesTheirRoots(t *testing.T) {
+	t.Parallel()
+	folder := reviewerFolder(t, "The folder's reviewer.\n")
+	r := newTextsRig(t, "LEGION-1", nil, folder)
+	first := r.spawn("folder", "LEGION-2", claim.RoleReviewer, 1)
+	if first.Texts == nil {
+		t.Fatalf("the first launch carries no folder; logged %s", r.logs.String())
+	}
+	const loaded = "A root a live pane of the claim loads.\n"
+	root := filepath.Join(filepath.Dir(first.Texts.Copy), "root")
+	writeTree(t, root, map[string]string{filepath.Join("agents", "goal-red-team.md"): loaded})
+
+	second := r.spawn("folder", "LEGION-2", claim.RoleReviewer, 2)
+	if second.Texts == nil {
+		t.Fatalf("the second launch carries no folder; logged %s", r.logs.String())
+	}
+	if _, err := os.Stat(first.Texts.Copy); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the first launch's copy outlives the second launch (%v)", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, "agents", "goal-red-team.md")); err != nil || string(got) != loaded {
+		t.Errorf("the second launch left the first launch's root holding %q (%v), want it untouched", got, err)
+	}
+
+	stale := filepath.Join(second.Texts.Copy, "roles", "tester.md")
+	writeTree(t, filepath.Dir(stale), map[string]string{"tester.md": "A file the folder does not hold.\n"})
+	again := r.spawn("folder", "LEGION-2", claim.RoleReviewer, 2)
+	if again.Texts == nil || again.Texts.Copy != second.Texts.Copy {
+		t.Fatalf("the launch again at generation 2 carries %+v, want the copy %s", again.Texts, second.Texts.Copy)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the launch again at generation 2 kept %s, which the folder does not hold (%v)", stale, err)
+	}
+	if _, err := os.Stat(filepath.Join(again.Texts.Copy, "roles", "reviewer.md")); err != nil {
+		t.Errorf("the launch again at generation 2 holds no copy of the folder's reviewer: %v", err)
 	}
 }
 

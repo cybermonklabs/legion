@@ -193,15 +193,7 @@ func checkDeclaredOverlays(cfg Config, field, owner string, files []string, role
 // of them, since the kubelet writes nothing else there. Whether the ConfigMap or Secret holds the
 // key is the cluster's to say, which the image probe reads.
 func checkRoleConfigMount(pod PodConfig, field, file string) error {
-	var holder *corev1.VolumeMount
-	for i, mount := range pod.VolumeMounts {
-		if file != mount.MountPath && !strings.HasPrefix(file, mount.MountPath+"/") {
-			continue
-		}
-		if holder == nil || len(mount.MountPath) > len(holder.MountPath) {
-			holder = &pod.VolumeMounts[i]
-		}
-	}
+	holder := deepestMount(pod, file)
 	if holder == nil {
 		return fmt.Errorf("%s entry %s is under no %s.volume_mounts mount_path: a role's pod and the image probe's see only the image and the operator's mounts, so mount the ConfigMap that holds it there", field, file, podKey)
 	}
@@ -224,6 +216,21 @@ func checkRoleConfigMount(pod PodConfig, field, file string) error {
 		paths = append(paths, item.Path)
 	}
 	return fmt.Errorf("%s entry %s is not among the items volume %s projects at %s (%s): add an item with path %s", field, file, holder.Name, holder.MountPath, strings.Join(paths, ", "), rel)
+}
+
+// deepestMount is the mount of the operator's pod block that holds target, the deepest one at or
+// above it, as the kernel resolves the path; nil where none does.
+func deepestMount(pod PodConfig, target string) *corev1.VolumeMount {
+	var holder *corev1.VolumeMount
+	for i, mount := range pod.VolumeMounts {
+		if target != mount.MountPath && !strings.HasPrefix(target, mount.MountPath+"/") {
+			continue
+		}
+		if holder == nil || len(mount.MountPath) > len(holder.MountPath) {
+			holder = &pod.VolumeMounts[i]
+		}
+	}
+	return holder
 }
 
 // projectedItems are the items the pod block's ConfigMap or Secret volume named name projects, nil

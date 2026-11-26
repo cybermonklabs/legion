@@ -2,7 +2,6 @@ package prompts
 
 import (
 	"bytes"
-	"embed"
 	"io/fs"
 	"maps"
 	"path/filepath"
@@ -28,9 +27,9 @@ import (
 // agree on a wrong one together: two shared parts no launch reads, the controller's three, and the
 // Claude Code part, which only Claude Code's roles read.
 func TestEveryLegionPartHasItsReaders(t *testing.T) {
-	texts := Texts()
+	root := Texts()
 	files := map[string]bool{}
-	top, err := fs.ReadDir(texts, ".")
+	top, err := fs.ReadDir(root, ".")
 	if err != nil {
 		t.Fatalf("read the root of Texts(): %v", err)
 	}
@@ -41,7 +40,7 @@ func TestEveryLegionPartHasItsReaders(t *testing.T) {
 	if want := []string{"go", "roles"}; !slices.Equal(dirs, want) {
 		t.Fatalf("Texts() holds %q at its root, want %q (the two embedded trees, nothing else)", dirs, want)
 	}
-	if err := fs.WalkDir(texts, ".", func(path string, entry fs.DirEntry, err error) error {
+	if err := fs.WalkDir(root, ".", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return err
 		}
@@ -53,11 +52,11 @@ func TestEveryLegionPartHasItsReaders(t *testing.T) {
 
 	// Texts() is the embedded trees themselves, byte for byte, and no other tree.
 	embedded := map[string]bool{}
-	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
-		if err := eachPart(parts, dir, func(name string, body []byte) error {
+	for _, dir := range []string{"roles", "go"} {
+		if err := eachPart(texts, dir, func(name string, body []byte) error {
 			path := dir + "/" + name
 			embedded[path] = true
-			got, err := fs.ReadFile(texts, path)
+			got, err := fs.ReadFile(root, path)
 			if err != nil {
 				t.Errorf("Texts() cannot read %s, which is embedded: %v", path, err)
 			} else if !bytes.Equal(got, body) {
@@ -159,8 +158,8 @@ func composedReaders(t *testing.T) map[string]Readers {
 	}
 	readers := map[string]Readers{}
 	// Every file starts with no reader, so a file nothing composes is an entry the list must hold.
-	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
-		if err := eachPart(parts, dir, func(name string, _ []byte) error {
+	for _, dir := range []string{"roles", "go"} {
+		if err := eachPart(texts, dir, func(name string, _ []byte) error {
 			readers[dir+"/"+name] = Readers{}
 			return nil
 		}); err != nil {

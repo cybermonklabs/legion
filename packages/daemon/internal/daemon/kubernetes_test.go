@@ -361,7 +361,7 @@ func TestKubernetesBootHandsTheShippedNamesToTheLaunch(t *testing.T) {
 		want    texts.Shipped
 		line    string
 	}{
-		{"a report naming what the image ships", &names, texts.ShippedNames(names.Agents, names.Skills),
+		{"a report naming what the image ships", &names, texts.NewShipped(names.Agents, names.Skills),
 			`"msg":"legion daemon read the agents and skills the worker image ships","from":"the image probe","agents":3,"skills":2`},
 		{"a report from a probe that predates the names", nil, texts.Shipped{},
 			`"msg":"legion daemon read no agent or skill names the worker image ships; a launch of an arm's folder of texts that names an agent or a skill falls back (names-unread)","from":"the image probe"`},

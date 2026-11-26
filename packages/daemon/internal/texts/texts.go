@@ -57,8 +57,9 @@ type Folder struct {
 	// Dir is the folder as the caller named it.
 	Dir string
 	// Files are the bytes of every file the folder holds, by its path there, manifest.json among
-	// them.
+	// them, and Digests each one's digest (Digest), by the same path.
 	Files    map[string][]byte
+	Digests  map[string]string
 	Manifest Manifest
 	// Fingerprint is the SHA-256, in hex, of one line `<path>\t<sha256 hex of its bytes>\n` for
 	// each file, manifest.json included, in the order of their paths: any change to any file, and
@@ -146,7 +147,11 @@ func Read(dir string) (Folder, error) {
 			return refuse(p, Missing, "")
 		}
 	}
-	return Folder{Dir: dir, Files: w.files, Manifest: manifest, Fingerprint: fingerprint(w.files)}, nil
+	digests := make(map[string]string, len(w.files))
+	for p, body := range w.files {
+		digests[p] = Digest(body)
+	}
+	return Folder{Dir: dir, Files: w.files, Digests: digests, Manifest: manifest, Fingerprint: fingerprint(digests)}, nil
 }
 
 // decodeManifest is raw read as a manifest, or what is wrong with it: one JSON object holding
@@ -196,12 +201,11 @@ func validPath(p string) bool {
 	return slices.ContainsFunc(prefixes, func(prefix string) bool { return strings.HasPrefix(p, prefix) })
 }
 
-// fingerprint is Folder.Fingerprint of files.
-func fingerprint(files map[string][]byte) string {
+// fingerprint is Folder.Fingerprint of the files whose digests (Digest) are digests.
+func fingerprint(digests map[string]string) string {
 	sum := sha256.New()
-	for _, p := range slices.Sorted(maps.Keys(files)) {
-		file := sha256.Sum256(files[p])
-		fmt.Fprintf(sum, "%s\t%s\n", p, hex.EncodeToString(file[:]))
+	for _, p := range slices.Sorted(maps.Keys(digests)) {
+		fmt.Fprintf(sum, "%s\t%s\n", p, strings.TrimPrefix(digests[p], "sha256:"))
 	}
 	return hex.EncodeToString(sum.Sum(nil))
 }

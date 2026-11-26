@@ -1,6 +1,8 @@
 package texts_test
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -14,7 +16,7 @@ import (
 // added without a sentence reads as a bare refusal, which this fails.
 func TestEachFaultSaysWhatIsWrongWhereAndWhy(t *testing.T) {
 	if len(texts.Causes) != 19 {
-		t.Errorf("Causes holds %d causes, want the 19 of R2, R3 and the plan's fallbacks: %q", len(texts.Causes), texts.Causes)
+		t.Errorf("Causes holds %d causes, want the 19 of R2 and R3 of dispatch://INFRA-5590 and the plan's fallbacks: %q", len(texts.Causes), texts.Causes)
 	}
 	sentences := map[string]texts.Cause{}
 	for i, cause := range texts.Causes {
@@ -38,5 +40,19 @@ func TestEachFaultSaysWhatIsWrongWhereAndWhy(t *testing.T) {
 	}
 	if folder := (texts.Fault{Dir: "/etc/arm", Cause: texts.Gone}).Error(); !strings.HasPrefix(folder, "texts folder /etc/arm: the folder does not exist") {
 		t.Errorf("a fault of the folder as a whole renders %q, want it to name the folder and no file", folder)
+	}
+}
+
+// A caller of Read takes the fault its refusal holds, however wrapped, and an error that holds no
+// fault as the folder unreadable, for that error's reason.
+func TestFaultOfIsTheFaultAnErrorHoldsOrTheFolderUnreadable(t *testing.T) {
+	held := &texts.Fault{Dir: "/etc/arm", Path: "agents/oracle.md", Cause: texts.Missing, Detail: "what the check saw"}
+	for _, err := range []error{held, fmt.Errorf("read the folder: %w", error(held))} {
+		if got := texts.FaultOf(err); got != *held {
+			t.Errorf("FaultOf(%v) = %+v, want the fault it holds %+v", err, got, *held)
+		}
+	}
+	if got, want := texts.FaultOf(errors.New("permission denied")), (texts.Fault{Cause: texts.Unreadable, Detail: "permission denied"}); got != want {
+		t.Errorf("FaultOf of an error that holds no fault = %+v, want %+v", got, want)
 	}
 }

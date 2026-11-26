@@ -2201,7 +2201,7 @@ func (h *shippedNames) bind(names *bootprobe.ShippedNames, from string, log *slo
 			"from", from)
 		return
 	}
-	h.set = texts.ShippedNames(names.Agents, names.Skills)
+	h.set = texts.NewShipped(names.Agents, names.Skills)
 	log.Info("legion daemon read the agents and skills the worker image ships",
 		"from", from, "agents", len(names.Agents), "skills", len(names.Skills))
 }

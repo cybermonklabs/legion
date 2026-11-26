@@ -125,6 +125,19 @@ func pluginText(p, envoyRoot, legionRoot string) (string, bool) {
 // skillsDir is a plugin's skills directory, as its manifest names it (`omp.skills`).
 func skillsDir(plugin string) string { return filepath.Join(plugin, "dist", "skills") }
 
+// ReadablePlugins is nil when the directories a root is built from and CheckPlugins reads can be
+// read: pi-envoy's skills, and pi-legion's agents and skills. A plugin that is not there, or whose
+// pack is cut, would otherwise read as one that ships none of the folder's texts. Its error is the
+// first directory's that cannot be read, as os.ReadDir gives it.
+func ReadablePlugins(envoyRoot, legionRoot string) error {
+	for _, dir := range []string{skillsDir(envoyRoot), filepath.Join(legionRoot, "agents"), skillsDir(legionRoot)} {
+		if _, err := os.ReadDir(dir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // skillPlugin is the root of the plugin that ships skill: pi-envoy's, or else pi-legion's.
 func skillPlugin(skill, envoyRoot, legionRoot string) (string, bool) {
 	for _, plugin := range []string{envoyRoot, legionRoot} {
@@ -202,8 +215,8 @@ type Shipped struct {
 	agents, skills map[string]bool
 }
 
-// ShippedNames are the names a boot read: every agent and every skill the image ships.
-func ShippedNames(agents, skills []string) Shipped {
+// NewShipped is the names a boot read: every agent and every skill the image ships.
+func NewShipped(agents, skills []string) Shipped {
 	s := Shipped{known: true, agents: map[string]bool{}, skills: map[string]bool{}}
 	for _, agent := range agents {
 		s.agents[agent] = true
@@ -213,9 +226,6 @@ func ShippedNames(agents, skills []string) Shipped {
 	}
 	return s
 }
-
-// Known is whether the boot read the names.
-func (s Shipped) Known() bool { return s.known }
 
 // CheckReferences holds every agent and skill names holds to those the image ships: one fault for
 // each name it does not ship, at the first file that names it, in the order of the names. Where the

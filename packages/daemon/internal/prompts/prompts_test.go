@@ -1,7 +1,6 @@
 package prompts
 
 import (
-	"embed"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -445,11 +444,7 @@ func TestNewRewritesAPartTheRunningDaemonDidNotWrite(t *testing.T) {
 		t.Fatalf("second New: %v", err)
 	}
 	for name, source := range embedded {
-		parts := goParts
-		if strings.HasPrefix(source, "roles/") {
-			parts = roleParts
-		}
-		want, err := parts.ReadFile(source)
+		want, err := texts.ReadFile(source)
 		if err != nil {
 			t.Fatalf("read embedded %s: %v", source, err)
 		}
@@ -913,8 +908,8 @@ func TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCar
 // composed prompts hold the statement
 // (TestTheProductionCheckFailsAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerge).
 func TestTheProductionCheckRuleHoldsInEveryPromptPart(t *testing.T) {
-	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
-		err := eachPart(parts, dir, func(name string, body []byte) error {
+	for _, dir := range []string{"roles", "go"} {
+		err := eachPart(texts, dir, func(name string, body []byte) error {
 			for _, clause := range clauses(string(body)) {
 				for _, fault := range checkRuleFaults(clause) {
 					t.Errorf("%s/%s %s", dir, name, fault)

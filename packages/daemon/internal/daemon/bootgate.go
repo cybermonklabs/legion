@@ -49,9 +49,10 @@ import (
 // extension roots, as the task tool resolves an agent's name and a `skill://` read a skill's, and
 // prints which it could not find; and, unless LEGION_SKIP_AGENT_MODELS is set, whether each of
 // those agents runs on its own model as the task tool would select and resolve it. Under
-// LEGION_PROMPT_LIST, which every run of the gate sets (run), it also prints every agent and every
-// skill that discovery finds, the agents Oh My Pi bundles among them: the names the launch ships,
-// which the gate answers (verify) and the daemon holds a folder of texts' agents and skills to.
+// LEGION_PROMPT_LIST, which the gate's load probe sets (verify), and the controller's does not, it
+// also prints every agent and every skill that discovery finds, the agents Oh My Pi bundles among
+// them: the names the launch ships, which the gate answers (verify) and the daemon holds a folder
+// of texts' agents and skills to; or, where that discovery fails, why.
 //
 //go:embed probe.mjs
 var pluginLoadProbe []byte
@@ -80,10 +81,12 @@ const (
 	agentsMarker     = "LEGION_OMP_AGENTS=available"
 	noAgentsMarker   = "LEGION_OMP_AGENTS=missing"
 	// listVariable asks the load probe for every agent and skill its discovery finds, which it
-	// prints one per shippedAgentMarker or shippedSkillMarker line.
+	// prints one per shippedAgentMarker or shippedSkillMarker line, or, where the discovery
+	// fails, one unlistedMarker line saying why.
 	listVariable       = "LEGION_PROMPT_LIST"
 	shippedAgentMarker = "LEGION_SHIPPED_AGENT="
 	shippedSkillMarker = "LEGION_SHIPPED_SKILL="
+	unlistedMarker     = "LEGION_SHIPPED_UNRESOLVABLE="
 	// pluginPackage is the Legion plugin, whose manifest declares the daemon API contract;
 	// envoyPackage the Envoy plugin it claims its role through, which every session loads; and
 	// legacyPackage the one package that carried both before the split, which no pane may still
@@ -232,13 +235,16 @@ func (g pluginGate) label() string {
 
 // verify runs the two probes, and answers the agents and skills the probed launch ships, as the
 // load probe's own discovery listed them on its stderr (the pane's lane and the pod's alike), or
-// nil when it listed none. A refusal names what the operator has to change; a gate the daemon's
-// stop interrupted returns an error wrapping ctx's.
+// nil when it listed none. Its load probe alone is asked for the list (listVariable), and where
+// the probe's discovery could not list the names, why is logged at WARN, in the daemon's log
+// under tmux and on the image probe's stderr in a pod's lane. A refusal names what the operator
+// has to change; a gate the daemon's stop interrupted returns an error wrapping ctx's.
 func (g pluginGate) verify(ctx context.Context) (*bootprobe.ShippedNames, error) {
 	lane, err := g.lane()
 	if err != nil {
 		return nil, err
 	}
+	lane.exports = append(lane.exports, listVariable+"=1")
 	plugin, err := readPluginManifest(lane.manifest, lane.installInto, g.contract)
 	if err != nil {
 		return nil, err
@@ -259,6 +265,9 @@ func (g pluginGate) verify(ctx context.Context) (*bootprobe.ShippedNames, error)
 	g.log.Info("boot gate: pi-legion speaks this daemon's contract and loads with pi-envoy",
 		"lane", lane.described, "manifest", lane.manifest, "version", plugin.version, "daemonApiVersion", g.contract,
 		"envoyInterface", from.envoyInterface, "envoyFrom", from.envoy)
+	if from.unlisted != "" {
+		g.log.Warn("boot gate: the load probe's discovery listed no agent or skill names", "lane", lane.described, "cause", from.unlisted)
+	}
 	return from.shipped, nil
 }
 
@@ -499,13 +508,14 @@ func readPluginManifest(manifest, installInto string, contract int) (pluginManif
 
 // loaded is what a passed load probe reports: where pi-legion loaded from (its `legion.ts`, a
 // `file:` URL as import.meta.url renders it), the Envoy plugin interface version pi-envoy
-// publishes, where pi-envoy loaded from, and the agents and skills the probe's discovery listed
-// (nil when it listed none).
+// publishes, where pi-envoy loaded from, the agents and skills the probe's discovery listed
+// (nil when it listed none), and why the discovery listed none where it says (unlisted).
 type loaded struct {
 	legion         string
 	envoyInterface int
 	envoy          string
 	shipped        *bootprobe.ShippedNames
+	unlisted       string
 }
 
 // loadedFrom is the load probe (verifyLegionPluginLoaded, boot-probes.ts), under the gate's
@@ -630,11 +640,12 @@ func owningManifest(file, pkg string) (string, error) {
 // instances the Envoy plugin loaded as. A probe of an older shape prints none, and the pane lane's
 // fakes print none: no count there means no refusal, as before the line existed. agents and
 // skills are every shippedAgentMarker and shippedSkillMarker line, and listed whether it printed
-// any: a probe of an older shape, or one whose discovery failed, lists none.
+// any: a probe of an older shape, or one whose discovery failed, lists none. unlisted is what the
+// unlistedMarker line of a discovery that failed says.
 type loadAnswer struct {
-	legion, speaks, envoy, envoyFrom, legacyFrom string
-	publishers, agents, skills                   []string
-	listed                                       bool
+	legion, speaks, envoy, envoyFrom, legacyFrom, unlisted string
+	publishers, agents, skills                             []string
+	listed                                                 bool
 }
 
 // shipped is the names the probe listed, or nil when it listed none.
@@ -670,7 +681,7 @@ func readLoadAnswer(output string) loadAnswer {
 			into   *string
 		}{
 			{loadedFromMarker, &answer.legion}, {speaksMarker, &answer.speaks}, {envoyMarker, &answer.envoy},
-			{envoyFromMarker, &answer.envoyFrom}, {legacyFromMarker, &answer.legacyFrom},
+			{envoyFromMarker, &answer.envoyFrom}, {legacyFromMarker, &answer.legacyFrom}, {unlistedMarker, &answer.unlisted},
 		} {
 			if rest, ok := strings.CutPrefix(line, field.marker); ok {
 				*field.into = rest
@@ -755,7 +766,7 @@ func (l pluginLane) judgeLoaded(answer loadAnswer, version string) (loaded, erro
 	if err := l.verifyEnvoyLoadedFrom(answer.envoyFrom); err != nil {
 		return loaded{}, err
 	}
-	return loaded{legion: answer.legion, envoyInterface: found, envoy: answer.envoyFrom, shipped: answer.shipped()}, nil
+	return loaded{legion: answer.legion, envoyInterface: found, envoy: answer.envoyFrom, shipped: answer.shipped(), unlisted: answer.unlisted}, nil
 }
 
 // verifyAgentsCapability is the pi.agents probe (verifyOmpAgentsCapability, boot-probes.ts):
@@ -943,9 +954,7 @@ func (r ran) killed(launch string, budget time.Duration) string {
 }
 
 // run runs `sh -c script sh args…` once within the gate's budget, under the gate's environment,
-// with listVariable set, and in its working directory. The variable asks the load probe for the
-// names the launch ships, which every gate answers (verify), so every run carries it and no caller
-// of the gate can leave it out. `exec` in every probe's script replaces the shell with the launch
+// and in its working directory. `exec` in every probe's script replaces the shell with the launch
 // prefix and Oh My Pi, and the attempt runs in its own process group, so a timeout or the daemon's
 // stop kills what is actually running — a prompting `secrets`, Oh My Pi and its children — rather
 // than a shell that leaves them holding the pipes (the doc comment on verifyOmpAgentsCapability,
@@ -960,7 +969,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	defer cancel()
 	job := foregroundOf(g.stdin, g.echo)
 	cmd := exec.CommandContext(attempt, "sh", append([]string{"-c", job.script(script), "sh"}, args...)...)
-	cmd.Env = append(environPairs(g.env), listVariable+"=1")
+	cmd.Env = environPairs(g.env)
 	cmd.Dir = g.workDir
 	cmd.Stdin = g.stdin
 	var stdout, stderr bytes.Buffer

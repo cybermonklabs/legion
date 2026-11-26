@@ -557,7 +557,9 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // control's launch, whose prompt holds Legion's own parts: the spec becomes its fallback
 // (runtime.SpawnSpec.FallBack) and the daemon is told (Options.TextsFellBack) once the refusal of a
 // live claim has passed. The extension root and its settings layer are built under the launch
-// lock, after that refusal, so a refused launch rewrites no root a live process reads.
+// lock, after that refusal, which is also where the roots of the claim's earlier generations are
+// removed (checkedTexts.build), so a refused launch rewrites or removes no root a live process
+// reads.
 //
 // A resume finds the file it continues before the pane's home and files are written: the recorded
 // file where the spec names one (ResumeSessionFile, sessionFileOf), and where it names the session

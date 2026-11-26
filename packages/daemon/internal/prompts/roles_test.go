@@ -5,7 +5,6 @@ package prompts
 //ci:reads .github/private-names.toml TestNoReusablePartNamesARepositoryOrLibrary reads it under ../../../.. and runs its rules over every reusable role part
 
 import (
-	"embed"
 	"errors"
 	"io/fs"
 	"os"
@@ -60,7 +59,7 @@ func coreFiles() []string {
 // rolePart is one embedded role prompt part, by its path under roles/.
 func rolePart(t *testing.T, name string) string {
 	t.Helper()
-	body, err := roleParts.ReadFile("roles/" + name)
+	body, err := texts.ReadFile("roles/" + name)
 	if err != nil {
 		t.Fatalf("read role prompt part %s: %v", name, err)
 	}
@@ -127,7 +126,7 @@ func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 	for _, file := range reusableParts {
 		check(file, rolePart(t, file))
 	}
-	err = eachPart(goParts, "go", func(name string, body []byte) error {
+	err = eachPart(texts, "go", func(name string, body []byte) error {
 		check("go/"+name, string(body))
 		return nil
 	})
@@ -161,7 +160,7 @@ func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {
 			t.Errorf("roles/%s.md is blank", role)
 		}
 	}
-	if _, err := fs.Stat(roleParts, "roles/core/merger.md"); err == nil {
+	if _, err := fs.Stat(texts, "roles/core/merger.md"); err == nil {
 		t.Error("roles/core/merger.md exists; the merger composes no core")
 	}
 }
@@ -322,8 +321,8 @@ func TestEveryTaskAgentARolePromptDispatchesIsShipped(t *testing.T) {
 // name what is merged.
 func TestNoPartSaysTheDaemonMerges(t *testing.T) {
 	daemonMerges := regexp.MustCompile(`(?i)daemon\s+(submits|arms|enqueues|enables|merges|turns)\s+(the|a|an|that|its|it|ready|auto)\b`)
-	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
-		err := eachPart(parts, dir, func(name string, body []byte) error {
+	for _, dir := range []string{"roles", "go"} {
+		err := eachPart(texts, dir, func(name string, body []byte) error {
 			if phrase := daemonMerges.Find(body); phrase != nil {
 				t.Errorf("%s/%s says %q", dir, name, phrase)
 			}
@@ -340,7 +339,7 @@ func TestNoPartSaysTheDaemonMerges(t *testing.T) {
 			t.Errorf("roles/merger.md does not say %q", want)
 		}
 	}
-	goMerger, err := goParts.ReadFile("go/merger.md")
+	goMerger, err := texts.ReadFile("go/merger.md")
 	if err != nil {
 		t.Fatalf("read go/merger.md: %v", err)
 	}
@@ -436,7 +435,7 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 			t.Errorf("roles/merger.md still says %q", gone)
 		}
 	}
-	goMerger, err := goParts.ReadFile("go/merger.md")
+	goMerger, err := texts.ReadFile("go/merger.md")
 	if err != nil {
 		t.Fatalf("read go/merger.md: %v", err)
 	}
@@ -486,8 +485,8 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 	}
 	promisesAPluginRound := regexp.MustCompile(`(?i)your process alone|on a different plugin|plugin (update )?(round|task)`)
 	whitespace := regexp.MustCompile(`\s+`)
-	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
-		err := eachPart(parts, dir, func(name string, body []byte) error {
+	for _, dir := range []string{"roles", "go"} {
+		err := eachPart(texts, dir, func(name string, body []byte) error {
 			phrase := promisesAPluginRound.Find(whitespace.ReplaceAll(body, []byte(" ")))
 			if phrase != nil && !plugin {
 				t.Errorf("%s/%s says %q, and no path builds a plugin round id: a daemon of this release replaces the pod and never a role's process alone", dir, name, phrase)
@@ -506,7 +505,7 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 	// does one that lost the step that lets a role's own background work finish before it answers
 	// (dispatch://INFRA-4203 R2).
 	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
-		body, err := goParts.ReadFile(part)
+		body, err := texts.ReadFile(part)
 		if err != nil {
 			t.Fatalf("read %s: %v", part, err)
 		}
@@ -530,8 +529,8 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 func TestNoPartSaysARoleStaysLiveUntilItsIssueEnds(t *testing.T) {
 	saysARoleStaysLive := regexp.MustCompile(`(?i)stays? live,? (from|until|only|as)|idle and not suspended`)
 	whitespace := regexp.MustCompile(`\s+`)
-	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
-		err := eachPart(parts, dir, func(name string, body []byte) error {
+	for _, dir := range []string{"roles", "go"} {
+		err := eachPart(texts, dir, func(name string, body []byte) error {
 			if phrase := saysARoleStaysLive.Find(whitespace.ReplaceAll(body, []byte(" "))); phrase != nil {
 				t.Errorf("%s/%s says %q: a released pod's roles lose their processes and keep their sessions", dir, name, phrase)
 			}
@@ -573,8 +572,8 @@ var retiredCheckSentences = []string{
 // sentence can cross the break.
 func TestNoPartMakesTheProductionCheckTheImplementersOrWakesItFromADeploy(t *testing.T) {
 	whitespace := regexp.MustCompile(`\s+`)
-	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
-		err := eachPart(parts, dir, func(name string, body []byte) error {
+	for _, dir := range []string{"roles", "go"} {
+		err := eachPart(texts, dir, func(name string, body []byte) error {
 			folded := string(whitespace.ReplaceAll(body, []byte(" ")))
 			for _, phrase := range retiredCheckSentences {
 				if strings.Contains(folded, phrase) {
@@ -616,11 +615,7 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 	var dispatching []string
 	for _, dir := range []string{"go", "roles"} {
-		parts := goParts
-		if dir == "roles" {
-			parts = roleParts
-		}
-		err := eachPart(parts, dir, func(name string, body []byte) error {
+		err := eachPart(texts, dir, func(name string, body []byte) error {
 			if !strings.HasSuffix(name, ".md") {
 				return nil
 			}
@@ -741,24 +736,23 @@ func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
 	fold := func(body []byte) string { return foldWhitespace(string(body)) }
 	for _, pin := range []struct {
 		dir       string
-		parts     embed.FS
 		want      string
 		unwritten []string
 		clause    string
 	}{
 		{
-			dir: "roles", parts: roleParts, want: "mechanics/headless.md",
+			dir: "roles", want: "mechanics/headless.md",
 			unwritten: []string{"implementer.md", "planner.md"},
 			clause:    "Each subagent you start runs its commands in this pod, so put these facts in its context",
 		},
 		{
-			dir: "go", parts: goParts, want: "architect-common.md",
+			dir: "go", want: "architect-common.md",
 			unwritten: []string{"claude-mechanics.md"},
 			clause:    "you put these facts in the context of each subagent you start",
 		},
 	} {
 		var carrying, read []string
-		err := eachPart(pin.parts, pin.dir, func(name string, body []byte) error {
+		err := eachPart(texts, pin.dir, func(name string, body []byte) error {
 			read = append(read, name)
 			if strings.Contains(fold(body), pin.clause) {
 				carrying = append(carrying, pin.dir+"/"+name)

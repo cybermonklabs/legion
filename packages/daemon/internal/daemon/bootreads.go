@@ -196,7 +196,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 // list, lacking one it lists, holding a path outside the four trees, or holding a link that
 // leaves it); under runtime kubernetes, a file of it the operator's mount does not carry into the
 // pods (config.CheckTextsFilesMounted, the manifest among them); and a role part at a path of
-// Legion's that no launch of a role the experiment reaches reads (textsPartRead), which would
+// Legion's that no launch of a role the experiment reaches reads (partReadBy), which would
 // stand in the folder as a replacement of nothing. The loader has refused the arm's other faults
 // already (config's checkTextsArms): a role it reaches on another harness, a folder outside the
 // pods' mounts, and a second experiment giving a folder to one of its roles.
@@ -218,7 +218,7 @@ func readArmTexts(cfg config.Config, experiment config.Experiment, variant confi
 			return err
 		}
 	}
-	read := textsPartRead(cfg, experiment)
+	read := partReadBy(experiment.Reaches, cfg.BackendFor)
 	for _, file := range files {
 		if !strings.HasPrefix(file, "roles/") && !strings.HasPrefix(file, "go/") {
 			continue
@@ -226,18 +226,10 @@ func readArmTexts(cfg config.Config, experiment config.Experiment, variant confi
 		if info, err := fs.Stat(prompts.Texts(), file); err != nil || info.IsDir() || read(file) {
 			continue
 		}
-		// A *texts.Fault, as texts.Read refuses with, so one errors.As reads both.
-		var unread error = &texts.Fault{Dir: folder.Dir, Path: file, Cause: texts.Unread}
-		return fmt.Errorf("%s: %w", field, unread)
+		// error(…): vet refuses a *texts.Fault under %w, since Fault's Error is the value's method.
+		return fmt.Errorf("%s: %w", field, error(&texts.Fault{Dir: folder.Dir, Path: file, Cause: texts.Unread}))
 	}
 	return nil
-}
-
-// textsPartRead is whether a launch of a role experiment reaches reads the role part at a path of
-// Legion's, as a folder of texts names it (partReadBy, over config.Experiment.Reaches and
-// cfg.BackendFor).
-func textsPartRead(cfg config.Config, experiment config.Experiment) func(path string) bool {
-	return partReadBy(experiment.Reaches, cfg.BackendFor)
 }
 
 // partReadBy is whether a launch of a role that reaches answers true for reads the role part at a
@@ -246,7 +238,7 @@ func textsPartRead(cfg config.Config, experiment config.Experiment) func(path st
 // told the part (a part that names no harness is told to every one). The controller runs in no
 // experiment, so a part only its launches read is read by none, as is a part no launch reads at
 // all and a path where Legion has no text. Boot asks it of each declared experiment
-// (textsPartRead), and each launch of an arm's folder of its arm (specs.armTexts).
+// (readArmTexts), and each launch of an arm's folder of its arm (specs.armTexts).
 func partReadBy(reaches func(claim.Role) bool, backendFor func(claim.Role) runtime.Backend) func(path string) bool {
 	readers := partReaders()
 	return func(path string) bool {

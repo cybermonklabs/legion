@@ -376,7 +376,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		NATSURLs: r.natsURLs, RoleConfigFiles: r.overlays(spec.Claim), Variants: spec.Variants,
 	}
 	profileEnv := tmux.PaneEnvironment([]string{"HOME=" + r.home, "OMP_PROFILE=" + r.profile}, r.stateDir)
-	spec, built, err := tmux.PrepareTexts(spec, tmux.Host{StateDir: r.stateDir, Legion: r.legion}, profileEnv, workDir, in.ConfigLayers(), r.textsFellBack)
+	spec, built, err := tmux.PrepareTexts(spec, profileEnv, workDir, in.ConfigLayers(), r.textsFellBack)
 	if err != nil {
 		return runtime.Locator{}, err
 	}

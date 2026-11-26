@@ -26,10 +26,6 @@ import (
 //go:embed roles go/*.md
 var texts embed.FS
 
-// roleParts and goParts are texts by the tree each reader walks (eachPart): roleParts below roles/
-// and goParts below go/. They are texts itself, so the binary holds each part once.
-var roleParts, goParts = texts, texts
-
 // Texts is Legion's role-prompt texts as a folder of texts an experiment arm names mirrors them:
 // "roles/<path>" is the shared prompt internal/prompts/roles/<path>, and "go/<path>" the daemon's
 // part internal/prompts/go/<path>. Its root holds those two trees and nothing else.
@@ -68,7 +64,7 @@ func eachPart(parts embed.FS, dir string, visit func(name string, body []byte) e
 // resolves what they name beside the plugin's own.
 func RoleReferences() promptrefs.Names {
 	names := promptrefs.New()
-	if err := eachPart(roleParts, "roles", func(name string, body []byte) error {
+	if err := eachPart(texts, "roles", func(name string, body []byte) error {
 		names.Text("roles/"+name, body)
 		return nil
 	}); err != nil {
@@ -85,13 +81,13 @@ func RoleReferences() promptrefs.Names {
 // is, so an ordinary restart changes nothing, and one an older daemon wrote is rewritten.
 func New(stateDir string) (*Composer, error) {
 	sharedDir := filepath.Join(stateDir, "prompts", "shared")
-	if err := eachPart(roleParts, "roles", func(name string, body []byte) error {
+	if err := eachPart(texts, "roles", func(name string, body []byte) error {
 		return syncPrompt(filepath.Join(sharedDir, name), body, "shared role prompt")
 	}); err != nil {
 		return nil, err
 	}
 	goDir := filepath.Join(stateDir, "prompts", "go")
-	if err := eachPart(goParts, "go", func(name string, body []byte) error {
+	if err := eachPart(texts, "go", func(name string, body []byte) error {
 		return syncPrompt(filepath.Join(goDir, name), body, "Go daemon prompt")
 	}); err != nil {
 		return nil, err
@@ -122,12 +118,7 @@ func (c *Composer) ControllerPromptPaths(headless bool) ([]string, error) {
 	if c == nil {
 		return nil, fmt.Errorf("controller role prompt: nil composer")
 	}
-	names := controllerPartNames(headless)
-	paths := make([]string, 0, len(names))
-	for _, name := range names {
-		paths = append(paths, c.snapshot(name))
-	}
-	return paths, nil
+	return c.snapshots(controllerPartNames(headless)), nil
 }
 
 // Part is the daemon's prompt part name, as boot snapshotted it: what a backend's launch is told
@@ -181,6 +172,15 @@ func (c *Composer) snapshot(name string) string {
 	return filepath.Join(c.goDir, strings.TrimPrefix(name, "go/"))
 }
 
+// snapshots are the snapshots of the parts names, in their order.
+func (c *Composer) snapshots(names []string) []string {
+	paths := make([]string, 0, len(names))
+	for _, name := range names {
+		paths = append(paths, c.snapshot(name))
+	}
+	return paths
+}
+
 // Compose returns the snapshots of the parts PartNames lists for role, in its order. The runtime
 // appends addressing and deployment instructions after these paths.
 func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
@@ -191,11 +191,7 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 	if err != nil {
 		return Parts{}, err
 	}
-	paths := make([]string, 0, len(names))
-	for _, name := range names {
-		paths = append(paths, c.snapshot(name))
-	}
-	return Parts{RolePromptPaths: paths}, nil
+	return Parts{RolePromptPaths: c.snapshots(names)}, nil
 }
 
 // Readers are the launches whose prompt holds one part of Texts.

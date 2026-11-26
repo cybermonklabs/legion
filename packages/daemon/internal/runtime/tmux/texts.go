@@ -1,12 +1,12 @@
 package tmux
 
 import (
-	"errors"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -43,18 +43,19 @@ func (in PaneInputs) ConfigLayers() []string {
 	return slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, runtime.VariantOverlays(in.Variants))
 }
 
-// PrepareTexts is the one preparation of a launch's folder of texts, which the tmux runtime and the
-// live proofs' local runtime share, so a proof runs the production check, root and layer. It does
-// nothing and answers spec as it is where spec carries no folder (spec.Texts nil). Otherwise it
-// reads the daemon's copy of the folder (spec.Texts.Copy), holds its agents and skills to the
-// plugins the pane has installed, builds the extension root beside the copy and writes the
-// settings layer into it.
+// PrepareTexts is the whole preparation of a launch's folder of texts, its check and then its
+// build, which the live proofs' local runtime calls, so a proof runs the production check, root and
+// layer. The tmux runtime runs the same two around its launch lock instead: the check before it
+// composes the prompt (checkArmTexts), and the build once the refusal of a claim whose process
+// still runs has passed (Runtime.launch). It does nothing and answers spec as it is where spec
+// carries no folder (spec.Texts nil). Otherwise it reads the daemon's copy of the folder
+// (spec.Texts.Copy), holds its agents and skills to the plugins the pane has installed, builds the
+// extension root beside the copy and writes the settings layer into it.
 //
-// The plugins are those of host (EnvoyPlugin and LegionPlugin) or, where it names none, the
-// profile's own, `plugins/node_modules/@sjawhar/pi-envoy` and `pi-legion` under the root Oh My Pi
-// resolves over env (ompdirs.ProfileRoot), as the boot gate's pane lane finds pi-legion
-// (pluginManifestPath). env is the environment the pane's Oh My Pi starts under and workDir its
-// working directory; layers are the pane's PI_CONFIG_FILES before the texts layer
+// The plugins are the profile's own, `plugins/node_modules/@sjawhar/pi-envoy` and `pi-legion` under
+// the root Oh My Pi resolves over env (ompdirs.ProfileRoot), as the boot gate's pane lane finds
+// pi-legion (pluginManifestPath). env is the environment the pane's Oh My Pi starts under and
+// workDir its working directory; layers are the pane's PI_CONFIG_FILES before the texts layer
 // (PaneInputs.ConfigLayers), which with the workspace's and the profile's own settings give the
 // skills the layer keeps ignoring (texts.BaseIgnoredSkills).
 //
@@ -67,8 +68,8 @@ func (in PaneInputs) ConfigLayers() []string {
 // would refuse to start on, or a root it cannot write, is the launch's error.
 //
 // Call it before the prompt is composed: a fallback changes the prompt.
-func PrepareTexts(spec runtime.SpawnSpec, host Host, env map[string]string, workDir string, layers []string, fellBack runtime.TextsFellBack) (runtime.SpawnSpec, TextsLaunch, error) {
-	prepared, fallback, err := checkTexts(spec, host, env, workDir, layers)
+func PrepareTexts(spec runtime.SpawnSpec, env map[string]string, workDir string, layers []string, fellBack runtime.TextsFellBack) (runtime.SpawnSpec, TextsLaunch, error) {
+	prepared, fallback, err := checkTexts(spec, env, workDir, layers)
 	if err != nil {
 		return runtime.SpawnSpec{}, TextsLaunch{}, err
 	}
@@ -105,7 +106,7 @@ func (r *Runtime) checkArmTexts(spec runtime.SpawnSpec) (*checkedTexts, *runtime
 	env := maps.Clone(r.paneEnv)
 	maps.Copy(env, r.operatorEnv)
 	layers := PaneInputs{PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role], Variants: spec.Variants}.ConfigLayers()
-	checked, fallback, err := checkTexts(spec, Host{StateDir: r.stateDir, Legion: r.legion}, env, workDir, layers)
+	checked, fallback, err := checkTexts(spec, env, workDir, layers)
 	switch {
 	case err != nil:
 		return nil, nil, spec, err
@@ -131,10 +132,10 @@ type textsFallback struct {
 
 // checkTexts is PrepareTexts less its writes: nothing is made on disk until build. The tmux
 // runtime calls it before it composes the prompt and builds under its launch lock, once the
-// refusal of a claim whose process still runs has passed, so a refused launch rewrites no root a
-// live process reads. Exactly one of the results is not nil for a spec that carries a folder, and
-// none for one that does not.
-func checkTexts(spec runtime.SpawnSpec, host Host, env map[string]string, workDir string, layers []string) (*checkedTexts, *textsFallback, error) {
+// refusal of a claim whose process still runs has passed, so a refused launch rewrites and removes
+// no root a live process reads. Exactly one of the results is not nil for a spec that carries a
+// folder, and none for one that does not.
+func checkTexts(spec runtime.SpawnSpec, env map[string]string, workDir string, layers []string) (*checkedTexts, *textsFallback, error) {
 	if spec.Texts == nil {
 		return nil, nil, nil
 	}
@@ -146,29 +147,21 @@ func checkTexts(spec runtime.SpawnSpec, host Host, env map[string]string, workDi
 
 	folder, err := texts.Read(spec.Texts.Copy)
 	if err != nil {
-		var fault *texts.Fault
-		if errors.As(err, &fault) {
-			return fellBack(*fault)
-		}
-		return fellBack(texts.Fault{Cause: texts.Unreadable, Detail: err.Error()})
+		return fellBack(texts.FaultOf(err))
 	}
-	envoyRoot, legionRoot, agentDir, err := textsHost(host, env, workDir)
+	envoyRoot, legionRoot, agentDir, err := textsHost(env, workDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	if err := readablePlugins(envoyRoot, legionRoot); err != nil {
-		return fellBack(texts.Fault{Cause: texts.Unreadable, Detail: err.Error()})
+	if err := texts.ReadablePlugins(envoyRoot, legionRoot); err != nil {
+		return fellBack(texts.Fault{Cause: texts.Unreadable, Detail: "the installed plugin's texts cannot be read: " + err.Error()})
 	}
 	if faults := texts.CheckPlugins(folder, envoyRoot, legionRoot); len(faults) > 0 {
 		return fellBack(faults[0])
 	}
-	// A caller that names neither the pane's directories nor its layers (a Launch of a spec whose
-	// root nobody prepared) has no settings to read a base from.
-	var base []string
-	if workDir != "" && agentDir != "" {
-		if base, err = texts.BaseIgnoredSkills(layers, workDir, agentDir); err != nil {
-			return nil, nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
-		}
+	base, err := texts.BaseIgnoredSkills(layers, workDir, agentDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	return &checkedTexts{
 		folder: folder, envoyRoot: envoyRoot, legionRoot: legionRoot, base: base,
@@ -177,8 +170,26 @@ func checkTexts(spec runtime.SpawnSpec, host Host, env map[string]string, workDi
 }
 
 // build writes the extension root beside the daemon's copy of the folder, removing what an earlier
-// build of the launch's generation left, and the settings layer in it.
+// build of the launch's generation left, and the settings layer in it. It runs once no process of
+// the claim runs, so it first removes every other generation's directory the daemon's copies left
+// beside the launch's own, `<state>/texts/<claim>/<generation>`, with the root an earlier launch
+// loaded: the daemon removes only its copies, since it cannot tell whether a process of the claim
+// still loads a root (specs.armTexts).
 func (c *checkedTexts) build() (TextsLaunch, error) {
+	generation := filepath.Dir(c.root)
+	launches := filepath.Dir(generation)
+	entries, err := os.ReadDir(launches)
+	if err != nil {
+		return TextsLaunch{}, fmt.Errorf("read the texts of the claim's earlier launches: %w", err)
+	}
+	for _, entry := range entries {
+		if _, err := strconv.ParseUint(entry.Name(), 10, 64); err != nil || entry.Name() == filepath.Base(generation) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(launches, entry.Name())); err != nil {
+			return TextsLaunch{}, fmt.Errorf("remove the texts of an earlier launch: %w", err)
+		}
+	}
 	if err := os.RemoveAll(c.root); err != nil {
 		return TextsLaunch{}, fmt.Errorf("remove the texts root of an earlier launch: %w", err)
 	}
@@ -193,53 +204,17 @@ func (c *checkedTexts) build() (TextsLaunch, error) {
 	return TextsLaunch{Root: root.Dir, SettingsLayer: layer}, nil
 }
 
-// textsHost is the two plugin roots a launch loads and the agent directory of the profile it runs
-// under, where its own config.yml sits ("" where env names nothing to resolve it over). A root
-// host names is that root; the rest are the profile's installed plugins, found as the boot gate's
-// pane lane finds pi-legion (pluginManifestPath).
-//
-// The agent directory is the config root's `agent`: an XDG data root that holds the profile
-// moves its plugins, sessions and other data-class files, never config.yml, so it is resolved with
-// no XDG data home.
-func textsHost(host Host, env map[string]string, workDir string) (envoyRoot, legionRoot, agentDir string, err error) {
-	envoyRoot, legionRoot = host.EnvoyPlugin, host.LegionPlugin
-	if envoyRoot == "" || legionRoot == "" {
-		root, _, err := ompdirs.ProfileRoot(env, workDir)
-		if err != nil {
-			return "", "", "", err
-		}
-		plugins := filepath.Join(root, "plugins", "node_modules", "@sjawhar")
-		if envoyRoot == "" {
-			envoyRoot = filepath.Join(plugins, "pi-envoy")
-		}
-		if legionRoot == "" {
-			legionRoot = filepath.Join(plugins, "pi-legion")
-		}
+// textsHost is the two plugin roots a launch loads, the profile's installed plugins found as the
+// boot gate's pane lane finds pi-legion (pluginManifestPath), and the agent directory of the
+// profile it runs under, where its own config.yml sits (ompdirs.ConfigAgentDir).
+func textsHost(env map[string]string, workDir string) (envoyRoot, legionRoot, agentDir string, err error) {
+	root, _, err := ompdirs.ProfileRoot(env, workDir)
+	if err != nil {
+		return "", "", "", err
 	}
-	if len(env) > 0 {
-		config := maps.Clone(env)
-		delete(config, "XDG_DATA_HOME")
-		root, _, err := ompdirs.ProfileRoot(config, workDir)
-		if err != nil {
-			return "", "", "", err
-		}
-		agentDir = filepath.Join(root, "agent")
+	if agentDir, err = ompdirs.ConfigAgentDir(env, workDir); err != nil {
+		return "", "", "", err
 	}
-	return envoyRoot, legionRoot, agentDir, nil
-}
-
-// readablePlugins is nil when the directories the root is built from and the check reads can be
-// read: pi-envoy's skills, and pi-legion's agents and skills. A plugin that is not installed, or
-// whose pack is cut, would otherwise read as a plugin that ships none of the folder's texts.
-func readablePlugins(envoyRoot, legionRoot string) error {
-	for _, dir := range []string{
-		filepath.Join(envoyRoot, "dist", "skills"),
-		filepath.Join(legionRoot, "agents"),
-		filepath.Join(legionRoot, "dist", "skills"),
-	} {
-		if _, err := os.ReadDir(dir); err != nil {
-			return fmt.Errorf("the installed plugin's texts cannot be read: %w", err)
-		}
-	}
-	return nil
+	plugins := filepath.Join(root, "plugins", "node_modules", "@sjawhar")
+	return filepath.Join(plugins, "pi-envoy"), filepath.Join(plugins, "pi-legion"), agentDir, nil
 }

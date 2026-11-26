@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -152,9 +153,47 @@ type specs struct {
 
 // textsCopies is `<state>/texts/<claim>`, where a launch of claim's arm keeps its copy of the
 // arm's folder of texts, `<generation>/folder` (armTexts), beside which the tmux runtime builds the
-// launch's extension root. Each launch of such an arm removes what an earlier one left.
+// launch's extension root, `<generation>/root`. Each launch of such an arm removes the copies an
+// earlier one left and none of the roots, which a process of the claim that still runs may load:
+// the tmux runtime removes an earlier generation's root once it knows none runs
+// (tmux's checkedTexts.build).
 func textsCopies(stateDir string, token claim.Token) string {
 	return filepath.Join(stateDir, "texts", string(token))
+}
+
+// removeTextsCopies removes from copies (textsCopies) each generation's copy of the folder,
+// `<generation>/folder`, and then each directory that leaves empty, a generation's and copies
+// itself, so a claim no root was built for keeps nothing. A root stays where it is.
+func removeTextsCopies(copies string) error {
+	generations, err := os.ReadDir(copies)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, generation := range generations {
+		if !generation.IsDir() {
+			continue
+		}
+		dir := filepath.Join(copies, generation.Name())
+		if err := os.RemoveAll(filepath.Join(dir, "folder")); err != nil {
+			return err
+		}
+		if err := removeIfEmpty(dir); err != nil {
+			return err
+		}
+	}
+	return removeIfEmpty(copies)
+}
+
+// removeIfEmpty removes the directory dir where it holds nothing.
+func removeIfEmpty(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) > 0 {
+		return err
+	}
+	return os.Remove(dir)
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -600,12 +639,12 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, bool, error) {
 
 // armTexts is spec, c's launch, as the arm among its Variants that names a folder of texts makes
 // it (runtime.Variant.Texts; the loader lets no two experiments give one role a folder), and spec
-// itself where no arm does. It removes what the claim's earlier launches copied (textsCopies),
-// reads the folder as it stands now (texts.Read) and checks it: every role part it holds against
-// Legion's own text at that path and as a part some role the experiment reaches reads
-// (texts.CheckRoleParts over partReadBy), and every agent and skill its texts name against the
-// names the worker image ships, as the boot read them (texts.CheckReferences; a boot that read
-// none can check no name). It then copies what it read to `<generation>/folder` under
+// itself where no arm does. It removes the copies the claim's earlier launches made
+// (removeTextsCopies), reads the folder as it stands now (texts.Read) and checks it: every role
+// part it holds against Legion's own text at that path and as a part some role the experiment
+// reaches reads (texts.CheckRoleParts over partReadBy), and every agent and skill its texts name
+// against the names the worker image ships, as the boot read them (texts.CheckReferences; a boot
+// that read none can check no name). It then copies what it read to `<generation>/folder` under
 // textsCopies, and reads each of the launch's role parts the folder holds from that copy
 // (prompts.PartNames names the part of each path), so the prompt the runtime composes later holds
 // the bytes checked here whatever the folder holds by then. A claim with an operator prompt file
@@ -634,16 +673,12 @@ func (s specs) armTexts(c supervise.Claim, spec runtime.SpawnSpec, operatorPromp
 	spec.Texts = &runtime.Texts{Folder: arm.Texts, Experiment: arm.Experiment, Variant: arm.Name, Fallback: fallback}
 
 	copies := textsCopies(s.stateDir, c.Token)
-	if err := os.RemoveAll(copies); err != nil {
+	if err := removeTextsCopies(copies); err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("remove the earlier copies of the folder of texts of %s: %w", c.Token, err)
 	}
 	folder, err := texts.Read(arm.Texts)
 	if err != nil {
-		var fault *texts.Fault
-		if !errors.As(err, &fault) {
-			fault = &texts.Fault{Cause: texts.Unreadable, Detail: err.Error()}
-		}
-		return s.textsFellBack(c, spec, *fault), nil
+		return s.textsFellBack(c, spec, texts.FaultOf(err)), nil
 	}
 	spec.Texts.Fingerprint = folder.Fingerprint
 	faults := texts.CheckRoleParts(folder, prompts.Texts(), partReadBy(arm.Reaches, s.backendOf))
@@ -664,14 +699,7 @@ func (s specs) armTexts(c supervise.Claim, spec runtime.SpawnSpec, operatorPromp
 		if err := os.WriteFile(file, body, 0o644); err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("copy the folder of texts %s for %s: %w", arm.Texts, c.Token, err)
 		}
-		if skill, ok := strings.CutPrefix(path, "skills/"); ok {
-			skill, _, _ = strings.Cut(skill, "/")
-			if !slices.Contains(spec.Texts.Skills, skill) {
-				spec.Texts.Skills = append(spec.Texts.Skills, skill)
-			}
-		}
 	}
-	slices.Sort(spec.Texts.Skills)
 	if !operatorPrompt {
 		names, err := prompts.PartNames(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
 		if err != nil {

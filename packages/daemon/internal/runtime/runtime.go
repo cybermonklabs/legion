@@ -659,8 +659,7 @@ func (variant Variant) Reaches(role claim.Role) bool {
 // launch's role prompt parts are read from (PromptParts.RolePromptPaths), so the prompt holds the
 // bytes the daemon checked whatever the folder holds by the time the prompt is composed; the
 // claim's next launch removes it. Experiment and Variant name the arm (Variant.Experiment,
-// Variant.Name). Skills are the skills whose files the folder holds, sorted, each once: the
-// skills whose plugin copies the launch hides.
+// Variant.Name).
 //
 // Fallback is the launch's prompt and arms with the arm dropped whole: Legion's role parts, and
 // neither the arm's Variants entry, whose overlays go with it, nor the daemon's copy of its
@@ -673,7 +672,6 @@ type Texts struct {
 	Copy        string
 	Experiment  string
 	Variant     string
-	Skills      []string
 	Fallback    TextsFallback
 }
 

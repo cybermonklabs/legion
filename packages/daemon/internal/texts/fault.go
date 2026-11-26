@@ -1,6 +1,9 @@
 package texts
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 // Cause is why a folder of texts is refused at load or boot, or why a launch of its arm falls back
 // to the launch of no arm: the word a log line, a notice and a launcher's refusal carry.
@@ -92,6 +95,15 @@ type Fault struct {
 	Path   string
 	Cause  Cause
 	Detail string
+}
+
+// FaultOf is the *Fault err holds (errors.As), which is how Read refuses a folder, or, for an err
+// that holds none, the folder unreadable, err saying why.
+func FaultOf(err error) Fault {
+	if fault := (*Fault)(nil); errors.As(err, &fault) {
+		return *fault
+	}
+	return Fault{Cause: Unreadable, Detail: err.Error()}
 }
 
 // Error is the fault as one sentence for a log line and for the operator: the folder, the file,

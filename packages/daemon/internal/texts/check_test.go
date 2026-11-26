@@ -1,7 +1,9 @@
 package texts_test
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
@@ -201,13 +204,38 @@ func TestCheckPluginsNamesEachFault(t *testing.T) {
 	}
 }
 
+// The plugins' text directories a root is built from must each be readable: pi-envoy's skills,
+// pi-legion's agents and pi-legion's skills. A plugin missing any of them is refused with the
+// directory's own read error, and two plugins that hold all three are not.
+func TestReadablePluginsReadsEachTextDirectory(t *testing.T) {
+	if err := texts.ReadablePlugins(plugins(t)); err != nil {
+		t.Fatalf("ReadablePlugins of two whole plugins = %v, want nil", err)
+	}
+	for _, gone := range []struct{ name, dir string }{
+		{"pi-envoy's skills", "pi-envoy/dist/skills"},
+		{"pi-legion's agents", "pi-legion/agents"},
+		{"pi-legion's skills", "pi-legion/dist/skills"},
+	} {
+		envoy, legion := plugins(t)
+		dir := filepath.Join(filepath.Dir(envoy), filepath.FromSlash(gone.dir))
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		err := texts.ReadablePlugins(envoy, legion)
+		var path *fs.PathError
+		if !errors.Is(err, fs.ErrNotExist) || !errors.As(err, &path) || path.Path != dir {
+			t.Errorf("ReadablePlugins without %s = %v, want the read error of %s", gone.name, err, dir)
+		}
+	}
+}
+
 // Every agent and skill a folder text names, in each form a text can name one in, must be one the
 // worker image ships: one row per form, a known name and an unknown one each, so a form the
 // folder's reader misses lets its unknown name through and fails here. Each unknown name is one
 // fault at the first file that names it; a boot that read no names makes a folder that names any
 // one fault, NamesUnread, and a folder that names none nothing to check.
 func TestEveryReferenceOfTheFolderMustShip(t *testing.T) {
-	shipped := texts.ShippedNames([]string{"oracle", "scout"}, []string{"dispatch", "legion-worker"})
+	shipped := texts.NewShipped([]string{"oracle", "scout"}, []string{"dispatch", "legion-worker"})
 	forms := []struct {
 		name  string
 		cause texts.Cause
@@ -269,7 +297,16 @@ func TestEveryReferenceOfTheFolderMustShip(t *testing.T) {
 	if faults := texts.CheckReferences(texts.References(silent), texts.Shipped{}); len(faults) != 0 {
 		t.Errorf("CheckReferences of a folder that names nothing, with no names read = %v, want none: nothing is left unchecked", faults)
 	}
-	if !shipped.Known() || (texts.Shipped{}).Known() || !texts.ShippedNames(nil, nil).Known() {
-		t.Error("Known: want the names a boot read known, even when it read none, and the zero Shipped unknown")
+	// A boot that read the names knows them even where it read none: every name the folder's texts
+	// use is then one the image does not ship, never one that cannot be checked.
+	names := texts.References(folder)
+	none := texts.CheckReferences(names, texts.NewShipped(nil, nil))
+	if want := len(names[promptrefs.TaskAgents]) + len(names[promptrefs.Skills]); len(none) != want {
+		t.Errorf("CheckReferences with names read and none shipped = %v, want one fault for each of the %d names", none, want)
+	}
+	for _, f := range none {
+		if f.Cause != texts.UnknownAgent && f.Cause != texts.UnknownSkill {
+			t.Errorf("CheckReferences with names read and none shipped names %+v, want an unknown agent or skill", f)
+		}
 	}
 }

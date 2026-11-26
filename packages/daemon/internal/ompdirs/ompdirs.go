@@ -13,6 +13,7 @@ package ompdirs
 import (
 	"cmp"
 	"fmt"
+	"maps"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -71,6 +72,20 @@ var (
 // the root, this names another than the one Oh My Pi uses, which is the caller's to notice.
 func ProfileRoot(env map[string]string, workDir string) (root, profile string, err error) {
 	return xdgRoot(env, workDir, "XDG_DATA_HOME")
+}
+
+// ConfigAgentDir is the agent directory of the profile Oh My Pi, started under env in workDir,
+// reads its own config.yml from: the `agent` of the profile's config root. An XDG data root that
+// holds the profile moves its plugins, sessions and other data-class files, never config.yml, so
+// this is ProfileRoot's resolution with no XDG data home.
+func ConfigAgentDir(env map[string]string, workDir string) (string, error) {
+	config := maps.Clone(env)
+	delete(config, "XDG_DATA_HOME")
+	root, _, err := ProfileRoot(config, workDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "agent"), nil
 }
 
 // StateRoot is the root under which Oh My Pi, started under env in workDir, keeps the profile's

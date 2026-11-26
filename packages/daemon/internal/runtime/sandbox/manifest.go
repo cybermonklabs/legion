@@ -1039,13 +1039,7 @@ func (l launch) textsRoot() string {
 	if !l.runsTexts() {
 		return ""
 	}
-	return textsRoot(l.spec.Role, l.spec.Generation)
-}
-
-// textsRoot is the extension root of role's generation, built from a folder of texts under the
-// role's state home.
-func textsRoot(role claim.Role, generation uint64) string {
-	return shimwire.TextsRoot(roleStateHome(role), generation)
+	return shimwire.TextsRoot(roleStateHome(l.spec.Role), l.spec.Generation)
 }
 
 // claudeArgv is the command the shim runs for a Claude Code role: the agent command

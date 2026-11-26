@@ -38,19 +38,15 @@ func (t *textsReports) bind(pool *store.Pool, handlers []intake.Handler) {
 
 // read logs, at INFO, what c's launch read of its arm's folder of texts (launched): the claim and
 // its generation, the arm, the folder with its fingerprint, the daemon's copy, and each file the
-// folder held with its digest, so the log records which text of each path the launch ran. A nil
-// holder, a test's specs that made none, logs nothing.
+// folder held with its digest (texts.Folder.Digests), so the log records which text of each path
+// the launch ran. A nil holder, a test's specs that made none, logs nothing.
 func (t *textsReports) read(c supervise.Claim, launched *runtime.Texts, folder texts.Folder) {
 	if t == nil {
 		return
 	}
-	files := make(map[string]string, len(folder.Files))
-	for path, body := range folder.Files {
-		files[path] = texts.Digest(body)
-	}
 	t.log.Info("legion daemon launches with an arm's folder of texts", "claim", c.Token, "generation", c.Generation,
 		"experiment", launched.Experiment, "arm", launched.Variant, "folder", launched.Folder, "fingerprint", launched.Fingerprint,
-		"copy", launched.Copy, "files", files)
+		"copy", launched.Copy, "files", folder.Digests)
 }
 
 // fellBack logs, at WARN, one launch that ran its fallback in place of its arm's folder of texts

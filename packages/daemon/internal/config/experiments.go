@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
-	corev1 "k8s.io/api/core/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -749,15 +748,7 @@ func checkTextsArms(cfg Config, key string, declared []Experiment) error {
 // opposite. Which files the folder holds is boot's to read, and whether a volume that projects
 // items projects each of them (CheckTextsFilesMounted).
 func checkTextsMount(pod PodConfig, field, folder string) error {
-	var holder *corev1.VolumeMount
-	for i, mount := range pod.VolumeMounts {
-		if folder != mount.MountPath && !strings.HasPrefix(folder, mount.MountPath+"/") {
-			continue
-		}
-		if holder == nil || len(mount.MountPath) > len(holder.MountPath) {
-			holder = &pod.VolumeMounts[i]
-		}
-	}
+	holder := deepestMount(pod, folder)
 	switch {
 	case holder == nil:
 		return fmt.Errorf("%s %s is under no %s.volume_mounts mount_path: a role's pod sees only the image and the operator's mounts, so mount the volume that holds the folder there, at the path the daemon reads it at", field, folder, podKey)

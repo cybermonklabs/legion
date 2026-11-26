@@ -1212,7 +1212,7 @@ for path; do
   esac
   mkdir -p "$folder/$(dirname "$path")"
   git show "$tag:$source" >"$folder/$path"
-  sum=$(git show "$tag:$source" | sha256sum)
+  sum=$(sha256sum <"$folder/$path")
   entries="$entries${entries:+,}
     \"$path\": \"sha256:${sum%% *}\""
 done

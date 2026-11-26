@@ -84,9 +84,9 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 	}
 
 	project := filepath.Join(projectDir, ".omp")
-	if raw, err := readIfPresent(filepath.Join(project, "config.yml")); err != nil {
+	if raw, found, err := readIfPresent(filepath.Join(project, "config.yml")); err != nil {
 		return nil, err
-	} else if raw != nil {
+	} else if found {
 		layer, err := yamlLayer(filepath.Join(project, "config.yml"), raw)
 		if err != nil {
 			return nil, err
@@ -95,9 +95,9 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 			return value, err
 		}
 	}
-	if raw, err := readIfPresent(filepath.Join(project, "settings.json")); err != nil {
+	if raw, found, err := readIfPresent(filepath.Join(project, "settings.json")); err != nil {
 		return nil, err
-	} else if raw != nil {
+	} else if found {
 		var layer map[string]any
 		if json.Unmarshal(raw, &layer) == nil {
 			if value, set, err := ignoredSkills(filepath.Join(project, "settings.json"), layer, true); set || err != nil {
@@ -108,11 +108,11 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 
 	for _, name := range []string{"config.yml", "config.yaml"} {
 		file := filepath.Join(agentDir, name)
-		raw, err := readIfPresent(file)
+		raw, found, err := readIfPresent(file)
 		if err != nil {
 			return nil, err
 		}
-		if raw == nil {
+		if !found {
 			continue
 		}
 		layer, err := yamlLayer(file, raw)
@@ -125,19 +125,16 @@ func BaseIgnoredSkills(layers []string, projectDir, agentDir string) ([]string, 
 	return nil, nil
 }
 
-// readIfPresent is file's bytes, or nil where there is no such file.
-func readIfPresent(file string) ([]byte, error) {
-	raw, err := os.ReadFile(file)
+// readIfPresent is file's bytes and true, or false where there is no such file.
+func readIfPresent(file string) (raw []byte, found bool, err error) {
+	raw, err = os.ReadFile(file)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read the settings %s: %w", file, err)
+		return nil, false, fmt.Errorf("read the settings %s: %w", file, err)
 	}
-	if raw == nil {
-		raw = []byte{}
-	}
-	return raw, nil
+	return raw, true, nil
 }
 
 // yamlLayer is the settings file at file, whose bytes are raw, as a mapping: an empty document is
