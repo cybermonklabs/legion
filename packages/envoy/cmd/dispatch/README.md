@@ -1709,7 +1709,8 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
   Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5, the version `pmdoc/schema/blocks.json` declares since #4611.
   It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
-  Migration `20261125164529` adds `check`'s `subject` and `program` attribute nodes.
+  Migration `20261125125701` adds `check`'s `subject` and `program` attribute nodes.
+  It sorts below `20261125125703_btree_gin` on purpose: a pending `create extension` takes the census's size exemptions from every later pending migration, and this migration needs them.
   Each is read from version 6 and created from version 7.
   It moves every block type to version 6, which `pmdoc/schema/blocks.json` declares.
   Like `20261123080000`, it uses bounded writes alone.
@@ -2942,7 +2943,7 @@ Such a repository is one with an open or merged linked pull request that GitHub 
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
 A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
-Migration `20261125164530_after_merge_states` stores merge metadata, commit ancestry answers and deploys for result comparison.
+Migration `20261125125702_after_merge_states` stores merge metadata, commit ancestry answers and deploys for result comparison.
 `pull_request_heads.merge_commit_sha` defaults to `''`, and `merged_at` is nullable.
 They hold the merge commit and GitHub's merge time.
 A merged row takes both from its `pull_request` envelope or GitHub's answer.
@@ -2987,7 +2988,7 @@ Each index on an existing table holds SHARE while reading it inside the migratio
 The previous release names insert columns and ignores these fields, so both builds can run together.
 Its census answers `0`.
 An image rollback leaves these tables and columns intact.
-`20261125164530_after_merge_states.down.sql` removes them by hand, with no process of this release serving.
+`20261125125702_after_merge_states.down.sql` removes them by hand, with no process of this release serving.
 It loses stored holds, deploys, merge commits, merge times and marks.
 It deletes the migration's version row, so the next boot of this release applies it again.
 
