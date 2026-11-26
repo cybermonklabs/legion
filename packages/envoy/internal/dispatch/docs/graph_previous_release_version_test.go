@@ -422,7 +422,7 @@ func TestABuildOfANewerMarkingRuleReadsFromTheBackfillHorizon(t *testing.T) {
 
 	newer := markingRuleBuild(t, database, nextBuildCommit, newerRule)
 	tick = awaitedBlockIndexTick(t, newer)
-	if started := tickStart(t, database, tick); started != horizon {
+	if started := tickStart(t, database, nextBuildCommit, tick); started != horizon {
 		t.Errorf("the first tick of a build of marking rule %d started at %d, the cursor a build of rule %d left, want the backfill's horizon %d",
 			newerRule, started, older.markingRule, horizon)
 	}
@@ -468,7 +468,7 @@ func TestAHigherRuleStartsAtItsOwnHorizonAboveALowerRulesBackfill(t *testing.T) 
 
 	higher := markingRuleBuild(t, database, nextBuildCommit, higherRule)
 	tick := awaitedBlockIndexTick(t, higher)
-	if started := tickStart(t, database, tick); started != higherHorizon {
+	if started := tickStart(t, database, nextBuildCommit, tick); started != higherHorizon {
 		t.Errorf("the first tick of a build of marking rule %d started at %d, want its own rule's horizon %d",
 			higherRule, started, higherHorizon)
 	}
@@ -505,7 +505,7 @@ func TestABuildWithOnlyALowerRulesHorizonStartsAtItsSafeHorizon(t *testing.T) {
 	safe := blockIndexEventCursor(t, database, nextBuildCommit)
 	if tick.Events != 0 {
 		t.Errorf("the first tick of a build of marking rule %d started at %d with only the horizon of rule %d standing, want its safe horizon %d",
-			higherRule, tickStart(t, database, tick), lower.markingRule, safe)
+			higherRule, tickStart(t, database, nextBuildCommit, tick), lower.markingRule, safe)
 	}
 }
 
@@ -593,15 +593,23 @@ func oweTheNewerRule(t *testing.T, database *store.Store, document string) {
 	}
 }
 
-// tickStart is where tick started its read of the event log: the id below the oldest event it
-// read, as every event above that id is one it read (awaitedBlockIndexTick), and the newest event
-// id where it read none.
-func tickStart(t *testing.T, database *store.Store, tick BlockIndexTick) int64 {
+// tickStart is where tick, a tick of the build of commit, started its read of the event log: the
+// id below the oldest event it read. The tick reads every event above its cursor up to the event_id
+// its build's cursor row records after it (readEventsAfterCursor moves the row to the last event
+// of a full page, else to its safe horizon, which awaitedBlockIndexTick has let reach every event
+// written before the tick), so the start is the id tick.Events places below that one, and that id
+// itself where it read none. An event above the row is one the tick appended after its read and
+// did not read: its documents batch appends an artifact.indexed for each owed index it clears
+// (queueIndexedEvent), so the newest event of the log is no end of the read.
+func tickStart(t *testing.T, database *store.Store, commit string, tick BlockIndexTick) int64 {
 	t.Helper()
 	var start int64
 	if err := database.Pool.QueryRow(context.Background(), `
-		select coalesce((select id from events order by id desc offset $1 limit 1), 0)
-	`, tick.Events).Scan(&start); err != nil {
+		select coalesce((
+			select id from events
+			where id <= (select event_id from block_index_event_cursors where build_commit = $2)
+			order by id desc offset $1 limit 1), 0)
+	`, tick.Events, commit).Scan(&start); err != nil {
 		t.Fatalf("read where the tick started: %v", err)
 	}
 	return start

@@ -79,9 +79,10 @@ func TestDocumentSearchCensusFindsDifferencesBothWays(t *testing.T) {
 		values ('artifact', 'DSR/extra-md', '', 1, to_tsvector('english', 'extra'))`); err != nil {
 		t.Fatal(err)
 	}
+	// A node difference is named at the node's kind and id.
 	kind := readDocumentSearchCensus(t, database)
 	if kind.RowDifferences != 1 || len(kind.ReportedRows) != 1 || !strings.Contains(kind.ReportedRows[0].At, "DSR/extra-md") ||
-		kind.NodeDifferences != 1 || len(kind.ReportedNodes) != 1 || kind.ReportedNodes[0].At != key {
+		kind.NodeDifferences != 1 || len(kind.ReportedNodes) != 1 || kind.ReportedNodes[0].At != graphstore.KindArtifact+" "+key {
 		t.Fatalf("%s: %+v; want the extra search row and the missing row of %s", kind.Kind, kind, key)
 	}
 	// A document that owes its block index is on neither side: the pass that indexes it writes its

@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -410,10 +411,20 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	}
 
 	requireRelatedDocumentRows(t)
-	// An issue's own vector also contains the spec. Remove that alternative match so the
-	// keyword check must return the document and the near-copy gate must score its vector.
+	// The issue matches the check's text twice besides its spec, and either of its rows takes the
+	// spec's place: the check keeps one item per owner, and a row that is no document replaces the
+	// owner's document (fillRelatedItems). Its keyword vector carries its spec's text (migration
+	// 20261105145242), so it is emptied. Its own embedding is the fake embedder's default vector,
+	// which the check's text embeds to as well, so it answers the meaning leg at cosine 1
+	// (meaning_issue_candidates reads it whatever its hash); it is written orthogonal to that
+	// vector. The document windows hold angledVector(0.9, 2), orthogonal to it too, so the keyword
+	// document arm is what must answer the spec, and the near-copy gate must score its vector.
 	if _, err := database.Pool.Exec(ctx, `update issues set search = ''::tsvector where key = $1`, issue.Key); err != nil {
 		t.Fatalf("clear the issue vector of %s: %v", issue.Key, err)
+	}
+	if tag, err := database.Pool.Exec(ctx, `update embeddings set embedding = $2::vector where kind = 'issue' and id = $1`,
+		issue.Key, embed.Literal(angledVector(0, 3))); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("turn the embedding of %s away from the check's text: %v (%d rows)", issue.Key, err, tag.RowsAffected())
 	}
 	refreshTermStats(t, database, project)
 	created := createIssueRequest(t, handler, map[string]any{

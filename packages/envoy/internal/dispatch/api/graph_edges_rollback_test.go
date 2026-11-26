@@ -619,8 +619,9 @@ func rollbackRequireServes(t *testing.T, process *cmdtest.Process) {
 // (refs.SetFourArmsDeleted), and the outbound references read. Two controls run against a scratch
 // database hold the checks to a view stated without the blocked_by arm and without the child_of
 // arm's probe of the newest tuple, and a third, against this one, to a view whose probe of
-// issue_links does not end in `offset 0`; the fourth control of c-view-arms, the deletion that
-// skips its guard, is the driver's.
+// issue_links does not end in `offset 0`, over 50,000 more waits of the issue the check reads
+// (rollbackStateUnprojectedWaits), where the view of the step reads issue_links through its index;
+// the fourth control of c-view-arms, the deletion that skips its guard, is the driver's.
 //
 // A document's citations, T8c's: the release before's document, naming no node, cites the target
 // by a refs row that release wrote, which the arm over refs answers once before the backfill and
@@ -1274,15 +1275,76 @@ func TestGraphEdgesKeepsEveryRelationAcrossARollback(t *testing.T) {
 		requireTheIssueReadAtScale(t, database)
 	})
 	// The third control, against this database: the view of the step with the probe of issue_links
-	// stated with no `offset 0`, which Postgres reads as a hashed `= any` over the whole table, so
-	// the plan of the read of one issue holds a Seq Scan of issue_links and the check names it.
+	// stated with no `offset 0`, which Postgres reads as a hashed `= any` over the whole table where
+	// it expects the read to run the probe more often than that whole read costs, so the plan of the
+	// read of one issue holds a Seq Scan of issue_links and the check names it. The issue read is
+	// given the waits that make the planner expect so (rollbackStateUnprojectedWaits), and the view
+	// of the step is held to the check over the same rows first, where its fenced probe reads
+	// issue_links through its index: the fence is the one difference the check tells.
 	t.Run("a probe of issue_links with no offset 0 is read whole and fails the check", func(t *testing.T) {
+		defer rollbackStateUnprojectedWaits(t, database)()
+		readsIssueLinksWhole := func(failure string) bool { return strings.Contains(failure, " reads issue_links by a Seq Scan") }
+		if found := issueReadSeqScans(t, database); slices.ContainsFunc(found, readsIssueLinksWhole) {
+			t.Errorf("the view of the step, whose probe of issue_links ends in offset 0, fails the check over the control's waits, so the control's failure would not be the fence's: %v", found)
+		}
 		stateRollbackViewText(t, database, rollbackCut(t, store.GraphEdgesView(store.GraphEdgesFourArmsDeleted),
 			rollbackIssueLinkProbe, rollbackIssueLinkProbeUnfenced))
 		defer stateRollbackView(t, database, store.GraphEdgesFourArmsDeleted)
-		found := issueReadSeqScans(t, database)
-		if !slices.ContainsFunc(found, func(failure string) bool { return strings.Contains(failure, " reads issue_links by a Seq Scan") }) {
+		if found := issueReadSeqScans(t, database); !slices.ContainsFunc(found, readsIssueLinksWhole) {
 			t.Errorf("the control, the view with the probe of issue_links stated with no offset 0, passes the check naming no Seq Scan of issue_links: %v", found)
 		}
 	})
+}
+
+// rollbackUnprojectedWaits is how many waits rollbackStateUnprojectedWaits states out of
+// rollbackScaleIssue: enough that the planner expects the read of the issue to run the probe of
+// issue_links some 600 times, which it prices at four times the whole read of the table.
+const rollbackUnprojectedWaits = 50000
+
+// rollbackStateUnprojectedWaits states, by SQL, rollbackUnprojectedWaits needs tuples out of
+// rollbackScaleIssue beside its 100 waits, to ROLL-2001 on, issues no row names, so no issue_links
+// row projects any of them: as a release before leaves the waits it deleted, rows and all, with no
+// retraction. The probe of issue_links answers none of them, so the read of the issue answers what
+// it answered. It analyzes graph_tuples, and answers the func that takes the tuples out again and
+// analyzes it once more.
+//
+// The tuples are the third control's (c-view-arms). Without the `offset 0` that fences it, Postgres
+// plans the probe two ways, per edge through issue_links' primary key or as a hashed `= any` over
+// the whole table read once, and keeps the one its estimate of the probe's runs prices lower
+// (setrefs.c's fix_alternative_subplan, which takes twice the rows of the node the probe filters);
+// the fenced probe has the per-edge plan alone. Over seedRollbackScale's rows the planner prices the
+// whole read of issue_links, 50,002 rows on 467 pages, at 1,217 and a probe at about 8, some 150
+// probes' worth, and expects the read of the issue to bring the probe 1 to 9 edges: 9 where
+// ANALYZE's sample of graph_tuples holds the issue among from_id's most common values, 1 where it
+// does not. So it probes per edge with the fence or without it, and no plan of that read tells the
+// two views apart. More waits of an issue do not move that below 2,000 tuples: the tuple arm's
+// DISTINCT ON reads a union all, which carries no statistics, so the planner puts its groups at
+// Postgres's default of 200 until a tenth of its input is more. Over these tuples, two fifths of
+// graph_tuples, it expects some 12,700 tuples, 1,268 groups and 316 edges past the tuple arm's
+// tests whatever rows the sample draws, and reads issue_links whole.
+func rollbackStateUnprojectedWaits(t *testing.T, database *store.Store) func() {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.Pool.Exec(ctx, `
+		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, asserted)
+		select 'issue', $1, 'needs', 'issue', 'ROLL-' || n, now() - interval '1 day', '{"kind":"user","id":"alice"}'::jsonb, 0, true
+		from generate_series(2001, 2000 + $2::int) n`, rollbackScaleIssue, rollbackUnprojectedWaits); err != nil {
+		t.Fatalf("state %d waits out of %s that no issue_links row projects: %v", rollbackUnprojectedWaits, rollbackScaleIssue, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `analyze graph_tuples`); err != nil {
+		t.Fatalf("analyze graph_tuples: %v", err)
+	}
+	return func() {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `
+			delete from graph_tuples
+			where from_kind = 'issue' and from_id = $1 and kind = 'needs' and source_event = 0
+			  and to_id in (select 'ROLL-' || n from generate_series(2001, 2000 + $2::int) n)`,
+			rollbackScaleIssue, rollbackUnprojectedWaits); err != nil {
+			t.Fatalf("take out the waits out of %s that no issue_links row projects: %v", rollbackScaleIssue, err)
+		}
+		if _, err := database.Pool.Exec(ctx, `analyze graph_tuples`); err != nil {
+			t.Fatalf("analyze graph_tuples: %v", err)
+		}
+	}
 }

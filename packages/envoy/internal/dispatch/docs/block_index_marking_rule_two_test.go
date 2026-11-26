@@ -304,7 +304,7 @@ func TestRule2MarksWhatRule1IndexedAndClearsOnlyItsOwnMarks(t *testing.T) {
 			t.Fatalf("%d cursor row(s) of rule %d stand before its first tick (%v), want none: this test proves nothing", rows, markingRuleTwo, err)
 		}
 		tick := awaitedBlockIndexTick(t, two)
-		if started := tickStart(t, database, tick); started != horizon {
+		if started := tickStart(t, database, nextBuildCommit, tick); started != horizon {
 			t.Errorf("the first tick of the build of rule %d started at %d, want the horizon %d the backfill of rule %d recorded, and not the cursor %d of the build of rule %d",
 				markingRuleTwo, started, horizon, markingRuleTwo, cursor, markingRuleOne)
 		}
