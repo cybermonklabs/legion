@@ -43,13 +43,20 @@ func (r *hourRig) expiryNotices(role string) []storedNotice {
 }
 
 // waitReported waits until both listeners' logs hold n lines named name for role, where that line
-// is the last write of a walk's report of a copy it ended. A walk that ends a copy with a publish
-// writes its claim, publishes, confirms the cursor past the copy (waitPassed), and only then
-// reports (endKeptCopyWithPublish, reportKeptCopyEnd): the copy's own drop report, the publish's
-// count, and last the publish's line - the notice's (expiryNoticeLine) or the dead letter's
-// (hourDeadLetterLine). A walk that ends a copy with no publish writes the cursor, then reports its
-// count and last its line (hourDropLine, hourUndecodableLine). A sweep does not wait for the walks
-// it starts, so a row that reads a report's counts or lines waits here first.
+// is the last write of a walk's report of a copy it ended or forwarded. Each report comes after
+// the walk's cursor write for the copy (waitPassed):
+//   - a copy ended with a publish: the claim, the publish, the confirm, then the report
+//     (endKeptCopyWithPublish, reportKeptCopyEnd): the copy's own drop report, the publish's count,
+//     and last the publish's line - the notice's (expiryNoticeLine), the dead letter's
+//     (hourDeadLetterLine), or the refusal's (hourRefusedLine);
+//   - a dead letter refused before its publish: the cursor write, then that same report;
+//   - a copy ended with no publish: the cursor write, then its count and last its line
+//     (hourDropLine, hourUndecodableLine);
+//   - a copy forwarded: the claim, the forward, the confirm, then the forward's report
+//     (finishRoleForward): the delivered count and last the forward's line (hourForwardLine).
+//
+// A sweep does not wait for the walks it starts, and a holder can take a forward before its
+// report, so a row that reads a report's counts or lines waits here first.
 func (r *hourRig) waitReported(role, name string, n int) {
 	r.t.Helper()
 	waitFor(r.t, fmt.Sprintf("%d lines %q for role %s", n, name, role), func() bool {

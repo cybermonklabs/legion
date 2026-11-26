@@ -746,6 +746,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 		if stored := rig.envelopesOn(contracts.LegacyAgentSubject(holder)); len(stored) != 1 {
 			t.Fatalf("the claimant's agent subject holds %d copies, want one", len(stored))
 		}
+		rig.waitReported(role, hourForwardLine, 1)
 		forwards := rig.lines(hourForwardLine, map[string]any{"role": role})
 		if len(forwards) != 1 || forwards[0]["event_id"] != answer.EventID || forwards[0]["session_id"] != holder || forwards[0]["source_session"] != sender {
 			t.Fatalf("the forward lines are %v, want one naming event %s, holder %s and the sender's session %s", forwards, answer.EventID, holder, sender)
@@ -1011,6 +1012,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			t.Fatalf("the live holder received event %s, want the later copy %s", got[0].EventID, later.item.EventID)
 		}
 		rig.waitPassed(role, later.sequence)
+		rig.waitReported(role, hourRefusedLine, 1)
 		if lines := rig.lines(hourRefusedLine, map[string]any{"role": role, "event_id": refused.item.EventID}); len(lines) != 1 {
 			t.Fatalf("the refused dead letter is logged %d times, want once: %v", len(lines), lines)
 		}
@@ -1244,6 +1246,7 @@ func TestAKeptRoleCopyIsForwardedOrReturned(t *testing.T) {
 			received[frame.EventID]++
 		}
 		rig.waitPassed(role, held[copies-1].sequence)
+		rig.waitReported(role, hourForwardLine, copies)
 		for _, each := range held {
 			if received[each.item.EventID] != 1 {
 				t.Fatalf("the holder received event %s %d times, want once: %v", each.item.EventID, received[each.item.EventID], received)
