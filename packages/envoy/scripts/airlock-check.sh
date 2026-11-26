@@ -1134,18 +1134,31 @@ EOF
 	declare -A K4
 	while IFS='=' read -r key value; do K4["$key"]="$value"; done <"$WORK_DIR/k4-out"
 
-	local s_leaf t_leaf s_own t_own s_issuer
+	local s_leaf t_leaf s_own t_own s_issuer s_chain_ok s_not_stands s_chain_verify
 	s_leaf="$(openssl x509 -in "$WORK_DIR/s-leaf.pem" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	t_leaf="$(openssl x509 -in "$WORK_DIR/t-leaf.pem" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	s_own="$(openssl x509 -in "$AIRLOCK_DIR/stands/s.crt" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	t_own="$(openssl x509 -in "$AIRLOCK_DIR/stands/t.crt" -noout -fingerprint -sha256 | sed 's/.*=//')"
 	s_issuer="$(openssl x509 -in "$WORK_DIR/s-leaf.pem" -noout -issuer)"
+	# Build the chain, do not compare a string: S's leaf must chain through the broker's
+	# intermediate to the proxy test root (PROXY_ROOT_FILE). An issuer-string check cannot tell a
+	# leaf that chains to the root from one that does not; openssl verify does. The control is the
+	# negative - the same served chain must not verify against the stands' authority
+	# (PROXY_STANDS_CA_CERT_FILE), which signs a stand's own certificate - so a leaf chaining
+	# elsewhere is caught. %{certs} writes the chain with metadata between the PEM blocks, so the
+	# blocks are pulled out first.
+	sed -n '/-----BEGIN CERTIFICATE-----/,/-----END CERTIFICATE-----/p' "$WORK_DIR/s-leaf.pem" >"$WORK_DIR/s-chain.pem"
+	s_chain_ok=0
+	openssl verify -CAfile "$PROXY_ROOT_FILE" -untrusted "$WORK_DIR/s-chain.pem" "$WORK_DIR/s-chain.pem" >/dev/null 2>&1 && s_chain_ok=1
+	s_not_stands=0
+	openssl verify -CAfile "$PROXY_STANDS_CA_CERT_FILE" -untrusted "$WORK_DIR/s-chain.pem" "$WORK_DIR/s-chain.pem" >/dev/null 2>&1 || s_not_stands=1
+	s_chain_verify="$(openssl verify -CAfile "$PROXY_ROOT_FILE" -untrusted "$WORK_DIR/s-chain.pem" "$WORK_DIR/s-chain.pem" 2>&1 | tr '\n' ' ')"
 	local s_recs t_recs
 	s_recs="$(records s | jq --argjson n "$s_before" '.[$n:]')"
 	t_recs="$(records t | jq --argjson n "$t_before" '.[$n:]')"
 
 	observe "the command's NO_PROXY is ${K4[no_proxy]}"
-	observe "S's certificate as the command saw it is $s_leaf and S's own certificate file is $s_own: a different leaf, signed by $s_issuer, which is the proxy minting one of its own"
+	observe "S's certificate as the command saw it is $s_leaf and S's own certificate file is $s_own: a different leaf, issued by $s_issuer; its served chain verifies against the proxy test root (chain_ok=$s_chain_ok: $s_chain_verify) and not against the stands' authority (not_stands=$s_not_stands)"
 	observe "T's certificate as the command saw it is $t_leaf and T's own certificate file is $t_own"
 	observe "T answered the POST with: ${K4[t_body]}; T's last record's body is $(printf '%s' "$t_recs" | jq -r '[.[] | select(.body != "") | .body] | .[0] // ""')"
 	observe ".svc: ${K4[svc]}; .ts.net: ${K4[tsnet]}; curl 10.x: ${K4[curl10]}; Go 10.x: ${K4[go10]}; Node 10.x: ${K4[node10]}"
@@ -1154,9 +1167,9 @@ EOF
 	observe "the same private address asked of the proxy with curl: ${K4[private]}"
 	observe "no proxy password: ${K4[no_password]}; a made-up one: ${K4[made_up]}"
 
-	judge "$([ "${K4[s_status]}" = 200 ] && [ "$s_leaf" != "$s_own" ] && contains "dev-airlock-stands authority" "$s_issuer" && echo 0 || echo 1)" \
-		"the call to S goes through the proxy port and S's certificate comes from the proxy's authority" \
-		"S answered ${K4[s_status]} and presented a leaf the stand never wrote ($s_leaf against the stand's own $s_own), signed by the authority the proxy holds the key of"
+	judge "$([ "${K4[s_status]}" = 200 ] && [ "$s_leaf" != "$s_own" ] && [ "$s_chain_ok" = 1 ] && [ "$s_not_stands" = 1 ] && contains "Cipher proxy intermediate" "$s_issuer" && echo 0 || echo 1)" \
+		"the call to S goes through the proxy port and S's certificate chains through the broker's intermediate to the proxy test root" \
+		"S answered ${K4[s_status]} and presented a leaf the stand never wrote ($s_leaf against the stand's own $s_own), issued by $s_issuer; its served chain verifies against the proxy test root and not against the stands' authority ($s_chain_verify)"
 	judge "$([ "$t_leaf" = "$t_own" ] && contains "the-bytes-the-command-sent" "$(printf '%s' "$t_recs" | jq -r '[.[] | .body] | join(" ")')" && echo 0 || echo 1)" \
 		"T presents its own certificate and gets the bytes the command sent" \
 		"T's leaf is its own certificate file, and its record holds the bytes the command POSTed"
@@ -1202,11 +1215,15 @@ EOF
 		BROKER_AIRLOCK_TEST_DIAL_ALLOW="$STACK_DIAL_ALLOW ${BROKER_API_ADDRS[0]}"
 	release AIRLOCK_DEMO_TOKEN 30m
 	local control_answer
-	control_answer="$(curl -sS --noproxy '' -K <(proxy_config "$EXTRA_PROXY_ADDR") "http://${BROKER_API_ADDRS[0]}/healthz" 2>&1 | tr '\n' ' ')"
-	control "a second broker on the same database and profiles, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered the same request: $control_answer"
-	judge "$(! contains "loopback" "$control_answer" && echo 0 || echo 1)" \
-		"negative control: with the refusal turned off the connection to the broker's loopback port is tunnelled" \
-		"the same request through that broker answered '$control_answer', where the stack's own brokers answer '${K4[broker_port]}'"
+	# The tunnel must reach the fixture, not merely answer without the word "loopback": a refusal
+	# by any other rule also lacks it (the tester's control: with addr.IsLoopback() off, a later
+	# localRule rule refuses 127.0.0.1 anyway). The proof the tunnel reached the broker's /healthz
+	# is its 200, which a proxy refusal (403) or a failed CONNECT (000) never gives.
+	control_answer="$(curl -sS -w ' http_status=%{http_code}' --noproxy '' -K <(proxy_config "$EXTRA_PROXY_ADDR") "http://${BROKER_API_ADDRS[0]}/healthz" 2>&1 | tr '\n' ' ')"
+	control "a second broker on the same database and profiles, started with the first broker's address in BROKER_AIRLOCK_TEST_DIAL_ALLOW — the setting that turns the refusal of a loopback address off for one host — answered /healthz: $control_answer"
+	judge "$(contains "http_status=200" "$control_answer" && echo 0 || echo 1)" \
+		"negative control: with the refusal turned off the connection to the broker's loopback port is tunnelled and its /healthz answers 200" \
+		"the same request through that broker answered '$control_answer' — the broker's own /healthz, proof the tunnel reached it — where the stack's own brokers refuse it with '${K4[broker_port]}'"
 
 	stop_stack
 }

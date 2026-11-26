@@ -5,15 +5,17 @@
 # must fail: TestAStoredGrantsConnectToADPoPHostReadsNoOtherGrant
 # Applied with patch -p1 from a copy.
 
+diff --git a/packages/envoy/internal/cipher/proxy/enrollment.go b/packages/envoy/internal/cipher/proxy/enrollment.go
+index 9e345fe2c2b2..cdf36fd6e5d3 100644
 --- a/packages/envoy/internal/cipher/proxy/enrollment.go
 +++ b/packages/envoy/internal/cipher/proxy/enrollment.go
-@@ -157,7 +157,8 @@ func boundEntries(rules proxyrules.Rules, host string, port uint16) []string {
+@@ -154,7 +154,8 @@ func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules,
+ func boundEntries(rules proxyrules.Rules, host string, port uint16) []string {
  	var names []string
  	for _, binding := range rules.Names {
- 		kind := rules.KindOf(&binding)
--		if kind != nil && binding.Way != proxyrules.WayDPoP && proxyrules.HostBound(kind.Hosts, host) {
+-		if binding.Way != proxyrules.WayDPoP && kindBinds(rules.KindOf(&binding), host, port) {
 +		// MUTANT: a dpop binding's name is read for too.
-+		if kind != nil && proxyrules.HostBound(kind.Hosts, host) {
++		if kindBinds(rules.KindOf(&binding), host, port) {
  			names = append(names, binding.Name)
  		}
  	}

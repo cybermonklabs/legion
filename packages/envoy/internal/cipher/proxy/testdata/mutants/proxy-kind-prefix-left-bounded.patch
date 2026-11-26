@@ -3,15 +3,17 @@
 # must fail: TestAKindsOwnPlaceholderPrefixIsReadBeforeTheSwap
 # Applied with patch -p1 from a copy.
 
+diff --git a/packages/envoy/internal/cipher/proxy/leftover.go b/packages/envoy/internal/cipher/proxy/leftover.go
+index eb45c2a0aeb1..9f4da5adc1d1 100644
 --- a/packages/envoy/internal/cipher/proxy/leftover.go
 +++ b/packages/envoy/internal/cipher/proxy/leftover.go
-@@ -151,7 +151,8 @@ func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
+@@ -150,7 +150,8 @@ func headerPlaceholder(prefixes []placeholderPrefix, v string) string {
+ func placeholderInPrefixes(text string, prefixes []placeholderPrefix) string {
  	for i := range len(text) {
  		for _, prefix := range prefixes {
--			if !strings.HasPrefix(text[i:], prefix.text) || prefix.leftBounded && i > 0 && asciiLetterOrDigit(text[i-1]) {
+-			if !strings.HasPrefix(text[i:], prefix.text) || prefix.leftBounded && i > 0 && placeholder.ASCIILetterOrDigit(text[i-1]) {
 +			// MUTANT: a kind prefix matches inside another word.
 +			if !strings.HasPrefix(text[i:], prefix.text) {
  				continue
  			}
  			if found := placeholderAtPrefix(text[i:], prefix); found != "" {
- 				return found
