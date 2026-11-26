@@ -12,11 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,11 +28,13 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
+	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -384,7 +388,9 @@ func (m *manager) logf(format string, args ...any) {
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
 // pushes the check only to a launcher that still needs it. It also says that this launcher looks a
 // session named by its id alone up in the session table (resumesBySession, which start's lookup
-// serves): the daemon names a session that way only to a launcher whose hello said so. The
+// serves): the daemon names a session that way only to a launcher whose hello said so; and that it
+// checks a folder of texts a start hands it before it writes anything (checksTexts, which start's
+// prepareTexts serves): the daemon hands a folder only to a launcher whose hello said so. The
 // acknowledgement is logged as one line, so a launcher the daemon accepted reads apart from one
 // still dialing. The memory guard settings it carries, or their absence, go to the pod's guard,
 // and what it carries decides whether the kill reports of this role's processes go on this
@@ -401,7 +407,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	writer := shimwire.NewWriter(conn)
 	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
-		ResumesBySession: true,
+		ResumesBySession: true, ChecksTexts: true,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
 	if err := writer.WriteFrame(hello); err != nil {
@@ -863,7 +869,10 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// refuse is how a start that cannot run answers: the refusal is remembered under the command's
 	// id, so a retry of that id is answered with it rather than tried again. A refusal over the
 	// session to resume names its kind in the answer's own field, and the remembered answer carries
-	// it too, so the retry says the same thing (shimwire.SessionRefusal).
+	// it too, so the retry says the same thing (shimwire.SessionRefusal). A refusal over the folder
+	// of texts the start hands the launcher, a *texts.Fault (prepareTexts), names the fault's file,
+	// cause and detail in the answer's own field the same way (shimwire.TextsRefusal), which the
+	// daemon answers with the start of the arm's control.
 	refuse := func(cause error) shimwire.LauncherStartResult {
 		result := shimwire.LauncherStartResult{ID: command.ID, Error: cause.Error()}
 		for _, kind := range []shimwire.SessionRefusal{shimwire.SessionGone, shimwire.SessionStoreUnreachable} {
@@ -871,6 +880,9 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 				result.Session = kind
 				break
 			}
+		}
+		if fault := (*texts.Fault)(nil); errors.As(cause, &fault) {
+			result.Texts = &shimwire.TextsRefusal{Path: fault.Path, Cause: string(fault.Cause), Detail: fault.Detail}
 		}
 		m.remember(command.ID, body, result)
 		return result
@@ -894,6 +906,16 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	}
 	m.mu.Unlock()
 	env := mergeEnv(os.Environ(), command.Env)
+	// A start that hands the launcher a folder of texts has the folder checked and the start's
+	// extension root built from it here, before the generation's directory exists (prepareTexts):
+	// a folder that fails a check refuses the start with the file and the cause it failed on, having
+	// written nothing of the generation, and the daemon sends the start of the arm's control in its
+	// place. A start of no folder passes here untouched.
+	if command.Texts != nil {
+		if err := prepareTexts(*command.Texts, env); err != nil {
+			return refuse(err)
+		}
+	}
 	// The generation's own directory comes first, since everything else of the generation lives in
 	// it: the session database's connection file and the socket its proxy binds, which the resume
 	// lookup reaches the table through and which the child must find already bound.
@@ -1185,6 +1207,167 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 		}
 	}
 	return dir, nil
+}
+
+// prepareTexts checks the folder of texts a start hands the launcher (shimwire.LauncherTexts),
+// whose child's environment is env, and builds the start's extension root from it, before
+// anything of the generation is written (start). The folder is read as the daemon read it
+// (texts.Read) and must be the folder the daemon read, at the start's fingerprint; the two
+// plugins the start's agent loads must have texts to read, and each agent and skill of the folder
+// is held to the plugin file it replaces (texts.CheckPlugins), as the tmux runtime holds them in
+// the daemon's own process (internal/runtime/tmux's checkTexts). Only then is anything written:
+// the base of the settings layer is read (textsBase), every root an earlier generation of the
+// role built is removed (clearTextsRoots), the root is built at its Root (texts.BuildRoot), and
+// the settings layer is written in it (texts.WriteSettingsLayer).
+//
+// A folder that fails a check is a *texts.Fault naming the folder, the file and the cause, which
+// start answers as a texts refusal: the daemon then sends the start of the arm's control, so
+// nothing has been written. Anything else is the pod's own fault and an ordinary refusal of the
+// start: a PI_CONFIG_FILES that does not end with the root's settings layer, settings Oh My Pi
+// would refuse to start on, or a state home the roots cannot be removed from or built in. A root
+// a failed build left is removed, so no partial root is left for a child to load.
+func prepareTexts(given shimwire.LauncherTexts, env []string) error {
+	folder, err := texts.Read(given.Folder)
+	if err != nil {
+		if fault := (*texts.Fault)(nil); errors.As(err, &fault) {
+			return fault
+		}
+		return &texts.Fault{Dir: given.Folder, Cause: texts.Unreadable, Detail: err.Error()}
+	}
+	if folder.Fingerprint != given.Fingerprint {
+		return &texts.Fault{Dir: given.Folder, Cause: texts.Changed,
+			Detail: fmt.Sprintf("the daemon read it at fingerprint %s, and the launcher at %s", given.Fingerprint, folder.Fingerprint)}
+	}
+	if err := readablePluginTexts(given.EnvoyRoot, given.LegionRoot); err != nil {
+		return &texts.Fault{Dir: given.Folder, Cause: texts.Unreadable, Detail: err.Error()}
+	}
+	if faults := texts.CheckPlugins(folder, given.EnvoyRoot, given.LegionRoot); len(faults) > 0 {
+		return &faults[0]
+	}
+	base, err := textsBase(given.Root, env)
+	if err != nil {
+		return err
+	}
+	if err := clearTextsRoots(given.Root); err != nil {
+		return err
+	}
+	root, err := texts.BuildRoot(folder, given.EnvoyRoot, given.LegionRoot, given.Root)
+	if err == nil {
+		_, err = texts.WriteSettingsLayer(root.Dir, base, root.Touched)
+	}
+	if err != nil {
+		if removeErr := rolefile.RemoveTree(given.Root); removeErr != nil {
+			return fmt.Errorf("build the extension root %s of the folder of texts %s: %v; remove what the build left: %v", given.Root, given.Folder, err, removeErr)
+		}
+		return fmt.Errorf("build the extension root %s of the folder of texts %s: %w", given.Root, given.Folder, err)
+	}
+	return nil
+}
+
+// readablePluginTexts is nil when the directories the root is built from and the check reads can
+// be read: pi-envoy's skills, and pi-legion's agents and skills. A plugin that is not there, or
+// whose pack is cut, would otherwise read as one that ships none of the folder's texts.
+func readablePluginTexts(envoyRoot, legionRoot string) error {
+	for _, dir := range []string{
+		filepath.Join(envoyRoot, "dist", "skills"),
+		filepath.Join(legionRoot, "agents"),
+		filepath.Join(legionRoot, "dist", "skills"),
+	} {
+		if _, err := os.ReadDir(dir); err != nil {
+			return fmt.Errorf("the plugin's texts cannot be read: %w", err)
+		}
+	}
+	return nil
+}
+
+// textsBase is the base of the settings layer of the root at root, the skills.ignoredSkills Oh My
+// Pi would read for the start without that layer (texts.BaseIgnoredSkills), for a child whose
+// environment is env: over the entries of its PI_CONFIG_FILES before the layer, which must be the
+// last entry (the daemon names it there, and a start that does not would run the root without
+// hiding the plugins' copies of the skills it replaces); the project settings of the directory
+// the child starts in, which is this launcher's own working directory, since command sets none
+// and an issue pod's roles container works in the issue's workspace; and the agent directory of
+// the profile env resolves, the config root's `agent`, where its config.yml sits, resolved with
+// no XDG data home, which moves a profile's data and never its config.yml, as the tmux runtime
+// resolves it (internal/runtime/tmux's textsHost). Each file is read where the launcher's own view
+// of the container holds it, which for a file under a role's home is the image's, without what the
+// role wrote into its own home overlay.
+func textsBase(root string, env []string) ([]string, error) {
+	layer := filepath.Join(root, texts.SettingsLayerName)
+	var layers []string
+	for _, file := range strings.Split(envValue(env, "PI_CONFIG_FILES"), ":") {
+		if file != "" {
+			layers = append(layers, file)
+		}
+	}
+	if len(layers) == 0 || layers[len(layers)-1] != layer {
+		return nil, fmt.Errorf("the start hands the launcher a folder of texts, and its PI_CONFIG_FILES does not end with the root's settings layer %s", layer)
+	}
+	workDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("the working directory the child starts in: %w", err)
+	}
+	values := make(map[string]string, len(env))
+	for _, entry := range env {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			values[name] = value
+		}
+	}
+	delete(values, "XDG_DATA_HOME")
+	profile, _, err := ompdirs.ProfileRoot(values, workDir)
+	if err != nil {
+		return nil, err
+	}
+	base, err := texts.BaseIgnoredSkills(layers[:len(layers)-1], workDir, filepath.Join(profile, "agent"))
+	if err != nil {
+		return nil, fmt.Errorf("the skills the settings layer of %s keeps ignoring: %w", root, err)
+	}
+	return base, nil
+}
+
+// textsRootName is the name of a root a start builds under the role's state home's
+// shimwire.TextsRootsDir: g<generation>.
+var textsRootName = regexp.MustCompile(`^g[0-9]+$`)
+
+// clearTextsRoots readies root, a start's extension root, `<state home>/legion-texts/g<N>`
+// (shimwire.TextsRoot, which LauncherStart.Validate held it to), for its build: it removes every
+// root an earlier start of the role built beside it, each directory of the role's TextsRootsDir
+// named g<generation>, root's own name among them, without following any link in it
+// (rolefile.RemoveTree), since every role of the issue can write the state home. Nothing else is
+// touched: an entry of another name stays, and so does one of that name that is no directory. No
+// child of the role runs when it is called (start's checks), so no root it removes serves a
+// process. A state home or TextsRootsDir that is not there holds nothing to remove; one that is no
+// directory, such as a link a role left there, is refused rather than built through, and so is
+// anything still at root.
+func clearTextsRoots(root string) error {
+	dir := filepath.Dir(root)
+	for _, at := range []string{filepath.Dir(dir), dir} {
+		info, err := os.Lstat(at)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			return nil
+		case err != nil:
+			return fmt.Errorf("read %s, where the launcher builds the roots of folders of texts: %v", at, err)
+		case !info.IsDir():
+			return fmt.Errorf("%s is a %s, not the directory the launcher builds the roots of folders of texts under", at, rolefile.Kind(info.Mode()))
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read %s, where the launcher builds the roots of folders of texts: %v", dir, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !textsRootName.MatchString(entry.Name()) {
+			continue
+		}
+		if err := rolefile.RemoveTree(filepath.Join(dir, entry.Name())); err != nil {
+			return fmt.Errorf("remove the root of folders of texts an earlier generation built: %v", err)
+		}
+	}
+	if info, err := os.Lstat(root); err == nil {
+		return fmt.Errorf("%s is a %s, which the launcher does not remove, where it builds the root of a folder of texts", root, rolefile.Kind(info.Mode()))
+	}
+	return nil
 }
 
 // roleLog is the one container log an issue pod's roles share: every line a role's launcher or

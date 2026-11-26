@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -192,6 +193,13 @@ type AgentSecretsTokenResult struct {
 // it finds (LauncherStart.ResumeSession). A launcher built before the member sends none, and the
 // daemon names a session only to a launcher that said resumesBySession: to any other it names no
 // session, and the agent's own command carries `--resume=<session id>` instead.
+//
+// ChecksTexts is this launcher saying it checks a folder of texts a start hands it
+// (LauncherStart.Texts) against the plugins the start loads, builds the start's extension root from
+// it, and refuses the start before it writes anything of the generation where the folder fails a
+// check (LauncherStartResult.Texts). A launcher built before the member sends none, which decodes
+// as false, and the daemon hands a folder only to a launcher that said checksTexts: to any other
+// it sends the start of the arm's control, as it does for a folder the daemon's own check refused.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -201,6 +209,7 @@ type LauncherHello struct {
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
+	ChecksTexts        bool   `json:"checksTexts,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -634,6 +643,12 @@ type LauncherState struct {
 // resumeSession and sends no resumesBySession in its hello, and the daemon names a session only to
 // a launcher that said resumesBySession (LauncherHello), so an older launcher is never sent one; an
 // older daemon sends no resumeSession.
+//
+// Texts is the folder of texts an experiment arm runs in place of Legion's own, which the
+// launcher checks and builds the start's extension root from before it writes anything of the
+// generation (LauncherTexts). The daemon hands one only to a launcher whose hello said checksTexts
+// (LauncherHello), so an older launcher, which would ignore the member and start an unchecked root,
+// is never sent one; an older daemon sends none, and a start with none is a start of no folder.
 type LauncherStart struct {
 	ID            string            `json:"id"`
 	Generation    uint64            `json:"generation"`
@@ -648,7 +663,43 @@ type LauncherStart struct {
 	// The daemon fills it for an Oh My Pi launch, and a launcher with a session writer token
 	// knows the agent's process by it (internal/launcher's sessionPeer). It is empty for a
 	// Claude Code launch, whose agent writes no session itself.
-	AgentExecutable string `json:"agentExecutable,omitempty"`
+	AgentExecutable string         `json:"agentExecutable,omitempty"`
+	Texts           *LauncherTexts `json:"texts,omitempty"`
+}
+
+// LauncherTexts is the folder of texts a start hands its launcher, and where the launcher builds
+// the start's extension root from it. Folder is the folder as the arm names it, under one of the
+// operator's mounts the role's container carries, and Fingerprint the SHA-256, in 64 lower-case
+// hex, the daemon read it at (internal/texts' Folder.Fingerprint): a folder the launcher reads at
+// another is one that changed between the two reads, and the launcher refuses it rather than run a
+// folder the daemon did not check. EnvoyRoot and LegionRoot are the roots of the two plugins the
+// start's agent loads, which the launcher holds the folder's agents and skills to and builds the
+// root from. Root is where it builds it, TextsRoot of the role's state home and the start's
+// generation, which the start's argv names first as `--extension <Root>` and its environment as
+// LEGION_TEXTS_ROOT, and whose settings layer, `<Root>/texts-settings.yml`, is the last entry of
+// its PI_CONFIG_FILES.
+type LauncherTexts struct {
+	Folder      string `json:"folder"`
+	Fingerprint string `json:"fingerprint"`
+	Root        string `json:"root"`
+	EnvoyRoot   string `json:"envoyRoot"`
+	LegionRoot  string `json:"legionRoot"`
+}
+
+// TextsRootsDir is the directory under a role's state home that holds the extension roots its
+// launcher builds from folders of texts, one per generation (TextsRoot). It holds nothing else: a
+// start that builds a root removes every `g<generation>` directory in it first, since no child of
+// the role runs then and an earlier generation's root serves nothing.
+const TextsRootsDir = "legion-texts"
+
+// TextsRoot is the extension root a start of generation builds from its folder of texts:
+// `<stateHome>/legion-texts/g<generation>`, stateHome being the role's state home, the
+// XDG_STATE_HOME its start tells it, on the issue's volume, which the launcher sees at the same
+// path as the role. Both ends name it: the daemon in the start's argv, environment and Texts, the
+// launcher when it builds the root, and LauncherStart.Validate refuses a Texts whose Root is
+// another path.
+func TextsRoot(stateHome string, generation uint64) string {
+	return path.Join(stateHome, TextsRootsDir, GenerationDir(generation))
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -697,12 +748,31 @@ func (r SessionRefusal) Error() string {
 // error's prose to tell the two apart: the sandbox runtime maps the kind to the sentinel the
 // supervisor acts on (runtime.ErrSessionFileMissing, runtime.ErrSessionStore). Error carries the
 // sentence either way.
+//
+// A start the launcher refused over the folder of texts it was handed (LauncherStart.Texts) names
+// the refusal in Texts, which the daemon answers by sending the start of the arm's control under a
+// new id: a start refused for anything else carries none, the pod's own faults among them (a root
+// the launcher could not write), and a start the launcher ran never carries one (Validate).
 type LauncherStartResult struct {
 	ID                string         `json:"id"`
 	OK                bool           `json:"ok"`
 	RunningGeneration uint64         `json:"runningGeneration,omitempty"`
 	Error             string         `json:"error,omitempty"`
 	Session           SessionRefusal `json:"session,omitempty"`
+	Texts             *TextsRefusal  `json:"texts,omitempty"`
+}
+
+// TextsRefusal is why a launcher refused a folder of texts: Path is the folder's file the check
+// found at fault, by its path in the folder, "" for the folder as a whole; Cause is the check's
+// word for the fault (internal/texts' Cause: `digest`, `name-differs`, `no-legion-text`,
+// `changed`, …), which the daemon's notice and log carry, and Detail what the check saw. The wire
+// carries the cause as a plain string, so it depends on nothing of the daemon's, and a cause this
+// build does not know still reaches the notice as its word. The answer's Error is the same fault as
+// one sentence, naming the folder, the file and the cause.
+type TextsRefusal struct {
+	Path   string `json:"path,omitempty"`
+	Cause  string `json:"cause"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // LauncherStop stops only the child of Generation. The launcher refuses an older generation
@@ -1472,9 +1542,10 @@ func (f LauncherHello) Validate() error {
 // sessions to resume, when the id is not a single path element (it holds `/` or NUL), which no
 // session file name ends in, or when its argv does not hold exactly one element
 // `--resume=<ResumeSession>`: the launcher resumes the file it finds for the id by replacing that
-// one element with the file's path, and with none or two there is nothing certain to replace. The
-// daemon is the frame's only sender, so each of these is a bug of the daemon's, which the refusal
-// names.
+// one element with the file's path, and with none or two there is nothing certain to replace. A
+// start that hands the launcher a folder of texts is refused where the folder could not be checked
+// or its root built where the launcher builds roots (LauncherTexts.validate). The daemon is the
+// frame's only sender, so each of these is a bug of the daemon's, which the refusal names.
 func (f LauncherStart) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1506,6 +1577,57 @@ func (f LauncherStart) Validate() error {
 		if held != 1 {
 			return fmt.Errorf("%w: launcher_start argv holds %s %d times, want it exactly once for resumeSession", ErrMalformedFrame, resume, held)
 		}
+	}
+	if f.Texts != nil {
+		return f.Texts.validate(f.Env, f.Generation)
+	}
+	return nil
+}
+
+// validate refuses a folder of texts a start of generation hands the launcher, whose environment
+// is env, where the launcher could not read it as the daemon did or could not tell where its root
+// goes: a Folder, Root, EnvoyRoot or LegionRoot that is not an absolute clean path, a Fingerprint
+// that is not a SHA-256 in 64 lower-case hex, and a Root that is not TextsRoot of the role's state
+// home and generation. The role's state home is the XDG_STATE_HOME env tells it, the last entry
+// naming it, which the start must tell: the root is the role's own, on the issue's volume, and
+// only a Root of that one form is a directory whose earlier generations the launcher may remove.
+func (t LauncherTexts) validate(env []string, generation uint64) error {
+	for _, member := range []struct{ name, value string }{
+		{"folder", t.Folder}, {"root", t.Root}, {"envoyRoot", t.EnvoyRoot}, {"legionRoot", t.LegionRoot},
+	} {
+		if !path.IsAbs(member.value) || path.Clean(member.value) != member.value {
+			return fmt.Errorf("%w: launcher_start texts.%s %q is not an absolute clean path", ErrMalformedFrame, member.name, cutForError(member.value))
+		}
+	}
+	if !digestShape.MatchString(t.Fingerprint) {
+		return fmt.Errorf("%w: launcher_start texts.fingerprint %q is not a SHA-256 in 64 lower-case hex", ErrMalformedFrame, cutForError(t.Fingerprint))
+	}
+	stateHome := ""
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "XDG_STATE_HOME="); ok {
+			stateHome = value
+		}
+	}
+	if stateHome == "" {
+		return fmt.Errorf("%w: launcher_start hands the launcher a folder of texts and tells the role no XDG_STATE_HOME, the state home its root is built under", ErrMalformedFrame)
+	}
+	if want := TextsRoot(stateHome, generation); t.Root != want {
+		return fmt.Errorf("%w: launcher_start texts.root %q is not %s, the root of generation %d under the role's state home", ErrMalformedFrame, cutForError(t.Root), want, generation)
+	}
+	return nil
+}
+
+// Validate refuses a start answer the daemon could not act on: a texts refusal on a start the
+// launcher says it ran, which is a start both running and refused, and a texts refusal that names
+// no cause, which no notice of the fallback could say.
+func (f LauncherStartResult) Validate() error {
+	switch {
+	case f.Texts == nil:
+		return nil
+	case f.OK:
+		return fmt.Errorf("%w: launcher_start_result says the start ran and carries a texts refusal", ErrMalformedFrame)
+	case f.Texts.Cause == "":
+		return fmt.Errorf("%w: launcher_start_result carries a texts refusal that names no cause", ErrMalformedFrame)
 	}
 	return nil
 }

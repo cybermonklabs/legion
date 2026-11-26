@@ -1114,3 +1114,169 @@ func TestHelloAckEncodesKernelKillsOnlyWhenTrue(t *testing.T) {
 		}
 	}
 }
+
+// textsFingerprint is a folder's fingerprint as the daemon reads it: a SHA-256 in 64 lower-case
+// hex.
+const textsFingerprint = "9f2c4e1a7b3d5f6081a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708"
+
+// textsStart is a start of generation 7 that hands its launcher a folder of texts: its role's
+// state home is the one its environment names, its root is that home's TextsRoot of the
+// generation, and the two plugins are the image's.
+func textsStart() LauncherStart {
+	return LauncherStart{
+		ID: "start-7", Generation: 7, Argv: []string{"omp", "--extension", "/legion/scratch/state/tester/legion-texts/g7"},
+		Env: []string{"XDG_STATE_HOME=/legion/scratch/state/tester"},
+		Texts: &LauncherTexts{
+			Folder: "/etc/legion-texts/shorter", Fingerprint: textsFingerprint,
+			Root:      "/legion/scratch/state/tester/legion-texts/g7",
+			EnvoyRoot: "/opt/legion/pi-envoy", LegionRoot: "/opt/legion/pi-legion",
+		},
+	}
+}
+
+// The three launcher frame members of a folder of texts cross the wire whole, and each frame
+// without its member is the bytes it was before the member existed: a launcher's hello says
+// checksTexts, and an older launcher's hello, which carries no member, decodes as one that does
+// not check, which the daemon hands no folder; a start hands the launcher a folder, and an older
+// daemon's start, with no member, decodes as a start of no folder; and a start the launcher refused
+// over the folder names the file and the cause, or no file for the folder as a whole. Each frame
+// that carries a member validates.
+func TestTheTextsFramesRoundTrip(t *testing.T) {
+	start := textsStart()
+	for _, tc := range []struct {
+		name  string
+		line  string
+		frame Frame
+	}{
+		{
+			"a hello that says it checks texts",
+			`{"type":"launcher_hello","token":"tok","sandbox":"legion-acme-1","role":"tester","podUid":"pod-1","launcherId":"l-1","resumesBySession":true,"checksTexts":true}`,
+			LauncherHello{Token: "tok", Sandbox: "legion-acme-1", Role: "tester", PodUID: "pod-1", LauncherID: "l-1", ResumesBySession: true, ChecksTexts: true},
+		},
+		{
+			"an older launcher's hello",
+			`{"type":"launcher_hello","token":"tok","sandbox":"legion-acme-1","role":"tester","podUid":"pod-1","launcherId":"l-1","resumesBySession":true}`,
+			LauncherHello{Token: "tok", Sandbox: "legion-acme-1", Role: "tester", PodUID: "pod-1", LauncherID: "l-1", ResumesBySession: true},
+		},
+		{
+			"a start that hands the launcher a folder",
+			`{"type":"launcher_start","id":"start-7","generation":7,"argv":["omp","--extension","/legion/scratch/state/tester/legion-texts/g7"],` +
+				`"env":["XDG_STATE_HOME=/legion/scratch/state/tester"],"texts":{"folder":"/etc/legion-texts/shorter","fingerprint":"` + textsFingerprint + `",` +
+				`"root":"/legion/scratch/state/tester/legion-texts/g7","envoyRoot":"/opt/legion/pi-envoy","legionRoot":"/opt/legion/pi-legion"}}`,
+			start,
+		},
+		{
+			"an older daemon's start",
+			`{"type":"launcher_start","id":"start-7","generation":7,"argv":["omp"],"env":["A=B"]}`,
+			LauncherStart{ID: "start-7", Generation: 7, Argv: []string{"omp"}, Env: []string{"A=B"}},
+		},
+		{
+			"a refusal over a file of the folder",
+			`{"type":"launcher_start_result","id":"start-7","ok":false,"error":"texts folder /etc/legion-texts/shorter: agents/oracle.md: stale [digest]",` +
+				`"texts":{"path":"agents/oracle.md","cause":"digest","detail":"manifest.json records sha256:aa, and Legion's text is sha256:bb"}}`,
+			LauncherStartResult{ID: "start-7", Error: "texts folder /etc/legion-texts/shorter: agents/oracle.md: stale [digest]",
+				Texts: &TextsRefusal{Path: "agents/oracle.md", Cause: "digest", Detail: "manifest.json records sha256:aa, and Legion's text is sha256:bb"}},
+		},
+		{
+			"a refusal over the folder as a whole",
+			`{"type":"launcher_start_result","id":"start-7","ok":false,"error":"texts folder /etc/legion-texts/shorter: changed [changed]","texts":{"cause":"changed"}}`,
+			LauncherStartResult{ID: "start-7", Error: "texts folder /etc/legion-texts/shorter: changed [changed]", Texts: &TextsRefusal{Cause: "changed"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			decoded, err := Decode([]byte(tc.line))
+			if err != nil {
+				t.Fatalf("Decode(%s): %v", tc.line, err)
+			}
+			if !reflect.DeepEqual(decoded, tc.frame) {
+				t.Fatalf("Decode(%s) = %#v, want %#v", tc.line, decoded, tc.frame)
+			}
+			encoded, err := json.Marshal(tc.frame)
+			if err != nil {
+				t.Fatalf("Marshal(%#v): %v", tc.frame, err)
+			}
+			if string(encoded) != tc.line {
+				t.Fatalf("Marshal(%#v) = %s, want %s", tc.frame, encoded, tc.line)
+			}
+			if validated, ok := decoded.(interface{ Validate() error }); ok {
+				if err := validated.Validate(); err != nil {
+					t.Fatalf("%s validated as %v, want no refusal", tc.line, err)
+				}
+			}
+		})
+	}
+}
+
+// A start that hands the launcher a folder of texts is refused where the launcher could not read
+// the folder as the daemon did or could not tell where its root goes, each refusal naming what is
+// wrong: a path that is not absolute or not clean, for each of the four paths; a fingerprint that
+// is not 64 lower-case hex; a start that tells the role no state home; and a root that is not the
+// root of the start's generation under that state home. A start answer may carry a texts refusal
+// only as a refusal, and only one naming its cause. The negative controls are the round-trip
+// table's frames, which validate.
+func TestTheTextsFramesValidateRefusesWhatTheLauncherCannotAct(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*LauncherStart)
+		names  string
+	}{
+		{"a relative folder", func(s *LauncherStart) { s.Texts.Folder = "etc/legion-texts/shorter" }, "texts.folder"},
+		{"a folder that is not clean", func(s *LauncherStart) { s.Texts.Folder = "/etc/legion-texts/../shorter" }, "texts.folder"},
+		{"a folder with a trailing slash", func(s *LauncherStart) { s.Texts.Folder = "/etc/legion-texts/shorter/" }, "texts.folder"},
+		{"no folder", func(s *LauncherStart) { s.Texts.Folder = "" }, "texts.folder"},
+		{"a relative root", func(s *LauncherStart) { s.Texts.Root = "legion-texts/g7" }, "texts.root"},
+		{"a relative envoy root", func(s *LauncherStart) { s.Texts.EnvoyRoot = "opt/legion/pi-envoy" }, "texts.envoyRoot"},
+		{"a legion root that is not clean", func(s *LauncherStart) { s.Texts.LegionRoot = "/opt/legion//pi-legion" }, "texts.legionRoot"},
+		{"a short fingerprint", func(s *LauncherStart) { s.Texts.Fingerprint = textsFingerprint[:63] }, "texts.fingerprint"},
+		{"an upper-case fingerprint", func(s *LauncherStart) { s.Texts.Fingerprint = strings.ToUpper(textsFingerprint) }, "texts.fingerprint"},
+		{"a fingerprint with its prefix", func(s *LauncherStart) { s.Texts.Fingerprint = "sha256:" + textsFingerprint }, "texts.fingerprint"},
+		{"no state home", func(s *LauncherStart) { s.Env = []string{"A=B"} }, "XDG_STATE_HOME"},
+		{"a root under another state home", func(s *LauncherStart) {
+			s.Env = []string{"XDG_STATE_HOME=/legion/scratch/state/reviewer"}
+		}, "texts.root"},
+		{"a root of another generation", func(s *LauncherStart) { s.Texts.Root = "/legion/scratch/state/tester/legion-texts/g6" }, "texts.root"},
+		{"a root elsewhere under the state home", func(s *LauncherStart) { s.Texts.Root = "/legion/scratch/state/tester/omp" }, "texts.root"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			start := textsStart()
+			texts := *start.Texts
+			start.Texts = &texts
+			tc.change(&start)
+			err := start.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.names) {
+				t.Fatalf("a start with %s validated as %v, want ErrMalformedFrame naming %s", tc.name, err, tc.names)
+			}
+		})
+	}
+	if err := textsStart().Validate(); err != nil {
+		t.Fatalf("the start that hands its launcher a folder was refused: %v", err)
+	}
+	if got, want := TextsRoot("/legion/scratch/state/tester", 7), "/legion/scratch/state/tester/legion-texts/g7"; got != want {
+		t.Fatalf("TextsRoot = %s, want %s", got, want)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		result LauncherStartResult
+		names  string
+	}{
+		{"a start it ran", LauncherStartResult{ID: "start-7", OK: true, RunningGeneration: 7, Texts: &TextsRefusal{Path: "agents/oracle.md", Cause: "digest"}}, "says the start ran"},
+		{"no cause", LauncherStartResult{ID: "start-7", Error: "refused", Texts: &TextsRefusal{Path: "agents/oracle.md"}}, "names no cause"},
+	} {
+		t.Run("a texts refusal on "+tc.name, func(t *testing.T) {
+			err := tc.result.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.names) {
+				t.Fatalf("%+v validated as %v, want ErrMalformedFrame saying it %s", tc.result, err, tc.names)
+			}
+		})
+	}
+	for _, result := range []LauncherStartResult{
+		{ID: "start-7", OK: true, RunningGeneration: 7},
+		{ID: "start-7", Error: "generation 7 is still running"},
+		{ID: "start-7", Error: "refused", Texts: &TextsRefusal{Cause: "changed"}},
+	} {
+		if err := result.Validate(); err != nil {
+			t.Errorf("%+v was refused: %v", result, err)
+		}
+	}
+}

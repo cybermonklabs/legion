@@ -206,7 +206,7 @@ projects:
         unit: issue
         roles: [planner, implementer]
         variants:
-          - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md, plan: owner}
+          - {name: short, weight: 2, config_files: [/etc/legion/short-plan.yml], instructions: /etc/legion/short-plan.md, texts: /etc/legion/short-texts, plan: owner}
           - {name: long, plan: default}
 github_apps:
   implement:
