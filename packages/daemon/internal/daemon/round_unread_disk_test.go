@@ -386,14 +386,14 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 	// (7) Case (2) on a kept volume that the issue's next pod mounts. R7 makes no exception for
 	// such a disk: a round over a drift the pod's roles can keep working under replaces nothing
 	// there either, a turn that runs at the bound included, although a replacement would leave the
-	// files on the volume, since it stops that turn and its subagents. The read finds the unpushed
-	// commit, nothing is replaced, the turn runs on, and the implementer, the open phase's worker,
-	// is told once.
+	// files on the volume, since it stops that turn and its subagents. As in case (2) the read finds
+	// the change in the working copy, so the kept volume is the one difference: nothing is replaced,
+	// the turn runs on, and the implementer, the open phase's worker, is told once.
 	t.Run("a kept volume past the bound over a turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 		rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
-		rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+		rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundChanged)
 		rig.drifts(podUpdateDrift)
 		rig.tick()
 		rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
@@ -402,7 +402,7 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 		rig.envoyTurn(claim.RoleImplementer)
 		rig.clockAt(podUpdateBound)
 
-		rig.roundEndsKept("at the bound over a turn, on a kept volume whose workspace holds an unpushed commit", claim.RoleImplementer, claim.RoleTester)
+		rig.roundEndsKept("at the bound over a turn whose working copy holds a change, on a kept volume", claim.RoleImplementer, claim.RoleTester)
 		if c := rig.claimOf(claim.RoleImplementer); c.State != supervise.StateWorking || podOf(c.Locator) != podUpdatePod {
 			t.Fatalf("the implementer is %s in pod %q, want its turn running on in pod %s", c.State, podOf(c.Locator), podUpdatePod)
 		}
@@ -410,8 +410,8 @@ func TestAnUpdateRoundKeepsAPodWhoseDiskHoldsUnpushedWork(t *testing.T) {
 			t.Fatalf("the decline row reads %q of pod %q, want unpushed_work of the round's pod %s", reason, pod, podUpdatePod)
 		}
 		told := rig.roleMessagesTo(claim.RoleImplementer)
-		if len(told) != 1 || !strings.Contains(told[0], passedOverCommit) {
-			t.Fatalf("the implementer was told %q, want one message naming the commit %s", told, passedOverCommit)
+		if len(told) != 1 || !strings.Contains(told[0], roundChangeHead) {
+			t.Fatalf("the implementer was told %q, want one message naming the change on %s", told, roundChangeHead)
 		}
 		rig.noRoundOver("while the turn runs on over the kept volume", claim.RoleImplementer, claim.RoleTester)
 		if taken := rig.architectNotices(record.WorkspaceTakenNotice); len(taken) != 0 {
