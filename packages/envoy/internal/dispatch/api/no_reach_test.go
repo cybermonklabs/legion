@@ -655,6 +655,9 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		// The session that opened the seeded ask (createIssueAsk writes it as sessionActor): its
 		// ask.opened event and its follow of the ask are records knownSessionsStatement counts.
 		"GET /api/v1/agents/known": url.Values{"id": {sessionActor()["id"].(string)}}.Encode(),
+		// A handoff id no seed writes: the read still reads the issue and its handoffs, and
+		// answers the id null.
+		"GET /api/v1/issues/{key}/handoffs/bodies": url.Values{"ids": {"00000000-0000-0000-0000-000000000001"}}.Encode(),
 	}
 }
 

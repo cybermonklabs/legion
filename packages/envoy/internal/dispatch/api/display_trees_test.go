@@ -342,8 +342,9 @@ func TestACommentEventCarriesTheTreeOfTheQuestionItReplies(t *testing.T) {
 // the first proof entry each keep their own tree under their own pointer, and a field whose name
 // holds a `/` or a `~` is keyed with them escaped (`~1`, `~0`). A body that is no JSON object,
 // which only a row written before the API refused one can hold, is drawn whole, and its tree
-// stands under the root's pointer "". Both routes that answer a body answer the trees, and the
-// document declares them.
+// stands under the root's pointer "". Every route that answers a body answers the trees - the
+// read of one handoff, the latest of a phase, and each entry of the bodies of an issue's
+// handoffs - and the document declares them.
 func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
@@ -385,44 +386,53 @@ func TestAHandoffReadCarriesTheTreeOfEachTextItsCardDraws(t *testing.T) {
 	}
 	node, _ := readOpenAPITree(t)
 	document, _ := node.(map[string]any)
+	byID := map[string]json.RawMessage{
+		"/summary": trees(summary), "/notes": trees(notes), "/proof/0": trees(first), "/proof/2": trees(third),
+	}
+	pointedTrees := map[string]json.RawMessage{"/proof.0": trees(dotted), "/proof/0": trees(entry), "/a~1b~0c": trees(escaped)}
+	legacyTrees := map[string]json.RawMessage{"": trees(legacy)}
+	bodies := "/api/v1/issues/" + issue.Key + "/handoffs/bodies?ids=" + written.ID + "," + pointed.ID + "," + legacyID
 	for _, read := range []struct {
 		name, pattern, target string
-		want                  map[string]json.RawMessage
+		// trees is where the answer holds the field trees: the answer itself for a read of one
+		// handoff, and one entry of the bodies for a read of several.
+		trees string
+		want  map[string]json.RawMessage
 	}{
-		{"a handoff by id", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + written.ID, map[string]json.RawMessage{
-			"/summary": trees(summary), "/notes": trees(notes), "/proof/0": trees(first), "/proof/2": trees(third),
-		}},
+		{"a handoff by id", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + written.ID, "field_trees", byID},
 		{"a phase's latest handoff", "/api/v1/issues/{key}/handoffs/{phase}/latest",
-			"/api/v1/issues/" + issue.Key + "/handoffs/implement/latest", map[string]json.RawMessage{
-				"/summary": trees(summary), "/notes": trees(notes), "/proof/0": trees(first), "/proof/2": trees(third),
-			}},
+			"/api/v1/issues/" + issue.Key + "/handoffs/implement/latest", "field_trees", byID},
 		{"a field named like a proof entry, and one whose name holds a slash and a tilde", "/api/v1/handoffs/{id}",
-			"/api/v1/handoffs/" + pointed.ID, map[string]json.RawMessage{
-				"/proof.0": trees(dotted), "/proof/0": trees(entry), "/a~1b~0c": trees(escaped),
-			}},
-		{"a body that is no JSON object", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + legacyID,
-			map[string]json.RawMessage{"": trees(legacy)}},
+			"/api/v1/handoffs/" + pointed.ID, "field_trees", pointedTrees},
+		{"a body that is no JSON object", "/api/v1/handoffs/{id}", "/api/v1/handoffs/" + legacyID, "field_trees", legacyTrees},
+		{"the bodies of an issue's handoffs", "/api/v1/issues/{key}/handoffs/bodies", bodies, "bodies.0.field_trees", byID},
+		{"the bodies of an issue's handoffs, a field named like a proof entry", "/api/v1/issues/{key}/handoffs/bodies",
+			bodies, "bodies.1.field_trees", pointedTrees},
+		{"the bodies of an issue's handoffs, a body that is no JSON object", "/api/v1/issues/{key}/handoffs/bodies",
+			bodies, "bodies.2.field_trees", legacyTrees},
 	} {
 		t.Run(read.name, func(t *testing.T) {
 			if bare := treesRequest(t, handler, read.target, false); strings.Contains(bare.Body.String(), "field_trees") {
 				t.Errorf("GET %s without the header carries field trees: %s", read.target, bare.Body.String())
 			}
-			var answer struct {
-				FieldTrees map[string]json.RawMessage `json:"field_trees"`
+			raw, held := valueAt(t, treesRequest(t, handler, read.target, true), read.trees)
+			if !held {
+				t.Fatalf("GET %s with the header carries no %s", read.target, read.trees)
 			}
-			if err := json.Unmarshal(treesRequest(t, handler, read.target, true).Body.Bytes(), &answer); err != nil {
-				t.Fatalf("decode GET %s: %v", read.target, err)
+			var answer map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &answer); err != nil {
+				t.Fatalf("decode %s of GET %s: %v", read.trees, read.target, err)
 			}
-			got := make(map[string]json.RawMessage, len(answer.FieldTrees))
-			for path, tree := range answer.FieldTrees {
+			got := make(map[string]json.RawMessage, len(answer))
+			for path, tree := range answer {
 				got[path] = sameShape(t, tree)
 			}
 			if !reflect.DeepEqual(got, read.want) {
-				t.Errorf("GET %s field_trees =\n\t%s\nwant the tree of each string the card draws\n\t%s", read.target, got, read.want)
+				t.Errorf("GET %s %s =\n\t%s\nwant the tree of each string the card draws\n\t%s", read.target, read.trees, got, read.want)
 			}
 			// The map's keys are the body's own, so the document declares the one schema every
 			// value has (additionalProperties), which any key reaches.
-			requireTreeInAnswerSchema(t, document, read.pattern, "field_trees.summary")
+			requireTreeInAnswerSchema(t, document, read.pattern, read.trees+".summary")
 		})
 	}
 }

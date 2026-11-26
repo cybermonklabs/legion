@@ -163,6 +163,8 @@ export type {
   GraphEdge,
   GraphReferences,
   Handoff,
+  HandoffBodies,
+  HandoffBody,
   HandoffSummary,
   IDCandidate,
   InboxDismissRequest,

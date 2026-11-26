@@ -157,6 +157,18 @@ const KnownSessionsMax = 100
 // batches are one number.
 const ReferenceTargetsMax = 256
 
+// HandoffBodiesMaxIDs is the most handoff ids one GET /api/v1/issues/{key}/handoffs/bodies names.
+// Generated from HANDOFF_BODIES_MAX_IDS in packages/contracts so the server's refusal and the
+// page's batches are one number.
+const HandoffBodiesMaxIDs = 20
+
+// HandoffBodiesMaxBytes is the most bytes the entries of one GET
+// /api/v1/issues/{key}/handoffs/bodies answer come to, each entry's body as a JSON string as the
+// encoder sends it and its field trees where it carries them; the first id asked is answered
+// whatever its size. Generated from HANDOFF_BODIES_MAX_BYTES in packages/contracts so the route
+// and the page's loader read one number.
+const HandoffBodiesMaxBytes = 1048576
+
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the `dispatch search`
 // command's cannot drift apart.

@@ -1612,6 +1612,17 @@ export class DispatchApiClient {
     return this.read("/api/v1/handoffs/{id}", { id });
   }
 
+  /** `GET /api/v1/issues/{key}/handoffs/bodies`: the bodies of `ids`, handoffs of the issue, in one
+   *  answer: one entry for each id answered, in the order asked, its `body` `null` for an id that is
+   *  no handoff of the issue, and `left`, the ids the answer stopped before so as to stay within
+   *  `HANDOFF_BODIES_MAX_BYTES`, for a later call. The first id is always answered. At most
+   *  `HANDOFF_BODIES_MAX_IDS` ids, each a whole uuid named once: past that the server answers
+   *  `400 INVALID_QUERY`. Each entry carries the trees of its body's texts (`field_trees`), but a
+   *  first entry whose trees would pass the limit, which this page then reads itself. */
+  getHandoffBodies(key: string, ids: readonly string[]) {
+    return this.read("/api/v1/issues/{key}/handoffs/bodies", { key }, { ids: ids.join(",") });
+  }
+
   listArtifacts(key: string) {
     return this.read("/api/v1/issues/{key}/artifacts", { key });
   }

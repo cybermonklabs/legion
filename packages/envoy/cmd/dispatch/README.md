@@ -5920,6 +5920,17 @@ Each item below names a path with its method and identity, then its purpose.
 
   List the issue's handoffs, newest first, without their bodies; a closed issue's read too.
 
+- `/api/v1/issues/{key}/handoffs/bodies` (GET; cookie, trusted header, or bearer)
+
+  The bodies of up to `contracts.HandoffBodiesMaxIDs` handoffs of the issue in one answer, each named by its whole uuid in `?ids=<id>,<id>`: `{bodies: [{id, body}], left: [<id>]}`.
+  `bodies` holds one entry for each id answered, in the order asked: `body` is the text as stored, or `null` for an id that is no handoff of this issue, another issue's handoff included.
+  The route adds each entry's size as it is sent to a count: its body as a JSON string, each `<`, `>` and `&` six bytes as the encoder writes them, and its `field_trees` where the answer carries them.
+  It stops before the first entry that would take the count past `contracts.HandoffBodiesMaxBytes`, and `left` names that id and each id after it, in the order asked, for a later request.
+  The first id asked is always answered, so one body made mostly of escaped characters can pass the limit alone.
+  With `Dispatch-Trees: 1` each entry also carries `field_trees`, as `GET /api/v1/handoffs/{id}` does, and they count in the limit; a first entry whose body and trees together pass it is sent with its body and no trees, and the page reads that one text itself.
+  The refusals, in this order: `ids` absent, empty or given twice, an empty id, or an id asked twice, `400 INVALID_QUERY`; more than `contracts.HandoffBodiesMaxIDs` ids, `400 INVALID_QUERY`; an id that is not a uuid, `400 HANDOFF_ID_INPUT`; a key that names no issue, `404 NOT_FOUND`, as `GET /api/v1/issues/{key}` answers it.
+  The route writes nothing, reads the issue and the bodies in one read-only transaction, and reads a closed issue's handoffs too.
+
 - `/api/v1/issues/{key}/handoffs/{phase}/latest` (GET; cookie, trusted header, or bearer)
 
   The phase's newest handoff with its body, byte for byte as written; `404 HANDOFF_NOT_FOUND` when it has none.

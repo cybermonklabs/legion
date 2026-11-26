@@ -108,6 +108,7 @@ GET /api/v1/issues/{key}/decisions any
 PUT /api/v1/issues/{key}/design-gates any
 GET /api/v1/issues/{key}/events any
 GET /api/v1/issues/{key}/handoffs any
+GET /api/v1/issues/{key}/handoffs/bodies any
 POST /api/v1/issues/{key}/handoffs/{phase} bearer
 GET /api/v1/issues/{key}/handoffs/{phase}/latest any
 GET /api/v1/issues/{key}/legion any

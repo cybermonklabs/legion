@@ -466,6 +466,13 @@ type knownSessionsQuery struct {
 	ID []string `query:"id"`
 }
 
+// handoffBodiesQuery is GET /api/v1/issues/{key}/handoffs/bodies's query.
+type handoffBodiesQuery struct {
+	// IDs is the handoffs whose bodies to read, once, separated by commas: 1 to
+	// contracts.HandoffBodiesMaxIDs whole uuids, each named once (parseHandoffBodyIDs).
+	IDs string `query:"ids"`
+}
+
 // issueAsksQuery is GET /api/v1/issues/{key}/asks's query.
 type issueAsksQuery struct {
 	// State filters the list: all, open or answered.
@@ -828,6 +835,10 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: model.HandoffSummary{}, Request: createHandoffInput{},
 	},
 	"GET /api/v1/issues/{key}/handoffs": {Status: http.StatusOK, Response: []model.HandoffSummary{}},
+	// The bodies of several handoffs, each entry carrying field_trees as handoffRead does.
+	"GET /api/v1/issues/{key}/handoffs/bodies": {
+		Status: http.StatusOK, Response: handoffBodies{}, Params: handoffBodiesQuery{},
+	},
 	// The two reads of one handoff with its body answer handoffRead, whose field_trees carries
 	// the tree of each text the body's card draws.
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: handoffRead{}},

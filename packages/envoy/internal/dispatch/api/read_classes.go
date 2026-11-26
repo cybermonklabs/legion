@@ -135,6 +135,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}/messages":                                  {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/messages/{id}":                             {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/handoffs":                                  {Writes: readWritesNothing},
+	"GET /api/v1/issues/{key}/handoffs/bodies":                           {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest":                   {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/steps":                                     {Writes: readWritesNothing},
 	"GET /api/v1/issues/{key}/role-holders":                              {Writes: readWritesNothing},

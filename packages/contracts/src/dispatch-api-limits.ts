@@ -221,6 +221,27 @@ export const KNOWN_SESSIONS_MAX = 100;
 export const REFERENCE_TARGETS_MAX = 256;
 
 /**
+ * The most handoff ids one `GET /api/v1/issues/{key}/handoffs/bodies` names in `ids`; past it the
+ * server answers `400 INVALID_QUERY`. It is the most entries the issue page's history asks for
+ * in one request: the entries within one screen of the view on its first load, and the next ones
+ * as the reader scrolls. Generated into Go as `contracts.HandoffBodiesMaxIDs`, which the route
+ * enforces, and the page's loader reads it, so the server's refusal and the page's batches are
+ * one number.
+ */
+export const HANDOFF_BODIES_MAX_IDS = 20;
+
+/**
+ * The most bytes the entries of one `GET /api/v1/issues/{key}/handoffs/bodies` answer come to.
+ * The route adds each entry's size as it is sent to a count: its body as a JSON string, each `<`,
+ * `>` and `&` written as six bytes by Dispatch's encoder, and its `field_trees` where it carries
+ * them. It answers no entry that would take the count past this, and names that id and every id
+ * after it in `left`, for a later request. The first id asked is always answered, so a body made
+ * mostly of escaped characters is the one answer that can pass it. Generated into Go as
+ * `contracts.HandoffBodiesMaxBytes`, which the route enforces.
+ */
+export const HANDOFF_BODIES_MAX_BYTES = 1_048_576;
+
+/**
  * The request header that names one write's intent: the same on every retry of that write, and
  * different for every new press. Dispatch accepts it, optionally, on every `POST` and `PATCH`
  * route (`PUT` and `DELETE` are idempotent already): a repeat with the same key and the same

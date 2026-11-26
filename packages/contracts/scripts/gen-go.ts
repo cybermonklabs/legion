@@ -19,6 +19,8 @@ import {
   DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
+  HANDOFF_BODIES_MAX_BYTES,
+  HANDOFF_BODIES_MAX_IDS,
   ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -411,6 +413,18 @@ const KnownSessionsMax = ${KNOWN_SESSIONS_MAX}
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
 // batches are one number.
 const ReferenceTargetsMax = ${REFERENCE_TARGETS_MAX}
+
+// HandoffBodiesMaxIDs is the most handoff ids one GET /api/v1/issues/{key}/handoffs/bodies names.
+// Generated from HANDOFF_BODIES_MAX_IDS in packages/contracts so the server's refusal and the
+// page's batches are one number.
+const HandoffBodiesMaxIDs = ${HANDOFF_BODIES_MAX_IDS}
+
+// HandoffBodiesMaxBytes is the most bytes the entries of one GET
+// /api/v1/issues/{key}/handoffs/bodies answer come to, each entry's body as a JSON string as the
+// encoder sends it and its field trees where it carries them; the first id asked is answered
+// whatever its size. Generated from HANDOFF_BODIES_MAX_BYTES in packages/contracts so the route
+// and the page's loader read one number.
+const HandoffBodiesMaxBytes = ${HANDOFF_BODIES_MAX_BYTES}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`

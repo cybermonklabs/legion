@@ -155,6 +155,8 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/issues/{key}/messages":      {target: "/api/v1/issues/$issue/messages", statement: statementOf(`\bfrom\s+messages\s+where\s+issue_key\s*=\s*\$1\s+and\s+in_reply_to\s+is\s+null\b`)},
 	"GET /api/v1/issues/{key}/messages/{id}": {target: "/api/v1/issues/$issue/messages/$message", statement: statementOf(`\bfrom\s+messages\s+where\s+id\s*=\s*\$1\s+and\s+issue_key\s*=\s*\$2\b`)},
 	"GET /api/v1/issues/{key}/handoffs":      {target: "/api/v1/issues/$issue/handoffs", statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+order\s+by\b`)},
+	"GET /api/v1/issues/{key}/handoffs/bodies": {target: "/api/v1/issues/$issue/handoffs/bodies?ids=$handoff",
+		statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+and\s+id\s*=\s*any\b`)},
 	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {target: "/api/v1/issues/$issue/handoffs/$phase/latest",
 		statement: statementOf(`\bfrom\s+handoffs\s+where\s+issue_key\s*=\s*\$1\s+and\s+phase\b`)},
 	"GET /api/v1/issues/{key}/steps":        {target: "/api/v1/issues/$issue/steps", statement: statementOf(`\bfrom\s+workflow_tuples\s+t\s+join\s+workflow_nodes\s+n\b`)},
