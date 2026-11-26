@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -407,7 +408,7 @@ env -0 >%[1]s/env
 pwd >%[1]s/cwd
 exit %[2]d
 `, record, opts.exitCode, waitForFileScript(opts.waitForFile), releaseWait(`"$LEGION_TEST_HOLD"`, `"$hold_dir"`))
-	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
 	// Oh My Pi's directories are this HOME's: the plugin gate reads the process environment through
@@ -425,7 +426,7 @@ exit %[2]d
 	// The real gh the controller's `legion gh` runs, which the operator's environment names here so
 	// the run never depends on a gh this machine may or may not have.
 	c.gh = filepath.Join(record, "gh")
-	if err := os.WriteFile(c.gh, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+	if err := execfile.Write(c.gh, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_GH_PATH", c.gh)
@@ -654,6 +655,7 @@ func modeOf(t *testing.T, path string) os.FileMode {
 // bearer and the contract the probe held the plugin to as the body, then the github-credential
 // fetch.
 func TestControllerStartFetchesTheSecretWithTheOperatorBearer(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
@@ -679,6 +681,7 @@ func TestControllerStartFetchesTheSecretWithTheOperatorBearer(t *testing.T) {
 // gh shim, the legion launcher, the deployment instructions, and the controller's working
 // directory.
 func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
@@ -720,6 +723,7 @@ func TestControllerStartWritesTheSecretAndTheControllersFilesUnderTheStateDirect
 // turn. This default daemon has no GitHub App, so the controller's gh acts as nobody and its
 // prompt says its App is installed on no owner, whatever repositories the live records name.
 func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	baseline := map[string]string{}
@@ -854,6 +858,7 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 // recording Oh My Pi, and runs `x <tool> -- <program> <args…>` as mise runs it under an operator's
 // `_.path` entry: a dotfiles shims directory first on PATH, then the program, exec'd.
 func TestControllerStartUnderMiseKeepsTheLauncherDirectoryFirstOnOhMyPisPath(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	const tool = "github:sjawhar/oh-my-pi@18.1.21"
@@ -878,7 +883,7 @@ fi
 echo "stand-in mise: unexpected argv: $*" >&2
 exit 64
 `, shellprefix.Word(tool), shellprefix.Word(install), shellprefix.Word(shims))
-	if err := os.WriteFile(mise, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(mise, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_OMP_PATH", "")
@@ -906,6 +911,7 @@ exit 64
 // Oh My Pi waits (LEGION_TEST_HOLD) until a second run has written its prompt, launched and
 // exited, and only then reads its own file.
 func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	release := filepath.Join(t.TempDir(), "release")
@@ -945,6 +951,7 @@ func TestOverlappingControllerStartsEachKeepTheirOwnPromptFile(t *testing.T) {
 // accepts every answer the route gives, so each deployment launches. The sentence after the
 // steps is the reach of the controller's gh, which this daemon, having no GitHub App, gives none.
 func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	for _, tc := range []struct {
 		name  string
 		steps []record.DesignStep
@@ -978,6 +985,7 @@ func TestControllerStartTellsTheControllerTheDaemonsGatedSteps(t *testing.T) {
 // repositories told the controller it reached acme alone. It names no repository, since the App
 // installation and not any list of repositories decides where the project may work (INFRA-2543).
 func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	tokens := newControllerCredentialTokens("ghs_first")
 	tokens.installOn("acme", "example-org")
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
@@ -1012,6 +1020,7 @@ func TestControllerStartsAddressingGainsTheReachItsAppGives(t *testing.T) {
 // lease there, so the bundle holds no acme directory. A sentence built from the installations
 // alone says the controller's token reaches every repository of acme.
 func TestControllerStartsAddressingNamesNeitherARenameAliasNorAnOwnerItsGhHoldsNoTokenOf(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	tokens := newControllerCredentialTokens("ghs_first")
 	tokens.installOn("acme", "cybermonklabs")
 	tokens.refuse("acme")
@@ -1086,6 +1095,7 @@ func TestControllerStartsAddressingNamesNeitherARenameAliasNorAnOwnerItsGhHoldsN
 // (the two tests below): the daemon boots and keeps running exactly this way on purpose, and the
 // controller is what drives recovery by admitting work once an App is installed.
 func TestControllerStartRefusesAnUnusableRepositoriesBlock(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	for _, tc := range []struct {
 		name string
 		opts controllerDaemonOptions
@@ -1120,6 +1130,7 @@ func TestControllerStartRefusesAnUnusableRepositoriesBlock(t *testing.T) {
 // App was installed on no owner while the gh directory held that token. The repositories are
 // named in the state and never in the addressing, which names no repository at all.
 func TestControllerStartLaunchesWhereNoLiveRepositoryHasBothApps(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	tokens := newControllerCredentialTokens("ghs_first")
 	tokens.installOn("example-org")
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{
@@ -1144,6 +1155,7 @@ func TestControllerStartLaunchesWhereNoLiveRepositoryHasBothApps(t *testing.T) {
 // GitHub App, so the controller is told its App is installed on no owner — the same wording and
 // behavior on both launch paths.
 func TestControllerStartLaunchesWithNoLiveRepository(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{steps: config.DesignGateOff.Steps(), repositories: []string{}})
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
@@ -1160,6 +1172,7 @@ func TestControllerStartLaunchesWithNoLiveRepository(t *testing.T) {
 // outcomes of checkControllerRepositories, and only the former refuses. This is what keeps a
 // running controller from being revoked for a replacement that never starts.
 func TestControllerStartNeverMintsWhenTheRepositoryReadFails(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemonWithOptions(t, controllerDaemonOptions{stateStatus: http.StatusServiceUnavailable})
 	c := newControllerStart(t, d, controllerOptions{})
 	c.refused("/legion/v1/state")
@@ -1173,6 +1186,7 @@ func TestControllerStartNeverMintsWhenTheRepositoryReadFails(t *testing.T) {
 // step this one does not know; the empty list is neither, and is the deployment that gates
 // nothing.
 func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ body, want string }{
 		{`{"secret":"s"}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
 		{`{"secret":"s","designGateSteps":null}`, "answered no design gate steps (designGateSteps); upgrade the daemon"},
@@ -1201,6 +1215,7 @@ func TestControllerSecretWithoutTheConfiguredStepsIsRefused(t *testing.T) {
 }
 
 func TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: demo", "daemon_url: " + d.url, "operator_token_file: ./operator-token",
@@ -1222,6 +1237,7 @@ func TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet(t *testing.T) 
 }
 
 func TestControllerStartExitsWithOhMyPisCode(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{exitCode: 3})
 	if code, _, _ := c.run(); code != 3 {
@@ -1231,6 +1247,7 @@ func TestControllerStartExitsWithOhMyPisCode(t *testing.T) {
 
 // --daemon-url replaces the file's daemon_url for the secret request and for LEGION_DAEMON_URL.
 func TestControllerStartDaemonURLOverridesTheFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: demo", "daemon_url: http://127.0.0.1:1", "operator_token_file: ./operator-token",
@@ -1250,6 +1267,7 @@ func TestControllerStartDaemonURLOverridesTheFile(t *testing.T) {
 // A 403 names the URL and the one cause the route has: every Go daemon serves it, since none boots
 // without operator_token_file. Nothing is written and nothing launched.
 func TestControllerStartRefusedByTheDaemonWritesNothing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{tokenContents: "not-the-operator-token\n"})
 	code, _, errb := c.run()
@@ -1264,6 +1282,7 @@ func TestControllerStartRefusedByTheDaemonWritesNothing(t *testing.T) {
 // refuses the contract field with a 400 naming it as unknown. That refusal says which side to
 // upgrade instead of quoting the daemon, and nothing is launched or written.
 func TestControllerStartAgainstADaemonBeforeContract12NamesTheSideToUpgrade(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == "/legion/v1/state" {
 			// A contract-11 daemon still serves state with a repositories object, in the shape
@@ -1302,6 +1321,7 @@ func TestControllerStartAgainstADaemonBeforeContract12NamesTheSideToUpgrade(t *t
 
 // An unreachable daemon is named, and no other address is tried.
 func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	unreachable := "http://127.0.0.1:1"
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
@@ -1318,6 +1338,7 @@ func TestControllerStartUnreachableDaemonIsNamedAndNoOtherAddressTried(t *testin
 // daemon revokes the incumbent controller's capability on every mint, so a local failure must
 // never cut it off for nothing.
 func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal.
 	t.Run("a group-readable operator token file, naming the path and mode", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{tokenMode: 0o640})
@@ -1494,6 +1515,7 @@ func TestControllerStartRefusesLocallyBeforeTheRequest(t *testing.T) {
 // launches it: no resolution of its own decides which copy that is. Each row installs a copy of
 // this binary's contract and one of another at two roots, and has Oh My Pi load one of them.
 func TestControllerStartHoldsTheCopyOhMyPiLoadsToTheContract(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	t.Run("the loaded copy speaks the contract; the profile's own does not", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
@@ -1519,6 +1541,7 @@ func TestControllerStartHoldsTheCopyOhMyPiLoadsToTheContract(t *testing.T) {
 // such as `secrets` scopes a human-tier grant by the terminal it is run from, and refuses on a
 // stdin that is not one.
 func TestControllerStartProbesOnTheOperatorsStdin(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart); it replaces os.Stdin of the whole process.
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	terminal, err := os.Create(filepath.Join(t.TempDir(), "operator-terminal"))
@@ -1549,6 +1572,7 @@ func TestControllerStartProbesOnTheOperatorsStdin(t *testing.T) {
 // The load probe's Oh My Pi runs in the controller's own directory, which exists for it, under the
 // environment the controller is then launched with.
 func TestControllerStartProbesUnderTheControllersEnvironment(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	if code, _, errb := c.run(); code != 0 {
@@ -1578,6 +1602,7 @@ func TestControllerStartProbesUnderTheControllersEnvironment(t *testing.T) {
 // The controller is pane-side: the daemon's own NATS seed, by value or by pointer, exported in the
 // operator's shell, reaches neither its load probe nor its Oh My Pi, while its pane seed pointer does.
 func TestControllerStartDropsTheDaemonSeedFromTheControllersEnvironment(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	const seed = "SUAMDAEMONSEEDVALUEFORTHECONTROLLERTEST"
@@ -1602,6 +1627,7 @@ func TestControllerStartDropsTheDaemonSeedFromTheControllersEnvironment(t *testi
 // plugin takes a controller session carrying one for a controller the daemon launched (`controller:
 // daemon`), which registers with it, so neither reaches the operator's controller or its load probe.
 func TestControllerStartDropsAnInheritedBootToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	t.Setenv("LEGION_BOOT_TOKEN", "a-pane-boot-token")
@@ -1623,6 +1649,7 @@ func TestControllerStartDropsAnInheritedBootToken(t *testing.T) {
 // reads. A controller pushes nothing and carries no table, as the daemon's own controller carries
 // none, so neither the operator's controller nor its load probe is handed it.
 func TestControllerStartDropsAnInheritedRoleIdentityTable(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	t.Setenv("LEGION_ROLE_IDENTITIES", `{"implementer":{"name":"legion-implementer[bot]","email":"7+legion-implementer[bot]@users.noreply.github.com"}}`)
@@ -1640,6 +1667,7 @@ func TestControllerStartDropsAnInheritedRoleIdentityTable(t *testing.T) {
 // inherits LEGION_SLACK_CHANNELS: another project's channels, or this project's, whose mentions only
 // the daemon's controller hears. Neither the operator's controller nor its load probe is handed it.
 func TestControllerStartDropsInheritedSlackChannels(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	t.Setenv("LEGION_SLACK_CHANNELS", "C00000001")
@@ -1657,6 +1685,7 @@ func TestControllerStartDropsInheritedSlackChannels(t *testing.T) {
 // tells a pane that resumes a recorded session. This controller resumes none, so neither it nor
 // its load probe is handed the variable, which would stop it where Oh My Pi moves a held session.
 func TestControllerStartDropsAnInheritedSessionExclusive(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	t.Setenv(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
@@ -1679,6 +1708,7 @@ func TestControllerStartDropsAnInheritedSessionExclusive(t *testing.T) {
 // helper socket of the operator's shell reach both exactly as that shell has them, so the
 // controller's own agent-secrets reads are signed as they are without the setting.
 func TestControllerStartTurnsThePersonTradeOffAndLeavesAgentSecretsAsTheOperatorsShellHasIt(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	for _, tc := range []struct {
 		name   string
 		broker bool
@@ -1720,6 +1750,7 @@ func TestControllerStartTurnsThePersonTradeOffAndLeavesAgentSecretsAsTheOperator
 // `project: sjawhar/Legion`, copied from the daemon's legion.yaml, names the daemon's own token in
 // the state directory, the secret file and LEGION_PROJECT.
 func TestControllerStartSanitizesTheProjectAsTheDaemonDoes(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{lines: []string{
 		"project: sjawhar/Legion", "daemon_url: " + d.url, "operator_token_file: ./operator-token",
@@ -1744,6 +1775,7 @@ func TestControllerStartSanitizesTheProjectAsTheDaemonDoes(t *testing.T) {
 // state_dir in the file replaces the default, resolved against the file's directory; so does an
 // absolute XDG_STATE_HOME the default.
 func TestControllerStartStateDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	t.Run("from the file", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{lines: []string{
@@ -1775,6 +1807,7 @@ func TestControllerStartStateDirectory(t *testing.T) {
 }
 
 func TestControllerStartUsage(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		argv []string
 		want string
@@ -1907,6 +1940,7 @@ func credentialRequests(t *testing.T, d *controllerDaemon) []api.ControllerCrede
 // Oh My Pi starts, whose GH_CONFIG_DIR names the first owner's directory and LEGION_GH_OWNERS_DIR
 // the bundle's root, with one request made before the loop, naming no default yet.
 func TestControllerStartWritesTheControllersGitHubCredentialUnderGh(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	tokens := newControllerCredentialTokens("ghs_first")
 	d := newControllerDaemonWithTokens(t, tokens)
 	c := newControllerStart(t, d, controllerOptions{})
@@ -1960,6 +1994,7 @@ func TestControllerStartWritesTheControllersGitHubCredentialUnderGh(t *testing.T
 // releases it, once it has seen the second token land, so the proof does not depend on the
 // machine's speed.
 func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variables controllerGitHubRefreshInterval and stdinIsTerminal (newControllerStart).
 	old := controllerGitHubRefreshInterval
 	controllerGitHubRefreshInterval = 50 * time.Millisecond
 	t.Cleanup(func() { controllerGitHubRefreshInterval = old })
@@ -2029,6 +2064,7 @@ func TestControllerStartRefreshesTheGitHubCredentialWhileOhMyPiRuns(t *testing.T
 // daemon. The recording Oh My Pi runs until the test releases it, once it has seen the stop logged
 // and the requests settle.
 func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variables controllerGitHubRefreshInterval and stdinIsTerminal (newControllerStart).
 	old := controllerGitHubRefreshInterval
 	controllerGitHubRefreshInterval = 50 * time.Millisecond
 	t.Cleanup(func() { controllerGitHubRefreshInterval = old })
@@ -2077,6 +2113,7 @@ func TestControllerStartStopsTheRefreshLoopWhenTheCapabilityIsSuperseded(t *test
 // A daemon with no GitHub App for the project writes an empty gh directory and runs no loop,
 // stating so, and Oh My Pi still starts, its GH_CONFIG_DIR the empty directory.
 func TestControllerStartWithNoGitHubAppWritesAnEmptyGhDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	code, _, errb := c.run()
@@ -2110,6 +2147,7 @@ func TestControllerStartWithNoGitHubAppWritesAnEmptyGhDirectory(t *testing.T) {
 // controller's gh acts as nobody, so it must leave no token for gh to act with: every stale file
 // goes (LEGION-668, found by the tester).
 func TestControllerStartWithNoGitHubAppRemovesAStaleHostsFile(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	d := newControllerDaemon(t)
 	c := newControllerStart(t, d, controllerOptions{})
 	ghDir := filepath.Join(c.defaultDir, "gh")
@@ -2142,6 +2180,7 @@ func TestControllerStartWithNoGitHubAppRemovesAStaleHostsFile(t *testing.T) {
 // false of it (dispatch://INFRA-4401 A3). Each start still empties the gh directory and launches.
 // Control: with the first line printed for both codes, the review App's case fails.
 func TestControllerStartSaysWhyTheControllersGhActsAsNobodyForEachCode(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	noApp := "[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody\n"
 	noOwner := "[legion] the review App is installed on no account, so the controller has no GitHub owner; the controller's gh acts as nobody\n"
 	for _, tc := range []struct {
@@ -2199,19 +2238,20 @@ func TestControllerStartSaysWhyTheControllersGhActsAsNobodyForEachCode(t *testin
 // before the daemon is asked for anything: a mint would replace the running controller's
 // capability with one whose gh cannot run.
 func TestControllerStartResolvesTheRealGh(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable stdinIsTerminal (newControllerStart).
 	t.Run("on PATH, past the controller's own wrapper", func(t *testing.T) {
 		d := newControllerDaemon(t)
 		c := newControllerStart(t, d, controllerOptions{})
 		bin := t.TempDir()
 		real := filepath.Join(bin, "gh")
-		if err := os.WriteFile(real, []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
+		if err := execfile.Write(real, []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		wrapper := filepath.Join(c.defaultDir, "bin")
 		if err := os.MkdirAll(wrapper, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(wrapper, "gh"), []byte("#!/bin/sh\nexit 97\n"), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(wrapper, "gh"), []byte("#!/bin/sh\nexit 97\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		fixtureenv.Unset(t, "LEGION_GH_PATH")
@@ -2228,10 +2268,10 @@ func TestControllerStartResolvesTheRealGh(t *testing.T) {
 		c := newControllerStart(t, d, controllerOptions{})
 		shims, bin := t.TempDir(), t.TempDir()
 		shim := filepath.Join(shims, "gh")
-		if err := os.WriteFile(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
+		if err := execfile.Write(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
+		if err := execfile.Write(filepath.Join(bin, "gh"), []byte("\x7fELF\x02\x01\x01\x00"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		fixtureenv.Unset(t, "LEGION_GH_PATH")
@@ -2273,6 +2313,7 @@ func TestControllerStartResolvesTheRealGh(t *testing.T) {
 // A failed GitHub credential fetch after the mint exits 1, naming the route and the daemon's
 // sentence; Oh My Pi never ran, and the secret file stays written.
 func TestControllerStartExitsWhenTheGitHubCredentialFetchFails(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (newControllerStart); it sets the package variable stdinIsTerminal (newControllerStart).
 	tokens := newControllerCredentialTokens("ghs_first")
 	tokens.failWith(errors.New("github is down"))
 	d := newControllerDaemonWithTokens(t, tokens)
