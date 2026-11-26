@@ -4,7 +4,7 @@ import "slices"
 
 // approvalKind is one kind of problem of a comparison with the approved spec, an index of
 // approvalKinds: a rule of Compare, or bad-approved-document, which versionText gives for a
-// document of the approved spec.
+// document of the approved spec and relationFault for a relation of one.
 type approvalKind int
 
 // The kinds of problem of a comparison with the approved spec. numApprovalKinds counts them, so
@@ -18,13 +18,16 @@ const (
 	approvedOtherNode
 	approvedNotAnID
 	approvedNotPrinted
+	approvedNoNode
+	approvedOtherKind
 	numApprovalKinds
 )
 
 // approvalKinds is the format of the Detail of each kind of problem of a comparison with the
 // approved spec, which begins with its rule: Compare's rules, and bad-approved-document for a
 // document of no node or of two, of a node with another id, with a value at an id place that is
-// not an id, or not as Print writes its node.
+// not an id, or not as Print writes its node, and for a relation that names no node of the
+// approved spec or a node of a kind that it may not name.
 var approvalKinds = [numApprovalKinds]string{
 	unapprovedID:       "unapproved-id: the approved spec never held this id",
 	unapprovedText:     "unapproved-text: the approved spec never held this text",
@@ -33,6 +36,8 @@ var approvalKinds = [numApprovalKinds]string{
 	approvedOtherNode:  "bad-approved-document: the document is of node %s, not %s",
 	approvedNotAnID:    "bad-approved-document: %s %s is no id",
 	approvedNotPrinted: "bad-approved-document: the document is not as Print writes it",
+	approvedNoNode:     "bad-approved-document: %s %s names no node of the approved spec",
+	approvedOtherKind:  "bad-approved-document: %s %s names %s, not %s",
 }
 
 // Holding is which approved text of a node the files hold: Present when they hold one, Version its

@@ -156,11 +156,6 @@ func (f approvedFile) approved() (Approved, error) {
 	for _, n := range nodes {
 		a.Nodes[n.ID] = n
 	}
-	for _, n := range f.Nodes {
-		if err := n.unsetFault(); err != nil {
-			return Approved{}, err
-		}
-	}
 	return a, nil
 }
 
@@ -423,13 +418,13 @@ func relationFault(node any, kinds map[string]string, current bool) string {
 		kind, held := kinds[r.id]
 		switch {
 		case !held:
-			return fmt.Sprintf("bad-approved-document: %s %s names no node of the approved spec", r.member, quoted(r.id))
+			return fmt.Sprintf(approvalKinds[approvedNoNode], r.member, quoted(r.id))
 		case current && !slices.Contains(r.kinds, kind):
 			wanted := make([]string, len(r.kinds))
 			for i, k := range r.kinds {
 				wanted[i] = withArticle(k)
 			}
-			return fmt.Sprintf("bad-approved-document: %s %s names %s, not %s", r.member, quoted(r.id), withArticle(kind), strings.Join(wanted, " or "))
+			return fmt.Sprintf(approvalKinds[approvedOtherKind], r.member, quoted(r.id), withArticle(kind), strings.Join(wanted, " or "))
 		}
 	}
 	return ""

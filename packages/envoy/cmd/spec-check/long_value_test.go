@@ -156,6 +156,13 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 			approved: addNode(v, false, workUnit), shows: shows, in: "approved"},
 		{name: "an approved document whose parent is no id", kind: ruleFormat(t, "bad-approved-document: ", "is no id"), files: files(),
 			approved: addNode("a-page-shows-it", false, requirement("a-page-shows-it", "parent: "+badID+"\n", "The page shows it.")), shows: badIDShows, in: "approved"},
+		{name: "an approved document whose parent names no node", kind: ruleFormat(t, "bad-approved-document: ", "names no node"), files: files(),
+			approved: addNode("a-page-shows-it", false, requirement("a-page-shows-it", "parent: "+v+"\n", "The page shows it.")), shows: shows, in: "approved"},
+		{name: "an approved document whose parent names a node of another kind", kind: ruleFormat(t, "bad-approved-document: ", "names %s, not %s"), files: files(),
+			approved: func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
+				nodes = addNode(v, false, term(v, "work unit", "A work unit is work."))(nodes)
+				return addNode("a-page-shows-it", false, requirement("a-page-shows-it", "parent: "+v+"\n", "The page shows it."))(nodes)
+			}, shows: shows, in: "approved"},
 		{name: "an approved document that print does not write", kind: "bad-approved-document: the document is not as Print writes it", files: files(),
 			approved: addNode(v, false, term(v, "work unit", "A work unit is work.")+"surprise: true\n"), shows: shows, in: "approved"},
 	}
