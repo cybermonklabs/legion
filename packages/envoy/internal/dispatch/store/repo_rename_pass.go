@@ -673,6 +673,20 @@ var repoRenameLines = []repoRenameLine{
 		},
 	},
 	{
+		fields: "commit_holds.repo",
+		steps: func(r repoRename) []repoRenameStep {
+			return []repoRenameStep{
+				collisions(r, "commit_holds", "commit_sha", "merge_sha"),
+				nameWrite(r, "commit_holds", "repo"),
+			}
+		},
+	},
+	// A program's current deploy is its newest row under the repository's name
+	// (delivery.CurrentDeploys), so the rows recorded under the old name join the new name's
+	// history rather than leave the program with no deploy until its next one. No key of the
+	// table holds the repository, so nothing collides.
+	nameLine("deploys", "repo"),
+	{
 		// Each cited URL is rewritten in its place. A URL the array then holds twice is kept once,
 		// at its first place, as delivery's citedIssues keeps each URL once.
 		fields: "delivery_pull_requests.repo, .url, .attribution_cited_issues",
