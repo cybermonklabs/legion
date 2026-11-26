@@ -1,12 +1,14 @@
-// Package rolefile opens, reads and removes what a role can write, for a caller that holds
+// Package rolefile opens, reads, makes and removes what a role can write, for a caller that holds
 // something others wait on: the tmux daemon's outbox under a repository's store lock, or a pod's
 // launcher, which is its container's PID 1. Such a file can be anything the role made it: a
 // symlink to /dev/zero, which a reader that follows it and reads to the end holds whole in memory
 // until the process is killed, a fifo, whose plain open waits for a writer for as long as none
 // comes, a device, a socket, or a regular file of any size. OpenRegular never follows a link and
 // never waits, and refuses anything but a regular file in words naming it; ReadBounded refuses a
-// file larger than its caller's bound rather than read on; RemoveTree follows no link and waits on
-// nothing anywhere it walks.
+// file larger than its caller's bound rather than read on; MakeDirectory and CreateRegular make a
+// directory or a new file under a directory's descriptor and refuse whatever a role put at its
+// name, a link among it, rather than make or write anything where it points; RemoveTree follows
+// no link and waits on nothing anywhere it walks.
 package rolefile
 
 import (
@@ -128,7 +130,8 @@ func OpenDirectory(dirfd int, name, path string) (int, error) {
 // openDirectory is OpenDirectory's open and its check, with no path to print: it answers the
 // descriptor, or the call that failed ("open" or "fstat") and its own error, or, for what it opened
 // and found no directory, no call and ENOTDIR. removeAt opens each directory of its walk through it
-// and makes words of a refusal only for the one error RemoveTree answers.
+// and makes words of a refusal only for the one error RemoveTree answers; MakeDirectory opens
+// through it what it made or found, and words its refusal by what is there.
 func openDirectory(dirfd int, name string) (int, string, error) {
 	fd, err := directoryOpen(dirfd, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -153,6 +156,47 @@ type notDirectory string
 func (path notDirectory) Error() string { return string(path) + " is no directory" }
 
 func (notDirectory) Unwrap() error { return unix.ENOTDIR }
+
+// MakeDirectory is a descriptor of the directory name under dirfd, made there with perm where
+// nothing is at name, for a caller that builds under a directory a role can write; path is name as
+// the errors print it. A directory already at name is opened as it is. A link at name, which
+// neither mkdirat nor the open follows (OpenDirectory's open, which never asks for O_DIRECTORY),
+// and anything else that is no directory are refused in words naming path and what is there
+// (Kind), and nothing is made where a link points. A name that cannot be made, where nothing is,
+// answers mkdirat's own error.
+func MakeDirectory(dirfd int, name, path string, perm uint32) (int, error) {
+	made := mkdirat(dirfd, name, perm)
+	fd, op, err := openDirectory(dirfd, name)
+	switch {
+	case err == nil:
+		return fd, nil
+	case op == "" || op == "open" && (errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENXIO)):
+		if mode, statErr := modeAt(dirfd, name); statErr == nil {
+			return -1, fmt.Errorf("%s is a %s", path, Kind(mode))
+		}
+		if op == "" {
+			return -1, notDirectory(path)
+		}
+	case made != nil && !errors.Is(made, unix.EEXIST):
+		return -1, &fs.PathError{Op: "mkdir", Path: path, Err: made}
+	}
+	return -1, &fs.PathError{Op: op, Path: path, Err: err}
+}
+
+// CreateRegular makes name, a new regular file under the directory dirfd, with perm, and answers
+// it open for writing, for a caller that writes under a directory a role can write; path is name
+// as the errors print it. It opens as OpenRegular does, with O_CREAT|O_EXCL, so whatever is at
+// name already, a link among it, which O_EXCL never follows wherever it points, is refused in
+// words naming path and what is there (Kind), and nothing is written where a link points.
+func CreateRegular(dirfd int, name, path string, perm uint32) (*os.File, error) {
+	file, err := OpenRegular(dirfd, name, path, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL, perm)
+	if errors.Is(err, unix.EEXIST) {
+		if mode, statErr := modeAt(dirfd, name); statErr == nil {
+			return nil, fmt.Errorf("%s already exists as a %s", path, Kind(mode))
+		}
+	}
+	return file, err
+}
 
 // RemoveTree removes path and everything under it, as os.RemoveAll does save for a ".." in path
 // (below), but follows no link and waits on nothing anywhere it walks, for a caller that removes
@@ -339,6 +383,16 @@ func unlinkat(dirfd int, name string, flags int) error {
 	}
 }
 
+// mkdirat is unix.Mkdirat, asked again when a signal interrupted it.
+func mkdirat(dirfd int, name string, perm uint32) error {
+	for {
+		err := unix.Mkdirat(dirfd, name, perm)
+		if !errors.Is(err, unix.EINTR) {
+			return err
+		}
+	}
+}
+
 // isDirectoryAt is whether name under the directory dirfd is a directory, read without following
 // a link at name. A name it cannot read is taken as no directory. removeAt asks it only once
 // openDirectory failed, to tell a directory it may not open from a file it may not read.
@@ -374,28 +428,36 @@ func Kind(mode fs.FileMode) string {
 // opened write-only while no reader holds it, or a device with nothing behind it. A name it
 // cannot read is called a socket, what open's ENXIO most often means.
 func kindAt(dirfd int, name string) string {
-	var stat unix.Stat_t
-	if err := unix.Fstatat(dirfd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+	mode, err := modeAt(dirfd, name)
+	if err != nil {
 		return "socket"
 	}
-	var mode fs.FileMode
+	return Kind(mode)
+}
+
+// modeAt is the type of what is at name under the directory dirfd, as fs.FileMode's type bits
+// give it, read without following a link at name.
+func modeAt(dirfd int, name string) (fs.FileMode, error) {
+	var stat unix.Stat_t
+	if err := unix.Fstatat(dirfd, name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return 0, err
+	}
 	switch stat.Mode & unix.S_IFMT {
 	case unix.S_IFREG:
 		// A regular file's mode has no type bits.
+		return 0, nil
 	case unix.S_IFDIR:
-		mode = fs.ModeDir
+		return fs.ModeDir, nil
 	case unix.S_IFLNK:
-		mode = fs.ModeSymlink
+		return fs.ModeSymlink, nil
 	case unix.S_IFIFO:
-		mode = fs.ModeNamedPipe
+		return fs.ModeNamedPipe, nil
 	case unix.S_IFSOCK:
-		mode = fs.ModeSocket
+		return fs.ModeSocket, nil
 	case unix.S_IFCHR:
-		mode = fs.ModeDevice | fs.ModeCharDevice
+		return fs.ModeDevice | fs.ModeCharDevice, nil
 	case unix.S_IFBLK:
-		mode = fs.ModeDevice
-	default:
-		mode = fs.ModeIrregular
+		return fs.ModeDevice, nil
 	}
-	return Kind(mode)
+	return fs.ModeIrregular, nil
 }

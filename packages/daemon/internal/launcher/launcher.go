@@ -1219,15 +1219,14 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 // is held to the plugin file it replaces (texts.CheckPlugins), as the tmux runtime holds them in
 // the daemon's own process (internal/runtime/tmux's checkTexts). Only then is anything written:
 // the base of the settings layer is read (textsBase), every root an earlier generation of the
-// role built is removed (clearTextsRoots), the root is built at its Root (texts.BuildRoot), and
-// the settings layer is written in it (texts.WriteSettingsLayer).
+// role built is removed (clearTextsRoots), and the root is built at its Root with its settings
+// layer in it (buildTextsRoot).
 //
 // A folder that fails a check is a *texts.Fault naming the folder, the file and the cause, which
 // start answers as a texts refusal: the daemon then sends the start of the arm's control, so
 // nothing has been written. Anything else is the pod's own fault and an ordinary refusal of the
 // start: a PI_CONFIG_FILES that does not end with the root's settings layer, settings Oh My Pi
-// would refuse to start on, or a state home the roots cannot be removed from or built in. A root
-// a failed build left is removed, so no partial root is left for a child to load.
+// would refuse to start on, or a state home the roots cannot be removed from or built in.
 func prepareTexts(given shimwire.LauncherTexts, env []string) error {
 	folder, err := texts.Read(given.Folder)
 	if err != nil {
@@ -1254,9 +1253,29 @@ func prepareTexts(given shimwire.LauncherTexts, env []string) error {
 	if err := clearTextsRoots(given.Root); err != nil {
 		return err
 	}
-	root, err := texts.BuildRoot(folder, given.EnvoyRoot, given.LegionRoot, given.Root)
+	return buildTextsRoot(folder, given, base)
+}
+
+// buildTextsRoot builds the extension root of folder at given.Root, which clearTextsRoots cleared,
+// and writes in it the settings layer over base (textsBase). The role's state home, which holds
+// it, is made first where no child of the role has made it yet (the shim makes Oh My Pi's
+// directories in it once the first child runs); the root is then built under it, legion-texts and
+// the root's own directory among what it makes, through directory descriptors alone
+// (texts.BuildRoot, texts.WriteSettingsLayer). Every role of the issue can write the state home,
+// and this launcher sees every role's private directories: so a link a role puts at legion-texts,
+// at the root or anywhere the build has yet to make, after the clear or while the build runs, is
+// refused rather than followed, and nothing is made or written where it points. A root a failed
+// build left is removed (rolefile.RemoveTree), so no partial root is left for a child to load.
+func buildTextsRoot(folder texts.Folder, given shimwire.LauncherTexts, base []string) error {
+	stateHome := filepath.Dir(filepath.Dir(given.Root))
+	err := os.MkdirAll(stateHome, 0o755)
 	if err == nil {
-		_, err = texts.WriteSettingsLayer(root.Dir, base, root.Touched)
+		var root texts.Root
+		root, err = texts.BuildRoot(folder, given.EnvoyRoot, given.LegionRoot, stateHome, shimwire.TextsRootsDir+"/"+filepath.Base(given.Root))
+		if err == nil {
+			_, err = texts.WriteSettingsLayer(root, base, root.Touched)
+			_ = root.Close()
+		}
 	}
 	if err != nil {
 		if removeErr := rolefile.RemoveTree(given.Root); removeErr != nil {
@@ -1322,8 +1341,9 @@ var textsRootName = regexp.MustCompile(`^g[0-9]+$`)
 // touched: an entry of another name stays, and so does one of that name that is no directory. No
 // child of the role runs when it is called (start's checks), so no root it removes serves a
 // process. A state home or TextsRootsDir that is not there holds nothing to remove; one that is no
-// directory, such as a link a role left there, is refused rather than built through, and so is
-// anything still at root.
+// directory, such as a link a role left there, is refused here, and so is anything still at root.
+// These refusals are the early ones, which name the start's fault before anything is built: a link
+// a role puts there after them the build refuses itself (buildTextsRoot).
 func clearTextsRoots(root string) error {
 	dir := filepath.Dir(root)
 	for _, at := range []string{filepath.Dir(dir), dir} {

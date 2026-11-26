@@ -711,8 +711,12 @@ func TestAnOperatorPromptFileKeepsItsTextAndTakesTheFoldersAgents(t *testing.T) 
 		filepath.Join("dist", "skills", "legion-worker", "notes.md"): "Legion's note.\n",
 	})
 	writeTree(t, envoy, map[string]string{filepath.Join("dist", "skills", "dispatch-first", "SKILL.md"): "Legion's dispatch-first.\n"})
-	if root, err := texts.BuildRoot(copied, envoy, legion, filepath.Join(plugins, "root")); err != nil || !reflect.DeepEqual(root.Touched, []string{"dispatch-first", "legion-worker"}) {
+	root, err := texts.BuildRoot(copied, envoy, legion, plugins, "root")
+	if err != nil || !reflect.DeepEqual(root.Touched, []string{"dispatch-first", "legion-worker"}) {
 		t.Errorf("the root built from the copy replaces the skills %q (%v), want dispatch-first and legion-worker", root.Touched, err)
+	}
+	if err == nil {
+		_ = root.Close()
 	}
 	if got, err := os.ReadFile(filepath.Join(spec.Texts.Copy, "agents", "goal-red-team.md")); err != nil || string(got) != agent {
 		t.Errorf("the copy's agent is %q (%v), want the folder's", got, err)

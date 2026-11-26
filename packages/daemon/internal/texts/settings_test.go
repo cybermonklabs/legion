@@ -123,11 +123,17 @@ func TestBaseIgnoredSkillsFollowsOhMyPisLayers(t *testing.T) {
 func TestTheSettingsLayerKeepsTheIgnoredSkillsBelowIt(t *testing.T) {
 	base := t.TempDir()
 	project, agent, root := filepath.Join(base, "project"), filepath.Join(base, "agent"), filepath.Join(base, "root")
-	for _, dir := range []string{project, agent, root} {
+	for _, dir := range []string{project, agent} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	envoy, legion := plugins(t)
+	built, err := texts.BuildRoot(texts.Folder{}, envoy, legion, base, "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer built.Close()
 	writeFile(t, filepath.Join(agent, "config.yml"), "skills:\n  ignoredSkills: [global]\n")
 	operator, arm := filepath.Join(base, "operator.yml"), filepath.Join(base, "arm.yml")
 	writeFile(t, operator, "skills:\n  ignoredSkills: [operator-*]\n  customDirectories: [/operator/skills]\n")
@@ -138,7 +144,7 @@ func TestTheSettingsLayerKeepsTheIgnoredSkillsBelowIt(t *testing.T) {
 	if err != nil || !slices.Equal(below, []string{"operator-*"}) {
 		t.Fatalf("BaseIgnoredSkills = %q, %v; want the operator's [operator-*]", below, err)
 	}
-	layer, err := texts.WriteSettingsLayer(root, below, []string{"dispatch-first", "legion-worker"})
+	layer, err := texts.WriteSettingsLayer(built, below, []string{"dispatch-first", "legion-worker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +169,12 @@ func TestTheSettingsLayerKeepsTheIgnoredSkillsBelowIt(t *testing.T) {
 
 	// With nothing below and nothing replaced, the layer still sets an empty list rather than
 	// null, so the profile's own list below it does not show through.
-	empty, err := texts.WriteSettingsLayer(t.TempDir(), nil, nil)
+	bare, err := texts.BuildRoot(texts.Folder{}, envoy, legion, t.TempDir(), "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bare.Close()
+	empty, err := texts.WriteSettingsLayer(bare, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

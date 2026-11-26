@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // HidingPatterns are the skills.ignoredSkills patterns that remove every copy of skill Oh My Pi
@@ -22,14 +24,16 @@ func HidingPatterns(skill string) []string {
 	return []string{"*/" + skill, "*/" + skill + "~*"}
 }
 
-// WriteSettingsLayer writes dir/texts-settings.yml, the last settings layer of a launch of a
-// folder, and returns its path. It sets skills.ignoredSkills to base, the value Oh My Pi reads
-// without the layer (BaseIgnoredSkills), and after it the HidingPatterns of each of skills, the
-// skills whose files the folder holds (Root.Touched): Oh My Pi's arrays are replaced whole by a
-// higher layer, so a layer of the patterns alone would erase the operator's, a role's, an arm's
-// or a repository's own list. It sets nothing else, so every other skills setting of a lower layer
-// still holds.
-func WriteSettingsLayer(dir string, base, skills []string) (string, error) {
+// WriteSettingsLayer writes texts-settings.yml in root, the last settings layer of a launch of a
+// folder, and returns its path in root.Dir. The file is made new through the root's directory as
+// BuildRoot left it open, never through root.Dir's path (rolefile.CreateRegular), so a link a role
+// put at the file's name, or in place of the root, is never written through. It sets
+// skills.ignoredSkills to base, the value Oh My Pi reads without the layer (BaseIgnoredSkills),
+// and after it the HidingPatterns of each of skills, the skills whose files the folder holds
+// (Root.Touched): Oh My Pi's arrays are replaced whole by a higher layer, so a layer of the
+// patterns alone would erase the operator's, a role's, an arm's or a repository's own list. It
+// sets nothing else, so every other skills setting of a lower layer still holds.
+func WriteSettingsLayer(root Root, base, skills []string) (string, error) {
 	ignored := slices.Clone(base)
 	if ignored == nil {
 		ignored = []string{}
@@ -41,10 +45,18 @@ func WriteSettingsLayer(dir string, base, skills []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	file := filepath.Join(dir, SettingsLayerName)
+	file := filepath.Join(root.Dir, SettingsLayerName)
 	header := "# Written by Legion for a launch of an experiment arm's folder of texts: the ignored skills of\n" +
 		"# the layers below, then the collision names of each skill the folder replaces.\n"
-	if err := os.WriteFile(file, append([]byte(header), body...), 0o644); err != nil {
+	out, err := rolefile.CreateRegular(int(root.dir.Fd()), SettingsLayerName, file, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("write the texts settings layer %s: %w", file, err)
+	}
+	_, err = out.Write(append([]byte(header), body...))
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
 		return "", fmt.Errorf("write the texts settings layer %s: %w", file, err)
 	}
 	return file, nil

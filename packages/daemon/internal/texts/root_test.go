@@ -41,11 +41,13 @@ func TestBuildRootLaysTheFolderOverLegionsSkill(t *testing.T) {
 	}
 	folder := read(t, dir)
 
-	dest := filepath.Join(t.TempDir(), "root")
-	root, err := texts.BuildRoot(folder, envoy, legion, dest)
+	base := t.TempDir()
+	dest := filepath.Join(base, "root")
+	root, err := texts.BuildRoot(folder, envoy, legion, base, "root")
 	if err != nil {
 		t.Fatalf("BuildRoot = %v, want the root built", err)
 	}
+	_ = root.Close()
 	if root.Dir != dest || !slices.Equal(root.Touched, []string{"dispatch-first", "legion-worker"}) {
 		t.Errorf("BuildRoot = %+v, want the root at %s touching dispatch-first and legion-worker", root, dest)
 	}
@@ -104,15 +106,147 @@ func TestBuildRootLaysTheFolderOverLegionsSkill(t *testing.T) {
 	}
 
 	t.Run("a destination that holds files", func(t *testing.T) {
-		if _, err := texts.BuildRoot(folder, envoy, legion, dest); err == nil || !strings.Contains(err.Error(), dest) {
+		if _, err := texts.BuildRoot(folder, envoy, legion, base, "root"); err == nil || !strings.Contains(err.Error(), dest) {
 			t.Errorf("BuildRoot into the built root = %v, want a refusal naming %s", err, dest)
 		}
 	})
 	t.Run("a folder file that replaces no plugin file", func(t *testing.T) {
 		extra := texts.Folder{Dir: dir, Files: maps.Clone(folder.Files), Manifest: folder.Manifest}
 		extra.Files["agents/new-agent.md"] = []byte("A new agent.\n")
-		if _, err := texts.BuildRoot(extra, envoy, legion, filepath.Join(t.TempDir(), "root")); err == nil || !strings.Contains(err.Error(), "agents/new-agent.md") {
+		if _, err := texts.BuildRoot(extra, envoy, legion, t.TempDir(), "root"); err == nil || !strings.Contains(err.Error(), "agents/new-agent.md") {
 			t.Errorf("BuildRoot of a folder adding an agent = %v, want a refusal naming agents/new-agent.md", err)
 		}
 	})
+}
+
+// A link a role plants where the build of a root makes a directory or a file, pointing out of the
+// base the build is given, is never built through: the build is refused with an error naming the
+// link and saying it is one, and the directory outside, another role's, is left as it was, nothing
+// made in it. The places are base itself, each element of the root's path under base
+// (legion-texts, then g1), a directory inside a root that holds nothing else, and the settings
+// layer's file in a built root. And the layer is written in the directory the build made even
+// where a link took the root's path since: the build's descriptor, not the path, is written
+// through.
+func TestTheBuildFollowsNoLinkARolePlants(t *testing.T) {
+	envoy, legion := plugins(t)
+	folder := read(t, writeFolder(t, "agents/oracle.md", "skills/legion-worker/SKILL.md"))
+	const rel = "legion-texts/g1"
+	// planted is a path for a base, which the caller makes, and beside it a directory outside it
+	// that holds another role's file.
+	planted := func(t *testing.T) (base, outside string) {
+		dir := t.TempDir()
+		base, outside = filepath.Join(dir, "base"), filepath.Join(dir, "outside")
+		writeFile(t, filepath.Join(outside, "kept.md"), "Another role's.\n")
+		return base, outside
+	}
+	// built is a root built over a plain base.
+	built := func(t *testing.T, base string) texts.Root {
+		t.Helper()
+		if err := os.Mkdir(base, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root, err := texts.BuildRoot(folder, envoy, legion, base, rel)
+		if err != nil {
+			t.Fatalf("BuildRoot over a plain base = %v, want the root built", err)
+		}
+		t.Cleanup(func() { _ = root.Close() })
+		return root
+	}
+	symlink := func(t *testing.T, target, link string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused := func(t *testing.T, err error, link string) {
+		t.Helper()
+		if err == nil || !strings.Contains(err.Error(), link) || !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("the build over a link at %s = %v, want a refusal naming the link as a symlink", link, err)
+		}
+	}
+
+	for _, tc := range []struct{ name, at string }{
+		{"base", ""},
+		{"the first element of the root's path", "legion-texts"},
+		{"the second element of the root's path", rel},
+		{"a directory inside an otherwise empty root", rel + "/agents"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base, outside := planted(t)
+			link := filepath.Join(base, filepath.FromSlash(tc.at))
+			symlink(t, outside, link)
+			before := listing(t, outside)
+			root, err := texts.BuildRoot(folder, envoy, legion, base, rel)
+			if err == nil {
+				_ = root.Close()
+			}
+			refused(t, err, link)
+			if after := listing(t, outside); !maps.Equal(after, before) {
+				t.Errorf("the build wrote through the link at %s: the directory it points at holds %v, was %v", link, after, before)
+			}
+		})
+	}
+
+	t.Run("the settings layer's file", func(t *testing.T) {
+		base, outside := planted(t)
+		root := built(t, base)
+		link := filepath.Join(root.Dir, texts.SettingsLayerName)
+		symlink(t, filepath.Join(outside, "settings.yml"), link)
+		before := listing(t, outside)
+		_, err := texts.WriteSettingsLayer(root, nil, root.Touched)
+		refused(t, err, link)
+		if after := listing(t, outside); !maps.Equal(after, before) {
+			t.Errorf("the layer was written through the link at %s: the directory it points at holds %v, was %v", link, after, before)
+		}
+	})
+
+	t.Run("a link in place of the built root", func(t *testing.T) {
+		base, outside := planted(t)
+		root := built(t, base)
+		moved := root.Dir + ".moved"
+		if err := os.Rename(root.Dir, moved); err != nil {
+			t.Fatal(err)
+		}
+		symlink(t, outside, root.Dir)
+		before := listing(t, outside)
+		if _, err := texts.WriteSettingsLayer(root, nil, root.Touched); err != nil {
+			t.Fatalf("WriteSettingsLayer = %v, want the layer written in the directory the build made", err)
+		}
+		if _, err := os.Lstat(filepath.Join(moved, texts.SettingsLayerName)); err != nil {
+			t.Errorf("the directory the build made holds no settings layer: %v", err)
+		}
+		if after := listing(t, outside); !maps.Equal(after, before) {
+			t.Errorf("the layer was written through the link at %s: the directory it points at holds %v, was %v", root.Dir, after, before)
+		}
+	})
+}
+
+// listing is every entry under dir with its mode and, for a file, its bytes, so a test reads
+// whether a build left a directory as it was.
+func listing(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	entries := map[string]string{}
+	if err := filepath.WalkDir(dir, func(file string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, file)
+		entries[rel] = info.Mode().String()
+		if info.Mode().IsRegular() {
+			body, err := os.ReadFile(file)
+			entries[rel] += " " + string(body)
+			return err
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return entries
 }

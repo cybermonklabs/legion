@@ -471,15 +471,16 @@ func aTextsRootOnTheRealOhMyPi(t *testing.T, omp, envoy, legion string) {
 			}
 			t.Logf("Oh My Pi reads skills.ignoredSkills = %q below the layer", lower)
 
-			root, err := texts.BuildRoot(folder, envoy, legion, filepath.Join(dir, "root"))
+			root, err := texts.BuildRoot(folder, envoy, legion, dir, "root")
 			if err != nil {
 				t.Fatalf("texts.BuildRoot = %v", err)
 			}
+			defer root.Close()
 			over := base
 			if tc.bare {
 				over = nil
 			}
-			layer, err := texts.WriteSettingsLayer(root.Dir, over, root.Touched)
+			layer, err := texts.WriteSettingsLayer(root, over, root.Touched)
 			if err != nil {
 				t.Fatalf("texts.WriteSettingsLayer = %v", err)
 			}

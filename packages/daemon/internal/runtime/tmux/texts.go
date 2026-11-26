@@ -193,11 +193,12 @@ func (c *checkedTexts) build() (TextsLaunch, error) {
 	if err := os.RemoveAll(c.root); err != nil {
 		return TextsLaunch{}, fmt.Errorf("remove the texts root of an earlier launch: %w", err)
 	}
-	root, err := texts.BuildRoot(c.folder, c.envoyRoot, c.legionRoot, c.root)
+	root, err := texts.BuildRoot(c.folder, c.envoyRoot, c.legionRoot, filepath.Dir(c.root), filepath.Base(c.root))
 	if err != nil {
 		return TextsLaunch{}, err
 	}
-	layer, err := texts.WriteSettingsLayer(root.Dir, c.base, root.Touched)
+	defer root.Close()
+	layer, err := texts.WriteSettingsLayer(root, c.base, root.Touched)
 	if err != nil {
 		return TextsLaunch{}, err
 	}

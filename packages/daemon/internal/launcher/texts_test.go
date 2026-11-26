@@ -2,6 +2,7 @@ package launcher
 
 import (
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -514,4 +515,73 @@ func TestAPodFaultBuildingTheTextsRootIsAnOrdinaryStartRefusal(t *testing.T) {
 	if entries, _ := os.ReadDir(told); len(entries) != 0 {
 		t.Errorf("a child of the refused start ran and wrote %v", entries)
 	}
+}
+
+// A link a role plants at the state home's legion-texts, pointing at a directory outside the state
+// home, another role's, is never built through, whether the start finds it there or a role puts
+// it there after the clear: a start that finds it is refused before anything is built, as an
+// ordinary refusal naming it (clearTextsRoots), and no child starts; a link put there once the
+// clear passed, in place of the plain legion-texts the clear saw, is refused by the build itself,
+// naming it as a symlink (buildTextsRoot). Either way the directory it points at is left as it was.
+func TestALinkAtTheTextsRootsIsNeverBuiltThrough(t *testing.T) {
+	// plant puts at link a link to a directory of another role's file, and answers that directory
+	// and what it holds.
+	plant := func(t *testing.T, link string) (string, map[string]string) {
+		t.Helper()
+		target := t.TempDir()
+		writeTextsFile(t, filepath.Join(target, "kept.md"), "Another role's.\n")
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		return target, tree(t, target)
+	}
+	untouched := func(t *testing.T, target string, before map[string]string) {
+		t.Helper()
+		if after := tree(t, target); !maps.Equal(after, before) {
+			t.Errorf("the start built through the link to %s: it holds %v, was %v", target, after, before)
+		}
+	}
+
+	t.Run("planted before the start", func(t *testing.T) {
+		c := newTextsCase(t)
+		roots := filepath.Join(c.stateHome, shimwire.TextsRootsDir)
+		target, before := plant(t, roots)
+		folder, fingerprint := c.folder()
+		told := t.TempDir()
+		got := c.g.start(c.start(7, folder, fingerprint, told))
+		if got.OK || got.Texts != nil || !strings.Contains(got.Error, roots) {
+			t.Fatalf("the start whose legion-texts is a link answered %#v (texts %+v), want an ordinary refusal naming %s", got, got.Texts, roots)
+		}
+		untouched(t, target, before)
+		c.nothingWritten(7)
+		if entries, _ := os.ReadDir(told); len(entries) != 0 {
+			t.Errorf("a child of the refused start ran and wrote %v", entries)
+		}
+	})
+
+	t.Run("planted after the clear", func(t *testing.T) {
+		c := newTextsCase(t)
+		roots := filepath.Join(c.stateHome, shimwire.TextsRootsDir)
+		writeTextsFile(t, filepath.Join(roots, "g3", "agents", "oracle.md"), armOracle)
+		dir, fingerprint := c.folder()
+		given := *c.start(7, dir, fingerprint, t.TempDir()).Texts
+		if err := clearTextsRoots(given.Root); err != nil {
+			t.Fatalf("clearTextsRoots over a plain legion-texts = %v, want it cleared", err)
+		}
+		if err := os.Remove(roots); err != nil {
+			t.Fatalf("the clear left legion-texts holding something: %v", err)
+		}
+		target, before := plant(t, roots)
+		folder, err := texts.Read(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := buildTextsRoot(folder, given, nil); err == nil || !strings.Contains(err.Error(), roots+" is a symlink") {
+			t.Errorf("the build over a link put at legion-texts after the clear = %v, want a refusal naming %s as a symlink", err, roots)
+		}
+		untouched(t, target, before)
+	})
 }
