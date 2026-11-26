@@ -15,7 +15,7 @@
  * `SIGCONT` resumes it and `SIGKILL` ends it with no deregistration, as a killed pane leaves it.
  *
  * Run it from packages/envoy-client with LEGION_E2E_ENVOY_STACK=1 and
- * `bun test --timeout 930000 --preload @legion/test-fixtures/row-deadline ./test/session-stall.ts`,
+ * `bun test --timeout 550000 --preload @legion/test-fixtures/row-deadline ./test/session-stall.ts`,
  * the command of the envoy-session-stall job's step, which sets LEGION_E2E_ENVOY_STACK too.
  */
 
