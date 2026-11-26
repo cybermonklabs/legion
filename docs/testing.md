@@ -336,10 +336,8 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
 Two rules set the edges of those layers:
 
 - A rule that the Go server and the browser both implement is one row of a fixture table that both suites read.
-  How a markdown document is read is in `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md` and the `fixtures.json` in `pmdoc/testdata/`, beside the `corpus/` directory.
-  How a typed block's id is spelled and what a block pointer holds are in `typed-block-id-spellings.json` and `block-pointer-values.json`, in the same directory.
-  `splices.json` and `typed-fence-lines.json`, there too, hold the browser editor's own answers, which `pmdoc/gen/gen.ts` writes and the Go tests read: add a splice to `replaceRangeCases` in `gen.ts`, or a case to `typed-fence-lines.json`, and run `bun run gen` in `pmdoc/gen`.
-  How a text's references, the block ids they name and its code spans are read is in the JSON tables of `packages/envoy/internal/dispatch/text/testdata/`, one table for each rule, such as `code-ranges.json` for where a text's code is.
+  The table is in the package that holds the rule: `packages/envoy/internal/dispatch/pmdoc/testdata/` for how a document is read and written, `packages/envoy/internal/dispatch/text/testdata/` for how a text's references and code spans are read, and `packages/contracts/fixtures/` for a shape or a value the server and its clients share, such as the scalars Go's `unicode.IsSpace` reports (`go-unicode-isspace.json`).
+  In `pmdoc/testdata/`, `pmdoc/gen/gen.ts` writes `fixtures.json`, `splices.json` and `typed-fence-lines.json` from the browser editor's own engine: add a markdown file to `corpus/`, a splice to `replaceRangeCases` in `gen.ts` or a case to `typed-fence-lines.json`, then run `bun run gen` in `pmdoc/gen`.
   Add the shape there, not a row on each surface.
 
 - A row that drives no browser is no browser row. A command-line row goes to the tests of the
