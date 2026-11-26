@@ -2,8 +2,9 @@ kind: Added
 body: |-
   `dispatch steps` ends each line with four words: `set <model>` and `answered <counts>`. The
   counts read `<model>=<calls>(<share>%)`, joined by commas, or `none`, `unknown` or `running`. A
-  missing set model prints `-`. `dispatch plans` ends each finished issue's line with
-  `on set model <n> off <n> unknown <n>`, and prints `-` for each against an older Dispatch.
+  missing set model prints `-`. In each finished issue's line, `dispatch plans` prints
+  `on set model <n> off <n> unknown <n>` after `failed steps <n>`. Where the issue has a variant,
+  `variant <experiment>/<variant>` follows them. Against an older Dispatch, each count prints `-`.
 time: 2026-11-25T17:45:59Z
 custom:
     Issue: pr5533

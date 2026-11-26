@@ -5623,7 +5623,8 @@ scripts/e2e/plan-ratings-read.sh <PROJECT> <ISSUE>     # → "PASS: <ISSUE>: pla
 
 The check after the merge: once the release that rates each plan reaches a deployment, one real issue of the project runs to done there, and this script reads it among the project's finished issues.
 It runs `dispatch plans --project <PROJECT>` once and prints what the command printed, then one verdict on the line of `<ISSUE>`, an issue of `<PROJECT>`.
-It reads each line after the header as one finished issue, which ends with `variant <experiment>/<variant>` where the records of the issue's newest run name an experiment, and at `failed steps <n>` where they name none.
+It reads each line after the header as one finished issue, which holds `on set model <-|n> off <-|n> unknown <-|n>` after `failed steps <n>`.
+The line ends there where the records of the issue's newest run name no experiment, and with `variant <experiment>/<variant>` where they name one.
 It runs where the operator runs `dispatch` by hand, with the operator's own credential: the `dispatch` command on PATH, the session the operator's shell names (`DISPATCH_HOST`, `DISPATCH_SESSION_ID`) and the deployed Dispatch and token the operator's `envoy.json`, or `DISPATCH_URL` and `DISPATCH_TOKEN`, name.
 It sets none of those, reads no credential of its own, writes nothing and starts nothing.
 It reads no file but `lib/dispatch-read.sh` beside it, so a copy of the two runs outside a checkout of this repository too.
