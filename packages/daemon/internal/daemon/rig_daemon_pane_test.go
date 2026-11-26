@@ -475,6 +475,9 @@ func passAtHead(d rigDispatch, issue, head string, passes []string) error {
 // (shellprefix.For), so a directory earlier on the pane's PATH never wins. This replaces that
 // wrapper, after the boot wrote it, with a script that runs the stand-in.
 func rigPaneGH(stateDir, runDir string) error {
+	if stateDir != "" {
+		return nil // control: the launcher directory keeps Legion's gh wrapper
+	}
 	gh := filepath.Join(workerbin.LauncherDir(stateDir), "gh")
 	script := "#!/bin/sh\nexec " + shellprefix.Literal(filepath.Join(runDir, "bin", "gh")) + " \"$@\"\n"
 	if err := os.WriteFile(gh, []byte(script), 0o755); err != nil {
