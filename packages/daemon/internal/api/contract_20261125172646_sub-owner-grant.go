@@ -3,10 +3,12 @@ package api
 // 20261125172646 sub-owner-grant: `POST /legion/v1/plans/register` (register_plan) takes a grant of
 // the claim role `sub-owner` (`claim.RoleSubOwner`) whose agent is the sub-owner of a task of the
 // plan in force (`plan.SubOwnerAgent`), for that agent's own issue alone, and answers
-// `403 SUB_OWNER_OUTSIDE_ISSUE` to a grant for any other issue. A sub-owner's version changes only
-// the parts of its task: any version it gives while the task stands at its report, its retro or its
-// merge is answered `409 PLAN_REFUSED` naming the task and where it stands, one that changes whether
-// a task it does not write merges is answered `409 PLAN_REFUSED` naming that task, and one given for
+// `403 SUB_OWNER_OUTSIDE_ISSUE` to a grant for any other issue, and `500 RECORD_UNAVAILABLE` where
+// the issue's record cannot be read to check the grant (`404 ISSUE_NOT_FOUND` for an issue it does
+// not record). A sub-owner's version changes only the parts of its task: any version it gives while
+// the task stands at its report, its retro or its merge is answered `409 PLAN_REFUSED` naming the
+// task and where it stands, one that changes whether a task it does not write merges is answered
+// `409 PLAN_REFUSED` naming that task, and one given for
 // a task that is done or left is answered `409 TASK_DONE`, whose text names the sub-owner's next
 // act. A `plan_task` block's `parent` now places it: under a task that names `owner` it is a part of
 // that task, and under a task with none it is an element, which no task carries out.
