@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+    The daemon API fixtures hold the entry 20261125180842 launcher-workspace-read
+    (`contracts/20261125180842_launcher-workspace-read.json`): a pod's launcher reads the issue
+    workspace, which moves the launcher wire and no answer's shape.
+time: 2026-11-23T20:00:03Z
+custom:
+    Issue: pr5285
