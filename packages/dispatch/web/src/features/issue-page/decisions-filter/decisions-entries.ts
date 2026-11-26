@@ -182,10 +182,10 @@ export function useDecisionsEntries({
   issue: IssueDetails;
   /** Who is reading, which tells their own decisions from other people's. */
   reader: string | undefined;
-  /** The whole tree `view` was drawn over, taken as it is given: the tree the decisions view
-   *  read builds (`useDecisionsTree`), which the slot hands its body, and Conversation's until
-   *  that read holds an answer. It holds each ask and each decision and each statement a tie
-   *  names, and on the issue's node the decisions view the page holds (`TreeNode.views`). */
+  /** The whole tree `view` was drawn over: the tree the decisions view read builds
+   *  (`useDecisionsTree`), which the slot hands its body, and Conversation's until that read
+   *  holds an answer. It holds each ask and each decision and each statement a tie names, and on
+   *  the issue's node the decisions view the page holds (`TreeNode.views`). */
   root: TreeNode;
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
@@ -355,7 +355,7 @@ export function useDecisionsEntries({
  * the results, and of the Plan view read's answer the issue's node holds (`TreeNode.views`)
  * whether it holds a plan task. It is built without the names read, whose set of addresses is the
  * page's tree's own: no row the view draws names a chip. A view answer over one answer of
- * Conversation's read builds one tree (`viewTree`), which every caller of the same reads holds.
+ * Conversation's read is built once (`viewTree`).
  *
  * The view's slot draws the view over this tree (`slots/view-decisions.tsx`): the node its
  * address names, the nodes its words filter keeps, its rows and its keys are read over the nodes

@@ -331,8 +331,8 @@ export function decisionsParts({
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   // Each statement a tie names, resolved once for each address (`statementOf`): the one lookup
   // both the review list's membership and each decision's "informs" line read a tie by.
-  const statements = new Map<string, Statement | undefined>();
-  const statementAt = (reference: string): Statement | undefined => {
+  const statements = new Map<string, Omit<ShapedStatement, "stale"> | undefined>();
+  const statementAt = (reference: string): Omit<ShapedStatement, "stale"> | undefined => {
     if (!statements.has(reference)) {
       statements.set(reference, statementOf(reference, nodeIdOf, placed, coverageStatement));
     }
@@ -483,11 +483,18 @@ interface Placement {
   readonly parent?: ParentLine;
 }
 
+/** Each tree's placements (`placements`), by its root: a tree's are read once, and go with it. */
+const placementsByRoot = new WeakMap<TreeNode, ReadonlyMap<string, Placement>>();
+
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
  *  is edited (`TreeNode.transcluded`), with the parent it hangs under there: its one line, its
  *  address and its author's corrections of it, as the outline's filters give a row's parent
- *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. */
+ *  (`presets.ts`). The issue itself is no parent a row names: the page is the issue. Read once
+ *  per tree (`placementsByRoot`), so the write-ups of `useDecisionsEntries` and `decisionsParts`
+ *  walk one tree once. */
 export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
+  const held = placementsByRoot.get(root);
+  if (held !== undefined) return held;
   const placed = new Map<string, Placement>();
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {
     if (!placed.has(node.id)) {
@@ -499,6 +506,7 @@ export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
     for (const child of node.children) walk(child, node);
   };
   walk(root, undefined);
+  placementsByRoot.set(root, placed);
   return placed;
 }
 
@@ -531,31 +539,22 @@ function pathOf(node: Pick<TreeNode, "reference">): { readonly path?: string } {
   return path === undefined ? {} : { path };
 }
 
-/** A statement of this issue a tie's far end names, resolved once (`statementOf`): its node id,
- *  the words its line is drawn by, and, for words that are not the tree's node's, the reading
- *  the page names it by (`ShapedStatement.reading`). */
-interface Statement {
-  readonly id: string;
-  readonly reading?: ReferenceNameReading;
-  readonly words: StatementWords;
-}
-
-/** The statement of this issue `reference` names, by the one rule the review list and a
- *  decision's "informs" line read it by: where the node `placed` holds at that address is a
- *  requirement, that node; else, where the coverage read holds a row of it
- *  (`coverageStatement`), that row, read as a requirement of that node id at the row's own
- *  address and named by the reading of its words, though the tree holds a node of another kind
- *  there; else none. */
+/** The statement of this issue `reference` names, as a decision's row draws it but for whether
+ *  the tie is stale (`ShapedStatement`), by the one rule the review list and a decision's
+ *  "informs" line read it by: where the node `placed` holds at that address is a requirement,
+ *  that node; else, where the coverage read holds a row of it (`coverageStatement`), that row,
+ *  read as a requirement of that node id at the row's own address and named by the reading of
+ *  its words, though the tree holds a node of another kind there; else none. */
 function statementOf(
   reference: string,
   nodeIdOf: (reference: string) => string | undefined,
   placed: ReadonlyMap<string, Placement>,
   coverageStatement: ((reference: string) => CoverageStatement | undefined) | undefined
-): Statement | undefined {
+): Omit<ShapedStatement, "stale"> | undefined {
   const id = nodeIdOf(reference);
   if (id === undefined) return undefined;
   const node = placed.get(id)?.node;
-  if (node?.type === "requirement") return { id, words: node };
+  if (node?.type === "requirement") return { id, node, ...pathOf(node) };
   const covered = coverageStatement?.(reference);
   if (covered === undefined) return undefined;
   const words: StatementWords = {
@@ -565,7 +564,7 @@ function statementOf(
     ...(covered.text_tree === undefined ? {} : { tree: covered.text_tree }),
     type: "requirement",
   };
-  return { id, reading: nodeReading(words), words };
+  return { id, node: words, ...pathOf(words), reading: nodeReading(words) };
 }
 
 /** The statements of this issue `row`'s ties name, each once, in the ties' own order, each as
@@ -573,25 +572,18 @@ function statementOf(
  *  (`decisionsParts`). */
 function shapesOf(
   row: Pick<Decision, "links">,
-  statementAt: (reference: string) => Statement | undefined
+  statementAt: (reference: string) => Omit<ShapedStatement, "stale"> | undefined
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
   for (const link of row.links ?? []) {
     const statement = link.to.ref === undefined ? undefined : statementAt(link.to.ref);
     if (statement === undefined) continue;
-    const { id, reading, words } = statement;
-    const held = shapes.get(id);
+    const held = shapes.get(statement.id);
     if (held !== undefined) {
-      shapes.set(id, { ...held, stale: held.stale || link.stale });
+      shapes.set(statement.id, { ...held, stale: held.stale || link.stale });
       continue;
     }
-    shapes.set(id, {
-      id,
-      node: words,
-      ...pathOf(words),
-      ...(reading === undefined ? {} : { reading }),
-      stale: link.stale,
-    });
+    shapes.set(statement.id, { ...statement, stale: link.stale });
   }
   return [...shapes.values()];
 }

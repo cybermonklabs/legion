@@ -163,6 +163,15 @@ const ASKED: readonly IssueAskRow[] = [
   answeredAsk({ id: "ask-answered" }),
 ].map((asked) => ({ ...asked, last_reply: null }));
 
+/** Statement `s1` of the spec as Conversation's read answers it, which the decisions view read
+ *  leaves to that read. */
+const S1 = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
+
+/** The decision block `block` of the spec, waiting for review and tied to `S1`. */
+function tied(block: string): TreeAnswerNode {
+  return decision(block, { decision: { links: [shaped(specRef("s1"))] } });
+}
+
 /** The block of the spec that holds the reader's write-up of their answer to `ask-answered`: a
  *  `reading` block. */
 const WRITE_UP_BLOCK = "writeup";
@@ -223,12 +232,10 @@ test("a person's write-up of an answered question, named on the Decisions view's
 // page that ends before the second, and the decisions view read holds both: `#b-later` keeps the
 // view, with the focus on the later decision's row.
 test("a decision only the decisions view read holds, named on the Decisions view's address, keeps the view, with the focus on its row", async () => {
-  const tied = (block: string) => decision(block, { decision: { links: [shaped(specRef("s1"))] } });
-  const statement = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
     query?.view === "decisions"
       ? treeOf([tied("first"), tied("later")])
-      : treeOf([statement, tied("first")])
+      : treeOf([S1, tied("first")])
   );
   // The messages read is the one held: it answers last, and with it every read the tree is built
   // from is held, once the decisions view read has answered.
@@ -255,13 +262,9 @@ test("a decision only the decisions view read holds, named on the Decisions view
 // `#b-later` lands on its row in the Decisions view, and the stage never drew the outline in the
 // view's place.
 test("a decision only the decisions view read holds, its read answering after the outline's reads, keeps the view, with the focus on its row", async () => {
-  const tied = (block: string) => decision(block, { decision: { links: [shaped(specRef("s1"))] } });
-  const statement = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
   const viewOut = Promise.withResolvers<TreeAnswer>();
   spyOn(api, "getIssueTree").mockImplementation((_key, query) =>
-    query?.view === "decisions"
-      ? viewOut.promise
-      : Promise.resolve(treeOf([statement, tied("first")]))
+    query?.view === "decisions" ? viewOut.promise : Promise.resolve(treeOf([S1, tied("first")]))
   );
   const first = decisionNode("first").id;
   const later = decisionNode("later").id;
@@ -303,14 +306,12 @@ test("a refused Keep of a decision only the decisions view read holds keeps its 
   const keep = spyOn(api, "keepDecision").mockRejectedValue(
     new ApiError(409, { code: "DECISION_CHANGED", error: refusal })
   );
-  const tied = (block: string) => decision(block, { decision: { links: [shaped(specRef("s1"))] } });
-  const statement = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
   // The decisions view read answers once, and the read the refused Keep makes of it again is
   // held.
   const again = Promise.withResolvers<TreeAnswer>();
   let viewReads = 0;
   spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
-    if (query?.view !== "decisions") return Promise.resolve(treeOf([statement, tied("first")]));
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
     viewReads += 1;
     return viewReads === 1
       ? Promise.resolve(treeOf([tied("first"), tied("later")]))

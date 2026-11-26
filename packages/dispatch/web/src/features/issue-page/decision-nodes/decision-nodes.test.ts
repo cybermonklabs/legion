@@ -95,6 +95,9 @@ const ISSUE = node(KEY, "issue", null, { text: "The issue page draws one ordered
 /** The person a `decided_by` tuple names, which the read answers as context. */
 const ALICE = node("alice", "person", null, { role: "context", text: "alice" });
 
+/** The session a `decided_by` tuple names, which the read answers as context. */
+const PLANNER = node("session-planner", "session", null, { role: "context", text: "planner" });
+
 /** One answer of the tree read: the issue's node, then `nodes` in the walk's order. */
 function answer(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[] = []): TreeAnswer {
   return treeAnswer([ISSUE, ...nodes], tuples);
@@ -406,7 +409,6 @@ test("a person's decision is its answered ask", () => {
 // and it reads "Author unknown". A person's decision, an answered ask with `shaped` ties, names
 // its person the same way.
 test("a decision's author is its decided_by, and none where the read holds none", () => {
-  const planner = node("session-planner", "session", null, { role: "context", text: "planner" });
   const tree = answer(
     [
       block("r1", "requirement", SPEC, 0),
@@ -415,7 +417,7 @@ test("a decision's author is its decided_by, and none where the read holds none"
       decision("d3"),
       block("q1", "ask", SPEC, 2),
       ALICE,
-      planner,
+      PLANNER,
     ],
     [
       tuple("decided_by", "d1", "alice"),
@@ -663,9 +665,8 @@ test("a decision whose from_ask names an answered ask does not restate where it 
 // decisions read answers every decision block neither kept nor replaced; that says nothing of
 // whose it is.
 test("a decision whose decided_by names a person is that person's, and one naming a session is an agent's", () => {
-  const planner = node("session-planner", "session", null, { role: "context", text: "planner" });
   const tree = answer(
-    [decision("d-person"), decision("d-session"), decision("d-nobody"), ALICE, planner],
+    [decision("d-person"), decision("d-session"), decision("d-nobody"), ALICE, PLANNER],
     [tuple("decided_by", "d-person", "alice"), tuple("decided_by", "d-session", "session-planner")]
   );
 
@@ -689,7 +690,6 @@ test("a decision whose decided_by names a person is that person's, and one namin
 // agent's decision's review; replaced, it stands replaced. The same decision decided by a session
 // is an agent's, and every one of those rules holds for it.
 test("reviewState and inReviewList give a person's decision no review, whatever its waiting_review says", () => {
-  const planner = node("session-planner", "session", null, { role: "context", text: "planner" });
   const tied = { links: [linkTo(blockRef("spec", "r1"))] };
   const tree = answer(
     [
@@ -704,7 +704,7 @@ test("reviewState and inReviewList give a person's decision no review, whatever 
       decision("d-replaced", { decision: { ...tied, replaced: true, waiting_review: false } }),
       decision("d-session", { decision: tied }),
       ALICE,
-      planner,
+      PLANNER,
     ],
     [
       tuple("decided_by", "d-person", "alice"),

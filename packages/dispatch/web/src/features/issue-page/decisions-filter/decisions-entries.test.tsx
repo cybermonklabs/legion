@@ -10,6 +10,7 @@ import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { DECISIONS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
+import { inDocument } from "../slots/stage-fixtures";
 import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
 import { useDecisionsEntries, useDecisionsTree } from "./decisions-entries";
@@ -108,7 +109,7 @@ async function slotOver(client: QueryClient, decisions: TreeAnswer) {
       const root = useDecisionsTree(issue, page, READER);
       const view = useMemo(() => presetView(root, "decisions", "").root, [root]);
       const { parts } = useDecisionsEntries({ issue, reader: READER, root, view });
-      return { parts, signal: filterSignals(root, "", root).decisions };
+      return { parts, signal: filterSignals(root, "").decisions };
     },
     { wrapper }
   );
@@ -121,9 +122,10 @@ async function slotOver(client: QueryClient, decisions: TreeAnswer) {
 
 /** Statement `s1` of the spec as Conversation's read answers it: the statement a decision's
  *  `shaped` tie names, which the decisions view read leaves to that read. */
-const S1 = treeNode("s1", "requirement", KEY, {
-  document: { artifact_id: SPEC_DOCUMENT.id, position: 0, slug: SPEC_SLUG },
-});
+const S1 = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT));
+
+/** The decision members of a decision block tied to `S1`. */
+const TIED = { decision: { links: [shaped(specRef("s1"))] } };
 
 /** The seam's parts over `client` for the issue whose tree holds `children`, with `decisions`
  *  the decisions view held on its root (undefined for a view that holds no answer), read once. */
@@ -632,10 +634,9 @@ test("a decision stands in its part with its state from the tree read until the 
 // or not the tree the page has read so far holds its node. The seam is handed the tree that read
 // builds, as the slot hands it (`slotOver`).
 test("a decision the view read holds stands in its part where the tree read has not reached it yet", async () => {
-  const tied = { decision: { links: [shaped(specRef("s1"))] } };
-  const view = treeAnswer([decision("first", tied), decision("later", tied)]);
+  const view = treeAnswer([decision("first", TIED), decision("later", TIED)]);
   const { parts } = await slotOver(
-    heldClient([], [], treeAnswer([S1, decision("first", tied)])),
+    heldClient([], [], treeAnswer([S1, decision("first", TIED)])),
     view
   );
 
@@ -653,13 +654,12 @@ test("a decision the view read holds stands in its part where the tree read has 
 // with her name and is not on the review list, as a decision on the first page with its Change
 // does. The seam is handed the tree that read builds, as the slot hands it (`slotOver`).
 test("a waiting decision past Conversation's first page with the reader's Change in the view read stands with her decisions", async () => {
-  const tied = { decision: { links: [shaped(specRef("s1"))] } };
   const asked = {
     ...changeComment("change-later", "later", "2026-11-15T09:00:00Z", "Name the read."),
     role: "context" as const,
   };
-  const view = treeAnswer([decision("first", tied), decision("later", tied), asked]);
-  const firstPage = pagedAnswer(treeAnswer([S1, decision("first", tied)]), "next-page", 30);
+  const view = treeAnswer([decision("first", TIED), decision("later", TIED), asked]);
+  const firstPage = pagedAnswer(treeAnswer([S1, decision("first", TIED)]), "next-page", 30);
   const { parts } = await slotOver(heldClient([], [], firstPage), view);
 
   expect(
@@ -686,9 +686,8 @@ test("a waiting decision past Conversation's first page with the reader's Change
 // first, and its foot holds nothing: the later decision stands in no part until a page of the
 // Decisions view read holds it.
 test("a waiting decision Conversation's pages hold and the Decisions view read's page does not is no entry, count or part of the view", async () => {
-  const tied = { decision: { links: [shaped(specRef("s1"))] } };
-  const conversation = treeAnswer([S1, decision("first", tied), decision("later", tied)]);
-  const decisions = pagedAnswer(treeAnswer([decision("first", tied)]), "next-page", 30);
+  const conversation = treeAnswer([S1, decision("first", TIED), decision("later", TIED)]);
+  const decisions = pagedAnswer(treeAnswer([decision("first", TIED)]), "next-page", 30);
   const { parts, signal } = await slotOver(heldClient([], [], conversation), decisions);
 
   expect(

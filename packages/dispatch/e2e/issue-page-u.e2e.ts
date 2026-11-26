@@ -1758,10 +1758,10 @@ function viewEntries(
 // (`restating`); it calls none of the page's own classifiers (`restatesAnswer`,
 // `decisionNodeChanges`, `inReviewList`), so a bug in one moves the page and not the row's
 // expectation. Its control is U's code at 776d9d85, which draws the parts from Conversation's
-// root. Step (2)'s poll before Decisions is pressed has a control of its own: `IssuePresets.tsx`
-// with only the flag's "+" dropped (`e2e-job/ctl7-flag.patch`), which leaves the header's count
-// and the filter's count with their "+", so the poll fails on the flag alone. Its step (4), on
-// the decision past the first page that waits for review,
+// root. Step (2)'s poll before Decisions is pressed has a control of its own: `IssuePresets.tsx`'
+// `Signal` with only the flag's "+" dropped, which leaves the header's count and the filter's
+// count with their "+", so the poll fails on the flag alone. Its step (4), on the decision past
+// the first page that waits for review,
 // has two controls of its own: `DecisionActions.tsx` as at cc5b97fe, which finds its decision in
 // the outline read alone, which holds no node of that decision, so the row draws neither Keep
 // nor Change and the step's first assertion fails; and the Changes read from Conversation's read
@@ -1815,9 +1815,9 @@ test("every decision of a paged issue is in its part, the header's count and the
     const firstNodes = first.nodes ?? [];
     const wholeNodes = conversation.whole.nodes ?? [];
     const pageQuestions = firstNodes.filter((node) => seeded.pageQuestions.includes(node.id));
-    const firstDecision = wholeNodes.findIndex(
-      (node) => node.supertag === "decision" && (node.block_id ?? node.id) === seeded.firstBlock
-    );
+    const isFirstDecision = (node: IssueTreeNode) =>
+      node.supertag === "decision" && (node.block_id ?? node.id) === seeded.firstBlock;
+    const firstDecision = wholeNodes.findIndex(isFirstDecision);
     console.log(
       `PAGED-ROW ${key}: Conversation's first page holds ${firstNodes.length} nodes, ` +
         `${pageQuestions.length} of the ${seeded.pageQuestions.length} long open questions ` +
@@ -1836,9 +1836,7 @@ test("every decision of a paged issue is in its part, the header's count and the
       "the seed did not page: Conversation's first page names a cursor and holds none of the three nodes the read holds past it"
     ).toEqual({ cursor: true, missing: [], onTheFirstPage: [] });
     expect(
-      firstNodes.some(
-        (node) => node.supertag === "decision" && (node.block_id ?? node.id) === seeded.firstBlock
-      ),
+      firstNodes.some(isFirstDecision),
       "the seed's first decision, which settles the open question and waits for review, is on Conversation's first page, so the to-review flag is drawn before Decisions is pressed"
     ).toBe(true);
 
