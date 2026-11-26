@@ -1,5 +1,5 @@
--- 20261124085213_handoffs_check_states_serial.up.sql
--- The serial of the issue's check states (check_state_serials, 20261124085206) a `test` handoff
+-- 20261125005345_handoffs_check_states_serial.up.sql
+-- The serial of the issue's check states (check_state_serials, 20261125005338) a `test` handoff
 -- was written after: the route waits until every mark of the issue due when it began is settled,
 -- and stores the serial then, so each check.state_changed event the tester's results caused has a
 -- serial at or below it (api/check_states.go, awaitCheckStatesSettled). Null for every other

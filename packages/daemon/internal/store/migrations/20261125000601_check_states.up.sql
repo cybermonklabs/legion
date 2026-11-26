@@ -1,4 +1,4 @@
--- 20261121065041_check_states.up.sql — the daemon keeps the newest state of each before_merge
+-- 20261125000601_check_states.up.sql — the daemon keeps the newest state of each before_merge
 -- check at each head of an issue, each head's set of checks, and the serials of the state events
 -- it applied, from Dispatch's check.state_changed (intake.DispatchCheckState).
 --
@@ -34,7 +34,7 @@
 --   drop table if exists check_state_sets;
 --   drop table if exists check_state_serials;
 --   alter table issues drop column if exists check_states_seq;
---   delete from schema_version where version = 20261121065041;
+--   delete from schema_version where version = 20261125000601;
 --   commit;
 --   SQL
 --

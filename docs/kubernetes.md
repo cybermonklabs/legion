@@ -3094,7 +3094,7 @@ An issue standing in `testing` at the upgrade has no tester's completion recorde
 
 **The way back is three transactions, run with this release's daemon stopped, before the earlier image is pinned.**
 Run them newest first.
-`20261123134347_phase_return_to` adds `phases.return_to`: on the tester's row, the step its completion names for the task to return to when the states fail the testing step, kept until the states decide.
+`20261125000603_phase_return_to` adds `phases.return_to`: on the tester's row, the step its completion names for the task to return to when the states fail the testing step, kept until the states decide.
 The earlier release names the column in no statement, and each row it inserts takes the default, 0.
 Its header's way back is owed to the roll-forward alone: it drops the column and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the column back at 0 on every row:
 
@@ -3102,13 +3102,13 @@ Its header's way back is owed to the roll-forward alone: it drops the column and
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 begin;
 alter table phases drop column if exists return_to;
-delete from schema_version where version = 20261123134347;
+delete from schema_version where version = 20261125000603;
 commit;
 SQL
 ```
 
 What the drop costs is the step a tester's completion named while it still waits for its states: after the roll-forward, a fail of those states returns the task to the first implementation step before the tester.
-Then run the way back of `20261121074614_phase_verdict_gone`.
+Then run the way back of `20261125000602_phase_verdict_gone`.
 That migration keeps `phases.verdict`, which every earlier release reads and writes by name, and gives it the default `''`.
 This release writes nothing to the column, so a daemon of the earlier release, during the roll or after a rollback, reads each phase row this release wrote as one with no verdict and writes its own; a later release drops the column, once no running build reads it.
 Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial`, deletes the keys `head`, `waits_for`, `waiting` and `failing` from each queued notice and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
@@ -3119,7 +3119,7 @@ begin;
 update phases set verdict = '' where verdict <> '';
 alter table phases drop column if exists states_serial;
 update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
-delete from schema_version where version = 20261121074614;
+delete from schema_version where version = 20261125000602;
 commit;
 SQL
 ```
@@ -3129,7 +3129,7 @@ The tester's `phase-finished` notice of the testing move in this release carries
 The earlier release decodes a notice strictly and has none of these fields, so a queued notice that kept one would retry for ever there; no notice of the earlier release carries any of them, and the notice keeps its `reason`, which names the same head and checks.
 A daemon of the earlier release that runs beside this one during the roll retries such a notice until this release's daemon sends it.
 The `verdict` key needs nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
-Then run the way back in the header of `20261121065041_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
+Then run the way back in the header of `20261125000601_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
 
 ```sh
 psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
@@ -3138,7 +3138,7 @@ drop table if exists check_states;
 drop table if exists check_state_sets;
 drop table if exists check_state_serials;
 alter table issues drop column if exists check_states_seq;
-delete from schema_version where version = 20261121065041;
+delete from schema_version where version = 20261125000601;
 commit;
 SQL
 ```
@@ -3637,7 +3637,7 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
-A rollback of a store that the release with `20261123134347_phase_return_to` migrated runs the way back in that migration's header before that of 20261121074614_phase_verdict_gone, the newest first, as [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states) gives them, which deletes that version's row too.
+A rollback of a store that the release with `20261125000603_phase_return_to` migrated runs the way back in that migration's header before that of 20261125000602_phase_verdict_gone, the newest first, as [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states) gives them, which deletes that version's row too; both run before the way back of `20261125000600_production_check_failed_looks`, which is older.
 
 To roll a release at contract 94 back to contract 87, stop the daemon and run the eleven statements below.
 On a store that a release at contract 146 migrated, run the contract 146 block above first; on one that cybermonklabs/legion#3995 migrated, its four statements before that block; on one that cybermonklabs/legion#4115 migrated, the three statements of [Rolling back the project pause](#rolling-back-the-project-pause) after those four statements and before that block, once that section's first two steps are done; and on one that cybermonklabs/legion#4464 migrated, its own block after those four statements and before that block.
@@ -3715,11 +3715,8 @@ The migrations recorded above this one are these.
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261120144241_intake_failures, of dispatch://INFRA-1575, adds the tables `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads`, and touches none of the six, so the block holds over it and leaves the three tables standing, which the earlier release never reads, and a rollback to a release before it takes the steps of its own section first, [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages).
-20261121065041_check_states adds the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the way back in its own header drops them.
-20261121074614_phase_verdict_gone gives `phases.verdict`, which it keeps for every earlier release, the default `''`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which empties `phases.verdict` and drops `phases.states_serial` for the roll-forward.
 20261121170714_dispatch_issue_applied_seq adds `dispatch_issues.applied_seq` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `dispatch_issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every issue event after the drop.
 20261123050533_idle_release_keeps_no_workspace drops `workspace_bundles` and adds the table `idle_release_declines` and the column `issue_releases.turn_start`, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section first, [Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace), which makes `workspace_bundles` again, empty, drops `idle_release_declines` and `issue_releases.turn_start` and deletes its version row.
-20261123134347_phase_return_to adds `phases.return_to` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which drops the column and deletes its version row for the roll-forward.
 20261123165139_experiment_assignment_plan adds `experiment_assignments.plan` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; a rollback past it takes `plan` out of `legion.yaml` first ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 20261123212127_claim_start_failure_after_ready empties `claims.last_start_failure` on every claim stored ready, working or idle, and touches none of the six, so the block holds over it; it carries no way back, since an earlier release reads an empty start failure as none recorded.
 20261123224717_members_owed, of dispatch://INFRA-5471, adds `issues.members_owed`, true on the roots whose re-admission has still to bring their members back, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which drops the column and deletes its version row, with every daemon of the database stopped: `issues` holds the rows of every project that shares the database, and a daemon of this release still running for another project would fail every fact after the drop.
@@ -3729,6 +3726,9 @@ The migrations recorded above this one are these.
 20261124182040_issue_pod_disks adds `issue_pod_disks` and touches none of the six, so the block holds over it.
 A rollback to a release before it leaves the table in place and needs no SQL for this migration.
 20261125000600_production_check_failed_looks adds `production_checks.failed_looks` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which takes `wakeAt` off every queued `check_wake` row, a key the release before refuses as one it does not know, drops the column and deletes its version row, with every daemon of the database stopped: `production_checks` holds the checks of every project that shares the database, and a daemon of this release still running for another project would fail every fact that reads a check after the drop.
+20261125000601_check_states adds the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the way back in its own header drops them.
+20261125000602_phase_verdict_gone gives `phases.verdict`, which it keeps for every earlier release, the default `''`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which empties `phases.verdict` and drops `phases.states_serial` for the roll-forward.
+20261125000603_phase_return_to adds `phases.return_to` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which drops the column and deletes its version row for the roll-forward.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

@@ -1,4 +1,4 @@
--- 20261124085215_check_states_ci_read_at.up.sql
+-- 20261125005347_check_states_ci_read_at.up.sql
 -- When the check states settler last started a read of GitHub's check runs at a former head of an
 -- open pull request (api/check_states.go, formerHeadsOf), on the head's set row of check_states
 -- (check_block_id ''); null where no read there has started yet. The settler reads the former

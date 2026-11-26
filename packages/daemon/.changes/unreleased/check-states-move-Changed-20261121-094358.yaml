@@ -17,7 +17,7 @@ body: |-
     VERDICT_NOT_TAKEN`; a tester's plugin below 225 still sends one, which the daemon ignores.
     The refusals `TESTER_VERDICT_REQUIRED` and `VERDICT_ROLE_FORBIDDEN` are gone, the reviewer's
     task no longer names `Tester's verdict:`, and a `phase-finished` notice no longer carries
-    `verdict`. Migration `20261121074614_phase_verdict_gone` keeps `phases.verdict`, which a daemon
+    `verdict`. Migration `20261125000602_phase_verdict_gone` keeps `phases.verdict`, which a daemon
     of the release before reads and writes during the roll or after a rollback, and gives it the
     default `''`, since this release writes nothing to it (a later release drops it); it adds
     the nullable `phases.states_serial` at 0 and strips `verdict` from each queued notice; its header holds the

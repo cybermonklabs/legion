@@ -1,4 +1,4 @@
--- 20261124085219_pull_request_heads_attempted_at.up.sql
+-- 20261125005351_pull_request_heads_attempted_at.up.sql
 --
 -- When the reconcile last stamped a try of a pull request's row (pull_request_heads.attempted_at),
 -- which it does just before the row's read, whatever the read then answered. The reconcile's head

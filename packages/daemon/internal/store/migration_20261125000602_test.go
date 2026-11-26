@@ -11,9 +11,9 @@ import (
 )
 
 // phaseVerdictGoneVersion is the version of the migration this file tests.
-const phaseVerdictGoneVersion = 20261121074614
+const phaseVerdictGoneVersion = 20261125000602
 
-// 20261121074614 keeps phases.verdict, which the release before reads and writes by name, gives it
+// 20261125000602 keeps phases.verdict, which the release before reads and writes by name, gives it
 // the empty string for a default, which each row this release inserts takes, and adds
 // phases.states_serial at 0 on every row the release before wrote. The way back its header gives
 // (migrations.WayBack), run as an operator runs it through psql, empties every verdict, drops
@@ -80,7 +80,7 @@ func TestThePhaseVerdictGoneMigrationAndItsWayBack(t *testing.T) {
 	}
 	// The release before's write after the way back takes, naming the verdict.
 	exec(`update phases set verdict = 'fail' where issue = 'ACME-1' and role = 'tester'`)
-	if got, want := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261121074614`), []string{"0"}; !reflect.DeepEqual(got, want) {
+	if got, want := rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261125000602`), []string{"0"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the migration's rows after the way back = %v, want %v", got, want)
 	}
 

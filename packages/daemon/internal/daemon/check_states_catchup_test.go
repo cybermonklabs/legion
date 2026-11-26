@@ -31,7 +31,7 @@ const (
 	statesHeadTwo   = "2222222222222222222222222222222222222222"
 	statesHeadThree = "3333333333333333333333333333333333333333"
 
-	checkStatesMigrationFile = "internal/store/migrations/20261121065041_check_states.up.sql"
+	checkStatesMigrationFile = "internal/store/migrations/20261125000601_check_states.up.sql"
 )
 
 // stateLogs is the stand-in Dispatch of the boot's catch-up (awaitingDispatch) holding one event

@@ -8,13 +8,13 @@ import (
 
 // phaseReturnToVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const phaseReturnToVersion = 20261123134347
+const phaseReturnToVersion = 20261125000603
 
 // phaseReturnToRelease names the release whose way back the migration's header carries, as a
 // failure to read that block names it.
 const phaseReturnToRelease = "the release that keeps the step a tester's completion names until the check states decide"
 
-// 20261123134347 adds phases.return_to, on the tester's row the step its completion names for its
+// 20261125000603 adds phases.return_to, on the tester's row the step its completion names for its
 // task to return to when the check states fail the testing step, at its default, 0, on every row
 // the release before wrote, and the release before's insert, which names none of it, still lands
 // at 0. Its way back, the last paragraph of the migration's header (migrations.WayBack), drops the
@@ -54,7 +54,7 @@ func TestThePhaseReturnToComesAtZeroAndItsWayBackLetsItComeAgain(t *testing.T) {
 	exec(wayBackOf(t, phaseReturnToVersion, phaseReturnToRelease))
 	const column = `select count(*)::text from information_schema.columns where table_schema = current_schema()
 		and table_name = 'phases' and column_name = 'return_to'`
-	const version = `select count(*)::text from schema_version where version = 20261123134347`
+	const version = `select count(*)::text from schema_version where version = 20261125000603`
 	if got := append(rowsAsText(t, store, column), rowsAsText(t, store, version)...); !reflect.DeepEqual(got, []string{"0", "0"}) {
 		t.Fatalf("after the way back the column and the version row = %v, want neither", got)
 	}

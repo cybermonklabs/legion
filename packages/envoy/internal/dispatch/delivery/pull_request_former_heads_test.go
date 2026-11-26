@@ -19,7 +19,7 @@ import (
 // foldedFormerHeadsOf is the former heads of the pull request repo#number stands for, by commit,
 // as the check states settler reads them: once the records the writes of pull_request_heads
 // appended under any of its names are applied (pull_request_former_heads_fold, migration
-// 20261124122830), which each settle of an issue runs first for the issue's open pull requests
+// 20261125005352), which each settle of an issue runs first for the issue's open pull requests
 // (pull_request_former_heads_drain). Every name of one pull request reads its one history.
 func foldedFormerHeadsOf(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) []string {
 	t.Helper()

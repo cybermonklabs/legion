@@ -18,7 +18,7 @@ package api
 // (workflow's decideTesting). `returnTo`, 219's field, rides a tester's completion with no
 // verdict: the route refuses it on any other completion 400 `RETURN_TO_NEEDS_FAIL`, the workflow
 // keeps it with the completion until the states decide (`phases.return_to`, store migration
-// 20261123134347_phase_return_to), and a pass does not use it. A tester's plugin below this
+// 20261125000603_phase_return_to), and a pass does not use it. A tester's plugin below this
 // contract, in a turn when its daemon was upgraded, still sends `pass` or `fail`: the route takes
 // its completion and ignores the verdict, which no longer makes the completion's key, and any
 // other role's verdict below it is refused as above (`api.CheckStatesContract`). The reviewer's

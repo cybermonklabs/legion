@@ -2600,7 +2600,7 @@ func TestResidentRolesMigrationDropsOnlyTheQueuedPhaseEndSuspends(t *testing.T) 
 // record: it gives phases.verdict, which this release no longer writes and the release before
 // still reads and writes, the empty string for its default, adds phases.states_serial, and strips
 // the key verdict from every queued notice.
-const phaseVerdictGoneVersion = 20261121074614
+const phaseVerdictGoneVersion = 20261125000602
 
 // A phase-finished notice the release before queued names the tester's verdict, which the notice
 // no longer has. The migration strips the key from each stored notice: the release before's notice

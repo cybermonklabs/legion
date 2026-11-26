@@ -1,4 +1,4 @@
--- 20261124085216_check_states_owed_reads_from.up.sql
+-- 20261125005348_check_states_owed_reads_from.up.sql
 -- When the check states settler first kept a mark because a settle that held it left a read of
 -- GitHub's check runs at a former head of an open pull request unstarted (api/check_states.go,
 -- publish); null on every other mark. Such a mark is settled once a read of each former head a

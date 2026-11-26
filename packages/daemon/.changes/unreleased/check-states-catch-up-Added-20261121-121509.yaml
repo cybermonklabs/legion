@@ -11,7 +11,7 @@ body: |-
     while the daemon was down, or while a release before this one ran, is held, and a tester's
     move waiting on it decides at the boot. The catch-up applies each state event it reads whether
     or not `processed_events` records it, which applying again leaves unchanged, so after the way
-    back of `20261121065041_check_states` and the roll-forward every state is held again. An issue
+    back of `20261125000601_check_states` and the roll-forward every state is held again. An issue
     Dispatch keeps refusing is read again and passed over under the same rule as a root.
 time: 2026-11-21T12:15:09Z
 custom:

@@ -375,7 +375,7 @@ type Notice struct {
 	// waits for; on a move back, each check that does not pass there, with its state and reason.
 	// The move writes the Reason and these from one value (workflow's testingMove), so the architect
 	// reads each as a value and not only inside a sentence. A release before these keys decodes a
-	// notice strictly (DisallowUnknownFields), so the way back of 20261121074614_phase_verdict_gone
+	// notice strictly (DisallowUnknownFields), so the way back of 20261125000602_phase_verdict_gone
 	// deletes them from each queued notice before that release boots.
 	Head     string         `json:"head,omitempty"`
 	WaitsFor string         `json:"waits_for,omitempty"`
@@ -2199,7 +2199,7 @@ func DecodeOutboxPayload(row OutboxRow) (OutboxPayload, error) {
 
 // releasedNotice is a notice as a build of the release before can write it: a Notice that may
 // name the tester's verdict under the key verdict, which Notice no longer has. Such a notice is
-// one queued before the upgrade, which migration 20261121074614_phase_verdict_gone strips; one a
+// one queued before the upgrade, which migration 20261125000602_phase_verdict_gone strips; one a
 // daemon of the release before queues on the database the two share during a roll, after that
 // migration ran; or one a listener reports failed with the payload as it went out. Decoded into
 // this, the key is read and dropped, so each such notice is sent with the rest of what it says,

@@ -663,7 +663,7 @@ var errCheckStatesNotMarked = errors.New("the check states of the settled pull r
 // handleChecksEnvelope processes one `kind:"checks"` envelope: the settlement the listener's CI
 // summary loop publishes once every check run of a commit of a pull request has finished
 // (cistore). It marks the check states of the issue the pull request's open head belongs to owed
-// (check_states_owe, migration 20261124085206), in a statement of its own, whose commit notifies
+// (check_states_owe, migration 20261125005338), in a statement of its own, whose commit notifies
 // the check states settler: the settler reads the check runs at the head from GitHub again and
 // publishes the state of each check CI proves that changed (api/check_states.go). The settlement's
 // own fields decide nothing past the pull request it names, since any caller of the listener's
@@ -701,7 +701,7 @@ func (in *Intake) handleChecksEnvelope(ctx context.Context, _ DeliverySettings, 
 }
 
 // markOpenHeadsOwed marks owed the check states of every issue that holds an open pull request
-// head, in one statement, the backfill migration's (20261124085214). Each take-over of the
+// head, in one statement, the backfill migration's (20261125005346). Each take-over of the
 // durable runs it before it changes the durable (heldDurable.beforeTakeOver). The holder before
 // may be a build that acknowledges a settlement of a pull request's checks with no mark, as every
 // build before these marks does, and nothing else would read the run that settlement announced:

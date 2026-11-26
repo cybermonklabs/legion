@@ -1,4 +1,4 @@
--- 20261121074614_phase_verdict_gone.up.sql — a phase completion carries no verdict: the states
+-- 20261125000602_phase_verdict_gone.up.sql — a phase completion carries no verdict: the states
 -- Dispatch publishes of the issue's before_merge checks at the tested head decide the testing
 -- phase (workflow's decideTesting), so the record keeps no verdict of the tester's.
 --
@@ -53,7 +53,7 @@
 -- update phases set verdict = '' where verdict <> '';
 -- alter table phases drop column if exists states_serial;
 -- update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
--- delete from schema_version where version = 20261121074614;
+-- delete from schema_version where version = 20261125000602;
 -- commit;
 alter table phases alter column verdict set default '';
 alter table phases add column states_serial bigint default 0 check (states_serial >= 0);

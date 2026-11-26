@@ -26,7 +26,7 @@ import (
 // testing move reads the states at the head the tester tested, so a result recorded there after
 // the move still publishes its state there. Each write of pull_request_heads that can move a pull
 // request's history appends a record of it, by a trigger in the writer's own transaction
-// (pull_request_former_heads_moves, migration 20261124122830), so a head is a former head whether
+// (pull_request_former_heads_moves, migration 20261125005352), so a head is a former head whether
 // or not a settle ran while the pull request was there; a settle applies the records of its
 // issue's open pull requests before it reads their former heads (the drain, settleRound), and each
 // pass applies the rest (foldLeftRecords). A head an open pull request left before that migration
@@ -39,7 +39,7 @@ import (
 //
 // A write that can change a state does not publish anything itself: a row trigger on each table a
 // state is computed from marks the issue owed, in the writer's own transaction
-// (check_states_owe, migration 20261124085206, and the triggers after it), and notifies
+// (check_states_owe, migration 20261125005338, and the triggers after it), and notifies
 // CheckStatesOwedChannel, which Postgres delivers at the writer's commit and never for a rollback.
 // So no writer runs code of this file or takes a lock it did not take before: the triggers of the
 // former heads only read, append and mark too, and the settler alone rewrites what they append, so
@@ -192,7 +192,7 @@ func (c *checkStatesSettler) owedIssues(ctx context.Context) ([]string, error) {
 }
 
 // foldLeftRecords applies the records of up to batch pull requests that the writes of
-// pull_request_heads appended (pull_request_former_heads_moves, migration 20261124122830), the
+// pull_request_heads appended (pull_request_former_heads_moves, migration 20261125005352), the
 // pull request of the oldest record first, each in a statement of its own that takes that pull
 // request's lock alone (pull_request_former_heads_fold), and answers whether it took a full batch.
 // A record names the row it was written under; the fold finds the pull request that name stands
@@ -300,7 +300,7 @@ func (c *checkStatesSettler) settleRound(ctx context.Context, issue string) (mor
 		// Each mark read committed before this compute, in the transaction of its change, so the
 		// compute sees every change the marks record. The drain first applies, under each pull
 		// request's lock, the records the writers' triggers appended and the candidates they owe
-		// the issue (pull_request_former_heads_drain, migration 20261124122830): the writers only
+		// the issue (pull_request_former_heads_drain, migration 20261125005352): the writers only
 		// append, so the settle writes the former heads its compute reads.
 		if _, err := pool.Exec(ctx, `select pull_request_former_heads_drain($1)`, issue); err != nil {
 			return false, fmt.Errorf("drain the former heads owed to %s: %w", issue, err)
@@ -368,7 +368,7 @@ func dueMarksOf(ctx context.Context, pool *store.Pool, issue string) ([]int64, i
 // formerHeadsHeld is the start of a statement over the open pull requests of an issue, given as
 // the arrays repos and numbers, the statement's placeholders of their rows' names and numbers:
 // held is each row with the identity of the pull request it stands for
-// (pull_request_former_heads_pull_of, migration 20261124122830), null where the settler has met
+// (pull_request_former_heads_pull_of, migration 20261125005352), null where the settler has met
 // none of its names, and first is true on one row of each pull request, the row stored under its
 // canonical name where it has one. A pull request's history is the identity's, whichever of its
 // names its rows are stored under, so the settler reads it once, for that row.
@@ -518,7 +518,7 @@ type formerHeadsReads struct {
 }
 
 // verifyFormerHeads confirms the candidates (pull_request_former_heads rows whose verified is
-// false, migration 20261124122830): the commits of results the settle of an open pull request's
+// false, migration 20261125005352): the commits of results the settle of an open pull request's
 // issue reads, recorded on any issue against a check of its Verification document, which the
 // install seeded, or the drain left for a result recorded since at a commit that is no head of the
 // pull request Dispatch knows, or for a row that started at the issue since, and which may or may
