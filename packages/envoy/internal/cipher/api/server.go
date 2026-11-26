@@ -618,11 +618,10 @@ func (s *server) edgeListenerCaller(w http.ResponseWriter, r *http.Request) (cal
 }
 
 // issuerNamed reports whether the entry that lists identity's account, whose issuer names are
-// issuers, takes identity's token (PlatformIdentity.TakenFrom: a Kubernetes token only from an
-// issuer the entry names, a Google token always), or writes the refusal. The refusal is the 403
-// code of an account the entry's list does not name, its sentence naming entry. It is the issuer
-// check accountCaller holds a BROKER_API_ACCOUNTS entry to and edgeListenerCaller an edge
-// listener's entry of BROKER_NATS_SERVICES.
+// issuers, takes identity's token (PlatformIdentity.TakenFrom), or writes the refusal. The refusal
+// is the 403 code of an account the entry's list does not name, its sentence naming entry. It is
+// the issuer check accountCaller holds a BROKER_API_ACCOUNTS entry to and edgeListenerCaller an
+// edge listener's entry of BROKER_NATS_SERVICES.
 func issuerNamed(w http.ResponseWriter, identity PlatformIdentity, issuers []string, code, entry string) bool {
 	if identity.TakenFrom(issuers) {
 		return true
@@ -632,9 +631,8 @@ func issuerNamed(w http.ResponseWriter, identity PlatformIdentity, issuers []str
 }
 
 // identityAccount verifies r's bearer, a caller's own identity token, and answers what it says
-// of its caller (PlatformIdentity: the token's Account, Google and Issuer, its Issued and Expiry
-// left zero, since liveIdentityToken judges the token's times here), or writes the refusal: the
-// one verification accountCaller and edgeListenerCaller share.
+// of its caller (PlatformIdentity), or writes the refusal: the one verification accountCaller and
+// edgeListenerCaller share.
 //
 // A caller presents one of two tokens: a Kubernetes service account's own projected token, which
 // names the account by its subject, or a machine's Google identity token, which names it by its
@@ -662,8 +660,8 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (Platfo
 	if s.deps.AccountTokens != nil {
 		claims, err := s.deps.AccountTokens.VerifyAccount(r.Context(), raw)
 		if !errors.Is(err, oidc.ErrIssuer) {
-			identity := PlatformIdentity{Account: claims.Subject, Issuer: claims.Issuer.Name}
-			return identity, s.liveIdentityToken(w, err, identity.Google, claims.IssuedAt, claims.Expiry)
+			identity := PlatformIdentity{Account: claims.Subject, Issuer: claims.Issuer.Name, Issued: claims.IssuedAt, Expiry: claims.Expiry}
+			return identity, s.liveIdentityToken(w, err, identity)
 		}
 	}
 	if s.deps.GoogleAccountTokens != nil {
@@ -673,8 +671,8 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (Platfo
 				writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the Google identity token names no verified account, so it names no caller (ask for it with format=full)")
 				return PlatformIdentity{}, false
 			}
-			identity := PlatformIdentity{Account: token.Identity.Account, Google: true}
-			return identity, s.liveIdentityToken(w, err, identity.Google, token.IssuedAt, token.Expiry)
+			identity := PlatformIdentity{Account: token.Identity.Account, Google: true, Issued: token.IssuedAt, Expiry: token.Expiry}
+			return identity, s.liveIdentityToken(w, err, identity)
 		}
 	}
 	writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's token names no issuer this broker trusts for its API callers")
@@ -682,25 +680,24 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (Platfo
 }
 
 // liveIdentityToken is identityAccount's judgement of one token its verifier judged, whichever
-// kind it is: err is what the verifier answered, and google whether that was the Google
-// verifier. It reports whether the token is sound, or writes the refusal. A Kubernetes token's
-// oidc.ErrIssuerUnavailable is 503 OIDC_ISSUER_UNAVAILABLE; the Google verifier's outage stays
-// the 401 it was.
-func (s *server) liveIdentityToken(w http.ResponseWriter, err error, google bool, issuedAt, expiry time.Time) bool {
+// kind it is: err is what the verifier answered. It reports whether the token is sound, or writes
+// the refusal. A Kubernetes token's oidc.ErrIssuerUnavailable is 503 OIDC_ISSUER_UNAVAILABLE; the
+// Google verifier's outage stays the 401 it was.
+func (s *server) liveIdentityToken(w http.ResponseWriter, err error, identity PlatformIdentity) bool {
 	switch {
 	case errors.Is(err, oidc.ErrExpired):
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED", "the caller's identity token has expired")
 		return false
-	case !google && errors.Is(err, oidc.ErrIssuerUnavailable):
+	case !identity.Google && errors.Is(err, oidc.ErrIssuerUnavailable):
 		writeIssuerUnavailable(w)
 		return false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the caller's identity token does not verify")
 		return false
-	case issuedAt.IsZero():
+	case identity.Issued.IsZero():
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token names no issue time (iat)")
 		return false
-	case expiry.Sub(issuedAt) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
+	case identity.Expiry.Sub(identity.Issued) > machine.MaxTokenLoginLifetime+s.deps.Proof.Skew:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_TOO_LONG_LIVED", "the caller's identity token lives longer than an hour from its issue")
 		return false
 	}

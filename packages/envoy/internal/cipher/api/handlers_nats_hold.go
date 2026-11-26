@@ -60,11 +60,11 @@ type NATSHold struct {
 }
 
 // PlatformIdentity is what a verified platform identity token says of its account, as the auth
-// service's verifier answers it (natscallout.PlatformTokens.Verify). Each of its readers reads
-// this one struct: the auth service (natscallout, as ServiceIdentity) of a service's token, the
-// hold routes (NATSHold.OperatorToken) of the operator's, and the API's identity-token callers
-// (accountCaller and edgeListenerCaller, as identityAccount answers it) of a listed caller's or an
-// edge listener's.
+// service's verifier (natscallout.PlatformTokens.Verify) and the API's identityAccount both answer
+// it. Each of its readers reads this one struct: the auth service (natscallout, as
+// ServiceIdentity) of a service's token, the hold routes (NATSHold.OperatorToken) of the
+// operator's, and the API's identity-token callers (accountCaller and edgeListenerCaller, as
+// identityAccount answers it) of a listed caller's or an edge listener's.
 type PlatformIdentity struct {
 	// Account is the account the token names.
 	Account string
@@ -80,11 +80,7 @@ type PlatformIdentity struct {
 // TakenFrom reports whether an entry whose issuer names are issuers takes p's token: a Google
 // token always, since a Google entry names no issuer, and a Kubernetes token only from an issuer
 // the entry names, since the same account name in another cluster is another ServiceAccount, which
-// the entry does not list. It is the one issuer rule of every entry that lists an account: the
-// operator entry's (operatorCaller), a BROKER_API_ACCOUNTS entry's and an edge listener's
-// (issuerNamed), and every BROKER_NATS_SERVICES entry's at the auth service (natscallout).
-// BROKER_SERVICE_LOGINS entries, which take Kubernetes tokens alone, keep the same check in
-// machine.verifyKubernetes, below this package.
+// the entry does not list.
 func (p PlatformIdentity) TakenFrom(issuers []string) bool {
 	return p.Google || slices.Contains(issuers, p.Issuer)
 }

@@ -511,11 +511,12 @@ jobs:
       # The step carries a package deadline of its own, as the envoy race lanes do: under go
       # test's ten-minute default, internal/daemon, by far the slowest of the five packages, took
       # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The project release's tests took the whole
-      # package past 30 minutes (docs/testing.md), and TestAProjectMovesToAnotherClusterAndBack took
-      # 243 s without -race in an issue pod on 2026-11-15; each of the three legs that run the
-      # package runs a group of its tests, about a third, under these 30 minutes.
+      # main at job 125691048644 (run 41562777668). No single test dominated it before the project
+      # release's tests: a local run then timed 648 tests one after another, the slowest at 44 s.
+      # Those tests took the whole package to more than 1,980 s, past 30 minutes (docs/testing.md),
+      # and TestAProjectMovesToAnotherClusterAndBack took 243 s without -race in an issue pod on
+      # 2026-11-15; each of the three legs that run the package runs a group of its tests, about a
+      # third, under these 30 minutes.
       #
       # The -skip is the plugin-pack job's three tests, the ones of internal/daemon that
       # ci_job_reads.py's PLUGIN_PACK_TESTS names, a fourth test of that package loading a plugin
