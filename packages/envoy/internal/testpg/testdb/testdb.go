@@ -13,7 +13,8 @@
 // packages give out its clones as migrated stores, and a test of either store that wants one calls
 // its storetest instead. Every URL a Server hands out carries the test binary's deadline as its
 // connect bound (WithConnectDeadline), and every drop of a database here but ProcessDatabaseOn's
-// waits out the backends still attached to it until that same deadline (dropDatabase).
+// waits out the backends still attached to it until that same deadline (dropDatabase). Every
+// database made here runs with JIT off, as production's databases do (WithoutJIT).
 //
 // It imports no testcontainers package, so a test helper every Postgres-backed test links (the
 // broker's storetest among them) does not pay testcontainers' package init, which walks every
@@ -76,7 +77,22 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 			t.Fatalf("drop database %s: %v", name, err)
 		}
 	})
+	adminExec(t, adminURL, server.Host, WithoutJIT(name))
 	return databaseURL(*server, name)
+}
+
+// WithoutJIT is the statement that turns JIT off for every session that connects to the database
+// name from then on, as production runs every statement: Cloud SQL does not support PostgreSQL's
+// LLVM JIT, and CI's Postgres image runs with it on. Under jit = on a statement whose estimate
+// passes jit_above_cost compiles before it runs, which production never pays: main's closure
+// statement, the oracle of internal/dispatch/refs's comparisons, estimates past a million on a
+// fixture of 200 issues and spent 445-475 ms of each 453-564 ms run compiling 141 functions,
+// 200 times, most of that package's time (dispatch://INFRA-1075). The setting is the database's,
+// so it reaches every pool and process a test opens there, and it goes with the database: no
+// setting of the server changes. A clone does not copy its template's settings, so every database
+// takes it when it is made, a template included, so a migration runs as production's does too.
+func WithoutJIT(name string) string {
+	return "alter database " + name + " set jit = off"
 }
 
 // newDatabaseName is prefix, an underscore and eight random bytes in hex (randomSuffix).

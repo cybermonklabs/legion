@@ -98,9 +98,10 @@ func (s Server) urlAt(t testing.TB, now time.Time) url.URL {
 // Dispatch's 12.7 MB template per clone, 16 GiB over one run of its api and docs packages. A file
 // copy writes a few hundred bytes of log; Postgres forces a checkpoint before and after the copy.
 //
-// The template changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to
-// the whole server, which can hold other databases (the one packages/envoy/scripts/dev-postgres.sh
-// runs holds the local Dispatch's), and a change to them outlives the run.
+// The template changes no setting of the server: fsync, full_page_writes and max_wal_size belong
+// to the whole server, which can hold other databases (the one packages/envoy/scripts/dev-postgres.sh
+// runs holds the local Dispatch's), and a change to them outlives the run. It sets one setting of
+// each database it makes, which goes with the database: JIT is off (WithoutJIT), as production's.
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
 // drops. Dropping a database forces a checkpoint and waits for it, and every package testing
@@ -195,6 +196,9 @@ func (tp *Template) clone(t testing.TB, template string) string {
 	}
 	// Registered before the caller opens a pool on the clone, so it runs after that pool's close.
 	t.Cleanup(func() { tp.drop(name) })
+	if _, err := tp.admin.Exec(context.Background(), WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on the clone %s: %v", name, err)
+	}
 	return databaseURL(tp.serverURL, name)
 }
 
@@ -234,6 +238,9 @@ func (tp *Template) Other(t testing.TB) string {
 			return
 		}
 		tp.other = name
+		if _, err := tp.admin.Exec(context.Background(), WithoutJIT(name)); err != nil {
+			tp.otherErr = fmt.Errorf("turn JIT off on the binary's other database: %w", err)
+		}
 	})
 	if tp.otherErr != nil {
 		t.Fatalf("%v", tp.otherErr)
@@ -440,6 +447,9 @@ func (tp *Template) makeTemplate(entry *madeTemplate, migrate func(ctx context.C
 		return fmt.Errorf("create template database: %w", err)
 	}
 	entry.name = name
+	if _, err := tp.admin.Exec(ctx, WithoutJIT(name)); err != nil {
+		return fmt.Errorf("turn JIT off on the template database: %w", err)
+	}
 	if err := migrate(ctx, databaseURL(tp.serverURL, name)); err != nil {
 		return fmt.Errorf("migrate template database: %w", err)
 	}

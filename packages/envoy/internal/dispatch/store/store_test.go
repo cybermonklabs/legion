@@ -1138,6 +1138,7 @@ func migratedTemplate(t *testing.T, admin url.URL, version int) string {
 	}
 	adminExec(t, admin, statement)
 	migratedTemplates.made = append(migratedTemplates.made, name)
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	ctx := context.Background()
 	database, err := Open(ctx, databaseOn(admin, name))
 	if err != nil {
@@ -1170,6 +1171,7 @@ func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store
 			t.Fatalf("drop %s, the copy of %s: %v", name, template, err)
 		}
 	})
+	adminExec(t, admin, testdb.WithoutJIT(name))
 	store, err := Open(context.Background(), databaseOn(admin, name))
 	if err != nil {
 		t.Fatalf("open the copy of %s: %v", template, err)
