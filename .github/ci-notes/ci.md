@@ -1293,7 +1293,8 @@ restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
 without it an entry grew with each fill, go-envoy-test from 690 MB to 2,039 MB in a day, and every
-job that restores it downloaded the growth), and saves the result under the job's key followed by
+job that restores it downloaded the growth) and from the module cache every zip, which no build
+reads (.github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips), and saves the result under the job's key followed by
 the commit (`-${{ github.sha }}`). No entry
 carries the job's key itself, so GitHub's matching gives each job the newest entry whose key
 starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every

@@ -60,24 +60,26 @@ whole jobs 4.5 and 4.2 min), against 274 s and 214 s for the `-c` fill (jobs 139
 139585275017). On main's entry this fill's jobs took 2.9 and 2.7 min, an 8 s save included (jobs
 139585272770 and 139585272357).
 
-## Why the go-envoy-test fill deletes the module zips
+## Why the fills delete the module zips
 
 Go reads a module it has extracted from its tree, ~/go/pkg/mod/<module>@<version>. The zip that
 tree came from, under ~/go/pkg/mod/cache/download/<module>/@v/, is read only to extract the tree
 again when it is missing, and by `go mod download` and `go mod verify`, which no job that
-restores this entry runs: a build checks that the tree and its .ziphash exist
+restores these entries runs: a build checks that the tree and its .ziphash exist
 (cmd/go/internal/modfetch/fetch.go, DownloadDir), and the .info, .mod and .ziphash files beside
-the zip stay. So the fill deletes the zips before it saves. A job that does need a zip downloads
-it again, as it downloads a module the entry never held.
+the zip stay. So every fill that saves a module cache deletes its zips before the save:
+go-cache-working-set.sh's `end` does it for go-daemon, go-notices, go-envoy and go-envoy-test,
+and its `zips` alone for go-envoy-infra, which builds from nothing and has no `begin`. A job that
+does need a zip downloads it again, as it downloads a module the entry never held.
 
-Measured in the same runs: the zips were 160 files and 272 MB of the arm64 entry's module cache
-(150 and 210 MB on x64), stored as they are, since a zip does not compress again. The saved entry
-went from 939 MB to 708 MB on arm64 and from 859 MB to 690 MB on x64, though this fill keeps
-about 330 more build cache entries (the test mains and the natslive packages), and envoy-go's
-restore from 20 s to 16 s. On the entry without zips, `GOPROXY=off go list -deps -test ./...`
-passed, so every package of the module and of its tests is served from the trees; with one tree
-removed from a copy of that cache it failed, naming the module it had to download, and on the
-entry with zips the same removal passed, since the zip extracted the tree again.
+go-envoy-test's were measured first, in its scratch runs above: 160 zips and 272 MB of the arm64
+entry's module cache (150 and 210 MB on x64), stored as they are, since a zip does not compress
+again. The saved entry went from 939 MB to 708 MB on arm64 and from 859 MB to 690 MB on x64,
+though that fill also kept about 330 more build cache entries, and envoy-go's restore from 20 s to
+16 s. On the entry without zips, `GOPROXY=off go list -deps -test ./...` passed, so every package
+of the module and of its tests is served from the trees; with one tree removed from a copy of
+that cache it failed, naming the module it had to download, and on the entry with zips the same
+removal passed, since the zip extracted the tree again.
 
 The zips are not left out by a `!` line in the save's path list. actions/cache resolves its path
 list with @actions/glob and `implicitDescendants: false`
