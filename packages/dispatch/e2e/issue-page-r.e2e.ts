@@ -305,9 +305,14 @@ test("a new node below and under is a prose block the reader types @phone", asyn
       await held.promise;
       await route.continue();
     };
-    // The hold stays routed once released, and passes each later read through: unrouting it here
-    // raced the read it released, whose `route.continue` then failed as already handled.
-    await page.route(treeReadRoute(key), hold);
+    // The hold takes the tree reads that name no view, Graph's among them: the editor of the tree
+    // artifact opens its room only once the issue's view read answers (`?view=spec`,
+    // `issueViewOfQuery`, which `ProofDocument.tsx`'s admission waits for), so a hold on that read
+    // put no caret in the new row. The hold stays routed once released, and passes each later
+    // read through: unrouting it here raced the read it released, whose `route.continue` then
+    // failed as already handled.
+    const treeRead = treeReadRoute(key);
+    await page.route((url) => treeRead(url) && !url.searchParams.has("view"), hold);
     try {
       await openRowMenu(page, "press", "the prose block");
       await menuEntry(page, EDIT_LABELS.edit_new_under).click();
