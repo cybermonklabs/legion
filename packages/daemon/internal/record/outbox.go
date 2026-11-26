@@ -1569,19 +1569,19 @@ func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 // checkLeftPodWorkspace), and the teardown and the suspension that a clean read lets through take
 // that pod or nothing (IssueRelease.PodUID, IssueSuspend.PodUID).
 type IssueWorkspaceCheck struct {
-	Tree           string       `json:"tree"`
-	Generation     uint64       `json:"generation"`
-	TreeGeneration uint64       `json:"treeGeneration"`
-	Role           claim.Role   `json:"role"`
+	Tree           string     `json:"tree"`
+	Generation     uint64     `json:"generation"`
+	TreeGeneration uint64     `json:"treeGeneration"`
+	Role           claim.Role `json:"role"`
 	// Claim is the claim whose shim is asked, where the release names it. A row that names none
 	// asks the claim of the worker on Role's step (WorkerClaim), as a row the release before
 	// wrote does.
-	Claim          claim.Token  `json:"claim,omitempty"`
-	CloseRoles     []claim.Role `json:"closeRoles,omitempty"`
-	TurnStart      time.Time    `json:"turnStart,omitzero"`
-	Launcher       bool         `json:"launcher,omitempty"`
-	Close          bool         `json:"close,omitempty"`
-	PodUID         string       `json:"podUid,omitempty"`
+	Claim      claim.Token  `json:"claim,omitempty"`
+	CloseRoles []claim.Role `json:"closeRoles,omitempty"`
+	TurnStart  time.Time    `json:"turnStart,omitzero"`
+	Launcher   bool         `json:"launcher,omitempty"`
+	Close      bool         `json:"close,omitempty"`
+	PodUID     string       `json:"podUid,omitempty"`
 }
 
 // LeftPodClose is whether the check is the first act of a left pod's close (CloseRoles, or Close

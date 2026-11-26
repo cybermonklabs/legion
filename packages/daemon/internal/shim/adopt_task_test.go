@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -170,7 +171,7 @@ func newTaskPod(t *testing.T) *taskPod {
 
 // shim runs a shim whose LEGION_WORKSPACE is the issue's working copy, with warm as its CodeGraph
 // warm-up, and answers the daemon's end of its stream.
-func (pod *taskPod) shim(t *testing.T, warm func(context.Context, string, time.Time)) *peer {
+func (pod *taskPod) shim(t *testing.T, warm func(context.Context, procgroup.Starter, string, time.Time)) *peer {
 	t.Helper()
 	path := socketPath(t)
 	daemon := listen(t, path)
@@ -251,7 +252,7 @@ type warmedDirs struct {
 	dirs []string
 }
 
-func (w *warmedDirs) record(_ context.Context, dir string, _ time.Time) {
+func (w *warmedDirs) record(_ context.Context, _ procgroup.Starter, dir string, _ time.Time) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.dirs = append(w.dirs, dir)
