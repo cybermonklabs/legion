@@ -199,10 +199,11 @@ func TestACICheckRepairLandsOnlyOnTheCheckItJudged(t *testing.T) {
 }
 
 // A check's marks, subject and program, are read by no rule, so a write that changes only them
-// does not introduce the block (refuseCICheckBlocks): a check carrying a ci_check that breaks a
+// does not introduce the block (introducedCIChecks): a check carrying a ci_check that breaks a
 // rule, left by another writer, is not refused for an edit of its marks, as it is not for an edit
 // elsewhere in the document. A change of an attribute a rule reads, its run here, introduces the
-// block, and the write is refused naming it. No result is read: the run rule decides first.
+// block, and the write is refused naming it (refuseCICheckText). No result is read: the run rule
+// decides first.
 func TestAChangeOfACheckMarkAloneDoesNotJudgeTheChecksCICheckAgain(t *testing.T) {
 	prior, err := pmdoc.Parse(ciCheckOf("c1", `run="go test ./..." `+ciCheckKept))
 	if err != nil {
@@ -213,7 +214,11 @@ func TestAChangeOfACheckMarkAloneDoesNotJudgeTheChecksCICheckAgain(t *testing.T)
 		if err != nil {
 			t.Fatalf("parse the write adding %s: %v", marks, err)
 		}
-		if err := refuseCICheckBlocks(context.Background(), nil, "doc-1", tree, prior); err != nil {
+		introduced := introducedCIChecks(tree, prior)
+		if len(introduced) != 0 {
+			t.Errorf("a write that adds %s to a check left breaking a rule introduces %v, want no block", marks, introduced)
+		}
+		if err := refuseCICheckText(introduced); err != nil {
 			t.Errorf("a write that adds %s to a check left breaking a rule = %v, want it taken", marks, err)
 		}
 	}
@@ -222,7 +227,7 @@ func TestAChangeOfACheckMarkAloneDoesNotJudgeTheChecksCICheckAgain(t *testing.T)
 		t.Fatalf("parse the write changing the run: %v", err)
 	}
 	var invalid *ErrInvalidCICheck
-	if err := refuseCICheckBlocks(context.Background(), nil, "doc-1", tree, prior); !errors.As(err, &invalid) || invalid.BlockID != "c1" {
+	if err := refuseCICheckText(introducedCIChecks(tree, prior)); !errors.As(err, &invalid) || invalid.BlockID != "c1" {
 		t.Errorf("a write that changes the run of a check left breaking a rule = %v, want ErrInvalidCICheck naming c1", err)
 	}
 }
