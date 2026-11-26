@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -503,11 +505,17 @@ type rig struct {
 	// feeds, when set, are the informers' feeds withBreakableFeeds serves.
 	feeds *breakableFeeds
 	uids  atomic.Int64
+	// watches counts the watches the rig's fakes opened, by resource (countWatches).
+	watchMu sync.Mutex
+	watches map[string]int
 
-	// hold stops the controller creating pods; autoStart makes a pod it creates scheduled on a
-	// node, past workspace-init, and Running at once.
-	hold      atomic.Bool
-	autoStart atomic.Bool
+	// hold stops the controller creating pods, set through setHold; autoStart makes a pod it
+	// creates scheduled on a node, past workspace-init, and Running at once. started counts the
+	// controller's passes begun and passed the last one ended: a pass reads hold once, before it
+	// lists the Sandboxes (control).
+	hold            atomic.Bool
+	autoStart       atomic.Bool
+	started, passed atomic.Int64
 	// suspendDelay is how long a pod the controller deletes stays terminating first, in
 	// nanoseconds. It is atomic because a test may shorten it while control() is running, to ask
 	// for a pod it has been holding terminating to end now: g.suspendDelay.Store(0) in
@@ -799,6 +807,8 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		dyn, kube = limitedDynamic{dyn, g.limit}, limitedKube{kube, g.limit, g.askedSecret}
 	}
 	g.clients = runtimeClients{informers: kubeClients{dyn: g.dyn, kube: g.kube}, requests: kubeClients{dyn: dyn, kube: kube}}
+	g.countWatches(&g.dyn.Fake, &g.kube.Fake)
+	opened := g.openedWatches()
 	if g.prober {
 		p, err := newProber(ctx, g.clients, opts)
 		if err != nil {
@@ -815,10 +825,77 @@ func newRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *ri
 		}
 		g.r = r
 	}
+	g.awaitWatches(opened)
 	if !g.noController {
 		go g.control()
 	}
 	return g
+}
+
+// informerResources are the resources every runtime's informers watch (startInformers).
+var informerResources = []string{"sandboxes", "pods", "services"}
+
+// countWatches has each of fakes count every watch it opens, under the resource the watch is of
+// (openedWatches). The fake tracker opens a watch at the present and replays nothing an informer's
+// list saw before it, so a change made between an informer's list and its watch never reaches the
+// runtime's store: a Sandbox a test deleted there stayed in it for ever
+// (TestAConfirmingReadTheReplacementsDeleteOvertakesIsUncertain, which waited 638 s). So every
+// runtime started on the rig's fakes is waited for until its informers have opened their watches
+// (awaitWatches). A watch reactor a test adds after newRig runs before this count, which then sees
+// nothing of the watches it answers.
+func (g *rig) countWatches(fakes ...*k8stesting.Fake) {
+	for _, fake := range fakes {
+		rest := slices.Clone(fake.WatchReactionChain)
+		fake.PrependWatchReactor("*", func(a k8stesting.Action) (bool, watch.Interface, error) {
+			for _, reactor := range rest {
+				if !reactor.Handles(a) {
+					continue
+				}
+				handled, w, err := reactor.React(a)
+				if !handled {
+					continue
+				}
+				if err == nil {
+					g.watchMu.Lock()
+					if g.watches == nil {
+						g.watches = map[string]int{}
+					}
+					g.watches[a.GetResource().Resource]++
+					g.watchMu.Unlock()
+				}
+				return true, w, err
+			}
+			return false, nil, nil
+		})
+	}
+}
+
+// openedWatches is how many watches the rig's fakes have opened so far, by resource.
+func (g *rig) openedWatches() map[string]int {
+	g.watchMu.Lock()
+	defer g.watchMu.Unlock()
+	return maps.Clone(g.watches)
+}
+
+// awaitWatches waits until the rig's fakes have opened a watch of each of informerResources more
+// than before counted: the watches of a runtime started since.
+func (g *rig) awaitWatches(before map[string]int) {
+	g.t.Helper()
+	testwait.Eventually(g.t, "the runtime's informers to open their watches", func() bool {
+		now := g.openedWatches()
+		return !slices.ContainsFunc(informerResources, func(resource string) bool { return now[resource] <= before[resource] })
+	})
+}
+
+// startWatched runs start, which starts a runtime's informers on the rig's fakes, failing the test on
+// its error, and waits until those informers have opened their watches (countWatches).
+func (g *rig) startWatched(start func() error) {
+	g.t.Helper()
+	before := g.openedWatches()
+	if err := start(); err != nil {
+		g.t.Fatal(err)
+	}
+	g.awaitWatches(before)
 }
 
 // newDynamic is the dynamic fake holding objects, each under the resource an API server serves
@@ -864,10 +941,36 @@ func (t generationTracker) specChanged(gvr schema.GroupVersionResource, obj k8sr
 	return !isBefore || !isAfter || !reflect.DeepEqual(before.Object["spec"], after.Object["spec"])
 }
 
-// advance moves the runtime's clock.
+// advance moves the present the runtime reads ages against (now, Options.Now), not the clock its
+// waits run on (Runtime.clock), which a test that sets a clocktest.Fake there moves with step.
 func (g *rig) advance(d time.Duration) {
 	next := g.now.Load().Add(d)
 	g.now.Store(&next)
+}
+
+// step moves fc, the clock the rig's runtime waits on (the test sets g.r.clock = fc before it
+// starts the wait), recheckInterval forward, and returns once a check of the runtime's wait has
+// begun at the new moment and found the wait not over, or once ended reports true because the
+// wait under test is over. await arms each recheck for the moment its check began plus
+// recheckInterval, so a recheck pending one recheckInterval past the new moment says a check began
+// after the move, and read what the runtime's stores held before it. A check that began before the
+// move arms a recheck the move has reached, which fires at once, so a check of the new moment
+// follows it; and a move of recheckInterval reaches the recheck the last check armed, so every
+// step is answered by one.
+func (g *rig) step(fc *clocktest.Fake, ended func() bool) {
+	g.t.Helper()
+	fc.Advance(recheckInterval)
+	awaitArmedAt(g.t, fc, "a check of the runtime's wait", fc.Now().Add(recheckInterval), ended)
+}
+
+// awaitArmedAt waits until fc has a deadline pending at at (Armed), or until ended, when not nil,
+// reports true; what names what the deadline stands for in the failure at the test binary's
+// deadline.
+func awaitArmedAt(t testing.TB, fc *clocktest.Fake, what string, at time.Time, ended func() bool) {
+	t.Helper()
+	testwait.Eventually(t, what+", a deadline armed for "+at.Format(time.RFC3339Nano), func() bool {
+		return (ended != nil && ended()) || slices.ContainsFunc(fc.Armed(), at.Equal)
+	})
 }
 
 // record logs every request, and gives what a create makes the uid and creation time an API
@@ -958,7 +1061,8 @@ func (g *rig) clearActions() {
 // and the headless Service of a Sandbox that asks for one, which it makes as the controller does
 // (cacheService) when no Service of the name exists and removes once its Sandbox is gone, as the
 // garbage collector would. Its own requests go through the tracker directly, so they never appear
-// among the runtime's.
+// among the runtime's. Each pass reads hold once, before it lists the Sandboxes, and decides on
+// that reading (setHold).
 func (g *rig) control() {
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
@@ -970,61 +1074,96 @@ func (g *rig) control() {
 			return
 		case <-tick.C:
 		}
-		list, err := g.dyn.Tracker().List(sandboxGVR, sandboxGVR.GroupVersion().WithKind("Sandbox"), testNamespace)
-		if err != nil {
+		pass := g.started.Add(1)
+		g.reconcile(g.hold.Load(), terminating, services)
+		g.passed.Store(pass)
+	}
+}
+
+// reconcile is one pass of the controller stand-in (control), creating no pod when hold is set. It
+// makes or ends a pod only while the Sandbox the pass listed is still in the mode its list read
+// (stillMode).
+func (g *rig) reconcile(hold bool, terminating map[types.UID]time.Time, services map[string]types.UID) {
+	list, err := g.dyn.Tracker().List(sandboxGVR, sandboxGVR.GroupVersion().WithKind("Sandbox"), testNamespace)
+	if err != nil {
+		return
+	}
+	items, _ := list.(*unstructured.UnstructuredList)
+	if items == nil {
+		return
+	}
+	live := map[types.UID]bool{}
+	for i := range items.Items {
+		s, err := decodeSandbox(&items.Items[i])
+		if err != nil || s.DeletionTimestamp != nil {
 			continue
 		}
-		items, _ := list.(*unstructured.UnstructuredList)
-		if items == nil {
-			continue
-		}
-		live := map[types.UID]bool{}
-		for i := range items.Items {
-			s, err := decodeSandbox(&items.Items[i])
-			if err != nil || s.DeletionTimestamp != nil {
-				continue
-			}
-			live[s.UID] = true
-			if s.Spec.Service != nil && *s.Spec.Service {
-				if _, err := g.kube.Tracker().Get(servicesGVR, testNamespace, s.Name); err != nil {
-					if g.kube.Tracker().Add(cacheService(s.Name, s.UID)) == nil {
-						services[s.Name] = s.UID
-					}
+		live[s.UID] = true
+		if s.Spec.Service != nil && *s.Spec.Service {
+			if _, err := g.kube.Tracker().Get(servicesGVR, testNamespace, s.Name); err != nil {
+				if g.kube.Tracker().Add(cacheService(s.Name, s.UID)) == nil {
+					services[s.Name] = s.UID
 				}
-			}
-			pod := g.pod(s.Name)
-			owned := ownedBy(pod, s.UID)
-			switch {
-			case owned && pod.DeletionTimestamp != nil:
-				// A pod the cluster is terminating goes once its grace has passed, whatever its
-				// Sandbox says by then. Only the suspended branch below used to remove one, so a
-				// pod still terminating when its Sandbox came back to Running was in a state this
-				// controller could not leave: it neither removed that pod nor made a replacement,
-				// since a replacement needs none to be there. A launch whose own wait for the pod
-				// to go accepts a terminating one - which production's does, because in a cluster
-				// such a pod is on its way out - then waited for a pod this controller was never
-				// going to create. That is what red this package's pod-drift row about 4 times in
-				// 100 under load, at every bound it was given, with the controller reading
-				// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
-				if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
-					_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
-				}
-			case s.mode() == modeSuspended && owned:
-				if _, ok := terminating[pod.UID]; !ok {
-					terminating[pod.UID] = time.Now()
-					g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
-				}
-			case s.mode() == modeRunning && pod == nil && !g.hold.Load():
-				g.createPod(s)
 			}
 		}
-		for name, uid := range services {
-			if !live[uid] {
-				_ = g.kube.Tracker().Delete(servicesGVR, testNamespace, name)
-				delete(services, name)
+		pod := g.pod(s.Name)
+		owned := ownedBy(pod, s.UID)
+		switch {
+		case owned && pod.DeletionTimestamp != nil:
+			// A pod the cluster is terminating goes once its grace has passed, whatever its
+			// Sandbox says by then. Only the suspended branch below used to remove one, so a
+			// pod still terminating when its Sandbox came back to Running was in a state this
+			// controller could not leave: it neither removed that pod nor made a replacement,
+			// since a replacement needs none to be there. A launch whose own wait for the pod
+			// to go accepts a terminating one - which production's does, because in a cluster
+			// such a pod is on its way out - then waited for a pod this controller was never
+			// going to create. That is what red this package's pod-drift row about 4 times in
+			// 100 under load, at every bound it was given, with the controller reading
+			// `generation 3, Running, pod uid-pod-13 terminating` for ever (INFRA-985).
+			if started, ok := terminating[pod.UID]; ok && time.Since(started) >= time.Duration(g.suspendDelay.Load()) {
+				_ = g.kube.Tracker().Delete(podsGVR, testNamespace, pod.Name)
 			}
+		case s.mode() == modeSuspended && owned:
+			if _, ok := terminating[pod.UID]; !ok && g.stillMode(s, modeSuspended) {
+				terminating[pod.UID] = time.Now()
+				g.update(pod, func(p *corev1.Pod) { now := metav1.Now(); p.DeletionTimestamp = &now })
+			}
+		case s.mode() == modeRunning && pod == nil && !hold && g.stillMode(s, modeRunning):
+			g.createPod(s)
 		}
 	}
+	for name, uid := range services {
+		if !live[uid] {
+			_ = g.kube.Tracker().Delete(servicesGVR, testNamespace, name)
+			delete(services, name)
+		}
+	}
+}
+
+// stillMode is whether the Sandbox the pass listed as s is, as the API holds it now, still that
+// Sandbox in mode: the pass decides to make or to end a pod on the Sandbox as it stands, not as its
+// list found it a pass earlier, which a launch may since have suspended or set Running.
+func (g *rig) stillMode(s *sandbox, mode string) bool {
+	current := g.sandbox(s.Name)
+	return current != nil && current.UID == s.UID && current.DeletionTimestamp == nil && current.mode() == mode
+}
+
+// setHold has the controller stand-in create no pod while on is set, and returns once a pass of
+// it that began after the change has ended, so no pass that read the setting before is still in
+// flight when the test acts on the new one. A pass that listed a Sandbox Running and read hold
+// only after the test had released it created a pod for a Sandbox the runtime had suspended in the
+// meantime, and then ended that pod under the launch that had taken it
+// (TestAKeptVolumeOutlivesItsPodsAndItsRelease, `uid-pod-17, want uid-pod-16`).
+func (g *rig) setHold(on bool) {
+	g.t.Helper()
+	g.hold.Store(on)
+	if g.noController {
+		return
+	}
+	after := g.started.Load() + 1
+	g.eventually("a pass of the controller stand-in that began after its hold changed", func() bool {
+		return g.passed.Load() >= after
+	})
 }
 
 var servicesGVR = corev1.SchemeGroupVersion.WithResource("services")
