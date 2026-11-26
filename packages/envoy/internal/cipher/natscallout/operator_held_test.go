@@ -541,13 +541,40 @@ func TestTheBarrierIsAStream(t *testing.T) {
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, 0), natsgrant.OperatorPhaseHeld)
 	barrier := map[string]any{"name": natsgrant.HoldBarrierStream, "subjects": []string{"_ENVOY_HOLD_BARRIER.hold-1"},
 		"storage": "memory", "num_replicas": 1, "max_msgs": 1}
-	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE."+natsgrant.HoldBarrierStream, barrier)
+	createsStream(t, operator.Conn, "$JS.API.STREAM.CREATE."+natsgrant.HoldBarrierStream, barrier)
 	requireStreamListed(t, operator.Conn, natsgrant.HoldBarrierStream)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+natsgrant.HoldBarrierStream, nil)
 	requireStreamGone(t, js, natsgrant.HoldBarrierStream)
 
 	other := map[string]any{"name": "ENVOY_HOLD_OTHER", "subjects": []string{"_ENVOY_HOLD_OTHER.hold-1"}, "storage": "memory", "num_replicas": 1}
 	operator.refused(t, "$JS.API.STREAM.CREATE.ENVOY_HOLD_OTHER", other)
+}
+
+// A stream create can reach the cluster while its reply is lost. The create is sent again, and the
+// cluster answers that identical create with the stream the first one made, so the barrier stands
+// with no read of it, which the held operator's grant does not name.
+func TestTheBarrierCreateRetriesALostReply(t *testing.T) {
+	r := newOperatorRig(t, nil)
+	r.setPhase(t, natsgrant.OperatorPhaseHeld)
+	r.makeStreams(t, 1, 16, 2)
+	operator := r.connectOperator(t, hourLong(operatorAccount))
+	requireOperatorDecision(t, r.decisions.after(t, operatorName, 0), natsgrant.OperatorPhaseHeld)
+	barrier := map[string]any{"name": natsgrant.HoldBarrierStream, "subjects": []string{"_ENVOY_HOLD_BARRIER.hold-1"},
+		"storage": "memory", "num_replicas": 1, "max_msgs": 1}
+	create := "$JS.API.STREAM.CREATE." + natsgrant.HoldBarrierStream
+	dropped := false
+	ask := func(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error) {
+		answer, err := requestAnswer(t, nc, subject, body)
+		if subject == create && !dropped && err == nil {
+			dropped = true
+			return apiAnswer{}, nats.ErrTimeout
+		}
+		return answer, err
+	}
+
+	createsStreamWith(t, operator.Conn, create, barrier, ask)
+	require.True(t, dropped, "the create reply was not dropped")
+	requireStreamListed(t, operator.Conn, natsgrant.HoldBarrierStream)
 }
 
 // requireStreamListed requires conn's STREAM.NAMES to list stream, asking again until it does,
