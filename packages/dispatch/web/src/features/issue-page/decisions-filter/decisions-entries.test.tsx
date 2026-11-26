@@ -2,12 +2,21 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
 import type { Actor, ArtifactBlock, Comment, IssueDecisions } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
+import {
+  commentNode,
+  markedCommentNode,
+  skipWithoutTreeNodeMarks,
+  treeAnswer,
+  treeNode,
+} from "../tree-read/tree-fixtures";
+import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   AGENT,
@@ -32,22 +41,36 @@ import {
 import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
 
 /**
- * The seam between today's reads and the Decisions view. Each case puts the three reads the seam
- * takes in the cache under the keys the page's tree reads them by, as the cache holds them once
- * the tree is drawn, and no query reads again on mount, so any request the seam made would be one
- * of its own. The seam reads no document's blocks: the spec's are put in the cache too only so
- * that the cold case can show that no read of them starts. The view is the one the slot passes:
- * the tree as the Decisions view leaves it (`presetView`).
+ * The seam between today's reads and the Decisions view. Each case puts the reads the seam takes
+ * in the cache under the keys the page's tree reads them by, as the cache holds them once the
+ * tree is drawn - the decisions, the asks, and Conversation's tree read, whose comments are the
+ * Changes - and no query reads again on mount, so any request the seam made would be one of its
+ * own. The seam reads no document's blocks: the spec's are put in the cache too only so that the
+ * cold case can show that no read of them starts. The view is the one the slot passes: the tree
+ * as the Decisions view leaves it (`presetView`).
  */
+
+/** Skips the cases that need the tree read to answer a post's marks on its node. */
+const withoutTreeNodeMarks = skipWithoutTreeNodeMarks();
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
+/** Conversation's tree read of the issue holding `comments` under the issue and nothing else:
+ *  no decision node, so each Change is found by its quote. */
+function commentsAnswer(comments: readonly Comment[]): TreeAnswer {
+  return treeAnswer([
+    treeNode(KEY, "issue", null),
+    ...comments.map((comment) => commentNode(comment, KEY)),
+  ]);
+}
+
 /** The seam mounted over the issue whose tree holds `children`, with `decisions`, `asks` and
- *  `comments` as the cache holds them, and the spec's `blocks` there too, which the seam never
- *  reads, until the case unmounts it. A read given as null is left out of the cache, as before it
- *  answers. By default no answer ever goes stale; `staleTime` gives the client the app's own
- *  default instead, and `answeredAt` the moment the cache's answers were given, now where it is
- *  left out. */
+ *  Conversation's tree read as the cache holds them - holding `comments`, or the answer the case
+ *  gives (`answer`) - and the spec's `blocks` there too, which the seam never reads, until the
+ *  case unmounts it. A read given as null is left out of the cache, as before it answers; the tree
+ *  read with `comments` null. By default no answer ever goes stale; `staleTime` gives the client
+ *  the app's own default instead, and `answeredAt` the moment the cache's answers were given, now
+ *  where it is left out. */
 async function mountEntries(
   children: readonly TreeNode[],
   decisions: IssueDecisions | null,
@@ -55,15 +78,22 @@ async function mountEntries(
   comments: readonly Comment[] | null = [],
   blocks: readonly ArtifactBlock[] | null = [],
   {
+    answer,
     answeredAt,
     staleTime = Number.POSITIVE_INFINITY,
-  }: { answeredAt?: number; staleTime?: number } = {}
+  }: { answer?: TreeAnswer; answeredAt?: number; staleTime?: number } = {}
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime } } });
   const given = { updatedAt: answeredAt };
   if (decisions !== null) client.setQueryData(["decisions", KEY], decisions, given);
   if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, given);
-  if (comments !== null) client.setQueryData(["comments", KEY], comments, given);
+  if (comments !== null) {
+    client.setQueryData(
+      outlineQuery(KEY, "conversation").queryKey,
+      answer ?? commentsAnswer(comments),
+      given
+    );
+  }
   // The seam reads no document's blocks; the spec's are put in the cache only so that the cold
   // case can show that no read of them starts.
   if (blocks !== null) {
@@ -73,7 +103,9 @@ async function mountEntries(
   const root = issueTree(children);
   const view = presetView(root, "decisions", "").root;
   const wrapper = ({ children: inside }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{inside}</QueryClientProvider>
+    <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
+      <QueryClientProvider client={client}>{inside}</QueryClientProvider>
+    </MemoryRouter>
   );
   const hook = renderHook(() => useDecisionsEntries({ issue, reader: READER, root, view }), {
     wrapper,
@@ -112,7 +144,7 @@ const D = (block: string) => decisionNode(block).id;
 /** Two decisions that wait open with one paragraph, the reader's Change was asked on the second,
  *  and answers of the reader, of Bob and of one moment stand around them: the reads of the
  *  page's tree for the two cases below, with the Change's anchor quoting `quote`. */
-async function seamOf(quote: string) {
+async function seamOf(quote: string, onNodes = false) {
   const tie = "2026-11-11T09:00:00Z";
   const opening = "The rail stays 56 px wide.";
   const reviewWords = `${opening}\n\nThe outline needs the room.`;
@@ -169,7 +201,23 @@ async function seamOf(quote: string) {
     closing("a-late", { at: "2026-11-14T09:00:00Z", kind: "answered" }),
     closing("a-tie-mine", { at: tie, kind: "answered" }),
   ];
-  const { parts } = await entriesOf(children, decisionsRead(made), asks, [change]);
+  // Conversation's tree read: the Change under the issue, found by its quote, or, `onNodes`, each
+  // decision a node of the read, and the Change under the node of the one it was asked on.
+  const answer = onNodes
+    ? treeAnswer([
+        treeNode(KEY, "issue", null),
+        ...made.map((row) =>
+          treeNode(row.block_id, "decision", KEY, {
+            decision: { changed_at: row.changed_at },
+            in: SPEC_SLUG,
+          })
+        ),
+        commentNode(change, "asked"),
+      ])
+    : undefined;
+  const { parts } = await entriesOf(children, decisionsRead(made), asks, [change], [], {
+    ...(answer === undefined ? {} : { answer }),
+  });
   return { change, parts };
 }
 
@@ -224,17 +272,132 @@ test("the seam gives four parts from today's reads and makes no request", async 
 
 // A Change stands under the decision it was asked on, though another decision holds its quote
 // too: here the Change quotes the paragraph both decisions open with, as the page's Change
-// quotes a decision's first paragraph. This case is marked to fail. The reads the seam takes
-// name no decision for a Change - only the tree read's decision nodes do - so the Change stands
-// under the first decision whose words hold its quote until the Decisions view draws its
-// decisions from the tree read's nodes. The mark makes the case fail the day it passes, so that
-// change removes it.
-test.failing("a Change stands under the decision it was asked on, where another decision holds its quote too", async () => {
-  const { change, parts } = await seamOf("The rail stays 56 px wide.");
+// quotes a decision's first paragraph. The tree read holds each decision as a node and hangs the
+// Change under the node of the one it was asked on, and the seam takes a decision node's Changes
+// from the read, as the outline does (`decision-review.ts`), so no quote is matched for it.
+test("a Change stands under the decision it was asked on, where another decision holds its quote too", async () => {
+  const { change, parts } = await seamOf("The rail stays 56 px wide.", true);
   expect(idsOf(parts).yours[0]).toBe(D("asked"));
   expect(parts.yours[0]).toMatchObject({ change: { id: change.id }, kind: "decision" });
   expect(parts.review[0]).not.toHaveProperty("change");
 });
+
+/** Two decisions and a Change on each as Conversation's tree read answers them: `noded` a node of
+ *  the read, with its Change under it; `quoted` no node of it, with its Change under the issue,
+ *  quoting its words. Each Change is the reader's, made after both decisions last changed, with
+ *  the server's reading of its words, and with what `marks` sets over it. */
+function twoChanges(marks: Partial<Comment> = {}) {
+  const made = [
+    decision("noded", { text: ":::decision{#noded}\nDraw the rail once.\n:::\n" }),
+    decision("quoted", { text: ":::decision{#quoted}\nKeep the model pure.\n:::\n" }),
+  ];
+  const changeOf = (id: string, quote: string | null): Comment => ({
+    ...commentDeliveryFields(),
+    anchor:
+      quote === null
+        ? null
+        : {
+            artifact_id: SPEC_DOCUMENT.id,
+            block_id: null,
+            mark_id: `mark-${id}`,
+            orphaned: false,
+            quote,
+            version: 1,
+          },
+    ask_id: null,
+    author: READER_ACTOR,
+    body: `Change ${id}.`,
+    created_at: "2026-11-15T09:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+    ...marks,
+  });
+  const onNode = changeOf("c-noded", null);
+  const byQuote = changeOf("c-quoted", "Keep the model pure.");
+  const reading = { content: [{ text: "Change.", type: "text" }], type: "paragraph" };
+  const answer = treeAnswer([
+    treeNode(KEY, "issue", null),
+    treeNode("noded", "decision", KEY, { decision: { changed_at: made[0]?.changed_at } }),
+    { ...markedCommentNode(onNode, "noded"), text_tree: reading },
+    { ...markedCommentNode(byQuote, KEY), text_tree: reading },
+  ]);
+  return { answer, byQuote, made, onNode, reading };
+}
+
+// R8 over the Decisions filter: the seam reads the Changes from Conversation's tree read, as the
+// outline does, and no comments list. A decision node takes the Change the read hangs under it,
+// and a decision the read holds no node for the Change whose quote its words hold; each entry's
+// Change is drawn from the comment the read answers: its words, the server's reading of them and
+// its id.
+test("the seam takes a decision node's Change from under its node and another's by its quote, from the tree read alone", async () => {
+  const { answer, byQuote, made, onNode, reading } = twoChanges();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const request = spyOn(globalThis, "fetch");
+  try {
+    const { client, hook } = await mountEntries(
+      [decisionNode("noded"), decisionNode("quoted")],
+      decisionsRead(made),
+      [],
+      [],
+      [],
+      { answer }
+    );
+    const entry = (id: string) =>
+      hook.result.current.parts.yours.find((one) => one.node.id === D(id));
+    expect(
+      [entry("noded"), entry("quoted")].map((one) =>
+        one?.kind === "decision"
+          ? { body: one.change?.body, id: one.change?.id, tree: one.change?.tree }
+          : undefined
+      )
+    ).toEqual([
+      { body: onNode.body, id: onNode.id, tree: reading },
+      { body: byQuote.body, id: byQuote.id, tree: reading },
+    ]);
+    expect(listComments, "the seam read the issue's comments").not.toHaveBeenCalled();
+    expect(
+      client.getQueryCache().find({ exact: true, queryKey: ["comments", KEY] }),
+      "the seam observes the issue's comments list"
+    ).toBeUndefined();
+    expect(request).not.toHaveBeenCalled();
+    hook.unmount();
+  } finally {
+    listComments.mockRestore();
+    request.mockRestore();
+  }
+});
+
+// Owed on the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
+// `deleted_by`): each entry's Change says when its author last edited it, read from the node the
+// read answers.
+test.skipIf(withoutTreeNodeMarks)(
+  "each Change the seam takes from the tree read carries when its author last edited it",
+  async () => {
+    const editedAt = "2026-11-15T10:00:00Z";
+    const { answer, made } = twoChanges({ edited_at: editedAt });
+    const { hook } = await mountEntries(
+      [decisionNode("noded"), decisionNode("quoted")],
+      decisionsRead(made),
+      [],
+      [],
+      [],
+      { answer }
+    );
+    expect(
+      hook.result.current.parts.yours.map((one) =>
+        one.kind === "decision" ? one.change?.editedAt : undefined
+      )
+    ).toEqual([editedAt, editedAt]);
+    hook.unmount();
+  }
+);
 
 // A reading of an answered question is a person's write-up of that answer, and no entry of its
 // own: the question it restates is the person's decision. The tree places the reading under the
@@ -276,7 +439,7 @@ test("a reading under an answered question is a write-up, which no part draws an
 // seam reads no document's blocks.
 test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
   const made = [decision("minor")];
-  const names = ["getIssueDecisions", "listIssueAskThreads", "listComments"] as const;
+  const names = ["getIssueDecisions", "listIssueAskThreads", "getIssueTree"] as const;
   // Each of the three reads, held, so a read the mount started reaches no server.
   const reads = names.map((read) =>
     spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
@@ -297,7 +460,7 @@ test("answers older than the app's staleTime are not read again as the seam moun
       Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls]))
     ).toEqual({
       getIssueDecisions: [],
-      listComments: [],
+      getIssueTree: [],
       listIssueAskThreads: [],
     });
     expect(request).not.toHaveBeenCalled();
@@ -371,11 +534,11 @@ test("an empty decisions member gives the questions alone and no error", async (
       starts: 1,
     },
     {
-      answer: [],
+      answer: commentsAnswer([]),
       heldWhileOut: true,
-      queryKey: ["comments", KEY],
+      queryKey: outlineQuery(KEY, "conversation").queryKey,
       mount: () => mountEntries(children, noDecision, [], null),
-      read: "listComments",
+      read: "getIssueTree",
       starts: 1,
     },
     {

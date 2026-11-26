@@ -90,7 +90,7 @@ import {
   wholeTreeOnly,
 } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
-import { issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
+import { issueMessagesQuery } from "../useIssueTree";
 import type { OnEditing } from "../useNodeEditing";
 import { check, checkNode, result } from "../verification-filter/verification-fixtures";
 import { SpecFilterBody } from "./SpecFilterBody";
@@ -1093,7 +1093,7 @@ function answerThreadsTree(statements: readonly string[] = []) {
 
 /** `client` holding every read the page's tree is built from, answered: the issue holds two
  *  threads of comments and nothing else, as the outline's own cases seed them
- *  (`IssueTree.test.tsx`'s `seedBodyReads`), and the tree read holds them as nodes
+ *  (`IssueTree.test.tsx`'s `seedBodyReads`), which the tree read holds as nodes
  *  (`threadsTree`). Who is reading is each case's own. */
 function holdTreeReads(client: QueryClient): void {
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
@@ -1104,7 +1104,6 @@ function holdTreeReads(client: QueryClient): void {
     open_questions: [],
   });
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  client.setQueryData(issueCommentsQuery(KEY).queryKey, [...TWO_THREADS]);
   client.setQueryData(issueMessagesQuery(KEY).queryKey, []);
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threadsTree());
 }
@@ -1173,7 +1172,6 @@ test("with Conversation's read out, the statements line's Retry sends the refuse
   client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf([]));
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
-  client.setQueryData(["comments", KEY], TWO_THREADS);
   client.setQueryData(["issue-messages", KEY], []);
   // Conversation's read never answers; the Spec view read is refused, and then answers when the
   // case says.
@@ -1389,7 +1387,6 @@ test("a names line that stands again in the Spec view for a refusal it counted i
   );
   const threads = (comments: typeof cited) =>
     treeAnswer([treeNode(KEY, "issue", null), ...comments.map((one) => commentNode(one))]);
-  client.setQueryData(issueCommentsQuery(KEY).queryKey, cited);
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(cited));
   const trees = answerThreadsTree();
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: READER });
@@ -1400,7 +1397,6 @@ test("a names line that stands again in the Spec view for a refusal it counted i
     await waitFor(() => alertSaying(view, STATE_LINES.names_unreadable));
     const fewer = cited.filter((comment) => comment.id !== "reply-b");
     await act(async () => {
-      client.setQueryData(issueCommentsQuery(KEY).queryKey, fewer);
       client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(fewer));
     });
     await waitFor(() =>
@@ -1411,7 +1407,6 @@ test("a names line that stands again in the Spec view for a refusal it counted i
     );
     names.mockReturnValueOnce(new Promise<never>(() => {}) as never);
     await act(async () => {
-      client.setQueryData(issueCommentsQuery(KEY).queryKey, cited);
       client.setQueryData(outlineQuery(KEY, "conversation").queryKey, threads(cited));
     });
     const words = await waitFor(() => view.getByText(STATE_LINES.names_unreadable));

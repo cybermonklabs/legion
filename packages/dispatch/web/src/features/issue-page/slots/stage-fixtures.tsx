@@ -270,7 +270,9 @@ export function inDocument(document: Pick<Artifact, "id" | "slug">, position = 0
   return { document: { artifact_id: document.id, position, slug: document.slug } };
 }
 
-/** Every read the page's tree is built from, answered with nothing, and who is reading. */
+/** Every read the page's tree is built from, answered with nothing, and who is reading. The
+ *  issue's comments are the tree read's own, so no comments list is answered: a read of one
+ *  reaches the network, which fails the file (`__tests__/network-guard.ts`). */
 export function stubReads(): { mockRestore(): void }[] {
   return [
     spyOn(api, "getIssueCoverage").mockResolvedValue({
@@ -289,7 +291,6 @@ export function stubReads(): { mockRestore(): void }[] {
     spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
-    spyOn(api, "listComments").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
     spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),

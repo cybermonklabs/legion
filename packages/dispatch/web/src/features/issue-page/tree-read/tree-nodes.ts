@@ -32,6 +32,8 @@ import {
   firstOfEachId,
   inReviewList,
   parentsIn,
+  type TreeComment,
+  treeComments,
 } from "../decision-review";
 import type { IssueTreeReads, NodeChip, TreeAsk, TreeNode } from "../issue-tree";
 import {
@@ -54,6 +56,7 @@ import {
   deciderOf,
   decisionState,
   deletedPostLine,
+  markChangeUnread,
   markKeptAndUnsure,
   requirementGaps,
   stableSourceOf,
@@ -111,10 +114,6 @@ export interface PostMarks {
  *  outline's builders read it (`blockNodeId`, `nodeIdOf`), so a row and its node meet by one
  *  address. */
 export interface KeptReads {
-  /** The comments the comments read anchors to text (`Comment.anchor`, which names the text's
-   *  block and quote), by their own ids: the tree read answers no anchor on a comment node, and
-   *  hangs such a comment under the node whose text it is on (`onNodeText`). */
-  readonly anchored: ReadonlySet<string>;
   /** Each ask of the issue read's open asks and of the asks read, the asks read's where both
    *  hold it. */
   readonly asks: ReadonlyMap<string, TreeAsk>;
@@ -138,9 +137,9 @@ export interface KeptReads {
    *  answers with the issue's own. Once one is held a statement no plan task serves is a gap,
    *  since a plan is written after the spec is approved; false while that read holds no answer. */
   readonly planned: boolean;
-  /** What the author of each comment and message of the comments read and the messages read did
-   *  to it, by the post's own id: the tree read answers its words, a deleted post's none, and no
-   *  mark of either. A post nobody corrected has no entry. */
+  /** What the author of each comment of the answer (`treeComments`) and each message of the
+   *  messages read did to it, by the post's own id: the read answers a comment's marks on its
+   *  node, and a message's on none. A post nobody corrected has no entry. */
   readonly posts: ReadonlyMap<string, PostMarks>;
   /** The artifact id of the issue's Verification document (`roleDocument`): a check block of it
    *  is a check, which draws a state, and one of any other document is a block and nothing more,
@@ -270,7 +269,7 @@ export function treeDraftsFrom(
   let offered = false;
   const drafting: TreeDraftContext = {
     ...context,
-    changes: decisionNodeChanges(answer, idOfNode, deletedPostIds(reads.comments)),
+    changes: decisionNodeChanges(answer, idOfNode, deletedPostIds(treeComments(answer))),
     drafted: (readId) => drafts.has(idOf(readId)),
     kept: keptReads(reads, context, answer, idOfNode),
     lineOf: (readId) => {
@@ -664,7 +663,9 @@ function draftResult(
  * node's `decision` names no decider; none where the read holds no entry or the entry names
  * nobody. A person's Change the read hangs under it says it waits on its agent
  * (`decisionNodeChanges`), and it waits on the reader by the outline's review list rule
- * (`inReviewList`), where a link ties it to a statement the coverage read holds.
+ * (`inReviewList`), where a link ties it to a statement the coverage read holds. Where the
+ * answer names an older comment page that may hold its Change, its state says so
+ * (`markChangeUnread`).
  *
  * An agent's decision of the decisions read that is no node of the answer - a section of
  * `decisions.md` a server of the release before answers - is drawn as the outline draws it, by
@@ -672,7 +673,7 @@ function draftResult(
  */
 function draftDecision(
   node: TreeAnswerNode,
-  _answer: TreeAnswer,
+  answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   if (node.supertag !== "decision") return undefined;
@@ -697,6 +698,8 @@ function draftDecision(
   draft.state = decisionState(decision, changed);
   markKeptAndUnsure(draft, decision);
   draft.replaced = decision.replaced === true;
+  // A decision the read hangs no Change under may have one on a comment page not read yet.
+  markChangeUnread(draft, decision, answer);
   draft.waiting =
     context.viewer !== undefined &&
     inReviewList(
@@ -778,8 +781,8 @@ function draftAsk(
  *  carries when and by whom (`deletedAt`, `deletedBy`) and holds the deleted line as its text
  *  (`deletedPostLine`) and no reading, so no line, body, filter or citation read from the node
  *  reads any part of its body. It carries no `editedAt`: the deleted line already says what
- *  became of the text. The marks are the comments read's and the messages read's, by the post's
- *  id (`KeptReads.posts`): the tree read holds neither.
+ *  became of the text. The marks are the answer's own for a comment and the messages read's for
+ *  a message, by the post's id (`KeptReads.posts`).
  *
  * A comment on a node's text is no row of either outline (R9, R10): it stays in the answer, and
  * the margin beside that node draws it (root R41). A post on the issue, a comment tied to no
@@ -811,11 +814,11 @@ function draftTurn(
 
 /**
  * Whether `node` is a comment on a node's text, or a reply in such a comment's thread (R9, R10:
- * no row of either outline, since the margin beside that node draws it, root R41). The tree read
- * answers no anchor on a comment node: the comments read does (`Comment.anchor`, the text's block
- * and its quote, `KeptReads.anchored`), and the read hangs a comment anchored inside a typed
- * block under that block's node. So a comment is on a node's text where the comments read anchors
- * it and the read hangs it under a node other than the issue's own. The second half is why the
+ * no row of either outline, since the margin beside that node draws it, root R41). The read
+ * answers a comment's anchor on its node (`anchor`: a document's words, or a node of the issue),
+ * and hangs a comment anchored inside a typed block under that block's node. So a comment is on
+ * a node's text where it carries an anchor and the read hangs it under a node other than the
+ * issue's own. The second half is why the
  * rule reads the read's placement too: a comment the read hangs under the issue - anchored in a
  * document whose block the answer holds no node for, as a `decisions.md` section's Change is -
  * has no node for the margin to draw it beside, and is drawn as a post. A reply the read hangs
@@ -830,7 +833,7 @@ function onNodeText(
 ): boolean {
   const { parent } = node;
   if (node.supertag !== "comment" || parent === null || passed?.has(node.id)) return false;
-  if (context.kept.anchored.has(node.id)) return parent.supertag !== "issue";
+  if (node.anchor != null) return parent.supertag !== "issue";
   if (parent.supertag !== "comment") return false;
   const above = context.nodeOf(parent.id);
   if (above === undefined) return false;
@@ -1232,9 +1235,6 @@ function keptReads(
     }
   }
   return {
-    anchored: new Set(
-      (reads.comments ?? []).flatMap((comment) => (comment.anchor == null ? [] : [comment.id]))
-    ),
     asks: indexBy([...asksOf(reads).values()], (ask) => askNodeId(ask, context.slugOf)),
     checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
@@ -1244,7 +1244,7 @@ function keptReads(
       return node === undefined ? undefined : idOf(node);
     }),
     planned: reads.holdsPlanTask === true,
-    posts: postMarksOf(reads),
+    posts: postMarksOf(treeComments(answer), reads.messages),
     requirements: indexBy(reads.coverage?.requirements ?? [], (requirement) =>
       blockNodeId(context.specSlug, requirement.block_id)
     ),
@@ -1257,14 +1257,18 @@ function keptReads(
 }
 
 /** What the author of each comment and message did to it (`PostMarks`), by the post's id: the
- *  comments read's and the messages read's, which carry the marks the tree read does not. A post
- *  nobody deleted or edited has none, and a deleted post has no edit mark, since the deleted
- *  line says what became of its text. */
-function postMarksOf(reads: Pick<IssueTreeReads, "comments" | "messages">): Map<string, PostMarks> {
+ *  answer's comments (`treeComments`), whose nodes carry their marks, and the messages read's
+ *  messages, which carry the marks the read answers on no message node. A post nobody deleted or
+ *  edited has none, and a deleted post has no edit mark, since the deleted line says what became
+ *  of its text. */
+function postMarksOf(
+  comments: readonly TreeComment[],
+  messages: IssueTreeReads["messages"]
+): Map<string, PostMarks> {
   const marks = new Map<string, PostMarks>();
   const posts = [
-    ...(reads.comments ?? []),
-    ...(reads.messages ?? []).flatMap((thread) => [thread.message, ...(thread.replies ?? [])]),
+    ...comments,
+    ...(messages ?? []).flatMap((thread) => [thread.message, ...(thread.replies ?? [])]),
   ];
   for (const post of posts) {
     const deleted = postDeletion(post);

@@ -90,12 +90,11 @@ const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
 /** The row's text with each control's name alone, which is all it draws with no signals. */
 const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
 
-/** Answers every read the row reaches: the tree's six reads, the issue's tree read, the reader
+/** Answers every read the row reaches: the tree's five reads, the issue's tree read, the reader
  *  and the names. A case changes the answer of the read it holds out or fails. */
 function answerReads() {
   return {
     asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
-    comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     decisions: spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
@@ -355,7 +354,6 @@ test("under a words filter the view row of an issue that holds no node draws no 
   const reads = answerReads();
   // No document holds a block and nobody has commented: the tree is the issue alone.
   reads.tree.mockResolvedValue(treeOf([], []));
-  reads.comments.mockResolvedValue([] as never);
   const own = buildDispatchReference({ key: KEY, kind: "issue" });
   // The names read, held out until the case answers it with the issue's own name.
   const names = Promise.withResolvers<{ targets: ReferenceTarget[] }>();

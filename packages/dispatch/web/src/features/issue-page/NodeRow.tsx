@@ -891,6 +891,10 @@ export function RowMargin({
                     </span>
                   </>
                 ) : null}
+                {/* A decision whose Change may stand on a comment page the read has not loaded
+                    says so as a count with more to read does (R15), rather than read as
+                    unchanged (`TreeNode.changeUnread`). */}
+                {node.changeUnread === true ? <span data-change-unread="">+</span> : null}
               </span>
             </span>
           )}

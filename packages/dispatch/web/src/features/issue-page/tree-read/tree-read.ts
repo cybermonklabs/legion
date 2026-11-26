@@ -26,6 +26,7 @@ import {
 } from "../../../api/queries";
 import { type RefreshTarget, refreshQueries } from "../../../api/query-refresh";
 import type {
+  Actor,
   IssueDetails,
   IssueTreeNode,
   IssueTreeRead,
@@ -55,7 +56,16 @@ import {
  * below, which are the generated contract's (`IssueTreeRead`, `IssueTreeNode`, `IssueTreeTuple`).
  */
 export type TreeAnswer = IssueTreeRead;
-export type TreeAnswerNode = IssueTreeNode;
+/** A node of the answer, with what the author of a comment or a message did to it: when they
+ *  last edited it, and when and by whom they deleted it. The read answers these marks on a
+ *  post's node, with no text for a deleted post, and a correction event writes them into every
+ *  answer the cache holds (`api/corrected-post.ts`). The page reads a comment's marks from its
+ *  node alone (`decision-review.ts`' `treeComments`). */
+export type TreeAnswerNode = IssueTreeNode & {
+  readonly deleted_at?: string | null;
+  readonly deleted_by?: Actor | null;
+  readonly edited_at?: string | null;
+};
 export type TreeTuple = IssueTreeTuple;
 
 /** One view's key: under the tree's (`issueTreeKey`), so every event of the issue reaches it

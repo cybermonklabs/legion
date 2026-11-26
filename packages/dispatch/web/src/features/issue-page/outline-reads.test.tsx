@@ -62,11 +62,12 @@ function treeOf(comments: readonly Comment[]): TreeAnswer {
   );
 }
 
-/** Each of the outline's six reads, and the tree read the outline draws its turns from, sent
- *  once. */
+/** Each of the outline's five reads beside the tree read, and the tree read the outline draws its
+ *  turns and its comments from, sent once; and the issue's comments list, which neither caller
+ *  reads. */
 const SENT_ONCE = {
   asks: 1,
-  comments: 1,
+  comments: 0,
   coverage: 1,
   decisions: 1,
   messages: 1,
@@ -123,7 +124,7 @@ test("the body and a second caller of the outline's reads send each read once an
     }
     expect(
       nodesInOrder(bodyGave.root).map((node) => node.id),
-      "the body's tree holds no turn of the comments' read"
+      "the body's tree holds no turn of the tree read's comments"
     ).toEqual(expect.arrayContaining(TWO_THREADS.map((comment) => comment.id)));
     expect(secondGave.root, "the second caller holds another tree than the body's").toEqual(
       bodyGave.root
@@ -164,9 +165,9 @@ function renderReads(issue: IssueDetails, client: QueryClient, held: Held) {
 // The page's first focus waits until every read the rows come from has answered, so it lands
 // once where no read still out draws rows above it (`IssueTree`'s opening). A read that answers
 // with a failure has answered too: waiting for a read to hold data, a failed one held the first
-// focus back for ever. Each of the six reads counts, and so does the tree read, which every node
-// of the outline comes from: the case leaves one of each out in turn, answers the other, and then
-// fails the one left out.
+// focus back for ever. Each of the five reads counts, and so does the tree read, which every node
+// and every comment of the outline comes from: the case leaves one of each out in turn, answers
+// the other, and then fails the one left out.
 test("the outline's reads are settled once each read and the tree read have answered, a failure among them", async () => {
   for (const last of ["messages", "tree"] as const) {
     const issue = issueDetails();
@@ -177,7 +178,6 @@ test("the outline's reads are settled once each read and the tree read have answ
     const tree = Promise.withResolvers<TreeAnswer>();
     const spies = [
       spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
-      spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
       spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
       spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
       spyOn(api, "listIssueMessages").mockReturnValue(messages.promise as never),

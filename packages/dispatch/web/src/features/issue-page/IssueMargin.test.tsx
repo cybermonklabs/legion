@@ -112,6 +112,8 @@ import {
 import { Publisher, publishedNames } from "./projection-fixture";
 import { architecture, offPageColours } from "./shared-controls-fixture";
 import { DetailsSlot } from "./slots/details";
+import { commentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { outlineQuery } from "./tree-read/tree-read";
 import { firstUsableIn, usableControl } from "./usable-control";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -6979,10 +6981,11 @@ test("Pinned says no None until the reader's state has answered, and None once i
   }
 });
 
-// The outline reads the questions, the comments and the messages under the keys Pinned reads
-// them by, and keeps them fresh by events (`useIssueTree.ts`), so Pinned reads them with the same
-// options: a window focus past the app's 30 s staleness reads none of them again. The reader's
-// state keeps the app's defaults, so its second read shows the focus was handled.
+// The outline reads the questions and the messages under the keys Pinned reads them by, and
+// keeps them fresh by events (`useIssueTree.ts`), so Pinned reads them with the same options: a
+// window focus past the app's 30 s staleness reads neither again. Its comments are the outline's
+// tree read's, which Pinned watches and never sends, and it reads no comments list at all. The
+// reader's state keeps the app's defaults, so its second read shows the focus was handled.
 test("with a pin, a window focus past 30 s reads none of Pinned's questions, comments and messages again", async () => {
   const { getMyState, pinReads, restore } = stubIssueApi();
   getMyState.mockResolvedValue(
@@ -6993,15 +6996,14 @@ test("with a pin, a window focus past 30 s reads none of Pinned's questions, com
 
   try {
     await waitFor(() => {
-      for (const read of Object.values(pinReads)) expect(read).toHaveBeenCalledTimes(1);
+      expect(pinReads.asks).toHaveBeenCalledTimes(1);
+      expect(pinReads.messages).toHaveBeenCalledTimes(1);
       expect(client.isFetching()).toBe(0);
     });
     await focusPastStaleness(client);
     await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
     expect(pinReads.asks, "a window focus read Pinned's questions again").toHaveBeenCalledTimes(1);
-    expect(pinReads.comments, "a window focus read Pinned's comments again").toHaveBeenCalledTimes(
-      1
-    );
+    expect(pinReads.comments, "Pinned read the issue's comments").not.toHaveBeenCalled();
     expect(pinReads.messages, "a window focus read Pinned's messages again").toHaveBeenCalledTimes(
       1
     );
@@ -7043,6 +7045,27 @@ function commentOf(id: string, body: string, tree?: DisplayTree): CommentWithTre
   };
 }
 
+/** Conversation's tree read of CORE-1 as the outline holds it, answering `comments` under the
+ *  issue with the server's reading of each, and each author's corrections as a correction writes
+ *  them into the answer the cache holds (`api/corrected-post.ts`): what Pinned draws a pinned
+ *  comment from. */
+function holdComments(client: QueryClient, comments: readonly CommentWithTrees[]): void {
+  client.setQueryData(
+    outlineQuery("CORE-1", "conversation").queryKey,
+    treeAnswer([
+      treeNode("CORE-1", "issue", null),
+      ...comments.map((one) => ({
+        ...commentNode(one),
+        ...(one.body_tree === undefined ? {} : { text_tree: one.body_tree }),
+        ...(one.edited_at === null ? {} : { edited_at: one.edited_at }),
+        ...(one.deleted_at === null
+          ? {}
+          : { deleted_at: one.deleted_at, deleted_by: one.deleted_by }),
+      })),
+    ])
+  );
+}
+
 /** A root message of CORE-1 as the messages read answers it, with what `more` sets over it: its
  *  author's corrections of it, where they made one. */
 function messageOf(
@@ -7066,20 +7089,18 @@ function messageOf(
   };
 }
 
-// Until the read that holds a pin's words answers, the pin is drawn by the page's word for its
-// kind, never by the id it was pinned under; once it answers, by its first line.
+// Until the read that holds a pin's words answers - for a comment, the outline's tree read - the
+// pin is drawn by the page's word for its kind, never by the id it was pinned under; once it
+// answers, by its first line.
 test("a pin whose words are not read yet is drawn by its kind's word, never its id", async () => {
   const id = "5b0f9e64-2c1d-4a7e-8f3b-91d2c6a4e870";
-  const { getMyState, pinReads, restore } = stubIssueApi();
+  const { getMyState, restore } = stubIssueApi();
   getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
-  const comments = Promise.withResolvers<CommentWithTrees[]>();
-  pinReads.comments.mockImplementation(() => comments.promise);
-  const { unmount } = renderDetails();
+  const { queryClient, unmount } = renderDetails();
 
   try {
     const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
     const link = await within(pins).findByRole("link");
-    await waitFor(() => expect(pinReads.comments).toHaveBeenCalled());
     expect(
       link.textContent,
       "the pin is not drawn by its kind's word while its words are unread"
@@ -7088,11 +7109,13 @@ test("a pin whose words are not read yet is drawn by its kind's word, never its 
       expect(link.textContent, "the pin is drawn by its comment's id").not.toContain(part);
     }
 
-    comments.resolve([commentOf(id, "Ship the fix tonight. Then watch the board.")]);
+    act(() =>
+      holdComments(queryClient, [commentOf(id, "Ship the fix tonight. Then watch the board.")])
+    );
     await waitFor(() =>
       expect(
         within(pins).getByRole("link").textContent,
-        "the pin is not drawn by its comment's first line once the comments are read"
+        "the pin is not drawn by its comment's first line once the tree read answers"
       ).toBe("Ship the fix tonight.")
     );
   } finally {
@@ -7128,7 +7151,7 @@ test("a pinned handoff is drawn by its kind's word and opens the history", async
 // reading of the text, so the symbols that format the body are not drawn as text.
 test("a pinned comment written in markdown is drawn by its words, without the marks", async () => {
   const id = "3c9a7e15-6d2b-4f80-b1e4-7a5c9d0e2f36";
-  const { getMyState, pinReads, restore } = stubIssueApi();
+  const { getMyState, restore } = stubIssueApi();
   getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
   const reading: DisplayTree = {
     content: [
@@ -7142,8 +7165,9 @@ test("a pinned comment written in markdown is drawn by its words, without the ma
     ],
     type: "doc",
   };
-  pinReads.comments.mockResolvedValue([commentOf(id, "**Bold** words. Then more.", reading)]);
-  const { unmount } = renderDetails();
+  const client = detailsQueryClient();
+  holdComments(client, [commentOf(id, "**Bold** words. Then more.", reading)]);
+  const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
     const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
@@ -7169,11 +7193,12 @@ test("a pin's line reads a reference as its target's name", async () => {
   const id = "7a1c3e5f-9b2d-4e6a-8c0f-1d3b5a7c9e20";
   const address = buildDispatchReference({ key: "CORE-2", kind: "issue" });
   const body = `Wait on ${address} first. Then ship.`;
-  const { getMyState, pinReads, restore } = stubIssueApi();
+  const { getMyState, restore } = stubIssueApi();
   getMyState.mockResolvedValue(pinnedState(conversationItemId("comment", id)));
-  pinReads.comments.mockResolvedValue([commentOf(id, body, displayTree(body))]);
+  const client = detailsQueryClient();
+  holdComments(client, [commentOf(id, body, displayTree(body))]);
   const published = publishedNames(new Map([[address, "Ship the release"]]));
-  const { unmount } = renderDetails(() => <Publisher published={published} />);
+  const { unmount } = renderDetails(() => <Publisher published={published} />, undefined, client);
 
   try {
     const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
@@ -7219,7 +7244,8 @@ test("a pinned comment and a pinned message their authors edited say edited afte
   getMyState.mockResolvedValue(
     pinnedState(conversationItemId("comment", comment), conversationItemId("message", message))
   );
-  pinReads.comments.mockResolvedValue([
+  const client = detailsQueryClient();
+  holdComments(client, [
     {
       ...commentOf(comment, "Ship the fix tonight. Then watch the board."),
       edited_at: PIN_EDITED_AT,
@@ -7231,7 +7257,7 @@ test("a pinned comment and a pinned message their authors edited say edited afte
       replies: [],
     },
   ]);
-  const { unmount } = renderDetails();
+  const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
@@ -7272,13 +7298,12 @@ test("a pinned comment and a pinned message their authors deleted are drawn as t
   getMyState.mockResolvedValue(
     pinnedState(conversationItemId("comment", comment), conversationItemId("message", message))
   );
-  pinReads.comments.mockResolvedValue([
-    { ...commentOf(comment, "Ship the fix tonight."), ...deletion },
-  ]);
+  const client = detailsQueryClient();
+  holdComments(client, [{ ...commentOf(comment, "Ship the fix tonight."), ...deletion }]);
   pinReads.messages.mockResolvedValue([
     { message: messageOf(message, "Hold the deploy.", deletion), replies: [] },
   ]);
-  const { unmount } = renderDetails();
+  const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
     await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
@@ -7404,7 +7429,7 @@ test("a pinned history line of an edited post's event says edited after the line
 // before it, else the Pinned heading, rather than falling to the page.
 test("Unpin gives the focus to the next pin, else the one before, else the Pinned heading", async () => {
   const user = userEvent.setup();
-  const { getMyState, pinReads, restore } = stubIssueApi();
+  const { getMyState, restore } = stubIssueApi();
   const [first, second, third] = [
     "1d4f0a6e-3b2c-4e8d-9a7f-5c6b1e2d3f40",
     "2e5a1b7f-4c3d-4f9e-8b6a-6d7c2f3e4a51",
@@ -7420,14 +7445,15 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
       seq: 0,
     },
   });
-  pinReads.comments.mockResolvedValue([
+  const client = detailsQueryClient();
+  holdComments(client, [
     commentOf(first, "First pin."),
     commentOf(second, "Second pin."),
     commentOf(third, "Third pin."),
   ]);
   // Each unpin is held out, so the page shows its own state of the pins throughout.
   const putIssueState = spyOn(api, "putIssueState").mockReturnValue(new Promise(() => undefined));
-  const { unmount } = renderDetails();
+  const { unmount } = renderDetails(undefined, undefined, client);
   const unpin = async (id: string) => {
     const row = document.querySelector(`[data-pin="${conversationItemId("comment", id)}"]`);
     if (!(row instanceof HTMLElement)) throw new Error(`Pinned draws no row for ${id}`);
@@ -7942,12 +7968,14 @@ test.each(
   focused,
 }) => {
   const user = userEvent.setup();
-  const { getIssue, getMyState, pinReads, restore } = stubIssueApi();
+  const { getIssue, getMyState, restore } = stubIssueApi();
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences");
   // The Advances row reads the priorities, to name the one the issue advances.
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
-  pinReads.comments.mockResolvedValue(
+  const client = detailsQueryClient();
+  holdComments(
+    client,
     Object.entries(PIN_WORDS).map(([id, words]) => commentOf(id, words))
   );
   // Makes `held` what Dispatch answers and, once Details is drawn, what its reads hold.
@@ -7969,7 +7997,7 @@ test.each(
     });
   };
   hold(before);
-  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER, client);
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {

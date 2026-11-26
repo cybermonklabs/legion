@@ -1,6 +1,9 @@
 import type {
+  Actor,
+  Anchor,
   Artifact,
   Comment,
+  CommentWithTrees,
   DecisionEntry,
   DisplayTree,
   IssueDecisions,
@@ -35,16 +38,16 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * `changeAnchor` gives the quote and the occurrence it is written with, counted over that
  * document's own reading, so it lands on the decision's first block that is no heading though
  * another decision, or the document's text around it, holds the same words. The decisions read
- * holds no state for it. So the page reads it from the comments it already reads: every comment
- * a person anchored inside a decision's block, on that decision's words, since that decision
- * last changed is a change they asked for, and is drawn under it (`decisionChangeComments`); the
- * newest is the change the decision waits on (`decisionChanges`). The decision then waits on its
- * agent, not on the reader: it says it was changed, and it leaves the review list and every count
- * of what waits on the reader. Once the agent edits the decision, every change is older than its
- * words and the decision waits for review again. A change its author deleted is no longer asked
- * for: it stays drawn under the decision, as the deleted line (`tree-drafts.ts`'s `addTurns`), but
- * no decision waits on it (`decisionChanges`), so a decision whose every change was deleted waits
- * for review again.
+ * holds no state for it. So the page reads it from the comments the tree read answers: every
+ * comment a person anchored inside a decision's block, on that decision's words, since that
+ * decision last changed is a change they asked for, and is drawn under it
+ * (`decisionChangeComments`); the newest is the change the decision waits on (`decisionChanges`).
+ * The decision then waits on its agent, not on the reader: it says it was changed, and it leaves
+ * the review list and every count of what waits on the reader. Once the agent edits the
+ * decision, every change is older than its words and the decision waits for review again. A
+ * change its author deleted is no longer asked for: it stays drawn under the decision, as the
+ * deleted line (`tree-drafts.ts`'s `addTurns`), but no decision waits on it (`decisionChanges`),
+ * so a decision whose every change was deleted waits for review again.
  *
  * What a decision's block holds is every block of its document whose markdown range lies inside
  * the decision's own (`ArtifactBlock.from`, `to`), the decision's block itself among them, in the
@@ -63,11 +66,78 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  */
 
 /** The fields of a comment this module reads, and when its author last edited it, which the
- *  Decisions view draws a Change with (`decisions-parts.ts`'s `DecisionChange`). */
-export type ChangeComment = Pick<
-  Comment,
-  "anchor" | "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
->;
+ *  Decisions view draws a Change with (`decisions-parts.ts`'s `DecisionChange`). A comment the
+ *  tree read answers carries its author's marks only where the read answers them
+ *  (`treeComments`): an absent mark is not known, never "not deleted" or "not edited". */
+export type ChangeComment = Pick<Comment, "anchor" | "author" | "body" | "created_at" | "id"> &
+  Partial<Pick<Comment, "deleted_at" | "edited_at">>;
+
+/** A comment as the tree read answers it (`treeComments`): the fields a Change is found and drawn
+ *  by, the server's reading of its words, and who deleted it, where the read answers that. */
+export type TreeComment = ChangeComment &
+  Pick<CommentWithTrees, "body_tree"> &
+  Partial<Pick<Comment, "deleted_by">>;
+
+/** No comment: the same empty list on every call. */
+const NO_COMMENTS: readonly TreeComment[] = [];
+
+/** The author of a comment node the read names none for, which is no person's, so it is no
+ *  Change (`decisionChangeComments`). */
+const NO_AUTHOR: Actor = { id: "", kind: "" };
+
+/** The comments of each answer `treeComments` has read, one list per answer, held by the answer
+ *  and gone with it. */
+const commentsOfAnswer = new WeakMap<TreeAnswer, readonly TreeComment[]>();
+
+/**
+ * The comments the tree read's `answer` holds, every page of it merged: each comment node, with
+ * its document anchor (none for a comment on a node, which no quote is matched in), its first
+ * author, its words and the server's reading of them, when it was made, and what its author did
+ * to it (`edited_at`, `deleted_at`, `deleted_by`, `TreeAnswerNode`). The answer holds every comment
+ * the page draws and every comment on the text of a node it returns, so the outline's post marks
+ * and Changes (`tree-read/tree-nodes.ts`, `tree-drafts.ts`' `addDecisions`), the header's count
+ * (`waiting.ts`) and the Decisions filter (`decisions-filter/decisions-entries.ts`) read the
+ * comments from it and the page reads no comment list of its own. One list for each answer, so
+ * every one of them reads the same list.
+ */
+export function treeComments(answer: TreeAnswer | undefined): readonly TreeComment[] {
+  if (answer === undefined) return NO_COMMENTS;
+  const held = commentsOfAnswer.get(answer);
+  if (held !== undefined) return held;
+  const comments: TreeComment[] = [];
+  const nodes: readonly TreeAnswerNode[] = answer.nodes ?? [];
+  for (const node of nodes) {
+    if (node.supertag !== "comment") continue;
+    comments.push({
+      anchor: documentAnchor(node.anchor),
+      author: node.author?.[0] ?? NO_AUTHOR,
+      body: node.text,
+      ...(node.text_tree === undefined ? {} : { body_tree: node.text_tree }),
+      created_at: node.made_at ?? "",
+      // An answer that omits a mark does not say whether the post was edited or deleted.
+      ...(node.deleted_at === undefined ? {} : { deleted_at: node.deleted_at }),
+      ...(node.deleted_by === undefined ? {} : { deleted_by: node.deleted_by }),
+      ...(node.edited_at === undefined ? {} : { edited_at: node.edited_at }),
+      id: node.id,
+    });
+  }
+  commentsOfAnswer.set(answer, comments);
+  return comments;
+}
+
+/** A comment node's anchor as a comment's (`Anchor`) where it is in a document, and none where it
+ *  is on a node or where there is none. */
+function documentAnchor(anchor: TreeAnswerNode["anchor"]): Anchor | null {
+  if (anchor?.artifact_id === undefined) return null;
+  return {
+    artifact_id: anchor.artifact_id,
+    block_id: anchor.block_id ?? null,
+    mark_id: anchor.mark_id ?? "",
+    orphaned: anchor.orphaned,
+    quote: anchor.quote,
+    version: anchor.version ?? 0,
+  };
+}
 
 /** The fields of a decision this module reads: an entry of the decisions read. */
 type ChangedDecision = Pick<
@@ -324,8 +394,8 @@ export function firstOfEachId(nodes: readonly TreeAnswerNode[]): Map<string, Tre
 /**
  * The Change each decision node waits on, by the id `idOf` gives the node: the newest of the
  * Changes the read hangs under it (`nodeChangeComments`) that its author has not deleted
- * (`deleted`, the comments the page's comments read says were: the tree read answers a deleted
- * comment with no body and no mark). A deleted Change keeps its place under the decision, as the
+ * (`deleted`, the comments the answer marks deleted, `treeComments`: the read answers a deleted
+ * comment with no body). A deleted Change keeps its place under the decision, as the
  * read puts it, and asks nothing any more, as `decisionChanges` has it for a Change found by its
  * quote. The outline (`tree-read/tree-nodes.ts`) names each node by its tree id
  * (`treeIdOfNode`), so two decision nodes of one block id in two documents are two decisions
@@ -692,4 +762,24 @@ function after(at: string, row: Partial<Pick<DecisionEntry, "changed_at" | "kept
     (moment): moment is string => typeof moment === "string"
   );
   return since.every((moment) => compareTimestamps(at, moment) > 0);
+}
+
+/**
+ * Whether a Change of `decision` may stand among the comments the tree read's `answer` does not
+ * hold: the read pages the issue's comments, the newest first, and an answer with an older page
+ * names where it starts (`comments_before`, `<made_at>,<id>` of the oldest comment it holds,
+ * `tree-read/tree-nodes.ts`' `olderCommentsBefore`). A Change is newer than the decision's words
+ * and its last Keep (`after`), so a comment older than the oldest held can be one only where that
+ * oldest comment is newer than both. A decision drawn with no Change it may have then carries the
+ * page's mark of a count with more to read (`tree-drafts.ts`' `markChangeUnread`), rather than
+ * reading as unchanged.
+ */
+export function changeMayBeOlder(
+  decision: Partial<Pick<DecisionEntry, "changed_at" | "kept">>,
+  answer: TreeAnswer | undefined
+): boolean {
+  const before = answer?.comments_before;
+  if (typeof before !== "string" || before === "") return false;
+  const comma = before.indexOf(",");
+  return after(comma < 0 ? before : before.slice(0, comma), decision);
 }

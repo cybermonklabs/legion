@@ -954,7 +954,6 @@ function seededClient(): QueryClient {
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
   client.setQueryData(["asks", KEY, "thread"], []);
-  client.setQueryData(["comments", KEY], []);
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(
     outlineQuery(KEY, "conversation").queryKey,
@@ -1040,11 +1039,11 @@ test("the Contents pane draws the three sentences though the plan's blocks could
 // has not read, and once it answers they draw what the tree holds.
 test("the Contents pane's rows draw their labels alone while a read of the tree is out, and count once it answers", async () => {
   const client = seededClient();
-  // The comments are the one read of the tree still out.
-  const outKey = ["comments", KEY];
+  // The messages are the one read of the tree still out.
+  const outKey = ["issue-messages", KEY];
   client.removeQueries({ queryKey: outKey });
-  const commentsAnswer = Promise.withResolvers<never[]>();
-  const comments = spyOn(api, "listComments").mockReturnValue(commentsAnswer.promise as never);
+  const messagesAnswer = Promise.withResolvers<never[]>();
+  const messages = spyOn(api, "listIssueMessages").mockReturnValue(messagesAnswer.promise as never);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
     targets: [summaryTarget()],
   } as never);
@@ -1053,7 +1052,7 @@ test("the Contents pane's rows draw their labels alone while a read of the tree 
     try {
       await waitFor(() => expect(client.isFetching({ queryKey: outKey })).toBe(1));
       expect(rowTexts(view)).toEqual([CONTROL_LABELS.in_short_how, CONTROL_LABELS.in_short_shown]);
-      await act(async () => commentsAnswer.resolve([]));
+      await act(async () => messagesAnswer.resolve([]));
       await waitFor(() =>
         expect(rowTexts(view)).toEqual([
           `${CONTROL_LABELS.in_short_how}${EMPTY_STATE_LINES.plan}`,
@@ -1064,7 +1063,7 @@ test("the Contents pane's rows draw their labels alone while a read of the tree 
       view.unmount();
     }
   } finally {
-    comments.mockRestore();
+    messages.mockRestore();
     names.mockRestore();
   }
 });

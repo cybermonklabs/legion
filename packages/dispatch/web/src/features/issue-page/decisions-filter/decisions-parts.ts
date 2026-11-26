@@ -156,8 +156,8 @@ export interface DecisionChange {
   readonly by: Actor;
   /** When the person last edited what they wrote (`Comment.edited_at`), which the row says
    *  ` · edited` after the words for (`EditedMark`, INFRA-1523, R2); null for a change nobody
-   *  edited. */
-  readonly editedAt: string | null;
+   *  edited, and absent where the read the change comes from answers no edit mark. */
+  readonly editedAt?: string | null;
   /** The comment's own id, which is its node's in the conversation. */
   readonly id: string;
   /** The comment's address in the conversation. */
@@ -362,7 +362,7 @@ export function decisionsParts({
               at: asked.created_at,
               body: asked.body,
               by: asked.author,
-              editedAt: asked.edited_at,
+              ...(asked.edited_at === undefined ? {} : { editedAt: asked.edited_at }),
               id: asked.id,
               path: buildIssuePath({ id: asked.id, key: issueKey, kind: "comment" }),
               source: { id: asked.id, issue: issueKey, kind: "comment" },
