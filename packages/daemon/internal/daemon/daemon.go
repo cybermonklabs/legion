@@ -3364,7 +3364,7 @@ func stateSource(cfg config.Config, st *store.Store, records record.Store, start
 		project:      cfg.Project,
 		projectToken: p.project,
 		runtime:      cfg.Runtime.Name,
-		admissionCap: cfg.AdmissionCap,
+		admissionCap: cfg.AdmissionCap + 1,
 		p0Bound:      cfg.AdmissionP0Bound,
 		startedAt:    startedAt,
 		now:          p.clock.Now,
