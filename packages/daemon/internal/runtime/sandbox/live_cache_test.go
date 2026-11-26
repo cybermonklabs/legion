@@ -436,12 +436,6 @@ func (r *liveRig) awaitCacheReady() (CacheStatus, error) {
 	return status, err
 }
 
-// initLog is workspace-init's log of the pod name.
-func (r *liveRig) initLog(name string) (string, error) {
-	out, err := r.kubectl("logs", name, "-c", initContainer)
-	return out, err
-}
-
 // github is the run's repository's REST API under the implement App's write lease on that
 // repository's owner, because the clients it hands out write: pushRunCommit POSTs /git/trees,
 // /git/commits and /git/refs, and the stale-branch sweep and the teardown delete refs. It is

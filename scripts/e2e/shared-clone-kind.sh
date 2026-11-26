@@ -325,7 +325,9 @@ cache_refs=$(kind_k -n legion exec "$cache_sandbox" -c cache -- git --git-dir="$
   fail "list cache refs: $cache_refs"
 [ "$cache_refs" = refs/heads/master ] || fail "cache refs are $(printf %q "$cache_refs"), want refs/heads/master alone"
 # shellcheck disable=SC2016 # expanded by the cache pod's shell
-index_objects=$(kind_k -n legion exec "$cache_sandbox" -c cache -- sh -c 'tmp=$(mktemp) || exit; trap "rm -f \"$tmp\"" EXIT; for index in "$1"/objects/pack/*.idx; do [ -e "$index" ] || continue; git show-index < "$index" > "$tmp" || exit; cut -d" " -f2 < "$tmp" || exit; done' sh "$cache_clone") ||
+# `git show-index` runs inside the cache's repository (--git-dir), which names the object format:
+# the image's git segfaults (exit 139) reading an index outside any repository.
+index_objects=$(kind_k -n legion exec "$cache_sandbox" -c cache -- sh -c 'tmp=$(mktemp) || exit; trap "rm -f \"$tmp\"" EXIT; for index in "$1"/objects/pack/*.idx; do [ -e "$index" ] || continue; git --git-dir="$1" show-index < "$index" > "$tmp" || exit; cut -d" " -f2 < "$tmp" || exit; done' sh "$cache_clone") ||
   fail "list cache pack indexes: $index_objects"
 [ -n "$index_objects" ] || fail "cache $cache_sandbox has no pack index under $cache_clone/objects/pack"
 # shellcheck disable=SC2016 # expanded by the cache pod's shell
