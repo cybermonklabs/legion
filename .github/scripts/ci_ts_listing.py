@@ -171,7 +171,8 @@ def listed_paths(text: str) -> list:
 def program_files(project: str, problems: list) -> list | None:
     """Every file of the project's tsc program that is inside the repository and outside
     node_modules, repository-relative. None when the command fails."""
-    command = ["bunx", "tsc", "-p", project, "--noEmit", "--listFilesOnly"]
+    command = (["bunx", "--package", "@typescript/native-preview", "tsgo"] if os.environ.get("CI_TSGO") == "1"
+               else ["bunx", "tsc"]) + ["-p", project, "--noEmit", "--listFilesOnly"]
     result = subprocess.run(command, cwd=REPO, capture_output=True, text=True)
     if result.returncode != 0:
         failed(project, " ".join(command), result, "program holds", problems)
