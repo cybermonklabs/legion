@@ -147,6 +147,8 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 type shortAcknowledgementClock time.Duration
 
 func (c shortAcknowledgementClock) WithTimeout(parent context.Context, _ time.Duration) (context.Context, context.CancelFunc) {
+	// The bound under test, not a wait: c is the publish's own deadline, which the row makes pass
+	// (300 ms) to show the publish ends within it rather than waiting for a connection.
 	return context.WithTimeout(parent, time.Duration(c))
 }
 

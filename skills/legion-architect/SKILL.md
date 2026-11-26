@@ -61,7 +61,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once it is filed: `legion({ op: "release_children", issues: ["LEGION-41", "LEGION-42"] })`.
+- Release each child once it is filed: `legion({ op: "release_children", issues: ["ACME-41", "ACME-42"] })`.
   Legion holds a child whose blockers are not `done`.
   Never hold a release back for a close: a child released after the root's merge runs as an orphan root.
   Never block a child on its own parent, which merges last.
@@ -91,27 +91,30 @@ A retro that cannot write the body: `skill://legion-architect/references/accepta
 
 ## 6. Acceptance and the merge
 
-In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
+In `accepting`, no worker holds the phase:
 read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
-Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
+Merge holds, finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 
-The merge closes the issue once every issue beneath it has left the workflow, except one held at
-`admitted`, which starts after the close, under a root only when the linger hands it over;
-nothing after it is yours (`skill://legion-architect/references/acceptance.md`, "The close").
+The merge closes the issue once every issue beneath it has left the workflow, except one held at `admitted`.
+Nothing after it is yours (`skill://legion-architect/references/acceptance-steps.md`, "The close").
 
 ## Escalation judgment
 
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and two trees changing the same code.
+- Send the controller a child serving no criterion of the root and a need for admission slots.
+  Two trees changing the same code: mention the other tree's architect on its issue (`skill://legion-worker/references/findings.md`).
 
-- Carry a clear defect the controller gives you in this tree:
-  in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.
-  It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").
+- Carry a clear defect another role writes to you in this tree, in an open pull request or a child.
+
+- An action on an agent is the controller's: ask it in a `dispatch comment` on that agent's issue mentioning its role, never by `envoy_publish`.
+
+- Your tree's failed CI runs and its pull requests that no merger merges are yours, never another session's.
+  Read `skill://legion-architect/references/operations.md` before each of these three.
 
 - A tool a worker cannot get is a pull request to the worker image (`skill://legion-worker/references/tools.md`).
