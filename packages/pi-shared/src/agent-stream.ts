@@ -125,7 +125,7 @@ const ENVOY_CARD = "envoy-message";
  * session (pi-envoy's `handCard` writes it), or answers one (the agent's copy of a person's
  * `!command` report, whose frame the stream already carries tagged with that message): that
  * message's id. Dispatch stores every message it delivers to a session for that session, and the
- * live view draws it from that store (`GET /api/v1/agents/{session_id}/messages`), or from the
+ * live view draws it from that store (`GET /api/v1/agents/{session_id}/conversation`), or from the
  * report's own frame, so such a card is not streamed: the page would show the message twice.
  */
 export interface DispatchMessageCardDetails {

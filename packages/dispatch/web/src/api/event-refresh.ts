@@ -623,8 +623,13 @@ const INBOX_THREAD_WRITES: Partial<Record<EventType, true>> = {
  * A project-default write moves the person without touching the thread or naming an issue, so
  * it reads it for the two named people's whole Inbox as well, and every other reader's Inbox
  * tests the rows it holds (`inboxRowsDecidedByDefault`, from the project-default branch of
- * `ownerTargets`). An assignee write needs no such read: every reader's Inbox holds every open
- * ask of the issue, so the test against its rows (`inboxRowsOf`) finds each list it moves.
+ * `ownerTargets`). An assignee write needs no such read. A read of the open asks (`openAsksQuery`)
+ * that can hold an ask of the issue - every project's, and the issue's project's - holds every one
+ * the reader can see, so the test against its rows (`inboxRowsOf`) finds each of those reads it
+ * moves. The reader's own asks come from the one read instead, which holds an ask only while it
+ * waits on the reader, and the write's `thread_logins` names the person the issue's asks waited on
+ * before the move and the one they wait on after it, so this rule reads both people's one read
+ * again.
  *
  * `thread_logins` names whose rows the write moved or reprinted - for an issue-less message the
  * thread root's author, which is the person whose Agent row it is, for a hand-on the person it
