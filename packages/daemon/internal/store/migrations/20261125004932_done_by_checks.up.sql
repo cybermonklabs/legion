@@ -144,14 +144,14 @@
 -- alter table production_checks drop column if exists relook_seq, drop column if exists generation;
 -- alter table pending_task_deliveries drop column if exists start_at;
 -- alter table outbox drop constraint if exists outbox_kind_check;
--- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes'));
+-- alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed'));
 -- alter table issues drop constraint if exists issues_phase_check;
--- alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
+-- alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
 -- delete from schema_version where version = 20261125004932;
 -- commit;
 alter table issues drop constraint issues_phase_check;
 alter table issues add constraint issues_phase_check check (phase in (
-  'admitted', 'awaiting_person', 'planning', 'implementing', 'testing', 'reviewing', 'accepting',
+  'admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting',
   'retro', 'merging', 'verifying', 'done', 'held'));
 
 alter table issues
@@ -224,7 +224,7 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask',
   'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record',
-  'conflict_confirm', 'merge_forward', 'design_changes', 'close_read', 'close_wait_publish'));
+  'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'close_read', 'close_wait_publish'));
 
 -- design_news_current is the one rule of which news of a delivery's copy still counts, now read on
 -- the tree's run: an item or an opening rendered for told_issue in a tree whose run stood at

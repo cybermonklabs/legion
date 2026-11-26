@@ -275,6 +275,23 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// holdOutbox answers whether the workflow's outbox leaves row unrun for now (outbox.hold):
+	// the row is put back, due again a moment later, and runs on the first claim the hook lets
+	// through. A test holds the rows of one kind — a gate seed, a pending-basis seed — until it
+	// has done what it needs done before them, and releases them by answering false. nil, in
+	// production, holds nothing.
+	holdOutbox func(record.OutboxRow) bool
+	// gateRegistrationRead is api.Options.GateRegistrationRead: told of each register_gate call
+	// once its Dispatch reads are made and before its fact is applied, on the route's goroutine,
+	// so a test can act on Dispatch between the two and release the call by returning. nil, in
+	// production, tells no one.
+	gateRegistrationRead func(ctx context.Context, issue string)
+	// dropConsumedEvent answers whether the workflow's handlers skip a fact the intake consumers
+	// delivered (workflowRuntime.consumerHandlers): the event is acknowledged and recorded as
+	// applied (processed_events), as every delivered event is, and nothing of the workflow acts
+	// on it, so a test reads what the daemon does with an event it missed. nil, in production,
+	// drops nothing.
+	dropConsumedEvent func(intake.Fact) bool
 	// supervising hands a whole-daemon test the supervisor run built and a function that applies
 	// one fact with the workflow's own handlers (intake.ApplyFact over the workflow's pool, as the
 	// daemon's consumers, its API and its own passes apply each fact), once run has built both and
@@ -627,11 +644,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		st.Close()
 		return err
 	}
-	// The Sandbox runtime's launches read the update round over a pod they would keep through the
-	// supervision, which exists only now; the runtime was built inside openSupervision before it
-	// (launchRounds). No machine exists yet, so no launch has asked.
+	// The Sandbox runtime's launches read the update round over a pod they would keep, record what
+	// a launch's own replacement of an issue pod is about to take, and tell what it took, through
+	// the supervision, which exists only now; the runtime was built inside openSupervision before
+	// it (launchRounds). No machine exists yet, so no launch has asked.
 	if plan.launchRounds != nil {
-		plan.launchRounds.bind(s.roundPodEndsAtLaunch)
+		plan.launchRounds.bind(s.roundPodEndsAtLaunch, s.recordLaunchTakes, s.tellLaunchTook)
 	}
 	if plan.probe != nil {
 		report, err := plan.probe(ctx, s.runtime)
@@ -1271,6 +1289,11 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
+	// nil holds, tells and drops nothing.
+	holdOutbox           func(record.OutboxRow) bool
+	gateRegistrationRead func(ctx context.Context, issue string)
+	dropConsumedEvent    func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
@@ -1410,6 +1433,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
@@ -1797,20 +1821,6 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
-	// podUpdateWorkspaceMu guards podUpdateWorkspace, what the update-round sweep keeps between
-	// ticks of a round's read of its issue's workspace: the one read that a round made before its
-	// pod's replacement (readRoundWorkspace), by issue, naming the round it was made for and
-	// holding the answer or the read's error. A replacement the read stood in front of can be
-	// refused under the pod's launch turn or can fail, and the next sweep that reaches the same
-	// round's replacement reuses the answer rather than read again, so the round reads the
-	// workspace once and its line and message name that read. The entry goes where the sweep ends
-	// the round (endPodUpdates) and where the sweep finds the issue in another round or in none
-	// (forgetWorkspaceReads). Nothing of it is in the store, because it decides nothing: the
-	// replacement is made whatever the read found. A restart forgets it, and the round's next
-	// replacement reads the workspace again. A mutex of its own, because it has nothing to do with
-	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
-	podUpdateWorkspaceMu sync.Mutex
-	podUpdateWorkspace   map[string]workspaceRead
 	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
 	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
 	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
@@ -1822,7 +1832,8 @@ type supervision struct {
 	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
 	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
 	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
-	// of its own, for the reason podUpdateWorkspaceMu has one.
+	// of its own, because it has nothing to do with the pace podUpdateMu guards; the sweep is its
+	// one goroutine all the same.
 	podUpdateEndedMu sync.Mutex
 	podUpdateEnded   map[string]string
 	// podUpdateLaunchMu guards podUpdateLaunchReplaced, what the launches into an issue's pod
@@ -1835,11 +1846,12 @@ type supervision struct {
 	// replacement the round made (endRoundALaunchReplaced). The entry goes where the sweep ends the
 	// round (endPodUpdates), where the hook writes one of another round of the issue, and at the
 	// first sweep that finds no claim of the issue that has not retired (forgetLaunchRounds).
-	// Nothing of it is in the store: a restart forgets it, and the sweep then reads a pod a launch
-	// replaced as a pod gone, whose message names the members by the same rule (lostClaims), where
-	// each machine built over its stored claim reads its set of pods as unknown wherever the stored
-	// claim shows a session (supervise's bootRegisteredPods). A mutex of its own, never held across
-	// a runtime call, because the hook runs on a launching machine's goroutine beside the sweep.
+	// Nothing of it is in the store: a restart forgets it, and the sweep then ends the round as the
+	// replacement from the record the launch wrote in the store (finishReplacements), whose end
+	// names the members by the same rule (lostClaims), where each machine built over its stored
+	// claim reads its set of pods as unknown wherever the stored claim shows a session (supervise's
+	// bootRegisteredPods). A mutex of its own, never held across a runtime call, because the hook
+	// runs on a launching machine's goroutine beside the sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
@@ -3141,7 +3153,9 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
-		Pause:              pauses,
+		// A test's seam alone (overrides.gateRegistrationRead); nil in production.
+		GateRegistrationRead: p.gateRegistrationRead,
+		Pause:                pauses,
 	})
 
 	group, serving := errgroup.WithContext(ctx)

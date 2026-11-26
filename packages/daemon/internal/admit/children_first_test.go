@@ -378,10 +378,7 @@ func TestTheWaitingLineLeavesOutAParentWhoseChildrenAreOpen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		waits, err := record.ChildWaitsOf(context.Background(), tx, record.NewStore(), testProject, issues, facts)
-		if err != nil {
-			t.Fatalf("judge the child waits: %v", err)
-		}
+		waits := record.ChildWaitsOf(facts)
 		if wait, waiting := waits[cfRoot]; !waiting || len(wait.Open) != 1 || wait.Open[0].Key != cfFirst || wait.Open[0].Status != "backlog" {
 			t.Fatalf("the judgement of %s = %+v, want it waiting on %s in backlog", cfRoot, waits[cfRoot], cfFirst)
 		}

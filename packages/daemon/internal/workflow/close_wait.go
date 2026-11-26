@@ -346,7 +346,7 @@ func (e *Engine) enterVerifying(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if _, err := e.arrive(ctx, tx, &issue, &w, trigger, phase.Verifying, PhaseStatus(phase.Verifying), nil, handoff, pr, ""); err != nil {
 		return err
 	}
-	if err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
+	if _, err := e.clearMergeForward(ctx, tx, issue.Key); err != nil {
 		return err
 	}
 	return e.waitEntered(ctx, tx, issue, view, pr)

@@ -175,6 +175,8 @@ const checkTaskLead = "Production check of "
 // controller (fact 11), and a pending for a requirement still unobserved (fact 10), which on the
 // last look closes the check as not run. It says nothing of a closed issue. Each sentence holds at
 // most 25 words and no semicolon.
+// For an issue whose spec is a view on an ancestor's requirements, the line after the first says
+// so (viewSentence), as every phase task of the issue does.
 func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail string, last bool, checks []dispatch.CheckBlock) string {
 	merge := check.MergeSHA
 	if merge == "" {
@@ -182,6 +184,9 @@ func checkTask(issue record.Issue, check record.ProductionCheck, cause, detail s
 	}
 	var text strings.Builder
 	fmt.Fprintf(&text, "%s%s: %s.\n", checkTaskLead, issue.Key, issue.Title)
+	if view := viewSentence(issue); view != "" {
+		text.WriteString(view + "\n")
+	}
 	fmt.Fprintf(&text, "Repository %s, pull request #%d, merge commit %s. Look %d, woken by %s.", check.Repo, check.Number, merge, check.Looks, wokenBy(cause, detail))
 	openedAt := check.OpenedAt.UTC().Format(time.RFC3339Nano)
 	fmt.Fprintf(&text, " The check opened at `%s`: your report names it with check_opened_at `%s`.",

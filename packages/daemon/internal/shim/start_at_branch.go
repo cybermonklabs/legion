@@ -12,7 +12,8 @@ import (
 // The shim of the role about to take the change's first task runs it in the workspace it works in
 // (workspace.StartAtBranch), so one copy of the steps runs on every runtime. A request the shim
 // cannot act on is answered with the reason when it names an id to answer, and a refusal carries
-// at most maxAnswerErrorBytes of its reason (cutAnswerError), so the answer always fits one line.
+// at most shimwire.MaxAnswerErrorBytes of its reason (shimwire.CutAnswerError), so the answer
+// always fits one line.
 func (s *shim) startAtBranch(request shimwire.StartAtBranch) {
 	result := shimwire.StartAtBranchResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -20,9 +21,9 @@ func (s *shim) startAtBranch(request shimwire.StartAtBranch) {
 			s.log.Printf("[worker-shim] refusing a start-at-branch frame: %v", err)
 			return
 		}
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	} else if started, err := s.runStartAtBranch(request); err != nil {
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	} else {
 		result.Moved, result.From, result.At, result.BehindBase = started.Moved, started.From, started.At, started.BehindBase
 	}

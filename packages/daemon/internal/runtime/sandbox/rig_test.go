@@ -562,6 +562,11 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// readsWorkspace is what every fake launcher's hello says of reading the issue workspace
+	// (shimwire.LauncherHello.ReadsWorkspace, withWorkspaceRead), and workspaceAnswer is what each
+	// such launcher answers a workspace-work request with, its ID set to the request's.
+	readsWorkspace  bool
+	workspaceAnswer shimwire.WorkspaceWorkResult
 	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
 	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
 	heldStops <-chan struct{}
@@ -570,6 +575,22 @@ type rig struct {
 type rigOption func(*rig, *Options)
 
 func withOptions(edit func(*Options)) rigOption { return func(_ *rig, o *Options) { edit(o) } }
+
+// withWaitsToTheDeadline sets the runtime's boot timeout to what is left of the test binary's
+// deadline when the rig is made (testwait.Remaining), in place of testOptions' 2 s. That timeout
+// bounds each wait of a launch on the wall clock — for its old pod to end, for its new pod, for its
+// role launcher's hello — and the wait for the answer to a stop, so no such wait gives up before the
+// binary's own deadline is near. It is for a test whose launches must not give up: each of those
+// waits ends there on an event the rig brings (its controller deleting or making a pod, a fake
+// launcher's hello or answer), and a loaded machine can put that event off past any fixed span. The
+// 2 s failed TestAnIssuePodOfTheEarlierLayoutIsStaleForEveryRoleAndReplacedByTheNextLaunch in CI run
+// 45752994928: its launch gave up while the controller had not yet deleted the earlier pod. A test
+// that means a launch to give up at its boot timeout sets that timeout itself. The timeout is at
+// most a day: under go test's -timeout 0, Remaining is about 36 years, and the launch's own bound
+// (launchBound), about ten boot timeouts, would wrap a time.Duration.
+func withWaitsToTheDeadline() rigOption {
+	return func(g *rig, o *Options) { o.BootTimeout = min(testwait.Remaining(g.t), 24*time.Hour) }
+}
 
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
@@ -605,6 +626,13 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withWorkspaceRead has every fake launcher's hello say it reads the issue workspace, and answer
+// each workspace-work request with answer, as a launcher of this release answers the daemon's read
+// of a pod no role process reads through (R6 of #5285).
+func withWorkspaceRead(answer shimwire.WorkspaceWorkResult) rigOption {
+	return func(g *rig, _ *Options) { g.readsWorkspace, g.workspaceAnswer = true, answer }
+}
 
 // withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
 // is closed.
@@ -1474,13 +1502,19 @@ func answerGeneration(command shimwire.Frame, running *uint64) (answers []shimwi
 func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 
 // connectRunning is a fake launcher connection for token whose launcher already runs generation
-// running (0 for none), as one that survived a daemon restart reports its child at once.
+// running (0 for none), as one that survived a daemon restart reports its child at once. It returns
+// once the runtime has read the launcher's first state, so the session is ready: a read of the
+// pod's workspace takes only a ready launcher and waits for none (launchers.workspaceReader), and a
+// launch that read before the server goroutine had read that state found no launcher connected.
+// The rig calls it from the fake controller's goroutine too (createPod), so a launcher that never
+// gets ready is an error of the test, not a stop of the goroutine.
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
+		ReadsWorkspace: g.readsWorkspace,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -1537,9 +1571,30 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 					installed = installed || len(checks[command.ID]) == command.Count
 					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, OK: true, Installed: installed})
 				}
+			case shimwire.WorkspaceWork:
+				answer := g.workspaceAnswer
+				answer.ID = command.ID
+				_ = writer.WriteFrame(answer)
 			}
 		}
 	}()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		select {
+		case <-session.ready:
+			return
+		case <-time.After(5 * time.Millisecond):
+		}
+		session.mu.Lock()
+		closed := session.closed
+		session.mu.Unlock()
+		if closed {
+			return
+		}
+		if time.Now().After(deadline) {
+			g.t.Errorf("the fake launcher of %s sent its first state, and the runtime had not read it 10s later", token)
+			return
+		}
+	}
 }
 
 // keptSince is what the resolver reads off the Sandbox of token's pod for a hello
