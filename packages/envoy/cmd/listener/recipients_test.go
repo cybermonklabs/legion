@@ -65,10 +65,14 @@ func (rig *recipientRig) unsubscribe(t *testing.T, sessionID string, topics []st
 // reap pass, which would need the registry's own clock moved past that allowance: both go through
 // deleteInterest, so the state they leave - no row in the bucket and none in the cache - is the
 // same, and that state is what the count reads.
+//
+// The delete is a case's setup, so it runs until the test binary's deadline (testwait.Context)
+// and not on a clock of its own: for a record past the NATS max payload it removes every chunk,
+// and beside 48 busy processes on four CPUs a fixed 5 s ran out, failing
+// TestAStoppedSessionPastTheMaxPayloadIsStillSentToAndCounted before it reached what it asks.
 func (rig *recipientRig) reapInterest(t *testing.T, sessionID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	if _, err := rig.harness.registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{}); err != nil {
 		t.Fatalf("remove %s's interest row: %v", sessionID, err)
 	}

@@ -1839,6 +1839,13 @@ async function drawFortyFiveIn(
   }
 }
 
+/** The entry of `drawFortyFiveIn` drawn last before a press, `TALL_HEIGHT` px tall in the cases
+ *  below, so the first entry a press draws stands wholly below Details' view. */
+const TALL_ENTRY = "event:26";
+
+/** How tall `TALL_ENTRY` is drawn: it fills Details' view to its foot. */
+const TALL_HEIGHT = 560;
+
 // The last press of Show more on a real issue drew its entries under a new day's line, and the
 // first of them stood below Details' view. The press moved the focus to that entry's control with
 // no scroll, so the focus stood where a keyboard reader could not see it. The press brings the
@@ -1848,7 +1855,7 @@ async function drawFortyFiveIn(
 // press draws stands wholly below the view.
 test("a keyboard press of Show more whose first entry stands below Details' view moves the focus to that entry's control, wholly in Details' view, and scrolls no page", async () => {
   const { box, more, restore } = await drawFortyFiveIn(
-    (row) => (row.getAttribute("data-history-entry") === "event:26" ? 560 : ROW_HEIGHT),
+    (row) => (row.getAttribute("data-history-entry") === TALL_ENTRY ? TALL_HEIGHT : ROW_HEIGHT),
     LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 40
   );
   const intoView = spyOn(Element.prototype, "scrollIntoView");
@@ -1908,6 +1915,184 @@ test("a keyboard press of Show more whose first entry stands in Details' view mo
     ).toBe(true);
     expect(focused?.getBoundingClientRect().top).toBe(340);
     expect(box.scrollTop, "a focus already in Details' view moved Details").toBe(scrollTop);
+  } finally {
+    restore();
+  }
+});
+
+/** A keyboard press of Show more over the 45 claims of `drawFortyFiveIn`, made as the case
+ *  above whose first entry stands below Details' view makes it: the press hands the focus to that
+ *  entry's control and brings it into Details' view by its foot. The resize observers are
+ *  stubbed, as happy-dom never calls them back, and `resize` sets how tall an entry is, a control
+ *  in it measuring as the entry, and calls them back as the frame after a change does. Returns
+ *  the box, the focused control and its entry's id, `resize`, and what puts everything back. */
+async function pressedToFoot(): Promise<{
+  box: HTMLElement;
+  entry: string;
+  focused: HTMLElement;
+  resize: (entry: string, height: number) => void;
+  restore: () => void;
+}> {
+  const sizes = installResizeObserver();
+  const heights = new Map([[TALL_ENTRY, TALL_HEIGHT]]);
+  let undraw: (() => void) | undefined;
+  const restore = () => {
+    undraw?.();
+    sizes.restore();
+  };
+  try {
+    const drawn = await drawFortyFiveIn(
+      (row) => heights.get(row.getAttribute("data-history-entry") ?? "") ?? ROW_HEIGHT,
+      LIST_TOP + (PAGE_SIZE - 1) * ROW_HEIGHT - 40
+    );
+    undraw = drawn.restore;
+    const { box, more } = drawn;
+    // The box holds far more than its view, so no scroll leaves it at its end, which happy-dom,
+    // laying nothing out, would read as the box pulled back to an end it shrank to.
+    Object.defineProperties(box, {
+      clientHeight: { configurable: true, value: VIEW_HEIGHT },
+      scrollHeight: { configurable: true, value: 100_000 },
+    });
+    act(() => more.focus());
+    await userEvent.keyboard("{Enter}");
+    const focused = document.activeElement;
+    const entry = drawnEntries()[PAGE_SIZE];
+    if (!(focused instanceof HTMLElement) || entry?.contains(focused) !== true) {
+      throw new Error("Show more did not move the focus to the first entry it drew");
+    }
+    expect(
+      focused.getBoundingClientRect().bottom,
+      "the press did not bring the focused control into Details' view by its foot, so the case proves nothing"
+    ).toBe(VIEW_HEIGHT);
+    return {
+      box,
+      entry: entry.getAttribute("data-history-entry") ?? "",
+      focused,
+      resize: (id, height) => {
+        heights.set(id, height);
+        sizes.resize();
+      },
+      restore,
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+// Show more hands the focus to the first entry it drew, brought into Details' view by the least
+// scroll, and that entry's control can grow after the hand-on: a reference in the entry's line is
+// drawn by its address until the names of the references are read, then by its target's name,
+// which can wrap over several lines. Found by the tester on a running build with a copy of a
+// large real issue at 1440 px: about 120 ms after a press, the focused link grew from 15 px to
+// 51 px, and its foot stood 35 px below Details' view. The hand-on keeps the control wholly in
+// that view through its own growth, by the least scroll, which the history's anchor makes
+// (`keepFocusedInView`), and the anchor then keeps the control where that scroll left it.
+test("a keyboard press of Show more keeps the control it focused wholly in Details' view as the control grows below the view's foot and holds it there as an entry above it shrinks", async () => {
+  const { box, entry, focused, resize, restore } = await pressedToFoot();
+
+  try {
+    const before = box.scrollTop;
+    resize(entry, ROW_HEIGHT + 36);
+    expect(
+      box.scrollTop - before,
+      "the focused control grew 36 px below Details' view, and Details did not follow it"
+    ).toBe(36);
+    const at = focused.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the focused control stands at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+
+    // The next frame raises that scroll's own event, which the anchor takes for its own; then the
+    // tall entry above the control's shrinks, and the anchor keeps the control where it stood.
+    act(() => {
+      box.dispatchEvent(new Event("scroll"));
+    });
+    resize(TALL_ENTRY, 500);
+    expect(
+      focused.getBoundingClientRect().top,
+      "the entry above the focused control shrank once Details followed the control, and the control moved"
+    ).toBe(at.top);
+  } finally {
+    restore();
+  }
+});
+
+// As the tester measured it: the link's first line moved up into the line above it as its
+// target's name landed, so the link grew 18 px above its top and 18 px below its foot, and its
+// entry 18 px. The anchor puts the link's top back where it stood, then the hand-on brings the
+// link's foot into the view: the anchor's resize observer, made as the list mounts, is called
+// back before the hand-on's, made at the press, as a browser calls observers in the order they
+// were made.
+test("a keyboard press of Show more keeps the link it focused wholly in Details' view as the link grows above its top and below its foot", async () => {
+  const { entry, focused, resize, restore } = await pressedToFoot();
+
+  try {
+    const row = focused.closest<HTMLElement>("[data-history-entry]");
+    if (row === null) throw new Error("the focused control stands in no entry");
+    // The link reaches 18 px above its entry's top, and down to its entry's foot.
+    focused.getBoundingClientRect = () => {
+      const at = row.getBoundingClientRect();
+      return new DOMRect(at.left, at.top - 18, at.width, at.height + 18);
+    };
+    resize(entry, ROW_HEIGHT + 18);
+    const at = focused.getBoundingClientRect();
+    expect(
+      at.top >= 0 && at.bottom <= VIEW_HEIGHT,
+      `the focused link stands at ${at.top} to ${at.bottom} px, out of Details' view (0 to ${VIEW_HEIGHT})`
+    ).toBe(true);
+    expect(at.bottom, "Details scrolled more than the least that shows the whole link").toBe(
+      VIEW_HEIGHT
+    );
+  } finally {
+    restore();
+  }
+});
+
+// The keeping of the focused control ends at the reader's first act that scrolls Details: from
+// then on the reader's own place is what Details keeps.
+test("after a wheel of the reader's over Details, the control a keyboard press of Show more focused grows below the view's foot and Details does not follow it", async () => {
+  const { box, entry, resize, restore } = await pressedToFoot();
+
+  try {
+    const before = box.scrollTop;
+    // The act itself ends the keeping, whatever it scrolls; happy-dom scrolls nothing for it.
+    act(() => {
+      box.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 40 }));
+    });
+    resize(entry, ROW_HEIGHT + 36);
+    expect(
+      box.scrollTop,
+      "the focused control grew after the reader's wheel, and Details followed it"
+    ).toBe(before);
+  } finally {
+    restore();
+  }
+});
+
+// A focused control wholly outside Details' view is no place the reader sees: its growth there
+// brings it back into the view by no scroll.
+test("the control a keyboard press of Show more focused grows wholly below Details' view and Details does not follow it", async () => {
+  const { box, entry, focused, resize, restore } = await pressedToFoot();
+
+  try {
+    // A scroll no act of the reader's made, as another script's, takes the control wholly below
+    // the view, and the frame raises its event.
+    box.scrollTop -= VIEW_HEIGHT;
+    act(() => {
+      box.dispatchEvent(new Event("scroll"));
+    });
+    expect(
+      focused.getBoundingClientRect().top >= VIEW_HEIGHT,
+      "the focused control is not wholly below Details' view, so the case proves nothing"
+    ).toBe(true);
+    const before = box.scrollTop;
+    resize(entry, ROW_HEIGHT + 36);
+    expect(
+      box.scrollTop,
+      "the focused control grew wholly below Details' view, and Details followed it"
+    ).toBe(before);
   } finally {
     restore();
   }
@@ -2576,7 +2761,7 @@ test("a handoff's Retry pressed twice by keyboard leaves its fields open once th
       toggle,
       "the second press of Retry landed on the toggle and shut the fields it asked for"
     ).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Second pass")).toBeInTheDocument();
+    await screen.findByText("Second pass");
     expect(getHandoff, "the two presses read the handoff more than once").toHaveBeenCalledTimes(2);
   } finally {
     unmount?.();

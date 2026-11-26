@@ -22,7 +22,7 @@ import {
 } from "../verification-filter/VerificationFilterBody";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
-import { usePublishViewParents } from "./view-parents";
+import { usePublishViewReadings } from "./view-readings";
 
 /** Filled by INFRA-1196 part V, "The Verification view". */
 export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotProps): ReactNode {
@@ -54,8 +54,8 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
     [address.filter, named, root]
   );
   // The other statements a check serves are named by the page's names, which the view names where
-  // only its own tree holds them (`PresetView.parents`).
-  usePublishViewParents(view.parents);
+  // only its own tree holds them (`PresetView.readings`).
+  usePublishViewReadings(view.readings);
   // The view with no words query, where a query is typed (`queryTyped`, the body's one rule): what
   // the issue holds whatever the query left of it. A query of spaces alone draws as no query does;
   // with none typed the body reads the view itself, and nothing is built a second time.

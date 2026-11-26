@@ -1237,6 +1237,66 @@ test("f steps through a row's chips, links and then the controls no key presses"
   }
 });
 
+// A row holds its margin - the kind's tag, the author, the time - ahead of its words in the DOM,
+// so that on a phone the margin floats beside the words' first line (`NodeRow.tsx`), and `f`
+// steps through the row in the order it reads: the links its words hold, then the kind's link,
+// then the controls no key presses. Taken in the DOM's order, the kind's link would come first.
+test("f steps through a row's controls in its reading order: the words' links before the kind's link", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const summary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-7",
+    project: "CORE",
+    status: "in_progress",
+    title: "Ship the flag",
+  });
+  const root = node({
+    children: [
+      // A statement of the spec, whose reference names its block, so its kind's tag is a link
+      // to it in Spec (`presetNodePath`).
+      node({
+        id: "spec#b-r1",
+        reference: `dispatch://${KEY}/spec#b-r1`,
+        statement: true,
+        text: "Ship it as dispatch://CORE-7 says.",
+        type: "requirement",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  /** Presses `f` and says what it left the focus on: a link of the words by its words, the kind's
+   *  link as "the kind", and any other control by its words. */
+  const stop = async (): Promise<string | null | undefined> => {
+    await user.keyboard("f");
+    const on = document.activeElement;
+    if (on?.matches("[data-node-tag-link]") === true) return "the kind";
+    return on?.closest("[data-node-words]") === null
+      ? on?.textContent
+      : `words: ${on?.textContent}`;
+  };
+  try {
+    const { container } = renderPageTree(root, "alice").view;
+    await waitFor(() => expect(focusedRow(container)).toBe("spec#b-r1"));
+    await waitFor(() => expect(container.textContent).toContain("CORE-7 Ship the flag"));
+    const tag = container.querySelector("[data-node-margin] a[data-node-tag-link]");
+    const words = container.querySelector("[data-node-words]");
+    expect(
+      tag !== null &&
+        words !== null &&
+        (tag.compareDocumentPosition(words) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+      "the row does not hold its kind's link ahead of its words in the DOM"
+    ).toBe(true);
+    expect(await stop()).toBe("words: CORE-7 Ship the flag");
+    expect(await stop()).toBe("the kind");
+    expect(await stop()).toBe(CONTROL_LABELS.copy_reference);
+    expect(await stop()).toBe("words: CORE-7 Ship the flag");
+  } finally {
+    summary.mockRestore();
+  }
+});
+
 // Home on the first row moves the focus to no other row, and from a chip `f` stopped on, the row
 // already holds the focus through the chip: the row's own placing, which runs as a row takes the
 // focus, does not run. A reader who scrolled the row off the screen from there is brought back
@@ -7952,6 +8012,111 @@ test("the reader folds a node by its control, Left or o, unfolds it by the contr
   await waitFor(() => expect(rowsFor(container, "reply-1")).toHaveLength(1));
   expect(rowsFor(container, "reply-2")).toHaveLength(1);
   expect(focusedRow(container)).toBe("comment-1");
+  view.unmount();
+});
+
+/** An issue whose one check serves seven statements, built under each as `issue-tree.ts` builds a
+ *  check that serves several: seven rows of one node, each holding the check's four results and
+ *  the note under each, eight nodes. */
+function checkServingSeven(): TreeNode {
+  const check = (): TreeNode =>
+    node({
+      children: Array.from({ length: 4 }, (_, at) =>
+        node({
+          children: [node({ id: `note-${at + 1}`, type: "callout" })],
+          held: 1,
+          id: `result-${at + 1}`,
+          type: "result",
+        })
+      ),
+      held: 8,
+      id: "verification-md#b-c1",
+      state: "passed",
+      type: "check",
+    });
+  return node({
+    children: Array.from({ length: 7 }, (_, at) =>
+      node({
+        children: [check()],
+        held: 9,
+        id: `spec#b-r${at + 1}`,
+        statement: true,
+        type: "requirement",
+      })
+    ),
+    id: KEY,
+    type: "issue",
+  });
+}
+
+// R6, R11: a node is folded only where the reader folds it, and a fold is the reader's act on one
+// row. A check that serves seven statements is drawn under each, seven rows of one node: a press
+// on one row's fold control folds that row alone, its count says how many rows it hides, and the
+// press that unfolds it adds exactly that many. Left, Right and `o` on one row do the same to that
+// row alone. Kept by the node, one press folded all seven rows, and unfolding added seven times
+// the count.
+test("a press on the fold control of one of the seven rows of a check that serves seven statements folds that row alone", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(checkServingSeven());
+  const { container } = view;
+  const checks = () => rowsFor(container, "verification-md#b-c1");
+  const expanded = () => checks().map((row) => row.getAttribute("aria-expanded"));
+  const control = () => checks()[3]?.querySelector<HTMLElement>("button[data-node-bullet]");
+  await waitFor(() => expect(focusedRow(container)).toBe("spec#b-r1"));
+  expect(checks()).toHaveLength(7);
+
+  await user.click(control() as HTMLElement);
+  await waitFor(() => expect(checks()[3]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "the press on one row's fold control folded other rows of the check").toEqual([
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+    "true",
+    "true",
+  ]);
+  const count = checks()[3]?.querySelector("[data-node-count]")?.textContent ?? "";
+  expect(count).toBe(`8 ${CONTROL_LABELS.folded_rows}`);
+  const before = container.querySelectorAll("[data-node-row]").length;
+  await user.click(control() as HTMLElement);
+  await waitFor(() => expect(checks()[3]?.getAttribute("aria-expanded")).toBe("true"));
+  expect(
+    container.querySelectorAll("[data-node-row]").length - before,
+    "the unfolding press added other than the rows the folded row counted"
+  ).toBe(Number.parseInt(count, 10));
+
+  // Left, Right and `o` on one row of the check fold and unfold that row alone.
+  const sixth = checks()[5];
+  await act(async () => sixth?.focus());
+  await user.keyboard("{ArrowLeft}");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "Left on one row of the check folded other rows of it").toEqual([
+    "true",
+    "true",
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+  ]);
+  await user.keyboard("{ArrowRight}");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("true"));
+  expect(expanded(), "Right on one row of the check unfolded other rows of it").not.toContain(
+    "false"
+  );
+  await user.keyboard("o");
+  await waitFor(() => expect(checks()[5]?.getAttribute("aria-expanded")).toBe("false"));
+  expect(expanded(), "o on one row of the check folded other rows of it").toEqual([
+    "true",
+    "true",
+    "true",
+    "true",
+    "true",
+    "false",
+    "true",
+  ]);
   view.unmount();
 });
 

@@ -63,6 +63,17 @@ export default {
       children_page_child: "more child",
       children_page_children: "more children",
     },
+    PLAN_WORDS: {
+      /** The units a task's size is drawn in, after its number: "45 min", "1 h 30 min"
+       *  (`plan-filter/plan-order.ts`'s `sizeWords`). */
+      hours: "h",
+      minutes: "min",
+    },
+    NODE_FACT_LABELS: {
+      /** The issue under this one that a task of the Plan view belongs to, drawn before its
+       *  key, which links to it. */
+      issue: "issue",
+    },
     GLYPH_TOKENS: {
       types: {
         /** A `prose` node's shape (`NodeGlyph.tsx`), by the model's token, as every type's is. */

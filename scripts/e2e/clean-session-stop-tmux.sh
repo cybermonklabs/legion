@@ -242,6 +242,8 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/model-endpoint.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
 . "$root/scripts/e2e/lib/run-verdict.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
 # ---- the selection ------------------------------------------------------------------------------
 selected=()
@@ -714,8 +716,7 @@ while IFS= read -r line; do note "$line"; done < <(
 # plugins, packed as the release packs them and installed as the worker image installs them, under
 # a HOME of the run's own. The caller's native-module cache is linked in, so a fresh home downloads
 # nothing and the caller's own ~/.omp is neither written nor removed.
-natives=$HOME/.omp/natives
-[ -z "${XDG_DATA_HOME:-}" ] || [ ! -d "$XDG_DATA_HOME/omp" ] || natives=$XDG_DATA_HOME/omp/natives
+natives=$(omp_natives_dir)
 mkdir -p "$natives"
 ln -sfT "$natives" "$omp_home/.omp/natives"
 

@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type ReactNode,
   type RefObject,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -77,16 +78,15 @@ import { indentOf } from "./tree-fold";
  *
  * A row reads from the left as the prototype's `.card` does: its bullet in its kind's colour,
  * which is also its fold control where it holds nodes, then its words, and at their end the
- * chips that name what the node points at. At the right end of its first line stand the node's
- * kind as one tag where it has a typed kind, then its author and its time in grey, all on one
- * line in a column as wide as that line needs, and under them, on a smaller line, its state
- * where the model holds one (ruling 5). The words of every node start at one left edge, so
- * nothing stands between a bullet and its words; the reader's own words carry an ink rule and
- * its indent, which is the outline's second left edge and its last (R34). At 760 px and below
- * the tag, the author, the time and the state are one small line under the words (ruling 4). A
- * node the model holds no author for draws none in that column, and an agent is named there by
- * its role's word: the row says "Author unknown" under its words, and gives an agent's whole
- * title (rulings 5 and 6).
+ * chips that name what the node points at. At the right end of its first line, at every width,
+ * stand the node's kind as one tag where it has a typed kind, then its author and its time in
+ * grey, all on one line in a column as wide as that line needs, and under them, on a smaller
+ * line, its state where the model holds one (ruling 5). The words of every node start at one
+ * left edge, so nothing stands between a bullet and its words; the reader's own words carry an
+ * ink rule and its indent, which is the outline's second left edge and its last (R34). A node the
+ * model holds no author for draws none in that column, and an agent is named there by its role's
+ * word: the row says "Author unknown" under its words, and gives an agent's whole title (rulings
+ * 5 and 6).
  *
  * A row draws its node's words whole, with no limit of lines, and draws on its face what the
  * node holds beside them: an option's own words, who made it where the column does not say, the
@@ -214,6 +214,7 @@ export function NodeRow({
   const tone = context ? "context" : toneOf(node, author.kind);
   // A node the reader folded draws one line and its count, whatever the focus (R11).
   const oneLine = expanded === false;
+  const ids = rowNameIds(useId());
 
   const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
 
@@ -237,6 +238,7 @@ export function NodeRow({
   return (
     <div
       aria-expanded={expanded}
+      aria-labelledby={ids.labelledBy}
       aria-level={level}
       className="relative min-w-0 pl-[calc(var(--row-depth)*23px)] outline-none max-[761px]:pl-[calc(var(--row-depth)*17px)]"
       data-editable={editable ? "" : undefined}
@@ -264,10 +266,24 @@ export function NodeRow({
           tabStops={tabStops}
           tone={tone}
         />
+        {/* The margin stands before the words in the DOM, so that on a phone it floats at the
+            right of their first line and the words take the row's whole width under it
+            (`NODE_ROW_LAYOUT`); from 761 px up the grid places each part in its column. The
+            row's name reads its words before the margin (`rowNameIds`). */}
+        <RowMargin
+          author={author}
+          context={context}
+          id={ids.margin}
+          node={node}
+          tabStops={tabStops}
+          {...(tagTo === undefined ? {} : { tagTo })}
+          tone={tone}
+        />
         <div
           className={`${NODE_ROW_LAYOUT.content} ${own ? pageOwnWordsRule : ""}`}
           data-node-content=""
           data-node-own={own ? "" : undefined}
+          id={ids.content}
         >
           {oneLine ? (
             <p
@@ -302,7 +318,9 @@ export function NodeRow({
               data-node-words=""
             >
               {editing !== undefined ? (
-                <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+                // The editor lays its own content out, so on a phone it starts under the
+                // margin's float, at the words' whole width (`NODE_ROW_LAYOUT.content`).
+                <div className="clear-right flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : deleted !== null ? (
                 <p className="break-words" {...authorText}>
                   <DeletedLine deleted={deleted} />
@@ -375,14 +393,6 @@ export function NodeRow({
             </p>
           )}
         </div>
-        <RowMargin
-          author={author}
-          context={context}
-          node={node}
-          tabStops={tabStops}
-          {...(tagTo === undefined ? {} : { tagTo })}
-          tone={tone}
-        />
         {threadRead === undefined || oneLine ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>
@@ -415,11 +425,22 @@ const BULLET_BOX =
  * media query at 760 px), for every row that reads as the outline's: this one, and a filter's own
  * row, which c-row reads by the same marks.
  *
- * From 761 px up the row is three columns: the bullet's 18 px, the words, and the column of the
- * kind's tag, the author and the time, which is as wide as that one line needs and never more
- * than two fifths of the row; a state takes a second, smaller line under it (ruling 5). At 760 px
- * and below the bullet's column is 16 px and the tag, the author, the time and the state stand on
- * one small line under the words, the tag first (ruling 4, the 390 px pictures).
+ * From 761 px up the row is three columns: the bullet's 18 px, the words, and the margin - the
+ * kind's tag at the right end of the words' first line, then the author and the time, and the
+ * state on a smaller line under them - which is as wide as its lines need and no more than two
+ * fifths of the row. At 760 px and below the row is no grid: the bullet floats left in its
+ * 16 px, the words stand 6 px past it, and the margin floats right at the top of the row, no
+ * wider than two fifths of the row, so the words share only the lines beside it and take the
+ * row's whole width under it. A block of the words that cannot wrap beside it - a code block, a
+ * table, a drawn diagram, a picture's paragraph, a rule - starts under it instead, where it has
+ * the row's whole width.
+ *
+ * At every width the author's name is drawn whole, never cut: the author and the time are one
+ * piece that follows the tag on its line where the tag, the name and the time fit in two fifths
+ * of the row, and that stands on a line of its own under the tag's where they do not, the name
+ * wrapping at a space where it is wider than the margin, and the time after its last word. The
+ * margin's line wraps by itself (`flex-wrap`): no script measures a row to decide it. The tag and
+ * the time never break, so the margin is never narrower than either of them.
  *
  * A phone class is `max-[761px]:`, not `max-[760px]:`: Tailwind writes an arbitrary `max-[N]`
  * as `(width < N)`, so only 761 draws 760 px itself as a phone, as the prototype's query and the
@@ -428,29 +449,60 @@ const BULLET_BOX =
  */
 export const NODE_ROW_LAYOUT = {
   /** The bullet's column: 18 px, and 16 px on a phone, its dot at the column's middle. */
-  bullet: `${BULLET_BOX} max-[761px]:w-4`,
+  bullet: `${BULLET_BOX} max-[761px]:float-left max-[761px]:w-4`,
   /** The bullet of a node that holds others, which is its fold control: on a phone 24 px
    *  square, the least target WCAG 2.5.8 allows, reaching 4 px left of the column and 4 px into
    *  the 6 px before the words, as the prototype's does, so it covers none of them, with its dot
    *  kept at the column's middle, where the guide of the level under it hangs. */
-  foldControl: `${BULLET_BOX} cursor-pointer max-[761px]:-ml-1 max-[761px]:w-6 max-[761px]:justify-start max-[761px]:pl-[8.5px]`,
-  /** The box the row's parts stand in (the prototype's `.card`). Below 768 px the words stand
-   *  6 px past the bullet's column, as the prototype's do (the architect's ruling on this part's
-   *  pull request). Not named `card`: `text-on-background.test.ts` reads that name as
-   *  `classes.ts`'s `card` ground, which a row is not drawn on. */
-  box: "relative grid min-w-0 grid-cols-[18px_minmax(0,1fr)_fit-content(40%)] gap-x-2 rounded-md py-0.5 pr-1.5 max-[768px]:gap-x-1.5 max-[761px]:grid-cols-[16px_minmax(0,1fr)] max-[761px]:pr-1",
-  /** The words' column, and everything the row draws under them. */
-  content: "col-start-2 row-start-1 min-w-0",
-  /** The column of the tag, the author, the time and the state, and on a phone their line. */
+  foldControl: `${BULLET_BOX} cursor-pointer max-[761px]:float-left max-[761px]:-ml-1 max-[761px]:w-6 max-[761px]:justify-start max-[761px]:pl-[8.5px]`,
+  /** The box the row's parts stand in (the prototype's `.card`): from 761 px up a grid, and on a
+   *  phone a box of its own the two floats stand in, so it is as tall as the taller of the
+   *  margin and the words. Below 768 px the words stand 6 px past the bullet's column, as the
+   *  prototype's do (the architect's ruling on this part's pull request). Not named `card`:
+   *  `text-on-background.test.ts` reads that name as `classes.ts`'s `card` ground, which a row is
+   *  not drawn on. */
+  box: "relative grid min-w-0 grid-cols-[18px_minmax(0,1fr)_fit-content(40%)] gap-x-2 rounded-md py-0.5 pr-1.5 max-[768px]:gap-x-1.5 max-[761px]:flow-root max-[761px]:pr-1",
+  /** The words' column, and everything the row draws under them: on a phone 22 px from the
+   *  row's left, the bullet's 16 px and the 6 px after it. Only lines of text wrap around the
+   *  margin's float: a box that lays its own content out - a grid, a flex row, a table, a box
+   *  that scrolls - is laid out beside a float at one width for its whole height, and never
+   *  widens under it. So every part of the content but the words and a folded row's one line -
+   *  the facts, the options, the answer, the parent line, the acts, a decision's controls -
+   *  clears the float and takes the content's whole width, as does a block of the words other
+   *  than a paragraph, a list, a quote or a heading, and a paragraph that holds a picture. One
+   *  rule on the content's children holds every part a row draws there, whichever it is. From
+   *  761 px up nothing floats beside the words, and these rules do nothing. */
+  content:
+    "col-start-2 row-start-1 min-w-0 max-[761px]:ml-[22px] [&>:not([data-node-words]):not(:has(>[data-node-first-line]))]:clear-right [&_[data-node-words]_.dispatch-markdown>:not(p,ul,ol,blockquote,h1,h2,h3,h4,h5,h6)]:clear-right [&_[data-node-words]_.dispatch-markdown>p:has([data-dispatch-picture])]:clear-right",
+  /** The margin: the tag, the author, the time and the state. Its least width is its lines'
+   *  (no `min-w-0` from 761 px up, `min-content` on a phone), so it never cuts the tag or the
+   *  time or pushes them past the row's right edge; past that it is no wider than two fifths of
+   *  the row. */
   margin:
-    "col-start-3 row-start-1 min-w-0 self-start text-right text-xs leading-6 max-[761px]:col-start-2 max-[761px]:row-start-2 max-[761px]:text-left max-[761px]:leading-4",
-  /** Its first line: the tag, then the author and the time. */
-  marginLine:
-    "flex flex-wrap items-baseline justify-end gap-x-[7px] max-[761px]:mr-1.5 max-[761px]:inline-flex max-[761px]:justify-start max-[761px]:gap-x-1.5",
-  /** Its second, smaller line: the state; on a phone, after the first on the same line. */
-  marginState:
-    "flex flex-wrap items-center justify-end gap-x-1.5 leading-4 font-semibold max-[761px]:inline-flex max-[761px]:justify-start",
+    "col-start-3 row-start-1 self-start text-right text-xs leading-6 max-[761px]:float-right max-[761px]:ml-1.5 max-[761px]:max-w-[40%] max-[761px]:min-w-min",
+  /** Its first line: the tag, then the author and the time, which move to a line of their own
+   *  under the tag's where the three do not fit (`RowMargin`). */
+  marginLine: "flex flex-wrap items-baseline justify-end gap-x-[7px]",
+  /** Its second, smaller line: the state. */
+  marginState: "flex flex-wrap items-center justify-end gap-x-1.5 leading-4 font-semibold",
 } as const;
+
+/**
+ * The ids of a row's parts and the `aria-labelledby` its `treeitem` carries, from `base`, the
+ * row's own `useId`. The row is named by its words with everything under them, then its margin:
+ * the order it reads in, though the margin stands ahead of the words in the DOM
+ * (`NODE_ROW_LAYOUT`), where a name taken from the row's text would read the kind first. The fold
+ * control names no row: `aria-expanded` says how it stands.
+ */
+export function rowNameIds(base: string): {
+  readonly content: string;
+  readonly labelledBy: string;
+  readonly margin: string;
+} {
+  const content = `${base}content`;
+  const margin = `${base}margin`;
+  return { content, labelledBy: `${content} ${margin}`, margin };
+}
 
 /**
  * Brings the focused row inside the viewport and clear of the sticky identity block after every
@@ -560,10 +612,10 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "comment":
     case "message":
       return author === "person" ? "person" : "agent";
-    // A criterion is what a person wants to be able to do, in their own words (`page-words`), a
-    // node only a person writes: it takes a person's ink.
+    // A criterion is what a person wants to be able to do, in their own words (`page-words`):
+    // what the work is held to, as it is to the spec's statements, so it takes their colour.
     case "criterion":
-      return "person";
+      return "statement";
     case "decision":
       return "decision";
     // A reading is an agent's reading of a person's answer, inside the ask or the decision it
@@ -675,14 +727,18 @@ export const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
  * and under them its state, by a word and a shape, with the one word a decision the model marks
  * unsure says of itself, on a second, smaller line (ruling 5). All of it is grey but the tag, the
  * reader's own name and a state that asks something of the reader. A node the model holds no
- * author for draws none here: its row says so under its words (`BodyAuthor`, ruling 5). From
- * 761 px up it is a column as wide as its first line; on a phone it is one small line under the
- * words (ruling 4). Where `tagTo` is given, the tag is a link that opens the node in its own view
- * (R9), out of the tab order unless `tabStops` holds: `f` steps to it and Enter follows it.
+ * author for draws none here: its row says so under its words (`BodyAuthor`, ruling 5). It is a
+ * column as wide as its lines, at every width (`NODE_ROW_LAYOUT`): the author and the time are
+ * one piece of the first line, after the tag, which stands on a line of its own under the tag's
+ * where the three do not fit in the column, with the whole name and the time after it; no part
+ * of the margin is ever cut. Where `tagTo` is given, the tag is a link that opens the node in its
+ * own view (R9), out of the tab order unless `tabStops` holds: `f` steps to it and Enter follows
+ * it. `id` names it in the row's name, after the words (`rowNameIds`).
  */
 export function RowMargin({
   author,
   context,
+  id,
   node,
   tabStops,
   tagTo,
@@ -690,6 +746,7 @@ export function RowMargin({
 }: {
   author: { readonly kind: AuthorKind; readonly name: string; readonly reader: boolean };
   context: boolean;
+  id: string;
   node: TreeNode;
   tabStops: boolean;
   /** The address the node's kind tag opens: its own view at the node (`presets.ts`'
@@ -709,7 +766,7 @@ export function RowMargin({
     // and no state, which its facts after its title say (ruling 5, the prototype's `.kr`).
     const key = node.child.key;
     return (
-      <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
+      <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="" id={id}>
         <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
           {/* The button keeps its touch padding without raising the height of the line. */}
           <span className="inline-flex" data-node-tag="">
@@ -729,11 +786,11 @@ export function RowMargin({
     );
   }
   return (
-    <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="">
+    <div className={`${NODE_ROW_LAYOUT.margin} ${pageQuietText}`} data-node-margin="" id={id}>
       <div className={NODE_ROW_LAYOUT.marginLine} data-node-margin-line="">
         {UNTYPED[node.type] === true ? null : (
           <span
-            className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
+            className={`inline-flex shrink-0 items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
             data-node-tag=""
           >
             {/* A `requirement` block of a document other than the spec is no statement: it says
@@ -754,19 +811,25 @@ export function RowMargin({
           </span>
         )}
         {!authored && time === "" ? null : (
+          // One piece: as one flex item of the line, it follows the tag where the tag and all of
+          // it fit, and takes a line of its own under the tag's where they do not. Inside it the
+          // name wraps at a space, or anywhere in a word too long for the margin, so nothing of
+          // it is cut, and the time follows its last word, or the next line where that one is
+          // full: the time is never on the tag's line while the name is under it, since a line
+          // the name has left is not one its later parts can return to.
           <span className="min-w-0 [overflow-wrap:anywhere]" data-node-byline="">
             {/* Who made it, by a word and a shape: one shape per kind of author, so a person and
                 an agent never share one (R9). The name is the page's one name for an author
-                (`AgentText.author`), never an id (R22). */}
+                (`AgentText.author`), never an id (R22), and it is drawn whole. */}
             {authored ? (
               <span
-                className="inline-flex items-center gap-1"
+                className="inline-flex max-w-full items-center gap-1"
                 data-author-kind={author.kind}
                 data-node-author=""
               >
                 <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors[author.kind]} />
                 <span
-                  className={author.reader && !context ? `font-semibold ${pageInkText}` : ""}
+                  className={`min-w-0${author.reader && !context ? ` font-semibold ${pageInkText}` : ""}`}
                   {...authorText}
                 >
                   {/* An agent by its role's word; the line under its words gives the whole
@@ -777,9 +840,13 @@ export function RowMargin({
             ) : null}
             {time === "" ? null : (
               <>
-                {authored ? <span {...pageChrome}> · </span> : null}
-                <span className="whitespace-nowrap" data-node-time="" {...authorText}>
-                  {time}
+                {/* The line may break between the name and the time, and never inside "· time". */}
+                {authored ? <span {...pageChrome}> </span> : null}
+                <span className="whitespace-nowrap">
+                  {authored ? <span {...pageChrome}>· </span> : null}
+                  <span data-node-time="" {...authorText}>
+                    {time}
+                  </span>
                 </span>
               </>
             )}
