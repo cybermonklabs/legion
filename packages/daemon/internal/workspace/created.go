@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // The workspace's creation record lives in its own .jj directory, on the issue's volume, which
@@ -21,26 +23,45 @@ import (
 // errLinkedJJ is the refusal of a workspace whose .jj is a symbolic link (openJJ).
 var errLinkedJJ = errors.New("the workspace's .jj is a symbolic link")
 
-// openJJ opens the .jj directory of the workspace at dir with O_DIRECTORY|O_NOFOLLOW, so a .jj
-// that is a symbolic link is refused with errLinkedJJ and one that is no other directory with
-// ENOTDIR. A link there would carry the record into a directory off the workspace's disk: a
-// record read there says nothing of this workspace, and one written there can be lost at a
-// container restart while the workspace keeps its work. Every read and write of the record goes
-// through the open directory (openat), so nothing after this open reads .jj by its path
-// again. held, when set, runs once the directory is open and before the record is read or
-// written: a test's seam for a .jj swapped in that window.
+// openJJ opens the .jj directory of the workspace at dir with O_NOFOLLOW and no O_DIRECTORY, so a
+// .jj that is a symbolic link is refused with errLinkedJJ, and then has the descriptor's own fstat
+// refuse anything but a directory with ENOTDIR. A link there would carry the record into a
+// directory off the workspace's disk: a record read there says nothing of this workspace, and one
+// written there can be lost at a container restart while the workspace keeps its work.
+//
+// The open does not ask for O_DIRECTORY because the kernels it runs under answer a link opened with
+// O_DIRECTORY|O_NOFOLLOW three ways: Linux with ENOTDIR, other kernels with ELOOP, and gVisor, which
+// every issue pod runs under, by following the link and opening its target
+// (TestALinkedJJIsRefusedBeforeTheCreationRecordIsReadOrWritten fails in a gVisor pod with
+// O_DIRECTORY). O_NOFOLLOW alone is refused at a link under each of them (ELOOP on Linux and gVisor; the
+// Lstat names the refusal on a kernel that answers otherwise), and the fstat of what was opened, not
+// of the path, is what says it is a directory (CERT FIO01-C). O_NONBLOCK keeps a .jj that is a FIFO
+// from holding the open, and O_NOCTTY keeps a .jj that is a terminal from becoming the controlling
+// terminal of the process that opens it. The open is asked again where a signal interrupts it, as
+// os.OpenFile asks (rolefile.Openat), and the descriptor is an *os.File from the moment it is open,
+// so its fstat (File.Stat) is asked again on an interrupt too, and every refusal closes it through
+// File.Close (the Legion reviewer's Minor on #5285 at 69e00593). Every read and write of the record
+// goes through the open directory (openat), so nothing after this open reads .jj by its path again.
+// held, when set, runs once the directory is open and before the record is read or written: a
+// test's seam for a .jj swapped in that window.
 func openJJ(dir string, held func()) (*os.File, error) {
 	path := filepath.Join(dir, ".jj")
-	jj, err := os.OpenFile(path, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if errors.Is(err, unix.ELOOP) || errors.Is(err, unix.ENOTDIR) {
-		// The open refused it: Linux answers a link opened with O_DIRECTORY|O_NOFOLLOW ENOTDIR, as
-		// it does a file, and other kernels ELOOP. The Lstat only says which the refusal was.
+	fd, err := rolefile.Openat(unix.AT_FDCWD, path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_NOCTTY|unix.O_CLOEXEC, 0)
+	if err != nil {
 		if info, statErr := os.Lstat(path); errors.Is(err, unix.ELOOP) || (statErr == nil && info.Mode()&fs.ModeSymlink != 0) {
 			return nil, fmt.Errorf("%w: %s: %w", errLinkedJJ, path, err)
 		}
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
 	}
+	jj := os.NewFile(uintptr(fd), path)
+	info, err := jj.Stat()
 	if err != nil {
+		jj.Close()
 		return nil, err
+	}
+	if !info.IsDir() {
+		jj.Close()
+		return nil, &fs.PathError{Op: "open", Path: path, Err: unix.ENOTDIR}
 	}
 	if held != nil {
 		held()

@@ -125,9 +125,9 @@ func TestConnectWithContextBoundsMultipleUnresponsiveServers(t *testing.T) {
 		}
 	})
 
-	// The outer deadline is the one under test, and the dial it bounds reaches real sockets: the
-	// connect is given it as a real context, and the row asserts it ended with that deadline
-	// rather than with its ten attempts run out.
+	// The bound under test, not a wait: the connect must end at this outer deadline, given it as a
+	// real context over a dial that reaches real sockets, and not with its ten attempts run out,
+	// which the row asserts below.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	type ended struct {

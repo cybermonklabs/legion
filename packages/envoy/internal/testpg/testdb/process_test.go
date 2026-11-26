@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -43,7 +46,9 @@ func TestProcessDatabaseChild(t *testing.T) {
 }
 
 // processChild asks ProcessDatabaseOn twice for its binary's database, checks that both answers
-// are the one database, and prints the database pgx selects from that URL and the one the server
+// are the one database, and then twice more with two different connect bounds, as
+// WithConnectDeadline gives two tests of one binary: still the one database, each answer keeping
+// the bound it asked with. It prints the database pgx selects from that URL and the one the server
 // says the connection is in, which the parent reads. A check that fails fails t with Errorf and
 // answers 1, never Fatal: Fatal would end the test's goroutine inside Run's run, before Run's
 // drop, and leave a database the parent cannot name.
@@ -52,6 +57,14 @@ func processChild(t *testing.T, admin string) int {
 	if again := ProcessDatabaseOn(t, admin, processChildPrefix); again != first {
 		t.Error("a second ProcessDatabaseOn of the same server and prefix answered another database")
 		return 1
+	}
+	for _, bound := range []string{"5", "7"} {
+		answer, err := url.Parse(ProcessDatabaseOn(t, withPairs(admin, "connect_timeout="+bound), processChildPrefix))
+		want, werr := url.Parse(first)
+		if err != nil || werr != nil || answer.Path != want.Path || answer.Query().Get("connect_timeout") != bound {
+			t.Errorf("ProcessDatabaseOn with connect_timeout=%s answered another database, or lost the bound it asked with", bound)
+			return 1
+		}
 	}
 	config, err := pgx.ParseConfig(first)
 	if err != nil {
@@ -237,6 +250,59 @@ func TestADatabaseURLDropsOnlyTheQuerysDatabasePairs(t *testing.T) {
 	const want = "postgres://u@h:5432/t_db?sslmode=disable&options=-c%20statement_timeout%3D5000&application_name=a+b"
 	if got := databaseURL(*server, "t_db"); got != want {
 		t.Errorf("databaseURL =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// WithConnectDeadline replaces every connect_timeout pair with its own and keeps each other pair
+// byte for byte, as databaseURL keeps them: an options pair's escaped space stays %20, which a
+// re-encoded query (url.Values.Encode) would write as a plus that pgx reads as a plus.
+func TestAConnectDeadlineKeepsTheQuerysOtherPairsByteForByte(t *testing.T) {
+	got := WithConnectDeadline(t, "postgres://u@h:5432/db?sslmode=disable&options=-c%20work_mem%3D7MB&connect_timeout=3&connect%5Ftimeout=4&application_name=a+b")
+	prefix := "postgres://u@h:5432/db?sslmode=disable&options=-c%20work_mem%3D7MB&application_name=a+b&connect_timeout="
+	rest, ok := strings.CutPrefix(got, prefix)
+	if !ok {
+		t.Fatalf("WithConnectDeadline =\n  %s\nwant the other pairs byte for byte, then the bound:\n  %s<seconds>", got, prefix)
+	}
+	if seconds, err := strconv.Atoi(rest); err != nil || seconds < 1 {
+		t.Fatalf("WithConnectDeadline set connect_timeout=%q; want a whole number of seconds, at least 1", rest)
+	}
+}
+
+// noDeadline is a testing.TB with no Deadline method, as a benchmark's *testing.B and a fuzz
+// target's *testing.F are at Go 1.27.3: the interface it embeds carries no Deadline, so the
+// *testing.T inside does not lend it one.
+type noDeadline struct{ testing.TB }
+
+// A caller that names no deadline keeps a real connect bound, pgxpool's two minutes, for its
+// pools and its plain pgx.Connect alike, rather than the longest connect_timeout pgx holds, which
+// is no bound at all. Control: connectTimeout's old answer for such a caller,
+// math.MaxInt64/int64(time.Second), sets connect_timeout=9223372036 and fails this.
+func TestAConnectWithNoTestDeadlineIsBoundedByTwoMinutes(t *testing.T) {
+	if _, bounded := ConnectEnd(noDeadline{t}); bounded {
+		t.Fatal("ConnectEnd named a deadline for a testing.TB with no Deadline method")
+	}
+	got := WithConnectDeadline(noDeadline{t}, "postgres://u@h:5432/db?sslmode=disable&connect_timeout=3")
+	if want := "postgres://u@h:5432/db?sslmode=disable&connect_timeout=120"; got != want {
+		t.Fatalf("WithConnectDeadline for a caller with no deadline =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+// A teardown that begins once its bound has passed still waits teardownFloor, as the broker
+// storetest's Run does where the Dispatch storetest's Run nested in it (internal/dispatch/api's
+// TestMain) waited to the bound both share; and one that begins at its tests' start keeps
+// TeardownGrace past the -timeout. Control: return the -timeout's bound alone, and the first
+// answer is a moment a day past.
+func TestATeardownThatBeginsPastItsBoundStillWaitsItsFloor(t *testing.T) {
+	before := time.Now()
+	if got := TeardownDeadline(before.Add(-24 * time.Hour)); got.Before(before.Add(teardownFloor)) {
+		t.Fatalf("a teardown whose tests began a day ago gives up %s from now; want at least %s", time.Until(got).Round(time.Millisecond), teardownFloor)
+	}
+	timeout, _ := flag.Lookup("test.timeout").Value.(flag.Getter).Get().(time.Duration)
+	if timeout <= 0 {
+		return
+	}
+	if got, want := TeardownDeadline(before), before.Add(timeout+TeardownGrace); !got.Equal(want) {
+		t.Fatalf("a teardown whose tests began now gives up %s from now; want TeardownGrace past the -timeout %s, %s", got.Sub(before), timeout, want.Sub(before))
 	}
 }
 
