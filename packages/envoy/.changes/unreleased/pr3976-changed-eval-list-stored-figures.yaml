@@ -11,7 +11,10 @@ body: |-
   (`:default`). Any other length, two or more repositories, an eval whose stored figures were
   folded under another definition, and a project whose figures are not built yet fold the day
   rows. Every write of day rows folds again, in its own transaction, the figures of the days it
-  moved, in each repository's figures its rows reach; the day-row refresher's pass builds each
+  moved, in each repository's figures its rows reach, but for a readings write of more days and
+  series than about 250 ms of folding (5,000 day-and-series pairs, such as a first reading of 234
+  series a year back): that write folds each cut's first paint, marks the cuts stale for its eval,
+  and leaves the rest to the refresher's refold below. The day-row refresher's pass builds each
   build's whole set of figures once, and then each new day's ranges, and marks a project built
   once the first whole walk of its figures is done (`eval_figures_built`). A move of a project's
   default repository marks stale, in the commit that publishes it, the figures of each cut it
@@ -30,11 +33,12 @@ body: |-
   short batch of its own; a process folds the first paint of every such mark before it serves, or
   waits for the process whose refresher holds the lease to fold it, for up to 30 s, and the next
   day's first paint is folded before the rest of a refold, so the first read after a restart, a
-  deploy or a midnight reads the stored figures too. A register
-  write that moves what an eval folds by is read by the refresher's next pass, which reads the
-  change log from a cursor of its own and marks stale each cut whose stored figures hold the old
-  fold key: those are folded again as a move's are, first paint first and then in batches of
-  about 250 ms, and a read of one folds its day rows until the refold has passed it. Both reads
+  deploy or a midnight reads the stored figures too. A register write that moves what an eval
+  folds by marks stale, in its own transaction, each cut holding a day row of the eval, so a series
+  it lists is read at once from the day rows; the refresher's next pass, which reads the change log
+  from a cursor of its own, marks stale too each cut whose stored figures hold the old fold key:
+  those are folded again as a move's are, first paint first and then in batches of about 250 ms,
+  and a read of one folds its day rows until the refold has passed it. Both reads
   fold each eval's rows in one order, by day and within a day by the key each row is stored under,
   its repository and its series, so a sum of
   floats answers the same bits whatever order the rows come back in. The bench waits for every

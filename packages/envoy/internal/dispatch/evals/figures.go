@@ -70,7 +70,9 @@ import (
 // moved and deleted where it holds no row any more. A day's rows moved where their stamp is not
 // the one its stored day row recorded, or that row was folded under another fold key (foldKeyOf).
 // So a write that moved nothing, such as a new build's rebuild of rows whose values stood, reads
-// two short index ranges and writes nothing.
+// two short index ranges and writes nothing. A readings write whose days and series pass the most
+// one transaction folds (inlineFoldDaySeries) folds of them the first paint of each cut its rows
+// reach and marks those cuts stale, naming its eval, for the refold below (foldWrittenPaints).
 //
 // A move of a project's default repository moves no day row, and moves what some of its cuts
 // fold: the old and the new default's (the rows stored under legionfacts.DefaultRepo), and, of
@@ -105,8 +107,9 @@ import (
 // the end of their batch (refresh.foldWalked), the refresher's pass folds the ranges of each new
 // end day (refresh.walkFigures) and again the days of the changes a write left unfolded
 // (refresh.figureChanges), whose read of the change log also marks stale each cut that holds a
-// stored figure of an eval a new version gave another fold key (markMovedKeys), and a rebuild
-// folds every figure of its projects aside and flips the ones that moved (rebuild.go). Every build
+// stored figure of an eval a new version gave another fold key (markMovedKeys), which a register
+// write of a logged eval marks in its own transaction as well (markMovedKey), and a rebuild folds
+// every figure of its projects aside and flips the ones that moved (rebuild.go). Every build
 // that holds this code writes them, as every build writes the day rows, and each row records the
 // build that folded it (built_by): a read serves a stored row whichever build folded it, as it
 // serves a day row whichever build built it, and a release whose folds differ rewrites, in its

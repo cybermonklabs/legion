@@ -79,15 +79,17 @@ type StoredFigures struct {
 // of those evals alone, which it serves, the range rows of the window and of the compare range, the
 // `union all` of two ranges of eval_range_figures' primary key, and the day rows of the window of
 // those with a headline series, one range of eval_day_figures' primary key for each project. Every
-// other eval the caller folds from the day rows: those of a project not built yet, and those a
-// move of a default repository moved rows of in the cut, until the refresher or the boot has folded
-// again the stored rows this read reads of them: a first paint's from its first-paint batch on,
-// and those of an older window and compare range once the refold, newest end day first, has come
-// down past them. A refresher pass rewrites the stored rows and the marks in one transaction, so in
-// one answer's snapshot (BeginSnapshot), as the eval list reads them, an eval's window figures are
-// the fold of the days read beside them, and an eval read as served is one no move has marked since
-// the figures it reads were folded; on the pool each statement reads the rows that stand when it
-// runs.
+// other eval the caller folds from the day rows: those of a project not built yet, and those whose
+// rows in the cut a stale mark names (a move of a default repository, a readings write past the
+// days and series it folds itself, inlineFoldDaySeries, and a register write that moves an eval's
+// fold key, each mark written in that write's own transaction), until the refresher or the boot
+// has folded again the stored rows this read reads of them: a first paint's from its first-paint
+// batch on, and those of an older window and compare range once the refold, newest end day first,
+// has come down past them. A refresher pass rewrites the stored rows and the marks in one
+// transaction, so in one answer's snapshot (BeginSnapshot), as the eval list reads them, an eval's
+// window figures are the fold of the days read beside them, and an eval read as served is one no
+// mark names since the figures it reads were folded; on the pool each statement reads the rows that
+// stand when it runs.
 func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) (StoredFigures, error) {
 	repo := ""
 	if len(repos) == 1 {
@@ -185,9 +187,10 @@ func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []str
 // statistic a lookup; and the oldest updated_at of the rows the stored rows it read fold, nil where
 // it read none. A range of which the eval has no stored row reads the fold of no parts, as the day
 // rows' read folds none where the range holds none of the eval's listed rows, which every write
-// that folds the rows it moves keeps true; a register write that lists a series folds none of its
-// rows (relistDays), so a range whose only listed rows it lists holds no stored row, and reads as
-// holding none, until the refresher's next pass folds the days it relisted (figureChanges). ok is
+// that folds the rows it moves keeps true; a register write that lists or unlists a series folds
+// none of its rows (relistDays) and marks stale, in its own transaction, every cut holding a row of
+// the eval, so this read does not serve it (below) and the caller folds the day rows until the
+// refresher's refold has passed the cut. ok is
 // false where the stored figures cannot answer the eval, which the caller answers from its day
 // rows: the read did not serve it (its project's figures are not built through the end of both
 // ranges, or a stale mark of its cut names it and its generation has not folded again the stored

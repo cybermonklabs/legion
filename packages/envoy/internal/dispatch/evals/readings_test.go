@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -642,22 +643,29 @@ func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 // write owes, a first reading of each of the MaxEvalSeries series an eval holds, each name the most
 // bytes a key holds, measured on MeasuredAtFloor, the earliest day a write takes, so that every
 // series owes the zero row of every day after the floor through today. The stored figures are
-// folded through today first, so the write folds the figures of the days it fills. The write sends
-// no statement of more than statementBytes of parameters as pgx encodes them, leaves each series a
-// row on every day from the floor through today, logs one eval_days change of the eval spanning
-// them, and leaves the stored figures the fold of the rows that stand. It logs how long it took and
-// how many day rows it wrote.
+// folded through today first. The write sends no statement of more than statementBytes of
+// parameters as pgx encodes them, leaves each series a row on every day from the floor through
+// today, and logs one eval_days change of the eval spanning them. Its days and series pass what a
+// write folds in its own transaction (inlineFoldDaySeries), so its figures' part is bounded by its
+// first paint, not by the history it wrote: it reads no stamp of a day row and no day row but those
+// of the days its eval's one cut's first paint reads (firstPaintOf, from its reach, paintReach),
+// writes the ranges of that first paint's end days and the day rows of those days and no other
+// stored row, and leaves the cut marked stale, naming the eval, its first paint folded. The
+// refresher's pass then folds the rest: no transaction of it writes the ranges of more than a
+// batch's end days of the cut, it rewrites no stored row the write folded, it logs no change of
+// the eval and leaves no mark, and the stored figures are the fold of the rows that stand. Red
+// where the write folds every day it moved in its own transaction: it reads the stamps of every
+// day and writes the ranges of every end day since the floor. It logs how long the write took, what
+// its folds read and wrote, and how many rows the figures' read of a new version of the eval
+// (markMovedKeys) reads: every stored day row of the eval.
 func TestTheMostZeroRowsOneReadingsWriteOwesGoInBoundedStatements(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
-	var clock time.Time
-	if err := r.database.Pool.QueryRow(t.Context(), `select now()`).Scan(&clock); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
-	r.now = clock
-	r.settle(t)
+	ctx := t.Context()
+	today := r.settleAtTheDatabasesClock(t)
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
+	plain := r.registry
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, plain.events, plain.attributor)
 	const slug = "floor-fill"
 	evalID := EvalID(r.project, slug)
 	name := func(index int) string {
@@ -670,16 +678,22 @@ func TestTheMostZeroRowsOneReadingsWriteOwesGoInBoundedStatements(t *testing.T) 
 			"measured_at": MeasuredAtFloor.Add(time.Duration(index) * time.Second)})
 	}
 	heads := r.changeHeads(t)
+	folds := &figureTimes{}
 	began := time.Now()
-	r.write(t, slug, alice, rows...)
+	if _, err := r.registry.WriteReadings(withFigureTimes(ctx, folds), Batch{Project: r.project, Slug: slug, Rows: rows, Caller: alice, BuiltBy: testBuild}); err != nil {
+		t.Fatalf("write a first reading of each of %d series on %s: %v", MaxEvalSeries, MeasuredAtFloor.Format(time.DateOnly), err)
+	}
 	took := time.Since(began)
+	r.registry = plain
 	sent := r.measured(t, statements.take())
 	for _, statement := range sent {
 		if statement.bytes > statementBytes {
 			t.Errorf("the write sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
 		}
+		if strings.Contains(statement.sql, stampsMarker) {
+			t.Errorf("the write read the stamps of its eval's day rows (%v), where its days pass what a write folds itself", spansRead(stampRead{statement: explaintest.Statement{SQL: statement.sql, Args: statement.args}}))
+		}
 	}
-	today := measures.Midnight(clock)
 	days := int(today.Sub(MeasuredAtFloor).Hours()/24) + 1
 	written := r.count(t, `select count(*) from eval_days where eval_id = $1`, evalID)
 	zeros := r.count(t, `select count(*) from eval_days where eval_id = $1 and n = 0 and day > $2 and day <= $3`, evalID, MeasuredAtFloor, today)
@@ -691,10 +705,392 @@ func TestTheMostZeroRowsOneReadingsWriteOwesGoInBoundedStatements(t *testing.T) 
 	if len(changes) != 1 || changes[0].evalID != evalID || !changes[0].first.Equal(MeasuredAtFloor) || !changes[0].last.Equal(today) {
 		t.Errorf("the write logged the eval_days changes %v, want one of %s from %s to %s", changes, evalID, MeasuredAtFloor.Format(time.DateOnly), today.Format(time.DateOnly))
 	}
-	expectTruth(t, "after the write of the most zero rows", r.storedFigures(t), r.truthFigures(t))
+
+	// What the write's transaction folded: the first paint of the project's own cut, the one its
+	// rows reach, with the day rows of every day the first paint's ranges hold.
+	through := r.figuresFolded(t)[r.project]
+	paint := firstPaintOf(through)
+	reach, cut := paintReach(paint), staleCut{project: r.project}
+	var writer string
+	if err := r.database.Pool.QueryRow(ctx, `select xmin::text from eval_days where eval_id = $1 limit 1`, evalID).Scan(&writer); err != nil {
+		t.Fatalf("read the transaction that wrote %s's day rows: %v", evalID, err)
+	}
+	afterWrite := r.storedFigures(t)
+	ranges, dayRows := 0, 0
+	var outside []string
+	for _, line := range slices.Sorted(maps.Keys(afterWrite)) {
+		of, id, day, ranged := figureLineKey(t, line)
+		switch {
+		case id != evalID:
+		case afterWrite[line].xmin != writer || of != cut || ranged && !paint.holds(day) || !ranged && (day.Before(reach) || !day.Before(through)):
+			outside = append(outside, line+" (transaction "+afterWrite[line].xmin+")")
+		case ranged:
+			ranges++
+		default:
+			dayRows++
+		}
+	}
+	if len(outside) > 0 {
+		t.Errorf("the write's transaction %s left %d stored rows of %s outside its first paint through %s, the ranges of its end days and the days from its reach %s, first ones:\n\t%s",
+			writer, len(outside), evalID, through.Format(time.DateOnly), reach.Format(time.DateOnly), strings.Join(outside[:min(len(outside), 8)], "\n\t"))
+	}
+	reached := r.count(t, `select count(distinct day) from eval_days where eval_id = $1 and day >= $2 and day < $3`, evalID, reach, through)
+	if ranges != len(paint.picked)*len(FigureLengths) || dayRows != reached {
+		t.Errorf("the write wrote %d stored ranges and %d stored days of %s, want the %d ranges of its first paint's %d end days and the %d days from %s that hold a row",
+			ranges, dayRows, evalID, len(paint.picked)*len(FigureLengths), len(paint.picked), reached, reach.Format(time.DateOnly))
+	}
+	if held := r.count(t, `select count(*) from eval_days where eval_id = $1 and listed and day >= $2 and day < $3`, evalID, paint.rows().From, paint.rows().To); folds.rows != held {
+		t.Errorf("the write's folds read %d day rows in %d statements, want the %d its first paint's days %s hold, of the %d it wrote",
+			folds.rows, folds.reads, held, daysText(paint.rows()), written)
+	}
+	marks := r.staleMarks(t)
+	if mark, held := marks[cut]; len(marks) != 1 || !held || mark.ready == nil || !mark.ready.Equal(through) || mark.next != nil || !slices.Equal(mark.evals, []string{evalID}) {
+		t.Errorf("the write left the marks %v, want %s's own cut alone marked naming %s, its first paint through %s folded and its refold to begin", marks, r.project, evalID, through.Format(time.DateOnly))
+	}
+
+	// The refresher's refold of the rest.
+	headsAfter := r.changeHeads(t)
+	r.settle(t)
+	refolded := r.storedFigures(t)
+	batches := 0
+	for xmin, byCut := range endsWritten(t, afterWrite, refolded) {
+		batches++
+		for of, ends := range byCut {
+			if len(ends) > r.batch {
+				t.Errorf("the refold wrote, in transaction %s, the stored ranges of %s's cut %q ending on %d end days (%s), more than a batch's %d",
+					xmin, of.project, of.repo, len(ends), endDaysText(ends), r.batch)
+			}
+		}
+	}
+	var rewritten []string
+	for line, row := range afterWrite {
+		if now, held := refolded[line]; row.xmin == writer && (!held || now.xmin != writer) {
+			rewritten = append(rewritten, line)
+		}
+	}
+	if len(rewritten) > 0 {
+		slices.Sort(rewritten)
+		t.Errorf("the refold rewrote %d stored rows the write folded from the rows that stand, first ones:\n\t%s", len(rewritten), strings.Join(rewritten[:min(len(rewritten), 8)], "\n\t"))
+	}
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the refold left the marks %v, want none", marks)
+	}
+	if logged := r.loggedChanges(t, "eval_days", headsAfter); slices.ContainsFunc(logged, func(change dayChange) bool { return change.evalID == evalID }) {
+		t.Errorf("the refresher's pass logged the eval_days changes %v, one of %s, whose day rows it wrote none of", logged, evalID)
+	}
+	expectTruth(t, "once the refold of the most zero rows is done", refolded, r.truthFigures(t))
+
+	// The figures' read of a new version of the eval (markMovedKeys) reads its stored day rows.
+	keyReads := &sentStatements{}
+	pass := New(storetest.TracedStore(t, r.database, keyReads), r.documents, plain.events, plain.attributor).newRefresh(r.build, r.now, r.batch)
+	if err := pass.markMovedKeys(ctx, r.project, []string{evalID}); err != nil {
+		t.Fatalf("read %s's stored day rows for another fold key: %v", evalID, err)
+	}
+	keyRows := -1.0
+	for _, statement := range keyReads.take() {
+		if strings.Contains(statement.SQL, "f.fold_key <> given.fold_key") {
+			plan := explaintest.ExplainBuffered(t, ctx, r.database.Pool, explaintest.Statement{SQL: statement.SQL, Args: statement.Args}, explaintest.PlanCacheModes[0], "json")
+			keyRows = relationRowsRead(t, plan, "eval_day_figures")
+		}
+	}
+	if keyRows < 0 {
+		t.Errorf("markMovedKeys sent no read of %s's stored day rows", evalID)
+	}
 	largest, what := largestStatement(sent)
-	t.Logf("a first reading of each of %d series on %s wrote %d day rows through %s in %s: %d statements, the largest %d bytes of parameters (%s), of %d",
-		MaxEvalSeries, MeasuredAtFloor.Format(time.DateOnly), written, today.Format(time.DateOnly), took, len(sent), largest, what, statementBytes)
+	t.Logf("a first reading of each of %d series on %s wrote %d day rows through %s in %s: %d statements, the largest %d bytes of parameters (%s), of %d; "+
+		"its folds read %d day rows in %d statements and wrote %d stored ranges and %d stored days, where the rows it wrote span %d days; "+
+		"the refold wrote in %d transactions; markMovedKeys read %.0f rows of eval_day_figures for the eval's %d stored day rows",
+		MaxEvalSeries, MeasuredAtFloor.Format(time.DateOnly), written, today.Format(time.DateOnly), took, len(sent), largest, what, statementBytes,
+		folds.rows, folds.reads, ranges, dayRows, days, batches, keyRows, r.count(t, `select count(*) from eval_day_figures where eval_id = $1`, evalID))
+}
+
+// settleAtTheDatabasesClock sets r's clock to the database's, the one a readings write fills its
+// zero rows through (writeLoggedZeros), and settles the refresher, so each project's figures are
+// folded through FigureLead days after that clock's UTC day, which it answers.
+func (r *refresherRig) settleAtTheDatabasesClock(t *testing.T) time.Time {
+	t.Helper()
+	var clock time.Time
+	if err := r.database.Pool.QueryRow(t.Context(), `select now()`).Scan(&clock); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	r.now = clock
+	r.settle(t)
+	return measures.Midnight(clock)
+}
+
+// TestAReadOfABackfillBeforeItsRefoldAnswersWhatItAnswersAfter: over a project whose figures are
+// folded through today, a first reading of each of 30 series of a logged eval 200 days before
+// today, every other one of acme/web too, passes what a write folds in its own transaction
+// (inlineFoldDaySeries) and logs one eval_days change of the eval, the one a view of it is sent. It
+// folds the first paint of each cut its rows reach, the project's own and acme/web's, and marks both
+// stale naming the eval. Between the write and the refresher's refold, each read of the eval's
+// first paint of either cut (firstPaintReads and windowBackReads) states it from the stored
+// figures, and each read of its history, a week from its first day, 28 days 150 days back against
+// the 28 before and 85 days 100 days back, from its day rows, each the fold of the day rows that
+// stand. Once a pass has folded the rest, it has logged no change of the eval and left no mark, the
+// stored figures are the fold of the rows that stand, and every one of those reads states the eval
+// from the stored figures, as it stated it before. Red where the write past its bound folds nothing
+// and marks no cut: a read of a first paint or of the history is then answered from stored figures
+// that hold no row of the eval.
+func TestAReadOfABackfillBeforeItsRefoldAnswersWhatItAnswersAfter(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	today := r.settleAtTheDatabasesClock(t)
+	heads := r.changeHeads(t)
+	evalID := r.writeBackfill(t, today)
+	through := r.figuresFolded(t)[r.project]
+	if changes := r.loggedChanges(t, "eval_days", heads); len(changes) != 1 || changes[0].evalID != evalID {
+		t.Errorf("the write logged the eval_days changes %v, want one of %s", changes, evalID)
+	}
+	cuts := []staleCut{{project: r.project}, {project: r.project, repo: "acme/web"}}
+	marks := r.staleMarks(t)
+	for _, cut := range cuts {
+		if mark, held := marks[cut]; !held || mark.ready == nil || !mark.ready.Equal(through) || !slices.Equal(mark.evals, []string{evalID}) {
+			t.Errorf("the write left %s's cut %q marked %t (%v), want it marked naming %s with its first paint through %s folded",
+				cut.project, cut.repo, held, mark, evalID, through.Format(time.DateOnly))
+		}
+	}
+	paint := slices.Concat(firstPaintReads(through), windowBackReads(through))
+	painted := map[string]bool{}
+	for _, read := range paint {
+		painted[read.name] = true
+	}
+	reads := slices.Concat(paint, []paintRead{
+		{name: "a week from the eval's first day", window: rangeOf(7, today.AddDate(0, 0, 7-backfillDays))},
+		{name: "28 days 150 days back against the 28 before", window: rangeOf(28, today.AddDate(0, 0, -150)), compare: new(rangeOf(28, today.AddDate(0, 0, -178)))},
+		{name: "85 days 100 days back", window: rangeOf(85, today.AddDate(0, 0, -100))},
+	})
+	ranges := make([]Range, 0, 2*len(reads))
+	for _, read := range reads {
+		ranges = append(ranges, read.window)
+		if read.compare != nil {
+			ranges = append(ranges, *read.compare)
+		}
+	}
+	// answers is each read's statement of the eval, by cut and read, and checks each is the fold of
+	// its day rows, stated from the stored figures where stored answers true of the read.
+	answers := func(what string, stored func(read paintRead) bool) map[string]string {
+		t.Helper()
+		answered := map[string]string{}
+		for _, cut := range cuts {
+			var repos []string
+			if cut.repo != "" {
+				repos = []string{cut.repo}
+			}
+			state := r.readListState(t, r.project, repos, ranges...)
+			for _, read := range reads {
+				stated, folded, fromFigures := state.values(t, read.window, read.compare)
+				if stated[evalID] != folded[evalID] {
+					t.Errorf("%s: the read of %s's %q over %s states %s's values in %d bytes that differ from the fold of its day rows' %d at byte %d",
+						what, cut.project, cut.repo, read.name, evalID, len(stated[evalID]), len(folded[evalID]), firstDiffering(stated[evalID], folded[evalID]))
+				}
+				if fromFigures[evalID] != stored(read) {
+					t.Errorf("%s: the read of %s's %q over %s states %s from the stored figures %t, want %t", what, cut.project, cut.repo, read.name, evalID, fromFigures[evalID], stored(read))
+				}
+				answered[fmt.Sprintf("%q %s", cut.repo, read.name)] = stated[evalID]
+			}
+		}
+		return answered
+	}
+	between := answers("between the write and the refold", func(read paintRead) bool { return painted[read.name] })
+	headsAfter := r.changeHeads(t)
+	r.settle(t)
+	if logged := r.loggedChanges(t, "eval_days", headsAfter); slices.ContainsFunc(logged, func(change dayChange) bool { return change.evalID == evalID }) {
+		t.Errorf("the refresher's pass logged the eval_days changes %v, one of %s, whose day rows it wrote none of", logged, evalID)
+	}
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the refold left the marks %v, want none", marks)
+	}
+	expectTruth(t, "once the refold is done", r.storedFigures(t), r.truthFigures(t))
+	after := answers("after the refold", func(paintRead) bool { return true })
+	for _, read := range slices.Sorted(maps.Keys(between)) {
+		if after[read] != between[read] {
+			t.Errorf("the read of %s states %s in %d bytes after the refold that differ at byte %d from the %d it stated before", read, evalID, len(after[read]), firstDiffering(after[read], between[read]), len(between[read]))
+		}
+	}
+	t.Logf("%d reads of each of %d cuts, %d of them of a first paint, stated %s alike before the refold and after", len(reads), len(cuts), len(paint), evalID)
+}
+
+// backfillDays is how many days before today writeBackfill's readings lie.
+const backfillDays = 200
+
+// writeBackfill writes, as alice, a first reading of each of 30 series of the logged eval
+// `backfill` backfillDays days before today, every other one of acme/web too: a write whose days
+// and series, 201 days of 30, pass what a write folds in its own transaction (inlineFoldDaySeries),
+// which it checks. It answers the eval's id.
+func (r *refresherRig) writeBackfill(t *testing.T, today time.Time) string {
+	t.Helper()
+	const slug, count = "backfill", 30
+	evalID := EvalID(r.project, slug)
+	rows := make([]json.RawMessage, count)
+	for index := range rows {
+		fields := map[string]any{"series": fmt.Sprintf("s%02d", index), "row_kind": "run", "row_key": fmt.Sprint(index), "value": float64(index) + 0.5,
+			"measured_at": today.AddDate(0, 0, -backfillDays).Add(time.Duration(index) * time.Minute)}
+		if index%2 == 0 {
+			fields["attributes"] = map[string]any{"repo": "acme/web"}
+		}
+		rows[index] = row(t, fields)
+	}
+	r.write(t, slug, alice, rows...)
+	spans := daySpans{evalID: {{first: today.AddDate(0, 0, -backfillDays), last: today}}}
+	if size := daySeries(spans, r.entries(t, evalID)[0], r.figuresFolded(t)[r.project]); size <= inlineFoldDaySeries {
+		t.Fatalf("the backfill's days and series are %d, and the check needs more than the %d a write folds itself", size, inlineFoldDaySeries)
+	}
+	return evalID
+}
+
+// TestAChangeOfADayAFirstPaintHoldsIsFoldedWhileItsMarkStands: over a backfill past what a write
+// folds itself (writeBackfill), whose write folded the first paint of the project's own cut and
+// marked the cut stale, a write of a row of yesterday by a build that writes no figures leaves the
+// first paint's stored rows of that day stale. The figures' read of the change log (figureChanges)
+// then folds that day, which the first paint's ranges hold, though the mark stands, and leaves to
+// the refold the days of the backfill's own change before the first paint's reach
+// (leaveToRefolds): after it, the mark standing as the write left it, every read of the first
+// paint states the eval from the stored figures, the fold of the day rows that stand. Red where
+// that read leaves every day of a cut whose mark names the eval to the refold: the first paint then
+// answers yesterday's figures from before the second write until the refold.
+func TestAChangeOfADayAFirstPaintHoldsIsFoldedWhileItsMarkStands(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx := t.Context()
+	today := r.settleAtTheDatabasesClock(t)
+	evalID := r.writeBackfill(t, today)
+	through := r.figuresFolded(t)[r.project]
+	cut := staleCut{project: r.project}
+	yesterday := today.AddDate(0, 0, -1)
+	r.exec(t, "write a row of yesterday as a build with no figures does", `
+		update eval_days set n = 1, sum = 99, num = 99, den = 1, max = 99, samples = '{99}', last_value = 99,
+			last_at = $2::timestamptz + interval '10 hours', updated_at = now()
+		where eval_id = $1 and series = 's00' and repo = '' and day = $2`, evalID, yesterday)
+	r.exec(t, "move the change into the log", `select delivery_changes_drain(1000)`)
+	if line := dayFigureLine(r.project, "", "", yesterday, evalID); r.storedFigures(t)[line].same(r.truthFigures(t)[line]) {
+		t.Fatalf("the write left the stored row of %s the fold of the rows that stand, so nothing shows the read of the change log folds it", line)
+	}
+	pass := r.registry.newRefresh(r.build, r.now, r.batch)
+	if err := pass.load(ctx, r.seeds); err != nil {
+		t.Fatalf("load the refresher's pass: %v", err)
+	}
+	if err := pass.figureChanges(ctx, refresherPage); err != nil {
+		t.Fatalf("read the figures' change log: %v", err)
+	}
+	if mark, held := r.staleMarks(t)[cut]; !held || mark.ready == nil || !mark.ready.Equal(through) || mark.next != nil || !slices.Equal(mark.evals, []string{evalID}) {
+		t.Fatalf("after the read of the change log %s's own cut is marked %t (%v), want the backfill's mark as its write left it", cut.project, held, mark)
+	}
+	r.expectReads(t, "after the read of the change log", map[staleCut][]string{cut: {evalID}}, firstPaintReads(through), func(staleCut) bool { return true })
+}
+
+// expectStampReads checks that reads, a write's reads of the stamps of its eval's day rows
+// (movedFigureDays), were sent in its transaction, name exactly the spans want, in any order, and
+// read exactly the rows of eval_days those spans hold, as analyzed (stampRowsRead); and logs how
+// many rows they read, beside the rows of evalID the days from the first span to the last hold.
+func (r *refresherRig) expectStampReads(t *testing.T, what, evalID string, reads *stampReads, want []readSpan) {
+	t.Helper()
+	var named []string
+	var rowsRead, held float64
+	for _, read := range reads.reads {
+		if !read.inTx {
+			t.Errorf("%s: the read of the stamps of %v was sent in no transaction, and the fold of a write is its own", what, spansRead(read))
+		}
+		got, spanned := r.stampRowsRead(t, read)
+		rowsRead, held = rowsRead+got, held+spanned
+		for _, span := range spansRead(read) {
+			named = append(named, span.String())
+		}
+	}
+	wanted := make([]string, len(want))
+	for index, span := range want {
+		wanted[index] = span.String()
+	}
+	slices.Sort(named)
+	slices.Sort(wanted)
+	if !slices.Equal(named, wanted) {
+		t.Errorf("%s: the write read the stamps of %v, want of %v alone", what, named, wanted)
+	}
+	if rowsRead != held {
+		t.Errorf("%s: the write's reads of the stamps read %.0f rows of eval_days, where their spans hold %.0f", what, rowsRead, held)
+	}
+	first, last := want[0].first, want[0].last
+	for _, span := range want[1:] {
+		if span.first.Before(first) {
+			first = span.first
+		}
+		if span.last.After(last) {
+			last = span.last
+		}
+	}
+	hull := r.count(t, `select count(*) from eval_days where eval_id = $1 and listed and day >= $2 and day <= $3`, evalID, first, last)
+	t.Logf("%s: the write read %.0f rows of eval_days in its reads of the stamps of %v, where one span from %s to %s holds %d rows of %s",
+		what, rowsRead, named, first.Format(time.DateOnly), last.Format(time.DateOnly), hull, evalID)
+}
+
+// TestAReadingsWriteOfAMonthsOldDayAndTodayFoldsThoseDaysAlone: over a logged eval of 30 series that
+// each hold a row of every day from 100 days before today, its figures folded and its rows analyzed,
+// one readings write of a reading of one series 90 days before today and of one today, which append
+// to the rows of those two days and owe no zero row, folds their stored figures in its own
+// transaction through reads of the stamps of those two days alone, each a span of its own
+// (movedFigureDays), which read exactly the rows of eval_days those spans hold, the 30 rows of each
+// day; one span from the first day to the last read the 30 rows of each of the 89 days between as
+// well (check k29 of dispatch://INFRA-2916). The stored figures are then the fold of the rows that
+// stand.
+func TestAReadingsWriteOfAMonthsOldDayAndTodayFoldsThoseDaysAlone(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	today := r.settleAtTheDatabasesClock(t)
+	const slug = "late-days"
+	evalID := EvalID(r.project, slug)
+	reading := func(series, key string, day time.Time) json.RawMessage {
+		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": series + "-" + key, "value": 12, "measured_at": day.Add(9 * time.Hour)})
+	}
+	var first []json.RawMessage
+	for index := range 30 {
+		first = append(first, reading(fmt.Sprintf("s%02d", index), "first", today.AddDate(0, 0, -100)))
+	}
+	r.write(t, slug, alice, first...)
+	r.exec(t, "analyze the day rows", `analyze eval_days`)
+	old := today.AddDate(0, 0, -90)
+	reads := &stampReads{}
+	plain := r.registry
+	r.registry = r.tracedStore(t, reads)
+	r.write(t, slug, alice, reading("s00", "old", old), reading("s00", "today", today))
+	r.registry = plain
+	r.expectStampReads(t, "a write of a months-old day and today", evalID, reads, []readSpan{{eval: evalID, first: old, last: old}, {eval: evalID, first: today, last: today}})
+	expectTruth(t, "after the write of a months-old day and today", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAWriteOfZeroRowsOfTwoRunsFoldsThoseRunsAlone: over a logged eval whose 30 series a00 to a29
+// each hold a row of every day from 60 days before today, and whose series b holds one from 20, its
+// figures folded and its rows analyzed, one readings write of a reading of a00 100 days before
+// today and of b 30 days before today owes the zero rows of a00 from the day after its reading up
+// to its first row, and of b likewise: two runs of days, of 39 and 9 days, between which a00 to a29
+// hold a row of every day and the write wrote none, and loggedZeros answers each run apart. The
+// write folds their stored figures in its own transaction through reads of the stamps of those two
+// runs alone, each with its reading's day (movedFigureDays), which read exactly the rows of
+// eval_days those spans hold; one span from the first day to the last read the 900 rows of a00 to
+// a29 between as well. The stored figures are then the fold of the rows that stand.
+func TestAWriteOfZeroRowsOfTwoRunsFoldsThoseRunsAlone(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	today := r.settleAtTheDatabasesClock(t)
+	const slug = "two-runs"
+	evalID := EvalID(r.project, slug)
+	reading := func(series string, back int) json.RawMessage {
+		return row(t, map[string]any{"series": series, "row_kind": "run", "row_key": fmt.Sprintf("%s-%d", series, back), "value": 3,
+			"measured_at": today.AddDate(0, 0, -back).Add(9 * time.Hour)})
+	}
+	first := []json.RawMessage{reading("b", 20)}
+	for index := range 30 {
+		first = append(first, reading(fmt.Sprintf("a%02d", index), 60))
+	}
+	r.write(t, slug, alice, first...)
+	r.exec(t, "analyze the day rows", `analyze eval_days`)
+	reads := &stampReads{}
+	plain := r.registry
+	r.registry = r.tracedStore(t, reads)
+	r.write(t, slug, alice, reading("a00", 100), reading("b", 30))
+	r.registry = plain
+	day := func(back int) time.Time { return today.AddDate(0, 0, -back) }
+	r.expectStampReads(t, "a write of the zero rows of two runs", evalID, reads, []readSpan{{eval: evalID, first: day(100), last: day(61)}, {eval: evalID, first: day(30), last: day(21)}})
+	expectTruth(t, "after the write of the zero rows of two runs", r.storedFigures(t), r.truthFigures(t))
 }
 
 // changeHeads is the newest pending and the newest drained change, before a write whose changes
