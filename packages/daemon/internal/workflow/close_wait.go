@@ -884,9 +884,6 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 	if unread := stored.Unread; unread != nil {
 		terms = append(terms, fmt.Sprintf("Its checks are unread since %s: %s.", since(unread.Since), unread.Cause))
 	}
-	if unapproved := stored.Unapproved; unapproved != nil {
-		terms = append(terms, fmt.Sprintf("Since %s these checks changed without a person's approval: %s.", since(unapproved.Since), strings.Join(unapproved.Checks, ", ")))
-	}
 	for _, beneath := range stored.Beneath {
 		terms = append(terms, fmt.Sprintf("%s beneath it is in the workflow at %s since %s.", beneath.Key, beneath.Status, since(beneath.Since)))
 	}
