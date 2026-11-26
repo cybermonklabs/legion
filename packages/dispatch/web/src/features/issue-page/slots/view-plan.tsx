@@ -55,9 +55,8 @@ export function ViewPlanSlot({
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves.
   //
-  // Every read the view watches - these two, and the plan's blocks again for the order they are
-  // written in (`PlanFilterBody`) - is watched under the key `useIssueTree` fills, by an observer
-  // that `useIssueTree` mounts (`useOutlineReads`' `blocksOf`): under the Plan filter the plan's
+  // Each of the two is watched under the key `useIssueTree` fills, by an observer that
+  // `useIssueTree` mounts (`useOutlineReads`' `blocksOf`): under the Plan filter the plan's
   // blocks are Plan's own view read and the spec's the outline read, each a read of the tree
   // kept fresh by its own rule (`TREE_FRESH`). So the view sends no request of its own and sees
   // whatever the tree's observer fetches; `refetch` still fetches, which is what Retry asks. A
@@ -138,9 +137,9 @@ export function ViewPlanSlot({
     const node = reveal?.at(-1);
     return new Set(node === undefined ? [] : [node.id]);
   }, [reveal]);
-  // The whole plan's tasks, with no words filter on: the order and each bar's start are worked
-  // out from every task of the plan, and the words filter chooses which of its places the view
-  // draws. With no words filter on it is the view's own.
+  // The whole plan's tasks, with no words filter on: the order is drawn and each bar's start
+  // worked out from every task of the plan, and the words filter chooses which of its places the
+  // view draws. With no words filter on it is the view's own.
   const whole = useMemo(() => presetView(root, "plan", "", named), [named, root]);
   const view = useMemo(
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
@@ -188,7 +187,6 @@ export function ViewPlanSlot({
           namesLine={names}
           onEditing={onEditing}
           plan={plan}
-          planBlocks={planBlocks.data}
           published={published}
           reads={reads}
           {...(request === undefined ? {} : { request })}

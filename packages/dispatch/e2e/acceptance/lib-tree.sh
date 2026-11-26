@@ -1,11 +1,12 @@
 # shellcheck shell=bash
-# What the issue-tree acceptance drivers share, so that no driver copies it: the
-# request to a server as the agent or as the person, the person's dev sign-in and the project create
-# that names that person, the tree read, the two CLIs, and for a driver over rows an earlier release
-# wrote the boot of this head over them, the store backfill's run and the wait for the backfill, the
-# wait for this head's build announcement and the conversion. Sourced, never run, after lib.sh, and
-# for an upgrade driver after lib-baseline.sh too, which this file reads but does not source: a
-# driver against `bun run dispatch:local` boots no server and has no use for it.
+# What the issue-tree acceptance drivers share, so that no driver copies it: the request to a
+# server as the agent or as the person, the person's dev sign-in and the project create that names
+# that person, the tree read, the two CLIs, the census's `census: versions` line R16 reads, and for
+# a driver over rows an earlier release wrote the boot of this head over them, the store backfill's
+# run and the wait for the backfill, the wait for this head's build announcement and the
+# conversion. Sourced, never run, after lib.sh, and for an upgrade driver after lib-baseline.sh
+# too, which this file reads but does not source: a driver against `bun run dispatch:local` boots no
+# server and has no use for it.
 #
 # The checks it serves are every driver check of the issue-tree Verification document
 # (verification-md), and seed-corpus.sh, which writes the corpus several of them read:
@@ -38,8 +39,8 @@
 # want_status, expect and body read; tree_last_request, the request the last answer came from;
 # tree_value, the value tree_field read; tree_person, the login tree_sign_in signed in; $work/out,
 # the output of the last CLI run, and tree_envoy_status, the exit status of the last
-# `envoy-dispatch`; and tree_head_pid, tree_head_url, tree_head_log and tree_head_commit after
-# tree_boot_head.
+# `envoy-dispatch`; tree_census_line, the `census: versions` line tree_census_versions read; and
+# tree_head_pid, tree_head_url, tree_head_log and tree_head_commit after tree_boot_head.
 #
 # A refused input or call exits 2 on stderr, as lib.sh's require_env does; a failed check prints
 # lib.sh's `FAIL: <section> <what>: <observed>` and exits 1. Every check is `cmd || fail …`, never
@@ -57,6 +58,7 @@ tree_head_url=""
 tree_head_log=""
 tree_head_commit=""
 tree_envoy_status=""
+tree_census_line=""
 
 # The settings every upgrade boot of this head takes, as the Verification preamble states: with
 # them this head holds the conversion step of R6 at boot and on its tick, so it converts an issue
@@ -252,6 +254,48 @@ tree_envoy_dispatch() {
   tree_envoy_dispatch_status "$@"
   [[ "$tree_envoy_status" == 0 ]] ||
     fail "$section" "$what" "envoy-dispatch $* exited $tree_envoy_status: $(tail -n 20 "$work/out")"
+}
+
+# tree_census_versions SECTION WHAT [OVER [OUTPUT]]: R16's reading of the census's line
+# `census: versions rendered_from_tree=… deferred=… tree_mismatch=… tree_mismatch_repaired=…
+# differences=…`, which c-tree-census, c-reparent-and-state, c-redirects and c-artifacts-in-tree
+# each make: no writer of the product writes a version whose tree does not render as its stored
+# markdown, and the server's reconciliation repairs a mark on its next quiet tick, after which only
+# tree_mismatch_repaired shows it, so both read 0. OUTPUT is the output of an `envoy-dispatch census
+# --store` the caller has run already; where it names none, this runs the census over $database_url
+# (tree_envoy_dispatch_status), its output in $work/out, and fails on an exit above 1 (1 is the
+# census's refusal, whose reasons are classes other than this line's). It prints the line and leaves
+# it in tree_census_line, whose members tree_census_member reads in any order. A line that does not
+# read tree_mismatch=0 and tree_mismatch_repaired=0, or no line at all, fails with WHAT, the
+# caller's message, and `the census reads tree_mismatch=<n> tree_mismatch_repaired=<m>, want 0 and
+# 0: <line>`, with ` over OVER` before the comma where the caller names the corpus the census read.
+# Inputs: `database_url`, `work`.
+tree_census_versions() {
+  local section="$1" what="$2" over="${3:-}" output="${4:-}" mismatch repaired
+  if [[ -z "$output" ]]; then
+    tree_envoy_dispatch_status census --store
+    [[ "$tree_envoy_status" -le 1 ]] ||
+      fail "$section" "$what" "envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/out")"
+    output="$work/out"
+  fi
+  tree_census_line="$(grep -m 1 '^census: versions ' "$output")" ||
+    fail "$section" "$what" "the census printed no line 'census: versions …'${over:+ over $over}: $(tail -n 20 "$output")"
+  printf '%s\n' "$tree_census_line"
+  mismatch="$(tree_census_member tree_mismatch)"
+  repaired="$(tree_census_member tree_mismatch_repaired)"
+  [[ "$mismatch" == 0 && "$repaired" == 0 ]] ||
+    fail "$section" "$what" \
+      "the census reads tree_mismatch=${mismatch:-(none)} tree_mismatch_repaired=${repaired:-(none)}${over:+ over $over}, want 0 and 0: $tree_census_line"
+  pass "$section" "the census reads tree_mismatch=0 tree_mismatch_repaired=0${over:+ over $over}"
+}
+
+# tree_census_member NAME: the value of the member NAME=<n> of tree_census_line, its thousands'
+# commas dropped; nothing where the line holds no such member. A member is read between spaces, so
+# tree_mismatch is never read off tree_mismatch_repaired.
+tree_census_member() {
+  if [[ " $tree_census_line " =~ [[:space:]]$1=([0-9,]+)[[:space:]] ]]; then
+    printf '%s' "${BASH_REMATCH[1]//,/}"
+  fi
 }
 
 # tree_run_backfill SECTION: the store backfill, as node-projects.sh runs it, until T9's boot step

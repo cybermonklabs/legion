@@ -38,21 +38,41 @@ const (
 	// writes the block back. It is retracted once an ask block of that ask stands in that document
 	// again. No table projects it.
 	TupleRemovedBy = "removed_by"
+	// TupleAskedOn is the relation from an ask's node to the block node its row names: the
+	// block of the document asks.block_artifact_id holds, addressed as the block index addresses
+	// it (AskPlaces.On), `<ref_key of block_artifact_id>#<block_id>`. It is the ask's block pointer
+	// as a tuple, beside the part_of to the document that holds the block: asks.block_id is its
+	// projection and the document alone is part_of's. The kind is internal to the store:
+	// refs.TupleKinds does not list it, and graph_edges does not render it.
+	TupleAskedOn = "asked_on"
 )
 
 // AskPlaces are the addresses (artifacts.ref_key) of the documents an ask's node relates to, each
 // empty where the ask has none: Anchor is the document holding its block, else the document its
 // anchor quotes, which graph_edges' old arm reads as coalesce(block_artifact_id, anchor's
 // artifact_id); Owner is the document an ask on no issue belongs to (artifact_id); Document is the
-// document holding its block (block_artifact_id).
+// document holding its block (block_artifact_id). Block is the address of the block node the ask
+// stands on, empty where the ask has no block or until On sets it.
 type AskPlaces struct {
-	Anchor, Owner, Document string
+	Anchor, Owner, Document, Block string
 }
 
-// Fit is whether every address of p is inside the store's bound (AddressFits). An ask any of whose
-// relation ends is past it is left out of the store's relations whole, as a comment is (api's
-// commentStored): its node is written, but none of its three relations, and its row names no node,
-// so graph_edges' old arms answer every edge of it rather than the tuple arm answering it short one.
+// On is p with Block the address of the block blockID of the document p.Document: the block
+// node as the block index addresses it, the document's ref_key, '#' and the block id
+// (text.TargetID). A block of an issue room is held by the room's tree artifact, which is the
+// document asks.block_artifact_id names there, so Document is already the room's ref_key. It is
+// p with no Block where the ask has no document or blockID is empty.
+func (p AskPlaces) On(blockID string) AskPlaces {
+	p.Block = ""
+	if p.Document != "" && blockID != "" {
+		p.Block = p.Document + "#" + blockID
+	}
+	return p
+}
+
+// Fit is whether the three document addresses are inside the store's bound (AddressFits).
+// An ask with a document address past the bound has a node, but its row names no node and it
+// states none of these relations. That preserves the answers of graph_edges' old arms.
 func (p AskPlaces) Fit() bool {
 	return AddressFits(p.Anchor) && AddressFits(p.Owner) && AddressFits(p.Document)
 }
@@ -77,12 +97,15 @@ func ReadAskPlaces(ctx context.Context, q Queryer, anchor, owner, block *string)
 }
 
 // AskFacts is what this store holds of one ask when it is created, beside its node's base
-// attributes: its node (AskNode), its three relations to documents where it has them (AskPlaces),
-// and who asked it (AuthorFacts: the authored_by tuple, the author's node, and the aliases the
-// server proved) where the actor names a person or a session. Every node comes before any tuple a
-// writer appends, the ask's node first. marked is whether the asks row names the node: false for
+// attributes: its node (AskNode), its relations to documents where it has them (AskPlaces), its
+// asked_on to the block its row names where the places hold one (AskPlaces.On), and who asked it
+// (AuthorFacts: the authored_by tuple, the author's node, and the aliases the server proved)
+// where the actor names a person or a session. Every node comes before any tuple a writer
+// appends, the ask's node first. marked is whether the asks row names the node: false for
 // an ask any of whose relation ends is past the store's bound (AskPlaces.Fit), whose relations are
-// left out and whose row the old arms of graph_edges answer.
+// left out and whose row the old arms of graph_edges answer. A block whose address alone is past
+// the bound is no node, so the ask states no asked_on to it and stays marked, as a comment states
+// no anchored_in to such a block.
 //
 // It is the one statement of an ask's creation, which the three create sites write
 // (api's createAskFor and openApprovalAsk, docs' createAskBlock) and the boot step's backfill
@@ -90,20 +113,21 @@ func ReadAskPlaces(ctx context.Context, q Queryer, anchor, owner, block *string)
 // graph_edges' old arm dated it, and event the event that recorded the ask, or NoEvent for a write
 // held for its cause (PlanUncaused).
 //
-// A later move of the ask - which the restore alone makes - states the three relations as
-// Claims through WriteArms instead (AskClaims), so the far ends it leaves are retracted.
+// A later move of the ask - which the restore and the issue room's conversion make - states the
+// relations as Claims through WriteArms instead (AskClaims), so the far ends it leaves are
+// retracted.
 func AskFacts(id, project string, parties []string, author model.Actor, at time.Time, event int64, places AskPlaces) (nodes []Node, tuples []Tuple, marked bool) {
 	node := AskNode(id, project, parties, author, at)
 	node.SourceEvent = event
 	nodes = []Node{node}
 	if marked = places.Fit(); marked {
 		for _, relation := range askRelations(places) {
-			if relation.address == "" {
+			if relation.address == "" || !AddressFits(relation.address) {
 				continue
 			}
 			tuples = append(tuples, Tuple{
 				FromKind: KindAsk, FromID: id, Kind: relation.kind,
-				ToKind: KindArtifact, ToID: relation.address,
+				ToKind: relation.toKind, ToID: relation.address,
 				At: at, Who: author, SourceEvent: event, Asserted: true,
 			})
 		}
@@ -115,26 +139,39 @@ func AskFacts(id, project string, parties []string, author model.Actor, at time.
 	return nodes, tuples, marked
 }
 
-// AskClaims is the three relations of an ask's node as Claims, for the write that moves an ask
-// from where its row stood (the restore): each claim retracts the far end the node held under
-// that kind and asserts the new one, and a relation the ask no longer has retracts what it held.
+// AskClaims is the relations of an ask's node as Claims, for the write that moves an ask
+// from where its row stood (the restore, the conversion of an issue into its room): each claim
+// retracts the far end the node held under that kind and asserts the new one, and a relation the
+// ask no longer has, or whose block address is past the store's bound, retracts what it held. The
+// asked_on claim ends the ask's block where the places hold none (AskPlaces.On), so a caller that
+// moves an ask whose row names a block sets it.
 func AskClaims(id string, places AskPlaces, who model.Actor, at time.Time, event int64) []Claim {
 	relations := askRelations(places)
 	claims := make([]Claim, 0, len(relations))
 	for _, relation := range relations {
+		address := relation.address
+		if relation.kind == TupleAskedOn && !AddressFits(address) {
+			address = ""
+		}
 		claims = append(claims, Claim{
 			FromKind: KindAsk, FromID: id, Kind: relation.kind,
-			ToKind: KindArtifact, ToID: relation.address,
+			ToKind: relation.toKind, ToID: address,
 			At: at, Who: who, SourceEvent: event,
 		})
 	}
 	return claims
 }
 
-// askRelations is the three relations of places in the order every writer states them.
-func askRelations(places AskPlaces) [3]struct{ kind, address string } {
-	return [3]struct{ kind, address string }{
-		{TupleAnchoredTo, places.Anchor}, {TupleOwnedBy, places.Owner}, {TuplePartOf, places.Document},
+// askRelation is one relation of an ask's node to an artifact or a block, by the kind of node its
+// far end is, and the far end's address.
+type askRelation struct{ kind, toKind, address string }
+
+// askRelations is the relations of places in the order every writer states them: the three to
+// documents, then the ask's block.
+func askRelations(places AskPlaces) [4]askRelation {
+	return [4]askRelation{
+		{TupleAnchoredTo, KindArtifact, places.Anchor}, {TupleOwnedBy, KindArtifact, places.Owner},
+		{TuplePartOf, KindArtifact, places.Document}, {TupleAskedOn, blockKind, places.Block},
 	}
 }
 

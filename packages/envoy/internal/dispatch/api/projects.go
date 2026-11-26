@@ -42,12 +42,17 @@ const projectListQuery = `
 // answer of the proven-sessions routes carries the open-ask count the list shows, not a zero.
 const projectRowQuery = `select * from (` + projectListQuery + `) listed where listed.key = $1`
 
-// scanListedProject reads one row of projectListQuery or projectRowQuery.
+// scanListedProject reads one row of projectListQuery or projectRowQuery. A stored list of gated
+// steps may hold the retired `decisions` step until the decisions step rewrites it, and the
+// database's check still admits it: the project is answered without it, by the list and by the
+// route that answers one row alike.
 func scanListedProject(row pgx.Row) (model.Project, error) {
 	var project model.Project
 	if err := row.Scan(&project.Key, &project.Name, &project.OpenAsks, &project.GatedSteps, &project.DefaultRepo, &project.ProvenSessions, &project.CreatedAt); err != nil {
 		return model.Project{}, err
 	}
+	// kept for one release: check-narrowings
+	project.GatedSteps = gatedStepsWithout(project.GatedSteps)
 	return project, nil
 }
 
@@ -68,10 +73,6 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		// A stored list may hold the retired `decisions` step until the decisions step rewrites
-		// it, and the database's check still admits it: the read answers the list without it.
-		// kept for one release: check-narrowings
-		project.GatedSteps = gatedStepsWithout(project.GatedSteps)
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {

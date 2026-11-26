@@ -78,15 +78,22 @@ export const SCOPE_ANCHOR = "Scope anchor: the ledger keeps a clock of its own i
 export const WINDOW_ANCHOR = "Window anchor: the mirror keeps its retry budget in both versions.";
 /** The block version 4 no longer holds. */
 export const RETIRED_BLOCK = "Retired note: the nightly mirror job runs at 02:00 every day.";
-/** The one changed paragraph that kept all but one of its words. */
+/** The one changed block that kept all but one of its words: the body of the spec's one
+ *  requirement (`RETRY_REQUIREMENT`). An approval covers the record of the Spec query - the spec's
+ *  memo, criteria and requirements - and not the paragraphs around them (R14), so a version 4
+ *  that changed paragraphs alone would keep alice's approval of version 3 and open no request.
+ *  This reworded requirement is what makes version 4 need an approval of its own. */
 export const WORDS_BEFORE = "The retry budget is three attempts per lease.";
 export const WORDS_AFTER = "The retry budget is seven attempts per lease.";
 export const REMOVED_WORD = "three";
 export const ADDED_WORD = "seven";
-/** How many blocks version 4 changed since version 3. */
+/** How many blocks version 4 changed since version 3: 21 paragraphs and the requirement, each one
+ *  top-level block of the drawn version and one block of the change view's source. */
 export const CHANGED_BLOCKS = 22;
 /** Which of them is the one that changed only some of its words. */
 export const WORD_LEVEL_STEP = 10;
+/** The id of the requirement whose body is `WORDS_BEFORE`, then `WORDS_AFTER`. */
+const RETRY_REQUIREMENT = "r-retry-budget";
 const changedParagraphs = Array.from({ length: CHANGED_BLOCKS }, (_, index) =>
   index === WORD_LEVEL_STEP
     ? { after: WORDS_AFTER, before: WORDS_BEFORE }
@@ -95,12 +102,15 @@ const changedParagraphs = Array.from({ length: CHANGED_BLOCKS }, (_, index) =>
         before: `Step ${index + 1}: the ledger writes the clock before the mirror reads it.`,
       }
 );
-/** Version 3's body, inserted under the heading in one edit. */
+/** Version 3's body, inserted under the heading in one edit: the word-level step as the body of
+ *  the requirement, and every other block a paragraph. */
 const baselineBody = `${[
   SCOPE_ANCHOR,
   RETIRED_BLOCK,
   WINDOW_ANCHOR,
-  ...changedParagraphs.map(({ before }) => before),
+  ...changedParagraphs.map(({ before }, index) =>
+    index === WORD_LEVEL_STEP ? `:::requirement{#${RETRY_REQUIREMENT}}\n${before}\n:::` : before
+  ),
 ].join("\n\n")}\n`;
 
 /** The four classes `features/doc/change-marks.ts` draws an approval's marks with. */
@@ -167,9 +177,10 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
 
 /**
  * Six made-up questions, in the order the Inbox lists them (the issue's priority first): the
- * decision block of a spec, the request to approve version 4 of a spec approved at version 3, a
- * first request to approve another document, an anchored question, a question in no document, and
- * the decision block of a project document, which no issue priority orders.
+ * decision block of a spec, the request to approve version 4 of a spec approved at version 3
+ * (version 4 rewords the spec's one requirement, which an approval covers), a first request to
+ * approve another document, an anchored question, a question in no document, and the decision
+ * block of a project document, which no issue priority orders.
  */
 export async function seedInbox(): Promise<Seed> {
   await createProject({ key: "PANE", name: "Pane rollout" });
@@ -220,6 +231,9 @@ export async function seedInbox(): Promise<Seed> {
           { expected_edited_at: null, selected: ["Approve"] },
           { login: "alice" }
         );
+        // The replace of `WORDS_BEFORE` rewords the requirement's body inside its block, the one
+        // change of the Spec query's record: so alice's approval of version 3 does not stand for
+        // version 4, and the request below opens an ask.
         await editArtifact(
           artifactId,
           {

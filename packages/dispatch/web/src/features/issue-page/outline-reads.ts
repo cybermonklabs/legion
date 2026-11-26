@@ -1,7 +1,7 @@
 import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import { issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails, MessageRead } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PublishedReferences } from "../refs/reference-names";
@@ -11,7 +11,6 @@ import { useOwnedIssueTree } from "./issue-tree-owner";
 import { STATE_LINES } from "./page-words";
 import {
   type IssueTreeView,
-  issueAskThreadsQuery,
   issueCommentsQuery,
   issueMessagesQuery,
   type NamesFailure,

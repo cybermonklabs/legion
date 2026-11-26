@@ -6,6 +6,7 @@ import type { NavigateFunction } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import {
+  issueAskThreadsQuery,
   issueCoverageQuery,
   issueResultsQuery,
   myRepliesOwnerQuery,
@@ -44,7 +45,6 @@ import {
 import { blockNodeId } from "../tree-drafts";
 import { treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswerNode } from "../tree-read/tree-read";
-import { issueAskThreadsQuery } from "../useIssueTree";
 import {
   decision,
   decisionNode,

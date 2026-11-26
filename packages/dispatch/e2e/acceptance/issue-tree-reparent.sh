@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# The issue-tree check c-reparent-and-state, the cases of the move route: a person or
-# an agent moves a node of an issue's tree through PATCH /api/v1/issues/{key}/nodes/{id} (R7), with
-# `{id}` the node's store address as one percent-encoded path segment, the body {parent, after} and
-# an If-Match naming the node's placement_seq as a quoted entity tag. It runs against a server of
-# this head serving alone, so every issue it creates is born converted, on the database that server
-# serves, and seeds every issue it reads.
+# The issue-tree check c-reparent-and-state, the cases of the node routes: a person or an agent
+# moves a node of an issue's tree through PATCH /api/v1/issues/{key}/nodes/{id} (R7), with `{id}`
+# the node's store address as one percent-encoded path segment, the body {parent, after} and an
+# If-Match naming the node's placement_seq as a quoted entity tag, and takes a node and its subtree
+# out through DELETE on the same path, with dry_run and expected_count (T18). It runs against a
+# server of this head serving alone, so every issue it creates is born converted, on the database
+# that server serves, and seeds every issue it reads.
 #
 #   subtree  Alice writes, under the spec's memo callout, two criteria K1 and K2, a requirement R1
 #            under K1 and two checks under R1, and moves R1 under K2: one part_of appended to K2, one
@@ -39,6 +40,15 @@
 #            passes keep every stored place; the input refusals; the route rows.
 #   bands    after: null puts a node first in its own rank band, the memo first throughout.
 #   request  An open approval request on the spec query node names the version the drain writes.
+#   delete   A criterion KD with a requirement RD under it, and a trade-off lens LD on KD with one
+#            finding: the dry run (dry_run=true) answers 200 with the count of the four the tree
+#            read returns and writes nothing; a comment is 400 NODE_NOT_DELETABLE; with no If-Match
+#            the delete is 428, with no expected_count 400 DELETE_INPUT naming it, with a stale tag
+#            412, and with a count that moved 409 DELETE_COUNT_MOVED carrying the count now, each
+#            storing nothing; with the dry run's count it answers 200 with that count, the lens and
+#            its finding go gone in the write, KD and RD leave the spec's text and go gone at its
+#            index pass, and the tree read returns none of the four.
+#   routes   GET /api/v1 and the routes table list PATCH and DELETE under the node route.
 #
 # Inputs: DATABASE_URL (the database the server serves, on this machine: the driver reads the store
 # through psql, deletes V's rows there and holds the block-index and forms drain leases there),
@@ -50,8 +60,8 @@
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
 # `FAIL: <section> <what>: <observed>` on stderr and the script exits 1. It prints no SKIP line. The
-# last line is `PASS: issue-tree-reparent.sh complete <n> moves`. Every check is `cmd || fail …`,
-# never part of an `&&` list.
+# last line is `PASS: issue-tree-reparent.sh complete <n> sections`, printed only after the last
+# section. Every check is `cmd || fail …`, never part of an `&&` list.
 
 # shellcheck disable=SC2016 # the single-quoted jq filters and SQL name jq and psql variables
 set -euo pipefail
@@ -124,22 +134,50 @@ tree_sign_in setup "$person_login"
 
 # --- the vocabulary of this driver ------------------------------------------------------------------
 
-# rp_patch AS KEY NODE TAG BODY: PATCH /api/v1/issues/KEY/nodes/NODE as AS (agent or person), NODE
-# percent-encoded as one segment, with BODY, and with `If-Match: "TAG"` where TAG is not empty. The
-# answer is in $work/body and `status`, as tree_request leaves them.
-rp_patch() {
-  local as="$1" key="$2" node="$3" tag="$4" body="$5"
-  local -a auth match=()
+# rp_send METHOD AS KEY NODE TAG BODY QUERY: METHOD /api/v1/issues/KEY/nodes/NODE as AS (agent or
+# person), NODE percent-encoded as one segment, with the JSON BODY and the query string QUERY
+# (dry_run=true, expected_count=<n>) where each is not empty, and `If-Match: "TAG"` where TAG is not
+# empty. The answer is in $work/body and `status`, as tree_request leaves them.
+rp_send() {
+  local method="$1" as="$2" key="$3" node="$4" tag="$5" body="$6" query="$7"
+  local -a auth match=() data=()
   case "$as" in
     agent) auth=(-H "@$work/auth") ;;
     person) auth=(-b "$work/jar" -H "Origin: $(tree_origin)") ;;
-    *) tree_refuse "rp_patch sends as agent or person, not '$as'" ;;
+    *) tree_refuse "rp_send sends as agent or person, not '$as'" ;;
   esac
   [[ -z "$tag" ]] || match=(-H "If-Match: \"$tag\"")
-  tree_last_request="PATCH /api/v1/issues/$key/nodes/$node${tag:+ If-Match \"$tag\"} $body"
-  status="$(curl -sS -X PATCH -o "$work/body" -w '%{http_code}' "${auth[@]}" "${match[@]}" \
-    -H 'Content-Type: application/json' --data-binary "$body" \
-    "$base/api/v1/issues/$(q "$key")/nodes/$(q "$node")" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+  [[ -z "$body" ]] || data=(-H 'Content-Type: application/json' --data-binary "$body")
+  tree_last_request="$method /api/v1/issues/$key/nodes/$node${query:+?$query}${tag:+ If-Match \"$tag\"}${body:+ $body}"
+  status="$(curl -sS -X "$method" -o "$work/body" -w '%{http_code}' "${auth[@]}" "${match[@]}" "${data[@]}" \
+    "$base/api/v1/issues/$(q "$key")/nodes/$(q "$node")${query:+?$query}" 2>"$work/curl")" ||
+    status="curl failed: $(<"$work/curl")"
+}
+
+# rp_patch AS KEY NODE TAG BODY: the move, PATCH with BODY (rp_send).
+rp_patch() { rp_send PATCH "$1" "$2" "$3" "$4" "$5" ""; }
+
+# rp_delete AS KEY NODE TAG QUERY: the delete, DELETE with QUERY and no body (rp_send).
+rp_delete() { rp_send DELETE "$1" "$2" "$3" "$4" "" "$5"; }
+
+# rp_answered SECTION WHAT STATUS CODE: the last answer is STATUS with the error code CODE.
+rp_answered() {
+  local got
+  got="$(jq -r '.code // ""' "$work/body" 2>/dev/null)" || got=""
+  [[ "$status" == "$3" && "$got" == "$4" ]] ||
+    fail "$1" "$2" "$tree_last_request answered $status${got:+ $got}, want $3 $4: $(body)"
+}
+
+# rp_wait_drained SECTION: waits, at most 60 s, until the drain has written every query version the
+# issue `key` owes: no issue_query_marks row names it.
+rp_wait_drained() {
+  local deadline=$((SECONDS + 60))
+  while true; do
+    query "$1" "read whether $key's queries are owed" "select count(*) from issue_query_marks where issue_key = '$key'"
+    [[ "$answer" != 0 ]] || return 0
+    ((SECONDS < deadline)) || fail "$1" "the drain of $key runs" "the mark of $key stands after 60 s"
+    sleep 1
+  done
 }
 
 # rp_store ADDRESS: the store's kind and id of the node at ADDRESS, in rp_kind and rp_id: a block's
@@ -627,12 +665,10 @@ tree_envoy_dispatch_status census --store
 if line="$(grep -m1 '^census: store kind=ask_parent difference' "$work/out")"; then
   problems+="${problems:+; }the census reads an ask_parent difference after the move of $ask: $line"
 fi
-if line="$(grep -m1 '^census: versions' "$work/out")"; then
-  [[ "$line" == *" tree_mismatch=0"* && "$line" == *" tree_mismatch_repaired=0"* ]] ||
-    problems+="${problems:+; }the census reads $(grep -o 'tree_mismatch=[0-9]*' <<<"$line" || true) $(grep -o 'tree_mismatch_repaired=[0-9]*' <<<"$line" || true), want 0 and 0: $line"
-else
-  problems+="${problems:+; }envoy-dispatch census --store printed no versions line and exited $tree_envoy_status: $(tail -n 20 "$work/out")"
-fi
+[[ "$tree_envoy_status" -le 1 ]] ||
+  problems+="${problems:+; }envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/out")"
+tree_census_versions "$section" \
+  "the census reads no tree mismatch${problems:+; $problems}" "" "$work/out"
 [[ -z "$problems" ]] ||
   fail "$section" "the route moves no ask, and the census reads no ask_parent difference and no tree mismatch" "$problems"
 pass "$section" "the move of $ask answers 400 NODE_NOT_MOVABLE storing nothing, its part_of names $ask_parent, and the census reads no ask_parent difference, and tree_mismatch=0 tree_mismatch_repaired=0"
@@ -654,8 +690,8 @@ rp_tree "$section" "$child"
 in_child="$(jq -r --arg c "${comment#comment/}" '[.nodes[] | select(.kind == "comment" and .id == $c)] | length' "$work/tree.json")"
 if [[ "$in_key" != 1 && "$in_child" == 0 ]]; then
   problems+="${problems:+; }the comment $comment is listed by the tree of neither $key nor $child"
-elif [[ "$in_key" != 1 ]]; then
-  problems+="${problems:+; }the comment $comment is listed by the tree of $child, want $key, where it stood"
+elif [[ "$in_key" != 1 || "$in_child" != 0 ]]; then
+  problems+="${problems:+; }the comment $comment is listed $in_key time(s) under $key and $in_child under $child, want 1 and 0"
 fi
 [[ -z "$problems" ]] || fail "$section" "the route moves no comment, which stays listed under $key" "$problems"
 pass "$section" "the move of $comment answers 400 NODE_NOT_MOVABLE storing nothing, and the tree of $key lists it, where it stood"
@@ -1075,13 +1111,7 @@ tree_person_send POST "/api/v1/artifacts/$spec_doc/approval-requests" '{}'
 tree_field "$section" "open an approval request on $key's spec query node" .ask.id
 readonly request="$tree_value"
 rp_move "$section" person "$key" "$r4" "$k2"
-deadline=$((SECONDS + 60))
-while true; do
-  query "$section" "read whether $key's queries are owed" "select count(*) from issue_query_marks where issue_key = '$key'"
-  [[ "$answer" != 0 ]] || break
-  ((SECONDS < deadline)) || fail "$section" "the drain of $key runs" "the mark of $key stands after 60 s"
-  sleep 1
-done
+rp_wait_drained "$section"
 with_vars "$section" "read the request and the spec's newest version" \
   "select coalesce((select artifact_version::text from asks where id = :'ask'::uuid), '') || '|' || (select max(number) from artifact_versions where artifact_id = :'doc'::uuid)" \
   ask="$request" doc="$spec_doc"
@@ -1090,6 +1120,88 @@ IFS='|' read -r named newest <<<"$answer"
 [[ "$named" == "$newest" ]] ||
   fail "$section" "the request on the spec query names the drained version" "the request on $spec_doc names version $named after the drain, want $newest"
 pass "$section" "the request $request names version $named, the newest, which the drain wrote after the move of $r4"
+
+# --- delete: preview and confirm a subtree removal --------------------------------------------------
+
+section=delete
+rp_edit "$section" "alice writes KD and RD under it" "$spec_doc" "$(jq -cn --arg p "dispatch://$key/spec#b-kd" '[
+  {op: "insert", after: "end", markdown: ":::criterion{#kd}\nThe criterion to delete.\n:::"},
+  {op: "insert", after: "end", markdown: (":::requirement{#rd parent=\"" + $p + "\"}\nThe requirement to delete with KD.\n:::")}
+]')"
+readonly kd="$(rp_block "$key" kd)" rd="$(rp_block "$key" rd)"
+rp_lens "$section" "$key" "dispatch://$key/spec#b-kd" trade-off
+readonly ld="$rp_lens"
+rp_finding "$section" "$key" "$ld" "The delete takes this finding with its lens."
+readonly fd="$rp_finding"
+corpus_wait_indexed "$section"
+rp_wait_drained "$section"
+rp_tree "$section" "$key"
+delete_nodes="$(jq -cn --arg a "$kd" --arg b "$rd" --arg c "${ld#lens/}" --arg d "$fd" '[$a, $b, $c, $d] | sort')"
+expect "$section" "the tree reads all four nodes in the delete fixture" "$delete_nodes" \
+  --argjson ids "$delete_nodes" '[.nodes[].id | select(. as $id | $ids | index($id) != null)] | sort'
+kd_tag="$(jq -er --arg id "$kd" '.nodes[] | select(.id == $id) | .placement_seq | numbers' "$work/tree.json")" ||
+  fail "$section" "read the placement_seq of $kd" "the tree held no tag for $kd"
+with_vars "$section" "read the spec's newest version before the dry run" \
+  "select max(number) from artifact_versions where artifact_id = :'doc'::uuid" doc="$spec_doc"
+before_delete="$answer"
+rp_seq "$section"
+delete_mark="$rp_mark"
+rp_delete person "$key" "$kd" "" "dry_run=true"
+tree_want 200 "$section" "the dry run of the delete of $kd"
+expect "$section" "the dry run counts KD, RD, LD and its finding" '4' .count
+tree_field "$section" "read the dry run count" .count
+dry_count="$tree_value"
+
+rp_delete person "$key" "$comment" "" ""
+rp_answered "$section" "the delete of a comment is refused" 400 NODE_NOT_DELETABLE
+rp_delete person "$key" "$kd" "" "expected_count=$dry_count"
+rp_answered "$section" "a delete with no If-Match is refused" 428 PRECONDITION_REQUIRED
+rp_delete person "$key" "$kd" "$kd_tag" ""
+rp_answered "$section" "a delete with no expected_count is refused" 400 DELETE_INPUT
+jq -e '.error | contains("expected_count")' "$work/body" >/dev/null ||
+  fail "$section" "the refusal names expected_count" "it reads $(body)"
+rp_delete person "$key" "$kd" "$((kd_tag - 1))" "expected_count=$dry_count"
+rp_answered "$section" "a delete with a stale If-Match is refused" 412 PRECONDITION_FAILED
+rp_delete person "$key" "$kd" "$kd_tag" "expected_count=$((dry_count + 1))"
+rp_answered "$section" "a delete with the wrong expected_count is refused" 409 DELETE_COUNT_MOVED
+expect "$section" "the refusal carries the current count" "$dry_count" .count
+for node in "$kd" "$rd" "$ld" "$fd" "$comment"; do
+  rp_untouched "$section" "the dry run and refused deletes write no tuple out of $node" "$node" "$delete_mark"
+done
+with_vars "$section" "read the spec's newest version after the dry run and refused deletes" \
+  "select max(number) from artifact_versions where artifact_id = :'doc'::uuid" doc="$spec_doc"
+[[ "$answer" == "$before_delete" ]] ||
+  fail "$section" "the dry run and refused deletes write no spec version" "the version was $before_delete and is now $answer"
+pass "$section" "the dry run and the five refused deletes store nothing"
+
+rp_delete person "$key" "$kd" "$kd_tag" "expected_count=$dry_count"
+tree_want 200 "$section" "the delete of $kd with the dry run's count"
+expect "$section" "the delete returns the count it took" "$dry_count" .count
+# The DELETE's own write states the lens and its finding gone, as the state route writes it: read
+# before any wait, so no later index pass or drain can have done it.
+with_vars "$section" "read the states of LD and its finding right after the delete answered" \
+  "select coalesce((select state from graph_nodes where kind = 'lens' and id = :'ld'), 'none')
+     || '|' || coalesce((select state from graph_nodes where kind = 'block' and id = :'fd'), 'none')" \
+  ld="${ld#lens/}" fd="$fd"
+[[ "$answer" == "gone|gone" ]] ||
+  fail "$section" "the delete's own write states $ld and its finding $fd gone" "right after the delete answered, the lens and the finding read $answer"
+pass "$section" "the delete's own write states $ld and its finding $fd gone"
+corpus_wait_indexed "$section"
+rp_wait_drained "$section"
+with_vars "$section" "count the nodes the delete marked gone" \
+  "select count(*) from graph_nodes where state = 'gone' and
+   ((kind = 'block' and id in (:'kd', :'rd', :'fd')) or (kind = 'lens' and id = :'ld'))" \
+  kd="$kd" rd="$rd" fd="$fd" ld="${ld#lens/}"
+[[ "$answer" == "$dry_count" ]] ||
+  fail "$section" "the delete marks its subtree gone" "the store holds $answer gone nodes, want $dry_count"
+pass "$section" "after the spec's index pass, KD, RD, LD and its finding read gone: $answer nodes, the dry run's count"
+tree_person_send GET "/api/v1/artifacts/$spec_doc/text"
+tree_want 200 "$section" "read the spec after deleting $kd"
+expect "$section" "KD and RD leave the spec's text" 'true' \
+  '.markdown | (contains("{#kd") or contains("{#rd")) | not'
+rp_tree "$section" "$key"
+expect "$section" "the tree read returns none of the nodes the delete took" '[]' \
+  --argjson ids "$delete_nodes" '[.nodes[].id | select(. as $id | $ids | index($id) != null)]'
 
 # --- routes: the node routes this head serves -------------------------------------------------------------
 
@@ -1115,4 +1227,5 @@ rp_node_rows "$routes_table"
   fail "$section" "the routes table's rows under /api/v1/issues/{key}/nodes/{id} are exactly PATCH, DELETE, findings, pointers, state and settle" "they read $answer"
 pass "$section" "the routes table's rows under /api/v1/issues/{key}/nodes/{id} are exactly $answer"
 
-printf 'PASS: %s complete %d moves\n' "$driver" "$moves"
+pass "$driver" "made $moves moves through the PATCH"
+printf 'PASS: %s complete 14 sections\n' "$driver"

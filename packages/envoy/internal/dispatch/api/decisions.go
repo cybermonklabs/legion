@@ -14,8 +14,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -36,11 +38,14 @@ import (
 // in model.Decision's shape, in the order of entries, and document is the address of the issue's
 // decisions document while it stands (decisions_documents()), null once it is retired or where
 // the issue holds none. A link of an entry's shaped and of a decision's links is one value
-// (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
-// after the tie and the spec node has not changed since they did, which the page of the release
-// before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
-// entries and open_questions stay. document and decisions go once no page of the release before
-// reads them (compat-objects).
+// (model.DecisionLink): its stale is the release before's rule, which compares text sums - the
+// decision's own words differ from those at the version the tie was written in and from those at
+// the version that stood when the spec node last changed, as the page of the release before reads
+// it too - and its changed_since_tie is R5's, the spec node's text changed after the tie.
+// entries and open_questions are the route's own, and the whole route is kept for one release
+// for a page of the release before (decisions-route): a page of this release reads the tree's
+// decisions view, which answers the same nodes (R21 of the issue-tree spec). document and
+// decisions go once no page of the release before reads them (compat-objects).
 type issueDecisions struct {
 	Entries []decisionEntry `json:"entries"`
 	// kept for one release: compat-objects
@@ -50,6 +55,7 @@ type issueDecisions struct {
 	Decisions []model.Decision `json:"decisions"`
 }
 
+// kept for one release: decisions-route
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -139,27 +145,31 @@ func artifactMissing(err error) bool {
 
 // specOpenQuestions are the issue's open asks whose block is in its spec (refs.AsksOfDocumentSQL),
 // oldest first, in the shape every ask read has (askReadColumns, with the newest reply beside the
-// row). An ask is open as its node holds it (askNodeAnswer.applyTo), which every read of an answer
-// reads (R3), so the statement reads each of the spec's asks and the scan keeps the open ones. An
-// ask's block is in the spec where the spec's block index holds an ask block under its block id
-// (document_blocks, keyed as the ask is): a row that names the spec and a block it no longer
-// holds - one a reopen restored with no block to write, which a later settlement retracts - is no
-// question of it.
+// row). An ask is open as its node holds it (asks.NodeAnswer.ApplyTo), which every read of an
+// answer reads (R3), so the statement reads each of the spec's asks and the scan keeps the open
+// ones. An ask's block is in the spec where the spec's block index holds an ask block under its
+// block id (document_blocks, keyed as the ask is): a row that names the spec and a block it no
+// longer holds - one a reopen restored with no block to write, which a later settlement retracts -
+// is no question of it. An ask whose node holds a value that does not parse is left out and
+// logged, as decisionEntries leaves out its entry, and the read goes on (R4, scanOpenQuestions).
 //
 // That index cannot say so while the spec owes it - while the spec is among the documents the
 // coverage read names as owing their block index (queueOwedDocuments), read in the same batch: a
 // version above the bound leaves its blocks to the block-index reconciliation, so an ask block it
 // added is in no document_blocks row yet, and for a spec converted into its issue's room no row
 // says yet which fragment holds the block (refs.AskBlockDocumentSQL). Then the spec's asks are the
-// asks rows of the ask blocks its fragment holds as the text routes read it
-// (docs.API.TextWithAsks), found by the room and those block ids
+// asks rows of the ask blocks its fragment holds as a read of the document reads it, out of the
+// issue's room for a converted spec (docs.API.Blocks), found by the room and those block ids
 // (refs.AsksOfFragmentBlocksSQL), whether or not the index holds them: a question a person can
 // see does not drop out of the read because the index has not caught up, and no ask whose block
-// the spec no longer holds is listed from an index that is behind. Once the index states the
-// spec's version, its rows decide again. Either way one statement reads each ask once, so none
-// is listed twice. reader is the answer's own, and each row registers its texts with it once the
-// slice has stopped growing: a shaping registers a pointer into the row, and an append that moved
-// the backing array would leave the reader filling trees into memory the answer no longer holds.
+// the spec no longer holds is listed from an index that is behind. The block ids are all that read
+// answers: it decodes no ask's answer, as the text routes' read (docs.API.TextWithAsks) does and
+// fails on a node that holds a value that does not parse, so such an ask reaches the scan, which
+// leaves it out. Once the index states the spec's version, its rows decide again. Either way one
+// statement reads each ask once, so none is listed twice. reader is the answer's own, and each row
+// registers its texts with it once the slice has stopped growing: a shaping registers a pointer
+// into the row, and an append that moved the backing array would leave the reader filling trees
+// into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
@@ -175,20 +185,20 @@ func (s *server) specOpenQuestions(
 			where d.artifact_id = a.block_artifact_id and d.block_id = a.block_id and d.type = 'ask')
 		order by a.created_at, a.id
 	`, key, specID).Query(func(rows pgx.Rows) error {
-		return scanOpenQuestions(rows, &questions)
+		return scanOpenQuestions(rows, key, &questions)
 	})
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, err
 	}
 	if slices.ContainsFunc(owed, func(document model.OwedDocument) bool { return document.ArtifactID == specID }) {
-		text, err := s.deps.Docs.TextWithAsks(ctx, specID, false)
+		held, err := s.deps.Docs.Blocks(ctx, specID)
 		if err != nil {
 			return nil, fmt.Errorf("read the ask blocks of the spec %s, which owes its block index: %w", specID, err)
 		}
-		blocks := make([]string, 0, len(text.Asks))
-		for _, block := range text.Asks {
-			if block.BlockID != "" {
-				blocks = append(blocks, block.BlockID)
+		blocks := make([]string, 0, len(held))
+		for _, block := range held {
+			if block.Type == "ask" && block.ID != "" {
+				blocks = append(blocks, block.ID)
 			}
 		}
 		rows, err := s.deps.Store.Pool.Query(ctx, `
@@ -200,20 +210,20 @@ func (s *server) specOpenQuestions(
 			return nil, err
 		}
 		questions = questions[:0]
-		err = scanOpenQuestions(rows, &questions)
+		err = scanOpenQuestions(rows, key, &questions)
 		rows.Close()
 		if err != nil {
 			return nil, err
 		}
 	}
-	asks := make([]*model.Ask, len(questions))
+	listed := make([]*model.Ask, len(questions))
 	for index := range questions {
-		asks[index] = &questions[index].Ask
+		listed[index] = &questions[index].Ask
 	}
-	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, listed); err != nil {
 		return nil, err
 	}
-	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {
+	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, listed); err != nil {
 		return nil, err
 	}
 	for index := range questions {
@@ -223,10 +233,16 @@ func (s *server) specOpenQuestions(
 }
 
 // scanOpenQuestions appends to questions each ask rows reads (askReadColumns) that is open as its
-// node holds it, in the order rows reads them.
-func scanOpenQuestions(rows pgx.Rows, questions *[]issueAskRow) error {
+// node holds it, in the order rows reads them. An ask of issue key whose node holds a value that
+// does not parse (asks.ErrNodeAnswerUnreadable) is left out and logged, and the scan goes on.
+func scanOpenQuestions(rows pgx.Rows, key string, questions *[]issueAskRow) error {
 	for rows.Next() {
 		ask, reply, err := scanAskRead(rows)
+		if errors.Is(err, asks.ErrNodeAnswerUnreadable) {
+			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
+				"issue", key, "err", err)
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -262,11 +278,12 @@ func scanOpenQuestions(rows pgx.Rows, questions *[]issueAskRow) error {
 // decision reads them: an ask's text is its question, and a decision's text its own words.
 // shaped is one link for each spec node the node's current `shaped` tuples reach, each with the
 // tuple's own event, the event that wrote the version the node's text last changed in
-// (text_changed_event), stale, true when the decision's own words changed after the tuple and the
-// node's text has not changed since they did, and changed_since_tie, true when the node's text
-// changed after the tuple (model.DecisionLink). readings are the `reading` nodes, at any state but
-// gone, whose part_of reaches this node, each with its node state and the far end of its
-// authored_by tuple, null where it holds none.
+// (text_changed_event), stale, true when the decision's own words differ from those at the version
+// the tuple was written in and from those at the version that stood when the node's text last
+// changed, and changed_since_tie, true when the node's text changed after the tuple
+// (model.DecisionLink). readings are the `reading` nodes, at any state but gone, whose part_of
+// reaches this node, each with its node state and the far end of its authored_by tuple, null where
+// it holds none.
 type decisionEntry struct {
 	Node     decisionEntryNode      `json:"node"`
 	Ref      string                 `json:"ref"`
@@ -373,27 +390,9 @@ var entryFactKinds = []string{
 	refs.ValueUncertainty, refs.ValueUncertaintyReason,
 }
 
-// decisionEntriesRead is the statement decisionEntries reads an issue's entries with, bound to
-// the issue $1, the acting credential $2 (refs.VisibilityArg) and entryFactKinds $3. It reads no
-// node of another issue: the asks by asks.issue_key, and the decisions from the issue's own
-// documents (artifacts.issue_key), each document through its own rows: those its room keys
-// (refs.DocumentRoomSQL - the document itself, or for a document converted into its issue's
-// room the room's tree artifact) whose block the document holds (refs.BlockDocumentSQL). A
-// document the block index has indexed lists its decisions in those document_blocks rows (type
-// `decision`); one that owes that index (document_block_versions.version null) lists them as
-// well in the nodes the typed-node pass placed in it in the write's own transaction
-// (refs.PlanDecisionNodes, written by refs.DecisionIndexing.Queue): the current part_of tuples
-// into the document's own node, through graph_tuples_as_of_in, and the nodes its block_refs rows
-// name (a decision's decided_by, shaped and from_ask), keyed by its room. Each candidate is then
-// read by its own key, the present nodes of the `decision` supertag kept: a node at any state
-// but gone, so a proposed, settled or overtaken decision, ask or reading is drawn wherever its
-// node is (R5 and R12 of the node-states plan this branch carries). An entry's document is the
-// one holding its block, read as decisionread reads it: the artifact keying the block's rows - a
-// block node's address opens with its ref_key, an ask's is its block_artifact_id - mapped to the
-// document whose fragment holds the block, or, for a decision of a document that owes its block
-// index whose block the room's index names no document of yet, the document the read found its
-// node in (refs.BlockDocumentOrSQL), which the statement answers last and decisionread is given
-// (decisionread.Node.Document).
+// decisionEntriesRead shapes the Decisions query's entries for the previous release's route.
+// $4 and $5 are the node kinds and ids the query takes. The document lookup supplies a fragment
+// hint for decisions the block index has not reached; it does not select the entries.
 func decisionEntriesRead() string {
 	return `
 		with documents as (
@@ -419,22 +418,18 @@ func decisionEntriesRead() string {
 			) held
 		),
 		members as (
-			select node.kind, node.id, node.state, null::uuid as document from asks q
+			select node.kind, node.id, node.state, source.document
+			from unnest($4::text[], $5::text[]) member(kind, id)
 			cross join lateral (
 				select g.kind, g.id, g.state from graph_nodes g
-				where g.kind = '` + graphstore.KindAsk + `' and g.id = q.id::text and g.state <> '` + graphstore.StateGone + `'
+				where g.kind = member.kind and g.id = member.id and g.state <> '` + graphstore.StateGone + `'
 				  and ` + refs.VisibleRow("g", "$2") + `
 				offset 0
 			) node
-			where q.issue_key = $1 and q.kind = 'question'
-			union all
-			select node.kind, node.id, node.state, n.document from decision_nodes n
-			cross join lateral (
-				select g.kind, g.id, g.state from graph_nodes g
-				where g.kind = '` + refs.BlockNodeKind + `' and g.id = n.id and g.supertag = '` + refs.DecisionSupertag + `'
-				  and g.state <> '` + graphstore.StateGone + `' and ` + refs.VisibleRow("g", "$2") + `
-				offset 0
-			) node
+			left join lateral (
+				select d.document from decision_nodes d where d.id = member.id and member.kind = '` + refs.BlockNodeKind + `'
+				order by d.document limit 1
+			) source on true
 		)
 		select m.kind, m.id, m.state, q.question, q.options, q.urgency, q.multiple, q.created_at, coalesce(place.block_id, ''),
 		       doc.id is not null, coalesce(doc.id::text, ''), coalesce(keyed.ref_key, ''), coalesce(doc.slug, ''),
@@ -493,19 +488,31 @@ func decisionEntriesRead() string {
 		order by m.kind, m.id`
 }
 
-// decisionEntries is the Decisions read's entries for issue key, as who reads them, in one
-// statement over graph_nodes, graph_tuples and the asks row for an ask's wording, and then
-// decisionread.Decisions over the nodes it found. Both read in one read-only transaction at
-// repeatable read, so the entries answer one state of the store: a Keep or an answer committed
-// between the two reads is in both or in neither. Its members are the store's:
-//
-//   - each `ask` node, at any state but gone, of an ask of kind question (asks.kind) the issue
-//     holds, on any of its documents or on the issue itself. A copy of an answered ask on another
-//     document opens no row of its own (its block's copied_from names the source), so it is no
-//     entry; a reading in it reads the source's ask and is answered under the source's entry.
-//   - each block node of the `decision` supertag, at any state but gone, in any document of the
-//     issue, found from that document alone (decisionEntriesRead), so a decision of a document that
-//     still owes its block index is listed.
+// decisionEntryTargets takes the primary entries from the same query definition as the tree
+// view. The compatibility route nests readings under their decision or ask.
+func decisionEntryTargets(ctx context.Context, q queryer, key string) (kinds, ids []string, err error) {
+	if err := refs.TurnJITOff(ctx, q); err != nil {
+		return nil, nil, err
+	}
+	tree, err := docs.WalkIssueTree(ctx, q, key, refs.TreeCut{})
+	if err != nil {
+		return nil, nil, err
+	}
+	taken, _ := tree.Takes(graphstore.QueryDecisions)
+	for _, index := range taken {
+		node := tree.Nodes[index]
+		if node.Kind == graphstore.KindAsk || node.Type == refs.DecisionSupertag {
+			kinds = append(kinds, node.Kind)
+			ids = append(ids, node.ID)
+		}
+	}
+	return kinds, ids, nil
+}
+
+// decisionEntries reads the Decisions query's nodes (decisionEntryTargets) and shapes them for
+// the caller (decisionEntriesRead and decisionread.Decisions). The walk and those reads share one
+// read-only, repeatable-read transaction, so a Keep or answer committed during the read is in
+// all of them or in none. The route still nests each reading under its decision or ask.
 //
 // An entry names the document that holds its node's block where a document_blocks row holds that
 // block - for an ask, a row of type ask at the ask's block id - or where the document owes its block
@@ -531,7 +538,11 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 		return nil, nil, fmt.Errorf("open the read of the decisions of %s: %w", key, err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, decisionEntriesRead(), key, refs.VisibilityArg(who), entryFactKinds)
+	kinds, ids, err := decisionEntryTargets(ctx, tx, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("walk the decisions query of %s: %w", key, err)
+	}
+	rows, err := tx.Query(ctx, decisionEntriesRead(), key, refs.VisibilityArg(who), entryFactKinds, kinds, ids)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the decisions of %s: %w", key, err)
 	}
@@ -701,17 +712,17 @@ func (entry decisionEntry) at() time.Time {
 
 // readFacts sets the values and relations of entry's node the entries read holds (entryFactKinds),
 // from the JSON list the statement aggregated, or answers which of them does not parse: the
-// answer state, as every ask read reads it (askNodeAnswer), and the decision's own. A declined ask
+// answer state, as every ask read reads it (asks.NodeAnswer), and the decision's own. A declined ask
 // carries its note and no answer, and an ask carries no Keep.
 func (entry *decisionEntry) readFacts(encoded []byte) error {
-	var facts []nodeFact
+	var facts []asks.NodeFact
 	if err := json.Unmarshal(encoded, &facts); err != nil {
 		return fmt.Errorf("the node's values: %w", err)
 	}
-	var answer askNodeAnswer
+	var answer asks.NodeAnswer
 	for _, fact := range facts {
 		value := fact.ToID
-		if held, err := answer.read(fact.Kind, value); held {
+		if held, err := answer.Read(fact.Kind, value); held {
 			if err != nil {
 				return err
 			}

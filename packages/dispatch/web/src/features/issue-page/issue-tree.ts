@@ -287,6 +287,10 @@ export interface TreeNode {
   readonly moreToRead?: true;
   /** Whether this ask takes more than one of its options, which its answer's picks follow. */
   readonly multiple?: true;
+  /** Where this plan task stands in the order the Plan view's read answers (`plan.position`),
+   *  which the Plan view draws its tasks in (`plan-filter/plan-order.ts`); absent on a task that
+   *  order gives no place - one of a cycle, an overtaken one - and on every other node. */
+  readonly position?: number;
   /** Whether this node is an open question, whoever's turn it is - the reader's, another
    *  person's or an agent's - which the fold unfolds the path to whatever its depth (R6). */
   readonly question: boolean;
@@ -387,7 +391,7 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
 
 /**
  * Whether `node` is a check: a `check` block of the issue's Verification document, the one the
- * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
+ * issue read names for its verification query, or a check the results read answers for. Each
  * draws a state - `no-result` until the results read answers (`tree-read/tree-nodes.ts`'
  * `draftServing`) - and a `check` block of any other document draws none and is a block and
  * nothing more: no row and no count of the Verification filter, and no check of a statement.

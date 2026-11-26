@@ -2,10 +2,18 @@ import { beforeAll, expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
+import { decisionsFromTree } from "../../../api/decisions-tree";
 import type { CheckBlock, Decision } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
-import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
+import {
+  DECISIONS_SLUG,
+  issueTree,
+  KEY,
+  node,
+  READER,
+  READER_ACTOR,
+} from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
@@ -13,6 +21,7 @@ import { presetView } from "../presets";
 import { Publisher, publishedTree } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
+import { treeNode } from "../tree-read/tree-fixtures";
 import {
   check,
   checkNode,
@@ -204,6 +213,60 @@ test("another person's answer is not drawn as the reader's own words", () => {
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.said).toBe("person");
+});
+
+// R5: the client reads the decisions from the tree's Decisions view (`api/decisions-tree.ts`),
+// which answers each one as an entry and leaves the read's `decisions` member empty: each is
+// drawn beside the statements its entry's `shaped` links name, a person's as their answer to the
+// ask the entry is, an agent's by its own words.
+test("the decisions read from the tree's Decisions view stand beside the statements they shaped", () => {
+  const read = decisionsFromTree(
+    KEY,
+    [
+      treeNode("d1", "decision", KEY, {
+        decision: { links: [shaped(statementRef("r1"))] },
+        in: DECISIONS_SLUG,
+        role: "query",
+        text: "One read answers every node.",
+      }),
+      treeNode("ask-1", "ask", KEY, {
+        ask: { multiple: false, options: [], urgency: "med" },
+        decision: { links: [shaped(statementRef("r2"))] },
+        role: "query",
+        text: "Does the built page work for you?",
+      }),
+    ],
+    []
+  );
+  expect(read.decisions).toEqual([]);
+  const tree = issueTree([
+    answeredAsk("ask-1", { text: "Keep both statements." }),
+    statement("r1"),
+    statement("r2"),
+    decisionNode("d1"),
+  ]);
+  const { groups } = specDecidedBy({
+    asksHeld: true,
+    checks: [],
+    decisions: read,
+    nameOf: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+  });
+  expect(
+    groups
+      .flatMap((group) => group.runs)
+      .map((run) => [
+        run.decision?.id,
+        run.decision?.said,
+        run.statements.map((one) => one.node.id).join(" "),
+      ])
+  ).toEqual([
+    ["decisions-md#b-d1", "agent", "spec#b-r1"],
+    ["ask-1", "you", "spec#b-r2"],
+  ]);
 });
 
 // R5: an agent's decision is drawn in its own text, with how sure it was and how it stands with

@@ -817,32 +817,41 @@ test("a view's row drawn from its own tree names each other parent it serves by 
   ).toEqual(["The second statement."]);
 });
 
-// R19: the Plan view's read answers each task's size in whole minutes, from the task's `size`
-// attribute (`plan.size`), and on an issue with issues under it the tasks of every issue under it
-// beside the issue's own, each marked with its issue, as context. Each is a row of Plan, with its
+// R19: the Plan view's read answers each task's place in the order it answers (`plan.position`)
+// and its size in whole minutes, from the task's `size` attribute (`plan.size`), and on an issue
+// with issues under it the tasks of every issue under it beside the issue's own, each marked with
+// its issue, as context. Each is a row of Plan, with its place where the read gives it one, its
 // size where it holds one and its issue where it is another issue's, and the Plan control counts
-// them all; a size that is no whole number of minutes is none. The view hands the issue's own
-// tasks first, then each other issue's in the order its document writes them, the written order
-// the plan's walk starts from. No other view takes another issue's node as a row.
-test("a plan task's size and issue come from the plan view's answer", () => {
-  const plan = (size: string | null) => ({ cycle: false, needs: [], position: 0, size });
+// them all; a size that is no whole number of minutes is none. The view hands the rows over in the
+// order the read answers them - the issue's own tasks, then each other issue's, and last a task
+// the read gives no place - and the Plan view draws them by their places. No other view takes
+// another issue's node as a row.
+test("a plan task's place, size and issue come from the plan view's answer", () => {
+  const plan = (position: number | null, size: string | null) => ({
+    cycle: false,
+    docs: null,
+    needs: [],
+    position,
+    size,
+    skills: null,
+  });
   const answer = treeAnswer(
     [
-      viewNode("t1", "plan_task", "query", { in: "plan", plan: plan("90") }),
-      viewNode("x1", "plan_task", "context", {
-        document: { artifact_id: "artifact-child-plan", position: 1, slug: "plan" },
-        issue: "CORE-2",
-        parent: "CORE-2",
-        plan: plan("45"),
-      }),
+      viewNode("t1", "plan_task", "query", { in: "plan", plan: plan(1, "90") }),
+      viewNode("t2", "plan_task", "query", { in: "plan", plan: plan(2, null) }),
+      viewNode("t3", "plan_task", "query", { in: "plan", plan: plan(3, "soon") }),
       viewNode("x0", "plan_task", "context", {
         document: { artifact_id: "artifact-child-plan", position: 0, slug: "plan" },
         issue: "CORE-2",
         parent: "CORE-2",
-        plan: plan(null),
+        plan: plan(5, null),
       }),
-      viewNode("t2", "plan_task", "query", { in: "plan", plan: plan(null) }),
-      viewNode("t3", "plan_task", "query", { in: "plan", plan: plan("soon") }),
+      viewNode("x1", "plan_task", "context", {
+        document: { artifact_id: "artifact-child-plan", position: 1, slug: "plan" },
+        issue: "CORE-2",
+        parent: "CORE-2",
+        plan: plan(null, "45"),
+      }),
     ],
     [],
     { view: "plan" }
@@ -856,13 +865,18 @@ test("a plan task's size and issue come from the plan view's answer", () => {
   ]);
   const root = node("CORE-1", "issue", [], { views: { plan: answer, trees: { plan: tree } } });
   expect(
-    presetView(root, "plan", "").root.children.map((row) => [row.id, row.size, row.issue])
+    presetView(root, "plan", "").root.children.map((row) => [
+      row.id,
+      row.position,
+      row.size,
+      row.issue,
+    ])
   ).toEqual([
-    ["plan#b-t1", 90, undefined],
-    ["plan#b-t2", undefined, undefined],
-    ["plan#b-t3", undefined, undefined],
-    ["x0", undefined, "CORE-2"],
-    ["x1", 45, "CORE-2"],
+    ["plan#b-t1", 1, 90, undefined],
+    ["plan#b-t2", 2, undefined, undefined],
+    ["plan#b-t3", 3, undefined, undefined],
+    ["x0", 5, undefined, "CORE-2"],
+    ["x1", undefined, 45, "CORE-2"],
   ]);
   expect(filterSignals(root, "").plan.count).toBe(5);
   const verification = treeAnswer(

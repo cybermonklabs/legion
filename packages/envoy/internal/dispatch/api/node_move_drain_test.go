@@ -114,8 +114,8 @@ func TestAMoveMarksItsIssuesQueriesOwedAndTheDrainWritesThem(t *testing.T) {
 	if !committed || !drained {
 		t.Fatalf("the move ran no drain of %s once it committed (before %t, after %t)", key, committed, drained)
 	}
-	if moved, _ := placementOf(t, database, "block", criterion); moved.ToID != lens || moved.Seq == held.Seq {
-		t.Errorf("the move of %s left it under %s %s at placement_seq %d, want %s at a new one", criterion, moved.ToKind, moved.ToID, moved.Seq, lens)
+	if moved, _ := placementOf(t, database, "block", criterion); storeAddress(moved.ToKind, moved.ToID) != lens || moved.Seq == held.Seq {
+		t.Errorf("the move of %s left it under %s at placement_seq %d, want %s at a new one", criterion, storeAddress(moved.ToKind, moved.ToID), moved.Seq, lens)
 	}
 	if blind := sent.Blind(); len(blind) > 0 {
 		t.Fatalf("the statement recorder could not read %q", blind)

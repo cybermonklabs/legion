@@ -356,6 +356,53 @@ test("an unknown event type refreshes everything, at most once per window", asyn
     realClock();
   }
 });
+test("document.retired refreshes its issue's reads and does not refresh everything", async () => {
+  jest.useFakeTimers();
+  const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
+  const watched = [
+    ["artifacts", "CORE-1"],
+    ["artifact", "artifact-3"],
+    ["decisions", "CORE-1"],
+    ["issue", "CORE-2"],
+    ["user-state"],
+  ] as const;
+  for (const key of watched) {
+    queryClient.setQueryData(key, { loaded: true });
+  }
+  const isStale = (key: readonly unknown[]) =>
+    queryClient.getQueryCache().find({ queryKey: key, exact: true })?.isStale();
+  const wholeCache = countWholeCacheRefreshes(queryClient);
+  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+  try {
+    const { socket, sub } = openFeed();
+    const retired = {
+      ...quietEvent(10),
+      issue_key: "CORE-1",
+      project: "CORE",
+      type: "document.retired",
+      payload: {
+        artifact_id: "artifact-3",
+        ref_key: "CORE-1/decisions-md",
+        name: "decisions.md",
+        role: "decisions",
+        reason: "Converted to decision blocks.",
+        superseded_approval: null,
+      },
+    };
+    receive(socket, eventFrame(sub, retired));
+    await advance(200);
+    expect(wholeCache.count()).toBe(0);
+    expect(isStale(["artifacts", "CORE-1"])).toBe(true);
+    expect(isStale(["artifact", "artifact-3"])).toBe(true);
+    expect(isStale(["decisions", "CORE-1"])).toBe(true);
+    expect(isStale(["issue", "CORE-2"])).toBe(false);
+    expect(isStale(["user-state"])).toBe(false);
+  } finally {
+    hook.unmount();
+    wholeCache.restore();
+    realClock();
+  }
+});
 
 test("an event this page cannot read is skipped and refreshes everything", async () => {
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
