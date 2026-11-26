@@ -192,6 +192,12 @@ type AgentSecretsTokenResult struct {
 // it finds (LauncherStart.ResumeSession). A launcher built before the member sends none, and the
 // daemon names a session only to a launcher that said resumesBySession: to any other it names no
 // session, and the agent's own command carries `--resume=<session id>` instead.
+//
+// ReadsWorkspace is this launcher saying it answers WorkspaceWork on its own connection: it reads
+// the issue workspace of its pod, which the pod sets as its working directory, whether or not a
+// role process runs there (R6 of #5285). A launcher's command loop closes its
+// connection on a frame it does not know, so the daemon asks only a launcher whose hello said
+// readsWorkspace, and a pod with no such launcher is one whose workspace the daemon cannot read.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -201,6 +207,7 @@ type LauncherHello struct {
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
+	ReadsWorkspace     bool   `json:"readsWorkspace,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -932,7 +939,10 @@ type AdoptWorkingCopyResult struct {
 // on origin holds: a read, which moves no bytes of the work and writes only jj's snapshot of the
 // working copy. The daemon names the issue whose workspace it asks about and the budget, never a
 // command or a path: the shim reads the one workspace its environment names, which is that
-// issue's, with the jj it already works with.
+// issue's, with the jj it already works with. The daemon sends the same frame to an issue pod's
+// launcher whose hello said readsWorkspace (LauncherHello.ReadsWorkspace), where no role process
+// runs to read through, and that launcher answers WorkspaceWorkResult on its own connection with
+// the same count (internal/launcher's readWorkspace, workspace.ReadWork).
 type WorkspaceWork struct {
 	ID        string `json:"id"`
 	Issue     string `json:"issue"`
