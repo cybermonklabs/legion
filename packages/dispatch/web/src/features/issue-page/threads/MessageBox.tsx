@@ -7,6 +7,7 @@ import type { DeliveryCapability, Message } from "../../../api/types";
 import { submitOnModifiedEnter } from "../../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../../hooks/useSending";
 import {
+  bgTransparent,
   pageComposer,
   pageFailedText,
   pageInkText,
@@ -129,7 +130,7 @@ export function MessageBox({
       <div className="flex min-w-0 items-end gap-2">
         <textarea
           aria-label={label}
-          className={`block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 bg-transparent py-px text-[15px] leading-6 outline-none ${pageInkText}`}
+          className={`block max-h-[150px] min-h-[26px] min-w-0 flex-1 resize-none border-0 py-px text-[15px] leading-6 outline-none ${bgTransparent} ${pageInkText}`}
           disabled={sending}
           onChange={(event) => {
             const next = event.target.value;
