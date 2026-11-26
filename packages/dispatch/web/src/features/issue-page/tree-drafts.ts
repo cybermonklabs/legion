@@ -13,6 +13,7 @@ import type {
   IssueDetails,
   IssueTreeNode,
   ReferenceTarget,
+  RequirementCoverage,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import { type AgentText, actorLabelText } from "../refs/AgentName";
@@ -202,20 +203,40 @@ export function nodeIdOf(
  * nor a block of any other document. It is the one rule both readers of the list read: the
  * outline's `waiting` on a decision (`tree-read/tree-nodes.ts`' `draftDecision`, which the
  * drafting context hands it) and the header's count (`IssuePropertiesRow.tsx`, which hands it to
- * `waitingOnReader`), so the count counts the very decisions the outline marks.
+ * `waitingOnReader`), so the count counts the very decisions the outline marks. It reads a
+ * reference by `coverageStatementOf`, so the two never differ.
  */
 export function coverageStatements(
   issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">,
   coverage: IssueCoverage | undefined
 ): (reference: string) => boolean {
+  const statementOf = coverageStatementOf(issue, coverage);
+  return (reference: string): boolean => statementOf(reference) !== undefined;
+}
+
+/**
+ * The coverage read's row of the statement a reference names (`RequirementCoverage`), by the one
+ * rule `coverageStatements` reads: a requirement that read holds, compared as the tree addresses
+ * it, so the spec's block written short and by the spec's own slug name the same row. Undefined
+ * for every reference that names none, and for all while that read has not answered. The row
+ * holds the statement's words (`text`), the server's reading of them where the read sent one
+ * (`text_tree`) and its own address (`ref`): what a view draws a statement by where Conversation's
+ * read, which is paged, holds no node of it (`decisions-filter/decisions-parts.ts`' `shapesOf`).
+ */
+export function coverageStatementOf(
+  issue: Pick<IssueTreeReads["issue"], "artifacts" | "key" | "primary_artifact_id">,
+  coverage: IssueCoverage | undefined
+): (reference: string) => RequirementCoverage | undefined {
   const specSlug = primarySpec(issue)?.slug ?? "";
-  const statements = new Set(
-    (coverage?.requirements ?? []).map((requirement) => blockNodeId(specSlug, requirement.block_id))
-  );
+  const statements = new Map<string, RequirementCoverage>();
+  for (const requirement of coverage?.requirements ?? []) {
+    const id = blockNodeId(specSlug, requirement.block_id);
+    if (!statements.has(id)) statements.set(id, requirement);
+  }
   const nodeIdOfReference = nodeIdOf(issue);
-  return (reference: string): boolean => {
+  return (reference: string): RequirementCoverage | undefined => {
     const id = nodeIdOfReference(reference);
-    return id !== undefined && statements.has(id);
+    return id === undefined ? undefined : statements.get(id);
   };
 }
 

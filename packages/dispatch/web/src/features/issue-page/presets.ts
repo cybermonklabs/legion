@@ -53,9 +53,10 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * Spec, Verification and Plan are each drawn from the issue's view read of that filter once the
  * page holds it (`TreeNode.views` on the issue's node, `heldFilterView`): the view's query names
  * the nodes, and each is drawn as the tree's node of that id, so a row reads as it does in the
- * outline. Until the view answers, and for Decisions until its view read stands in the decisions
- * read's place, a filter is read off the tree `issue-tree.ts` builds: the kinds are R2's, and the
- * context and the parent's line are this module's.
+ * outline. Until the view answers, a filter is read off the tree `issue-tree.ts` builds: the
+ * kinds are R2's, and the context and the parent's line are this module's. Decisions is always
+ * read so, off the tree it is given, which its slot gives as the tree its own view read builds
+ * once the page holds that read (`decisions-filter/decisions-entries.ts`' `useDecisionsTree`).
  *
  * A node the address names outranks the filter: an address that names one node and then draws a
  * page without it would not have resolved at all (R20), so `named` is kept whatever the filter
@@ -969,8 +970,14 @@ export interface PresetSignal {
    *  how many entries the Contents list holds, as the prototype's signal counts them. */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
-   *  the checks that failed, the decisions waiting for the reader's review. */
-  readonly flag?: { readonly count: number; readonly word: keyof typeof FILTER_SIGNAL_WORDS };
+   *  the checks that failed, the decisions waiting for the reader's review. The decisions' flag
+   *  is a count over the read Decisions' count is read from, so it carries "+" exactly where
+   *  that count does (`more`, R15); the failing checks' flag carries none. */
+  readonly flag?: {
+    readonly count: number;
+    readonly more?: true;
+    readonly word: keyof typeof FILTER_SIGNAL_WORDS;
+  };
   /** Whether the read the count is read from holds nodes no page read yet holds, so the count is
    *  of the nodes loaded and carries "+" (R15, `TreeNode.moreToRead`). */
   readonly more?: true;
@@ -1008,10 +1015,18 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
 
 /** The signal each filter's control draws under `query`, which its count follows. A count read
  *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
- *  for a filter whose view is held, and the tree's for every other. */
+ *  for a filter whose view is held, and the tree's for every other. Decisions is counted off the
+ *  tree its view is drawn over (`decisionsRoot`, `decisions-filter/decisions-entries.ts`'
+ *  `useDecisionsTree`): the one its own view read builds once the page holds that read, which
+ *  holds every question and decision whatever page of the tree read the page holds, so its count
+ *  and its flag are that read's, with "+" only where it names a next page itself; and `root`
+ *  until then, with "+" while the tree read names one (R15): either way the "+" of the tree it is
+ *  counted off (`TreeNode.moreToRead`), which the read it was built from sets by its cursor. Its
+ *  flag of what waits for review is a count over the same read, and carries the same "+". */
 export function filterSignals(
   root: TreeNode,
-  query: string
+  query: string,
+  decisionsRoot: TreeNode = root
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
   const more = (answer: TreeAnswer | undefined): Pick<PresetSignal, "more"> =>
@@ -1038,7 +1053,7 @@ export function filterSignals(
     ).size;
   };
   const verification = view("verification");
-  const decisions = view("decisions");
+  const decisions = presetView(decisionsRoot, "decisions", query);
   // A check's state is the page's one reading of it, as the server reads its results
   // (`tree-drafts.ts`'s `checkStanding`), and neither a check no count reads nor one that serves
   // only statements no count reads is counted (`countOf`), so this flag and the Verification body
@@ -1051,11 +1066,12 @@ export function filterSignals(
   // Each ask and each decision is one entry of the count: a person's decision is the answered
   // ask itself (`decision-nodes.ts`' `decisionNodes`), so no decision node restates an answer,
   // and a decision under an answered question is an agent's own that settles it.
+  const decisionsMore = decisionsRoot.moreToRead === true ? { more: true as const } : {};
   return {
     decisions: {
       count: decisions.matches,
-      ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
-      ...more(undefined),
+      ...(toReview === 0 ? {} : { flag: { count: toReview, ...decisionsMore, word: "to_review" } }),
+      ...decisionsMore,
     },
     plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },
     spec: { count: count("spec"), ...more(root.views?.spec) },

@@ -8,6 +8,7 @@ import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { contentsEntries } from "../contents-entries";
 import { CONTENTS_PANE_QUERY, drawsContents, OutlineSheet, PAGE_INSET } from "../contents-frame";
+import { useDecisionsTree } from "../decisions-filter/decisions-entries";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -47,10 +48,14 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   // Who the reader is, which Conversation's count is read for: a thread is counted where the
   // reader began it.
   const viewer = useQuery(whoAmIQuery()).data?.login;
+  // The tree the Decisions view is drawn over, which its count is read off: the one its own
+  // view read builds once the page holds that read, and the outline's until then.
+  const decisionsRoot = useDecisionsTree(issue, root, viewer);
   // What each control draws after its name (`viewRowSignals`).
   const signals = useMemo(
     () =>
       viewRowSignals({
+        decisionsRoot,
         filter: address.filter,
         namesHeld,
         preset: address.preset,
@@ -58,7 +63,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
         root,
         viewer,
       }),
-    [address.filter, address.preset, namesHeld, readsHeld, root, viewer]
+    [address.filter, address.preset, decisionsRoot, namesHeld, readsHeld, root, viewer]
   );
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
@@ -87,7 +92,9 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
  * list holds, as the prototype's signal counts its branches. Each follows the words filter
  * (`filter`, `?q=`), and carries "+" while the read it is read from holds nodes no page read yet
  * holds (R15). None while the reads (`readsHeld`) or the reader's login (`viewer`) do not hold,
- * nor under a words filter while the names do not (`namesHeld`).
+ * nor under a words filter while the names do not (`namesHeld`). Decisions is counted off the
+ * tree its view is drawn over (`decisionsRoot`, `presets.ts`' `filterSignals`): the one its own
+ * view read builds once the page holds that read, and `root` until then, as where none is given.
  *
  * A filter loaded cold with no outline read - Spec below 1024 px, which sends none until the
  * Outline sheet opens (R13) - never holds the outline's reads, and its count is its own view
@@ -95,6 +102,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
  * draws that count alone, and every other control none.
  */
 export function viewRowSignals({
+  decisionsRoot,
   filter,
   namesHeld,
   preset,
@@ -102,6 +110,7 @@ export function viewRowSignals({
   root,
   viewer,
 }: {
+  decisionsRoot?: TreeNode;
   filter: string;
   namesHeld: boolean;
   preset: Preset;
@@ -112,7 +121,7 @@ export function viewRowSignals({
   if (!namesHeld && filter !== "") return undefined;
   if (readsHeld && viewer !== undefined) {
     return {
-      ...filterSignals(root, filter),
+      ...filterSignals(root, filter, decisionsRoot),
       conversation: {
         count: contentsEntries(presetView(root, "conversation", filter).root, viewer),
         ...(root.moreToRead === true ? { more: true as const } : {}),

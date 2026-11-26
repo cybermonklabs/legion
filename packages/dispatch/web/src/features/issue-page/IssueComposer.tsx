@@ -1,4 +1,4 @@
-import { dispatchWritingBox } from "@legion/contracts";
+import { dispatchWritingBox, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
@@ -14,14 +14,17 @@ import { useHeldSend } from "../conversation/held-sends";
 import {
   keepFocusOnPress,
   MentionComposer,
+  type OutlineAnswers,
   type OutlineKind,
   type OutlineLook,
+  type OutlineNames,
   OutlineTargetLine,
   sendOnEnter,
 } from "../conversation/MentionComposer";
 import { MentionField } from "../conversation/MentionField";
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
+import type { RefPickerWords } from "../refs/ref-picker";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { useMediaQuery } from "../shell/useDialog";
@@ -42,6 +45,8 @@ import {
 import { authorText, pageChrome } from "./page-structure";
 import {
   ANSWER_LINES,
+  BOX_PICKER_LINES,
+  BOX_PICKER_NAMES,
   COMPOSER_ANSWER_WORDS,
   CONTROL_LABELS,
   NODE_TYPE_NAMES,
@@ -90,6 +95,86 @@ function placeholderOf(target: keyof typeof PLACEHOLDERS, phone: boolean): strin
   const [wide, narrow] = PLACEHOLDERS[target];
   return phone ? narrow : wide;
 }
+
+/** How many hours Dispatch keeps a write's key, which the box's sentences of what a Retry does
+ *  name (`COMPOSER_ANSWER_WORDS.stopped`). */
+const KEY_HOURS = String(IDEMPOTENCY_KEY_TTL_MS / 3_600_000);
+
+/** One of the box's sentences that names how many hours Dispatch keeps a write's key, whole. */
+function withKeyHours({
+  after,
+  before,
+}: {
+  readonly after: string;
+  readonly before: string;
+}): string {
+  return `${before}${KEY_HOURS}${after}`;
+}
+
+/** What the box says in answer to the reader's act, each one sentence of the page's own list
+ *  (`COMPOSER_ANSWER_WORDS`), in place of the composer's own and of Dispatch's (decision 527). */
+const ANSWERS: OutlineAnswers = {
+  changedEdit: COMPOSER_ANSWER_WORDS.changed_edit,
+  deletedReply: COMPOSER_ANSWER_WORDS.deleted_reply,
+  delivery: COMPOSER_ANSWER_WORDS.delivery,
+  elsewhere: COMPOSER_ANSWER_WORDS.elsewhere,
+  goneReply: COMPOSER_ANSWER_WORDS.gone_reply,
+  keptReply: COMPOSER_ANSWER_WORDS.kept_reply,
+  late: COMPOSER_ANSWER_WORDS.late,
+  refusals: COMPOSER_ANSWER_WORDS.send_refusals,
+  refused: COMPOSER_ANSWER_WORDS.refused,
+  stopped: {
+    expired: COMPOSER_ANSWER_WORDS.stopped.expired,
+    interrupted: withKeyHours(COMPOSER_ANSWER_WORDS.stopped.interrupted),
+    moved: COMPOSER_ANSWER_WORDS.stopped.moved,
+    unconfirmed: withKeyHours(COMPOSER_ANSWER_WORDS.stopped.unconfirmed),
+  },
+  upload: {
+    other: COMPOSER_ANSWER_WORDS.upload.other,
+    refused: COMPOSER_ANSWER_WORDS.upload.refused,
+    stopped: {
+      expired: COMPOSER_ANSWER_WORDS.upload.stopped.expired,
+      unconfirmed: withKeyHours(COMPOSER_ANSWER_WORDS.upload.stopped.unconfirmed),
+    },
+  },
+};
+
+/** The words the reference picker in the box draws, in the page's kind words: its names
+ *  (`BOX_PICKER_NAMES`), its lines (`BOX_PICKER_LINES`), and the page's own words of a list of
+ *  references still loading and one that could not be read. */
+const PICKER: RefPickerWords = {
+  headings: BOX_PICKER_NAMES.headings,
+  instruction: BOX_PICKER_LINES.instruction,
+  label: BOX_PICKER_NAMES.label,
+  parties: BOX_PICKER_LINES.agents,
+  parts: {
+    blocks: { control: BOX_PICKER_NAMES.parts.blocks, none: BOX_PICKER_LINES.parts_none.blocks },
+    documents: {
+      control: BOX_PICKER_NAMES.parts.documents,
+      none: BOX_PICKER_LINES.parts_none.documents,
+    },
+  },
+  states: {
+    empty: BOX_PICKER_LINES.empty,
+    loading: ANSWER_LINES.references_loading,
+    unreachable: ANSWER_LINES.references_unreadable,
+  },
+  stoppedRole: BOX_PICKER_LINES.stopped_role,
+};
+
+/** The names a screen reader reads the write line by, and its field's description, which says
+ *  what its keys do; the edit line's say Enter saves (`EDIT_NAMES`). */
+const WRITE_NAMES: OutlineNames = {
+  description: CONTROL_LABELS.composer_keys,
+  field: {
+    ask: CONTROL_LABELS.composer_question,
+    comment: CONTROL_LABELS.composer_comment,
+    edit: CONTROL_LABELS.composer_edit,
+  },
+  form: CONTROL_LABELS.composer_form,
+  targets: CONTROL_LABELS.composer_mentioned,
+};
+const EDIT_NAMES: OutlineNames = { ...WRITE_NAMES, description: CONTROL_LABELS.composer_keys_edit };
 
 /** Where the box stands on the page, as the slot reads it off the address (`slots/foot.tsx`). */
 export interface BoxPlace {
@@ -411,13 +496,15 @@ function WriteLine({
   const targets = useMemo(() => (tree === undefined ? undefined : drawnTargets(tree)), [tree]);
   const look: OutlineLook = {
     anchor,
+    answers: ANSWERS,
     cancelReply: CONTROL_LABELS.write_on_issue,
-    deletedReplyWay: ANSWER_LINES.deleted_reply_way,
     discardDraft: CONTROL_LABELS.discard_draft,
     end,
     endMark: CONTROL_LABELS.target_end_mark,
     kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
     kinds: writesKinds ? KINDS : [],
+    names: WRITE_NAMES,
+    picker: PICKER,
     placeholder: placeholderOf(aim?.placeholder ?? "issue", place.phone),
     retry: CONTROL_LABELS.retry,
     send: CONTROL_LABELS.send,
@@ -439,7 +526,6 @@ function WriteLine({
       ),
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
-    words: COMPOSER_ANSWER_WORDS.composer,
   };
   return (
     <MentionComposer
@@ -523,12 +609,14 @@ function EditLine({
   const back = () =>
     finish(writer, place, { to: "self", under: { id: editing.id, kind: "comment" } });
   const look: OutlineLook = {
+    answers: ANSWERS,
     cancelReply: CONTROL_LABELS.write_on_issue,
-    deletedReplyWay: ANSWER_LINES.deleted_reply_way,
     discardDraft: CONTROL_LABELS.discard_draft,
     end: back,
     endMark: CONTROL_LABELS.target_end_mark,
     kinds: [],
+    names: EDIT_NAMES,
+    picker: PICKER,
     placeholder: placeholderOf("edit", place.phone),
     retry: CONTROL_LABELS.retry,
     send: CONTROL_LABELS.save,
@@ -536,7 +624,6 @@ function EditLine({
     target: <TargetNamed author={author} doing={CONTROL_LABELS.editing} kind="comment" />,
     uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
     uploading: ANSWER_LINES.uploading,
-    words: COMPOSER_ANSWER_WORDS.composer,
   };
   return (
     <MentionComposer

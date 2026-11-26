@@ -253,6 +253,29 @@ function builtTree(reads: IssueTreeReads): TreeNode {
   return root;
 }
 
+/** Each view answer with the outline's context as `viewTree` last gave it (`viewWithContext`),
+ *  beside the outline answer that context came from, so every tree built from one view answer
+ *  over one outline answer is built from one answer, by which `builtTree` holds it. */
+const viewsWithContext = new WeakMap<
+  TreeAnswer,
+  { readonly answer: TreeAnswer; readonly outline: TreeAnswer | undefined }
+>();
+
+/**
+ * The tree a view answer builds alone (`TreeViews.trees`): `builtTree` of `reads` with `view` as
+ * the tree read's answer, the outline read's answer (`reads.tree`) adding only the context the
+ * view left out (`viewWithContext`). A view answer over one outline answer is one answer, so two
+ * callers of the same reads hold one tree, and a read that changed builds a tree of its own.
+ */
+export function viewTree(reads: IssueTreeReads, view: TreeAnswer): TreeNode {
+  const outline = reads.tree;
+  const held = viewsWithContext.get(view);
+  const fresh = held === undefined || held.outline !== outline;
+  const answer = fresh ? viewWithContext(view, outline) : held.answer;
+  if (fresh) viewsWithContext.set(view, { answer, outline });
+  return builtTree({ ...reads, tree: answer });
+}
+
 /**
  * The issue's tree, from the page's reads (root R20). This hook is where the reads are;
  * `buildIssueTree` is pure and holds none of them, so the model is testable without a server and
@@ -264,8 +287,9 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * or an address (R15) - which place, order and word every node; no document's blocks are read.
  * `IssueTreeReads.tree` is that read's whole answer as loaded (R7), so
  * `presetView`, `filterSignals` and `blocksOf` read the one tree the page holds. Every decision
- * is one of its nodes, with its review state, and a person's comment the read hangs under a
- * decision is a change they asked of it (`decision-review.ts`), so no decisions read is made.
+ * of the pages read so far is one of its nodes, with its review state, and a person's comment
+ * the read hangs under a decision is a change they asked of it (`decision-review.ts`), so no
+ * decisions read is made.
  * Beside it stand the reads that tell what the answer does not: the coverage, results,
  * comments, messages and the reader's login. Details' pins and the new page's margin share the
  * outline's asks read with each ask's thread (`issueAskThreadsQuery`). The login says which
@@ -275,8 +299,9 @@ function builtTree(reads: IssueTreeReads): TreeNode {
  * never sent: `ViewReadProvider` (`tree-read/view-read.tsx`) reads a view the first time its
  * filter is on, and whatever it holds is set on the issue's node (`TreeNode.views`), which
  * `presetView` and `filterSignals` draw a filter from, its rows and its count, and the Decisions
- * filter its decisions (`decisions-entries.ts`). The root keeps its identity while neither the
- * tree nor a held view changes.
+ * filter its decisions and the tree it is drawn over, which its view read builds as each
+ * filter's does (`viewTree`, `decisions-entries.ts`' `useDecisionsTree`). The root keeps its
+ * identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address its chips name and its
  * words cite is read in one batched request (`referenceTargetsQuery`; a tree holding more
@@ -525,11 +550,10 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       Object.defineProperty(held, filter, {
         enumerable: true,
         get: (): TreeNode => {
-          tree ??= builtTree({
-            ...reads,
-            tree: viewWithContext(answer, reads.tree),
-            ...(named === undefined ? {} : { targets: named }),
-          });
+          tree ??= viewTree(
+            { ...reads, ...(named === undefined ? {} : { targets: named }) },
+            answer
+          );
           return tree;
         },
       });

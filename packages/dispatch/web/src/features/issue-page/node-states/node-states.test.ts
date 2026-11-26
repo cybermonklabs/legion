@@ -18,7 +18,6 @@ import {
 import type {
   CheckBlock,
   IssueCheckResults,
-  IssueCoverage,
   IssueDetails,
   IssueTreeParent,
   RequirementCoverage,
@@ -746,26 +745,15 @@ function coverageRows(root: TreeNode): RequirementCoverage[] {
   return [...rows.values()];
 }
 
-/** The coverage read the server answers for the issue `root` is the tree of, whose rows are
- *  `coverageRows`' over it. */
-function coverageOf(root: TreeNode): IssueCoverage {
-  return {
-    gaps: [],
-    has_plan: false,
-    issue: KEY,
-    requirements: coverageRows(root),
-    spec_artifact_id: SPEC_DOCUMENT.id,
-  };
-}
-
 /** The Verification view over `root`, with `checks` as the issue's results read and the coverage
- *  read the server answers for `root` (`coverageOf`), drawn as its slot draws it
- *  (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`, where a case
- *  types any, with the view under no query as `whole`, which is that view itself where no query
- *  is typed, on the page's `address`, which carries the words as the page's own does (`?q=`);
- *  with `addressed`, the nodes the address names and what the body tells the slot of them, as the
- *  slot hands them on where it may tell (`slots/view-verification.tsx`); under the names store
- *  with what the page publishes for the tree's chips (`publishedTree`), and no names line. */
+ *  read's rows over it (`coverageRows`), drawn as its slot draws it
+ *  (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`,
+ *  where a case types any, with the view under no query as `whole`, which is that view itself
+ *  where no query is typed, on the page's `address`, which carries the words as the page's own
+ *  does (`?q=`); with `addressed`, the nodes the address names and what the body tells the slot
+ *  of them, as the slot hands them on where it may tell (`slots/view-verification.tsx`); under
+ *  the names store with what the page publishes for the tree's chips (`publishedTree`), and no
+ *  names line. */
 function drawVerification(
   root: TreeNode,
   checks: readonly CheckBlock[],
@@ -797,7 +785,7 @@ function drawVerification(
               artifacts: new Map(),
               checks,
               context: preset.context,
-              coverage: coverageOf(root),
+              coverage: { ...coverageRead([]), requirements: coverageRows(root) },
               isClosed: false,
               namesLine: NO_FAILED_READS,
               // No document a row is edited in, so no row asks the page for an editor.
@@ -954,44 +942,6 @@ test("under Verification an overtaken check is a row under its statement, marked
     expect(document.activeElement).toBe(statementRow);
     await user.keyboard("k");
     expect(document.activeElement).toBe(check);
-  } finally {
-    view.unmount();
-  }
-});
-
-// The server closes a statement's coverage row only where the statement, or a node above it in
-// its walk, is overtaken by a state of its own (`coverage_tuples.go`'s `closed`). A question
-// written as an `:::ask` block is overtaken by its ask's node, which stands in no statement's
-// walk, so the row of a statement under that question comes unclosed; the page closes that
-// statement with its question all the same (`stateIdOf`). No count of the summary reads it: not
-// the covered count, and not the "of M" that count is out of. The table still draws it.
-test("the Verification summary leaves out a statement under an overtaken question whose coverage row is not closed", () => {
-  const ask = "ask-q1";
-  const passed = checkThat("c-one", true);
-  const underQuestion = checkThat("c-two", true);
-  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
-  const asked = statementNode("r2", "A later question took this one's place.", [
-    checkNode(underQuestion),
-  ]);
-  const root = stamped(
-    node(KEY, "issue", [
-      first,
-      node("spec#b-q1", "ask", [asked], { source: { id: ask, issue: KEY, kind: "ask" } }),
-    ]),
-    { [ask]: { life: "overtaken" } }
-  );
-  expect(coverageRows(root).map((row) => [row.ref, row.coverage])).toEqual([
-    [first.reference, "unproven"],
-    [asked.reference, "unproven"],
-  ]);
-  expect(nodesInOrder(root).find((one) => one.id === asked.id)?.closed).toBe(true);
-
-  const view = drawVerification(root, [passed, underQuestion]);
-  try {
-    expect(view.container.querySelectorAll("[data-verification-card]")).toHaveLength(2);
-    expect(textOf(view.container, "[data-verification-covered]")).toBe(
-      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
-    );
   } finally {
     view.unmount();
   }

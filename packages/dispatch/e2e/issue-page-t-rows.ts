@@ -1262,19 +1262,50 @@ const ITEM_BLOCK_KINDS: readonly string[] = ["ask_block", "comment_block", "mess
  *  names them in its author and its state. */
 const ACTOR_KINDS: readonly string[] = ["person", "session"];
 
-/** The read ids of the answer's nodes an outline draws no row of on any seed of these rows: the
- *  memo's callout, which the three sentences draw (`memoBlock`, the block id the seed wrote it
- *  under), each comment on a node's text (`textComments`), each block of an item, and each
- *  person and session. */
-export function nodesNoRowDraws(
+/**
+ * The nodes of `answer` that restate a person's answer, by their read ids and by the ids the rows
+ * draw them by (`treeIdOf`), read from the facts the seed wrote and the read answers on each: a
+ * `decision` block whose `from_ask` (`decision.asks`) names an ask the asks read holds as
+ * answered, with no `shaped` tie of its own (`decision.links`), which is how a seed writes the old
+ * decisions document's section that restates an answer (part U's spec R5). Part U draws no row
+ * for such a node and counts it nowhere (INFRA-1196's decisions 513 and 521).
+ */
+export function restatingSections(
   answer: IssueTreeRead,
+  reads: TreeIdReads
+): { readonly drawn: ReadonlySet<string>; readonly read: ReadonlySet<string> } {
+  const answered = new Set(
+    (reads.asks ?? []).flatMap((ask) => (ask.state === "answered" ? [ask.id] : []))
+  );
+  const idOf = treeIdOf(answer, reads);
+  const read = new Set(
+    (answer.nodes ?? []).flatMap((node) =>
+      node.supertag === "decision" &&
+      (node.decision?.links ?? []).length === 0 &&
+      (node.decision?.asks ?? []).some((ask) => answered.has(ask))
+        ? [node.id]
+        : []
+    )
+  );
+  return { drawn: new Set([...read].map(idOf)), read };
+}
+
+/** The read ids of the answer's nodes an outline drawn from `from` draws no row of on any seed of
+ *  these rows: the memo's callout, which the three sentences draw (`memoBlock`, the block id the
+ *  seed wrote it under), each comment on a node's text (`textComments`), each block of an item,
+ *  each person and session, and each decision that restates a person's answer
+ *  (`restatingSections`), which part U draws no row for (INFRA-1196's decisions 513 and 521). */
+export function nodesNoRowDraws(
+  from: DrawnFrom,
   anchored: ReadonlySet<string>,
   memoBlock: string | undefined
 ): Set<string> {
-  const onText = textComments(answer, anchored);
+  const onText = textComments(from.answer, anchored);
+  const restating = restatingSections(from.answer, from.reads).read;
   return new Set(
-    (answer.nodes ?? []).flatMap((node) =>
+    (from.answer.nodes ?? []).flatMap((node) =>
       onText.has(node.id) ||
+      restating.has(node.id) ||
       ITEM_BLOCK_KINDS.includes(node.kind) ||
       ACTOR_KINDS.includes(node.kind) ||
       ACTOR_KINDS.includes(node.supertag) ||

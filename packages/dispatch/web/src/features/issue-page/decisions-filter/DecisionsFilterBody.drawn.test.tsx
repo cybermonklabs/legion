@@ -9,7 +9,12 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { ApiError, api } from "../../../api/client";
-import { conversationTreeKey, issueAskThreadsQuery, issueTreeKey } from "../../../api/queries";
+import {
+  conversationTreeKey,
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueTreeKey,
+} from "../../../api/queries";
 import type { Actor, AuthenticatedUser, Comment, Decision, DecisionKeep } from "../../../api/types";
 import {
   pageFocusedRow,
@@ -1478,6 +1483,43 @@ test("every state of the tree read, the decisions view read and the asks read dr
   }
 });
 
+// R2, and INFRA-1196's architect on it: the view's entries are the decisions view read's.
+// Conversation's tree read is paged, and the page reads a next page of it only when the reader
+// asks for one (R15), so a decision past its first page is a node of no page the page holds.
+// Here the tree read and the page's tree hold the first decision, and the decisions view read,
+// as the page holds it once the filter is on, holds a later one too, tied to the same statement:
+// the later one is a row of the review list with its state, newest first, the outline's keys
+// reach it, and the node an address names lands on its row.
+test("a decision past Conversation's first page is a row of its part, which the keys and an address reach", async () => {
+  const user = userEvent.setup();
+  const made = (block: string, at: string) =>
+    decision(block, { decision: { changed_at: at, links: [shaped(specRef("s1"))] } });
+  const first = made("first", "2026-11-10T12:00:00Z");
+  const view = renderBody({ children: [statement("s1"), decisionNode("first")], made: [first] });
+  try {
+    expect(rowsOfPart(view, "review")).toEqual([D("first")]);
+    await act(async () => {
+      view.client.setQueryData(
+        viewKey(KEY, "decisions"),
+        treeAnswer([first, made("later", "2026-11-12T12:00:00Z")])
+      );
+    });
+    expect(rowsOfPart(view, "review")).toEqual([D("later"), D("first")]);
+    expect(rowOf(view, D("later")).getAttribute("data-node-state")).toBe("waiting_review");
+
+    await act(async () => rowOf(view, D("first")).focus());
+    await user.keyboard("k");
+    expect(focusedRow(view)).toBe(D("later"));
+    await user.keyboard("j");
+    expect(focusedRow(view)).toBe(D("first"));
+
+    view.again({ reveal: D("later") });
+    await waitFor(() => expect(focusedRow(view)).toBe(D("later")));
+  } finally {
+    view.unmount();
+  }
+});
+
 /**
  * The body over `client`, drawn over the page's tree as `useIssueTree.ts` builds it from
  * `children`: the issue alone until the case hands it the nodes of a tree read that answered.
@@ -1584,9 +1626,11 @@ test("a failed read's line takes the focus the empty tree holds, and the focus s
     // The tree read was read three times: refused as the page loaded, refused again under the
     // first Retry, and answered under the second.
     expect(treeReads?.mock.calls.filter(([, query]) => query?.view === undefined)).toHaveLength(3);
-    // The line is gone and the page's tree does not hold the decision yet: the tree holds the
-    // focus, in the list.
-    await waitFor(() => expect(document.activeElement).toBe(tree));
+    // The line is gone, and the decision both reads hold is a row of the list though the page's
+    // tree holds no node of it yet: the view draws it from the tree the decisions view read
+    // builds (`useDecisionsTree`). It takes the focus the line left, in the list, and keeps it
+    // once the page's tree holds the decision too.
+    await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
     failed.again([statement("s1"), decisionNode("first")]);
     await waitFor(() => expect(focusedRow(failed)).toBe(D("first")));
   } finally {
@@ -2257,7 +2301,7 @@ test("a closed issue draws the review list with no Keep and no Change", () => {
 // to the view's first row, else, where no row is left, to the tree: never to the page.
 test("a focused entry that another person deletes gives the focus to its neighbour", async () => {
   /** Reads the issue again with `block`'s decision deleted: gone from the tree and from the
-   *  decisions view. */
+   *  decisions view, which answers the decision by its block (`block_id`). */
   const deleted = async (
     view: Drawn,
     issue: { children: TreeNode[]; made: TreeAnswerNode[] },
@@ -2266,7 +2310,7 @@ test("a focused entry that another person deletes gives the focus to its neighbo
     await act(async () => {
       view.client.setQueryData(
         viewKey(KEY, "decisions"),
-        treeAnswer(issue.made.filter((made) => made.id !== block))
+        treeAnswer(issue.made.filter((made) => made.block_id !== block))
       );
       view.again({ children: issue.children.filter((child) => child.id !== D(block)) });
     });
@@ -2723,6 +2767,66 @@ test("each statement on the informs line is named within 32 characters", () => {
   expect(words(rowOf(short, D("first")).querySelector("[data-decision-statement] a"))).toBe(
     "Rows stand alone."
   );
+});
+
+// INFRA-1196's architect, 13:39Z: "The 'informs' line past Conversation's pages: draw it from the
+// coverage read's statement row (its first line and address), as the part already reads the tie
+// there, so the row says which statement it informs". Here the tree, built from Conversation's
+// read, holds the statement s1 and none of s-late, which only the coverage read holds, and the
+// page's names read was asked for s1 alone. Until that read answers, the decision tied to both
+// informs s1 alone; once it holds s-late, the row draws s-late beside s1 by the same rule: the
+// first line of its words, from the server's reading of them that the coverage read sends
+// (`text_tree`), cut as a chip's are, and a link to the statement's own address.
+test("a decision tied to a statement only the coverage read holds draws that statement on its informs line from the coverage row", async () => {
+  const tree = displayTree("Rows **stand** alone. Each row draws one node of the tree.");
+  if (tree === undefined) throw new Error("the markdown engine has not loaded");
+  const view = renderBody({
+    children: [statement("s1"), decisionNode("first")],
+    made: [
+      decision("first", {
+        decision: { links: [shaped(specRef("s1")), shaped(specRef("s-late"))] },
+      }),
+    ],
+  });
+  const informs = () =>
+    [...rowOf(view, D("first")).querySelectorAll("[data-decision-informs] a")].map((link) => [
+      link.closest("[data-decision-statement]")?.getAttribute("data-decision-statement"),
+      link.textContent,
+      link.getAttribute("href"),
+    ]);
+  try {
+    expect(informs(), "the row named a statement no read holds").toEqual([
+      [statement("s1").id, "The page draws s1.", `/issues/${KEY}#b-s1`],
+    ]);
+    await act(async () => {
+      view.client.setQueryData(issueCoverageQuery(KEY).queryKey, {
+        gaps: [],
+        has_plan: false,
+        issue: KEY,
+        requirements: [
+          {
+            block_id: "s-late",
+            checks: 0,
+            gaps: [],
+            plan_tasks: 0,
+            ref: specRef("s-late"),
+            text: "The stored words of s-late.",
+            text_tree: tree,
+          },
+        ],
+        spec_artifact_id: SPEC_DOCUMENT.id,
+      });
+    });
+    await waitFor(() =>
+      expect(informs(), "the row's informs line once the coverage read holds s-late").toEqual([
+        [statement("s1").id, "The page draws s1.", `/issues/${KEY}#b-s1`],
+        [statement("s-late").id, "Rows stand alone.", `/issues/${KEY}#b-s-late`],
+      ])
+    );
+    expect(rowsOfPart(view, "review")).toEqual([D("first")]);
+  } finally {
+    view.unmount();
+  }
 });
 
 // R8 over an entry's words: the body hands its rows what the page publishes of its batched names

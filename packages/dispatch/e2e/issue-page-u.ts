@@ -7,10 +7,38 @@ import {
   NODE_STATE_WORDS,
   PRESET_NAMES,
 } from "../web/src/features/issue-page/page-words";
-import type { TreeIdReads } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { editArtifact, getIssue, listIssueAsks } from "./api";
-import { asPlanner, blockNodeIn, readTree, treePath } from "./issue-layout-seed-support";
-import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
+import {
+  mergeTreePages,
+  nextTreeCursor,
+  type TreeIdReads,
+} from "../web/src/features/issue-page/tree-read/tree-nodes";
+import {
+  answerAsk,
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  editArtifact,
+  getIssue,
+  listIssueAsks,
+  patchIssue,
+} from "./api";
+import {
+  asPlanner,
+  awaitBlockAsk,
+  blockNodeIn,
+  PROJECT,
+  pause,
+  readTree,
+  treePath,
+} from "./issue-layout-seed-support";
+import {
+  ANSWERED_QUESTION_BLOCK_ID,
+  answeredQuestionBlock,
+  OPEN_QUESTION_BLOCK_ID,
+  requirementBlockId,
+  specBlockRef,
+  specDocument,
+} from "./issue-layout-seed-text";
 import { presetCount, presetToggle } from "./issue-page";
 import { blockNode, longWords } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
@@ -47,7 +75,9 @@ import type { ApiRequests } from "./traffic";
  *   answers, `heldDecisionsRead` the decisions read that the gate on the seeds written as
  *   decision nodes (`decisionNodesGate`) reads, `decisionsViewServedGate` the gate on the
  *   server serving the tree read's Decisions view, and `sessionTitleGate` the gate on the tree
- *   read answering the title a session stamped on its session node.
+ *   read answering the title a session stamped on its session node. `conversationRead` is
+ *   Conversation's read (`?kind=`) from the first page the page received on, every page after
+ *   it read as the page's own next request would read it.
  * - **How a row names a node.** `decisionRowId` is the id a decision node's row carries (the
  *   `<slug>#b-<block id>`), `blockRowId` the id the row of a seed's block carries, a decision's
  *   or a statement's, by that block's node in a tree read, `askRowId` an ask's (its block's node
@@ -66,6 +96,8 @@ import type { ApiRequests } from "./traffic";
  *   whether they are cut or folded, and the words of the control under it that draws its next
  *   entries (`nextEntries`), which `nextCount` reads as the numbers it says;
  *   `decisionsPartHeading` is the words a headed part's heading names it by, its count left out.
+ *   `specCells` is each cell of the Spec view's Decided by column: whose words it says it draws
+ *   (`data-said`), the heading and the words it draws, and the statements its bracket spans.
  * - **What the page sends and receives.** `watchWrites` keeps every request under `/api/` that is
  *   no read, with its body; `holdTreeReads` holds every tree read the page sends until released.
  * - **Row 2's decisions.** `writeThirdDecision` writes, through the spec's edit route, a
@@ -75,6 +107,10 @@ import type { ApiRequests } from "./traffic";
  * - **Row 4's decisions.** `writeFootDecisions` writes, through the spec's edit route, as the
  *   planner, `FOOT_DECISIONS` `:::decision` blocks that no `shaped` pointer ties to a statement,
  *   each with words that run past six lines at 1440 px.
+ * - **Row 6's issue.** `seedPagedDecisions` writes an issue whose Conversation read pages before
+ *   its decisions: the checks of its Verification document, which stand under one statement of
+ *   its spec, weigh more than a page of the read holds, and the spec's question, the decision
+ *   under it and a decision that waits stand after that statement.
  */
 
 /** The nodes the read of issue `key`'s view `view` answers, every page its cursor names. */
@@ -130,6 +166,51 @@ export async function sessionTitleGate(key: string): Promise<Gate> {
       `(INFRA-1253's spec v168) on this branch's base: of the ${sessions.length} session ` +
       `nodes ${key}'s tree read answers as context here, none carries a title; ${OWED_BY}`,
   };
+}
+
+/** Conversation's read as the page reads it, every page of it: how many pages it holds, and the
+ *  pages merged by the page's own rule (`mergeTreePages`). */
+export interface ConversationRead {
+  readonly pages: number;
+  readonly whole: IssueTreeRead;
+}
+
+/**
+ * Conversation's read of issue `key` (the tree read with `kind=`) from `first` on, the first page
+ * the page received, whose request sent no cursor: each page after it read through the signed-in
+ * page's own request context with the kinds that request sent, `kinds`, in its order, and with
+ * the `Dispatch-Trees: 1` the page's client sends every request with (`api/client.ts`), so each
+ * page is the one the page's own next request would read. A cursor the read names twice fails
+ * it, as `readTree`'s does.
+ */
+export async function conversationRead(
+  page: Page,
+  key: string,
+  kinds: readonly string[],
+  first: IssueTreeRead
+): Promise<ConversationRead> {
+  const pages: [IssueTreeRead, ...IssueTreeRead[]] = [first];
+  const cursors = new Set<string>();
+  for (let cursor = nextTreeCursor(first); cursor !== undefined; ) {
+    if (cursors.has(cursor)) throw new Error(`${treePath(key)} names the cursor ${cursor} twice`);
+    cursors.add(cursor);
+    const query = new URLSearchParams([
+      ...kinds.map((kind): [string, string] => ["kind", kind]),
+      ["cursor", cursor],
+    ]);
+    const response = await page.request.get(`${treePath(key)}?${query}`, {
+      headers: { "Dispatch-Trees": "1" },
+    });
+    if (!response.ok()) {
+      throw new Error(
+        `GET ${treePath(key)}?${query} failed: ${response.status()} ${await response.text()}`
+      );
+    }
+    const answered = (await response.json()) as IssueTreeRead;
+    pages.push(answered);
+    cursor = nextTreeCursor(answered);
+  }
+  return { pages: pages.length, whole: mergeTreePages(pages) };
 }
 
 /** The issue read and the asks read, as alice reads them: what `treeIdOf` names a node by. */
@@ -243,6 +324,41 @@ export function statementsBeside(
       ? [row.id]
       : []
   );
+}
+
+/** One cell of the Spec view's Decided by column (`SpecFilterBody.tsx`' `DecisionCell`). */
+export interface SpecCell {
+  /** The heading over its words (`[data-spec-said]`), which says whose words they are. */
+  readonly heading: string;
+  /** The `data-node-id` and the `data-decision-id` it carries, as `specColumn` reads them: the
+   *  node it is drawn as and the decision it draws. */
+  readonly names: readonly string[];
+  /** Its words (`[data-spec-quote]`), with the quotation marks the page draws around them. */
+  readonly quote: string;
+  /** Whose words it draws (`data-said`): `you`, `person` or `agent`; null where it draws no
+   *  decision. */
+  readonly said: string | null;
+  /** The row id of each statement its bracket spans (`data-spec-statements`). */
+  readonly statements: readonly string[];
+}
+
+/** Each cell of the Spec view's Decided by column, in drawing order. */
+export function specCells(page: Page): Promise<SpecCell[]> {
+  return page.evaluate(() => {
+    const text = (element: Element | null) =>
+      (element?.textContent ?? "").replace(/\s+/g, " ").trim();
+    return [...document.querySelectorAll("[data-issue-page] [data-spec-cell]")].map((cell) => ({
+      heading: text(cell.querySelector("[data-spec-said]")),
+      names: [cell.getAttribute("data-node-id"), cell.getAttribute("data-decision-id")].filter(
+        (name): name is string => typeof name === "string" && name !== ""
+      ),
+      quote: text(cell.querySelector("[data-spec-quote]")),
+      said: cell.getAttribute("data-said"),
+      statements: (cell.getAttribute("data-spec-statements") ?? "")
+        .split(" ")
+        .filter((id) => id !== ""),
+    }));
+  });
 }
 
 /** What keeps the acts of the focused row `row` (`RowActs`, `[data-row-acts]`) from standing
@@ -562,4 +678,186 @@ export async function writeFootDecisions(key: string): Promise<string[]> {
     .join("\n\n");
   await editArtifact(spec, { ops: [{ after: "end", markdown, op: "insert" }] }, asPlanner);
   return blocks;
+}
+
+/** The blocks `seedPagedDecisions` writes in the spec beside its six statements and its open
+ *  question, by block id: the agent's decision tied to the first statement, the statement every
+ *  check of the Verification document serves, the agent's decision tied to the second statement,
+ *  and the agent's decision under the answered question, tied to the sixth. */
+const PAGED_BLOCKS = {
+  checked: "r-checked",
+  first: "d-first-page",
+  underAsk: "d-under-question",
+  waiting: "d-past-page",
+} as const;
+
+/** The words alice answers the question with: one sentence, which the Spec column quotes whole
+ *  as her decision (`spec-decided-by.ts`' `answerDecision`). */
+const PAGED_ANSWER = "Every address the old page answered, the paged ones as well.";
+
+/** How many checks the Verification document holds, each serving `PAGED_BLOCKS.checked`. */
+const LONG_CHECKS = 24;
+
+/**
+ * The words each check says after its opening sentence: an `&` and a space, 14,000 times, so a
+ * check holds some 28,300 characters, within the 32,000 a block holds, and the document some
+ * 680 KB, within the 1 MiB a markdown document holds (`pmdoc.MaxDocumentBytes`). An `&` that
+ * opens no character reference is stored as it is written (`pmdoc/escape.go`'
+ * `entityReference`), and the tree read writes each as `\u0026` in its JSON, as `json.Marshal`
+ * does (`issue_tree_json.go`' `appendTreeString`): six bytes for each in a check node's `text`,
+ * some 98 KB a check and some 2.4 MB for the 24, past the 2,000,000 bytes a page of the read
+ * holds (`issueTreePageBytes`), and more in the page's own read, which carries each node's
+ * display tree beside its text (`Dispatch-Trees: 1`).
+ */
+const CHECK_WORDS = "& ".repeat(14_000).trimEnd();
+
+/** What `seedPagedDecisions` wrote, each block by its id. */
+export interface PagedDecisionsSeed {
+  /** The ask alice answered: the planner's question whose `shaped` ties name the third to the
+   *  fifth statements (`answeredQuestionBlock`), a person's decision past Conversation's first
+   *  page. */
+  readonly answeredAskId: string;
+  /** The checks of the Verification document, by block id, which row 6's `PAGED-ROW` line
+   *  counts on Conversation's first page. */
+  readonly checks: readonly string[];
+  /** The agent's decision tied to the first statement, which waits for alice's review, on
+   *  Conversation's first page, as row 6's `PAGED-ROW` line says. */
+  readonly firstBlock: string;
+  readonly key: string;
+  /** The agent's decision under the answered question (`from_ask`), tied to the sixth statement,
+   *  which the question did not shape, so it waits for review (INFRA-1196's decision 521), past
+   *  Conversation's first page. */
+  readonly underAskBlock: string;
+  /** The agent's decision tied to the second statement, which waits for review, past
+   *  Conversation's first page. */
+  readonly waitingBlock: string;
+}
+
+/** A `:::decision` block of `seedPagedDecisions`: its id, its heading, the attributes that tie
+ *  it, and its words, which name what it ties as a reader would write them. */
+function pagedDecision(id: string, heading: string, ties: string, words: string): string {
+  return `:::decision{#${id} ${ties}}\n### ${heading}\n\n${words}\n:::`;
+}
+
+/** Waits until the skeleton of issue `key`'s tree read (`readTree`, every page) holds a node of
+ *  this issue of each of `blocks`, by block id, so the row reads a tree that holds the seed's
+ *  writes: a block a write adds may reach the tree read after the write has answered, as the ask
+ *  an `ask` block is indexed into does (`awaitBlockAsk`). */
+async function awaitTreeBlocks(key: string, blocks: readonly string[]): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const held = new Set(
+      ((await readTree(key, null)).nodes ?? []).flatMap((node) =>
+        node.issue === undefined ? [node.block_id ?? node.id] : []
+      )
+    );
+    const missing = blocks.filter((block) => !held.has(block));
+    if (missing.length === 0) return;
+    if (Date.now() > deadline) {
+      throw new Error(`${key}'s tree read holds no node of ${missing.join(", ")} within 30 s`);
+    }
+    await pause(200);
+  }
+}
+
+/**
+ * An issue whose Conversation read pages before its decisions, for row 6. The spec is alice's:
+ * six statements and an open question, which waits on her as the issue's assignee
+ * (`specDocument`). After them the planner writes a decision tied to the first statement, the
+ * statement every check of the Verification document serves (`PAGED_BLOCKS.checked`), and the
+ * question whose answer shaped the third to the fifth statements (`answeredQuestionBlock`), which
+ * alice answers (`PAGED_ANSWER`); then a decision tied to the second statement, and a decision
+ * under the answered question (`from_ask`) tied to the sixth, which the question did not shape.
+ * Last comes the Verification document: `LONG_CHECKS` checks of `CHECK_WORDS`, each serving
+ * `PAGED_BLOCKS.checked`.
+ *
+ * Why the question, the decision under it and the second decision fall past the first page of
+ * Conversation's read: the read walks each node before its children, and a node's ranked
+ * children in their order, which for the spec's blocks is the spec's own order
+ * (`docs.WalkIssueTree`, `refs.RankBandSpec`); a check stands under the statement it serves
+ * (refs' `placeAuthored`, as `issue_tree_skeleton_test.go` says of one), so the checks stand
+ * right after that statement and before every block the spec holds after it; and the checks
+ * weigh more than a page of the read holds (`CHECK_WORDS`), so the page ends among them. The six
+ * statements, the open question and the first decision stand before the checks, on the first
+ * page. Neither view row 6 reads holds a check: the Spec view takes the statements and the
+ * Decisions view the questions and the decisions (`graphstore.QueryTakes`), so each answers one
+ * page. Answers once the tree read holds a node of each block written (`awaitTreeBlocks`).
+ */
+export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
+  await createProject({ key: PROJECT, name: "Issue layout" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    spec: specDocument({ openQuestion: true, requirements: 6, summary: false }),
+    title: "Every decision of a paged issue stands in its part",
+  });
+  const { key } = issue;
+  const spec = issue.primary_artifact_id ?? "";
+  await patchIssue(key, { assignee: "alice" });
+  const ref = (index: number) => specBlockRef(key, requirementBlockId(index));
+  const beforeTheAnswer = [
+    "## Decisions",
+    pagedDecision(
+      PAGED_BLOCKS.first,
+      "Draw the first statement on the first page",
+      `shaped="${ref(1)}"`,
+      `Shapes ${ref(1)}.`
+    ),
+    "## Checked at length",
+    `:::requirement{#${PAGED_BLOCKS.checked}}\n` +
+      "Every check of the Verification document serves this statement, in words that fill " +
+      "pages of the tree read.\n:::",
+    "## Past the first page",
+    answeredQuestionBlock(key),
+  ];
+  await editArtifact(
+    spec,
+    { ops: [{ after: "end", markdown: `${beforeTheAnswer.join("\n\n")}\n`, op: "insert" }] },
+    asPlanner
+  );
+  const answeredAskId = await awaitBlockAsk(key, ANSWERED_QUESTION_BLOCK_ID);
+  await answerAsk(answeredAskId, { expected_edited_at: null, selected: [], text: PAGED_ANSWER });
+  const ask = `dispatch://${key}/ask/${answeredAskId}`;
+  const afterTheAnswer = [
+    pagedDecision(
+      PAGED_BLOCKS.waiting,
+      "Draw the second statement past the first page",
+      `shaped="${ref(2)}"`,
+      `Shapes ${ref(2)}.`
+    ),
+    pagedDecision(
+      PAGED_BLOCKS.underAsk,
+      "Draw the sixth statement as the answer asks",
+      `shaped="${ref(6)}" from_ask="${ask}"`,
+      `Decided in ${ask}. Shapes ${ref(6)}.`
+    ),
+  ];
+  await editArtifact(
+    spec,
+    { ops: [{ after: "end", markdown: `${afterTheAnswer.join("\n\n")}\n`, op: "insert" }] },
+    asPlanner
+  );
+  const checked = specBlockRef(key, PAGED_BLOCKS.checked);
+  const checks = Array.from({ length: LONG_CHECKS }, (_unused, at) => `c-long-${at + 1}`);
+  const verification = checks.map(
+    (block, at) =>
+      `:::check{#${block} serves="${checked}" surface="browser"` +
+      ` run="bun run e2e -- e2e/issue-page-u.e2e.ts" when="before_merge"` +
+      ` negative_control="Draw the page from its first page alone and the row fails."}\n` +
+      `Check ${at + 1} reads the page past the first page of its tree read: ${CHECK_WORDS}\n:::`
+  );
+  await createIssueArtifact(key, {
+    content: `How the paged issue is proved.\n\n${verification.join("\n\n")}\n`,
+    name: "verification.md",
+  });
+  await awaitBlockAsk(key, OPEN_QUESTION_BLOCK_ID);
+  await awaitTreeBlocks(key, [...Object.values(PAGED_BLOCKS), ...checks]);
+  return {
+    answeredAskId,
+    checks,
+    firstBlock: PAGED_BLOCKS.first,
+    key,
+    underAskBlock: PAGED_BLOCKS.underAsk,
+    waitingBlock: PAGED_BLOCKS.waiting,
+  };
 }
