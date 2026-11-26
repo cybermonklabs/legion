@@ -683,6 +683,9 @@ controller, which gives it to the tree that owns that code and files an issue on
 One that needs a decision is a Dispatch ask on Legion's
 daily report issue, so you decide whether it needs an issue.
 The record is that result and the pull request: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message.
+Each look's report names `check_opened_at`, the RFC 3339 opening time its task gives, with the
+stored microseconds unchanged. That field alone selects a report on that check: without it,
+`handoff_complete` completes a step, never a look, whatever phase the issue is in.
 
 Nothing waits for the deploy, and the agent names its own next look. A `pending` on any look but
 the check's last carries `wake_at`, an RFC 3339 time: when the agent wants to look again. The
