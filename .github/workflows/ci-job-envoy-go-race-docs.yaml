@@ -89,16 +89,17 @@ jobs:
           cache: false
       # The race step runs its go test under .github/scripts/go-test.sh.
       - uses: ./.github/actions/install-gotestsum
-      # go-envoy: its modules are the envoy module's, though this job builds the document
-      # service's race test binary rather than the listener and natsd ci-caches.yaml builds.
+      # go-envoy-race, restored only, as envoy-go-race restores it: it holds this job's race test
+      # binary's objects and its modules, where go-envoy held the modules alone.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+          key: go-envoy-race-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-race-{0}-{1}-', runner.os, runner.arch) }}
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back

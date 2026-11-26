@@ -14,6 +14,7 @@ package ciphertokentest
 //ci:reads packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json narrowedAnswersFile joins ../testdata/narrowed-answers.json from this file's own path, which NarrowedAnswers reads for every reader's test
 
 import (
+	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
 	"io"
@@ -141,6 +142,13 @@ func NewCaller(t testing.TB) *Caller {
 	if err != nil {
 		t.Fatalf("mint the caller's key: %v", err)
 	}
+	return NewCallerWith(t, key)
+}
+
+// NewCallerWith is a caller holding key, a key the test already has: the one a machine logged in
+// and traded with, so its proofs are of the key the broker bound that machine's token to.
+func NewCallerWith(t testing.TB, key *ecdsa.PrivateKey) *Caller {
+	t.Helper()
 	jkt, err := proof.Thumbprint(&key.PublicKey)
 	if err != nil {
 		t.Fatalf("thumbprint the caller's key: %v", err)
