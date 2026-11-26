@@ -72,12 +72,12 @@
 -- retried on its backoff for ever, as 20261111041503 says of its notice kind.
 --
 -- The first statement deletes the rows of the two new notice kinds. The second deletes the stops
--- of the pause. A resume deletes the ones that have not run, so it finds only a stop that was
--- running at the resume. The stops of claims of another project's issue go too. They are keyed by
--- the project and name their claim's issue (record.SuperviseRequest's Issue), a key the earlier
--- release does not know either. The third keeps each start's work and takes off two keys the
--- earlier release does not know. They are the pause and the wake's kind (record.SuperviseRequest's
--- Pause and WakeKind).
+-- of the pause. A resume deletes the ones that have not run, so the second statement finds only a
+-- stop that was running at the resume. The stops of claims of another project's issue go too. They
+-- are keyed by the project and name their claim's issue (record.SuperviseRequest's Issue), a key
+-- the earlier release does not know either. The third keeps each start's work and takes off two
+-- keys the earlier release does not know. They are the pause and the wake's kind
+-- (record.SuperviseRequest's Pause and WakeKind).
 --
 -- The three statements are the way back, the last paragraph of this header (migrations.WayBack).
 -- docs/kubernetes.md carries the same block under the heading above. internal/textcheck's

@@ -45,6 +45,10 @@ func TestTheAgentResumeGenerationsWayBackLeavesTheStoreAsBeforeTheMigration(t *t
 	if err := store.PutClaim(ctx, marked); err != nil {
 		t.Fatalf("put the marked claim: %v", err)
 	}
+	const mark = `select agent_resume_generation::text from claims order by token`
+	if got := rowsAsText(t, store, mark); !reflect.DeepEqual(got, []string{"7"}) {
+		t.Fatalf("the claim's mark after PutClaim = %v, want 7, the mark the way back then drops", got)
+	}
 	queue := func(kind, payload string) {
 		t.Helper()
 		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
@@ -85,7 +89,6 @@ func TestTheAgentResumeGenerationsWayBackLeavesTheStoreAsBeforeTheMigration(t *t
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("roll forward after the way back: %v", err)
 	}
-	const mark = `select agent_resume_generation::text from claims order by token`
 	if got := rowsAsText(t, store, mark); !reflect.DeepEqual(got, []string{"0"}) {
 		t.Fatalf("the claim's mark after the roll-forward = %v, want the column again, at 0", got)
 	}
