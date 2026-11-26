@@ -6737,13 +6737,19 @@ async function holdVerificationReads(
   ];
   const released = Promise.withResolvers<void>();
   const matchReads = ({ pathname }: URL) => reads.includes(pathname);
-  const hold = async (route: Route) => {
-    await released.promise;
-    await route.continue();
+  // Each held read goes on once the hold is let go, and the hold is taken off only once each has:
+  // a hold taken off while its reads still wait hands them on itself, and the wait's own
+  // `continue` then finds them handled.
+  const going: Promise<void>[] = [];
+  const hold = (route: Route) => {
+    const goes = released.promise.then(() => route.continue());
+    going.push(goes);
+    return goes;
   };
   await page.route(matchReads, hold);
   return async () => {
     released.resolve();
+    await Promise.all(going);
     await page.unroute(matchReads, hold);
   };
 }
