@@ -36,3 +36,15 @@ if os.environ.get("PROF_LOG"):
             json.dump({"start_epoch": _wall0, "total": round(time.monotonic() - _t0, 3), "recs": _recs}, f)
 
     atexit.register(_dump)
+
+    if os.environ.get("PROF_CPROFILE"):
+        import cProfile
+
+        _pr = cProfile.Profile()
+        _pr.enable()
+
+        def _dump_prof():
+            _pr.disable()
+            _pr.dump_stats(os.environ["PROF_CPROFILE"])
+
+        atexit.register(_dump_prof)
