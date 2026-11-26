@@ -21,7 +21,9 @@ body: |-
   refused as none. Its
   answer names the kind Dispatch stored: `a document
   (kind doc; …)`, `a file (kind file; …)` or `a picture (kind image; …)`. `dispatch doc-read
-  --version` reads a document's version stored as bytes as a file.
+  --version` reads a document's version stored as bytes as a file. The name, not the path, also
+  decides which `--path` files `dispatch artifact` and its dry run check and send as Markdown; this
+  replaces the rule of the `--dry-run` round trip entry, a path that ends in .md or .markdown.
 
   A `dispatch` write that may have reached Dispatch says so and tells the caller to check before it
   retries: a keyed write whose every attempt failed on the network, an unkeyed `PUT` or `DELETE` that

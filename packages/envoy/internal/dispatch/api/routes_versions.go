@@ -7,8 +7,9 @@ package api
 //   - A v1Row (v1Rows, routes_table.go) is a route of /api/v1 as it stood when /api/v2 began, at
 //     its literal /api/v1 pattern. Its facts stand beside the table in the side maps, keyed by
 //     "<method> <pattern>" (writeClasses, routeScopes, idRoutes, routeShapes, keyedReplays,
-//     answerHoldsSecret, keyedUploads) and in the pattern constants (issueUploadRoute,
-//     handoffWriteRoute, markdownRoundTripRoute), and it names the route that answers it under
+//     answerHoldsSecret, keyedUploads) and in the pattern constants (issueUploadRoute, and the
+//     routes with a body limit of their own: handoffWriteRoute, markdownRoundTripRoute,
+//     fileRoundTripRoute), and it names the route that answers it under
 //     /api/v2 in its Successor. /api/v1 alone serves it, and testdata/v1-only-routes.txt holds
 //     every one of them: those rows go when /api/v1 ends, so they keep the keys every open route
 //     pull request names rather than being re-keyed.
@@ -289,10 +290,13 @@ type requestBody struct {
 	Optional bool
 	// Opaque is why a bodyBytes body carries no schema; empty for every other kind.
 	Opaque string
-	// TextChecked is a bodyJSON body whose handler refuses U+0000 in the text it carries itself,
-	// under the name the write it answers for gives that text, as the /api/v1 route it answers for
-	// does (postMarkdownRoundTrip): the decoder then reads it without its own refusal of U+0000
-	// (readJSONBodyAllowingNUL). False for every other body, whose U+0000 the decoder refuses.
+	// TextChecked is a bodyJSON body whose handler checks the text it carries itself, as the
+	// /api/v1 route it answers for does, and refuses U+0000 in it under the upload's name for that
+	// text: the inline round trip's markdown as `content` (postMarkdownRoundTrip) and the file
+	// round trip's bytes as the file part (postFileRoundTrip). The decoder then reads it as that
+	// route reads it, without its own refusal of U+0000 (readJSONBodyAllowingNUL), so a U+0000 in
+	// a member the body does not declare is ignored at both paths. False for every other body,
+	// whose U+0000 the decoder refuses.
 	TextChecked bool
 }
 

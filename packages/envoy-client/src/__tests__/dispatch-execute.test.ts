@@ -11960,20 +11960,24 @@ describe("executeDispatchTool", () => {
       writeFileSync(path.join(cwd, file), bytes);
       return uploadFrom(cwd, name, file, bytes, gated);
     }
-    /** `upload` from `cwd`, where `bytes` are already written at the file `file` resolves to. */
+    /** `upload` from `cwd`, where `bytes` are already written at the file `file` resolves to. Each
+     *  request the stub receives is pushed to `requests` as it arrives, before its body is read,
+     *  as `<method> <path>`: a caller that passes its own array reads it after a rejection too. */
     async function uploadFrom(
       cwd: string,
       name: string,
       file: string,
       bytes: Uint8Array,
-      gated: boolean
+      gated: boolean,
+      requests: string[] = []
     ) {
       const declared: string[] = [];
       const sent: string[] = [];
       const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const { pathname } = new URL(String(url));
+        requests.push(`${init?.method ?? "GET"} ${pathname}`);
         const preflight = uploadPreflight(url, init);
         if (preflight !== undefined) return preflight;
-        const { pathname } = new URL(String(url));
         if (pathname !== "/api/v1/issues/DSP-42/artifacts") {
           throw new Error(`unexpected request: ${pathname}`);
         }
@@ -12244,7 +12248,8 @@ describe("executeDispatchTool", () => {
         declared: string;
       }> = [];
       const moved: Array<{ name: string; path: string; held: boolean }> = [];
-      const unrefused: Array<{ name: string; path: string; answer: string }> = [];
+      const unrefused: Array<{ name: string; path: string; answer: string; requests: string[] }> =
+        [];
       for (const name of UPLOAD_MATRIX_NAMES) {
         for (const file of paths) {
           const shown = file === absolute ? "<cwd>/notes.md/." : file;
@@ -12258,13 +12263,24 @@ describe("executeDispatchTool", () => {
           }
           for (const gated of [false, true]) {
             if (!gated && directories.includes(file)) {
-              const answer = await uploadFrom(cwd, name, file, notes, false).then(
+              // The read's own error refuses it, EISDIR or Bun's for a directory ("Directories
+              // cannot be read like files"): the upload rejects, and nothing goes up. A name that is
+              // not Markdown has its file read only by the upload, so the read of the names the
+              // owner holds (GET) may go first; no other request leaves.
+              const requests: string[] = [];
+              const answer = await uploadFrom(cwd, name, file, notes, false, requests).then(
                 ({ declared }) => `sent as ${declared.join(", ")}`,
-                (error: unknown) => String(error)
+                (error: unknown) =>
+                  /EISDIR|Directories cannot be read/.test(String(error))
+                    ? undefined
+                    : `rejected with ${String(error)}`
               );
-              // The read's own error refuses it, Bun's for a directory ("Directories cannot be read
-              // like files"), so nothing was sent.
-              if (answer.startsWith("sent as")) unrefused.push({ name, path: file, answer });
+              const sentBeyondTheHeldNames = requests.filter(
+                (request) => request !== "GET /api/v1/issues/DSP-42/artifacts"
+              );
+              if (answer !== undefined || sentBeyondTheHeldNames.length > 0) {
+                unrefused.push({ name, path: file, answer: answer ?? "rejected", requests });
+              }
               continue;
             }
             const [declared = ""] = (await uploadFrom(cwd, name, file, notes, gated)).declared;

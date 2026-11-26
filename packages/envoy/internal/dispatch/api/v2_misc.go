@@ -474,7 +474,7 @@ func (s *server) v2MiscRows() []routeRow {
 				contracts.TextRefusalHeader, fileRoundTripLimit),
 			Handler:  s.postFileRoundTripV2,
 			Resource: "markdown-file-round-trips", Kind: kindComputation,
-			Body:      requestBody{Kind: bodyJSON, Type: fileRoundTripInput{}},
+			Body:      requestBody{Kind: bodyJSON, Type: fileRoundTripInput{}, TextChecked: true},
 			Shape:     routeShape{Status: http.StatusOK, Response: markdownRoundTripResponse{}},
 			Scope:     scopeNoWrite,
 			BodyLimit: fileRoundTripBodyLimit,
@@ -932,7 +932,9 @@ func (s *server) postMarkdownRoundTripV2(w http.ResponseWriter, r *http.Request)
 
 // postFileRoundTripV2 answers POST /api/v2/markdown-file-round-trips: what POST
 // /api/v1/markdown/file-round-trip answers (answerFileRoundTrip), its body read by the decoder
-// within the row's own bound.
+// within the row's own bound and, as /api/v1 reads it, without its refusal of U+0000: the answer
+// refuses a U+0000 in the file's bytes in the upload's words, and one in a member the body does
+// not declare is ignored (requestBody.TextChecked).
 func (s *server) postFileRoundTripV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

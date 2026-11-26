@@ -1680,7 +1680,9 @@ export class DispatchClient {
    *  refusal of a 2xx whose body holds a credential it presented, or Dispatch's refusal thrown,
    *  but for a write Dispatch answered with its own 5xx, which can come after the write
    *  committed, and one that got no answer once it went out: each is thrown as a
-   *  `DispatchWriteUnsettledError` of one attempt (`#send`). It is no write of `#write`'s: it
+   *  `DispatchWriteUnsettledError` of one attempt (`#send`). Two writes that got no answer are
+   *  thrown as they are (`#sendOnce`): one the caller's own stop aborted in flight, and one whose
+   *  transport failure reached no server (`reachedNothing`). It is no write of `#write`'s: it
    *  goes once, and once more only after Dispatch answers that the token it presented is not
    *  live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
    *  `Idempotency-Key`, so a caller that repeats it decides that itself. */
@@ -2707,9 +2709,10 @@ export class DispatchClient {
    * A PUT, a DELETE or `sendRoute`'s write is a write all the same, with no key to ask again
    * under: one Dispatch answered with its own 5xx, which it sends when a write fails and which can
    * come after the write committed, is a `DispatchWriteUnsettledError` of one attempt, as is one
-   * that got no answer once it went out (`#sendOnce`). A gateway's 5xx stays its
-   * `DispatchGatewayError`, whose advice already says the write may or may not have reached
-   * Dispatch.
+   * that got no answer once it went out, but for the two `#sendOnce` throws as they are (the
+   * caller's own stop in flight, and a transport failure that reached no server). A gateway's
+   * 5xx stays its `DispatchGatewayError`, whose advice already says the write may or may not have
+   * reached Dispatch.
    */
   async #send(
     method: string,

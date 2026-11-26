@@ -12,10 +12,12 @@ flags and an example, and `--dry-run` checks a command's arguments as the call w
 them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). A dry run stores
 nothing. `dispatch artifact` and its dry run refuse alike, with exit 1, a document's text past
 1 MiB, and one holding a NUL character or a byte that is not UTF-8, whether it is read from
-`--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (a path ending
-in `.md` or `.markdown`): once the flags are read, before the arguments are checked and before
-anything that needs Dispatch, so with Dispatch off too. Then the dry run asks Dispatch, as the call
-does. For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
+`--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (one whose
+`--name` ends in `.md` or `.markdown`, whatever the path, or has no extension while the path ends
+in one of those; a trailing extension of digits alone, as in `plan.md.1`, does not count): once the
+flags are read, before the arguments are checked and before anything that needs Dispatch, so with
+Dispatch off too. Then the dry run asks Dispatch, as the call does.
+For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
 text, and refuses a text that Dispatch would store under another spelling. For a Markdown `--path`
 file, it asks Dispatch to check the file's bytes, and never refuses their spelling. In both cases it
 also refuses what an upload refuses for the text alone, such as a text that makes more elements than

@@ -2144,10 +2144,11 @@ func readJSONBody(r *http.Request, value any, limit int64, tooLarge *apiError) (
 
 // readJSONBodyAllowingNUL is readJSONBody without its refusal of U+0000, for the routes that
 // check what their body carries as another route checks it, under that route's name for it: the
-// markdown round trips of both versions (decodeRoundTrip, and the decoder for a row whose body says
-// TextChecked), the inline one refusing its text's U+0000 as the upload refuses its content's
-// (postMarkdownRoundTrip) and the file one its bytes' as the upload refuses its file part's
-// (documentTextRefusal).
+// markdown round trips of both versions (decodeRoundTrip at /api/v1, and at /api/v2 the decoder,
+// since both rows' bodies say TextChecked), the inline one refusing its text's U+0000 as the
+// upload refuses its content's (postMarkdownRoundTrip) and the file one its bytes' as the upload
+// refuses its file part's (documentTextRefusal). Each of the four ignores a U+0000 in a member its
+// body does not declare.
 func readJSONBodyAllowingNUL(r *http.Request, value any, limit int64, tooLarge *apiError) ([]byte, error) {
 	if refusal := jsonContentTypeRefusal(r); refusal != nil {
 		return nil, refusal

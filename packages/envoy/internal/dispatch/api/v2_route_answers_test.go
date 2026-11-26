@@ -225,7 +225,10 @@ func TestAV2PriorityListCarriesEachDescriptionsTree(t *testing.T) {
 // (writeHandoff, handoffRead): the tree of each string the body's card draws, under its JSON
 // Pointer, so a client that moves off /api/v1 to the route that answers for it loses no member.
 // Each answer holds to the committed /api/v2 document (tourContract.hold), with the header and
-// without it, and a read without the header carries no field_trees.
+// without it, and a read without the header carries no field_trees. On an issue with two versions
+// of one phase and a handoff of another, the list with include=body carries on every row the
+// field_trees of that handoff's /api/v1 read, and the phase's latest answers version 2 alone, with
+// version 2's trees.
 func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
 	tour := newRouteTour(t)
 	contract := newTourContract(t)
@@ -302,4 +305,91 @@ func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
 			}
 		})
 	}
+
+	// An issue with two versions of one phase and a handoff of another: the whole listing carries
+	// each row's own trees, and the phase's latest is version 2 alone, with version 2's trees.
+	t.Run("two versions of one phase and a handoff of another", func(t *testing.T) {
+		issue := tour.issue(t)
+		record := func(phase, summary string) string {
+			t.Helper()
+			body, err := json.Marshal(map[string]any{"summary": summary})
+			if err != nil {
+				t.Fatalf("encode the handoff body: %v", err)
+			}
+			created := sessionRequest(t, tour.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/handoffs/"+phase, map[string]any{
+				"actor": map[string]any{"kind": "session", "id": tourRecipient}, "body": string(body),
+			})
+			if created.Code != http.StatusCreated {
+				t.Fatalf("record the %s handoff: %d %s", phase, created.Code, created.Body.String())
+			}
+			return decodeBody[struct {
+				ID string `json:"id"`
+			}](t, created).ID
+		}
+		first := record("implement", "Wrote the **parser**.")
+		second := record("implement", "Shipped the _parser_.")
+		review := record("review", "Read the `parser`.")
+		trees := func(raw json.RawMessage) map[string]any {
+			t.Helper()
+			var decoded map[string]any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatalf("decode the field_trees %s: %v", raw, err)
+			}
+			return decoded
+		}
+		v1Trees := map[string]map[string]any{}
+		for _, id := range []string{first, second, review} {
+			raw, _ := valueAt(t, treesRequest(t, tour.handler, "/api/v1/handoffs/"+id, true), "field_trees")
+			v1Trees[id] = trees(raw)
+			if _, summary := v1Trees[id]["/summary"]; !summary {
+				t.Fatalf("GET /api/v1/handoffs/%s answers the field_trees %s, want the tree of /summary", id, raw)
+			}
+		}
+		if reflect.DeepEqual(v1Trees[first], v1Trees[second]) || reflect.DeepEqual(v1Trees[second], v1Trees[review]) {
+			t.Fatalf("the three handoffs' /api/v1 field_trees are not each their own: %v", v1Trees)
+		}
+		route := tour.requireMounted(t, http.MethodGet, "/issues/{key}/handoffs")
+		type listedHandoff struct {
+			ID         string          `json:"id"`
+			Version    int             `json:"version"`
+			FieldTrees json.RawMessage `json:"field_trees"`
+		}
+		list := func(query url.Values) []listedHandoff {
+			t.Helper()
+			sending := tour.request(t, route, tourRequest{Path: map[string]string{"key": issue.Key}, Query: query, As: alice}, "")
+			sending.Header.Set(displayTreesHeader, "1")
+			response := tour.serve(sending)
+			if response.Code != http.StatusOK {
+				t.Fatalf("GET %s?%s answered %d %s, want 200", route.Pattern, query.Encode(), response.Code, response.Body.String())
+			}
+			contract.hold(t, route, response)
+			return decodeBody[page[listedHandoff]](t, response).Items
+		}
+
+		listed := map[string]bool{}
+		for _, item := range list(url.Values{"include": {"body"}}) {
+			want, known := v1Trees[item.ID]
+			if !known || listed[item.ID] {
+				t.Fatalf("GET %s?include=body lists the handoff %s, want each of %s, %s and %s once", route.Pattern, item.ID, first, second, review)
+			}
+			listed[item.ID] = true
+			if got := trees(item.FieldTrees); !reflect.DeepEqual(got, want) {
+				t.Errorf("GET %s?include=body answers handoff %s's field_trees %s, want those GET /api/v1/handoffs/%s answers: %v",
+					route.Pattern, item.ID, item.FieldTrees, item.ID, want)
+			}
+		}
+		if len(listed) != 3 {
+			t.Fatalf("GET %s?include=body lists %d of the issue's 3 handoffs", route.Pattern, len(listed))
+		}
+
+		latest := list(url.Values{"phase": {"implement"}, "sort": {"-version"}, "limit": {"1"}, "include": {"body"}})
+		if len(latest) != 1 || latest[0].ID != second || latest[0].Version != 2 {
+			t.Fatalf("GET %s?phase=implement&sort=-version&limit=1&include=body answers %+v, want version 2 (%s) alone", route.Pattern, latest, second)
+		}
+		raw, _ := valueAt(t, treesRequest(t, tour.handler, "/api/v1/issues/"+issue.Key+"/handoffs/implement/latest", true), "field_trees")
+		if got, want := trees(latest[0].FieldTrees), trees(raw); !reflect.DeepEqual(got, want) || !reflect.DeepEqual(want, v1Trees[second]) {
+			t.Errorf("the phase's latest answers the field_trees %s, want version 2's, those GET /api/v1/issues/%s/handoffs/implement/latest answers: %s",
+				latest[0].FieldTrees, issue.Key, raw)
+		}
+	})
 }

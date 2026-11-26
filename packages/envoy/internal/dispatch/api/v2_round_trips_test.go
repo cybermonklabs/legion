@@ -76,3 +76,40 @@ func TestTheV2RoundTripsRefuseEachTextAsTheirV1RoutesDo(t *testing.T) {
 		})
 	}
 }
+
+// TestEachRoundTripIgnoresAU0000InAMemberItDoesNotDeclare sends each of the four round trips, the
+// inline and the file one of /api/v1 and of /api/v2, a text the store takes beside a member the
+// body does not declare that holds U+0000. Each reads its body without the JSON routes' refusal of
+// U+0000 (readJSONBodyAllowingNUL, requestBody.TextChecked) and ignores the member, so each answers
+// 200 with the same markdown, and a client that moves to /api/v2 is answered as /api/v1 answers it.
+func TestEachRoundTripIgnoresAU0000InAMemberItDoesNotDeclare(t *testing.T) {
+	handler := newTestHandler(t)
+	const text = "# Plan\n\nShip the **parser**.\n"
+	var first string
+	for _, route := range []struct {
+		pattern, member string
+		text            any
+	}{
+		{markdownRoundTripPattern, "markdown", text},
+		{"/api/v2/markdown-round-trips", "markdown", text},
+		{fileRoundTripPattern, "file", []byte(text)},
+		{"/api/v2/markdown-file-round-trips", "file", []byte(text)},
+	} {
+		answered := dispatchRequest(t, handler, http.MethodPost, route.pattern,
+			map[string]any{route.member: route.text, "note": "a\x00b"}, "alice")
+		if answered.Code != http.StatusOK {
+			t.Fatalf("POST %s with a U+0000 in an undeclared member answered %d %s, want 200",
+				route.pattern, answered.Code, answered.Body.String())
+		}
+		markdown := decodeBody[markdownRoundTripResponse](t, answered).Markdown
+		if first == "" {
+			if markdown == "" {
+				t.Fatalf("POST %s answered the empty markdown for %q", route.pattern, text)
+			}
+			first = markdown
+		}
+		if markdown != first {
+			t.Errorf("POST %s answered the markdown %q, want %q, the answer of POST %s", route.pattern, markdown, first, markdownRoundTripPattern)
+		}
+	}
+}

@@ -1396,9 +1396,12 @@ does not hold, because `--force` uploads a new document; under a name the owner 
 replacement holds those rules for the blocks it adds or changes, and refuses a rendering that
 grows past the bytes one document holds over the version it replaces. A check Dispatch adds to
 the upload reaches the dry run with no change here. An unmarked answer says nothing of the text,
-whatever its status. A
-`--path` file Dispatch stores as a Markdown document (a path ending in .md or .markdown, which the
-upload carries as `text/markdown`) is held to the same checks, in the same place: once the flags
+whatever its status. The upload's `--name`, not its path, decides which `--path` file Dispatch
+stores as a Markdown document, which the upload carries as `text/markdown` (`uploadIsDocument`): a
+name whose extension is .md or .markdown makes one whatever the path, a name with another extension
+makes a file whatever the path (`cases.txt` sent from cases.md), and a name with no extension makes
+one only when the resolved path ends in .md or .markdown; trailing extensions of digits alone do
+not count (`plan.md.1`). Such a file is held to the same checks, in the same place: once the flags
 are read, before the argument check and before anything that needs Dispatch, the command reads it
 once, as its upload reads it (`documentFileRead`; the command table names the field,
 `DispatchCommand.documentPathField`), and refuses a file past 1 MiB by its size before it reads

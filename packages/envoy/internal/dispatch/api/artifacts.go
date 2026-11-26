@@ -3006,7 +3006,7 @@ func fileUnderRoleNameRefusal(target artifactTarget, kind, name string, found *m
 	// names a path that is that name, which both the dispatch command of this release and the one
 	// deployed before it send as Markdown: this release's sends a --name ending in .md as
 	// text/markdown whatever its path (uploadedFile, packages/envoy-client/src/dispatch-commands/
-	// documents.ts), while the one before it (pi-envoy-v19.15.4) sends the type Bun reads from the
+	// stored-text.ts), while the one before it (pi-envoy-v19.15.4) sends the type Bun reads from the
 	// path's extension, text/markdown for .md. Advice that named --name alone would send that
 	// release's `--name plan.md --path plan.txt` back to this refusal as text/plain.
 	document := role + ".md"

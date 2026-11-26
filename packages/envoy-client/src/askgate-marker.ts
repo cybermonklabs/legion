@@ -124,7 +124,7 @@ const MARKDOWN_PATH = /\.(md|markdown)$/i;
  * text, so it is none: pi's gate, which reviews no upload without `--path`, reads it the same way.
  *
  * `dispatch artifact` declares an upload `text/markdown` exactly when this answers true
- * (uploadedFile, dispatch-commands/documents.ts), so Dispatch stores as a document every upload
+ * (uploadedFile, dispatch-commands/stored-text.ts), so Dispatch stores as a document every upload
  * AskGate holds as one, and no other.
  */
 export function uploadIsDocument(args: Readonly<Record<string, unknown>>, cwd: string): boolean {
