@@ -128,6 +128,23 @@ func TestBytesCutsWhatTheURLRuleLeavesOfTheWholeText(t *testing.T) {
 			wantCut: true,
 		},
 		{
+			// The bound falls two bytes into a three-byte character, the start two bytes back.
+			name:    "a bound inside a three-byte character",
+			text:    strings.Repeat("€", 20),
+			n:       41,
+			want:    strings.Repeat("€", 13),
+			wantCut: true,
+		},
+		{
+			// The bound falls three bytes into a four-byte character, the start as far back as
+			// Bytes looks, utf8.UTFMax-1 bytes.
+			name:    "a bound inside a four-byte character",
+			text:    strings.Repeat("𝄞", 15),
+			n:       43,
+			want:    strings.Repeat("𝄞", 10),
+			wantCut: true,
+		},
+		{
 			name:    "a bound inside a run of bytes that start no character",
 			text:    strings.Repeat("\x80", 10),
 			n:       9,
