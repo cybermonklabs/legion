@@ -102,7 +102,7 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/architecture": {target: "/api/v1/projects/$project/architecture",
 		statement: statementOf(`\bfrom\s+components\s+c\s+join\s+architecture_sources\b`)},
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
-		statement: statementOf(`\bwith\s+finished\s+as\s+\(\s*select\s+i\.key,\s*i\.title,\s*i\.closed_at\s+from\s+issues\s+i\b`)},
+		statement: statementOf(`\bwith\s+finished\s+as\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
 		statement: statementOf(`\bselect\s+key,\s*default_assignee\s+from\s+projects\b`)},
 	"GET /api/v1/settings/new-issue":           {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
