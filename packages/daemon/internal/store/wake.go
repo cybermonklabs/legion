@@ -838,3 +838,18 @@ func (p *PodRecords) OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue strin
 	}
 	return open, nil
 }
+
+// WaitsForItsSlot is whether issue owes a worker a start that waits for its admission slot while
+// no slot of the issue stands (slotWaitingStart): the issue gave its slot back to wait on another,
+// or had its work come back, and waits in the admission line. The outbox holds that start back
+// until the slot comes, and the start then wakes the worker an idle release suspended. So a
+// backstop of such an issue wakes no one (the workflow's podBackstopDue): a wake would put the
+// worker to its phase's work while the admission cap says the issue may not run.
+func (p *PodRecords) WaitsForItsSlot(ctx context.Context, tx pgx.Tx, issue string) (bool, error) {
+	var waits bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+slotWaitingStart+`)`,
+		issue).Scan(&waits); err != nil {
+		return false, fmt.Errorf("read whether %s waits for its admission slot: %w", issue, err)
+	}
+	return waits, nil
+}

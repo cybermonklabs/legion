@@ -51,17 +51,25 @@ var idleWaitingKinds = []string{"supervise", "notice", "hook_prompt", "update_as
 //     its news. A merger's waits for its tree's design gate for the whole time the gate stays
 //     closed (the daemon's mergerWaitsForTheDesignGate), and any one waits behind a task its claim
 //     has not finished (supervise's queue).
-//   - A worker start that waits for its issue's admission slot (record.SuperviseRequest.NeedsSlot,
-//     `"needsSlot": true`) while no slot of the issue stands: the outbox holds it back until one
-//     does (record's outboxInOrder, whose rule this repeats). Its issue gave its slot back or had
-//     its work come back, and it waits in the admission line for as long as its blocker stays
-//     open or the line is ahead of it. Once the slot stands the start is due, and it holds the pod
-//     as any start does.
+//   - A worker start that waits for its issue's admission slot while no slot of the issue stands
+//     (slotWaitingStart). Its issue gave its slot back or had its work come back, and it waits in
+//     the admission line for as long as its blocker stays open or the line is ahead of it. Once
+//     the slot stands the start is due, and it holds the pod as any start does.
 //
 // A pod held for either would stand idle for all that time.
 const idleWaitingRow = `kind = any($2) and not (kind = 'supervise' and coalesce(payload->>'news', '') = 'true')
-	and not (kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'needsSlot', '') = 'true'
-		and not exists (select 1 from slots where slots.issue = outbox.issue))`
+	and not (` + slotWaitingStart + `)`
+
+// slotWaitingStart is the predicate, over an outbox row the statement names `outbox`, of a worker
+// start marked as waiting for its issue's admission slot (record.SuperviseRequest.NeedsSlot, which
+// its payload writes as `"needsSlot": true`) while no slot of that issue stands. It is record's
+// outboxInOrder rule for such a row, which holds it back until the slot comes, written out here as
+// the store writes every statement of its own; TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot
+// holds the two together. The idle rule leaves such a start out (idleWaitingRow), and a backstop
+// wakes no worker of an issue that owes one (PodRecords.WaitsForItsSlot): the slot's start is what
+// brings that issue's worker back.
+const slotWaitingStart = `kind = 'supervise' and payload->>'op' = 'start' and coalesce(payload->>'needsSlot', '') = 'true'
+	and not exists (select 1 from slots where slots.issue = outbox.issue)`
 
 // IdleReleaseRow is one outbox row a release writes, encoded by its caller (record.NewOutboxRow),
 // in the order the issue's lifecycle lane runs them: the check of the workspace for unpushed
