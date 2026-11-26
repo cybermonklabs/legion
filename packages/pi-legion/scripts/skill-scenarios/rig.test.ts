@@ -4053,3 +4053,168 @@ describe("a world with daemon: label", () => {
     expect(existsSync(path.join(unrecorded.R, "out.txt"))).toBe(false);
   });
 });
+
+// C6 of dispatch://INFRA-5581's plan: the decision on a control cell, the first of its rows whose
+// condition holds, and whether the head's Job of that world may start (row 5 alone).
+describe("a control cell", () => {
+  /** One launch of a made cell: a rig error, or a scored run, its pass, whether it noticed the
+   * plant, and its flagged messages with no reading. */
+  type Launch =
+    | { error: string }
+    | { pass: boolean | "pending"; noticed?: boolean; unread?: number };
+  /** WORK/runs holding the launches of the cell of retro-defect under ctl-main-texts, in order. */
+  function plantCell(launches: Launch[]): string {
+    const work = freshDir("control-cell");
+    const world = madeWorld();
+    launches.forEach((launch, at) => {
+      const run = `forward-only-retro-defect-ctl-main-texts-${at + 1}`;
+      const dir = path.join(work, "runs", run);
+      mkdirSync(dir, { recursive: true });
+      for (const file of ["world.json", "anchors.json"]) writeFileSync(path.join(dir, file), world[file] ?? "");
+      const common = { run, scenario: "forward-only", label: "ctl-main-texts", case: "retro-defect" };
+      if ("error" in launch) {
+        writeFileSync(path.join(dir, "row.json"), JSON.stringify({ outcome: "rig-error", ...common, error: launch.error }));
+        return;
+      }
+      writeFileSync(
+        path.join(dir, "row.json"),
+        JSON.stringify({
+          outcome: "scored",
+          ...common,
+          pass: launch.pass,
+          clauses: [{ id: "m", clause: "m", pass: launch.pass, evidence: "e", counts: {} }],
+          reach: [],
+        })
+      );
+      writeFileSync(
+        path.join(dir, "forward.json"),
+        JSON.stringify({
+          run,
+          world: "retro-defect",
+          label: "ctl-main-texts",
+          noticed: launch.noticed ?? false,
+          clauses: { m: launch.pass },
+          pass: launch.pass,
+          flagged: Array.from({ length: launch.unread ?? 0 }, (_, index) => ({
+            index: index + 1,
+            tool: "envoy_publish",
+            addressee: "notifications.role.acme-1-architect",
+            text: "a message",
+          })),
+        })
+      );
+    });
+    return work;
+  }
+  /** `rig.sh forward-cell` of the planted cell at a count of 5. */
+  function decide(launches: Launch[]) {
+    const cell = childSpawn(
+      ["bash", path.join(scenarios, "rig.sh"), "forward-cell", "forward-only", "ctl-main-texts", "retro-defect", "5"],
+      { SKILL_SCENARIOS_WORK: plantCell(launches) }
+    );
+    const lines = cell.stdout.toString().trimEnd().split("\n");
+    return { code: cell.exitCode, stderr: cell.stderr.toString(), lines, decision: lines.at(-2), head: lines.at(-1) };
+  }
+  const pass: Launch = { pass: true };
+  const noticed: Launch = { pass: false, noticed: true };
+  const unseen: Launch = { pass: false, noticed: false };
+  const mayStart = "head Job of retro-defect: may start";
+  const noHead = "head Job of retro-defect: does not start";
+
+  // Catches: a control label whose patch is not the pull request's diff run anyway, so its cells
+  // measure some other change.
+  test("a control cell whose patch differs from the pull request's diff takes row 1 and starts no run", () => {
+    for (const plant of ["PLANT_TREE_FAIL", "PLANT_UNPATCH_FAIL"]) {
+      const job = plantedForwardJob();
+      const run = job.run(["forward-only", "ctl-main-texts", "--world", "retro-defect"], {
+        SKILL_SCENARIOS_MODEL: "standin",
+        [plant]: "1",
+      });
+      const commit = git(job.repo, "rev-parse", "HEAD").trim();
+      expect({ plant, code: run.code }).toEqual({ plant, code: 3 });
+      expect(run.stdout.split("\n")).toContain(
+        `UNKNOWN: controls/patches/forward-only-texts.patch is not the pull request's diff at ${commit}`
+      );
+      expect(run.calls).not.toContain("batch-scored");
+      expect(run.calls).not.toContain("profile");
+    }
+  });
+
+  // Catches: a cell short of its count, after the limit of launches, decided as if it were whole.
+  test("a control cell with 4 scored runs after the limit of launches takes row 2 and starts no head Job", () => {
+    const cell = decide([...Array.from({ length: 11 }, () => ({ error: "the rig failed the run: no ready" })), pass, pass, noticed, noticed]);
+    expect({ code: cell.code, decision: cell.decision, head: cell.head }).toEqual({
+      code: 0,
+      decision: "UNKNOWN: ctl-main-texts retro-defect 4 of 5 scored",
+      head: noHead,
+    });
+    expect(cell.lines.filter((line) => line.startsWith("discarded "))).toHaveLength(11);
+  });
+
+  // Catches: a cell with a reading owed decided as passed.
+  test("a control cell with 5 scored runs, 4 passing and 1 pending, takes row 3, not row 4", () => {
+    const cell = decide([pass, pass, pass, pass, { pass: "pending", unread: 2 }]);
+    expect({ decision: cell.decision, head: cell.head }).toEqual({
+      decision: "PENDING: ctl-main-texts retro-defect 2 readings owed",
+      head: noHead,
+    });
+  });
+
+  // Catches: a control that passes, which says the texts change nothing in its world, read as
+  // leave to run the head (Review Focus 2).
+  test("a control cell with four passing runs takes row 4 and starts no head Job", () => {
+    const cell = decide([pass, pass, noticed, pass, pass]);
+    expect({ decision: cell.decision, head: cell.head }).toEqual({
+      decision: "CONTROL PASSED: ctl-main-texts retro-defect 4/5",
+      head: noHead,
+    });
+  });
+
+  // Catches: a control that failed by its cause kept from its head Job.
+  test("a control cell with 1 pass and 3 failed runs noticed takes row 5, and the head Job starts", () => {
+    const cell = decide([noticed, pass, noticed, unseen, noticed]);
+    expect({ decision: cell.decision, head: cell.head }).toEqual({
+      decision: "CONTROL BIT: ctl-main-texts retro-defect 1/5, 3 failed runs noticed",
+      head: mayStart,
+    });
+  });
+
+  test("a control cell with 3 passes and 2 failed runs noticed takes row 5, and the head Job starts", () => {
+    const cell = decide([pass, noticed, pass, noticed, pass]);
+    expect({ decision: cell.decision, head: cell.head }).toEqual({
+      decision: "CONTROL BIT: ctl-main-texts retro-defect 3/5, 2 failed runs noticed",
+      head: mayStart,
+    });
+  });
+
+  // Catches: a discarded launch counted among the five, or left out of the report.
+  test("a control cell with one discarded launch, then 3 passes and 2 failed runs noticed, takes row 5 and lists the discarded launch", () => {
+    const cell = decide([{ error: "the rig failed the run: ready.json fails RigDaemonReady" }, pass, noticed, pass, noticed, pass]);
+    expect({ decision: cell.decision, head: cell.head }).toEqual({
+      decision: "CONTROL BIT: ctl-main-texts retro-defect 3/5, 2 failed runs noticed",
+      head: mayStart,
+    });
+    expect(cell.lines[0]).toBe(
+      "discarded forward-only-retro-defect-ctl-main-texts-1: the rig failed the run: ready.json fails RigDaemonReady"
+    );
+  });
+
+  // Catches: a control whose failures come from another cause than the texts read as having bit.
+  test("a control cell with 3 passes and 1 failed run noticed takes row 6, and no head Job starts", () => {
+    const cell = decide([pass, noticed, pass, unseen, pass]);
+    expect({ decision: cell.decision, head: cell.head }).toEqual({
+      decision: "CONTROL NOT BY ITS CAUSE: ctl-main-texts retro-defect 3/5, 1 failed runs noticed",
+      head: noHead,
+    });
+  });
+
+  // Catches: a control that failed because its agents never saw the plant read as having bit
+  // (Review Focus 1).
+  test("a control cell whose failed runs noticed nothing takes row 6", () => {
+    const cell = decide([unseen, unseen, unseen, unseen, unseen]);
+    expect({ decision: cell.decision, head: cell.head }).toEqual({
+      decision: "CONTROL NOT BY ITS CAUSE: ctl-main-texts retro-defect 0/5, 0 failed runs noticed",
+      head: noHead,
+    });
+  });
+});
