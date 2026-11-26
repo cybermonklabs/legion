@@ -1077,7 +1077,6 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
-	noteRecordWrite(ctx)
 	return nil
 }
 

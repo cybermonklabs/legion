@@ -1322,7 +1322,6 @@ func (s *Postgres) SetPullRequestBaseMoved(ctx context.Context, tx pgx.Tx, issue
 }
 
 func (s *Postgres) DeletePullRequest(ctx context.Context, tx pgx.Tx, issue, branch string) error {
-	noteIssueWrite(ctx, issue)
 	if _, err := tx.Exec(ctx, `delete from pull_requests where issue = $1 and branch = $2`, issue, branch); err != nil {
 		return fmt.Errorf("delete the pull request of %s on %s: %w", issue, branch, err)
 	}
