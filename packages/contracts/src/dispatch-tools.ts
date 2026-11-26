@@ -2657,7 +2657,9 @@ export const dispatchToolSpecs = [
       "A run whose record holds a commit then prints `at <start>..<end>`: the commits its " +
       "task's head was at when it started and when it ended, each its first 10 characters, or - " +
       "for one not recorded yet. A fix of a failed CI check then prints `fix of <check>`, the " +
-      "check's id, which is the rest of the line. " +
+      "check's id, which is the rest of the line: as it stands where it is a plain word, and " +
+      "otherwise as one JSON string, so that an id holding a space or a line break neither " +
+      "hides where it begins nor prints a line of a run nobody ran. " +
       "A closed issue's steps read too. An issue that no step ran on prints 0 steps in 0 tasks, " +
       "and a key Dispatch does not hold fails as dispatch read fails for it, NOT_FOUND: not " +
       `found. ${ISSUE_REFERENCE}`,
