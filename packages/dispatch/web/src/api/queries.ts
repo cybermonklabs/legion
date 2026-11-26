@@ -157,6 +157,21 @@ export const issueStepsQuery = (key: string) =>
     queryFn: () => api.listSteps(key),
   });
 
+/** The issue's asks as the issue page's tree reads them: every ask, open or closed
+ *  (`listIssueAsks` with `all`), under the key the margin, a document's ask blocks and the feed's
+ *  ask rules read and refresh (`["asks", key]`). One definition, so a view that observes the same
+ *  read takes the key from here and cannot drift from it; such a view, like the tree, adds how it
+ *  is kept fresh (`EVENT_FRESH`). It is here, beside the issue's other reads, and not beside the
+ *  tree (`issue-page/useIssueTree.ts`), because a document's ask blocks read it on today's pages
+ *  too (`doc/ProofDocument.tsx`, which the Inbox's reading pane loads), and those pages load
+ *  nothing of the issue page's model or its words (INFRA-1196 decisions 31 and 512;
+ *  `__tests__/entry-closure.test.ts`). */
+export const issueAsksQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["asks", key],
+    queryFn: () => api.listIssueAsks(key, "all"),
+  });
+
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
  *  reference panel and the Plan tab's task list read the same key, so a tab opened after the
  *  document finds it answered. */

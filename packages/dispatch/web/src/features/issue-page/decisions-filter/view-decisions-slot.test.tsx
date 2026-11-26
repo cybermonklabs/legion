@@ -7,6 +7,7 @@ import type { NavigateFunction } from "react-router-dom";
 import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
+  issueAsksQuery,
   issueCoverageQuery,
   issueResultsQuery,
   myRepliesOwnerQuery,
@@ -39,7 +40,6 @@ import {
   stubReads,
 } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
-import { issueAsksQuery } from "../useIssueTree";
 import {
   decision,
   decisionNode,

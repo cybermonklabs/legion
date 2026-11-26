@@ -2,7 +2,12 @@ import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
-import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import {
+  artifactBlocksQuery,
+  issueAsksQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+} from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PublishedReferences } from "../refs/reference-names";
@@ -10,7 +15,6 @@ import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
 import {
-  issueAsksQuery,
   issueCommentsQuery,
   issueMessagesQuery,
   type NamesFailure,

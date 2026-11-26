@@ -1,7 +1,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 
-import { artifactBlocksQuery } from "../../../api/queries";
+import { artifactBlocksQuery, issueAsksQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
@@ -10,7 +10,7 @@ import { changeDocumentIds, decisionChanges } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
-import { issueAsksQuery, issueCommentsQuery, treeDocumentIds } from "../useIssueTree";
+import { issueCommentsQuery, treeDocumentIds } from "../useIssueTree";
 import {
   askIdOf,
   type DecisionsEntry,

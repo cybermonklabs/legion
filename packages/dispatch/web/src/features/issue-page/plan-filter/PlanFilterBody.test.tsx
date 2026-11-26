@@ -10,6 +10,7 @@ import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
+  issueAsksQuery,
   issueCoverageQuery,
   issueResultsQuery,
   whoAmIQuery,
@@ -53,7 +54,6 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
-import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**

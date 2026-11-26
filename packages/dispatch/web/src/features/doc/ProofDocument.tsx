@@ -18,7 +18,7 @@ import {
   isDocumentSchemaError,
   isDocumentUnloadable,
 } from "../../api/client";
-import { artifactBlocksQuery, issueViewOfQuery } from "../../api/queries";
+import { artifactBlocksQuery, issueAsksQuery, issueViewOfQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   Artifact,
@@ -54,7 +54,6 @@ import {
   CLOSED_ISSUE_UPLOAD_REFUSAL,
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
-import { issueAsksQuery } from "../issue-page/useIssueTree";
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";

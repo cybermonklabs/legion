@@ -5,6 +5,7 @@ import { api } from "../../api/client";
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import {
   artifactBlocksQuery,
+  issueAsksQuery,
   issueCoverageQuery,
   issueResultsQuery,
   referenceTargetsQuery,
@@ -272,17 +273,6 @@ function useNamesFailures(reads: readonly NamesRead[]): number {
   last.current = { failures, seen: reads };
   return failures;
 }
-
-/** The issue's asks as the tree reads them: every ask, open or closed (`listIssueAsks` with
- *  `all`), under the key the margin, a document's ask blocks and the feed's ask rules read and
- *  refresh (`["asks", key]`). One definition, so a view that observes the same read takes the
- *  key from here and cannot drift from it; such a view, like the tree, adds how it is kept fresh
- *  (`EVENT_FRESH`). */
-export const issueAsksQuery = (key: string) =>
-  queryOptions({
-    queryKey: ["asks", key],
-    queryFn: () => api.listIssueAsks(key, "all"),
-  });
 
 /** The issue's comments as the tree reads them (`listComments`), under the key the feed's rules
  *  refresh (`["comments", key]`); a view of the same read takes its key from here. */

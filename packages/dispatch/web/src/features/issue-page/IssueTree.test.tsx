@@ -34,7 +34,12 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
 import { primarySpec } from "../../api/issue-cache";
-import { issueCoverageQuery, issueResultsQuery, referenceTargetsQuery } from "../../api/queries";
+import {
+  issueAsksQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+  referenceTargetsQuery,
+} from "../../api/queries";
 import type {
   Artifact,
   Comment,
@@ -104,7 +109,6 @@ import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { issueAsksQuery } from "./useIssueTree";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
 
