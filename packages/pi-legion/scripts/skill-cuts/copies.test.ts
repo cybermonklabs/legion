@@ -705,7 +705,7 @@ class World {
       if (found === undefined) return fail("gh: Not Found (HTTP 404)");
       if (typeof found === "string") return fail(found);
       if (!args.includes("--jq")) return fail("stand-in gh: a commit read without --jq");
-      // gh's jq of copies.ts's COMMIT_FILES_JQ: how many files, then one array per file.
+      // gh's jq of copies.ts's FILES_JQ: how many files, then one array per file.
       const lines = [
         String(found.length),
         ...found.map((file) =>

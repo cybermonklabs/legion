@@ -50,10 +50,10 @@ import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 // here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
 // Ki; in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe; in
 // the seventh a made-up session and three forks of it, which the fork tests describe; and in the
-// eighth, for roots.sql, made-up files at absolute paths of a named profile, of the default
-// profile and of neither. Three digest-times.sql rows each make one more database, and drop it in
-// their own `finally`: F1's session cut inside its digest line, a made-up root of 256 MiB, and a
-// made-up root with digest lines whose timestamps are no times.
+// eighth, for roots.sql and hashes.sql, made-up files at absolute paths of a named profile, of the
+// default profile and of neither. Three digest-times.sql rows each make one more database, and
+// drop it in their own `finally`: F1's session cut inside its digest line, a made-up root of 256
+// MiB, and a made-up root with digest lines whose timestamps are no times.
 // The rows of count.sql, models.sql and the pull, tasks and sessions queries on the fixture
 // databases must equal those of their F7 captures (psql-rows.test.ts and this header give the
 // capture commands), so a change to one of those queries that changes such a result fails here
@@ -234,6 +234,36 @@ describe("countsql.ts fills the SQL", () => {
     expect(err).toEqual([
       'countsql: --query "pull" is none of count, models, roots, hashes, transcript and transcript-coverage',
     ]);
+  });
+
+  // Catches: count-sql --run starting the transcript command with no time limit, though every
+  // child the runner starts has one (common.ts's timeLimit), so a command that never ends held the
+  // run for ever.
+  test("--run ends a transcript command that runs past its limit, and fails naming the command and the limit", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "skill-cuts-countsql-run-"));
+    try {
+      const command = path.join(dir, "query-transcripts");
+      // It reads the query, then runs past the limit in a child of its own, which holds its output.
+      writeFileSync(command, "#!/bin/sh\ncat >/dev/null\nsleep 5\n", { mode: 0o755 });
+      const config = path.join(dir, "skill-cuts.json");
+      const f7 = JSON.parse(readFileSync(path.join(TESTDATA, "F7-skill-cuts.json"), "utf8"));
+      writeFileSync(config, JSON.stringify({ ...f7, transcriptStore: { command, hosts: [] } }));
+      const out: string[] = [];
+      const err: string[] = [];
+      const io = { out: (text: string) => out.push(text), err: (text: string) => err.push(text) };
+      const started = performance.now();
+      const status = main(["--config", config, "--query", "transcript-coverage", "--run"], io, 200);
+      expect({ status, out, err }).toEqual({
+        status: 1,
+        out: [],
+        err: [
+          `countsql: transcript-coverage command failed: \`${command}\` ran past its limit of 200 ms, so it was ended`,
+        ],
+      });
+      expect(performance.now() - started).toBeLessThan(4_000);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("session-head.sql is filled with the path hashes, each a SHA-256 in hex, and refuses any other", () => {

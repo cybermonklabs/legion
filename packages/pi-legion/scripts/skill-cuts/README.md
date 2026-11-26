@@ -480,7 +480,9 @@ To include the ClickHouse transcript store, add this optional key to the private
 
 `command` is an executable at an absolute path. It receives the SQL on stdin with no arguments,
 prints results on stdout, puts diagnostics on stderr, and exits nonzero on failure. `--run`
-uses it for either transcript query. Without `--run`, `count-sql` prints the SQL as for Postgres.
+uses it for either transcript query, ends it once it runs for 15 minutes, and exits 1 when it
+fails, or, naming the limit, when it is ended. Without `--run`, `count-sql` prints the SQL as for
+Postgres.
 The config's `hosts` lists context mappings, not a filter: the queries include unlisted hosts.
 
 1. For each configured Postgres store, run `--query hashes` with no day through

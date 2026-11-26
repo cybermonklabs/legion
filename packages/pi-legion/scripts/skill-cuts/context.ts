@@ -120,6 +120,7 @@ import {
   GhRetries,
   ghLimiter,
   installationRateWait,
+  json,
   ompSkillName,
   ompText,
   parseJson,
@@ -417,7 +418,14 @@ export function gitBlobId(bytes: Uint8Array): string {
  *  (extensibility/skills.ts at the pinned tag). load.ts's `sessionDescription` reads the session's
  *  copy with it, and build.ts the copies of a repository. */
 export function skillTextFrontmatter(text: string): { description: string; hidden: boolean } {
-  const frontmatter = readFrontmatter(text);
+  return listingFrontmatter(readFrontmatter(text));
+}
+
+/** `skillTextFrontmatter` of the frontmatter `frontmatter`, read already. */
+function listingFrontmatter(frontmatter: Readonly<Record<string, unknown>>): {
+  description: string;
+  hidden: boolean;
+} {
   const description = frontmatter.description;
   return {
     description: typeof description === "string" ? description : "",
@@ -1249,7 +1257,7 @@ async function buildPlugin(tree: string, pluginPath: string, dest: string): Prom
   if (typeof manifest.scripts?.build === "string") {
     try {
       if (contract !== undefined) {
-        writeFileSync(manifestFile, `${JSON.stringify(manifest, null, 2)}\n`);
+        writeFileSync(manifestFile, json(manifest));
       }
       await mustRun(["bun", "run", "build"], COMMAND_TIMEOUT_MS.bunBuild, { cwd: dir });
     } finally {
@@ -1280,7 +1288,7 @@ async function buildPlugin(tree: string, pluginPath: string, dest: string): Prom
   });
   writeFileSync(
     path.join(dest, "package.json"),
-    `${JSON.stringify({ ...manifest, omp: { ...manifest.omp, extensions } }, null, 2)}\n`
+    json({ ...manifest, omp: { ...manifest.omp, extensions } })
   );
 }
 
@@ -2272,13 +2280,14 @@ export async function buildContext(
       // `renamedSkill`), so its copy passes; an arm text whose own `name:` is not the case
       // skill's is refused here.
       const text = ompText(readFileSync(path.join(dir, "SKILL.md")));
-      const named = ompSkillName(readFrontmatter(text), skill.name);
+      const frontmatter = readFrontmatter(text);
+      const named = ompSkillName(frontmatter, skill.name);
       if (named !== skill.name) {
         throw new Refused(
           `case ${c.id}: the profile's skill ${listed} is installed from ${from}, whose SKILL.md's frontmatter names it ${named}, and Oh My Pi names a skill by its frontmatter name, not ${skill.name}, the name the profile gives it${armDir === undefined ? "" : ": an arm's text must keep the case skill's name"}`
         );
       }
-      skills.push({ name: listed, dir, ...skillTextFrontmatter(text) });
+      skills.push({ name: listed, dir, ...listingFrontmatter(frontmatter) });
     }
   } finally {
     for (const release of releases) release();

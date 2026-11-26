@@ -1,14 +1,14 @@
 /**
- * What the skill-cuts commands share: a whole-file write, JSON text, a zod error's faults on one
- * line, strict option parsing, the configuration as a refusal, the two errors a command's `main`
- * turns into its exit status (`Refused` 2, `Stopped` 3), a SKILL.md's text as Oh My Pi reads,
- * splits and names it (`ompText`, `splitFrontmatter`, `readFrontmatter`, `ompSkillName`: the
- * runner's one frontmatter reader), and the one rule by which a gh call or a registry's request
- * that failed is sent again (`GhRetries`), with the words a registry request's failure is read in
- * (`httpFailure`, `fetchFailure`). It imports no other command's file, so every one of them can
- * import it.
+ * What the skill-cuts commands share: a whole-file write, JSON text and a JSON file's value as a
+ * refusal, a count in words, a zod error's faults on one line, strict option parsing, the
+ * configuration as a refusal, the two errors a command's `main` turns into its exit status
+ * (`Refused` 2, `Stopped` 3), a SKILL.md's text as Oh My Pi reads, splits and names it (`ompText`,
+ * `splitFrontmatter`, `readFrontmatter`, `ompSkillName`: the runner's one frontmatter reader), and
+ * the one rule by which a gh call or a registry's request that failed is sent again (`GhRetries`),
+ * with the words a registry request's failure is read in (`httpFailure`, `fetchFailure`). It
+ * imports no other command's file, so every one of them can import it.
  */
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -43,6 +43,27 @@ export function parseJson(text: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** The JSON value the file `file` holds, read as `what` (`--store-only`, `the input`). Throws a
+ *  refusal naming the file when it cannot be read or is not JSON. */
+export function readJson(file: string, what: string): unknown {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    throw new Refused(`cannot read ${what} ${file}: ${messageFor(error)}`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Refused(`${what} ${file} is not JSON: ${messageFor(error)}`);
+  }
+}
+
+/** `count` with `word`, or with `plural` unless the count is 1: `1 session`, `2 sessions`. */
+export function counted(count: number, word: string, plural = `${word}s`): string {
+  return `${count} ${count === 1 ? word : plural}`;
 }
 
 /** Each issue of a zod error as `<path>: <message>`, joined by `; `; an issue of the whole value
@@ -557,14 +578,16 @@ export interface TimeLimit {
 
 /** Ends `child` (SIGTERM) once `ms` pass, if `ms` is given; each `touch()` starts the `ms` again.
  *  `timedOut()` says whether the limit ended it, so a child a signal from elsewhere ended is not
- *  reported as out of time. Every child the runner starts has a limit, and every one but two gets
- *  it here: copies.ts's and context.ts's gh calls (`gh <call> timed out after <ms> ms`, a
+ *  reported as out of time. Every child the runner starts has a limit, and every one but three
+ *  gets it here: copies.ts's and context.ts's gh calls (`gh <call> timed out after <ms> ms`, a
  *  transient failure), the store reads (psql-rows.ts's `eachStoreRow`), and, ended with
  *  `pastLimit`'s reason, context.ts's commands (`tar`, `bun install`, `bun run build`, `go
  *  test`), `omp --version` (capture.ts), Claude Code's `--version` and `claude plugin` commands
  *  (load.ts), a registry's token command (pod-image.ts) and `--after-case` (cli.ts). The Oh My Pi
  *  run (capture.ts) and the Claude Code run (load.ts), which write their output to files, keep
- *  their own timer, which ends them with SIGKILL. */
+ *  their own timer, which ends them with SIGKILL; `count-sql --run`'s transcript command
+ *  (countsql.ts), which runs alone and synchronously, is ended by `Bun.spawnSync`'s own
+ *  `timeout`, with `pastLimit`'s reason. */
 export function timeLimit(child: { kill(): void }, ms: number | undefined): TimeLimit {
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;

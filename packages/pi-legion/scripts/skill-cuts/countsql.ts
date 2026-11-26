@@ -1,33 +1,46 @@
 /**
  * Fills the runner's SQL with the values of one query: count.sql (the read count, for one store and
  * one UTC day or hour of file mtime), models.sql (the model of each session of the same files),
- * roots.sql (the count hash and Oh My Pi profile of each file of a store), pull.sql (a transcript,
- * by path), tasks.sql (first user messages that hold some terms), sessions.sql (the paths of the
- * files a count row names by hash), session-head.sql (the head of each session a case or a load
- * task names by its path's SHA-256), session-paths.sql (the path of each session a load task
- * names by its path's SHA-256), subagents.sql (a subagent with a recorded skill listing of each
- * top-level session a path hash names, started between two times) and digest-times.sql (the
+ * roots.sql (the count hash and Oh My Pi profile of each file of a store), hashes.sql (the count
+ * hash of each file of a store whose mtime is at or after the window's start),
+ * transcript-count.clickhouse and transcript-coverage.clickhouse (the transcript store's read count
+ * for one UTC day or hour of call time, and its coverage and file hashes over the window), pull.sql
+ * (a transcript, by path), tasks.sql (first user messages that hold some terms), sessions.sql (the
+ * paths of the files a count row names by hash), session-head.sql (the head of each session a case
+ * or a load task names by its path's SHA-256), session-paths.sql (the path of each session a load
+ * task names by its path's SHA-256), subagents.sql (a subagent with a recorded skill listing of
+ * each top-level session a path hash names, started between two times) and digest-times.sql (the
  * prompt builds of each session's root). Each placeholder is the name of a value inside double
  * braces, and each is filled with one whole SQL value: a number, a string literal with its quotes
- * (`sqlString`), a text array of such literals (`sqlTextArray`: tasks.sql's terms, and the hashes
- * of sessions.sql, session-head.sql, session-paths.sql and digest-times.sql), or a string literal
- * of a JSON array cast to jsonb (subagents.sql's sessions), so no value can end the literal it is
- * in. The filled text goes into the store's read command unchanged.
+ * (`sqlString`; a ClickHouse one with its backslashes doubled too), a text array of such literals
+ * (`sqlTextArray`: tasks.sql's terms, and the hashes of sessions.sql, session-head.sql,
+ * session-paths.sql and digest-times.sql), or a string literal of a JSON array cast to jsonb
+ * (subagents.sql's sessions), so no value can end the literal it is in. The filled text goes into
+ * the store's read command unchanged.
  *
- *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD>
- *     [--hour <0-23>] [--query count|models]
- *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> --store <db> --query roots
+ *   bun scripts/skill-cuts/countsql.ts --config <skill-cuts.json> [--store <db>]
+ *     (--day <YYYY-MM-DD> [--hour <0-23>] [--query count|models|transcript]
+ *      | --query roots|hashes|transcript-coverage) [--run]
  *
- * prints count.sql (or, with `--query models`, models.sql) filled for that store and day (or for
- * the one hour of that day, which is how a day whose query times out is split), count.sql with the
- * window of the configuration. A store the configuration does not name is refused. Exit 0 prints
- * the query; exit 2 is a refusal before anything is printed.
- * With `--query roots`, omit `--day` and `--hour`: it prints roots.sql, which reads only the paths
- * in the store's file table and emits each file's count hash and Oh My Pi profile, never its path.
+ * With `--store` and `--day`, it prints count.sql (or, with `--query models`, models.sql) filled for
+ * that store and day (or for the one hour of that day, which is how a day whose query times out is
+ * split), count.sql with the window of the configuration. A store the configuration does not name
+ * is refused. With `--query roots` or `--query hashes`, omit `--day` and `--hour`: roots.sql reads
+ * only the paths in the store's file table and emits each file's count hash and Oh My Pi profile,
+ * never its path; hashes.sql emits the count hash of each file whose mtime is at or after the
+ * window's start.
+ * `--query transcript` (with `--day`, and `--hour` if given) and `--query transcript-coverage`
+ * (with neither) take no `--store`: they print the ClickHouse queries, and with `--run` send the
+ * query on stdin to the configuration's `transcriptStore.command` and print what it prints. The
+ * command is ended once it runs past TRANSCRIPT_TIMEOUT_MS. `--run` is refused for any other
+ * query.
+ * Exit 0 prints the query or the command's output; exit 1 is a `--run` whose command failed or ran
+ * past its limit; exit 2 is a refusal before anything is printed.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { pastLimit } from "./common";
 import { loadConfig, type SkillCutsConfig, storeNamed, TRANSCRIPT_SOURCE } from "./config";
 import type { PullKey } from "./psql-rows";
 import { DEFAULT_ROOT, NAMED_ROOT } from "./session-root";
@@ -313,14 +326,24 @@ export function rootsSql(config: SkillCutsConfig, store: string): string {
 const USAGE =
   "usage: countsql.ts --config <skill-cuts.json> [--store <db>] (--day <YYYY-MM-DD> [--hour <0-23>] [--query count|models|transcript] | --query roots|hashes|transcript-coverage) [--run]";
 
+/** The longest `--run`'s transcript command may run before it is ended: the transcript store's
+ *  queries of one 28-day window took 34 to 43 s for each day and 4 s for the coverage
+ *  (2026-11-25), so 15 minutes is 20 times the slowest. */
+const TRANSCRIPT_TIMEOUT_MS = 900_000;
+
 /** What `main` writes to. */
 export interface Output {
   out(text: string): void;
   err(text: string): void;
 }
 
-/** Print a query, or run a transcript query with the configured program. */
-export function main(argv: readonly string[], io: Output): number {
+/** Print a query, or run a transcript query with the configured program, ended once it runs past
+ *  `timeoutMs` (TRANSCRIPT_TIMEOUT_MS). */
+export function main(
+  argv: readonly string[],
+  io: Output,
+  timeoutMs = TRANSCRIPT_TIMEOUT_MS
+): number {
   const refuse = (why: string) => {
     io.err(`countsql: ${why}`);
     return 2;
@@ -373,7 +396,15 @@ export function main(argv: readonly string[], io: Output): number {
       }
       const command = config.transcriptStore?.command;
       if (command === undefined) return refuse("no transcriptStore is configured");
-      const result = Bun.spawnSync([command], { stdin: Buffer.from(sql), stderr: "inherit" });
+      const result = Bun.spawnSync([command], {
+        stdin: Buffer.from(sql),
+        stderr: "inherit",
+        timeout: timeoutMs,
+      });
+      if (result.exitedDueToTimeout === true) {
+        io.err(`countsql: ${query} command failed: ${pastLimit(command, timeoutMs)}`);
+        return 1;
+      }
       if (!result.success) {
         io.err(`countsql: ${query} command failed (exit ${result.exitCode})`);
         return 1;

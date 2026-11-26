@@ -14,8 +14,18 @@ import type { Registry, SkillCutsConfig } from "./config";
 
 const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
-const REVISION = "org.opencontainers.image.revision";
-const SOURCE = "org.opencontainers.image.source";
+/** The OCI config labels the runner reads: the commit an image was built from, its version, and
+ *  the repository it was built from. */
+export const OCI_REVISION = "org.opencontainers.image.revision";
+export const OCI_VERSION = "org.opencontainers.image.version";
+export const OCI_SOURCE = "org.opencontainers.image.source";
+
+/** Whether the OCI source label `source` names the GitHub repository `repo`, case aside and a
+ *  trailing `/` aside. */
+export function labelsRepository(source: string, repo: string): boolean {
+  return source.replace(/\/$/, "").toLowerCase() === `https://github.com/${repo}`.toLowerCase();
+}
+
 /** A digest-pinned reference: its host (with its port, if any), its path and its digest (group
  *  3). The path is held to lower case, as an image reference's path is, so a pinned image or a
  *  base with an upper-case letter in its path is refused as unpinned. */
@@ -24,7 +34,7 @@ const REFERENCE =
 /** The longest a registry's tokenCommand may run before it is ended: the command prints a token it
  *  holds or asks its issuer for, so a minute is room for a slow issuer, and a command that hangs
  *  holds no read, and no later read of that registry, past it. */
-export const REGISTRY_TOKEN_TIMEOUT_MS = 60_000;
+const REGISTRY_TOKEN_TIMEOUT_MS = 60_000;
 /** The longest one HTTP request of an image's read (the token GHCR gives, a manifest, the config
  *  blob) may take, its body included, before it is given up and sent again: a fetch has no time
  *  limit of its own, and a read of one image under load on the pod took 23.6 s in all (measured),
@@ -252,38 +262,52 @@ export function builtOn(
   return { on: true, words: `${counts} are the first ${n} of the ${m} of ${image.name}` };
 }
 
-function commentAbove(lines: readonly string[], index: number): string {
+/** The comment lines right above the line `at` of `lines`, none before the line `floor`, each less
+ *  its `#` and the white space around its text; none when `at` is -1. */
+export function commentAbove(lines: readonly string[], at: number, floor = 0): string[] {
   const comment: string[] = [];
-  for (let n = index - 1; n >= 0; n--) {
+  for (let n = at - 1; n >= floor; n--) {
     const line = lines[n]?.trimStart();
     if (!line?.startsWith("#")) break;
     comment.unshift(line.slice(1).trim());
   }
-  return comment.join(" ");
+  return comment;
 }
 
-export interface FinalStage {
+interface FinalStage {
   readonly base: string | undefined;
   readonly instructions: readonly string[];
   readonly baseComment: string;
 }
 
-/** Read the final stage's literal FROM (or its ARG default) and instructions. */
-export function finalStage(dockerfile: string): FinalStage {
+/** An `ARG` line's default: its name and its value, as written (quoted or not). */
+const ARG_DEFAULT = /(\w+)=("[^"]*"|'[^']*'|\S+)/g;
+
+/** The final stage of a Dockerfile as `dockerfileStages` reads it: the image its FROM names
+ *  (`base`: the default of the ARG it names resolved), its instructions' texts in their order, and
+ *  the comment lines right above the line that gives that ARG its default, else right above the
+ *  last FROM line, joined by spaces. */
+function finalStage(dockerfile: string): FinalStage {
+  const { stages, steps } = dockerfileStages(dockerfile);
+  const final = stages.at(-1);
   const lines = dockerfile.split(/\r?\n/);
-  const at = lines.findLastIndex((line) => /^\s*FROM\s/i.test(line));
-  const from = /^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)/i.exec(lines[at] ?? "")?.[1];
-  const arg = /^\$\{?(\w+)\}?$/.exec(from ?? "")?.[1];
-  const argLine = lines.findIndex(
-    (line) => /^\s*ARG\s+(\w+)=/.exec(line)?.[1] === arg && arg !== undefined
+  const from = (line: string) => /^\s*FROM\s/i.test(line);
+  const first = lines.findIndex(from);
+  // Before the first FROM, a line that is no comment is part of an ARG: the first that gives the
+  // final stage's ARG a default gives the one its FROM reads, and the comment is above the line
+  // that ARG starts on.
+  let argLine = lines.findIndex(
+    (line, at) =>
+      at < first &&
+      !line.trimStart().startsWith("#") &&
+      [...line.matchAll(ARG_DEFAULT)].some(([, name]) => name === final?.arg)
   );
-  const base = arg === undefined ? from : /^\s*ARG\s+\w+=(\S+)/.exec(lines[argLine] ?? "")?.[1];
-  const body = lines
-    .slice(at + 1)
-    .filter((line) => !line.trimStart().startsWith("#"))
-    .join("\n");
-  const instructions = body.replace(/\\\n/g, " ").split("\n");
-  return { base, instructions, baseComment: commentAbove(lines, argLine < 0 ? at : argLine) };
+  while (argLine > 0 && (lines[argLine - 1] ?? "").endsWith("\\")) argLine--;
+  return {
+    base: final?.base,
+    instructions: steps.map((step) => step.text),
+    baseComment: commentAbove(lines, argLine < 0 ? lines.findLastIndex(from) : argLine).join(" "),
+  };
 }
 
 /** A stage of a Dockerfile: its `AS` name (none for a stage without one), the reference its
@@ -382,7 +406,7 @@ export function dockerfileStages(dockerfile: string): {
     }
     if (stages.length === 0) {
       const args = /^\s*ARG\s+(.*)$/i.exec(line)?.[1] ?? "";
-      for (const [, name = "", value = ""] of args.matchAll(/(\w+)=("[^"]*"|'[^']*'|\S+)/g)) {
+      for (const [, name = "", value = ""] of args.matchAll(ARG_DEFAULT)) {
         if (!defaults.has(name)) defaults.set(name, value.replace(/^(["'])(.*)\1$/, "$2"));
       }
       continue;
@@ -454,7 +478,7 @@ export async function sessionPodImage(
   // comment above it (commentAbove of -1 is empty).
   const pinPlace =
     pinLine === -1 ? `${pinAt} (no line of it starts with ${pinKey}:)` : `${pinAt}:${pinLine + 1}`;
-  const comment = commentAbove(pinLines, pinLine);
+  const comment = commentAbove(pinLines, pinLine).join(" ");
   const attested = await github.attestedCommit(repository, digest);
   // The pin can move back to an older build. Read that build's Dockerfile, not the pin commit's.
   const ref =
@@ -475,12 +499,8 @@ export async function sessionPodImage(
     throw new PodNotMeasurable(
       `the runner cannot read the OCI config of ${base}, the base ${dockerfile} at ${build} names, from its registry, so it cannot confirm that the pinned image sha256:${digest} is built on it`
     );
-  const source = oci.labels[SOURCE];
-  if (
-    source !== undefined &&
-    source.replace(/\/$/, "").toLowerCase() !==
-      `https://github.com/${workerRepository.toLowerCase()}`
-  ) {
+  const source = oci.labels[OCI_SOURCE];
+  if (source !== undefined && !labelsRepository(source, workerRepository)) {
     throw new PodNotMeasurable(
       `source label of ${base} does not match the configured worker repository`
     );
@@ -500,7 +520,7 @@ export async function sessionPodImage(
     throw new PodNotMeasurable(
       `${dockerfile} at ${build} names the base ${base}, but ${layers.words}, so the pinned image sha256:${digest} is not built on it`
     );
-  const revision = oci.labels[REVISION];
+  const revision = oci.labels[OCI_REVISION];
   const fromLabel = revision !== undefined && SHA.test(revision);
   const historical = /\b(?:tag commit|built from commit) ([a-f0-9]{40})\b/.exec(
     stage.baseComment
@@ -517,6 +537,6 @@ export async function sessionPodImage(
   const baseLinks = linksIn(profile, [], worker);
   const podLinks = linksIn(profile, oci.env.length ? oci.env : baseLinks.env, stage);
   const directories = [...new Set([...baseLinks.found, ...podLinks.found])];
-  const why = `Inference: ${pinPlace} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}; ${layers.words}, so the pinned image is built on it. Its ${fromLabel ? REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
+  const why = `Inference: ${pinPlace} selects the image in force at prompt build ${at}. ${attested === undefined ? "The pin comment" : "Build provenance"} names ${build}. ${dockerfile} at that commit uses ${base}; ${layers.words}, so the pinned image is built on it. Its ${fromLabel ? OCI_REVISION : "Dockerfile pin comment"} names ${sha}. The Dockerfiles link ${directories.join(", ") || "no plugins"} into profile ${profile}.`;
   return { repo: workerRepository, sha, directories, why };
 }

@@ -111,6 +111,10 @@ const CheckoutDirectory = z.string().refine(inRepository, {
 const RepositoryFile = z.string().refine(inRepository, {
   error: "a file of the repository as a path in the repository, such as mise.toml",
 });
+/** An absolute path: a program or a directory of the dev box. */
+const AbsolutePath = z
+  .string()
+  .refine((value) => path.isAbsolute(value), { error: "an absolute path" });
 /** An instant in UTC, as the window's ends are written: `2026-10-23T00:00:00Z`. */
 const Instant = z.iso.datetime({ error: "an ISO instant ending in Z" });
 /** A version as a pin or a build names it, semver with an optional `v`: `18.16.0`,
@@ -125,7 +129,9 @@ export const TranscriptHost = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, {
 });
 /** Transcript query directory and the prefix of each host's store label. Not a database name. */
 export const TRANSCRIPT_SOURCE = "transcripts";
-export const transcriptStoreName = (host: string) => `${TRANSCRIPT_SOURCE}@${host}`;
+/** What each host's store label starts with: `transcripts@`. */
+export const TRANSCRIPT_PREFIX = `${TRANSCRIPT_SOURCE}@`;
+export const transcriptStoreName = (host: string) => `${TRANSCRIPT_PREFIX}${host}`;
 
 /** A session store: its database name, which a query names only as a value, so it is held to the
  *  letters a database identifier needs, and whose sessions it holds. */
@@ -185,15 +191,11 @@ export const SkillCutsConfig = z
       .array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]*$/, { error: "a GitHub owner" }))
       .min(1),
     stores: z.array(Store).min(1),
-    psqlCommand: z
-      .string()
-      .refine((value) => path.isAbsolute(value), { error: "an absolute path" }),
+    psqlCommand: AbsolutePath,
     gatewayBaseUrl: z.url({ protocol: /^https?$/, error: "an http or https URL" }),
     transcriptStore: z
       .strictObject({
-        command: z
-          .string()
-          .refine((value) => path.isAbsolute(value), { error: "an absolute path" }),
+        command: AbsolutePath,
         hosts: z.array(z.strictObject({ host: TranscriptHost, context: StoreContext })),
       })
       .optional(),
@@ -207,14 +209,8 @@ export const SkillCutsConfig = z
     ),
     windowStart: Instant,
     windowEnd: Instant,
-    devboxClaudeConfigDir: z
-      .string()
-      .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
-      .optional(),
-    devboxHome: z
-      .string()
-      .refine((value) => path.isAbsolute(value), { error: "an absolute path" })
-      .optional(),
+    devboxClaudeConfigDir: AbsolutePath.optional(),
+    devboxHome: AbsolutePath.optional(),
     clones: z.array(Clone).optional(),
     sessionPod: z
       .strictObject({

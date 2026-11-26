@@ -115,8 +115,9 @@
  *   An Oh My Pi read, a context's installed unit, or an `omp` installer row indicates an Oh My Pi
  *   install. A `claude-code` installer row indicates a Claude Code install. A copy with a read
  *   session is `read`. A copy with no such session is `no read` if Claude Code is counted or has
- *   no install of the copy. Without Claude Code coverage, the two legacy statuses distinguish
- *   the copies installed only for Claude Code and those also installed for Oh My Pi.
+ *   no install of the copy. Without Claude Code coverage, a copy Claude Code installs is
+ *   `not countable yet` where only Claude Code installs it, and
+ *   `no Oh My Pi read; Claude Code not counted yet` where Oh My Pi installs it too.
  *   With --models, each read session's model is its file's row of the models queries (a file in
  *   two queries takes the model one names; two models keep the first day's and are counted), the
  *   thinking suffix dropped and a Claude Code model id written `anthropic/<id>` (`sessionModel`).
@@ -186,12 +187,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
-import { Refused, schemaFaults } from "./common";
+import { counted, json, Refused, readJson, schemaFaults } from "./common";
 import {
   loadConfig,
   type SkillCutsConfig,
+  TRANSCRIPT_PREFIX,
   TRANSCRIPT_SOURCE,
   TranscriptHost,
   transcriptStoreName,
@@ -211,11 +212,11 @@ import {
 } from "./copies";
 import { psqlRows } from "./psql-rows";
 import { rankSkills } from "./score";
+import { PROFILE_NAME } from "./session-root";
 
 // ---------------------------------------------------------------------------------------------
 // the count's output
 
-const TRANSCRIPT_PREFIX = `${TRANSCRIPT_SOURCE}@`;
 const Hash = z.string().regex(/^[0-9a-f]{16}$/, { error: "a file hash of 16 hex characters" });
 const Key = z.string().regex(/^[0-9a-f]{16}$/, { error: "a call key of 16 hex characters" });
 /** Each file of a count row, by its hash, with the keys of its reads that put it in the row. */
@@ -408,7 +409,7 @@ export type CountRead = QueryDir<QueryOutput> & {
 
 const RootRow = z.strictObject({
   hash: Hash,
-  profile: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+  profile: z.string().regex(new RegExp(`^${PROFILE_NAME}$`)),
 });
 
 const TranscriptStore = z
@@ -520,11 +521,11 @@ function readTranscriptCount(
   if (queries.outputs.length > 0 && !coverageRead)
     throw new Error(`${coverageFile} is missing: run count-sql --query transcript-coverage first`);
   if (coverageRead) {
+    const schema = z.strictObject({ hash: Hash });
     for (const store of stores) {
       const file = path.join(dir, store, "hashes.txt");
       if (!existsSync(file))
         throw new Error(`${file} is missing: run count-sql --query hashes for ${store}`);
-      const schema = z.strictObject({ hash: Hash });
       for (const value of psqlRows(readFileSync(file, "utf8"))) {
         const parsed = schema.safeParse(value);
         if (!parsed.success) throw new Error(`${file}: ${schemaFaults(parsed.error)}`);
@@ -2560,7 +2561,7 @@ export function storeOnlyFiles(
     };
     return {
       name: path.join("store-only", `${skill}.json`),
-      text: `${JSON.stringify(storeOnly, null, 2)}\n`,
+      text: json(storeOnly),
     };
   });
 }
@@ -2568,19 +2569,7 @@ export function storeOnlyFiles(
 /** The StoreOnly `file` holds (`storeOnlyFiles`), for `--store-only <file>`. Throws a refusal
  *  naming the file when it cannot be read, is not JSON or is not of StoreOnlyFile's shape. */
 export function readStoreOnly(file: string): StoreOnly {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch (error) {
-    throw new Refused(`cannot read --store-only ${file}: ${messageFor(error)}`);
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(text);
-  } catch (error) {
-    throw new Refused(`--store-only ${file} is not JSON: ${messageFor(error)}`);
-  }
-  const parsed = StoreOnlyFile.safeParse(value);
+  const parsed = StoreOnlyFile.safeParse(readJson(file, "--store-only"));
   if (!parsed.success) {
     throw new Refused(
       `--store-only ${file} is not a skill's store-only sessions (attribute's <cut id>/store-only/<skill>.json): ${schemaFaults(parsed.error)}`
@@ -2656,9 +2645,6 @@ function code(text: string): string {
 const cell = (text: string | number) =>
   String(text).replaceAll("\\", "\\\\").replaceAll("|", "\\|");
 const iso = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
-/** `count` with `word`, or with `plural` unless the count is 1: `1 session`, `2 sessions`. */
-const counted = (count: number, word: string, plural = `${word}s`) =>
-  `${count} ${count === 1 ? word : plural}`;
 
 /** What the models directory gives: its outputs, its queries' issues and each session's model. */
 export interface ModelsRead {
@@ -3283,7 +3269,7 @@ export function main(argv: readonly string[], io: Output): number {
     };
     for (const ranking of rankings) {
       const rows = ranking.rows.map(({ skill, sessions }) => ({ skill, sessions }));
-      write(path.join(ranking.cut, "ranking.json"), `${JSON.stringify(rows, null, 2)}\n`);
+      write(path.join(ranking.cut, "ranking.json"), json(rows));
       writeDir(ranking.cut, "sessions", sessionFiles(attribution, ranking).files);
       if (models !== undefined)
         writeDir(ranking.cut, "models", modelFiles(attribution, ranking, models.sessions));

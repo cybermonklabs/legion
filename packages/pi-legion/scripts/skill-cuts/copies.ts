@@ -1370,11 +1370,14 @@ async function readRepository(
   }
 }
 
-/** The jq filter a compare is read through: the merge base, how many files it lists, then one
- *  JSON array per file, `[filename, status, previous filename]`, so the answer's patches and
- *  commits never sit in this process. */
-const COMPARE_JQ =
-  '.merge_base_commit.sha, (.files // [] | length), ((.files // [])[] | [.filename, .status, (.previous_filename // "")] | @json)';
+/** The jq filter a compare's or a commit's files are read through: how many it lists, then one
+ *  JSON array per file, `[filename, status, previous filename]`, so its patches never sit in this
+ *  process. */
+const FILES_JQ =
+  '(.files // [] | length), ((.files // [])[] | [.filename, .status, (.previous_filename // "")] | @json)';
+/** The jq filter a compare is read through: the merge base, then its files (FILES_JQ), so the
+ *  answer's patches and commits never sit in this process. */
+const COMPARE_JQ = `.merge_base_commit.sha, ${FILES_JQ}`;
 /** The most files GitHub lists of a compare, on its first page only, so a list this long may be
  *  cut. */
 export const COMPARE_MAX_FILES = 300;
@@ -5893,10 +5896,6 @@ const PathCommits = z.array(
 );
 /** The newest commit that changed a path, as the cache keeps it (null for none). */
 const CachedPathCommit = z.object({ commit: z.string().nullable(), date: z.string() });
-/** The jq filter a commit's files are read through: how many it lists, then one JSON array per
- *  file, `[filename, status, previous filename]`, so its patches never sit in this process. */
-const COMMIT_FILES_JQ =
-  '(.files // [] | length), ((.files // [])[] | [.filename, .status, (.previous_filename // "")] | @json)';
 /** The most files GitHub lists of a commit on one page, so a list this long may be cut. */
 const COMMIT_PAGE_FILES = 300;
 /** A commit's files as the cache keeps them, each `[filename, status, previous filename]`. */
@@ -5904,7 +5903,7 @@ const CachedCommitFiles = z.object({ files: z.array(CompareFile) });
 
 /**
  * The files the commit `commit` of `repo` changed (`repos/<r>/commits/<sha>` through
- * COMMIT_FILES_JQ), kept by the cache by repository and commit; a read that fails, or whose answer
+ * FILES_JQ), kept by the cache by repository and commit; a read that fails, or whose answer
  * is not of its shape, is not kept and gives `failed`, with why. A list of COMMIT_PAGE_FILES files
  * may be cut: GitHub lists a commit's files a page at a time.
  */
@@ -5920,7 +5919,7 @@ async function readCommitFiles(
   let lines: string[];
   try {
     const text = await github.text(
-      ["api", `repos/${repo.repository}/commits/${commit}`, "--jq", COMMIT_FILES_JQ],
+      ["api", `repos/${repo.repository}/commits/${commit}`, "--jq", FILES_JQ],
       repo.repository
     );
     lines = text.split("\n").filter((line) => line !== "");
@@ -5941,7 +5940,7 @@ async function readCommitFiles(
  * What git did to `<from>/SKILL.md` of `repo` since `windowStart` (`FormerSource`): the newest
  * commit of the default branch up to the commit read that changed it
  * (`repos/<r>/commits?sha=<commit read>&path=<file>&since=<windowStart>&per_page=1`), then that
- * commit's files (`repos/<r>/commits/<sha>` through COMMIT_FILES_JQ), the file `renamed` from it
+ * commit's files (`repos/<r>/commits/<sha>` through FILES_JQ), the file `renamed` from it
  * (its `previous_filename`) or listed under its own name. Each read goes through the run's gh
  * rules (`Github`: a read slot, retries, the memory limit), and the cache keeps each (the commit
  * keyed by repository, commit read, file and window start; the files by repository and commit),

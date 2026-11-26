@@ -1401,8 +1401,11 @@ export function loadFailedRunFile(out: string, taskId: string): string {
 }
 
 /** Each line of the JSON-lines file `file` that is not blank, with its line number (from 1) and
- *  its value (`parseJson`: undefined for a line that is no JSON); none when the file is missing. */
-function* jsonLines(file: string): Generator<{ readonly at: number; readonly value: unknown }> {
+ *  its value (`parseJson`: undefined for a line that is no JSON); none when the file is missing.
+ *  cli.ts reads the request log by it too. */
+export function* jsonLines(
+  file: string
+): Generator<{ readonly at: number; readonly value: unknown }> {
   if (!existsSync(file)) return;
   for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
     if (line.trim() === "") continue;

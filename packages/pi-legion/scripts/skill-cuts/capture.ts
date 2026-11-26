@@ -228,11 +228,11 @@ import {
 } from "./arms";
 import type { Case } from "./cases";
 import {
+  frontmatterFields,
   json,
   ompText,
   pastLimit,
   Refused,
-  readFrontmatter,
   STORE_QUIET_MS,
   splitFrontmatter,
   textOf,
@@ -850,11 +850,11 @@ function descriptionReader(database: string): DescriptionReader {
  * It compares what discovery/helpers.ts's `scanSkillsFromDir` keeps of each copy (skills.ts and
  * `scanSkillsFromDir` are the same there as at rig.sh's v18.18.6-sami.20261117-013345): the body
  * and the frontmatter of `parseFrontmatter` with its defaults, which are common.ts's
- * `splitFrontmatter` with `repair` (leading HTML comments dropped, the body trimmed) and
- * `readFrontmatter` (its keys camelCase at every depth), compared with
- * `Bun.deepEquals` as Oh My Pi compares them. So a profile that installs one text twice, once
- * under `<namespace>/<name>`, lists it once, under the copy admitted first. Only a name installed
- * more than once can lose a copy, so only the copies of such a name are read.
+ * `splitFrontmatter` with `repair` (leading HTML comments dropped, the body trimmed) and its block
+ * read as `readFrontmatter` reads it (`frontmatterFields`: its keys camelCase at every depth),
+ * compared with `Bun.deepEquals` as Oh My Pi compares them. So a profile that installs one text
+ * twice, once under `<namespace>/<name>`, lists it once, under the copy admitted first. Only a
+ * name installed more than once can lose a copy, so only the copies of such a name are read.
  */
 function listedSkills(
   context: Pick<CaseContext, "skills" | "namespacedDirs">
@@ -872,10 +872,11 @@ function listedSkills(
   const twice = context.skills.filter((skill) => (copies.get(bareName(skill)) ?? 0) > 1);
   for (const skill of twice.toSorted((a, b) => rank(a) - rank(b))) {
     const text = ompText(readFileSync(path.join(skill.dir, "SKILL.md")));
+    const { block, body } = splitFrontmatter(text, true);
     const copy = {
       name: bareName(skill),
-      body: splitFrontmatter(text, true).body,
-      frontmatter: readFrontmatter(text),
+      body,
+      frontmatter: block === undefined ? {} : frontmatterFields(block),
     };
     const same = admitted.some(
       (each) =>
@@ -1733,21 +1734,14 @@ function writeProfile(
     };
   }
   mkdirSync(agentDir, { recursive: true });
-  writeFileSync(
-    path.join(agentDir, "models.yml"),
-    `${JSON.stringify({ providers: kept }, null, 2)}\n`
-  );
+  writeFileSync(path.join(agentDir, "models.yml"), json({ providers: kept }));
   writeFileSync(
     path.join(agentDir, "config.yml"),
-    `${JSON.stringify(
-      {
-        modelRoles: { default: options.model, smol: options.hintModel },
-        disabledProviders: DISABLED_PROVIDERS,
-        skills: { customDirectories: [options.skillsDir, ...options.namespacedDirs] },
-      },
-      null,
-      2
-    )}\n`
+    json({
+      modelRoles: { default: options.model, smol: options.hintModel },
+      disabledProviders: DISABLED_PROVIDERS,
+      skills: { customDirectories: [options.skillsDir, ...options.namespacedDirs] },
+    })
   );
 }
 

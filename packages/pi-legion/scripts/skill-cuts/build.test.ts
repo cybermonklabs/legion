@@ -6263,9 +6263,9 @@ test("a pinned image whose rootfs.diff_ids do not start with its base's is not m
   );
 }, 120_000);
 
-// Catches: vskills-293's porting-released-proofs, whose read of the project's own
-// .claude/skills/porting-released-proofs/SKILL.md the context rule placed at a plugin holding a skill
-// of that name, so the profile installed that plugin whole (20 of the 21 names it added).
+// Catches: a project's own skill, whose read of the project's .claude/skills/<name>/SKILL.md the
+// context rule placed at a plugin holding a skill of that name, so the profile installed that
+// plugin whole (in one saved case, 20 of the 21 names it added).
 test("a read inside the session checkout's own .claude/skills is that project's skill, and installs no unit that holds a skill of its name", async () => {
   const project = await podProfile("project-skill-read", "", {
     readAt: "/work/.claude/skills/alpha",
@@ -7675,10 +7675,10 @@ test("build-cases --reprofile of a Legion pane reads the worker image's packages
   );
 }, 240_000);
 
-// Catches: legion-4447's 4 role cases, whose worker image ghcr.io/…/legion-worker@sha256:25f7f0ab…
+// Catches: 4 saved role cases whose worker image (ghcr.io/<owner>/legion-worker@sha256:<digest>)
 // has no build provenance and no comment above its line, read at the head of the repository's main
-// at the session's start: a newer pi-envoy and pi-legion than the image held (dispatch-brainstorming
-// missing, dispatch-writing-specs and leading-a-work-stream added).
+// at the session's start: a newer pi-envoy and pi-legion than the image held (one skill missing,
+// two added).
 describe("build-cases --reprofile of a Legion pane whose image has no build provenance", () => {
   const digest = "2".repeat(64);
   const pulumiOf = (image: string) =>
@@ -7757,7 +7757,6 @@ describe("build-cases --reprofile of a Legion pane whose image has no build prov
       expect(built.said).toContain(
         `pod profile not measurable: the worker image's commit of acme/skills is not known, and the repository's default branch is a guess, so the profile is not built: ${config0} ${image}${without}, and the OCI config of ${image}, read from its registry by digest, ${said}, and no comment line is right above its image: line: a Legion pod runs the worker image`
       );
-      expect(built.said).not.toContain("is read at its default branch's commit");
     },
     120_000
   );
@@ -8056,19 +8055,21 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
 
   /** The legion case built again with ACME's project file naming IMAGE, the registry giving
    *  IMAGE's config (its source label `source`) and BASE's (its diff ids `baseLayers`, its
-   *  revision label IMAGE_SHA), acme/infra holding REVISION and RECIPE at it, and the
-   *  configuration's deploymentImages naming `listed` with DOCKERFILE. */
+   *  revision label IMAGE_SHA), acme/infra holding REVISION and the Dockerfile `recipe` (RECIPE)
+   *  at it, and the configuration's deploymentImages naming `listed` with DOCKERFILE. */
   const built = (
     name: string,
     {
       source = "https://github.com/acme/infra",
       baseLayers = LAYERS.slice(0, 3),
       listed = REPOSITORY,
+      recipe = RECIPE,
       refused,
     }: {
       source?: string;
       baseLayers?: readonly string[];
       listed?: string;
+      recipe?: string;
       refused?: true;
     } = {}
   ) =>
@@ -8097,7 +8098,7 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
         if (route.startsWith(`repos/acme/infra/commits?sha=${REVISION}&`))
           return ok(`${REVISION}\n`);
         if (route === `repos/acme/infra/contents/${DOCKERFILE}` && args.includes(`ref=${REVISION}`))
-          return ok(RECIPE);
+          return ok(recipe);
         return undefined;
       },
       ...(refused === undefined ? {} : { refused }),
@@ -8112,11 +8113,11 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
     ]);
     expect(result.plugins).toContain(`pi-acme ${IMAGE_SHA} packages/pi-acme`);
     expect(result.registryReads).toContain(BASE);
-    // The built-on step decides: the COPY step is not taken (the rule the evidence quotes after
-    // its reads states it), and the version label, which names no commit of acme/skills here,
-    // confirms nothing and refutes nothing.
+    // The built-on step decides: the COPY step is not taken (its words, which name the final
+    // stage's copies into the profile's packages, are not among the reads), and the version label,
+    // which names no commit of acme/skills here, confirms nothing and refutes nothing.
     const reads = result.worker.slice(0, result.worker.indexOf(rule));
-    expect(reads).not.toContain("copies the worker's packages from");
+    expect(reads).not.toContain("whose final stage copies into the profile's packages");
     expect(result.worker).toStartWith(`${own}; ${labelled}`);
     expect(result.worker).toContain(
       `); ${recipe}; the 3 rootfs.diff_ids of ${BASE} are the first 3 of the 5 of ${IMAGE}, so the image is built on it; the base's digest has no build provenance that names a commit (gh api repos/acme/skills/attestations/sha256:${B}); the OCI config of ${BASE}, read from its registry by digest, labels org.opencontainers.image.revision ${IMAGE_SHA}, a commit of acme/skills (gh api repos/acme/skills/commits?sha=${IMAGE_SHA}&until=`
@@ -8125,6 +8126,33 @@ describe("build-cases --reprofile of a Legion pane whose image the deployment bu
       `), so the image's units of acme/skills are read at ${IMAGE_SHA}${rule}`
     );
   }, 120_000);
+
+  // Catches: the base of a Dockerfile's final stage read by a second reader that kept an ARG
+  // default's quotes, or read only the first name of an ARG line of several, so the base was said
+  // to pin no digest, or not to be named, though the stages the COPY step reads resolve it.
+  test.each([
+    ["a quoted ARG default", `ARG LEGION_WORKER="${BASE}"`],
+    [
+      "an ARG line of several names",
+      `ARG TOOLCHAIN=registry.example.test/acme/toolchain:1 LEGION_WORKER=${BASE}`,
+    ],
+  ])(
+    "the base of a final stage FROM %s is read as the Dockerfile's stages give it",
+    async (name, arg) => {
+      const result = await built(`base-${name.replaceAll(" ", "-")}`, {
+        recipe: `${arg}\nFROM \${LEGION_WORKER}\nRUN echo the deployment's layer\n`,
+      });
+      expect(result.skills).toEqual([
+        `alpha ${IMAGE_SHA}`,
+        `beta ${IMAGE_SHA}`,
+        `omicron ${IMAGE_SHA}`,
+      ]);
+      expect(result.worker).toContain(
+        `); ${recipe}; the 3 rootfs.diff_ids of ${BASE} are the first 3 of the 5 of ${IMAGE}, so the image is built on it;`
+      );
+    },
+    120_000
+  );
 
   test("a base whose diff ids are not the first of the image's leaves the case out, naming the mismatch", async () => {
     const result = await built("mismatch", {

@@ -320,10 +320,12 @@ import {
 import { type Case, loadCases, pathReadFile, Thinking } from "./cases";
 import {
   configFrom,
+  counted,
   json,
   parse,
   pastLimit,
   Refused,
+  readJson,
   required,
   Stopped,
   schemaFaults,
@@ -363,7 +365,7 @@ import {
   judgeControls,
   newSeed,
 } from "./judge";
-import { Host, LOAD_MODEL, LOAD_THINKING, runLoad } from "./load";
+import { Host, jsonLines, LOAD_MODEL, LOAD_THINKING, runLoad } from "./load";
 import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
   ATTACK_PLANTED_LINE,
@@ -471,21 +473,6 @@ function processIo(): CliIo {
     peakRssBytes: procPeakRssBytes,
     spendRecorder: processSpendRecorder(),
   };
-}
-
-/** The JSON value the file `file` holds. Throws a refusal naming the file. */
-function readJson(file: string, what: string): unknown {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch (error) {
-    throw new Refused(`cannot read ${what} ${file}: ${messageFor(error)}`);
-  }
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    throw new Refused(`${what} ${file} is not JSON: ${messageFor(error)}`);
-  }
 }
 
 /** Bytes as whole MiB. */
@@ -2373,9 +2360,6 @@ function replacedWords(score: SkillScore): string {
   return `, in place of ${named.join(", ")}, which the control rule chose before it`;
 }
 
-/** `count` with `word`, plural unless the count is 1: `1 session`, `2 sessions`. */
-const counted = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-
 /** The served models the screened (counted) cases of `score` ran on, each case on the served model
  *  of its model's id (`servedModel`), with its screened cases, most first, a tie by model. */
 function screenedModels(b: Behaviour, score: SkillScore): { model: string; cases: number }[] {
@@ -2747,12 +2731,9 @@ function requestLogLines(
   const kinds = new Map<string, { calls: number; usd: number }>();
   const replays: { userId: string | null; usd: number }[] = [];
   let unreadable = 0;
-  for (const text of readFileSync(file, "utf8").split("\n")) {
-    if (text.trim() === "") continue;
-    let line: unknown;
-    try {
-      line = JSON.parse(text);
-    } catch {
+  // A line that is no JSON (`parseJson`'s undefined) is counted and left out.
+  for (const { value: line } of jsonLines(file)) {
+    if (line === undefined) {
       unreadable += 1;
       continue;
     }

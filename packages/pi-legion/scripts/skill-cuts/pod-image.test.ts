@@ -342,20 +342,28 @@ const POD = {
 const pinText = (line: string) => `config:\n  # The job built commit ${BUILD}.\n  ${line}\n`;
 
 /** The GitHub and registry reads sessionPodImage makes: acme/deploy's branch main at
- *  DEPLOY_COMMIT holds `pin`; its pods/Dockerfile at BUILD builds on `base` and links
- *  /opt/pod/pi-pod into the profile `pod`; acme/worker's worker.Dockerfile at WORKER_COMMIT links
- *  /opt/worker/pi-worker into it; `base`'s config names WORKER_COMMIT and holds the first two of
- *  `pinned`'s diff ids; the build provenance of a digest names `attested`, or no commit. */
-function podReads(pin: string, base: string, pinned: string, attested?: string) {
+ *  DEPLOY_COMMIT holds `pin`; its pods/Dockerfile at BUILD is `more.recipe`, else one that builds
+ *  on `base` and links /opt/pod/pi-pod into the profile `pod`; acme/worker's worker.Dockerfile at
+ *  WORKER_COMMIT links /opt/worker/pi-worker into it; `base`'s config (its labels
+ *  `more.baseLabels`, else a revision label of WORKER_COMMIT) holds the first two of `pinned`'s
+ *  diff ids; the build provenance of a digest names `attested`, or no commit. */
+function podReads(
+  pin: string,
+  base: string,
+  pinned: string,
+  attested?: string,
+  more: { readonly recipe?: string; readonly baseLabels?: Record<string, string> } = {}
+) {
   const files: Record<string, string> = {
     [`acme/deploy@${DEPLOY_COMMIT}:pods/stack.yaml`]: pin,
-    [`acme/deploy@${BUILD}:pods/Dockerfile`]: `ARG BASE=${base}\nFROM \${BASE}\nRUN omp plugin link /opt/pod/pi-pod\n`,
+    [`acme/deploy@${BUILD}:pods/Dockerfile`]:
+      more.recipe ?? `ARG BASE=${base}\nFROM \${BASE}\nRUN omp plugin link /opt/pod/pi-pod\n`,
     [`acme/worker@${WORKER_COMMIT}:worker.Dockerfile`]:
       "FROM scratch\nENV OMP_PROFILE=pod\nRUN omp plugin link /opt/worker/pi-worker\n",
   };
   const configs: Record<string, ImageConfig> = {
     [base]: {
-      labels: { "org.opencontainers.image.revision": WORKER_COMMIT },
+      labels: more.baseLabels ?? { "org.opencontainers.image.revision": WORKER_COMMIT },
       env: ["OMP_PROFILE=pod"],
       diffIds: LAYERS.slice(0, 2),
     },
@@ -411,6 +419,51 @@ test("sessionPodImage of a pin file with no line that starts with its key says s
   expect(attested.why).toStartWith(
     `Inference: ${where} selects the image in force at prompt build ${POD_AT}. Build provenance names ${BUILD}.`
   );
+});
+
+// Catches: the pod Dockerfile's final stage read by a second reader, apart from dockerfileStages,
+// that kept an ARG default's quotes, read only the first name of an ARG line of several (and so
+// the pin comment above it), and split a RUN heredoc into lines, so the pod was refused as having
+// no digest-pinned base, or its profile lacked a plugin the heredoc links, with nothing said.
+test.each([
+  [
+    "a quoted ARG default",
+    (base: string) => `ARG BASE="${base}"\nFROM \${BASE}\nRUN omp plugin link /opt/pod/pi-pod\n`,
+    undefined,
+    "Its org.opencontainers.image.revision names",
+  ],
+  [
+    "an ARG line of several names, under a comment that names the base's commit",
+    (base: string) =>
+      `# The base, built from commit ${WORKER_COMMIT}.\nARG TOOLCHAIN=registry.example.test/acme/toolchain:1 BASE=${base}\nFROM \${BASE}\nRUN omp plugin link /opt/pod/pi-pod\n`,
+    {},
+    "Its Dockerfile pin comment names",
+  ],
+  [
+    "a RUN heredoc that links the plugin",
+    (base: string) =>
+      `ARG BASE=${base}\nFROM \${BASE}\nRUN <<EOF\nset -e\nomp plugin link /opt/pod/pi-pod\nEOF\n`,
+    undefined,
+    "Its org.opencontainers.image.revision names",
+  ],
+] as const)("sessionPodImage reads a pod Dockerfile with %s as dockerfileStages reads it", async (_name, recipe, baseLabels, named) => {
+  const pinned = `registry.example.test/acme/pod@sha256:${"a".repeat(64)}`;
+  const base = `registry.example.test/acme/worker@sha256:${"b".repeat(64)}`;
+  const pod = await sessionPodImage(
+    podReads(pinText(`pods:image: ${pinned}`), base, pinned, undefined, {
+      recipe: recipe(base),
+      ...(baseLabels === undefined ? {} : { baseLabels }),
+    }),
+    POD,
+    "pod",
+    POD_AT
+  );
+  expect({ sha: pod.sha, directories: pod.directories }).toEqual({
+    sha: WORKER_COMMIT,
+    directories: ["/opt/worker/pi-worker", "/opt/pod/pi-pod"],
+  });
+  expect(pod.why).toContain(`pods/Dockerfile at that commit uses ${base};`);
+  expect(pod.why).toContain(`${named} ${WORKER_COMMIT}.`);
 });
 
 // Catches: a deployment's Dockerfile whose final stage COPYs the worker's packages from a stage

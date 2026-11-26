@@ -20,6 +20,7 @@ import {
   capturePaths,
   extensionErrors,
   type HintWriter,
+  LegionToolUndefined,
   listingOf,
   NEUTRAL_CLAUDE_CONFIG_DIR,
   NEUTRAL_CWD,
@@ -979,7 +980,8 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
         (made) => made.record.pluginTools,
         (caught: unknown) => caught
       );
-      expect(failed).toBeInstanceOf(Error);
+      // The class cli.ts drops a behaviour case on (LegionToolUndefined), not any error.
+      expect(failed).toBeInstanceOf(LegionToolUndefined);
       const message = String((failed as Error).message);
       expect(message).toStartWith(
         "case legion-throws-1 arm old: the captured body is refused: a Legion implementer pane whose context installs pi-legion as an extension must send pi-legion's legion tool, and the body of none of its 2 attempts defines it: attempt 1: its body defines "
@@ -1013,7 +1015,7 @@ export default function legion() {}
         (made) => made.record.pluginTools,
         (caught: unknown) => caught
       );
-      expect(failed).toBeInstanceOf(Error);
+      expect(failed).toBeInstanceOf(LegionToolUndefined);
       const [first = "", second = "", ...more] = String((failed as Error).message)
         .split(/attempt \d: /)
         .slice(1);
