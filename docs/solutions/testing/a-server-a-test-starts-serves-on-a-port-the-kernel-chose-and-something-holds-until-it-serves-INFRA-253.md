@@ -81,7 +81,7 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
   `127.0.0.1:40077: bind: address already in use` (sjawhar/legion#2158, run 40149911299).
 - `HoldPort` and its regression `TestHeldPortStaysHeldUntilItsProcessServes`
   (`packages/envoy/internal/cmdtest/cmdtest_test.go`) are the deterministic proof; with
-  `HoldPort` releasing early it fails at `cmdtest_test.go:101`. The parallel acceptance run
+  `HoldPort` releasing early it fails at `cmdtest_test.go:87`. The parallel acceptance run
   (4 copies x 3 rounds, run 40292180529) passed at the head and at the base alike.
 - A plain `http.Get` to a held socket hung `go test` for its whole 10-minute timeout in a negative
   control of `cmd/listener`'s `waitHealthy`; it now bounds each request and waits for the

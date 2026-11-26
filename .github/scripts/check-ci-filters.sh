@@ -218,7 +218,10 @@
 #  13. a workspace of the root package.json that ci_job_reads.py's WORKSPACES does not name, or a
 #      WORKSPACES entry the root manifest does not list, naming the workspace. A frozen
 #      `bun install` reads every workspace manifest, so the table declares each of them a read of
-#      every Bun job and this check holds every filter gating such a job to all of them. What the
+#      every Bun job - but packages/test-fixtures/package.json while it declares no script an
+#      install runs (runs_at_install), which ci_job_reads.py's with_fixtures_manifest makes a read
+#      of each gate that reads a file of the fixtures instead - and this check holds every filter
+#      gating such a job to them. What the
 #      rule prevents is exactly that: a workspace missing from the table is a manifest no filter
 #      has to select, so a change to it starts no job. It prevents nothing else, and
 #      packages/cipher-client is the case that shows the difference - it was outside the table

@@ -96,6 +96,34 @@ hashed its files again, and its key drifted: in run 45088325195 the lookup asked
 ...-85ddfce1... and the save wrote ...-f2bbc22a..., so every push missed the lookup and built for
 seven to ten minutes a leg.
 
+## Why go-envoy-infra's key hashes the module files of both workspaces
+
+go-envoy-infra's key carries, beside the runner's architecture and the Go version, the hash of the
+files that choose the module versions its entry holds. The infra module's own build reads
+packages/envoy/infra/go.work and its go.work.sum, and the go.mod and go.sum of the two modules it
+binds. The x86_64 leg also builds envoy-smoke's container smoke test, which compiles in
+packages/envoy under the root go.work, so the key also hashes that go.work and its go.work.sum,
+and packages/daemon's go.mod and go.sum. The root go.work binds packages/daemon and
+packages/envoy, so a module both require is built at the higher of the two versions.
+
+An entry that held the infra workspace alone gave the smoke step 8 module downloads on an exact
+hit, in job 139764742393 of run 45777169440. They were x/net, x/sys, oauth2, gax-go and the Google
+auth modules at the root workspace's versions, and each was a fetch a stalled proxy could hold.
+
+An entry keyed on the Go version alone was refreshed only by a Go bump, and it went stale as those
+files moved. Restoring the entry of 2026-11-06, eleven days old, the linux vet (envoy-infra-build's
+now) took 175, 229 and 177 s in runs 43990864191, 43996496498 and 44008055050. That is 83 to 85%
+of what its darwin vet took in the same run with nothing cached, because google.golang.org/api,
+gax-go, the AWS SDK and nats had moved under it. With the hash, a push to main that changes those
+files misses the lookup and fills a fresh entry. A pull request that changes none of them restores
+one built from the same module versions, and one that changes them restores the newest entry by
+prefix and builds what moved.
+
+The daemon's module files move the key of the arm64 leg too, whose readers build nothing under
+the root go.work. The readers share one key text, which
+`.github/scripts/ci_workflow_rules.py#check_cache_round_trip` compares as text, so on such a push
+that leg refills for nothing it needs.
+
 ## The architecture-check and spec-check families
 
 The architecture-check job fills architecture-check-<os>-<arch>-go<version>-<hash>, the family of

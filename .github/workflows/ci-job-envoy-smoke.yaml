@@ -54,29 +54,32 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # go-envoy-infra, restored only, as envoy-go-docs-finalizers restores go-envoy: this job
-      # builds other packages than .github/workflows/ci-caches.yaml's envoy-infra job, which fills
-      # the family on a push to main, so it saves none. That fill loads every package of the infra
-      # module under both live-test tags, so it holds every module zip the three go commands below
-      # fetch, the smoke test's among them, and leaves them only the go.mod files of the root
-      # go.work's graph, about 150 KB, and what a go.sum change since the entry was saved moved.
-      # Without it each run fetched 161 modules, 242 MB, from the proxy: 6-8 s of the live-test step
-      # in a passing run, but 14 m 45 s in run 43880882183, where the step started no other module
-      # for 7.5 and then 6 minutes after the pulumi-aws and pulumi-gcp SDKs, and the job reached its
-      # 20-minute limit before a live test ran. The key is the fill's key: the runner's
-      # architecture, the Go this setup-go installs from packages/envoy/go.mod, the family's fill
-      # the Go of packages/envoy/infra/go.mod, and the hash of the files that choose the infra
-      # workspace's module versions. Both name go 1.27.3, and should the Go lines part or a module
-      # file move, the exact key misses and the prefix, which keeps the architecture, restores the
-      # family's newest entry for this runner, whose modules still serve. Both go test
-      # steps below pass -count=1, as every go test of a job that restores a Go family does: a
-      # cached pass in the restored build cache must not stand in for a run.
+      # go-envoy-infra, restored only: .github/workflows/ci-caches.yaml's envoy-infra job fills the
+      # family on a push to main, and this job saves none. Its x86_64 entry holds the modules and
+      # the build of the three go commands below: the live tests' and the plugin schema's, in the
+      # infra module under its own go.work, and the container smoke test's, in packages/envoy under
+      # the root go.work, whose module versions are the root workspace's (packages/daemon's go.mod
+      # takes part in them). So on an exact hit none of the three fetches a module. An entry that
+      # held the infra workspace alone gave the smoke step 8 module downloads on an exact hit (x/net,
+      # x/sys, oauth2, gax-go and the Google auth modules at the root workspace's versions, job
+      # 139764742393), each a fetch a stall could hold. Without any entry each run fetched 161
+      # modules, 242 MB, from the proxy: 6-8 s of the live-test step in a passing run, but 14 m 45 s
+      # in run 43880882183, where the step started no other module for 7.5 and then 6 minutes after
+      # the pulumi-aws and pulumi-gcp SDKs, and the job reached its 20-minute limit before a live
+      # test ran. The key is the fill's key: the runner's architecture, the Go this setup-go
+      # installs from packages/envoy/go.mod, the family's fill the Go of packages/envoy/infra/go.mod,
+      # and the hash of the files that choose both workspaces' module versions. Both name go
+      # 1.27.3. Should the Go lines part or a module file move, the exact key misses and the prefix,
+      # which keeps the architecture, restores the family's newest entry for this runner, and the
+      # steps fetch what moved since it was filled. Both go test steps below pass -count=1, as every
+      # go test of a job that restores a Go family does: a cached pass in the restored build cache
+      # must not stand in for a run.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
