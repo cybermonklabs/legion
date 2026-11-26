@@ -525,9 +525,10 @@ export function drawPage(
 
 /** The page's root as `IssueOutlinePage` draws it - the stage in the issue's column and the
  *  column of comments on text after it, in the page's providers - with `children` drawn inside
- *  those providers beside them: what a case needs to reach what the providers hold (the control, a
- *  composer's opener). The page's root takes no such child, so the cases that need one draw this;
- *  the cases that need only the page draw `drawPage`. */
+ *  those providers beside them in place of the root's own control (`SelectionComment`): what a
+ *  case needs to reach what the providers hold (the control, a composer's opener), drawn once.
+ *  The page's root takes no such child, so the cases that need one draw this; the cases that need
+ *  only the page draw `drawPage`. */
 function FrameRoot({
   children,
   issue,

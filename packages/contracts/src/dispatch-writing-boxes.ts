@@ -324,6 +324,21 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Question",
     write: "ask",
   },
+  // The new issue page's composer opened on words of a message (INFRA-5706), which writes a reply
+  // in that message's thread naming the block the words are in. `MentionComposer` computes this
+  // write for the message reply target the composer hands it, and the row says what it is: a pair
+  // no reader reaches at this base.
+  {
+    box: "margin-composer",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/text-comments/SelectionComposer.tsx"],
+    issueRows: true,
+    reach: "Comment",
+    reason:
+      "Words of a message take the control only from gate G4 (INFRA-5703's reply quote) of INFRA-5706; until then no reader reaches it.",
+    write: "message-reply",
+  },
   {
     box: "margin-comment-edit",
     covered: true,

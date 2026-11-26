@@ -29,7 +29,8 @@ export const GATES: Readonly<Record<GateName, boolean>> = {
   // G3b: `occurrence` on the tree read's document `anchor` (INFRA-1253).
   ANCHOR_OCCURRENCE: false,
   // G5: pull request 3125 on the base: the control, its composer and every send, and the stacking.
-  COMPOSER: false,
+  // On this branch's base since part W's merge of it.
+  COMPOSER: true,
   // G8: INFRA-5702, the Dashboard's items.
   DASHBOARD: false,
   // G2 and G5: INFRA-1253's node anchor, and the shell margin's comments read that asks for it.

@@ -23,16 +23,15 @@ const RELOADED = "the page reloaded, then back";
 const row = (host: string, move: string) => cells(`${host} · ${move}`);
 
 /** The selection composer's mount, as the census names it. */
-const MOUNT =
-  'SelectionComposer <MentionComposer mutationKey={["text-comment", issue.key, wordsKeyOf(words)]}>';
+const MOUNT = "SelectionComposer <MentionComposer mutationKey={sendName}>";
 
 /** The numbered reasons, said here alone, which the matrix file's header points to. */
 const REASONS = {
   1: "1. `IssueOutline` draws a failed or a loading line in place of its slots while the read of the issue fails or is pending (`issue.isError`, `issue.data === undefined`), and a sheet's row reads no issue then (`useStageIssue`), which ends the column, the sheet and every composer of this part as leaving the issue does; what the page draws again on recovery is what the issue-left rows draw again on return.",
   2: "2. `IssuePage` draws today's page in place of the outline when the reader's stored page choice says so (`useIssuePageChoice`), which ends every composer of this part as leaving the issue does; choosing the outline again draws the page afresh, as the issue-left rows' returns do.",
   3: "3. An address that parses as no issue draws the not-found page in place of `IssueOutline` (`route === undefined`), so no composer of this part is drawn there, and going there from an issue is leaving the issue, the issue-left rows.",
-  4: "4. `onLand` is what the composer's own send (`useSelectionSend`) calls once Dispatch takes it: it closes the composer, its draft sent, and holds where the page lands. At this base the composer's Send is `MentionComposer`'s own path, which never calls it (the composer takes `useSelectionSend` at gate G5), and the function changes only with the issue and the composer's state, so it moves no address and ends no mount.",
-  5: "5. The composer's owner is the issue of the node its words are in (`useSelectionSend`'s `write`, else the page's issue): the node is drawn when its words are selected, the composer reads it then and keeps it while the view no longer draws the node (`last`), and a node's issue never changes, so the owner never moves while the composer is mounted; other words are another composer, the other-words rows.",
+  4: "4. The composer draws `MentionComposer` only while it has where to send: the write of the node its words are in and what that write names (`useSendTarget`), which it takes from the view while the view draws the node and keeps from where it last drew it. A mount that never met its node drawn, or whose node takes no write any more, has none, and closes at once with its draft kept under its send name, as Escape closes it; the composer opened again on the same words holds that draft, as the Escape rows read it.",
+  5: "5. The composer's owner, anchor and reply target are the write of the node its words are in (`sendTargetOf`): the node is drawn when its words are selected, the composer reads it then and keeps it while the view no longer draws the node (`useSendTarget`'s `last`), and a node's issue, document, block and author never change, so none of them moves while the composer is mounted; other words are another composer, the other-words rows.",
   6: "6. The address's search names the item an address of R8 lands on (`?node=`), which the column reads only to give that item the focus and mark it in its thread's card (`outlineItemRoute`, `currentReply`); it moves no composer's address and ends no mount.",
   7: "7. A sheet's `node` and `parent` are the node of the row it stands in and the node that row is drawn under, which the row site hands it once for its row: a node drawn under several parents has its threads and its composer in its stored parent's row alone, and another node or another parent is another row with a sheet of its own, so neither moves a composer within one. No row site mounts the sheet at this base (gate G6).",
   8: "8. The reply an address names is marked in its thread's card (`currentReplyId`, `aria-current`) and takes the focus; that moves no address and ends no mount.",
@@ -47,18 +46,30 @@ const REASONS = {
 export const coverage: readonly CoverageEntry[] = [
   // The selection composer's own lines.
   ...answers(
-    `SelectionComposer | ${MOUNT} | address prop | mutationKey={["text-comment", issue.key, wordsKeyOf(words)]}`,
+    `SelectionComposer | ${MOUNT} | address prop | mutationKey={sendName}`,
     row(COLUMN, OTHER_WORDS),
     row(SHEET, OTHER_WORDS),
     row(COLUMN, ISSUE),
     row(SHEET, ISSUE)
   ),
   ...answers(
-    `SelectionComposer | ${MOUNT} | address prop | owner={{ issueKey: write?.issue ?? issue.key, kind: "issue" }}`,
+    `SelectionComposer | ${MOUNT} | address prop | owner={{ issueKey: target.issue, kind: "issue" }}`,
     { reason: REASONS[5] }
   ),
   ...answers(
-    `SelectionComposer | ${MOUNT} | lifetime | <MentionComposer mutationKey={["text-comment", issue.key, wordsKeyOf(words)]}>`,
+    `SelectionComposer | ${MOUNT} | address prop | anchor={target.address.anchor}`,
+    row(COLUMN, OTHER_WORDS),
+    row(SHEET, OTHER_WORDS),
+    { reason: REASONS[5] }
+  ),
+  ...answers(`SelectionComposer | ${MOUNT} | address prop | replyTo={target.address.replyTo}`, {
+    reason: REASONS[5],
+  }),
+  ...answers(`SelectionComposer | ${MOUNT} | conditional | !(target === null) ? …`, {
+    reason: REASONS[4],
+  }),
+  ...answers(
+    `SelectionComposer | ${MOUNT} | lifetime | <MentionComposer mutationKey={sendName}>`,
     row(COLUMN, RELOADED)
   ),
   // The column draws the composer.
@@ -71,9 +82,6 @@ export const coverage: readonly CoverageEntry[] = [
     row(COLUMN, OTHER_WORDS)
   ),
   ...answers("Column | SelectionComposer | address prop | issue={issue}", row(COLUMN, ISSUE)),
-  ...answers("Column | SelectionComposer | address prop | onLand={composer.land}", {
-    reason: REASONS[4],
-  }),
   ...answers("Column | SelectionComposer | address prop | view={view}", row(COLUMN, VIEW)),
   ...answers(
     "Column | SelectionComposer | address prop | words={request}",
@@ -89,9 +97,6 @@ export const coverage: readonly CoverageEntry[] = [
     row(SHEET, OTHER_WORDS)
   ),
   ...answers("SheetBody | SelectionComposer | address prop | issue={issue}", row(SHEET, ISSUE)),
-  ...answers("SheetBody | SelectionComposer | address prop | onLand={composer.land}", {
-    reason: REASONS[4],
-  }),
   ...answers("SheetBody | SelectionComposer | address prop | view={view}", row(SHEET, VIEW)),
   ...answers(
     "SheetBody | SelectionComposer | address prop | words={request}",
@@ -186,11 +191,6 @@ export const coverage: readonly CoverageEntry[] = [
     "Sheet | SheetBody | early return | if (threads.length === 0 && request === undefined) return …",
     row(SHEET, ESCAPED),
     row(REPLY_SHEET, VIEW)
-  ),
-  ...answers(
-    "Sheet | SheetBody | address prop | composer={composer}",
-    row(SHEET, ESCAPED),
-    row(SHEET, OTHER_WORDS)
   ),
   ...answers("Sheet | SheetBody | address prop | issue={issue}", row(SHEET, ISSUE)),
   ...answers(

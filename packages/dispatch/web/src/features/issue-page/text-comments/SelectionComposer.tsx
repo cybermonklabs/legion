@@ -1,36 +1,41 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { type KeyboardEvent, type ReactNode, useState } from "react";
+import { hashKey, type MutationKey, useQueryClient } from "@tanstack/react-query";
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 
-import { ApiError, api, type WriteBounds } from "../../../api/client";
-import type { Comment, IssueDetails, Message } from "../../../api/types";
+import { ApiError } from "../../../api/client";
+import { primarySpec } from "../../../api/issue-cache";
+import type { IssueDetails } from "../../../api/types";
+import { composerSend, useHeldSend } from "../../conversation/held-sends";
 import { MentionComposer } from "../../conversation/MentionComposer";
+import type { SentRequest } from "../../conversation/send-request";
+import { ofKind, writesOf } from "../../writes/write-store";
 import { MARGIN_ANSWERS } from "../page-words";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
-import { issueCommentsQuery, issueMessagesQuery } from "../useIssueTree";
 import { quotedBlock } from "./on-text";
 import { quoteLine } from "./quote-line";
 import {
-  type LiveWrite,
-  MOUNTED_GATES,
+  type ComposerAddress,
+  composerAddressOf,
   type QuotedWords,
   subjectOf,
-  textRequestOf,
   writeFor,
 } from "./text-comment-write";
 import type { ViewThreads } from "./useTextThreads";
 
 /**
  * The composer a comment on selected words is written in (R5), as the column draws it beside the
- * node (`TextMargin.tsx`) and the node's sheet below 1024 px (`NodeThreads.tsx`): the quoted words
- * cut to one line (`quoteLine`), then `MentionComposer`, which keeps the draft under the
- * composer's send name at each change, so the composer drawn at the same words in the other place
- * opens on it when the window crosses 1024 px.
+ * node (`TextMargin.tsx`) and the node's sheet below 1024 px (`NodeThreads.tsx`): `MentionComposer`
+ * under the composer's send name, which keeps the draft under that name at each change, so the
+ * composer drawn at the same words in the other place opens on it when the window crosses
+ * 1024 px. It is handed the anchor or the reply target of the node's write
+ * (`text-comment-write.ts`) and sends them through its own path (`send-request.ts`, held by
+ * `held-sends.ts`), so its draft is kept, retried and refused as every composer's is. An anchored
+ * composer is headed by the quote `MentionComposer` draws over its field; a reply's, which it
+ * draws none for, by the quoted words cut to one line (`quoteLine`).
  * Escape closes it with the draft kept and gives the focus to the node's row.
  *
- * Its send (`useSelectionSend`) writes the request of the node's kind (`text-comment-write.ts`).
- * `MentionComposer` sends through its own path, which carries none of R5's fields until pull
- * request 3125 is on the base, so the composer's Send takes this send at G5, and the page mounts
- * the control that opens this composer only where `GATES.COMPOSER` is on.
+ * Once the send lands, the composer closes and the page lands on the new thread's root, or says
+ * a reply's quote was not kept (`landingOf`); while Dispatch's last refusal says the words are
+ * gone, one sentence says so beside the composer's own words.
  */
 
 /** The words a person selected and the node they are in, by its tree id: what the control hands
@@ -46,10 +51,6 @@ export function wordsKeyOf(words: SelectedWords): string {
   return JSON.stringify([words.nodeId, words.block, words.occurrence, words.quote]);
 }
 
-/** The body `api.createComment` takes. A node anchor (G2) and a reply's quote and occurrence (G4)
- *  are fields the generated types gain with those gates. */
-type CommentInput = Parameters<typeof api.createComment>[1];
-
 /** The refusals that say the server found no such words: 400 `INVALID_ANCHOR` on an anchor
  *  (INFRA-1253), 404 `TARGET_NOT_FOUND` on a reply (INFRA-5703). */
 function wordsGone(error: unknown): boolean {
@@ -60,10 +61,65 @@ function wordsGone(error: unknown): boolean {
   );
 }
 
+/** A post as Dispatch answers its write, as far as the composer reads it: its id, and for a reply
+ *  the block it answers (`reply_block`). */
+interface WrittenPost {
+  readonly id: string;
+  readonly reply_block?: Parameters<typeof quotedBlock>[0] | null;
+}
+
+function writtenPost(answer: unknown): answer is WrittenPost {
+  return (
+    typeof answer === "object" &&
+    answer !== null &&
+    "id" in answer &&
+    typeof answer.id === "string" &&
+    (!("reply_block" in answer) || typeof answer.reply_block === "object")
+  );
+}
+
 /** Whether a reply's answered block kept the quote the send carried (`reply_block.quote`, G4). */
-function quoteKept(block: Parameters<typeof quotedBlock>[0] | null): boolean {
-  const quote = block === null ? undefined : quotedBlock(block).quote;
+function quoteKept(block: WrittenPost["reply_block"]): boolean {
+  const quote = block === null || block === undefined ? undefined : quotedBlock(block).quote;
   return typeof quote === "string" && quote !== "";
+}
+
+/** What a send that landed leaves the page to do, from Dispatch's answer `answer` to `sent`: the
+ *  new thread's root takes the focus, or, for a reply whose answered block holds no quote the send
+ *  carried - an older build answers so while two builds serve one database - one sentence says
+ *  the words were not kept, and the reply stands as a row under what it answers (decision 465
+ *  (4)). Undefined for an answer that names no post. */
+function landingOf(answer: unknown, sent: SentRequest): TextComposerOutcome | undefined {
+  if (!writtenPost(answer)) return undefined;
+  return sent.replyTo?.quote !== undefined && !quoteKept(answer.reply_block)
+    ? { notice: MARGIN_ANSWERS.quote_not_kept }
+    : { root: answer.id };
+}
+
+/**
+ * Calls `landed` with Dispatch's answer and the request it answered each time a send under
+ * `mutationKey` lands while the caller is mounted. The composer's own outcome of a send
+ * (`useComposerSend`) carries no answer, and the page lands on the post the answer names.
+ */
+function useLandedSends(
+  mutationKey: MutationKey,
+  landed: (answer: unknown, sent: SentRequest) => void
+): void {
+  const client = useQueryClient();
+  const latest = useRef(landed);
+  latest.current = landed;
+  const name = hashKey(mutationKey);
+  useEffect(
+    () =>
+      writesOf(client).onOutcome((outcome) => {
+        if (outcome.kind !== "landed") return;
+        const write = ofKind(outcome.write, composerSend);
+        if (write !== undefined && hashKey(write.detail.mutationKey) === name) {
+          latest.current(outcome.answer, write.detail.request);
+        }
+      }),
+    [client, name]
+  );
 }
 
 /** The `tree` artifact of the issue `issue` in the view's answer: the answer's own for the issue it
@@ -75,89 +131,66 @@ function treeOf(view: ViewThreads, issue: string): string | null | undefined {
   return answer.nodes?.find((node) => node.supertag === "issue" && node.id === issue)?.tree;
 }
 
-/** The send of a composer of this part and what it said last. */
-interface SelectionSend {
-  /** The sentence the last refusal left in the composer, with the role `status`: the words are no
-   *  longer in the text. */
-  readonly said: string | undefined;
-  /** Writes `body` on the selected words with the composer's write bounds, as an edit's save
-   *  takes them (`SaveCommentEdit`), and re-reads the comments or the messages, and the issue's
-   *  tree reads, as a margin write does. On 201 the composer closes and the page lands on the new
-   *  thread's root, or says a reply's quote was not kept; a refusal rejects, so the composer keeps
-   *  the draft and draws its own words, after the sentence where the words are gone. */
-  readonly send: (body: string, bounds: WriteBounds) => Promise<Comment | Message>;
+/** Where a send on selected words goes: the address `MentionComposer` sends with, on the route of
+ *  the node's own issue. */
+export interface SendTarget {
+  readonly address: ComposerAddress;
+  readonly issue: string;
 }
 
 /**
- * The send of the composer opened on `words` of the issue `issue`'s page: the write of the node
- * the words are in (`writeFor`), taken from the view while it draws the node, and from where it
- * last drew it once it is folded or paged away, where the composer stays.
+ * Where a send on `words` of `node`, a node of `view` on the page of `issue`, goes: the node's write
+ * (`writeFor`) and what it names (`composerAddressOf`), or null where no write stands on the node
+ * or the read gives it nothing to name. The control draws itself only where this answers one.
  */
-function useSelectionSend({
+export function sendTargetOf(
+  view: ViewThreads,
+  node: TreeAnswerNode,
+  issue: IssueDetails,
+  words: QuotedWords
+): SendTarget | null {
+  const write = writeFor(subjectOf(node, issue.key));
+  if (write === null) return null;
+  const spec = write.issue === issue.key ? primarySpec(issue)?.id : undefined;
+  const address = composerAddressOf(
+    write,
+    { ...node, ...(spec === undefined ? {} : { spec }), tree: treeOf(view, write.issue) },
+    words
+  );
+  return address === null ? null : { address, issue: write.issue };
+}
+
+/**
+ * Where the composer opened on `words` of the issue `issue`'s page sends (`sendTargetOf`), taken
+ * from the view while it draws the node, and from where it last drew it once it is folded or paged
+ * away, where the composer stays. Null in a mount that never met the node drawn.
+ */
+function useSendTarget({
   issue,
-  onLand,
   view,
   words,
 }: {
   readonly issue: IssueDetails;
-  readonly onLand: (outcome: TextComposerOutcome) => void;
   readonly view: ViewThreads;
   readonly words: SelectedWords;
-}): SelectionSend & { readonly write: LiveWrite | null } {
-  const client = useQueryClient();
-  const [said, setSaid] = useState<string>();
-  // The node as the view last drew it: the composer stays where a folded or paged-away row stood,
-  // and its send still writes on that node.
+}): SendTarget | null {
   const drawn = view.nodes.get(words.nodeId);
-  const tree = drawn === undefined ? undefined : treeOf(view, drawn.issue ?? issue.key);
-  const [last, setLast] = useState<{ readonly node: TreeAnswerNode; readonly tree: typeof tree }>();
-  if (drawn !== undefined && (last?.node !== drawn || last.tree !== tree)) {
-    setLast({ node: drawn, tree });
-  }
-  const node = drawn === undefined ? last : { node: drawn, tree };
-  const write =
-    node === undefined ? null : writeFor(subjectOf(node.node, issue.key), MOUNTED_GATES);
-  const send = async (body: string, bounds: WriteBounds): Promise<Comment | Message> => {
-    if (write === null || node === undefined) {
-      throw new Error("These words are in no node a comment is written on.");
-    }
-    setSaid(undefined);
-    const request = textRequestOf(write, { ...node.node, tree: node.tree }, words, body);
-    try {
-      const answer =
-        request.route === "messages"
-          ? await api.createMessage(request.issue, request.body, bounds)
-          : await api.createComment(request.issue, request.body as CommentInput, bounds);
-      void client.invalidateQueries({
-        queryKey:
-          request.route === "messages"
-            ? issueMessagesQuery(request.issue).queryKey
-            : issueCommentsQuery(request.issue).queryKey,
-      });
-      void client.invalidateQueries({ queryKey: ["issue", issue.key] });
-      const reply = write.place === "item" && write.request !== "node";
-      onLand(
-        reply && !quoteKept(answer.reply_block)
-          ? { notice: MARGIN_ANSWERS.quote_not_kept }
-          : { root: answer.id }
-      );
-      return answer;
-    } catch (error) {
-      if (wordsGone(error)) setSaid(MARGIN_ANSWERS.words_gone);
-      throw error;
-    }
-  };
-  return { said, send, write };
+  const target = drawn === undefined ? undefined : sendTargetOf(view, drawn, issue, words);
+  // The target as it was while each read of the node builds it afresh with the same values, so
+  // the composer's anchor and reply keep their identity.
+  const [last, setLast] = useState<SendTarget | null>(null);
+  const same = target !== undefined && JSON.stringify(target) === JSON.stringify(last);
+  if (target !== undefined && !same) setLast(target);
+  return target === undefined || same ? last : target;
 }
 
-/** What the composer's own send leaves its host to do beyond closing (`onClose`): nothing. */
-function nothingMore(): void {}
-
 /**
- * The composer opened on `words`: the quoted words cut to one line, `MentionComposer` on the
- * route of the node's issue, under a send name of these words, so each selection keeps its own
- * draft, and the sentence its last refusal left. `onLeave` closes it with the draft kept and
+ * The composer opened on `words`: `MentionComposer` on the route of the node's issue, under a send
+ * name of these words, so each selection keeps its own draft, and the sentence Dispatch's last
+ * refusal of its send leaves where the words are gone. `onLeave` closes it with the draft kept and
  * gives the focus to the node's row: what Escape does, and the composer's own Close and Discard.
+ * `onLand` closes it once its send lands, with where the page lands. A mount that never met its
+ * node drawn (`useSendTarget`) has nowhere to send, and closes at once with its draft kept.
  */
 export function SelectionComposer({
   issue,
@@ -172,39 +205,71 @@ export function SelectionComposer({
   readonly view: ViewThreads;
   readonly words: SelectedWords;
 }): ReactNode {
-  const { said, write } = useSelectionSend({ issue, onLand, view, words });
+  const target = useSendTarget({ issue, view, words });
+  const sendName: MutationKey = ["text-comment", issue.key, wordsKeyOf(words)];
+  const held = useHeldSend(sendName);
+  const said =
+    held?.status === "refused" && wordsGone(held.refusal) ? MARGIN_ANSWERS.words_gone : undefined;
+  // `MentionComposer` ends a send that lands with its `onSent`, then its `onClose`; the landing
+  // closes the composer with where the page lands, so that `onClose` is no Escape of the reader's.
+  const landing = useRef(false);
+  useLandedSends(sendName, (answer, sent) => {
+    landing.current = true;
+    const outcome = landingOf(answer, sent);
+    if (outcome === undefined) onLeave();
+    else onLand(outcome);
+  });
+  const leave = useRef(onLeave);
+  leave.current = onLeave;
+  const nowhere = target === null;
+  useEffect(() => {
+    if (nowhere) leave.current();
+  }, [nowhere]);
   // Escape in the composer closes it and keeps its draft (R5's table), where `MentionComposer`
-  // would ask to discard a typed one: before its own listener, unless a list it opened over its
-  // field - the mention list, the reference picker - or its own prompt takes the key.
+  // would ask to discard a typed one, or end its reply: before its own listener, unless a list it
+  // opened over its field - the mention list, the reference picker - takes the key. Its prompt,
+  // `Discard draft?`, closes the composer on Escape with the draft kept as this does, and a
+  // refusal's words take no key, so one Escape closes it in every state.
   const leaveOnEscape = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing) return;
-    const open = '[role="listbox"], [role="dialog"], [role="alert"]';
-    if (event.currentTarget.querySelector(open) !== null) return;
+    if (event.currentTarget.querySelector('[role="listbox"], [role="dialog"]') !== null) return;
     event.preventDefault();
     event.stopPropagation();
     onLeave();
   };
   return (
     <div className="flex min-w-0 flex-col gap-2" onKeyDownCapture={leaveOnEscape}>
-      {/* The selected words, as the server's plain text reads them: the reading list's `anchor-quote`. */}
-      <blockquote className="border-l-2 pl-2 text-sm">{quoteLine(words.quote)}</blockquote>
-      <MentionComposer
-        autoFocus
-        // The writing list's box of a margin's composer opened from a selection, which writes a
-        // comment on the words it quotes, as this one does.
-        box="margin-composer"
-        kind="comment"
-        mutationKey={["text-comment", issue.key, wordsKeyOf(words)]}
-        onClose={onLeave}
-        onSent={nothingMore}
-        owner={{ issueKey: write?.issue ?? issue.key, kind: "issue" }}
-        // The draft is kept under the send name at each change, as a standing box keeps its own,
-        // and not by its address only as the composer unmounts: at 1024 px the column and the
-        // node's sheet swap their composers at the same words in one commit, and the one that
-        // arrives reads the draft as it first draws, before the one that leaves has unmounted.
-        // Every other effect of `standing` is on a reply target, which this composer never has.
-        standing
-      />
+      {target === null || target.address.anchor !== undefined ? null : (
+        // The selected words, as the server's plain text reads them: the reading list's
+        // `anchor-quote`.
+        <blockquote className="border-l-2 pl-2 text-sm">{quoteLine(words.quote)}</blockquote>
+      )}
+      {target === null ? null : (
+        <MentionComposer
+          anchor={target.address.anchor}
+          autoFocus
+          // The writing list's box of a margin's composer opened from a selection, which writes a
+          // comment on the words it quotes, as this one does, or a reply to a message's block.
+          box="margin-composer"
+          kind="comment"
+          mutationKey={sendName}
+          onClose={() => {
+            if (!landing.current) onLeave();
+          }}
+          onSent={() => {
+            landing.current = true;
+          }}
+          owner={{ issueKey: target.issue, kind: "issue" }}
+          replyTo={target.address.replyTo}
+          // The draft is kept under the send name at each change, as a standing box keeps its own,
+          // and not by its address only as the composer unmounts: at 1024 px the column and the
+          // node's sheet swap their composers at the same words in one commit, and the one that
+          // arrives reads the draft as it first draws, before the one that leaves has unmounted.
+          // A reply target is the composer's own address, which nothing ends: it offers no Cancel
+          // reply and takes no focus for it.
+          standing
+        />
+      )}
       {said === undefined ? null : (
         <p className="text-sm" role="status">
           {said}

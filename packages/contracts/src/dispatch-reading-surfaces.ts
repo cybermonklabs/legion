@@ -1036,9 +1036,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // composer that is writing on it, in the Decisions panel's Change form, in the Activity tab's
   // line for the comment, and in the words that name it beside a draft a margin compose kept
   // for it (the composer's offer, the margin's list of what its compose kept).
-  // The new issue page's composer opened on selected words heads its box with those words cut
-  // to one line, the quote the thread card it makes draws: an anchor's on a block or a node, and
-  // a reply's on a block of an ask, a comment or a message (`text-comments/text-threads.ts`).
+  // The new issue page's composer opened on selected words of an ask, a comment or a message heads
+  // its box with those words cut to one line, the quote the thread card of the reply it makes
+  // draws (`text-comments/text-threads.ts`); an anchored composer is headed by `MentionComposer`'s
+  // own quote of its anchor.
   {
     files: [
       "packages/dispatch/web/src/features/margin/ThreadCard.tsx",

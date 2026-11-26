@@ -1,7 +1,7 @@
 // Mirrors web/src/features/issue-page/text-comments/gates.ts. The two tables move together.
 export const GATES = {
   ANCHOR_OCCURRENCE: false,
-  COMPOSER: false,
+  COMPOSER: true,
   DASHBOARD: false,
   NODE_ANCHOR: false,
   OTHER_ISSUE_COMMENTS: false,

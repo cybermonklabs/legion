@@ -4,10 +4,9 @@ import type { IssueDetails } from "../../../api/types";
 import { borderDefault, surfaceBg, textPrimaryOnSurface } from "../../../theme/classes";
 import { MARGIN_WORDS, type Preset } from "../page-words";
 import { rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
-import type { SelectedWords } from "./SelectionComposer";
+import { type SelectedWords, sendTargetOf } from "./SelectionComposer";
 import { quoteOf } from "./selection-quote";
 import { quotedNodeOf, useTextComposer } from "./TextMargin";
-import { MOUNTED_GATES, subjectOf, writeFor } from "./text-comment-write";
 import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThreads";
 
 /**
@@ -17,9 +16,11 @@ import { useStageIssue, useTextThreads, type ViewThreads } from "./useTextThread
  * `event.code === "KeyM"`, so macOS's Alt+M, which types "µ", still takes it) does what the button
  * does. A press, or the chord with a quote, opens the composer (`useTextComposer`), which closes
  * Details first; the chord with no quote does nothing. It draws no control on an author-only
- * node, a child issue's row, or a kind whose gate is off (`text-comment-write.ts`). It takes no
- * property: it reads the view the stage draws from the reads the page holds (`useStageIssue`,
- * `useTextThreads`). The stage mounts it only where `GATES.COMPOSER` is on.
+ * node, a child issue's row, or a kind whose gate is off, nor where the read gives the node's
+ * write nothing to name (`sendTargetOf`). It takes no property: it reads the view the stage draws
+ * from the reads the page holds (`useStageIssue`, `useTextThreads`). The page's root mounts it
+ * once, beside the stage and the column (`IssueOutlinePage.tsx`), and it serves the column and
+ * each node's sheet alike.
  *
  * The chord is a `keydown` listener of the document's, not a binding of the page's keymap: the
  * keymap matches a key by the character it types and by its place only on a Mac (`keymap.ts`),
@@ -68,13 +69,13 @@ function inOneTextBlock(range: Range, runs: TextRuns): boolean {
 }
 
 /**
- * What the document's selection quotes in the row its start is in, on the issue `page`'s page
- * drawn as `view`, or null: no single range, a collapsed one, no row the view draws a node of, a
- * node no write is offered on (`writeFor`), a selection that is not inside that row's own words
- * (`quoteOf`), or one across two of their text blocks (`inOneTextBlock`). The control stands
- * right of the last rectangle of the range, at its top.
+ * What the document's selection quotes in the row its start is in, on the page of `issue` drawn as
+ * `view`, or null: no single range, a collapsed one, no row the view draws a node of, a selection
+ * that is not inside that row's own words (`quoteOf`), one across two of their text blocks
+ * (`inOneTextBlock`), or words no send is offered on (`sendTargetOf`). The control stands right of
+ * the last rectangle of the range, at its top.
  */
-function selectedIn(view: ViewThreads, page: string): Selected | null {
+function selectedIn(view: ViewThreads, issue: IssueDetails): Selected | null {
   const selection = document.getSelection();
   if (selection === null || selection.rangeCount !== 1 || selection.isCollapsed) return null;
   const range = selection.getRangeAt(0);
@@ -83,7 +84,6 @@ function selectedIn(view: ViewThreads, page: string): Selected | null {
   const nodeId = row?.dataset.nodeId;
   const node = nodeId === undefined ? undefined : view.nodes.get(nodeId);
   if (row === null || row === undefined || nodeId === undefined || node === undefined) return null;
-  if (writeFor(subjectOf(node, page), MOUNTED_GATES) === null) return null;
   const quoted = quotedNodeOf(view, nodeId);
   const words = rowTextOf(row);
   if (quoted === undefined || words === null) return null;
@@ -91,18 +91,16 @@ function selectedIn(view: ViewThreads, page: string): Selected | null {
   const runs = textRuns(words);
   const quote = quoteOf(selection, row, quoted, runs);
   if (quote === null || !inOneTextBlock(range, runs)) return null;
+  const selected = {
+    block: quote.block?.block_id ?? null,
+    nodeId,
+    occurrence: quote.occurrence,
+    quote: quote.quote,
+  };
+  if (sendTargetOf(view, node, issue, selected) === null) return null;
   const rects = range.getClientRects();
   const end = rects.item(rects.length - 1) ?? range.getBoundingClientRect();
-  return {
-    left: end.right + GAP,
-    top: end.top,
-    words: {
-      block: quote.block?.block_id ?? null,
-      nodeId,
-      occurrence: quote.occurrence,
-      quote: quote.quote,
-    },
-  };
+  return { left: end.right + GAP, top: end.top, words: selected };
 }
 
 /** Whether `event` is `$mod+Alt+m` by the key's place: Meta or Control, as the page's keymap
@@ -117,12 +115,11 @@ function Control({ issue, preset }: { readonly issue: IssueDetails; readonly pre
   const view = useTextThreads(issue, preset);
   const composer = useTextComposer();
   const [selected, setSelected] = useState<Selected | null>(null);
-  // The listeners read the view and the composer as they stand, so they are not bound again
-  // whenever a read answers.
-  const now = useRef({ composer, view });
-  now.current = { composer, view };
-  const key = issue.key;
-  const find = useCallback(() => selectedIn(now.current.view, key), [key]);
+  // The listeners read the view, the issue and the composer as they stand, so they are not bound
+  // again whenever a read answers.
+  const now = useRef({ composer, issue, view });
+  now.current = { composer, issue, view };
+  const find = useCallback(() => selectedIn(now.current.view, now.current.issue), []);
 
   // The selection is read again at most once in an animation frame, however often it changes.
   useEffect(() => {

@@ -43,8 +43,8 @@
  * | either · the issue's read fails or is pending                       | (1)    |
  * | either · the page choice moves to today's page                      | (2)    |
  * | either · an address that names no issue                             | (3)    |
- * | selection composer · its own send lands                             | (4)    |
- * | selection composer · its owner changes                              | (5)    |
+ * | selection composer · it has nowhere to send                         | (4)    |
+ * | selection composer · its owner, anchor or reply target changes      | (5)    |
  * | either · the address's search changes                               | (6)    |
  * | either · the sheet's row is another node's or under another parent  | (7)    |
  * | text thread reply · the address marks one of its replies            | (8)    |
@@ -66,17 +66,17 @@
  * other way round; it is checked in the sheet and again in the column. (kept) marks a move that
  * keeps the composer mounted: another view keeps it open where the statement's row last stood.
  *
- * At this base no page mounts the control that opens the composer (`SelectionComment`, gate G5)
- * and no row site mounts the sheet (G6). So each case opens the composer as the control does
- * (`useTextComposer().open`), with a button of its own, and draws the statement's row with its
- * sheet beside the page, as `NodeThreads.test.tsx` draws it. The composer's Send is
- * `MentionComposer`'s own path at this base (the composer takes `useSelectionSend` at G5), so a
- * refused draft is one `MentionComposer` sent and Dispatch refused (`REFUSAL`), and a stopped one
- * is a send stopped under the composer's send name before the page is drawn (`stopSend`).
+ * The page's root mounts the control that opens the composer (`SelectionComment`), which reads a
+ * selection a case would have to lay out, and no row site mounts the sheet at this base (G6). So
+ * each case opens the composer as the control does (`useTextComposer().open`), with a button of
+ * its own, and draws the statement's row with its sheet beside the page, as `NodeThreads.test.tsx`
+ * draws it. The composer sends through `MentionComposer`'s own path with the statement's block
+ * anchor, so a refused draft is one `MentionComposer` sent and Dispatch refused (`REFUSAL`), and
+ * a stopped one is a send to that anchor stopped under the composer's send name before the page
+ * is drawn (`stopSend`).
  *
- * A refusal or a stop is drawn as an alert (`QueryError`), and the composer leaves Escape over an
- * alert to `MentionComposer`'s own listener, which asks `Discard draft?` over a draft first: the
- * Escape rows press it twice there, the second closing the composer with its draft kept.
+ * A refusal or a stop is drawn as an alert (`QueryError`), which takes no key: one Escape closes
+ * the composer with its draft kept in every state.
  *
  * The forms the composer census found: the column's at 1024 px (`TextMargin`'s `wide`) and the
  * sheet's (`NodeThreads`' `wide`), which the narrowing rows make. The app shell's forms above the
@@ -364,8 +364,18 @@ async function holdInComposer(page: Page, place: Place, held: Held): Promise<voi
   }
 }
 
+/** The composer's anchor on the statement's words `page`, which its send names. */
+const PAGE_ANCHOR = {
+  artifact: SPEC_DOCUMENT.id,
+  block_id: STATEMENT,
+  occurrence: 0,
+  quote: "page",
+} as const;
+
 const stoppedComposer = (held: Held): Stopped | undefined =>
-  held === "stopped" ? { key: COMPOSER_KEY, request: sentRequest(BODY, null) } : undefined;
+  held === "stopped"
+    ? { key: COMPOSER_KEY, request: sentRequest(BODY, null, { anchor: PAGE_ANCHOR }) }
+    : undefined;
 
 /** Puts `BODY` in the reply of the statement's thread in `place`, in the state `held` names; a
  *  stopped reply is the one `openPage` seeded, which the card draws with its reply. */
@@ -429,12 +439,11 @@ async function issueLeftAndBack(page: Page): Promise<void> {
   );
 }
 
-/** Presses Escape in the composer in `place` until it closes: once over a typed draft, and twice
- *  over a refusal or a stop, whose alert leaves the first Escape to `MentionComposer`, which asks
- *  `Discard draft?` first. */
-async function escapeComposer(page: Page, place: Place, held: Held): Promise<void> {
+/** Presses Escape once in the composer in `place`, which closes it in every state: a refusal's
+ *  or a stop's alert takes no key. */
+async function escapeComposer(page: Page, place: Place): Promise<void> {
   await page.user.click(fieldOf(await composerIn(page.view(), place)));
-  await page.user.keyboard(held === "typed" ? "{Escape}" : "{Escape}{Escape}");
+  await page.user.keyboard("{Escape}");
   await waitFor(() =>
     expect(composerAt(page.view(), place), "Escape left the composer open").toBeNull()
   );
@@ -457,7 +466,7 @@ for (const { host, place, width } of COMPOSER_HOSTS) {
       const page = await openPage({ stopped: stoppedComposer(held), threads: [], width });
       try {
         await holdInComposer(page, place, held);
-        await escapeComposer(page, place, held);
+        await escapeComposer(page, place);
         await openOn(page, "page");
         expect(heldBy(await composerIn(page.view(), place))).toEqual(expectedBack(held));
       } finally {

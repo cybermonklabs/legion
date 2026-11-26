@@ -37,8 +37,9 @@ import { TEXT_COMPOSER_ATTRIBUTE } from "./TextMargin";
  * row of the plan's table, and each that asserts the control or the composer away first asserts it
  * drawn, so a control that is never drawn fails the row on its own words. The control stands
  * `position: fixed` at the last client rectangle of the selection's range, which happy-dom lays
- * out nowhere, so a case gives the range its rectangle. The send rows wait for pull request 3125,
- * which brings the composer's fields (G5).
+ * out nowhere, so a case gives the range its rectangle. The composer sends through its own path
+ * (`MentionComposer`, `send-request.ts`), so a send row answers `api.createComment`, which that
+ * path calls; the row of a reply's quote waits for INFRA-5703's reply quote (G4).
  */
 
 /** The control's name and the margin's name for its column (`page-words-margin.ts`, R11). */
@@ -313,8 +314,7 @@ test("no selection, $mod+Alt+m: nothing is written and nothing is drawn", async 
   }
 });
 
-// The send rows wait for the composer's fields of pull request 3125 (G5): R5's anchor and reply
-// fields in `composer-model.ts`, `send-request.ts` and `held-sends.ts`.
+// The send rows: R5's anchor and reply fields, which the composer's send carries.
 
 /** Types `draft` in the composer's box and presses Send. */
 async function send(
@@ -326,127 +326,115 @@ async function send(
   await user.click(composer.querySelector<HTMLElement>('button[type="submit"]') as HTMLElement);
 }
 
-test.skipIf(!GATES.COMPOSER)(
-  "composer open, Send: sending, the draft is held and Send shows its pending state",
-  async () => {
-    const user = userEvent.setup();
-    const pending = Promise.withResolvers<never>();
-    const { client, row, view } = await drawn({ threads: [] });
-    const create = spyOn(api, "createComment").mockReturnValue(pending.promise);
-    stubs.push(create);
-    try {
-      const composer = await openComposer(view, row, user);
-      await send(composer, user);
-      await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
-      expect(create.mock.calls[0]?.[1], "the send's anchor").toMatchObject({
-        anchor: { artifact: SPEC_DOCUMENT.id, block_id: STATEMENT, occurrence: 0, quote: "page" },
-        body: "Why this word?",
-      });
-      const submit = composer.querySelector<HTMLElement>('button[type="submit"]');
-      expect(
-        submit?.hasAttribute("disabled") || submit?.getAttribute("aria-busy") === "true",
-        "Send shows no pending state"
-      ).toBe(true);
-      expect(within(composer).getByRole("textbox")).toHaveValue("Why this word?");
-    } finally {
-      view.finish();
-      client.clear();
-    }
-  }
-);
+/** A refusal that is Dispatch's verdict on the send, and none that says the words are gone: the
+ *  composer's path tries a send again under its key after an answer of no verdict (a 5xx). */
+const REFUSED = new ApiError(400, { code: "INPUT_REFUSED", error: "the write failed" });
 
-test.skipIf(!GATES.COMPOSER)(
-  "sending, 201: the composer closes and the new thread stands beside its node with the focus on its root, before and after the re-read",
-  async () => {
-    const user = userEvent.setup();
-    const reads: SeededReads = { threads: [] };
-    const { client, row, view } = await drawn(reads);
-    const created = { ...ON_STATEMENT.comment, id: "new-thread" };
-    stubs.push(spyOn(api, "createComment").mockResolvedValue(created));
-    try {
-      const composer = await openComposer(view, row, user);
-      reads.threads = [{ ...ON_STATEMENT, comment: created }];
-      await send(composer, user);
-      await waitFor(() =>
-        expect(view.container.querySelector(`[${TEXT_COMPOSER_ATTRIBUTE}]`)).toBeNull()
-      );
-      const root = await waitFor(() => {
-        const card = view
-          .getByRole("region", { name: COLUMN })
-          .querySelector<HTMLElement>('[data-margin-item="new-thread"]');
-        expect(card, "the new thread stands in no card").not.toBeNull();
-        return card as HTMLElement;
-      });
-      expect(root.contains(document.activeElement), "the focus is not on the thread's root").toBe(
-        true
-      );
-      await readAgain(client);
-      expect(
-        root.isConnected && root.contains(document.activeElement),
-        "the re-read moved the focus"
-      ).toBe(true);
-    } finally {
-      view.finish();
-      client.clear();
-    }
+test("composer open, Send: sending, the draft is held and Send shows its pending state", async () => {
+  const user = userEvent.setup();
+  const pending = Promise.withResolvers<never>();
+  const { client, row, view } = await drawn({ threads: [] });
+  const create = spyOn(api, "createComment").mockReturnValue(pending.promise);
+  stubs.push(create);
+  try {
+    const composer = await openComposer(view, row, user);
+    await send(composer, user);
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create.mock.calls[0]?.[1], "the send's anchor").toMatchObject({
+      anchor: { artifact: SPEC_DOCUMENT.id, block_id: STATEMENT, occurrence: 0, quote: "page" },
+      body: "Why this word?",
+    });
+    const submit = composer.querySelector<HTMLElement>('button[type="submit"]');
+    expect(
+      submit?.hasAttribute("disabled") || submit?.getAttribute("aria-busy") === "true",
+      "Send shows no pending state"
+    ).toBe(true);
+    expect(within(composer).getByRole("textbox")).toHaveValue("Why this word?");
+  } finally {
+    view.finish();
+    client.clear();
   }
-);
+});
 
-test.skipIf(!GATES.COMPOSER)(
-  "sending, 400 INVALID_ANCHOR or 404 TARGET_NOT_FOUND: the draft stays and one sentence says the words are no longer in the text",
-  async () => {
-    for (const refusal of [
-      new ApiError(400, { code: "INVALID_ANCHOR", error: "no such quote" }),
-      new ApiError(404, { code: "TARGET_NOT_FOUND", error: "no such occurrence" }),
-    ]) {
-      const user = userEvent.setup();
-      const { client, row, view } = await drawn({ threads: [] });
-      stubs.push(spyOn(api, "createComment").mockRejectedValue(refusal));
-      try {
-        const composer = await openComposer(view, row, user);
-        await send(composer, user);
-        const status = await waitFor(() => within(composer).getByRole("status"));
-        expect(status.textContent, `the sentence for ${refusal.status}`).toBe(NO_LONGER);
-        expect(within(composer).getByRole("textbox"), "the draft went").toHaveValue(
-          "Why this word?"
-        );
-      } finally {
-        view.finish();
-        client.clear();
-      }
-    }
-  }
-);
-
-test.skipIf(!GATES.COMPOSER)(
-  "sending, any other refusal: the draft stays and the composer's own failure words are drawn",
-  async () => {
-    const user = userEvent.setup();
-    const { client, row, view } = await drawn({ threads: [] });
-    stubs.push(
-      spyOn(api, "createComment").mockRejectedValue(
-        new ApiError(500, { code: "INTERNAL", error: "the write failed" })
-      )
+test("sending, 201: the composer closes and the new thread stands beside its node with the focus on its root, before and after the re-read", async () => {
+  const user = userEvent.setup();
+  const reads: SeededReads = { threads: [] };
+  const { client, row, view } = await drawn(reads);
+  const created = { ...ON_STATEMENT.comment, id: "new-thread" };
+  stubs.push(spyOn(api, "createComment").mockResolvedValue(created));
+  try {
+    const composer = await openComposer(view, row, user);
+    reads.threads = [{ ...ON_STATEMENT, comment: created }];
+    await send(composer, user);
+    await waitFor(() =>
+      expect(view.container.querySelector(`[${TEXT_COMPOSER_ATTRIBUTE}]`)).toBeNull()
     );
+    const root = await waitFor(() => {
+      const card = view
+        .getByRole("region", { name: COLUMN })
+        .querySelector<HTMLElement>('[data-margin-item="new-thread"]');
+      expect(card, "the new thread stands in no card").not.toBeNull();
+      return card as HTMLElement;
+    });
+    expect(root.contains(document.activeElement), "the focus is not on the thread's root").toBe(
+      true
+    );
+    await readAgain(client);
+    expect(
+      root.isConnected && root.contains(document.activeElement),
+      "the re-read moved the focus"
+    ).toBe(true);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+test("sending, 400 INVALID_ANCHOR or 404 TARGET_NOT_FOUND: the draft stays and one sentence says the words are no longer in the text", async () => {
+  for (const refusal of [
+    new ApiError(400, { code: "INVALID_ANCHOR", error: "no such quote" }),
+    new ApiError(404, { code: "TARGET_NOT_FOUND", error: "no such occurrence" }),
+  ]) {
+    const user = userEvent.setup();
+    const { client, row, view } = await drawn({ threads: [] });
+    stubs.push(spyOn(api, "createComment").mockRejectedValue(refusal));
     try {
       const composer = await openComposer(view, row, user);
       await send(composer, user);
-      await waitFor(() => expect(composer.textContent).not.toContain(NO_LONGER));
+      const status = await waitFor(() => within(composer).getByRole("status"));
+      expect(status.textContent, `the sentence for ${refusal.status}`).toBe(NO_LONGER);
       expect(within(composer).getByRole("textbox"), "the draft went").toHaveValue("Why this word?");
-      expect(
-        composer.querySelector('[role="alert"], [role="status"]'),
-        "the composer says nothing of the refusal"
-      ).not.toBeNull();
     } finally {
       view.finish();
       client.clear();
     }
   }
-);
+});
+
+test("sending, any other refusal: the draft stays and the composer's own failure words are drawn", async () => {
+  const user = userEvent.setup();
+  const { client, row, view } = await drawn({ threads: [] });
+  stubs.push(spyOn(api, "createComment").mockRejectedValue(REFUSED));
+  try {
+    const composer = await openComposer(view, row, user);
+    await send(composer, user);
+    await waitFor(() =>
+      expect(
+        composer.querySelector('[role="alert"]'),
+        "the composer says nothing of the refusal"
+      ).not.toBeNull()
+    );
+    expect(composer.textContent, "the words are said to be gone").not.toContain(NO_LONGER);
+    expect(within(composer).getByRole("textbox"), "the draft went").toHaveValue("Why this word?");
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
 
 // A reply to a block of a post, whose 201 keeps no quote (an older build, while two builds serve
 // one database): the reply is a row under what it answers (decision 465 (4)).
-test.skipIf(!GATES.COMPOSER || !GATES.REPLY_QUOTE)(
+test.skipIf(!GATES.REPLY_QUOTE)(
   "sending a reply, 201 whose reply_block holds no quote: the composer closes, the reply is a row under what it answers, the sentence is drawn with role status, and no thread",
   async () => {
     const user = userEvent.setup();
@@ -483,26 +471,46 @@ test.skipIf(!GATES.COMPOSER || !GATES.REPLY_QUOTE)(
   }
 );
 
-test("composer open, Escape: the composer closes, the draft is kept as the composer keeps one, and the focus goes to the node's row", async () => {
-  const user = userEvent.setup();
-  const { client, row, view } = await drawn({ threads: [] });
-  try {
-    const composer = await openComposer(view, row, user);
-    await user.type(within(composer).getByRole("textbox"), "Why this word?");
-    await user.keyboard("{Escape}");
-    await waitFor(() =>
-      expect(view.container.querySelector(`[${TEXT_COMPOSER_ATTRIBUTE}]`)).toBeNull()
-    );
-    expect(document.activeElement?.closest("[data-node-row]"), "the focus is not on the row").toBe(
-      row
-    );
-    const again = await openComposer(view, row, user);
-    expect(within(again).getByRole("textbox"), "the draft was not kept").toHaveValue(
-      "Why this word?"
-    );
-  } finally {
-    view.finish();
-    client.clear();
+test("composer open, Escape: the composer closes, the draft is kept as the composer keeps one, and the focus goes to the node's row, after a refused send as before any", async () => {
+  for (const held of ["typed", "refused"] as const) {
+    const user = userEvent.setup();
+    const { client, row, view } = await drawn({ threads: [] });
+    stubs.push(spyOn(api, "createComment").mockRejectedValue(REFUSED));
+    try {
+      const composer = await openComposer(view, row, user);
+      if (held === "refused") {
+        await send(composer, user);
+        await waitFor(() =>
+          expect(
+            composer.querySelector('[role="alert"]'),
+            "the send was not refused"
+          ).not.toBeNull()
+        );
+        await user.click(within(composer).getByRole("textbox"));
+      } else {
+        await user.type(within(composer).getByRole("textbox"), "Why this word?");
+      }
+      // One Escape closes the composer in each state.
+      await user.keyboard("{Escape}");
+      await waitFor(() =>
+        expect(
+          view.container.querySelector(`[${TEXT_COMPOSER_ATTRIBUTE}]`),
+          `one Escape left the composer open (${held})`
+        ).toBeNull()
+      );
+      expect(
+        document.activeElement?.closest("[data-node-row]"),
+        `the focus is not on the row (${held})`
+      ).toBe(row);
+      const again = await openComposer(view, row, user);
+      expect(within(again).getByRole("textbox"), `the draft was not kept (${held})`).toHaveValue(
+        "Why this word?"
+      );
+    } finally {
+      view.finish();
+      client.clear();
+      for (const stub of stubs.splice(0)) stub.mockRestore();
+    }
   }
 });
 

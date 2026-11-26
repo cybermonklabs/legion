@@ -1,3 +1,5 @@
+import type { Actor } from "../../../api/types";
+import type { ComposerAnchor, ReplyTarget } from "../../conversation/composer-model";
 import { blockIdOfNode } from "../decision-review";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { GATES, type GateName } from "./gates";
@@ -8,8 +10,9 @@ import { GATES, type GateName } from "./gates";
  * the quote alone, never by a block's type (INFRA-1253 `api/anchors.go`), so a block of a
  * document writes the same request whatever its type, and so does a block written in the room.
  * A block inside an ask, a comment or a message is drawn in that item's row, so its selection is
- * the item's and writes the item's reply with that block (`TextWords.block`). This module builds
- * a request's body; it sends nothing.
+ * the item's and writes the item's reply with that block (`QuotedWords.block`). This module says
+ * where a write goes - the anchor or the reply `MentionComposer` sends it with
+ * (`composerAddressOf`) - and sends nothing: the send is the composer's own (`send-request.ts`).
  */
 
 /** Where a node stands, which decides its write: as a block of a document the issue holds, as a
@@ -129,11 +132,6 @@ export function writeFor(
   return found === undefined || !gates[found.gate] ? null : { ...found, issue: subject.issue };
 }
 
-/** The gates as the control and its composer read them: the page mounts both only where
- *  `COMPOSER` is on (the stage's mount line, G5), so wherever they run it is on, and each other
- *  gate is the base's. */
-export const MOUNTED_GATES: Readonly<Record<GateName, boolean>> = { ...GATES, COMPOSER: true };
-
 /** The kinds that stand as items of their own: an ask, a comment, a message, and a lens with its
  *  findings, risks, constraints and results. */
 const ITEM_PLACE_KINDS: Readonly<Record<string, true>> = {
@@ -178,118 +176,69 @@ export interface QuotedWords {
   readonly quote: string;
 }
 
-/** What a write names of the words: the selected words, or, in an editor, the provisional mark
- *  its selection bar wrote over them (decision 10). */
-export type TextWords = QuotedWords | { readonly mark: string };
-
-/** The node the words are in, as the tree read answers it, with the `tree` artifact of the issue
- *  it belongs to, which a block written in the room is anchored in (G3a). */
+/** The node the words are in, as the tree read answers it, with what the page knows beside it:
+ *  the `tree` artifact of the issue it belongs to, which a block written in the room is anchored
+ *  in (G3a), and that issue's spec, which a reference in a comment on a node's words is read in
+ *  (`ComposerAnchor.node`). */
 export interface TextWriteTarget {
+  /** The item's authors as the read lists them: a reply names the first as whom it answers. */
+  readonly author?: readonly Actor[] | null;
   readonly block_id?: string;
   readonly document?: { readonly artifact_id: string };
   /** The node's id in the read: the item a reply answers, or the node a node anchor names. */
   readonly id: string;
+  readonly spec?: string;
   readonly tree?: string | null;
 }
 
-/** A block's anchor: its document, the block, the words and their occurrence; in an editor the
- *  document and the mark alone, since the server refuses `block_id`, `quote` or `occurrence`
- *  beside `mark_id` (`resolveAnchor`). */
-export type BlockAnchor =
-  | {
-      readonly artifact: string;
-      readonly block_id: string;
-      readonly occurrence: number;
-      readonly quote: string;
-    }
-  | { readonly artifact: string; readonly mark_id: string };
-
-/** A node's anchor (1253 R31): the node, the words and their occurrence in the node's text. */
-export interface NodeAnchor {
-  readonly node: string;
-  readonly occurrence: number;
-  readonly quote: string;
+/** Where a composer's send on selected words goes, as `MentionComposer` takes it: the anchor that
+ *  names the words, or the reply to the item they are in with the item's block and the words. */
+export interface ComposerAddress {
+  readonly anchor: ComposerAnchor | undefined;
+  readonly replyTo: ReplyTarget | null;
 }
 
-/** The body of a comment a write sends. */
-export interface TextCommentBody {
-  readonly anchor?: BlockAnchor | NodeAnchor;
-  readonly ask_id?: string;
-  readonly body: string;
-  readonly occurrence?: number;
-  readonly quote?: string;
-  readonly reply_to?: string;
-  readonly reply_to_block?: string;
-}
-
-/** The body of a message a write sends. */
-export interface TextMessageBody {
-  readonly body: string;
-  readonly in_reply_to: string;
-  readonly in_reply_to_block: string;
-  readonly occurrence: number;
-  readonly quote: string;
-}
-
-/** One write as it goes: the route, the issue whose route it is, and the body. */
-export type TextSend =
-  | { readonly body: TextCommentBody; readonly issue: string; readonly route: "comments" }
-  | { readonly body: TextMessageBody; readonly issue: string; readonly route: "messages" };
-
-/** The item's block that holds the words, which a reply names; an item's words always lie in one
- *  of its blocks (`quoteOf`). */
-function itemBlock(words: QuotedWords): string {
-  if (words.block === null) throw new Error("A reply with a quote names the item's block.");
-  return words.block;
-}
+/** The post each reply answers, as the composer's reply target names it (`parentKind`). */
+const REPLY_PARENTS = { ask_part: "ask", comment: "comment", message: "message" } as const;
 
 /**
- * The request that writes `body` on `words` of `at` by `write` (R5): a comment on the node's
- * issue's route anchored in its document's block, or the room's, or on the node; or a reply with
- * the quote to the ask, the comment or the message the words are in.
+ * Where the composer's send on `words` of `at` goes by `write` (R5), on the route of the write's
+ * issue, which `send-request.ts` builds the request of: a comment anchored in the block of the
+ * node's document, or the room's, or on the node; or a reply with the quote to the ask, the
+ * comment or the message the words are in. Null where the read gives the write nothing to name:
+ * a block with no artifact to anchor in, or an item with no author to answer.
  */
-export function textRequestOf(
+export function composerAddressOf(
   write: LiveWrite,
   at: TextWriteTarget,
-  words: TextWords,
-  body: string
-): TextSend {
-  const comment = (fields: Omit<TextCommentBody, "body">): TextSend => ({
-    body: { body, ...fields },
-    issue: write.issue,
-    route: "comments",
-  });
+  words: QuotedWords
+): ComposerAddress | null {
+  const { occurrence, quote } = words;
   if (write.request === "block" || write.request === "tree_block") {
     const artifact = write.request === "block" ? at.document?.artifact_id : at.tree;
-    if (artifact === undefined || artifact === null) {
-      throw new Error(`The ${write.place}'s block names no artifact to anchor in.`);
-    }
-    return comment({
-      anchor:
-        "mark" in words
-          ? { artifact, mark_id: words.mark }
-          : {
-              artifact,
-              block_id: blockIdOfNode(at),
-              occurrence: words.occurrence,
-              quote: words.quote,
-            },
-    });
+    if (artifact === undefined || artifact === null) return null;
+    return {
+      anchor: { artifact, block_id: blockIdOfNode(at), occurrence, quote },
+      replyTo: null,
+    };
   }
-  if ("mark" in words) throw new Error("Only a block of a document or the room has an editor.");
-  const quoted = { occurrence: words.occurrence, quote: words.quote };
-  switch (write.request) {
-    case "node":
-      return comment({ anchor: { node: at.id, ...quoted } });
-    case "ask_part":
-      return comment({ ask_id: at.id, reply_to_block: itemBlock(words), ...quoted });
-    case "comment":
-      return comment({ reply_to: at.id, reply_to_block: itemBlock(words), ...quoted });
-    case "message":
-      return {
-        body: { body, in_reply_to: at.id, in_reply_to_block: itemBlock(words), ...quoted },
-        issue: write.issue,
-        route: "messages",
-      };
+  if (write.request === "node") {
+    // A node anchor names no document; its `artifact`, which the send leaves out, is the spec a
+    // reference in the comment is read in, or none where the issue has none.
+    return { anchor: { artifact: at.spec ?? "", node: at.id, occurrence, quote }, replyTo: null };
   }
+  const actor = at.author?.[0];
+  if (actor === undefined || words.block === null) return null;
+  return {
+    anchor: undefined,
+    replyTo: {
+      actor,
+      block: words.block,
+      excerpt: "",
+      id: at.id,
+      occurrence,
+      parentKind: REPLY_PARENTS[write.request],
+      quote,
+    },
+  };
 }

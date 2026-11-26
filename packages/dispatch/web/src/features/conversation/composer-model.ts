@@ -31,7 +31,9 @@ export type ComposerKind = "ask" | "comment" | "suggestion";
 export type ComposerAnchor =
   | {
       readonly artifact: string;
+      readonly block_id?: never;
       readonly mark_id: string;
+      readonly node?: never;
       readonly occurrence?: never;
       /** The words the editor read on each side of `quote`, in the block it wrote the mark in, and
        *  how many readings of those words that block held, as it reported when the selection bar made
@@ -45,7 +47,17 @@ export type ComposerAnchor =
     }
   | {
       readonly artifact: string;
+      /** The block of the document the words are in, by its id, where the composer knows it: the
+       *  new issue page's composer opened on words a row draws of one block. The server then finds
+       *  the quote in that block alone. */
+      readonly block_id?: string;
       readonly mark_id?: never;
+      /** The node the words are in, by its address, where they are the words of an item of its
+       *  own that no document holds - a lens, a finding, a risk, a constraint or a result
+       *  (INFRA-1253's node anchor): the send names the node, the quote and its occurrence in the
+       *  node's text, and leaves `artifact` out, which names then the document a reference in the
+       *  comment is read in, the issue's spec, as the server reads a comment on no document. */
+      readonly node?: string;
       readonly occurrence: number;
       /** The server anchors a quote-anchored comment itself, so there is no mark to write again. */
       readonly placement?: never;
@@ -74,6 +86,13 @@ export interface ReplyTarget {
   readonly parentKind: "ask" | "comment" | "message";
   /** Canonical targets carried by a comment parent, prefilled as editable @ mentions. */
   readonly mentions?: readonly { readonly target: string; readonly title: string }[];
+  /** Where the reply answers one block of the post, the words of it the reader selected
+   *  (INFRA-5703's reply quote): the block by its id (`reply_to_block`, `in_reply_to_block`), the
+   *  words as its plain text reads them, and which match of them in that block they are. Absent
+   *  on a reply to the whole post. */
+  readonly block?: string;
+  readonly occurrence?: number;
+  readonly quote?: string;
   /** Kept while old targeted-message threads remain readable; S2 writes comments only. */
   readonly thread?: {
     readonly delivery: DeliveryCapability;

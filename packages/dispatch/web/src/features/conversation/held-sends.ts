@@ -240,6 +240,18 @@ const keptEdit = shape.either(
  *  bar wrote over them, or, on a closed issue's document, which takes no mark, the quote and which
  *  reading of it the reader selected (`quoteAnchor`), where the server writes the mark. */
 export const keptAnchor = shape.either(
+  // The new issue page's composer opened on words a row draws (`ComposerAnchor`): the quote with
+  // the block of the document it is in, or with the node it is in where no document holds it. A
+  // record is read back whole, the fields its shape does not name with it, so both come back with
+  // the quote and the send after a reload names them again; this member names the shape they are
+  // kept in.
+  shape.record({
+    artifact: shape.string,
+    block_id: shape.optional(shape.string),
+    node: shape.optional(shape.string),
+    occurrence: shape.number,
+    quote: shape.string,
+  }),
   shape.record({
     artifact: shape.string,
     mark_id: shape.string,
@@ -276,12 +288,17 @@ export const keptOwner = shape.either(
 /** The reply a draft answers (`ReplyTarget`). */
 export const keptReplyTo = shape.record({
   actor: keptActor,
+  // The block of the post a reply answers and the words of it the reader selected, where it
+  // answers one block (`ReplyTarget.block`, `quote`, `occurrence`).
+  block: shape.optional(shape.string),
   excerpt: shape.string,
   id: shape.string,
   mentions: shape.optional(
     shape.array(shape.record({ target: shape.string, title: shape.string }))
   ),
+  occurrence: shape.optional(shape.number),
   parentKind: shape.oneOf("ask", "comment", "message"),
+  quote: shape.optional(shape.string),
   thread: shape.optional(shape.record({ delivery: keptDelivery, target: shape.string })),
   to: shape.optional(shape.string),
 });

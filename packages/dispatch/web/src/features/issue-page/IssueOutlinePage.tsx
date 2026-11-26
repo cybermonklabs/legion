@@ -25,6 +25,7 @@ import { HeaderSlot } from "./slots/header";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
+import { SelectionComment } from "./text-comments/SelectionComment";
 import { TextMargin } from "./text-comments/TextMargin";
 
 /** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
@@ -128,6 +129,9 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
         <TextMargin {...props} />
       </div>
       <DetailsSlot {...props} />
+      {/* The control that comments on words selected in the stage (R5), which opens the composer
+          in the column beside its node, or in the node's sheet below 1024 px. */}
+      <SelectionComment />
     </ProvidersSlot>
   );
 }

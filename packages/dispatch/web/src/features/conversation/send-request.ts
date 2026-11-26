@@ -317,11 +317,19 @@ function attempt(
   const { body, replacement } = draft;
   // A provisional mark is named by its id; a quote anchor (a closed issue's document) by its text
   // and occurrence, where the server writes the mark.
+  // A block's anchor names its block as well, and an item's its node in place of a document. A
+  // field the composer did not set is not sent, so an anchor that sets neither sends as before.
   const selection: AnchorInput | undefined =
     anchor === undefined
       ? undefined
       : anchor.mark_id === undefined
-        ? { artifact: anchor.artifact, occurrence: anchor.occurrence, quote: anchor.quote }
+        ? {
+            ...(anchor.node === undefined ? { artifact: anchor.artifact } : {}),
+            ...(anchor.block_id === undefined ? {} : { block_id: anchor.block_id }),
+            ...(anchor.node === undefined ? {} : { node: anchor.node }),
+            occurrence: anchor.occurrence,
+            quote: anchor.quote,
+          }
         : { artifact: anchor.artifact, mark_id: anchor.mark_id };
   if (kind === "ask") {
     const input = {
@@ -342,6 +350,11 @@ function attempt(
       {
         body: plan.body,
         in_reply_to: replyTo.id,
+        // A reply to one block of the message names the block, the words it quotes and which
+        // match of them in the block the reader selected (INFRA-5703's reply quote).
+        ...(replyTo.block === undefined ? {} : { in_reply_to_block: replyTo.block }),
+        ...(replyTo.occurrence === undefined ? {} : { occurrence: replyTo.occurrence }),
+        ...(replyTo.quote === undefined ? {} : { quote: replyTo.quote }),
         ...(replyTo.thread === undefined
           ? {}
           : { delivery: plan.delivery, target: replyTo.thread.target }),
@@ -364,6 +377,10 @@ function attempt(
       : replyTo.parentKind === "ask"
         ? { ask_id: replyTo.id }
         : { reply_to: replyTo.id }),
+    // A reply to one block of the post names the block and the words it quotes, as above.
+    ...(replyTo?.block === undefined ? {} : { reply_to_block: replyTo.block }),
+    ...(replyTo?.occurrence === undefined ? {} : { occurrence: replyTo.occurrence }),
+    ...(replyTo?.quote === undefined ? {} : { quote: replyTo.quote }),
     ...(kind === "suggestion" ? { suggestion: { replace_with: replacement } } : {}),
     ...(parties.named ? { delivery: plan.delivery ?? plainDelivery } : {}),
   };
