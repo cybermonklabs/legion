@@ -143,6 +143,8 @@ func indexMatches(code string) []matchedName {
 	return out
 }
 
+// matchedNames names the tables pattern's first group names in code, passing over a match whose
+// first name, trimmed and lower-cased with its quotes kept, is one of skipFirst.
 func matchedNames(code string, pattern *regexp.Regexp, skipFirst []string) []matchedName {
 	var names []matchedName
 	for _, match := range pattern.FindAllStringSubmatchIndex(code, -1) {

@@ -56,6 +56,7 @@ func mounted(t *testing.T) *recordingMux {
 // (the api package's TestAKeyedWriteNeverRunsUnkeyed), or one of browserWrites. A write mounted
 // later beside them fails here, as the control's does.
 func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
+	t.Parallel()
 	t.Run("control", func(t *testing.T) {
 		mux := mounted(t)
 		const planted = "POST /api/v1/planted-outside-the-table"
