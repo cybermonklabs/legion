@@ -23,6 +23,7 @@ import {
   sessionBroker,
   startReopenServer,
   startSessionMod,
+  whileServing,
 } from "./reopen-server"
 
 const SESSION = "ses_reopen"
@@ -65,21 +66,6 @@ async function sessionMod(
       .madeOf("session.message")
       .filter((args) => args.eventId === undefined && args.message.text.includes(heading))
   return { mod, notices }
-}
-
-/** A probe for `until` (`@legion/test-fixtures/wait`): whether `condition` holds, while `run`'s
- *  server runs. Once the server has exited it throws, naming that exit and what the server wrote,
- *  which ends the wait at once. */
-function whileServing(
-  run: Pick<ReopenServer, "server" | "stderrEnded" | "state">,
-  condition: () => boolean,
-): () => Promise<boolean> {
-  return async () => {
-    if (condition()) return true
-    if (run.server.exitCode === null && run.server.signalCode === null) return false
-    await run.stderrEnded
-    throw new Error(`the server exited: ${run.state()}`)
-  }
 }
 
 test(

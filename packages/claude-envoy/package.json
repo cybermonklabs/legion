@@ -32,6 +32,7 @@
     "postpack": "bash scripts/pack-skills.sh --restore",
     "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
     "test": "bun test --timeout=200000 --preload @legion/test-fixtures/row-deadline",
+    "test:stall": "bun test --timeout=440000 --preload @legion/test-fixtures/row-deadline tests/envoy-channel-stall.test.ts",
     "lint": "bunx biome check src/ hooks/ scripts/"
   },
   "devDependencies": {

@@ -1,3 +1,7 @@
+// Run this file from packages/envoy-client with `LEGION_E2E_ENVOY_STACK=1 bun run test:stall:nats`.
+// That script is the command of the envoy-session-stall job's step, which sets
+// LEGION_E2E_ENVOY_STACK too: its `--timeout` is the one guard of the file's hooks and rows, and
+// it loads the row-deadline preload (`@legion/test-fixtures/row-deadline`) their waits end by.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { settled, until } from "@legion/test-fixtures/wait";
 import { connect, Events, StringCodec } from "nats";

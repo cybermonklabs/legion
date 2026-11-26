@@ -27,13 +27,14 @@ const pushWork = temporaryDirectory("skill-scenarios-push");
 const REAP_MARGIN_MS = 1_000;
 
 /**
- * Runs `command` and sends SIGKILL if its timeout expires. Bun 1.4.4 sends SIGTERM at the test
- * guard. A child that ignores SIGTERM can leave `Bun.spawnSync` blocked. An earlier SIGKILL
- * lets us report the command and signal, even when Bun labels the hook failure `(unnamed)`.
+ * Runs `command` and sends SIGKILL `REAP_MARGIN_MS` before the shared deadline, which `timeLeft()`
+ * reads as the command starts. Bun 1.4.4 sends SIGTERM at the test guard. A child that ignores
+ * SIGTERM can leave `Bun.spawnSync` blocked. An earlier SIGKILL lets us report the command and
+ * signal, even when Bun labels the hook failure `(unnamed)`.
  */
-function runToEnd(command: string[], killMs: number, env?: Record<string, string | undefined>) {
+function runToEnd(command: string[], env?: Record<string, string | undefined>) {
   // Whole milliseconds, and at least one: `Bun.spawnSync` takes a `timeout` of 0 as none.
-  const timeout = Math.max(1, Math.floor(killMs));
+  const timeout = Math.max(1, Math.floor(timeLeft() - REAP_MARGIN_MS));
   const ran = Bun.spawnSync(command, { env, timeout, killSignal: "SIGKILL" });
   if (ran.signalCode) {
     const how = ran.exitedDueToTimeout
@@ -49,8 +50,8 @@ function runToEnd(command: string[], killMs: number, env?: Record<string, string
  * write at the call. `work` is reserved at module scope and made by the hook that reservation
  * registered, so nothing exists to write into until then — and a `bun test -t <pattern>` that
  * selects no row of this file runs no hook of it, where a module body that staged its world
- * would leave every file of it behind. A staging that runs a child reads that child's kill time
- * itself, from `timeLeft()`.
+ * would leave every file of it behind. A staging that runs a child runs it through `runToEnd`,
+ * which takes the child's kill time from `timeLeft()`.
  */
 const stagings: (() => void)[] = [];
 
@@ -302,7 +303,6 @@ stagings.push(() => {
   const git = (...args: string[]) => {
     const result = runToEnd(
       ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", pushWork, ...args],
-      timeLeft() - REAP_MARGIN_MS,
       { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" }
     );
     if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr}`);
@@ -3142,10 +3142,7 @@ let out = "";
 let scoredExitCode: number | null = null;
 // The `score.ts runs` subprocess can hang while it scores the staged world.
 beforeAll(() => {
-  const scored = runToEnd(
-    ["bun", path.join(import.meta.dir, "score.ts"), "runs", runs],
-    timeLeft() - REAP_MARGIN_MS
-  );
+  const scored = runToEnd(["bun", path.join(import.meta.dir, "score.ts"), "runs", runs]);
   out = scored.stdout.toString();
   scoredExitCode = scored.exitCode;
 });
@@ -3653,10 +3650,14 @@ beforeAll(() => {
 
 // The `score.ts live-read` subprocess can hang while it reads the staged skill files.
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
-  const read = runToEnd(
-    ["bun", path.join(import.meta.dir, "score.ts"), "live-read", liveRun, liveSkills, liveLogs],
-    timeLeft() - REAP_MARGIN_MS
-  );
+  const read = runToEnd([
+    "bun",
+    path.join(import.meta.dir, "score.ts"),
+    "live-read",
+    liveRun,
+    liveSkills,
+    liveLogs,
+  ]);
   const text = read.stdout.toString();
   expect(read.exitCode).toBe(0);
   const skillChars = [...skillWhole].length;

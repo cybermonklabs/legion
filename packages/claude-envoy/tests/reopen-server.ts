@@ -53,6 +53,28 @@ export function count(text: string, part: string): number {
   return text.split(part).length - 1
 }
 
+/**
+ * A probe for a wait on a whole server process (`until` of `@legion/test-fixtures/wait`, or
+ * `startReopenServer`'s `waitForStart`): whether `condition` holds while `run`'s server runs.
+ * Once the server exits, the probe drains stderr. It checks `afterExit`, if supplied, for a fact
+ * that can still appear while stderr drains. If that check does not pass, the probe throws
+ * `ended` with the server's state.
+ */
+export function whileServing(
+  run: Pick<ReopenServer, "server" | "stderrEnded" | "state">,
+  condition: () => boolean,
+  ended = "the server exited",
+  afterExit?: () => boolean,
+): () => Promise<boolean> {
+  return async () => {
+    if (condition()) return true
+    if (run.server.exitCode === null && run.server.signalCode === null) return false
+    await run.stderrEnded
+    if (afterExit?.()) return true
+    throw new Error(`${ended}: ${run.state()}`)
+  }
+}
+
 /** The file in a Codex server's state directory that every `codex queue` call wrote to. */
 export const CODEX_QUEUED = "queued.log"
 
@@ -306,27 +328,29 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
   }
   const waitForStart =
     options.waitForStart ?? ((what, probe) => waitFor(probe, what, state, PROCESS_WAIT_MS))
+  const serving = { server, stderrEnded, state }
   try {
     // A server that ends first is named with its exit and stderr. A server writing Bun's
     // transpiler cache into its empty HOME (`./transpiler-cache.ts`) had written nothing in 30 s
     // at a load near 1,000.
-    await waitForStart("the server's first stderr line", async () => {
-      if (stderr.text().length > 0 || deliveries.length > 0) return true
-      if (server.exitCode === null && server.signalCode === null) return false
-      await stderrEnded
-      if (stderr.text().length > 0) return true
-      throw new Error(`the server ended before its first stderr line: ${state()}`)
-    })
+    await waitForStart(
+      "the server's first stderr line",
+      whileServing(
+        serving,
+        () => stderr.text().length > 0 || deliveries.length > 0,
+        "the server ended before its first stderr line",
+        () => stderr.text().length > 0,
+      ),
+    )
     if (options.awaitRegistration !== false) {
       // A server that printed its first line and then ended is named with its end at once too.
       await waitForStart(
         "the session's first registration and its relay subscription",
-        async () => {
-          if (deliveries.length > 0 && relaySubscriptions() === 1) return true
-          if (server.exitCode === null && server.signalCode === null) return false
-          await stderrEnded
-          throw new Error(`the server ended before its first registration: ${state()}`)
-        },
+        whileServing(
+          serving,
+          () => deliveries.length > 0 && relaySubscriptions() === 1,
+          "the server ended before its first registration",
+        ),
       )
     }
   } catch (error) {

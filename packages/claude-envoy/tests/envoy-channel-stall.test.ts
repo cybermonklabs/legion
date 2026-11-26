@@ -1,3 +1,7 @@
+// Run this file from packages/claude-envoy with `LEGION_E2E_ENVOY_STACK=1 bun run test:stall`.
+// That script is the command of the envoy-session-stall job's step, which sets
+// LEGION_E2E_ENVOY_STACK too: its `--timeout` is the one guard of the file's hooks and rows, and
+// it loads the row-deadline preload (`@legion/test-fixtures/row-deadline`) their waits end by.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
@@ -44,13 +48,12 @@ interface ChannelServer {
   /** Aborted once `stop` has run: by the row's own `finally`, or for a row that ended before
    *  it, by the describe's `afterEach`. Its reason says the row ended. */
   readonly ended: AbortSignal
-  /** The probe of a wait (`until`, `@legion/test-fixtures/wait`) for `what`: whether `condition`
-   *  holds, read inside the host's row (`readInRow`). It throws, which ends the wait at once,
-   *  naming `what`, once the server or a process of the stack has exited, by an exit code or a
-   *  signal, and once the row has ended (`ended`). */
-  probe(what: string, condition: () => boolean | Promise<boolean>): () => Promise<boolean>
-  /** The freeze scenario's wait (`FreezeScenarioHost.waitFor`): `until` on `probe`, which also
-   *  throws, naming `what`, once `deadline`, where one is given, has passed. */
+  /** A wait (`until`, `@legion/test-fixtures/wait`) for `what`: until `condition` holds, read
+   *  inside the host's row (`readInRow`). It throws, which ends the wait at once, naming `what`,
+   *  once the server or a process of the stack has exited, by an exit code or a signal, and once
+   *  the row has ended (`ended`). It is the freeze scenario's wait too
+   *  (`FreezeScenarioHost.waitFor`), which also throws, naming `what`, once `deadline`, where one
+   *  is given, has passed; a wait given none fails at its row's deadline. */
   waitFor(
     condition: () => boolean | Promise<boolean>,
     deadline: number | undefined,
@@ -214,7 +217,6 @@ async function startChannelServer(
       home,
       channel,
       ended: ended.signal,
-      probe,
       // Only a wait whose time the row asserts has a deadline: the freeze scenario's recovery,
       // within `RECOVERY_BOUND_MS` of the freeze (`runFreezeScenario`). A wait given none fails
       // at its row's deadline, naming what it waited for.
@@ -279,15 +281,15 @@ describe.skipIf(!envoyStackEnabled)(
     test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
       const { envoyUrl } = stack
-      const { proxy, sessionID, channel, probe, waitFor, stop } = await startChannelServer(
+      const { proxy, sessionID, channel, waitFor, stop } = await startChannelServer(
         stack,
         "ses_stall",
       )
       try {
-        const registered = "the session's registration"
-        await until(
-          registered,
-          probe(registered, async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok),
+        await waitFor(
+          async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
+          undefined,
+          "the session's registration",
         )
         // The bundle runs from this checkout, outside Claude Code's plugin cache.
         const registration = {
@@ -318,34 +320,30 @@ describe.skipIf(!envoyStackEnabled)(
     test("a session whose redial once hung still exits on SIGTERM", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
       const { envoyUrl } = stack
-      const { server, proxy, sessionID, ended, probe, stop } = await startChannelServer(
+      const { server, proxy, sessionID, ended, waitFor, stop } = await startChannelServer(
         stack,
         "ses_stall_exit",
       )
       try {
-        const subscribed = "the session's registration and first subscription"
-        await until(
-          subscribed,
-          probe(
-            subscribed,
-            async () =>
-              (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
-              proxy.connections[0]?.subscribedAt !== undefined,
-          ),
+        await waitFor(
+          async () =>
+            (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
+            proxy.connections[0]?.subscribedAt !== undefined,
+          undefined,
+          "the session's registration and first subscription",
         )
         // The first redial after the freeze hangs (accepted, never answered); the next forwards.
         // The row asserts no time for this recovery, only the exit on SIGTERM below, so the wait
         // has no deadline of its own: a recovery that never comes fails it at the row's deadline.
         proxy.stallNext(1)
         const frozenAt = proxy.freeze()
-        const resubscribed = "the session to subscribe again after the hung redial"
-        await until(
-          resubscribed,
-          probe(resubscribed, () =>
+        await waitFor(
+          () =>
             proxy.connections.some(
               (opened) => opened.acceptedAt >= frozenAt && opened.subscribedAt !== undefined,
             ),
-          ),
+          undefined,
+          "the session to subscribe again after the hung redial",
         )
         const signalledAt = Date.now()
         server.kill("SIGTERM")

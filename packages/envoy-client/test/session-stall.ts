@@ -14,9 +14,10 @@
  * heartbeat, with nothing closed and nothing deregistered.
  * `SIGCONT` resumes it and `SIGKILL` ends it with no deregistration, as a killed pane leaves it.
  *
- * Run it from packages/envoy-client with LEGION_E2E_ENVOY_STACK=1 and
- * `bun test --timeout 550000 --preload @legion/test-fixtures/row-deadline ./test/session-stall.ts`,
- * the command of the envoy-session-stall job's step, which sets LEGION_E2E_ENVOY_STACK too.
+ * Run it from packages/envoy-client with `LEGION_E2E_ENVOY_STACK=1 bun run test:stall:session`.
+ * That script is the command of the envoy-session-stall job's step, which sets
+ * LEGION_E2E_ENVOY_STACK too: its `--timeout` is the one guard of the file's hooks and rows, and
+ * it loads the row-deadline preload (`@legion/test-fixtures/row-deadline`) their waits end by.
  */
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
@@ -405,21 +406,35 @@ async function rowRead<T>(
   return await readInRow(ended, doing, () => stack.exited(), read);
 }
 
-/** The probe of a wait (`until`) for the session to read `want`: its `Sighting` once it does,
- *  else undefined, each read a `rowRead` in the row whose signal is `ended`. A read pending when
- *  the describe's `afterEach` aborts `ended` ends with that abort. */
-function readsState(
+/** Waits for a fact read in the row, stopping on row end or stack exit. */
+function untilRow<T>(
+  what: string,
+  stack: EnvoyStack,
+  ended: AbortSignal,
+  read: () => T | Promise<T>,
+  doing = `waiting for ${what}`
+) {
+  return until(what, () => rowRead(stack, ended, doing, read));
+}
+
+/** Returns the session's sighting once its state matches `want`. */
+function waitForState(
   stack: EnvoyStack,
   ended: AbortSignal,
   sessionID: string,
-  want: SessionState
-): () => Promise<Sighting | undefined> {
-  const doing = `waiting for ${sessionID} to read ${want}`;
-  return () =>
-    rowRead(stack, ended, doing, async () => {
+  want: SessionState,
+  what = `${sessionID} to read ${want}`
+): Promise<Sighting> {
+  return untilRow(
+    what,
+    stack,
+    ended,
+    async () => {
       const seen = await sighting(stack.envoyUrl, sessionID, ended);
       return seen.state === want ? seen : undefined;
-    });
+    },
+    `waiting for ${sessionID} to read ${want}`
+  );
 }
 
 type RoleAnswer =
@@ -483,10 +498,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   const liveRig = async () => {
     const started = rig();
     const { sessionID } = started.child;
-    await until(
-      `${sessionID} to read live`,
-      readsState(started.stack, started.ended, sessionID, "live")
-    );
+    await waitForState(started.stack, started.ended, sessionID, "live");
     return started;
   };
 
@@ -559,10 +571,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     throwIfRowEnded(ended, "freezing the session");
     child.freeze();
 
-    const stalled = await until(
-      `${child.sessionID} to read unresponsive`,
-      readsState(stack, ended, child.sessionID, "unresponsive")
-    );
+    const stalled = await waitForState(stack, ended, child.sessionID, "unresponsive");
 
     // (1) The state is its record's age, and `last_seen` is a registration it made before it
     // froze. Each assertion below holds however slow the host: a later read moves `Date.now()`
@@ -594,9 +603,12 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // row has ended the body stops here, rather than thaw the session inside a later row.
     throwIfRowEnded(ended, "thawing the session");
     child.thaw();
-    const resumed = await until(
-      `${child.sessionID} to read live again`,
-      readsState(stack, ended, child.sessionID, "live")
+    const resumed = await waitForState(
+      stack,
+      ended,
+      child.sessionID,
+      "live",
+      `${child.sessionID} to read live again`
     );
     expect(resumed.lastSeen).toBeGreaterThan(stalled.lastSeen);
     expect((await client.listSessions()).map((listed) => listed.session_id)).toContain(
@@ -621,18 +633,13 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     );
     expect(sentLive.recipientState).toBe("live");
     const reachedLive = `${live} to reach the live session`;
-    await until(reachedLive, () =>
-      rowRead(stack, ended, `waiting for ${reachedLive}`, () => child.messages().includes(live))
-    );
+    await untilRow(reachedLive, stack, ended, () => child.messages().includes(live));
     const claimed = await roleClaim(claims, child.role);
     expect(claimed?.holder_session_id).toBe(child.sessionID);
 
     throwIfRowEnded(ended, "freezing the session");
     child.freeze();
-    const stalled = await until(
-      `${child.sessionID} to read unresponsive`,
-      readsState(stack, ended, child.sessionID, "unresponsive")
-    );
+    const stalled = await waitForState(stack, ended, child.sessionID, "unresponsive");
 
     // (4) Every lookup answers the 404 it always did, now saying whose claim it is, that the
     // holder is stalled rather than gone, and that it released nothing. Five of them, because
@@ -668,12 +675,13 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     throwIfRowEnded(ended, "thawing the session");
     child.thaw();
     const reachedMissed = `${missed}, sent while the session was stalled, to reach it`;
-    await until(reachedMissed, () =>
-      rowRead(stack, ended, `waiting for ${reachedMissed}`, () => child.messages().includes(missed))
-    );
-    await until(
-      `${child.sessionID} to read live again`,
-      readsState(stack, ended, child.sessionID, "live")
+    await untilRow(reachedMissed, stack, ended, () => child.messages().includes(missed));
+    await waitForState(
+      stack,
+      ended,
+      child.sessionID,
+      "live",
+      `${child.sessionID} to read live again`
     );
     const back = await roleAnswer(stack.envoyUrl, child.role, ended);
     expect("holder" in back ? back.holder.holder : undefined).toBe(child.sessionID);
@@ -691,10 +699,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
 
     await settled("the killed session's exit", child.kill());
 
-    const stalled = await until(
-      `${child.sessionID} to read unresponsive`,
-      readsState(stack, ended, child.sessionID, "unresponsive")
-    );
+    const stalled = await waitForState(stack, ended, child.sessionID, "unresponsive");
     // Past the live window it is unresponsive, not gone, and its claim stands: nothing can yet
     // tell this from a box that will answer again in a minute.
     const whileStalled = await roleAnswer(stack.envoyUrl, child.role, ended);
@@ -723,10 +728,7 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
       );
     }
 
-    await until(
-      `${child.sessionID} to read gone`,
-      readsState(stack, ended, child.sessionID, "gone")
-    );
+    await waitForState(stack, ended, child.sessionID, "gone");
     // It reached the horizon by its record's age, not by anything the rig did to it.
     expect(Date.now() - stalled.lastSeen).toBeGreaterThan(GONE_HORIZON_MS);
 
@@ -738,25 +740,23 @@ describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
     // byte the one the child made, and once the reaper has taken it a lookup answers unclaimed.
     // No answer ever reports a claim a lookup released.
     const released = "the role claim reaper to release the gone holder's claim";
-    await until(released, () =>
-      rowRead(stack, ended, `waiting for ${released}`, async () => {
-        const answer = await roleAnswer(stack.envoyUrl, child.role, ended);
-        const refusal = "refusal" in answer ? answer.refusal : undefined;
-        expect(answer.status).toBe(404);
-        expect(refusal?.claim_released ?? false).toBe(false);
-        if (refusal?.reason === "unclaimed") return true;
-        expect(refusal).toMatchObject({
-          reason: "holder_lapsed",
-          holder: child.sessionID,
-          holder_state: "gone",
-          claim_released: false,
-        });
-        // The record itself is the claim the child made until the reaper's pass takes it away:
-        // a lookup never writes a third thing into the role bucket.
-        expect([claimed, undefined]).toContainEqual(await roleClaim(claims, child.role));
-        return false;
-      })
-    );
+    await untilRow(released, stack, ended, async () => {
+      const answer = await roleAnswer(stack.envoyUrl, child.role, ended);
+      const refusal = "refusal" in answer ? answer.refusal : undefined;
+      expect(answer.status).toBe(404);
+      expect(refusal?.claim_released ?? false).toBe(false);
+      if (refusal?.reason === "unclaimed") return true;
+      expect(refusal).toMatchObject({
+        reason: "holder_lapsed",
+        holder: child.sessionID,
+        holder_state: "gone",
+        claim_released: false,
+      });
+      // The record itself is the claim the child made until the reaper's pass takes it away:
+      // a lookup never writes a third thing into the role bucket.
+      expect([claimed, undefined]).toContainEqual(await roleClaim(claims, child.role));
+      return false;
+    });
     expect(await roleClaim(claims, child.role)).toBeUndefined();
     // What can hang is a wait for a state or a release that never comes.
   });

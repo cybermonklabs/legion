@@ -46,7 +46,11 @@ afterEach(() => {
   rowEnd = new AbortController()
 })
 
-/** The SDK owns the child; its close callback reports when the transport is gone. */
+/**
+ * The SDK owns the child; its close callback reports when the transport is gone. `untilServed` is
+ * `until` for a wait on this server: a failure of it also says what the server wrote to stderr,
+ * as a failure of the `waitFor` it replaced did. The close's own reason already says so.
+ */
 function observeServer(client: Client, transport: StdioClientTransport) {
   let stderr = ""
   transport.stderr?.on("data", (chunk: Buffer | string) => {
@@ -56,7 +60,15 @@ function observeServer(client: Client, transport: StdioClientTransport) {
   client.onclose = () => {
     closed.abort(new Error(`the channel server's MCP transport closed; its stderr: ${stderr}`))
   }
-  return { stderr: () => stderr, closed: closed.signal }
+  const untilServed = (what: string, probe: () => boolean | Promise<boolean>): Promise<void> =>
+    until(what, probe).then(
+      () => undefined,
+      (error: unknown) => {
+        if (error === closed.signal.reason) throw error
+        throw new Error(`${String(error)}; its stderr: ${stderr}`, { cause: error })
+      },
+    )
+  return { stderr: () => stderr, closed: closed.signal, untilServed }
 }
 
 // The rows below start each session in a home of its own and reach it at its mod socket; a home
@@ -154,12 +166,12 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     },
     stderr: "pipe",
   })
-  const { stderr, closed } = observeServer(client, transport)
+  const { stderr, closed, untilServed } = observeServer(client, transport)
 
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
     // The server answers tool calls only once its channel session has started.
-    await until("the channel session to start", () =>
+    await untilServed("the channel session to start", () =>
       client
         .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
         .then(
@@ -186,7 +198,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     })
     try {
       // The mod's hello makes the session register again, with what it can take now.
-      await until("the session to advertise its delivery modes", () => {
+      await untilServed("the session to advertise its delivery modes", () => {
         closed.throwIfAborted()
         return (advertised.at(-1) as string[] | undefined)?.length === 3
       })
@@ -264,11 +276,11 @@ test("the session advertises its delivery modes for a mod that polls and never s
     },
     stderr: "pipe",
   })
-  const { stderr, closed } = observeServer(client, transport)
+  const { stderr, closed, untilServed } = observeServer(client, transport)
 
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
-    await until("the channel session to start", () =>
+    await untilServed("the channel session to start", () =>
       client
         .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
         .then(
@@ -284,7 +296,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
 
     const socketPath = modSocketPath("ses_quiet", { XDG_RUNTIME_DIR: stateDirectory })
     if (socketPath === undefined) throw new Error("the session names no mod socket")
-    await until("the server to bind its mod socket", async () => {
+    await untilServed("the server to bind its mod socket", async () => {
       closed.throwIfAborted()
       return stat(socketPath).then(
         () => true,
@@ -297,7 +309,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
       signal: AbortSignal.any([ended, closed]),
     })
     try {
-      await until("the session to advertise its delivery modes", () => {
+      await untilServed("the session to advertise its delivery modes", () => {
         closed.throwIfAborted()
         return (advertised.at(-1) as string[] | undefined)?.length === 3
       })
@@ -353,10 +365,10 @@ test("a tool call while the start waits for its broker token says what the start
   // to: the token client writes that line at the wait after the trade, and the start names its
   // wait before it trades. A start that never gets there fails at the row's deadline (`until`),
   // naming the wait.
-  const { stderr, closed } = observeServer(client, transport)
+  const { stderr, closed, untilServed } = observeServer(client, transport)
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
-    await until("the start's wait for the token", () => {
+    await untilServed("the start's wait for the token", () => {
       closed.throwIfAborted()
       return stderr().includes("trading again")
     })
@@ -554,16 +566,16 @@ test("a broker token keeper's warning while the start registers leaves the tool 
     },
     stderr: "pipe",
   })
-  const { stderr, closed } = observeServer(client, transport)
+  const { stderr, closed, untilServed } = observeServer(client, transport)
 
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
     // Connected, and the start's registration held: the keeper warns about the lapsing token.
-    await until("the session's subscriptions to reach NATS", () => {
+    await untilServed("the session's subscriptions to reach NATS", () => {
       closed.throwIfAborted()
       return broker.subscribed.length > 0
     })
-    await until("the keeper's warning", () => {
+    await untilServed("the keeper's warning", () => {
       closed.throwIfAborted()
       return stderr().includes("envoy-channel: the NATS connection's broker token")
     })

@@ -149,7 +149,7 @@ export async function startFakeMod(
   }
 
   // The poll stops once the mod is stopped or its caller's row has ended, at its next turn and
-  // after each await, so a row its limit abandoned answers nothing more of its server's.
+  // after each await, so a row its guard abandoned answers nothing more of its server's.
   const poll = async (): Promise<void> => {
     while (!pollEnded()) {
       let requests: readonly ModRequest[] = []

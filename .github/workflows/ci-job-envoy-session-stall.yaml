@@ -83,7 +83,7 @@ jobs:
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
-      # The step's --timeout is its one guard, sized to the room one hang has: the job's
+      # The script's --timeout is this step's one guard, sized to the room one hang has: the job's
       # `timeout-minutes: 20` (1 200 s), less 83 s from the job's start to this step's (the
       # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
       # file's beforeAll at its worst, 249 s, less its two other rows at the slowest row's worst
@@ -95,7 +95,7 @@ jobs:
       # file's three rows, 20 of 20, the slowest row of a run 51 811 ms (infra-1580-r31nsa-229pk,
       # -r31nsb-kc799, 106 and 209 busy loops, row A 34.2 s and 36.3 s, at aa63d194).
       - name: Stall test of envoy-client's NATS connection options
-        run: bun test --timeout 730000 --preload @legion/test-fixtures/row-deadline src/__tests__/nats-stall.test.ts
+        run: bun run test:stall:nats
         working-directory: packages/envoy-client
       # A session's broker-token credential on a real natsd behind the real NATS auth service
       # (packages/envoy/internal/testnats/cmd/calloutd, built beside natsd): a token that lapses
@@ -107,7 +107,7 @@ jobs:
         working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
       # this one as a file because of the leading "./".
-      # The step's --timeout is its one guard, sized to the room one hang has: the job's
+      # The script's --timeout is this step's one guard, sized to the room one hang has: the job's
       # `timeout-minutes: 20` (1 200 s), less 242 s from the job's start to this step's (the
       # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
       # file's beforeAll at its worst, 249 s, less its two other rows at the slowest row's worst
@@ -120,7 +120,7 @@ jobs:
       # killed session's row waits out (infra-1580-r31ssa-5kddl, -r31ssb-766d8, 140 busy loops
       # each, row A 35.8 s and 38.0 s, at aa63d194).
       - name: Session state rig of a stalled session
-        run: bun test --timeout 550000 --preload @legion/test-fixtures/row-deadline ./test/session-stall.ts
+        run: bun run test:stall:session
         working-directory: packages/envoy-client
       # Through the package's own test script, so the file's hooks get the command
       # packages/pi-envoy/package.json sets, its preload included, as the pi-envoy job's run gives
@@ -140,7 +140,7 @@ jobs:
       - name: Stall test of pi-envoy
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes" --timeout 590000
         working-directory: packages/pi-envoy
-      # The step's --timeout is its one guard, sized to the room one hang has: the job's
+      # The script's --timeout is this step's one guard, sized to the room one hang has: the job's
       # `timeout-minutes: 20` (1 200 s), less 357 s from the job's start to this step's (the
       # slowest of main's 40 green runs of this job from 45686423066 to 45696996534), less the
       # file's beforeAll at its worst, 249 s, less its other row at its worst, 117 s, less 2 s for
@@ -152,7 +152,7 @@ jobs:
       # rows, 20 of 20, 116 955 ms and 113 076 ms at their slowest (infra-1580-r31cea-6sxq2,
       # -r31ceb-jsbc8, 70 and 65 busy loops, row A 35.9 s and 39.9 s, at 68bbae35).
       - name: Stall test of claude-envoy
-        run: bun test --timeout=440000 --preload @legion/test-fixtures/row-deadline tests/envoy-channel-stall.test.ts
+        run: bun run test:stall
         working-directory: packages/claude-envoy
       # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
       # with real client processes against a listener and natsd this job already sets Go up for.

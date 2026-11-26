@@ -299,7 +299,13 @@ The stack's listener answers `consumer`, so the scenario checks consumer deliver
 freeze: the connection nats.js dials in place of the frozen one subscribes the relay subject again
 (`/connz`), the session's `envoy_sessions` entry names a new epoch, and the message sent during the
 freeze and one sent after it are each shown once, neither as a replay. A test that uses the stack
-runs only with `LEGION_E2E_ENVOY_STACK=1`.
+runs only with `LEGION_E2E_ENVOY_STACK=1`. This package's two stall files run from this directory
+through a script each, `LEGION_E2E_ENVOY_STACK=1 bun run test:stall:nats`
+(`src/__tests__/nats-stall.test.ts`) and `LEGION_E2E_ENVOY_STACK=1 bun run test:stall:session`
+(`test/session-stall.ts`, whose name `bun test` does not discover). Each script is the command of
+its step in the `envoy-session-stall` job, with the one guard of that command, its `--timeout`,
+and the row-deadline preload. `bun run test` is not that command: its 30 s guard ends the stack's
+start before a cold `go build` can finish.
 
 `@legion/envoy-client/test/dispatch-stack` (Bun only, not built, in `test/`) is the same shape for
 a real Dispatch server: it builds `./cmd/dispatch` with `go build` from `packages/envoy` into its

@@ -724,8 +724,12 @@ repository root pins, against a stand-in Messages endpoint and Dispatch: the lis
 at startup, on `--resume`, after `/compact` and in a subagent. It skips without `LEGION_TEST_CLAUDE`,
 except on GitHub Actions, where `.github/actions/install-claude-code` installs the pin.
 `tests/envoy-channel-stall.test.ts` runs a real NATS server and Envoy listener, which it builds
-with Go, so it runs only with `LEGION_E2E_ENVOY_STACK=1` and `go` on `PATH`.
-Locally:
+with Go, so it runs only with `LEGION_E2E_ENVOY_STACK=1` and `go` on `PATH`. Run it with
+`(cd packages/claude-envoy && LEGION_E2E_ENVOY_STACK=1 bun run test:stall)`: that script is the
+command of the `envoy-session-stall` job's step, with the one guard of that command, its
+`--timeout`, and the row-deadline preload, where a bare `bun test` of the file gets Bun's 5 s.
+
+To run `tests/answers-claude.test.ts` locally:
 
 ```bash
 mkdir -p "$TMPDIR/claude-code" && bun add --cwd "$TMPDIR/claude-code" --exact --no-save "@anthropic-ai/claude-code@$(<.claude-code-pin)"
