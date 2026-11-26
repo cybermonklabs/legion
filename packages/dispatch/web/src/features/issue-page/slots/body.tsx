@@ -73,7 +73,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // held. With no filter on the line reads no words, and does not wait on the names. What the
   // page publishes of its batched names read the tree hands its rows and crumbs in the render
   // that draws them (`published`), so none of them reads a reference the page asks for.
-  const { failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
+  const { coverageOut, failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
     useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
@@ -222,6 +222,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             addressKey={following}
             artifacts={artifacts}
             context={view.context}
+            coverageOut={coverageOut}
             emptyLine={
               address.filter === ""
                 ? EMPTY_STATE_LINES[outline]
