@@ -45,6 +45,7 @@ func TestEachReviewStepSendsItsVerdictAtTheHeadItRead(t *testing.T) {
 		{"and at `blocked` once every check run GitHub reported on that head has concluded"},
 		{"`legion-verdict: failure (a commit with no reader)`", "no worker's change cures it", "only a person merges that head, by a break-glass merge",
 			"a GitHub owner turns the ruleset's rule off for that one merge"},
+		{"Where the merger says instead that the head waits for GitHub's next answer", "ask nobody"},
 	}
 	ownerRetired := append([]string{
 		"the daemon also asks the reviewer for its verdict on the new head",
@@ -141,6 +142,12 @@ func TestTheMergerTellsTheOwnerOfACommitWithNoReaderOncePerHead(t *testing.T) {
 		{"The message asks no person for an approval", "only a person merges that head, by a break-glass merge",
 			"a GitHub owner turns the ruleset's rule off for that one merge"},
 		{"unless the run's title names a commit with no reader"},
+		// At the bound of the writers' sweeps that GitHub answered no read of the change, the run
+		// keeps the no-reader title, and its summary names no commit: the head waits for GitHub's
+		// next answer, which decides it again, so no person is asked for a break-glass merge.
+		{"Where the summary says GitHub gave no answer to the daemon's read of the change's commits",
+			"tell the owner of the task once for that head that the head waits for GitHub's next answer",
+			"ask for no break-glass merge"},
 	} {
 		if !clauseHolds(text, terms...) {
 			t.Errorf("no clause of the composed merger prompt holds %q, in that order", terms)
