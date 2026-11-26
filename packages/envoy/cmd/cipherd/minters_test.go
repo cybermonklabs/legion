@@ -15,28 +15,39 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
+// appScope is the scope of a github-app profile of the one account that reads its repositories'
+// contents, with the metadata at read every GitHub profile names, as requests' release builds it
+// from a profile: secrets.GitHubApp.Mint refuses a mint with no scope before GitHub is asked
+// anything, so every github-app mint below carries one.
+func appScope(account string) *secrets.GitHubScope {
+	return &secrets.GitHubScope{Accounts: []string{account}, Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: githubname.ValueInstallations}
+}
+
 // TestEachTypeReachesItsOwnMinter: the broker's minters send a github-app secret's value to the
 // GitHub App minter, a google-login secret's to the Google login minter and a
 // google-service-account secret's to the service account minter, each against an endpoint of its
-// own, so wiring a type to another type's minter, which would refuse the value, fails here.
+// own, so wiring a type to another type's minter, which would refuse the value, fails here. The
+// GitHub endpoint lists what its installation holds and names what its token holds, as GitHub
+// does, since the minter cuts the profile's permissions to the one and checks the token against
+// the other.
 func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 	_, pemText := githubapptest.Key(t)
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
-			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}}})
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}, "permissions": map[string]string{"contents": "read", "metadata": "read"}}})
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": "github-installation-token", "expires_at": "2026-10-24T13:00:00Z"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "github-installation-token", "expires_at": "2026-10-24T13:00:00Z", "permissions": map[string]string{"contents": "read", "metadata": "read"}})
 		default:
 			t.Errorf("GitHub endpoint asked %s %s", r.Method, r.URL.Path)
 		}
@@ -75,7 +86,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	minted, err := minters[policy.TypeGitHubApp](context.Background(), secrets.MintRequest{Value: string(app), GitHubOwners: []string{"acme-org"}})
+	minted, err := minters[policy.TypeGitHubApp](context.Background(), secrets.MintRequest{Value: string(app), GitHub: appScope("acme-org")})
 	if err != nil || !strings.Contains(minted.Value, "github-installation-token") {
 		t.Fatalf("github-app minter = %q, %v; want the GitHub endpoint's installation token", minted.Value, err)
 	}
@@ -85,7 +96,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 		t.Fatalf("google-login minter = %q, %v; want the Google endpoint's access token", minted.Value, err)
 	}
 	account := `{"service_account":"dev-aditya@example-identities.iam.gserviceaccount.com"}`
-	minted, err = minters[policy.TypeGoogleServiceAccount](context.Background(), secrets.MintRequest{Name: "DEV_PERSON", Value: account})
+	minted, err = minters[policy.TypeGoogleServiceAccount](context.Background(), secrets.MintRequest{Name: "DEV_PERSON", Source: "DEV_PERSON", Value: account})
 	if err != nil || minted.Value != "service-account-access-token" {
 		t.Fatalf("google-service-account minter = %q, %v; want the IAM endpoint's access token", minted.Value, err)
 	}
@@ -117,7 +128,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
+	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, "", nil, nil, nil)
 	for _, secretType := range policy.Types {
 		if machine.Minters[secretType] == nil {
 			t.Fatalf("request machine has no minter for %s", secretType)
@@ -127,7 +138,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if mint == nil {
 		t.Fatal("request machine has no Azure login minter")
 	}
-	got, err := mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", HumanTier: true, Value: `{"tenant_id":"tenant","client_id":"client"}`})
+	got, err := mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: `{"tenant_id":"tenant","client_id":"client"}`})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}
@@ -158,8 +169,8 @@ func TestTypeMintersShareOneRetryBudget(t *testing.T) {
 	retry := secrets.NewRetry(metrics.New())
 	retry.Now = func() time.Time { return now }
 	retry.Sleep = func(context.Context, time.Duration) error { return nil }
-	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, proxyrules.Rules{}, "", retry, nil, nil).Minters
-	app := secrets.MintRequest{Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHubOwners: []string{"acme-org"}}
+	minters := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: github.URL, AirlockTestGoogleTokenURL: google.URL}, nil, nil, nil, nil, "", retry, nil, nil).Minters
+	app := secrets.MintRequest{Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHub: appScope("acme-org")}
 	login := secrets.MintRequest{Type: policy.TypeGoogleLogin, Value: policytest.TypeValue(policy.TypeGoogleLogin)}
 
 	for range 30 {
@@ -192,10 +203,10 @@ func TestRequestMachineCountsEachMintAttemptOnItsRegistry(t *testing.T) {
 	stand := proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}, Answer: proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensFailOnce}})
 	service.AnswerWith(stand.Answer)
 	registry := metrics.New()
-	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, proxyrules.Rules{}, "", secrets.NewRetry(registry), nil, nil)
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, "", secrets.NewRetry(registry), nil, nil)
 
 	minted, err := machine.Minters[policy.TypeGitHubApp](t.Context(), secrets.MintRequest{
-		Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHubOwners: []string{"acme-org"},
+		Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHub: appScope("acme-org"),
 	})
 	if err != nil || !strings.Contains(minted.Value, "ghs_standin_acme-org") {
 		t.Fatalf("a github-app mint through one 503 = %q, %v; want acme-org's token", minted.Value, err)
@@ -223,13 +234,13 @@ func TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub(t *testing.T) 
 	defer service.Close()
 	stand := proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: map[string]int64{"acme-org": 7}})
 	service.AnswerWith(stand.Answer)
-	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, proxyrules.Rules{}, "", secrets.NewRetry(metrics.New()), nil, nil)
+	machine := newRequestMachine(config.Config{AirlockTestGitHubAPIBase: service.URL()}, nil, nil, nil, nil, "", secrets.NewRetry(metrics.New()), nil, nil)
 	giveBack := machine.GiveBacks[policy.TypeGitHubApp]
 	if giveBack == nil || len(machine.GiveBacks) != 1 {
 		t.Fatalf("the machine's GiveBacks hold %d types, github-app's %t; want github-app's alone", len(machine.GiveBacks), giveBack != nil)
 	}
 	minted, err := machine.Minters[policy.TypeGitHubApp](t.Context(), secrets.MintRequest{
-		Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHubOwners: []string{"acme-org"},
+		Type: policy.TypeGitHubApp, Value: policytest.TypeValue(policy.TypeGitHubApp), GitHub: appScope("acme-org"),
 	})
 	if err != nil {
 		t.Fatalf("a github-app mint: %v", err)
@@ -258,7 +269,7 @@ func TestRequestMachineGivesBackAGitHubAppTokenAtTheMintersGitHub(t *testing.T) 
 	if status := reads(); status != http.StatusOK {
 		t.Fatalf("a read with the minted token answered %d, want 200", status)
 	}
-	giveBack(t.Context(), "APP_KEY", minted.Value)
+	giveBack(t.Context(), "APP_KEY", minted.Value, githubname.ValueInstallations)
 	if status := reads(); status != http.StatusUnauthorized {
 		t.Fatalf("a read with the given-back token answered %d, want 401", status)
 	}

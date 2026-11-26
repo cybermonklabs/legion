@@ -38,6 +38,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/testport"
@@ -66,16 +67,29 @@ var (
 	sharedMu      sync.Mutex
 	shared        *accountServer
 	sharedCleanup *sharedTB
+	// startAccounts is how many accounts the shared server declares when it starts: firstAccounts,
+	// unless the package's TestMain asked for more (Accounts).
+	startAccounts = firstAccounts
 )
 
-// firstAccounts is how many accounts the shared server starts with. Every time a test asks for
-// one past them, the server doubles them by a reload: a server's start time grows faster than its
-// account count (0.9 s for 1,000 on a loaded devbox, 26 s for 5,000). The reload's wait,
-// connectTimeout, caps that growth: at half a CPU, doubling 4,096 accounts took 36 s and 65 s in
-// two measurements, so the test that asks for account 4,097 fails. A package run takes one account
-// for each test and subtest that asks (103 for cmd/listener, 64 for internal/store), so -count=40
-// of cmd/listener in one binary reaches the ceiling.
+// firstAccounts is how many accounts the shared server starts with unless its package asks for
+// more (Accounts). Every time a test asks for one past them, the server doubles them by a reload: a
+// server's start time grows faster than its account count (0.9 s for 1,000 on a loaded devbox, 26 s
+// for 5,000). The reload's wait, connectTimeout, caps that growth: at half a CPU, doubling 4,096
+// accounts took 36 s and 65 s in two measurements, so the test that asks for account 4,097 fails.
+// A reload also holds every client of the server at a message boundary until it ends (0.61 s for
+// 256 to 512 accounts, 1.68 s for 512 to 1,024, measured in #5188's review), which a test running
+// beside it pays inside its own bounds. A package run takes one account for each test and subtest
+// that asks: about 600 for cmd/listener, which therefore starts with Accounts(1024).
 const firstAccounts = 256
+
+// MainOption is a setting of Main.
+type MainOption func()
+
+// Accounts makes the package's shared server declare n accounts when it starts, rather than
+// firstAccounts, for a package whose run asks for more than firstAccounts: none of its tests then
+// waits behind a reload that declares more while other tests run beside it.
+func Accounts(n int) MainOption { return func() { startAccounts = n } }
 
 // init runs in every test binary that imports this package, whichever helper its tests use. Every
 // server these helpers start has no users unless a test configures some, and nats.go refuses an
@@ -83,14 +97,17 @@ const firstAccounts = 256
 // operator's NATS_NKEY_SEED or NATS_NKEY_SEED_FILE never reaches the tests' clients. A test that
 // means to pass a seed sets it itself.
 func init() {
-	os.Unsetenv("NATS_NKEY_SEED")
+	os.Unsetenv(seedVariable)
 	os.Unsetenv("NATS_NKEY_SEED_FILE")
 }
 
 // Main runs the package's tests, then shuts the shared server down and removes its store if a test
 // started it, and returns the exit code. A package whose tests use URL calls it from TestMain:
-// os.Exit(testnats.Main(m)).
-func Main(m *testing.M) int {
+// os.Exit(testnats.Main(m)), with options such as Accounts.
+func Main(m *testing.M, options ...MainOption) int {
+	for _, option := range options {
+		option()
+	}
 	mainRuns = true
 	code := m.Run()
 	if sharedCleanup != nil {
@@ -139,7 +156,7 @@ func sharedServer(t testing.TB) *accountServer {
 			attempt.run()
 		}
 	}()
-	server := startShared(attempt, firstAccounts)
+	server := startShared(attempt, startAccounts)
 	started = true
 	shared, sharedCleanup = server, attempt
 	return server
@@ -255,7 +272,7 @@ func deleteStreams(t testing.TB, uri string) {
 	t.Helper()
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Errorf("open JetStream to delete the test's streams: %v", err)
 		return
@@ -304,6 +321,11 @@ func (s *Server) URL() string { return s.url }
 // Name is the server_name of a cluster member (StartCluster), the name JetStream reports it by in
 // a stream's or a consumer's cluster information. A lone server has none and answers "".
 func (s *Server) Name() string { return s.name }
+
+// StoreDir is the server's store directory, the same across every Stop and Start: JetStream keeps
+// a stream's files under jetstream/<account>/streams/<stream> in it, and a consumer's state at
+// obs/<consumer>/o.dat below that, which a forced-order test reads (hooks.go).
+func (s *Server) StoreDir() string { return s.store }
 
 // MonitorURL is the server's monitoring endpoint, where /varz and /connz are. The monitoring
 // listener is the server's own rather than the relay's, so a Stop and a Start give it a new port
@@ -417,8 +439,9 @@ func (s *Server) Freeze(t testing.TB) func() {
 //
 // The server reloads with no client message in flight. nats-server (2.15.1 and 2.15.3) writes each
 // service import's account on every authorization reload (configureAccounts, server.go:1398) under
-// the importing account's lock, and a client's request through a service import - every JetStream
-// API request - reads that field without the lock as the server sets up the response
+// the importing account's lock, and a client's request through a service import - most JetStream
+// API requests, all but a direct get and a consumer's next through the system account's export
+// (client.go:4944-4971) - reads that field without the lock as the server sets up the response
 // (setupResponseServiceImport and addRespServiceImport, client.go:4643 and accounts.go:2671 in
 // 2.15.1): a reload while a client's request is being processed is a data race in nats-server,
 // which the race detector reports in this process. Holding the clients' bytes is not enough on its
@@ -428,7 +451,9 @@ func (s *Server) Freeze(t testing.TB) func() {
 // only once it has processed everything the client sent before it, the server reloads, and the
 // relay lets the clients' bytes through. Each client keeps its connection and sees its messages
 // delayed by the reload; what the server sends reaches the clients throughout, less the relay's
-// own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails.
+// own PONGs. A server whose relay is frozen cannot answer the relay, so its Reload fails. The
+// relay's two waits each end within connectTimeout, or at the test's deadline (testDeadline) when
+// that comes first, so a Reload whose waits reach that deadline fails its test by name.
 func (s *Server) Reload(t testing.TB, config string) error {
 	t.Helper()
 	s.mu.Lock()
@@ -453,9 +478,10 @@ func (s *Server) Reload(t testing.TB, config string) error {
 	// server's as well: a reload can neither move the one nor turn the other on or off.
 	opts.ConfigFile = s.configPath
 	opts.JetStream = jetStream
-	release, err := s.relay.hold()
+	bound := boundOf(t)
+	release, err := s.relay.hold(bound)
 	if err == nil {
-		err = s.relay.barrier()
+		err = s.relay.barrier(bound)
 	}
 	if err != nil {
 		release()
@@ -506,6 +532,10 @@ func (s *Server) Log() string { return s.log.String() }
 // of them. It returns the block's size before the cut and after it, for the test's log, and fails
 // the test when the block or the index is not there.
 //
+// Before the stop it waits until the state file of every consumer of stream holds the position the
+// server reports for it (awaitConsumersStored), so the restarted server recovers each consumer from
+// the position a test read before the cut: the server's stop can keep an earlier one on disk.
+//
 // It works for a server whose streams are in the global account ($G), which is where the streams
 // of a server one Start made are: the shared server (URL) keeps each test's streams in the
 // directory of that test's account instead. The store survives the cut as it survives every Stop
@@ -513,6 +543,7 @@ func (s *Server) Log() string { return s.log.String() }
 // cut left of them.
 func (s *Server) CutStream(t testing.TB, stream string, keep func(size int64) int64) (before, after int64) {
 	t.Helper()
+	s.awaitConsumersStored(t, stream)
 	s.Stop(t)
 	messages := filepath.Join(s.store, "jetstream", "$G", "streams", stream, "msgs")
 	block, index := filepath.Join(messages, "1.blk"), filepath.Join(messages, "index.db")
@@ -732,6 +763,34 @@ func (b waitEnd) pause() { time.Sleep(b.step(retryInterval)) }
 
 // String is the end, as a wait's failure names it.
 func (b waitEnd) String() string { return b.end.Format(time.RFC3339Nano) }
+
+// awaitSignal waits for a receive from signal, which its close also gives, until bound, the end of
+// the caller's wait, and reports false when that end came first: the caller fails its test naming
+// what it waited for and bound. The caller computes bound once (boundOf), before the first of its
+// rounds: testDeadline is halfway to the binary's deadline when less than twice startMargin is left,
+// so an end computed again each round moves later each round and is never reached. A signal already
+// given is taken even at the end; with no deadline (bounded false) the wait lasts a day (noDeadline).
+func awaitSignal(bound waitEnd, signal <-chan struct{}) bool {
+	select {
+	case <-signal:
+		return true
+	default:
+	}
+	wait := noDeadline
+	if bound.bounded {
+		if wait = time.Until(bound.end); wait <= 0 {
+			return false
+		}
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-signal:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 // dial is the options of one connect of the wait, and what its caller runs once the connect has
 // returned a connection (retire). Each server's handshake is bounded by dialTimeout cut to what
@@ -1166,6 +1225,42 @@ func waitForJetStream(t testing.TB, check func(context.Context) error) {
 		}
 		bound.pause()
 	}
+}
+
+// MaxWait is the option every legacy JetStream context a test makes takes
+// (conn.JetStream(testnats.MaxWait(t))). nats.go's legacy context bounds each request made without
+// a nats.Context option, a KeyValue operation's among them, by its own wait, five seconds on the
+// wall clock unless natsgo.MaxWait sets another, and a test's requests rarely carry that option.
+// So a server that answers late on a loaded machine, or a relay a reload holds, would fail the
+// test with "nats: timeout" or "context deadline exceeded". With this option such a request waits
+// as long as requestWait says, which reaches testDeadline, the end of every wait of this package
+// on a server's own fact, so a late answer costs the test time and not its result. The same wait
+// is the default expiry of a pull subscription's Fetch and the time a KV watcher waits for its
+// initial values, so neither ends early either. A wait that sends a request again when it draws no
+// answer bounds each send by a step of its own instead (Connect's jetStreamStep): with this option
+// a send the server never answers would hold that wait until the deadline.
+func MaxWait(t testing.TB) natsgo.JSOpt {
+	return natsgo.MaxWait(requestWait(t))
+}
+
+// RequestTimeout is the option every JetStream client a test makes takes
+// (jetstream.New(conn, testnats.RequestTimeout(t))). nats.go bounds a request whose context has no
+// deadline by its own DefaultTimeout, five seconds on the wall clock, and a test's request often
+// has none: context.Background, t.Context, or a context of a clocktest.Fake, which reports no
+// deadline. So a server that answers late on a loaded machine would fail the test with "context
+// deadline exceeded". With this option such a request waits as long as one of a MaxWait context.
+func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
+	return jetstream.WithDefaultTimeout(requestWait(t))
+}
+
+// requestWait is how long a request of a context MaxWait or RequestTimeout made waits for its
+// answer: what is left until testDeadline, never under a millisecond (waitEnd.step), and at most
+// noDeadline, a day, which is also its wait under -timeout 0 (no deadline). It is measured once,
+// when the option is made, and nats.go gives every request of the context that same span: a
+// request a test sends long after it made the context can wait past testDeadline by that much,
+// and is then still ended by the binary's own -timeout.
+func requestWait(t testing.TB) time.Duration {
+	return boundOf(t).step(noDeadline)
 }
 
 // nats-server answers a stream create it could not make a file store for with streamStoreFailed,

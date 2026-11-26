@@ -131,6 +131,7 @@ func templatePatch(t *testing.T, body string) *podTemplate {
 // derived from the repository, never parsed back: at most 63 characters, a DNS label ending in eight
 // hex digits of the repository's hash, so two repositories whose slugs coincide get two names.
 func TestCacheIdentityIsTheAnnotationAndTheNameIsNeverParsed(t *testing.T) {
+	t.Parallel()
 	r := bareRuntime(t)
 	dnsLabel := regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	for _, repo := range []ghrepo.Repository{cacheRepo, longRepo, ghrepo.MustParse("acme/widgets-x"), ghrepo.MustParse("acme-widgets/x")} {
@@ -187,6 +188,7 @@ func TestCacheIdentityIsTheAnnotationAndTheNameIsNeverParsed(t *testing.T) {
 // and with nothing of an agent's: no providers, no Dispatch. A cache already as it should be is
 // left alone, its bearer token unchanged.
 func TestEnsureRepositoryCacheCreatesSuspendedWritesTheSecretThenSetsRunning(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	name := CacheSandboxName(testProject, cacheRepo)
 	g.clearActions()
@@ -307,6 +309,7 @@ func TestEnsureRepositoryCacheCreatesSuspendedWritesTheSecretThenSetsRunning(t *
 // LEGION_REPOSITORY_CACHE_TOKEN_FILE). Undo any one of them and the refresh becomes nothing: the
 // pod keeps serving the token it started with until it is replaced.
 func TestTheCachePodProjectsItsTokenSoTheKubeletKeepsItCurrent(t *testing.T) {
+	t.Parallel()
 	name := CacheSandboxName(testProject, cacheRepo)
 	spec := bareRuntime(t).cacheManifest(cacheRepo).Spec.PodTemplate.Spec
 	cache := containerNamed(t, spec, cacheContainer)
@@ -373,6 +376,7 @@ func TestTheCachePodProjectsItsTokenSoTheKubeletKeepsItCurrent(t *testing.T) {
 // The name of one repository's cache held by another repository's cache is a refusal naming both,
 // and nothing is written.
 func TestEnsureRepositoryCacheRefusesAnotherRepositorysCacheAtTheName(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{cacheObject(t, cacheRepo, "uid-cache", modeRunning, "acme/gadgets")})
 	g.clearActions()
 	err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo)
@@ -391,6 +395,7 @@ func TestEnsureRepositoryCacheRefusesAnotherRepositorysCacheAtTheName(t *testing
 // are kept: nothing is deleted, its claim template is as it was, and its Secret is updated in
 // place, owned by the same uid.
 func TestEnsureRepositoryCacheReplacesADriftedPodKeepingTheSandbox(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		mode    string
@@ -482,6 +487,7 @@ func reserveCacheCPU(t *testing.T, u *unstructured.Unstructured, cpu string) *un
 // A cache whose template reserves what the configuration does is left alone, though its pod's own
 // requirements differ from the template's, as GKE Autopilot makes them at admission.
 func TestEnsureRepositoryCacheReadsTheTemplateNotThePodForItsReservation(t *testing.T) {
+	t.Parallel()
 	adjusted := cachePod(cacheRepo, "uid-pod", "uid-cache", testImage, corev1.PodRunning)
 	adjusted.Spec.Containers[0].Resources = corev1.ResourceRequirements{
 		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
@@ -503,6 +509,7 @@ func TestEnsureRepositoryCacheReadsTheTemplateNotThePodForItsReservation(t *test
 // queueing, since the replacement would end every one of them, and replaced at the first ensure
 // that finds it serving none.
 func TestEnsureRepositoryCacheWaitsForTheStreamsToEndBeforeReplacingAPod(t *testing.T) {
+	t.Parallel()
 	var streams atomic.Int64
 	streams.Store(2)
 	served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -557,12 +564,13 @@ func jsonEqual(t *testing.T, a, b any) bool {
 // new bearer token, and replaces one another uid owns, keeping the bearer token it held, without
 // touching the Sandbox; a Secret holding the fresh lease already is not written.
 func TestRefreshCacheTokensRewritesALostOrForeignSecret(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
 		t.Fatal(err)
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	g.eventually("the cache pod", func() bool { return g.r.storedPod(name) != nil })
+	cacheStored(g, cacheRepo)
 	s := g.sandbox(name)
 	secretsGVR := corev1.SchemeGroupVersion.WithResource("secrets")
 
@@ -600,11 +608,28 @@ func TestRefreshCacheTokensRewritesALostOrForeignSecret(t *testing.T) {
 	}
 }
 
+// cacheStored waits until the runtime's stores hold the cache Sandbox of repo and its pod. A
+// Sandbox and its pod arrive on informers of their own, and nothing orders the Sandbox store after
+// the pod store, so a test that waits for the pod alone can read a Sandbox store that does not hold
+// the cache yet. RepositoryCache read such a store and found no cache on a loaded runner (#5643), and
+// the sweep (sweepCaches), which judges only the cache Sandboxes the store holds, passed over the
+// cache, wrote nothing and returned nil, so the mark a test then waited for never came (CI run
+// 45783744798, TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes).
+func cacheStored(g *rig, repo ghrepo.Repository) {
+	g.t.Helper()
+	name := CacheSandboxName(testProject, repo)
+	g.eventually("the cache "+name+"'s Sandbox and its pod in the runtime's stores", func() bool {
+		s, _ := g.r.storedSandbox(name)
+		return s != nil && g.r.storedPod(name) != nil
+	})
+}
+
 // A cache is ready, at its Service's http://<sandbox>.<namespace>.svc:8418, when the pod its Sandbox
 // owns has passed its readiness probe, and not before, whatever address the pod holds; a long
 // repository is found by the name it derives, with its whole name; and a cache name another
 // repository's cache holds answers not found, logged once.
 func TestRepositoryCacheReadsReadiness(t *testing.T) {
+	t.Parallel()
 	logs := &logBuffer{}
 	g := newRig(t, []k8sruntime.Object{cacheObject(t, ghrepo.MustParse("acme/gadgets"), "uid-gadgets", modeRunning, "acme/sprockets")}, withLog(logs))
 	for _, repo := range []ghrepo.Repository{cacheRepo, longRepo} {
@@ -613,7 +638,11 @@ func TestRepositoryCacheReadsReadiness(t *testing.T) {
 		}
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	g.eventually("the cache pod", func() bool { return g.r.storedPod(name) != nil })
+	// RepositoryCache reads the Sandbox store, so the test waits for both caches' Sandboxes and
+	// pods in the runtime's stores (cacheStored).
+	for _, repo := range []ghrepo.Repository{cacheRepo, longRepo} {
+		cacheStored(g, repo)
+	}
 	status, found := g.r.RepositoryCache(cacheRepo)
 	if !found || status.Ready || status.Address != "" || status.Sandbox != name || status.Repo != cacheRepo {
 		t.Fatalf("RepositoryCache before readiness = %+v, %t; want found, not ready, no address", status, found)
@@ -655,6 +684,7 @@ func crashLooping(pod *corev1.Pod) *corev1.Pod {
 // starting while its readiness probe passes before the controller has made its Service, and ready,
 // at that Service, once both are true.
 func TestRepositoryCacheReadsItsState(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, []k8sruntime.Object{cacheObject(t, cacheRepo, "uid-cache", modeRunning, "")}, withoutController())
 	name := CacheSandboxName(testProject, cacheRepo)
 	state := func() (string, string) {
@@ -711,6 +741,7 @@ func TestRepositoryCacheReadsItsState(t *testing.T) {
 // as a cache that is not one: no repository annotation, an issue's claim template, or a container
 // more. An issue Sandbox owning a cache's claim template is still refused as an issue Sandbox.
 func TestCensusAcceptsACacheSandboxAndRefusesAMalformedOne(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
 		t.Fatal(err)
@@ -771,6 +802,7 @@ func TestCensusAcceptsACacheSandboxAndRefusesAMalformedOne(t *testing.T) {
 // while that is under Retain, then deleted in the foreground with its volume; one back in the set
 // before then loses the mark and stays. The claim path's sweep never judges a cache.
 func TestReconcileOrphansKeepsACacheInTheSetAndRetiresOneOutsideIt(t *testing.T) {
+	t.Parallel()
 	var inSet atomic.Bool
 	inSet.Store(true)
 	logs := &logBuffer{}
@@ -889,6 +921,7 @@ func TestReconcileOrphansKeepsACacheInTheSetAndRetiresOneOutsideIt(t *testing.T)
 // kept for its retention and retired, which is the one rule the sweep has, and the cache of a
 // repository a live record still names is kept.
 func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testing.T) {
+	t.Parallel()
 	// A live record names acme/widgets throughout; stranger/tools is named by a live record until
 	// its issue is done.
 	recorded := ghrepo.MustParse("stranger/tools")
@@ -916,7 +949,7 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testin
 	if writes := g.sandboxWrites(); !slices.Contains(writes, "create sandboxes "+name) {
 		t.Fatalf("the sweep wrote %q, want the cache of the repository a record names made", writes)
 	}
-	g.eventually("the cache pod of "+recorded.String(), func() bool { return g.r.storedPod(name) != nil })
+	cacheStored(g, recorded)
 
 	sweep("of the cache of a repository a live record still names")
 	if writes := g.sandboxWrites(); len(writes) != 0 {
@@ -958,13 +991,13 @@ func TestReconcileOrphansKeepsTheCacheOfARepositoryWhileARecordNamesIt(t *testin
 // at its own address, with a token minted for the owner serving the repository now, which is what
 // keeps the pods addressed at it fetching.
 func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(servingRenamed(servingSmoke)))
 	for _, repo := range []ghrepo.Repository{recordedSmoke, servingSmoke} {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatalf("make the cache of %s: %v", repo, err)
 		}
-		name := CacheSandboxName(testProject, repo)
-		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+		cacheStored(g, repo)
 	}
 	kept, unused := CacheSandboxName(testProject, servingSmoke), CacheSandboxName(testProject, recordedSmoke)
 
@@ -1019,6 +1052,7 @@ func TestTheSweepKeepsTheServedNamesCacheAndMarksTheRecordedOnes(t *testing.T) {
 // read only where the new one is absent or not a time), which fails case 4; and a cache none of
 // whose marks parses kept untouched, which fails case 5, still carrying the old annotation.
 func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionAfterItsFirstMark(t *testing.T) {
+	t.Parallel()
 	const oldAnnotation = "legion.dev/cache-unmapped-at"
 	inSet := ghrepo.MustParse("acme/sprockets")
 	logs := &logBuffer{}
@@ -1182,6 +1216,7 @@ func TestACacheMarkedUnderTheOldAnnotationRetiresOneRetentionAfterItsFirstMark(t
 // alone, and one still sending or queueing a tar waits for its streams to end, whichever drift is
 // replacing it.
 func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *testing.T) {
+	t.Parallel()
 	name := CacheSandboxName(testProject, cacheRepo)
 	// cacheOn is a rig configured to run its pods as otherAccount, holding a Running cache
 	// Sandbox and a live pod of it on podAccount, whose /healthz counts serving streams when the
@@ -1269,6 +1304,7 @@ func TestEnsureRepositoryCacheReplacesACachePodRunningAnotherServiceAccount(t *t
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
 // repository's cache.
 func TestACacheThatCannotBeMadeNeverFailsTheReconciliation(t *testing.T) {
+	t.Parallel()
 	logs := &logBuffer{}
 	g := newRig(t, nil, withLog(logs), withOptions(func(o *Options) {
 		o.Tokens = refusingTokens{}
@@ -1293,6 +1329,7 @@ func TestACacheThatCannotBeMadeNeverFailsTheReconciliation(t *testing.T) {
 
 // A tree's cleanup lists the tree's Sandboxes, which a cache never is: it survives.
 func TestCleanupTreeNeverListsACache(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
 		t.Fatal(err)
@@ -1313,6 +1350,7 @@ func TestCleanupTreeNeverListsACache(t *testing.T) {
 // The gh refresher walks the issue and controller pods; a cache pod, which has no role, is passed
 // over with nothing logged and nothing written.
 func TestGitHubRefreshSkipsCachePods(t *testing.T) {
+	t.Parallel()
 	logs := &logBuffer{}
 	g := newRig(t, nil, withLog(logs))
 	if err := g.r.EnsureRepositoryCache(g.ctx, cacheRepo); err != nil {
@@ -1353,6 +1391,7 @@ func mountsOf(c corev1.Container) []string {
 // mount the volume whole and the feed again, read-only, over it, so no agent can write the feed the
 // token-holding container reads. No emptyDir feed is left.
 func TestTheFeedIsOnTheIssueVolumeAndOnlyTheFetchWritesIt(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(rootSpec(t))
 	spec := g.sandbox(loc.Sandbox.Name).Spec.PodTemplate.Spec
@@ -1403,6 +1442,7 @@ func (g *rig) fetchEnv(name string) map[string]string {
 // environment value. A launch makes the cache when the repository has none yet. The token reaches
 // the fetch container alone, and is the cache's own.
 func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	repo := rootSpec(t).Repository
 	loc := g.spawn(rootSpec(t))
@@ -1442,12 +1482,18 @@ func TestAnIssuePodsFetchIsToldItsRepositorysCacheAndItsToken(t *testing.T) {
 	}
 }
 
-// RepositoryCaches is every cache the stores hold, by repository, each with what its /healthz
-// answered at the last health read (on the gh refresher's tick): a Ready cache's head, bytes and
-// last fetch, a cache that could not be read with why, and one not Ready with nothing read. A cache
-// of a repository the set no longer holds carries when the sweep retires it.
+// RepositoryCaches is every cache the stores hold, by repository, each with its volume claim's name
+// — the claim the controller makes from its Sandbox's volume template, which an operator grows in
+// place — and with what its /healthz answered at the last health read (on the gh refresher's
+// tick): a Ready cache's head, bytes and last fetch, and its room on its volume with the time its
+// repack last failed for lack of space, a cache that could not be read with why, and one not Ready
+// with nothing read. A cache of a repository the set no longer holds carries when the sweep retires
+// it.
 func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
+	t.Parallel()
 	fetched := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	repackFailed := time.Date(2026, 11, 19, 2, 15, 33, 0, time.UTC)
+	volume, available := uint64(20<<30), uint64(107374182)
 	var presented atomic.Value
 	presented.Store("")
 	served := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1457,7 +1503,8 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		}
 		presented.Store(r.Header.Get("Authorization"))
 		w.Header().Set(workspace.CacheRepositoryHeader, "acme/widgets")
-		_ = json.NewEncoder(w).Encode(repocache.Health{Ready: true, Repo: "acme/widgets", Head: "0123abcd", LastFetchAt: fetched, Bytes: 6612345678})
+		_ = json.NewEncoder(w).Encode(repocache.Health{Ready: true, Repo: "acme/widgets", Head: "0123abcd", LastFetchAt: fetched, Bytes: 6612345678,
+			VolumeBytes: &volume, AvailableBytes: &available, RepackOutOfSpaceAt: repackFailed})
 	}))
 	t.Cleanup(served.Close)
 	network := &podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}
@@ -1477,8 +1524,7 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 		if err := g.r.EnsureRepositoryCache(g.ctx, repo); err != nil {
 			t.Fatal(err)
 		}
-		name := CacheSandboxName(testProject, repo)
-		g.eventually("the cache pod of "+repo.String(), func() bool { return g.r.storedPod(name) != nil })
+		cacheStored(g, repo)
 	}
 	g.update(g.pod(CacheSandboxName(testProject, cacheRepo)), func(p *corev1.Pod) {
 		p.Status.PodIP = "10.0.0.5"
@@ -1506,12 +1552,25 @@ func TestRepositoryCachesCarryTheirLastHealthRead(t *testing.T) {
 	if len(caches) != 2 || caches[0].Repo != gadgets || caches[1].Repo != cacheRepo {
 		t.Fatalf("RepositoryCaches = %+v, want acme/gadgets then acme/widgets", caches)
 	}
+	for _, cache := range caches {
+		stored, err := g.r.storedSandbox(cache.Sandbox)
+		if err != nil || stored == nil || len(stored.Spec.VolumeClaimTemplates) != 1 {
+			t.Fatalf("the cache Sandbox %s is %+v (%v), want it stored with its one volume claim template", cache.Sandbox, stored, err)
+		}
+		if want := stored.Spec.VolumeClaimTemplates[0].Metadata.Name + "-" + stored.Name; cache.Claim != want {
+			t.Errorf("the cache of %s names its claim %q, want %q: the claim the controller makes from its Sandbox's volume template", cache.Repo, cache.Claim, want)
+		}
+	}
 	if gadgetsCache := caches[0]; gadgetsCache.Ready || gadgetsCache.Health != nil || gadgetsCache.HealthError != "" || gadgetsCache.RetainedUntil.IsZero() {
 		t.Errorf("the not-Ready cache outside the set is %+v, want nothing read and its retention", gadgetsCache)
 	}
 	widgets := caches[1]
 	if !widgets.Ready || widgets.Health == nil || widgets.Health.Head != "0123abcd" || widgets.Health.Bytes != 6612345678 || !widgets.Health.LastFetchAt.Equal(fetched) || widgets.HealthError != "" {
 		t.Errorf("the Ready cache is %+v (health %+v), want its /healthz", widgets, widgets.Health)
+	}
+	if room := widgets.Health; room == nil || room.VolumeBytes == nil || *room.VolumeBytes != volume || room.AvailableBytes == nil || *room.AvailableBytes != available ||
+		room.VolumeError != "" || !room.FetchOutOfSpaceAt.IsZero() || !room.RepackOutOfSpaceAt.Equal(repackFailed) {
+		t.Errorf("the Ready cache's health is %+v, want its room on its volume and its repack's failure for lack of space as /healthz answered them", room)
 	}
 
 	served.Close()
@@ -1597,6 +1656,7 @@ func readyCache(t *testing.T, g *rig, podIP string) string {
 // no Authorization header. A read is the pod's it was made of: once that pod is replaced, its
 // successor shows none until it is read.
 func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
+	t.Parallel()
 	served, credentials := healthServer(t, cacheRepo.String())
 	g := newRig(t, nil)
 	network := &podNetwork{routes: map[string]string{"10.0.0.5:8418": served.Listener.Addr().String()}}
@@ -1627,6 +1687,7 @@ func TestTheHealthReadAsksThePodAddressWithNoCredential(t *testing.T) {
 // no health read. Its answer names another repository, which the read refuses: the cache shows that
 // read's failure, and no health, until the next.
 func TestAStrangerAtTheCachePodsAddressGetsNoCredential(t *testing.T) {
+	t.Parallel()
 	stranger, credentials := healthServer(t, "acme/gadgets")
 	g := newRig(t, nil)
 	g.r.cacheDial = (&podNetwork{routes: map[string]string{"10.0.0.5:8418": stranger.Listener.Addr().String()}}).dial
@@ -1659,6 +1720,7 @@ func cacheService(name string, uid types.UID) *corev1.Service {
 // the controller's own function returns for these names, so the selector the daemon requires of a
 // cache's Service is the one the controller writes.
 func TestSandboxNameHashIsTheControllersNameHash(t *testing.T) {
+	t.Parallel()
 	for name, want := range map[string]string{
 		"":  "811c9dc5",
 		"a": "e40c292c",
@@ -1682,6 +1744,7 @@ func TestSandboxNameHashIsTheControllersNameHash(t *testing.T) {
 // timeout naming the Service, with no issue pod made and no token written for one; and legion
 // state shows the cache refused, naming the Service and why.
 func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		edit func(*corev1.Service)
 		says string
@@ -1735,6 +1798,7 @@ func TestAnIssuePodGetsNoCacheAddressFromAServiceThatIsNotTheCaches(t *testing.T
 // store is trusted again. The failure recorded here is what the Service informer's list or watch
 // records when the API server refuses it.
 func TestNoServiceIsTrustedWhileTheServiceWatchFails(t *testing.T) {
+	t.Parallel()
 	spec := rootSpec(t)
 	cache := CacheSandboxName(testProject, spec.Repository)
 	logs := &logBuffer{}

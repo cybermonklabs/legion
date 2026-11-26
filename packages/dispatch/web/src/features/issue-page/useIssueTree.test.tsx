@@ -1,33 +1,52 @@
-import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
+import { liveSocketFor } from "../../api/live-socket";
 import { referenceTargetsQuery } from "../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   ArtifactBlock,
+  AuthenticatedUser,
   Comment,
   DispatchEvent,
   DisplayTree,
   EventType,
+  IssueAskRow,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
-import type { TreeNode } from "./issue-tree";
-import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import type { PostDeletion } from "../refs/post-marks";
 import {
   ReferenceNamesProvider,
-  useKnownAmbiguousReferences,
-  useKnownReferenceName,
-  useKnownReferenceNames,
-  usePublishReferenceNames,
-} from "./reference-names";
+  useKnownDeletedReferences,
+  useKnownEditedReferences,
+  useKnownReferences,
+} from "../refs/reference-names";
+import type { TreeNode } from "./issue-tree";
+import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
+import { Publisher, publishedNames } from "./projection-fixture";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
+
+/** The name the page published for `reference`, as a surface under the store reads it, or
+ *  `undefined` where it published none. */
+function useKnownReferenceName(reference: string): string | undefined {
+  return useKnownReferences().names.get(reference);
+}
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The names of the issue page's tree, across a change to the tree itself. The batched name read
@@ -119,6 +138,8 @@ const comment: Comment = {
   author: { id: "alice", kind: "user" },
   body: "One more turn of the conversation.",
   created_at: "2026-11-05T01:00:00Z",
+  deleted_at: null,
+  deleted_by: null,
   deliveries: [],
   edited_at: null,
   id: "comment-1",
@@ -152,9 +173,11 @@ function stubTreeReads(
     targets: ReferenceTarget[];
   }>,
   {
+    asks = [],
     comments = [],
     held,
   }: {
+    readonly asks?: readonly IssueAskRow[];
     readonly comments?: readonly Comment[];
     readonly held?: { readonly read: TreeRead; readonly until: Promise<void> };
   } = {}
@@ -174,10 +197,15 @@ function stubTreeReads(
       await answered("results");
       return { checks: [], issue: KEY, verification_artifact_id: "" };
     }),
-    spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
+    spyOn(api, "getIssueReferences").mockResolvedValue({
+      linked_from: [],
+      links: [],
+      members: [],
+      truncated: false,
+    }),
     spyOn(api, "listIssueAsks").mockImplementation(async () => {
       await answered("asks");
-      return [];
+      return [...asks];
     }),
     spyOn(api, "listComments").mockImplementation(async () => {
       await answered("comments");
@@ -519,7 +547,7 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
       () => {
         useIssueTree(issue);
         return {
-          ambiguous: useKnownAmbiguousReferences(),
+          ambiguous: useKnownReferences().ambiguous,
           names: [useKnownReferenceName(ambiguous), useKnownReferenceName(gone)],
           task: useKnownReferenceName(TASK_REF),
         };
@@ -537,28 +565,115 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
   }
 });
 
-/** What one surface publishes: the names it read and the references it read as ambiguous. */
-interface Published {
-  readonly ambiguous: ReadonlySet<string>;
-  readonly names: ReadonlyMap<string, string>;
-}
+// R2 of dispatch://INFRA-1523: the page publishes an edited post a comment cites by its words
+// alone, and the post among the references whose post its author edited, so a link cuts the
+// words to its own length and marks what the cut left ` · edited`.
+test("the page publishes an edited post a comment cites by its words, among the edited references", async () => {
+  const cited = `dispatch://${KEY}/comment/c0ffee00`;
+  const stubs = stubTreeReads(
+    async (refs) => ({
+      targets: namedTargets(refs).targets.map(
+        (target): ReferenceTarget =>
+          target.ref === cited
+            ? { ...target, edited_at: "2026-11-05T02:00:00Z", kind: "comment", name: "Hold it." }
+            : target
+      ),
+    }),
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return {
+          edited: useKnownEditedReferences(),
+          name: useKnownReferenceName(cited),
+          task: useKnownReferenceName(TASK_REF),
+        };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect([...view.result.current.edited]).toEqual([cited]));
+    expect(view.result.current.name).toBe("Hold it.");
+    // A target nobody edited is published by its name and left out of the set.
+    expect(view.result.current.task).toBe(NODE_TYPE_NAMES.plan_task);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
 
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: the page publishes a deleted post a
+// comment cites by its deleted line, and the post among the deleted references by its delete, so
+// a row's words draw the line with its actor named as the page names an author.
+test("the page publishes a deleted post a comment cites by its deleted line, among the deleted references", async () => {
+  const cited = `dispatch://${KEY}/comment/c0ffee00`;
+  const deletion = { at: "2026-11-05T02:00:00Z", by: { id: "alice", kind: "user" } };
+  const stubs = stubTreeReads(
+    async (refs) => ({
+      targets: namedTargets(refs).targets.map(
+        (target): ReferenceTarget =>
+          target.ref === cited
+            ? {
+                ...target,
+                deleted_at: deletion.at,
+                deleted_by: deletion.by,
+                kind: "comment",
+                name: "",
+              }
+            : target
+      ),
+    }),
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return {
+          deleted: useKnownDeletedReferences(),
+          name: useKnownReferenceName(cited),
+          task: useKnownReferenceName(TASK_REF),
+        };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect([...view.result.current.deleted]).toEqual([[cited, deletion]]));
+    expect(view.result.current.name).toBe("Deleted by alice");
+    // A target nobody deleted is published by its name and left out of the map.
+    expect(view.result.current.task).toBe(NODE_TYPE_NAMES.plan_task);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
 /** What a link under the provider read on its latest render. */
 interface Seen {
   ambiguous?: ReadonlySet<string>;
+  deleted?: ReadonlyMap<string, PostDeletion>;
+  edited?: ReadonlySet<string>;
   names?: ReadonlyMap<string, string>;
-}
-
-/** A surface that publishes `published` for as long as it is mounted. */
-function Publisher({ published }: { readonly published: Published }): ReactNode {
-  usePublishReferenceNames(published.names, published.ambiguous);
-  return null;
 }
 
 /** A link under the provider, which writes what it reads into `seen` on every render. */
 function Reader({ seen }: { readonly seen: Seen }): ReactNode {
-  seen.ambiguous = useKnownAmbiguousReferences();
-  seen.names = useKnownReferenceNames();
+  const known = useKnownReferences();
+  seen.ambiguous = known.ambiguous;
+  seen.deleted = known.deleted;
+  seen.edited = known.edited;
+  seen.names = known.names;
   return null;
 }
 
@@ -572,25 +687,32 @@ test("one publisher leaving keeps the names and ambiguous references another pub
   const other = "dispatch://CORE-7";
   const pageAmbiguous = `dispatch://${KEY}/comment/c0b271c7`;
   const sheetAmbiguous = `dispatch://${KEY}/ask/a5`;
-  const page: Published = {
+  // What each surface read - the names, and the references it read as ambiguous - and what it
+  // publishes of that, made once, so a render in which no surface reads again publishes the
+  // same value.
+  const page = {
     ambiguous: new Set([pageAmbiguous]),
     names: new Map([
       [TASK_REF, TASK_WORDS],
       [shared, "Hold the deploy."],
     ]),
   };
-  const sheet: Published = {
+  const sheet = {
     ambiguous: new Set([sheetAmbiguous]),
     names: new Map([
       [other, "Another issue"],
       [shared, "Hold the deploy until Friday."],
     ]),
   };
+  const published = {
+    page: publishedNames(page.names, { ambiguous: page.ambiguous }),
+    sheet: publishedNames(sheet.names, { ambiguous: sheet.ambiguous }),
+  };
   const seen: Seen = {};
   const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
     <ReferenceNamesProvider>
-      {mounted.page && <Publisher published={page} />}
-      {mounted.sheet && <Publisher published={sheet} />}
+      {mounted.page && <Publisher published={published.page} />}
+      {mounted.sheet && <Publisher published={published.sheet} />}
       <Reader seen={seen} />
     </ReferenceNamesProvider>
   );
@@ -624,9 +746,96 @@ test("one publisher leaving keeps the names and ambiguous references another pub
   view.unmount();
 });
 
+// A name and its edit mark come from one read. Where two surfaces name one post, the mark of the
+// one whose name stands - the last to publish - stands with it: the page read a comment edited,
+// and the sheet, publishing after it, read the comment deleted, whose deleted line takes no
+// mark, so a link reads that line unmarked and not as `Deleted by alice · edited`. Once the sheet
+// closes, the page's name and its mark stand again.
+test("the edited mark a link reads is the one of the publisher whose name stands", () => {
+  const deleted = `dispatch://${KEY}/comment/c0ffee00`;
+  const edited = `dispatch://${KEY}/comment/c0ffee01`;
+  const page = publishedNames(
+    new Map([
+      [deleted, "Hold the deploy."],
+      [edited, "Ship it."],
+    ]),
+    { edited: new Set([deleted, edited]) }
+  );
+  const sheet = publishedNames(new Map([[deleted, "Deleted by alice"]]));
+  const seen: Seen = {};
+  const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
+    <ReferenceNamesProvider>
+      {mounted.page && <Publisher published={page} />}
+      {mounted.sheet && <Publisher published={sheet} />}
+      <Reader seen={seen} />
+    </ReferenceNamesProvider>
+  );
+
+  const view = render(surfaces({ page: true, sheet: true }));
+  expect(seen.names?.get(deleted)).toBe("Deleted by alice");
+  expect(seen.edited).toEqual(new Set([edited]));
+
+  // The sheet closes: the page's own set stands, as it published it.
+  view.rerender(surfaces({ page: true, sheet: false }));
+  expect(seen.names?.get(deleted)).toBe("Hold the deploy.");
+  expect(seen.edited).toBe(page.edited);
+
+  view.rerender(surfaces({ page: false, sheet: false }));
+  expect(seen.edited).toEqual(new Set());
+  view.unmount();
+});
+
+// A name and its delete come from one read, as a name and its edit mark do. Where two surfaces
+// name one post, the delete of the one whose name stands - the last to publish - stands with it:
+// the page read a comment standing, and the sheet, publishing after it, read it deleted, so a
+// row's words draw the sheet's deleted line from its delete. A post the sheet named standing,
+// which the page read deleted before, is read standing. Once the sheet closes, the page's names
+// and its own map stand again.
+test("the delete a link reads is the one of the publisher whose name stands", () => {
+  const deleted = `dispatch://${KEY}/comment/c0ffee00`;
+  const restored = `dispatch://${KEY}/comment/c0ffee01`;
+  const deletion = { at: "2026-11-05T02:00:00Z", by: { id: "alice", kind: "user" } };
+  const page = publishedNames(
+    new Map([
+      [deleted, "Hold the deploy."],
+      [restored, "Deleted by alice"],
+    ]),
+    { deleted: new Map([[restored, deletion]]) }
+  );
+  const sheet = publishedNames(
+    new Map([
+      [deleted, "Deleted by alice"],
+      [restored, "Ship it."],
+    ]),
+    { deleted: new Map([[deleted, deletion]]) }
+  );
+  const seen: Seen = {};
+  const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
+    <ReferenceNamesProvider>
+      {mounted.page && <Publisher published={page} />}
+      {mounted.sheet && <Publisher published={sheet} />}
+      <Reader seen={seen} />
+    </ReferenceNamesProvider>
+  );
+
+  const view = render(surfaces({ page: true, sheet: true }));
+  expect(seen.names?.get(deleted)).toBe("Deleted by alice");
+  expect(seen.deleted).toEqual(new Map([[deleted, deletion]]));
+
+  // The sheet closes: the page's own map stands, as it published it.
+  view.rerender(surfaces({ page: true, sheet: false }));
+  expect(seen.names?.get(deleted)).toBe("Hold the deploy.");
+  expect(seen.deleted).toBe(page.deleted);
+
+  view.rerender(surfaces({ page: false, sheet: false }));
+  expect(seen.deleted).toEqual(new Map());
+  view.unmount();
+});
+
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
-// link that reads the page's published names draws the name as it is, so the page publishes the
-// question's plain words, the name a chip naming the ask draws (`targetNaming`).
+// surface that reads the page's published names draws the name as it is, so the page publishes
+// the projection of the question's reading, as a link to the ask reads it (R8), from which a
+// chip naming the ask cuts its own words (`targetNaming`, `chipName`).
 test("a published name of an ask is its question's plain words, never its markdown", async () => {
   const cited = `dispatch://${KEY}/ask/ask-9`;
   const stubs = stubTreeReads(
@@ -1142,7 +1351,7 @@ test("A plan with no role that the issue names by its id has its blocks read and
     expect(api.getArtifactBlocks).toHaveBeenCalledWith(roleless.id);
     // A comment citing the whole plan carries a chip that names it as the plan.
     const chips = nodesInOrder(view.result.current).find((node) => node.id === comment.id)?.chips;
-    expect(chips?.map(({ name, ref }) => ({ name, ref }))).toEqual([
+    expect(chips?.map((chip) => ({ name: chip.reading?.chipWord, ref: chip.ref }))).toEqual([
       { name: PRESET_NAMES.plan, ref: cites },
     ]);
     view.unmount();
@@ -1151,11 +1360,117 @@ test("A plan with no role that the issue names by its id has its blocks read and
   }
 });
 
+// A link titles another issue's whole spec by that issue's title (`issueOrDocumentTitle`), which
+// the batched read answers only under the issue's own address. So where a comment cites such a
+// spec alone, the page asks the one read for the issue beside it, and publishes the spec by the
+// issue's title for every plain line it feeds, with the page's word for a document beside it for
+// a chip to draw (`targetNaming`).
+test("another issue's spec a comment cites alone is read with its issue and published by the issue's title", async () => {
+  const other = "dispatch://CORE-9";
+  const cited = `${other}/spec`;
+  const title = "Other issue title";
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      // The spec by its file name and the issue by its title, each where it is asked for.
+      return {
+        targets: namedTargets(refs).targets.map((target): ReferenceTarget => {
+          if (target.ref === cited) return { ...target, kind: "artifact", name: "spec.md" };
+          return target.ref === other ? { ...target, kind: "issue", name: title } : target;
+        }),
+      };
+    },
+    { comments: [{ ...comment, body: `Wait for ${cited} to be approved.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        const known = useKnownReferences();
+        return { line: known.lines.get(cited), name: known.names.get(cited) };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current.name).toBeDefined());
+    expect(asked, "the names were read more than once").toHaveLength(1);
+    expect(asked[0]).toContain(cited);
+    expect(asked[0], "the names read was not asked for the spec's issue").toContain(other);
+    expect(view.result.current).toEqual({ line: NODE_TYPE_NAMES.document, name: title });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A declined ask's note is drawn under its row in the Decisions view from the asks read, not from
+// a node of the tree, so the page asks the one names read for what the note cites, and no row
+// reads it itself. The ask is the row the server answers for a decline: `resolved`, with a
+// resolution of kind `declined` (the database's `asks_state_check` holds no `declined` state).
+test("what a declined ask's note cites is asked for in the one names read", async () => {
+  const cited = "dispatch://CORE-9";
+  const asked: string[][] = [];
+  const declined = {
+    anchor: null,
+    answer: null,
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    author: { id: "session-1", kind: "session" },
+    block_id: null,
+    created_at: "2026-11-10T09:00:00Z",
+    edited_at: null,
+    id: "a-declined",
+    issue_key: KEY,
+    kind: "question",
+    last_reply: null,
+    multiple: false,
+    options: null,
+    question: "On a phone, where does the box sit?",
+    resolution: {
+      actor: { id: "alice", kind: "user" },
+      at: "2026-11-13T09:00:00Z",
+      kind: "declined",
+      reason: `Ask about ${cited} first.`,
+    },
+    state: "resolved",
+    urgency: "normal",
+  } satisfies IssueAskRow;
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      return namedTargets(refs);
+    },
+    { asks: [declined] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    await waitFor(() => expect(asked).toHaveLength(1));
+    expect(asked[0], "the names read was not asked for what the note cites").toContain(cited);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 // The batched read names a typed block by its stored excerpt, which opens on the block's
-// directive line. Every link that reads the page's published names draws the name as it is, so
-// the page publishes the name a chip naming the block draws (`targetNaming`): the first line of
-// the server's reading where the read sends one, and the page's word for the block's kind where
-// it sends none - never the directive line.
+// directive line. Every surface that reads the page's published names draws the name as it is,
+// so the page publishes the name a chip naming the block is cut from (`targetNaming`): the first
+// block of the server's reading where the read sends one, whole, and the page's word for the
+// block's kind where it sends none - never the directive line.
 test("A published name of a typed block is never its directive line", async () => {
   const opener = `:::plan_task{#t1 serves="dispatch://${KEY}/spec#b-r1"}`;
   const reading: DisplayTree = {
@@ -1366,27 +1681,30 @@ const NAMING_KEY = [[`dispatch://${KEY}`]];
 /** Names reads whose key names no address of the issue: another issue's, and a document of the
  *  issue's project, which is no address of the issue. */
 const NAMING_ELSEWHERE = [
-  ["dispatch://ACME-2", "dispatch://ACME-2/comment/comment-1"],
+  ["dispatch://ACME-2", "dispatch://ACME-2/comment/comment-9"],
   ["dispatch://CORE/artifact/roadmap-md"],
 ];
 
 // A names read is keyed by the addresses it names, so only words that change under an address
-// already named need a rule - a comment's edit, an ask's edit and a document's new version - and
-// so do a document's rename and its removal, which rename or empty every address to it, and an
-// issue's write that changes its title, which renames the issue's own address. The feed is the
-// workspace's, so each refreshes only the names reads whose key names an address it can change of
-// the issue the event is on: an event on an issue no read names changes no name that read holds,
-// and only a title change changes the name of the issue's own address, which the names read
-// answers with the issue's title and nothing else. A child's page names its parent by that
-// address, and the parent's documents take new versions often: none of those, nor any other
-// change under the parent, reads the child's names again, where the parent's new title, and an
-// older server's update that names none of its changes, does. A new comment is a new address,
-// which the tree reads under a key of its own, a person's edit of a document is the notice after
-// the versions that already refreshed them, and an issue's write that leaves its title alone and
-// a follower joining an ask rename nothing.
+// already named need a rule - a comment's edit and delete, an issue message's edit and delete,
+// an ask's edit and a document's new version - and so do a document's rename and its removal,
+// which rename or empty every address to it, and an issue's write that changes its title, which
+// renames the issue's own address. The feed is the workspace's, so each refreshes only the names
+// reads whose key names an address it can change of the issue the event is on: an event on an
+// issue no read names changes no name that read holds, and only a title change changes the name
+// of the issue's own address, which the names read answers with the issue's title and nothing
+// else. A child's page names its parent by that address, and the parent's documents take new
+// versions often: none of those, nor any other change under the parent, reads the child's names
+// again, where the parent's new title, and an older server's update that names none of its
+// changes, does. A new comment is a new address, which the tree reads under a key of its own, a
+// person's edit of a document is the notice after the versions that already refreshed them, and
+// an issue's write that leaves its title alone and a follower joining an ask rename nothing.
 test("an edit on an issue refreshes the names reads whose key names the issue and no other, a new comment none", () => {
   const editsWords = [
     feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("comment.deleted", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("message.edited", { id: "message-1", in_reply_to: null }),
+    feedEvent("message.deleted", { id: "message-1", in_reply_to: null }),
     feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
     feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
     feedEvent("artifact.renamed", { artifact: plan }),
@@ -1424,7 +1742,7 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
 test("an event on CORE-1 leaves a names read naming only CORE-12 alone", () => {
   const other = [
     "dispatch://CORE-12",
-    "dispatch://CORE-12/comment/comment-1",
+    "dispatch://CORE-12/comment/comment-9",
     "dispatch://CORE-12/spec#b-s1",
   ];
   const own = [`dispatch://${KEY}`, `dispatch://${KEY}/spec#b-s1`];
@@ -1442,13 +1760,13 @@ const roadmap = issueDocument("artifact-roadmap", "roadmap-md", {
 });
 
 // A project document's event is on the document and what it owns, each written under
-// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit, the edit of an
-// ask its anchor puts on the document, or of a block ask through the ask's own route, and an
-// approval request's rewording carry the slug, so they leave a read naming another document of
-// the project alone too, `roadmap-md-2` among them; a new version and the edit of a question
-// asked of the document as a whole name the document by its id alone, as a version's rewording
-// of a block ask does, so they are held to the project's documents, which leaves another
-// project's documents and every issue alone.
+// `dispatch://CORE/artifact/roadmap-md`. A rename, a removal, a comment's edit and delete, the
+// edit of an ask its anchor puts on the document, or of a block ask through the ask's own route,
+// and an approval request's rewording carry the slug, so they leave a read naming another
+// document of the project alone too, `roadmap-md-2` among them; a new version and the edit of a
+// question asked of the document as a whole name the document by its id alone, as a version's
+// rewording of a block ask does, so they are held to the project's documents, which leaves
+// another project's documents and every issue alone.
 test("a project document's event refreshes the names reads naming that document, and none naming another", () => {
   const onDocument = { artifact_id: roadmap.id, issue_key: null };
   const naming = [
@@ -1471,6 +1789,19 @@ test("a project document's event refreshes the names reads naming that document,
         anchor: null,
         artifact_slug: roadmap.slug,
         ask_id: null,
+        id: "comment-1",
+        project_key: "CORE",
+      },
+      onDocument
+    ),
+    feedEvent(
+      "comment.deleted",
+      {
+        anchor: null,
+        artifact_slug: roadmap.slug,
+        ask_id: null,
+        deleted_at: "2026-11-05T03:00:00Z",
+        deleted_by: { id: "alice", kind: "user" },
         id: "comment-1",
         project_key: "CORE",
       },
@@ -1636,5 +1967,203 @@ test("a cited comment's edit reads the names once more, and the page publishes i
   } finally {
     setSystemTime();
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-19 22:21Z: a names
+// read (`["reference-targets", <addresses>]`) that a post's edit or delete refreshes keeps the
+// answer it held while the refetch is out, and TanStack keeps that answer when the refetch fails.
+// So the feed writes the correction's own facts into the answer it keeps (`markCorrectedPost`):
+// after a failed refetch the kept answer and the page's published name give a deleted post's
+// deleted line, never its old words, and mark an edited post edited.
+
+/** A comment a turn cites by its whole id, as Dispatch stores one: a correction names the post by
+ *  that id. */
+const CITED_ID = "11111111-2222-4333-8444-555555555555";
+const CITED = `dispatch://${KEY}/comment/${CITED_ID}`;
+const OLD_WORDS = "Hold the deploy.";
+
+/** The page open on the issue: the workspace's event feed, the tree and what it publishes, signed
+ *  in as alice, with the comments read answering `stored` and the names read naming each comment
+ *  by its words until `deliver` makes every names read fail. A first load that fails puts back
+ *  what the page took before it throws. Returns what each step reads. */
+async function openCorrectedPage(stored: Comment[]) {
+  let failing = false;
+  let namesReads = 0;
+  const sockets = installFakeLiveSockets();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const stubs = stubTreeReads(
+    async (refs) => {
+      namesReads += 1;
+      if (failing) throw new Error("the names read failed");
+      return {
+        targets: namedTargets(refs).targets.map((target) => {
+          const turn = stored.find((one) => target.ref.endsWith(`/comment/${one.id}`));
+          return turn === undefined ? target : { ...target, kind: "comment", name: turn.body };
+        }),
+      };
+    },
+    { comments: stored }
+  );
+  let unmount: (() => void) | undefined;
+  // Puts back what the page took: the view, the feed's socket, the cache, the clock and the
+  // stubbed reads.
+  const restore = () => {
+    unmount?.();
+    liveSocketFor(client).close();
+    client.clear();
+    sockets.restore();
+    setSystemTime();
+    for (const stub of stubs) stub.mockRestore();
+  };
+  try {
+    const signedIn: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
+    client.setQueryData(["whoami"], signedIn);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+      </QueryClientProvider>
+    );
+    const view = renderHook(
+      () => {
+        useEventFeed();
+        const { namesFailure } = useIssueTree(issue);
+        return {
+          edited: useKnownEditedReferences(),
+          name: useKnownReferenceName(CITED),
+          namesFailed: namesFailure !== undefined,
+        };
+      },
+      { wrapper }
+    );
+    unmount = view.unmount;
+    await waitFor(() => expect(view.result.current.name).toBe(OLD_WORDS));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const socket = sockets.latest();
+    act(() => socket.open());
+    const { sub } = socket.subscribed("events");
+    act(() => socket.receive({ type: "events_start", sub, since: "0", replay_complete: true }));
+    return {
+      /** What the names reads the cache holds keep for the cited comment. */
+      cached: (): ReferenceTarget[] =>
+        client
+          .getQueryCache()
+          .findAll({ queryKey: ["reference-targets"] })
+          .flatMap(
+            (query) =>
+              (query.state.data as { targets: ReferenceTarget[] } | undefined)?.targets ?? []
+          )
+          .filter((target) => target.ref === CITED),
+      /** Delivers `event` on the feed with every names read failing from now on, and waits until
+       *  the names read it leads to has failed. */
+      deliver: async (event: DispatchEvent) => {
+        failing = true;
+        const before = namesReads;
+        // A second on, so the scheduler's interval between two fetches of one read
+        // (`MIN_REFETCH_INTERVAL_MS`) holds back none of the reads the event sends.
+        setSystemTime(Date.now() + MIN_REFETCH_INTERVAL_MS);
+        act(() => socket.receive({ type: "event", sub, id: String(event.id), event }));
+        await waitFor(() => expect(namesReads).toBeGreaterThan(before));
+        await waitFor(() => expect(client.isFetching()).toBe(0));
+        const states = client
+          .getQueryCache()
+          .findAll({ queryKey: ["reference-targets"] })
+          .map((query) => query.state.status);
+        expect(states, "the names read the event led to failed").toContain("error");
+      },
+      restore,
+      view,
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+/** The delete of `cited` as Dispatch stores it, and as its event carries it: the comment's
+ *  routing fields and its marks, and no body. */
+function deletionOf(cited: Comment) {
+  const marks = { deleted_at: "2026-11-05T02:00:00Z", deleted_by: comment.author };
+  const { body: _body, ...routing } = cited;
+  return {
+    marks,
+    payload: { ...routing, ...marks, artifact_name: "" },
+    stored: { ...cited, ...marks, body: "" },
+  };
+}
+
+test("a deleted post's names read whose refetch fails names the deleted line, never the old words", async () => {
+  const cited: Comment = { ...comment, body: OLD_WORDS, id: CITED_ID };
+  const stored: Comment[] = [{ ...comment, body: `Read ${CITED} first.` }, cited];
+  const page = await openCorrectedPage(stored);
+  try {
+    const deleted = deletionOf(cited);
+    stored[1] = deleted.stored;
+    await page.deliver(feedEvent("comment.deleted", deleted.payload));
+    expect({
+      cached: page.cached(),
+      published: page.view.result.current.name,
+    }).toEqual({
+      cached: [{ ...deleted.marks, gone: false, kind: "comment", name: "", ref: CITED }],
+      published: "Deleted by alice",
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+test("an edited post's names read whose refetch fails marks the post edited", async () => {
+  const cited: Comment = { ...comment, body: OLD_WORDS, id: CITED_ID };
+  const stored: Comment[] = [{ ...comment, body: `Read ${CITED} first.` }, cited];
+  const page = await openCorrectedPage(stored);
+  try {
+    const editedAt = "2026-11-05T02:00:00Z";
+    const edited: Comment = {
+      ...cited,
+      body: "Hold the deploy until Friday.",
+      edited_at: editedAt,
+    };
+    stored[1] = edited;
+    await page.deliver(feedEvent("comment.edited", { ...edited, artifact_name: "" }));
+    // The words stay the kept answer's until a read succeeds; the mark is the edit's own.
+    expect({
+      cached: page.cached(),
+      edited: [...page.view.result.current.edited],
+    }).toEqual({
+      cached: [{ edited_at: editedAt, gone: false, kind: "comment", name: OLD_WORDS, ref: CITED }],
+      edited: [CITED],
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+// The same where a new turn has changed the tree's set of addresses while every names read
+// fails: the page draws the answer the cache holds for the set it answered last
+// (`useLastAnswered`), and a delete that arrives only then writes its mark into that answer, so
+// the page names the deleted line there too, never the old words.
+test("a delete after a grown tree's names read failed names the deleted line, never the old words", async () => {
+  const cited: Comment = { ...comment, body: OLD_WORDS, id: CITED_ID };
+  const stored: Comment[] = [{ ...comment, body: `Read ${CITED} first.` }, cited];
+  const page = await openCorrectedPage(stored);
+  try {
+    // A new turn arrives: the tree holds one address more, and the names read of that set fails.
+    const second: Comment = { ...comment, body: "A second turn.", id: "comment-3" };
+    stored.push(second);
+    await page.deliver(feedEvent("comment.created", { ...second, artifact_name: "" }));
+    expect(page.view.result.current).toMatchObject({ name: OLD_WORDS, namesFailed: true });
+
+    const deleted = deletionOf(cited);
+    stored[1] = deleted.stored;
+    await page.deliver(feedEvent("comment.deleted", deleted.payload, { id: 3, seq: 3 }));
+    expect({
+      cached: page.cached(),
+      published: page.view.result.current.name,
+    }).toEqual({
+      cached: [{ ...deleted.marks, gone: false, kind: "comment", name: "", ref: CITED }],
+      published: "Deleted by alice",
+    });
+  } finally {
+    page.restore();
   }
 });

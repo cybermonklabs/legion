@@ -239,6 +239,7 @@ var nearCopyMarkedDuplicates = []string{
 }
 
 func TestNearCopyRefusalReplay(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("DISPATCH_NEARCOPY_CORPUS")
 	if path == "" {
 		t.Skip("DISPATCH_NEARCOPY_CORPUS must name a file scripts/near-copy-replay.sh wrote")
@@ -260,8 +261,9 @@ func TestNearCopyRefusalReplay(t *testing.T) {
 	ctx := context.Background()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	// The related-item check is not what is being measured, and it runs on every create: give it
-	// no time, so each create answers that it was not made and the replay pays only for the gate.
-	served.suggestionTimeout = time.Millisecond
+	// an allowance already spent, so each create answers that it was not made and the replay pays
+	// only for the gate.
+	served.suggestionTimeout = spentRelatedAllowance
 	served.duplicateBound = nearCopyGateBound
 	srv := directServer(deps)
 	srv.duplicateBound = nearCopyGateBound

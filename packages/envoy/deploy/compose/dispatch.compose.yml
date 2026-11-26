@@ -50,6 +50,9 @@ services:
       DISPATCH_LISTEN_HOST: ${DISPATCH_LISTEN_HOST:-127.0.0.1}
       DISPATCH_PORT: ${DISPATCH_PORT:-8766}
       DISPATCH_APP_CLIENT_ID: ${DISPATCH_APP_CLIENT_ID:-}
+      # The App that writes legion-verdict: the CI reconcile pass leaves its check suites out of
+      # the CI record. Give it the listener's ENVOY_VERDICT_APP_ID, or a head is published twice.
+      DISPATCH_VERDICT_APP_ID: ${DISPATCH_VERDICT_APP_ID:-}
       DISPATCH_AGENT_TOKEN: ${DISPATCH_AGENT_TOKEN:?set DISPATCH_AGENT_TOKEN}
       DISPATCH_SERVER_URL: ${DISPATCH_SERVER_URL:?set DISPATCH_SERVER_URL (the browser origin)}
       NATS_URLS: ${NATS_URLS:?set NATS_URLS}
@@ -73,11 +76,6 @@ services:
       # audience, or the token file mounted below at /run/envoy-listener/token.
       ENVOY_ACCOUNT_GOOGLE_AUDIENCE: ${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}
       ENVOY_ACCOUNT_TOKEN_FILE: ${ENVOY_ACCOUNT_TOKEN_FILE:+/run/envoy-listener/token}
-      # Optional boot seed for mappings absent from the dashboard. Stored
-      # repository mappings are authoritative; DISPATCH_DEFAULT_PROJECT catches
-      # external repositories with no stored mapping.
-      DISPATCH_REPO_PROJECTS: ${DISPATCH_REPO_PROJECTS:-}
-      DISPATCH_DEFAULT_PROJECT: ${DISPATCH_DEFAULT_PROJECT:-}
       # Session cookies are Secure by default; set this when serving the
       # OAuth dashboard over plain HTTP (local/tailnet use).
       DISPATCH_INSECURE_COOKIE: ${DISPATCH_INSECURE_COOKIE:-}

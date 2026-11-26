@@ -6,12 +6,16 @@ body: |-
   Dispatch says that person may see every project on it, checked before the enrollment's
   transaction begins. It refuses a list that is no list `400 PROJECTS_INVALID`, a service's pod
   or a machine's own session naming projects `400 PROJECTS_NEED_A_PERSON`, a project its person cannot see or one Dispatch does not
-  hold `403 PROJECT_NOT_VISIBLE` (one answer for both), a restricted member's session naming none
-  `403 PROJECTS_REQUIRED`, and a list it could not check with Dispatch, because it has no
-  `BROKER_PROJECT_ACCESS_URL` or Dispatch did not answer, `503 PROJECTS_UNCHECKED`. A session
-  naming no project enrolls as before while Dispatch cannot be reached, with a line saying it
-  enrolled unchecked; while Dispatch refuses the broker's own account, no session enrolls through
-  it, `503 PROJECTS_UNCHECKED` saying so. The list is fixed for the
+  hold `403 PROJECT_NOT_VISIBLE` (one answer for both), and a list it could not check with
+  Dispatch, because it has no `BROKER_PROJECT_ACCESS_URL` or Dispatch did not answer,
+  `503 PROJECTS_UNCHECKED`. A restricted member's machine login and pod login enroll nothing at
+  all, naming projects or not (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`), and while Dispatch cannot
+  say what kind of member a person is, neither does any person's machine login or pod login
+  (`503 MEMBER_KIND_UNCHECKABLE`), but for a person Dispatch last answered a full member, whose kept
+  kind the broker serves while Dispatch does not answer. A person's sign-in naming no project enrolls as before while
+  Dispatch cannot be reached, with a line saying it enrolled unchecked, and one whose person
+  Dispatch calls a restricted member is refused `403 PROJECTS_REQUIRED` when it names none; while
+  Dispatch refuses the broker's own account, no session enrolls through it. The list is fixed for the
   enrollment's life and is never carried to a successor that adopts its grants. Migration 0040
   (`0040_enrollment_projects`) adds `enrollments.projects`, empty on every existing row.
 time: 2026-11-16T02:40:03Z

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -21,8 +23,20 @@ import (
 )
 
 // pullStandIn is GitHub's REST API for acme/widgets as the per-issue read sees it: pull request 86
-// answered with pull, and no review on it.
+// answered with pull, and no review on it. Its GraphQL endpoint answers the query a REST read of
+// a `blocked`, MERGEABLE head asks for that head's whole answer (readWholeAnswer) from the same
+// answer, as GitHub answers both about the one pull request (graphQLAnswerOf).
 func pullStandIn(t *testing.T, pull string) *httptest.Server {
+	t.Helper()
+	return pullStandInWith(t, pull, func(asked []int) string {
+		_, body := graphQLAnswerOf(t, pullAnswer{status: http.StatusOK, body: pull}, asked)
+		return body
+	})
+}
+
+// pullStandInWith is pullStandIn whose GraphQL endpoint answers with graphQL, given the numbers
+// the query asks for.
+func pullStandInWith(t *testing.T, pull string, graphQL func(asked []int) string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer outbox-token" {
@@ -31,9 +45,11 @@ func pullStandIn(t *testing.T, pull string) *httptest.Server {
 		}
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
-			w.Write([]byte(pull))
+			_, _ = w.Write([]byte(pull))
 		case "/repos/acme/widgets/pulls/86/reviews":
-			w.Write([]byte(`[]`))
+			_, _ = w.Write([]byte(`[]`))
+		case "/graphql":
+			_, _ = io.WriteString(w, graphQL(readBatchRequest(t, r)))
 		default:
 			http.NotFound(w, r)
 		}
@@ -52,25 +68,35 @@ func mergeableStandIn(t *testing.T, state string) *httptest.Server {
 // mergeStateStandIn answers pull request 86 on base main with state as GitHub's `mergeable_state`,
 // beside the `mergeable: true` GitHub computes with it: GitHub answers true for every state its
 // own rules leave rather than a conflict, a head it blocks on a required check included, which is
-// what makes the merge state the only answer that tells those apart.
+// what makes the merge state the only answer that tells those apart. It holds no review request
+// open, as GitHub's answer lists by two empty lists.
 func mergeStateStandIn(t *testing.T, state string) *httptest.Server {
 	t.Helper()
-	return pullStandIn(t, `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"`+state+`"}`)
+	return pullStandIn(t, `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"`+state+`","requested_reviewers":[],"requested_teams":[]}`)
 }
 
 // readRuntime is a workflow runtime over pool whose GitHub reads go to api, logging to log. Its
-// engine stands in for the whole workflow and is given the runtime's own merge-state queue, so a
-// fact a test applies asks for the read it asks for in production; the queue is empty and
-// nothing reads it until a test starts readMergeStates.
+// engine stands in for the whole workflow and is given the runtime's own merge-state queues, of
+// one pull request and of a base's batch, so a fact a test applies asks for the read it asks for
+// in production; the queues are empty and nothing reads them until a test starts readMergeStates.
+// Its reads of a pull request and of a base's rules are conditional, as the daemon's are.
 func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
 	w := &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api,
-		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{},
+		mergeStates: newWakeSet[string](), mergeStateRunning: map[string]*mergeStateRun{}, baseWake: newWakeSet[string](),
+		etags: githubrest.NewETags(etagBytes),
 	}
-	w.engine = workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, ReadMergeState: w.queueMergeState}, log)
-	w.handlers = []intake.Handler{w.engine}
+	w.engineOver(record.NewStore())
 	return w
+}
+
+// engineOver gives w the engine readRuntime gives it, writing through records, and applies the
+// facts w's reads make with it (workflowRuntime.handlers).
+func (w *workflowRuntime) engineOver(records record.Store) {
+	w.engine = workflow.New(records, workflow.Config{Project: "CAPTURE", Repositories: testRepositories,
+		ReadMergeState: w.queueMergeState, ReadBaseMergeStates: w.queueBaseMergeStates}, w.log)
+	w.handlers = []intake.Handler{w.engine}
 }
 
 // servedAcme is the repository state of a project that has prepared acme/widgets alone, both
@@ -85,7 +111,7 @@ func capturePhase(t *testing.T, pool *store.Pool) (phase.Phase, *record.PullRequ
 	t.Helper()
 	var issue *record.Issue
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if issue, err = record.NewStore().Issue(context.Background(), tx, "CAPTURE-1"); err != nil {
 			return err
@@ -117,8 +143,7 @@ var captureHeadUpdated = time.Date(2026, 10, 8, 22, 15, 0, 0, time.UTC)
 func seedCapture(t *testing.T, pool *store.Pool, from phase.Phase, status string, phases ...record.PhaseRow) {
 	t.Helper()
 	records := record.NewStore()
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		ctx := context.Background()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, record.Issue{Key: "CAPTURE-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "CAPTURE-1", Project: "CAPTURE", Title: "root",
 			Phase: from, Generation: 1, Status: status, Rank: "U"}); err != nil {
 			return err
@@ -175,6 +200,7 @@ func noticeReasons(t *testing.T, pool *store.Pool, kind string) []string {
 // the issue reaches merging has to ask for the merge forward then, with no change in the GitHub
 // answer to key off.
 func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		state        string
@@ -248,6 +274,7 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 // what the column records is the read, so a head read a minute ago reads differently from one
 // nothing has read for a day (applyMergeability).
 func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		state     string

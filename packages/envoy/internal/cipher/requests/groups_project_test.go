@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/groups/groupstest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
@@ -45,13 +44,12 @@ func TestAGroupsSecretOfAPrivateProject(t *testing.T) {
 		Audience: testAudience, Skew: time.Minute, Replay: replayer(st), Groups: directory,
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
 	m.Chain.Groups = directory
-	m.Airlock = proxyrules.Rules{}
 	answerFrom(t, m, dispatchRows(publicTeam))
 	nameProjects(t, m, enrollmentID, privProject)
 
-	req, err := m.Create(ctx, enrollmentID, signRequest(t, m, key, "PRIV work", "PRIV_GROUP_KEY"), "", nil)
+	req, err := m.Create(ctx, enrollmentID, signRequest(t, m, key, "PRIV work", "PRIV_GROUP_KEY"), "")
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("the request for PRIV_GROUP_KEY = %+v, %v; want pending on the group", req, err)
 	}

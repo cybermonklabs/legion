@@ -1,0 +1,7 @@
+kind: Changed
+custom:
+  Issue: pr3995
+body: |-
+  The root and sub-architect role prompts no longer ask an approval request's `--summary` for a
+  sentence with both reviews' results. The summary says what the human is approving, and nothing
+  else; a request after an earlier approval names in one sentence what changed since it.

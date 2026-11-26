@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -89,8 +90,6 @@ func TestParseNATSServicesRefusals(t *testing.T) {
 		"a Google service agent":                     "measure/-/*=google:service-123@gcp-sa-pubsub.iam.gserviceaccount.com",
 		"an account given twice":                     "daemon/-/-=" + daemonAccount + " listener/host-a/*=" + daemonAccount,
 		"an edge listener with no machine id":        "edge-listener/-/PRIV=" + edgeAccount,
-		"an edge listener with every project":        "edge-listener/edge-a/*=" + edgeAccount,
-		"an edge listener held to exchange ones":     "edge-listener/edge-a/-=" + edgeAccount,
 		"an edge listener naming no project key":     "edge-listener/edge-a/priv=" + edgeAccount,
 		"an edge listener naming a project twice":    "edge-listener/edge-a/PRIV,PRIV=" + edgeAccount,
 		"an edge listener naming an empty project":   "edge-listener/edge-a/PRIV,=" + edgeAccount,
@@ -102,5 +101,43 @@ func TestParseNATSServicesRefusals(t *testing.T) {
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "BROKER_NATS_SERVICES")
 		})
+	}
+}
+
+// The deployment's one operator identity and the writer hold's one probe are entries of their own
+// kinds, each listed once, with no machine id and the whole grant: the hold and the buckets
+// command reach no project's messages, and no project scope can hold a stream create. A second
+// entry of either kind, a machine id, or the scope - is refused, naming the entry.
+func TestParseNATSServicesReadsTheOperatorKind(t *testing.T) {
+	const operator = "system:serviceaccount:envoy-operator:envoy-operator"
+	const probe = "system:serviceaccount:envoy-operator:envoy-hold-probe"
+	operatorText, probeText := "operator/-/*="+operator, "probe/-/*="+probe
+	services, err := ParseNATSServices(operatorText + " " + probeText)
+	require.NoError(t, err)
+	require.Equal(t, []NATSService{
+		{Kind: NATSOperator, Account: operator, AllProjects: true, Text: operatorText},
+		{Kind: NATSProbe, Account: probe, AllProjects: true, Text: probeText},
+	}, services)
+	require.Equal(t, "operator/"+operator, services[0].Name())
+	for raw, names := range map[string]string{
+		"operator/m1/*=" + operator: "operator/m1/*=" + operator,
+		"operator/-/-=" + operator:  "operator/-/-=" + operator,
+		"operator/-/*=" + operator + " operator/-/*=system:serviceaccount:envoy-operator:second": "operator/-/*=system:serviceaccount:envoy-operator:second",
+		"probe/m1/*=" + probe: "probe/m1/*=" + probe,
+		"probe/-/-=" + probe:  "probe/-/-=" + probe,
+		"probe/-/*=" + probe + " probe/-/*=system:serviceaccount:envoy-operator:second": "probe/-/*=system:serviceaccount:envoy-operator:second",
+	} {
+		_, err := ParseNATSServices(raw)
+		require.ErrorContains(t, err, strconv.Quote(names), "ParseNATSServices(%q)", raw)
+	}
+}
+
+// An edge listener's entry that gives it every project (*) or its exchange's projects (-) is
+// refused by its own rule, naming the form an edge entry takes, before its scope is read as a
+// list of project keys: an edge listener serves only the projects its entry names.
+func TestAnEdgeEntryOfEveryOrTheExchangeProjectsIsRefusedNamingWhy(t *testing.T) {
+	for _, scope := range []string{allProjectsScope, exchangeScope} {
+		_, err := ParseNATSServices("edge-listener/edge-a/" + scope + "=" + edgeAccount)
+		require.ErrorContains(t, err, "an edge listener serves only the projects its entry names", "scope %q", scope)
 	}
 }

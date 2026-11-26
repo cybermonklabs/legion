@@ -35,11 +35,15 @@
 # port, and one after, a listener or Dispatch that reports its address and exits while its keeper
 # still holds the port, which the run reports inside 15 s rather than waiting on a request that
 # port never answers; a SIGTERM to the run while such a request is outstanding at a server that
-# stays alive ends it inside 15 s with 143; a process that ignores SIGTERM is killed 10 s into
-# the stop, which says so and still drops both databases; a SIGHUP while the stop runs does not end
-# it; and the stop signals only a process the run started that is still running, never another
-# process that took the pid of one that exited early; (f) a run given no database URL refuses with
-# exit 2, naming all three sources;
+# stays alive ends it inside 15 s with 143 (those rows give a readiness request 1 s, every other
+# run the driver's default, which every ready row checks); a process that ignores SIGTERM is killed
+# when the stop's grace runs out, by the stop's own record of its SIGTERM and its kill (2 s in that
+# row; the default, the driver's DEFAULT_STOP_GRACE_SECONDS, held by the stop's helpers under a
+# clock of their own shell), which says so and still drops both databases; a SIGHUP while the stop
+# holds on such a process does not end it; a stop by the group's SIGTERM waits on no process that
+# took the signal, even one bash still lists; and the stop signals only a process the run started
+# that is still running, never another process that took the pid of one that exited early; (f) a
+# run given no database URL refuses with exit 2, naming all three sources;
 # (g) the second box is printed with a path of its own for each of the first box's, every one
 # of them under this run's own work directory, the directories it writes into already there, and
 # its metadata stand-in taking its port file from the environment rather than from the one baked
@@ -64,17 +68,23 @@
 # and one line naming the bash it needs and the one it is, while 5.1 and 5.3 are taken, by the
 # gate the driver runs at its top; (q) a --project-access run points the broker at its own
 # Dispatch's access routes with a token of its own account, has Dispatch admit that account, and
-# starts the airlock in a container of its own, while a run without it sets none of it; (r) a
+# starts the airlock in a container of its own, with a profiles file of the one kind priv and no
+# profile and that kind in its banner, while a run without it sets none of it; (r) a
 # --project-access run whose airlock proxy bound another port than the one it picked stops,
 # naming both ports; (s) only --project-access needs the airlock's stands: it builds
 # dev-airlock-stands beside the eight, given --binaries it needs that ninth binary there, and it
 # needs docker on PATH, refused before anything is created or started without either, while a
 # run without it builds no stands and needs no docker; (t) --callout and --project-access
 # together, in either order, are refused with exit 2 and one line naming the pair, before anything
-# is created or started and with no psql, curl, go or docker call; and (u) every broker a run
-# starts, the --callout run's second among them, lists the run's registrar as the registrar of the
-# pod's account and of nothing else (BROKER_POD_REGISTRARS), without which the one registration
-# the run makes is refused. (q) and (r) run after (h), and (s) and (t) after (i).
+# is created or started and with no psql, curl, go or docker call, and so is a stop grace or a
+# readiness bound that is no whole number of seconds from 1 to 9999 (t2), naming the variable; (u)
+# every broker a run starts, the --callout run's second among them, lists the run's registrar as
+# the registrar of the pod's account and of nothing else (BROKER_POD_REGISTRARS), without which the
+# one registration the run makes is refused; and (v) a run on a PATH that holds a version manager's
+# python3 shim after the fakes, as a developer's box does (mise's), reaches ready and stops: the
+# fake python3 runs the real interpreter by the path that interpreter names for itself, never
+# through the shim, which would hand the call back to the fake. (q) and (r) run after (h), and (s)
+# and (t) after (i).
 #
 # The fake docker is scripts/lib/dev-stack-test-docker.sh's, and assert_project_access and the
 # --project-access cases are scripts/lib/dev-stack-test-project-access.sh's; this file sources
@@ -83,10 +93,14 @@ set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
 # when it started, so an instance started with & from this script could not run its own INT trap
-# at all. With -m each instance is a process group of its own with the default dispositions, so
-# the INT this test sends reaches dev-stack.sh's trap exactly as a terminal's Ctrl-C does, and
-# the group the SIGTERM case signals holds that instance and every process of its stack and
-# nothing of this test's own.
+# at all. With -m each instance is a process group of its own, and the group the SIGTERM case
+# signals holds that instance and every process of its stack and nothing of this test's own.
+# Monitor mode gives an instance the dispositions this test itself started with, though, and this
+# test may be started with SIGINT ignored too (a background job of a shell without job control,
+# as podrun.sh's `setsid "$@" &` starts it). So both launchers start each instance with SIGINT put
+# back to its default (env --default-signal=INT, in prepare_instance), and each INT row first
+# reads the instance's own report that it was not started with SIGINT ignored, so the INT reaches
+# dev-stack.sh's trap exactly as a terminal's Ctrl-C does whatever started this test.
 set -m
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -108,6 +122,14 @@ readonly admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=dis
 # run's own database URL starts with.
 readonly admin_url_no_query=${admin_url%%\?*}
 readonly server_url=${admin_url%/postgres*}
+# The stop's grace and a readiness request's bound are the driver's defaults unless a row sets one,
+# so the caller's own environment decides neither. The two defaults are pinned here, as the rows
+# before these variables pinned them: 10 s and 5 s, production's values. A change to either is a
+# product change that changes these lines too. The driver is held to them by what it does: every
+# ready row by the bound each of its requests was given, and (e10b) by how long the stop waits
+# when nothing sets its grace.
+unset DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS
+readonly stop_grace_default=10 readiness_default=5
 
 declare -a instance_pid=()
 cleanup() {
@@ -132,6 +154,9 @@ trap cleanup EXIT
 cat >"${fake_bin_dir}/psql" <<'EOF'
 #!/usr/bin/env bash
 printf 'psql %s\n' "$*" >>"${DEV_STACK_TEST_PSQL_CALL_FILE:?}"
+# The password psql was handed in its environment, a line a call: dev-stack.sh keeps it out of
+# psql's arguments (server_psql), which the line above records.
+printf '%s\n' "${PGPASSWORD-}" >>"${DEV_STACK_TEST_PSQL_CALL_FILE}.pgpassword"
 if [[ "$*" == *"select current_database()"* ]]; then
   url=$1 query=""
   [[ "$url" == *\?* ]] && query=${url#*\?}
@@ -191,6 +216,18 @@ chmod +x "${fake_bin_dir}/curl"
 . "${project_root}/packages/envoy/scripts/lib/dev-stack-test-docker.sh"
 write_fake_docker "$fake_bin_dir"
 
+# --- Fake env, first on PATH: appends its arguments, one line per call, to the run's own
+# DEV_STACK_TEST_ARGV_FILE when that is set, and then runs the real env with them. With the fake
+# python3 below, which does the same, it is how the row (u2) reads every argument list a start
+# handed a process: the URL's password must be in none of them. ---
+real_env="$(command -v env)"
+cat >"${fake_bin_dir}/env" <<EOF
+#!/usr/bin/env bash
+if [[ -n "\${DEV_STACK_TEST_ARGV_FILE:-}" ]]; then printf 'env %s\n' "\$*" >>"\$DEV_STACK_TEST_ARGV_FILE"; fi
+exec ${real_env} "\$@"
+EOF
+chmod +x "${fake_bin_dir}/env"
+
 # --- Fake python3, which dev-stack.sh runs as two things. As scripts/e2e/lib/held-port.py:
 # `keep` writes its own PID to the port file as the port it holds (two concurrent keepers have
 # distinct PIDs, as two kernel-chosen ports are distinct) and stays alive, writing that file last
@@ -202,9 +239,31 @@ write_fake_docker "$fake_bin_dir"
 # which asks the kernel for a free port for the airlock's proxy: this one prints its own PID for
 # the same reason, and with DEV_STACK_TEST_PICKED_PORT set prints that instead. The lost port race
 # of (r) does not use it: there the broker's stub reports another address
-# (DEV_STACK_TEST_AIRLOCK_BOUND). No socket is opened either way. ---
-cat >"${fake_bin_dir}/python3" <<'EOF'
-#!/usr/bin/env bash
+# (DEV_STACK_TEST_AIRLOCK_BOUND). No socket is opened either way.
+#
+# write_fake_python3 DIR writes that fake to DIR/python3. Its --pass branch runs the real
+# interpreter, which it names by the path that interpreter gives for itself (sys.executable),
+# asked through whatever python3 the PATH in effect finds and checked to be an executable file,
+# never by a lookup of python3 on PATH (command -v). On a developer's box that lookup finds a
+# version manager's shim (mise's), and the shim, run with this fake first on PATH, hands the call
+# to the next python3 on PATH, which is this fake: the fake got its own `-c` back, answered it with
+# its pid as it answers the airlock's port query, and exited, so the listener never started and
+# its log was that one pid (v). The interpreter runs in the environment dev-stack.sh starts
+# held-port.py with, the server's settings alone and no HOME, which a shim may need. ---
+write_fake_python3() {
+  local dir="$1" real_python3
+  if ! real_python3="$(python3 -I -c 'import sys; print(sys.executable)')"; then
+    echo "dev-stack.test.sh: the python3 on PATH could not name its interpreter (sys.executable)" >&2
+    exit 1
+  fi
+  if [[ "$real_python3" != /* || ! -f "$real_python3" || ! -x "$real_python3" ]]; then
+    echo "dev-stack.test.sh: the python3 on PATH named its interpreter '$real_python3', which is not an executable file" >&2
+    exit 1
+  fi
+  {
+    printf '#!/usr/bin/env bash\nreal_python3=%q\n' "$real_python3"
+    cat <<'EOF'
+if [[ -n "${DEV_STACK_TEST_ARGV_FILE:-}" ]]; then printf 'python3 %s\n' "$*" >>"$DEV_STACK_TEST_ARGV_FILE"; fi
 script="${1:-}"
 case "$script" in
   */held-port.py) shift ;;
@@ -251,7 +310,7 @@ case "$mode" in
     wait "$sleeper"
     ;;
   exec)
-    held=""
+    held="" passed=() pairs=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --)
@@ -262,7 +321,19 @@ case "$mode" in
           held="$(cat "$2")"
           shift 2
           ;;
-        --host | --port-file | --fd-env | --env)
+        --host | --port-file)
+          shift 2
+          ;;
+        --fd-env)
+          pairs+=("$2=3")
+          shift 2
+          ;;
+        --env)
+          pairs+=("$2")
+          shift 2
+          ;;
+        --pass)
+          passed+=("$2")
           shift 2
           ;;
         *)
@@ -278,7 +349,21 @@ case "$mode" in
         command+=("${argument//\{port\}/$held}")
       done
       set -- "${command[@]}"
+      for i in "${!pairs[@]}"; do
+        pairs[i]="${pairs[i]//\{port\}/$held}"
+      done
     fi
+    # With --pass, the command's environment is exactly the variables named, each --env pair and
+    # the --fd-env name, as the real held-port.py gives it: the real python3 execs it with those
+    # values, read from its own environment and in no process's arguments. A bash exec of its own
+    # would add SHLVL.
+    if [[ ${#passed[@]} -gt 0 ]]; then
+      exec "$real_python3" -c 'import os, sys
+env = {name: os.environ[name] for name in sys.argv[1].split()}
+env.update(pair.split("=", 1) for pair in sys.argv[2].split("\n") if pair)
+os.execve(sys.argv[3], sys.argv[3:], env)' "${passed[*]}" "$(printf '%s\n' "${pairs[@]}")" "$@"
+    fi
+    [[ ${#pairs[@]} -eq 0 ]] || export "${pairs[@]}"
     exec "$@"
     ;;
   *)
@@ -287,7 +372,10 @@ case "$mode" in
     ;;
 esac
 EOF
-chmod +x "${fake_bin_dir}/python3"
+  } >"${dir}/python3"
+  chmod +x "${dir}/python3"
+}
+write_fake_python3 "$fake_bin_dir"
 
 # --- Fake go: "go build -o <dir>/ ./cmd/<pkg> ..." installs one stub per package instead of
 # compiling. Every server stub reports its own PID as its port and stays alive until it is
@@ -364,7 +452,7 @@ while [[ $# -gt 0 ]]; do
       account_and_file="${2#*=}"
       printf 'fake-token-for-%s\n' "${account_and_file%%=*}" >"${account_and_file#*=}"
       ;;
-    --code-flow) code_clients="$code_clients ${2%%=*}:$(stat -c %a "${2#*=}")" ;;
+    --code-flow) secret_and_uri="${2#*=}" && code_clients="$code_clients ${2%%=*}:$(stat -c %a "${secret_and_uri%%=*}"):${secret_and_uri#*=}" ;;
     --device-flow) device_clients="$device_clients ${2%%=*}:$(stat -c %a "${2#*=}")" ;;
     --sign-in-as) sign_in_as="$2" ;;
     *)
@@ -382,15 +470,20 @@ ISSUER
       cat >"$target" <<'BROKER'
 #!/usr/bin/env bash
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
+echo "fake broker: environ=$(tr '\0' '\n' </proc/$$/environ | sed 's/=.*//' | sort | tr '\n' ' ')" >&2
+echo "fake broker: cmdline=$(tr '\0' ' ' </proc/$$/cmdline)" >&2
 echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: service-logins=${BROKER_SERVICE_LOGINS:-} project-access=${BROKER_PROJECT_ACCESS_URL:-} project-access-token=${BROKER_PROJECT_ACCESS_TOKEN_FILE:-}" >&2
-echo "fake broker: airlock-rules=${BROKER_AIRLOCK_RULES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
+echo "fake broker: profiles=${BROKER_PROFILES_FILE:-} airlock-ca=${BROKER_AIRLOCK_CA_CERT_FILE:-} airlock-proxy=${BROKER_AIRLOCK_PROXY_URL:-} airlock-resolve=${BROKER_AIRLOCK_TEST_RESOLVE:-} airlock-dial=${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}" >&2
 echo "fake broker: nats=${BROKER_NATS_URLS:-} seeds=${BROKER_NATS_SEED_FILE:-},${BROKER_NATS_ISSUER_SEED_FILE:-},${BROKER_NATS_XKEY_SEED_FILE:-} nats-audience=${BROKER_NATS_K8S_AUDIENCE:-} services=${BROKER_NATS_SERVICES:-}" >&2
 echo "fake broker: pod-registrars=${BROKER_POD_REGISTRARS:-}" >&2
-# The proxy binds the address it was given, as the real one does. dev-stack.sh starts every
-# process with env -i, so nothing of this test's environment reaches the stub: the control for a
-# lost port race bakes the other address in at build time, as DEV_STACK_TEST_BROKER_FAILS does.
-if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ]; then
+# The proxy binds the address it was given, as the real one does, and only when the profiles file
+# declares a kind or holds a dpop block, as the real one binds it (config.AirlockSubjects).
+# dev-stack.sh starts every process with env -i, so nothing of this test's environment reaches the
+# stub: the control for a lost port race bakes the other address in at build time, as
+# DEV_STACK_TEST_BROKER_FAILS does.
+if [ -n "${BROKER_AIRLOCK_LISTEN_ADDR:-}" ] && [ -n "${BROKER_PROFILES_FILE:-}" ] &&
+  jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"%s"}\n' \
     "${AIRLOCK_BOUND_ADDR:-$BROKER_AIRLOCK_LISTEN_ADDR}" >&2
 fi
@@ -460,6 +553,8 @@ NATSD
 printf '{"level":"INFO","msg":"listener API auth: none","nats":"%s"}\n' "${NATS_URLS:-}" >&2
 echo "fake listener: machine=${ENVOY_MACHINE_ID:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
 echo "fake listener: pid=$$ public=${ENVOY_PUBLIC_URL:-} listen-fd=${ENVOY_LISTEN_FD:-}" >&2
+echo "fake listener: environ=$(tr '\0' '\n' </proc/$$/environ | sed 's/=.*//' | sort | tr '\n' ' ')" >&2
+echo "fake listener: cmdline=$(tr '\0' ' ' </proc/$$/cmdline)" >&2
 # It serves the socket it was handed, whose port held-port.py put in ENVOY_PUBLIC_URL; its own PID
 # stands for a port only where it was handed none.
 port="${ENVOY_PUBLIC_URL##*:}"
@@ -485,6 +580,8 @@ LISTENER
       cat >"$target" <<'DISPATCH'
 #!/usr/bin/env bash
 echo "fake dispatch: database=${DATABASE_URL:-} server-url=${DISPATCH_SERVER_URL:-} listen-fd=${DISPATCH_LISTEN_FD:-} envoy=${ENVOY_URL:-} broker=${DISPATCH_AGENT_SECRETS_URL:-} nats=${NATS_URLS:-} home=${HOME:-} nats-token=${NATS_SERVICE_TOKEN_FILE:-}" >&2
+echo "fake dispatch: environ=$(tr '\0' '\n' </proc/$$/environ | sed 's/=.*//' | sort | tr '\n' ' ')" >&2
+echo "fake dispatch: cmdline=$(tr '\0' ' ' </proc/$$/cmdline)" >&2
 echo "fake dispatch: oidc-issuer=${DISPATCH_OIDC_ISSUER:-} oidc-audience=${DISPATCH_OIDC_AUDIENCE:-} oidc-accounts=${DISPATCH_OIDC_ACCOUNTS:-} access-accounts=${DISPATCH_ACCESS_ACCOUNTS:-}" >&2
 port=$$
 DISPATCH
@@ -510,12 +607,18 @@ CLIENT
   # Every server stub ends the same way: stay alive as the backgrounded process dev-stack.sh waits
   # on, and end at 0 when it is stopped, killing the sleep so nothing of the stub outlives it. The
   # one named by DEV_STACK_TEST_IGNORES_TERM instead ignores SIGTERM and INT, as a server stuck in
-  # its shutdown does, and ends only at SIGKILL: it becomes the sleep (exec keeps both its pid, the
-  # port it reported, and the ignored signals), so nothing of it outlives that SIGKILL either.
+  # its shutdown does, and ends at SIGKILL, or at 0 on the SIGUSR1 a row sends it to let the stop
+  # go on (e9b). It waits in bash's own `read` on a FIFO it holds open both ways, which nothing ever
+  # writes, so it starts no process that could outlive that SIGKILL.
   if [[ "${DEV_STACK_TEST_IGNORES_TERM:-}" == "$name" ]]; then
     cat >>"$target" <<'IGNORES'
 trap '' TERM INT
-exec sleep 999999
+trap 'exit 0' USR1
+hold="${0%/*}/.held.$$"
+mkfifo "$hold"
+exec {held}<>"$hold"
+rm -f "$hold"
+while :; do read -r -t 86400 -u "$held" _ || :; done
 IGNORES
   else
     cat >>"$target" <<'IDLE'
@@ -573,11 +676,12 @@ prepare_instance() {
   local log_file="$2" psql_call_file="$3" curl_call_file="$4"
   : >"$log_file"
   : >"$psql_call_file"
+  : >"${psql_call_file}.pgpassword"
   : >"$curl_call_file"
   if [[ -n "${DEV_STACK_TEST_GO_CALL_FILE:-}" ]]; then
     : >"$DEV_STACK_TEST_GO_CALL_FILE"
   fi
-  instance_command=(env -u LEGION_TEST_PG_DSN -u DATABASE_URL
+  instance_command=(env --default-signal=INT -u LEGION_TEST_PG_DSN -u DATABASE_URL
     PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir"
     DEV_STACK_TEST_PSQL_CALL_FILE="$psql_call_file" DEV_STACK_TEST_CURL_CALL_FILE="$curl_call_file"
     DEV_STACK_TEST_BROKER_FAILS="${DEV_STACK_TEST_BROKER_FAILS:-}"
@@ -592,6 +696,7 @@ prepare_instance() {
     DEV_STACK_TEST_DOCKER_STATE="${DEV_STACK_TEST_DOCKER_STATE:-}"
     DEV_STACK_TEST_PICKED_PORT="${DEV_STACK_TEST_PICKED_PORT:-}"
     DEV_STACK_TEST_AIRLOCK_BOUND="${DEV_STACK_TEST_AIRLOCK_BOUND:-}"
+    DEV_STACK_TEST_ARGV_FILE="${DEV_STACK_TEST_ARGV_FILE:-}"
     bash "$driver" --database-url "$admin_url")
 }
 
@@ -645,6 +750,17 @@ fail() {
   exit 1
 }
 
+# interrupt <n> <label> <log file> sends instance <n> the INT a terminal's Ctrl-C sends, once the
+# instance's log shows its INT trap took: dev-stack.sh reports a run that started with SIGINT
+# ignored, which no INT can stop, before it creates anything, so the row fails there by name
+# rather than waiting out wait_for_exit's bound and reading the timeout as an exit status of 0.
+interrupt() {
+  if grep -q 'dev-stack: SIGINT was ignored when this run started' "$3"; then
+    fail "$2 reports that it started with SIGINT ignored, so the INT this row sends cannot stop it"
+  fi
+  kill -INT "${instance_pid[$1]}"
+}
+
 # Each reader below ends in `|| true`: under this script's own pipefail a grep that matches
 # nothing — the exact regression each caller checks for — exits 1, and head, awk and sed on empty
 # input exit 0, so that 1 would become the pipeline's status and trip errexit before the caller's
@@ -665,6 +781,24 @@ listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | s
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 # The value of one "export NAME=..." line of the banner.
 exported() { grep -o "export $2=.*" "$1" | head -n1 | cut -d= -f2- || true; }
+# What a run asked at one port, from its fake curl's call file: each distinct call to
+# http://127.0.0.1:PORT as its path, its bound and its whole command line ("/healthz with a 5 s
+# bound (curl -sf --max-time 5 http://127.0.0.1:PORT/healthz)"), joined by "; ", or "no call".
+# A row that wants one path and one bound names this when the run asked something else, so its
+# failure says which of the two differed.
+calls_at_port() {
+  local port="$1" file="$2" line path bound entry seen=""
+  local at="http://127\.0\.0\.1:${port}(/[^ ]*)?( |$)" max_time=' --max-time ([^ ]+) '
+  while IFS= read -r line; do
+    [[ "$line" =~ $at ]] || continue
+    path="${BASH_REMATCH[1]:-/}"
+    bound="no bound"
+    [[ " $line " =~ $max_time ]] && bound="a ${BASH_REMATCH[1]} s bound"
+    entry="$path with $bound (curl $line)"
+    [[ "; $seen; " == *"; $entry; "* ]] || seen="${seen:+$seen; }$entry"
+  done <"$file"
+  printf '%s\n' "${seen:-no call}"
+}
 
 # The globals assert_instance_ready sets for the caller: the run's work directory, the suffix its
 # names are made from, the ports every process of it reported, the port its Dispatch keeper held,
@@ -830,14 +964,14 @@ assert_instance_ready() {
     fail "$label printed no line that starts the second box's helper from this run's own binaries"
 
   # Each readiness check this run made named its own process's port, so no check of it could have
-  # been answered by another run's server, and gave up after 5 s, so none could wait on a port
-  # nothing serves any longer (e7).
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own broker's health at port ${process_port[broker]} with a 5 s bound"
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
-    fail "$label did not check its own listener's health at port ${process_port[listener]} with a 5 s bound"
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
-    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a 5 s bound"
+  # been answered by another run's server, and gave up after the pinned default bound, so none
+  # could wait on a port nothing serves any longer (e7).
+  grep -qxF -e "-sf --max-time ${readiness_default} http://127.0.0.1:${process_port[broker]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own broker's health at port ${process_port[broker]} with a ${readiness_default} s bound; it asked that port at $(calls_at_port "${process_port[broker]}" "$curl_call_file")"
+  grep -qxF -e "-sf --max-time ${readiness_default} http://127.0.0.1:${process_port[listener]}/healthz" "$curl_call_file" ||
+    fail "$label did not check its own listener's health at port ${process_port[listener]} with a ${readiness_default} s bound; it asked that port at $(calls_at_port "${process_port[listener]}" "$curl_call_file")"
+  grep -qxF -e "-sf --max-time ${readiness_default} http://127.0.0.1:${process_port[dispatch]}/api/v1" "$curl_call_file" ||
+    fail "$label did not read its own Dispatch's route index at port ${process_port[dispatch]} with a ${readiness_default} s bound; it asked that port at $(calls_at_port "${process_port[dispatch]}" "$curl_call_file")"
 
   # Two databases of this run's own, named for it, and no other; each server pointed at its own,
   # the broker with production's pool size (k), whole URL to whole URL.
@@ -846,10 +980,20 @@ assert_instance_ready() {
   created="$(created_databases "$psql_call_file")"
   [[ "$created" == "dev_stack_broker_${run_suffix} dev_stack_dispatch_${run_suffix} " ]] ||
     fail "$label created '$created', not one broker and one Dispatch database of its own"
+  # No psql call holds the server's password in its arguments, where `ps -ww` shows it; each was
+  # handed it in PGPASSWORD alone.
+  ! grep -qF 's3cret' "$psql_call_file" ||
+    fail "$label handed psql the server's password in its arguments: $(grep -F 's3cret' "$psql_call_file" | head -n 1)"
+  [[ "$(sort -u "${psql_call_file}.pgpassword")" == "s3cret" ]] ||
+    fail "$label did not hand every psql call the server's password in PGPASSWORD: $(sort -u "${psql_call_file}.pgpassword" | tr '\n' ' ')"
   grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}${broker_query} issuer=" "${work_dir}/logs/broker.log" ||
     fail "$label did not point its broker at its own database with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/broker.log")"
   grep -qF "fake dispatch: database=${server_url}/dev_stack_dispatch_${run_suffix}${query} server-url=" "${work_dir}/logs/dispatch.log" ||
     fail "$label did not point Dispatch at its own database with the URL's query string alone: $(grep 'fake dispatch: database' "${work_dir}/logs/dispatch.log")"
+  # The issuer's one code-flow client is the broker's, with a 0600 secret and the approval page's
+  # loopback callback, which the real issuer registers and redirects to alone.
+  grep -qF "fake issuer: code-flow dev-stack-broker:600:http://127.0.0.1/signin/callback " "${work_dir}/logs/dev-oidc-issuer.log" ||
+    fail "$label did not serve the broker's code-flow client with its loopback callback: $(grep 'fake issuer: code-flow' "${work_dir}/logs/dev-oidc-issuer.log")"
   assert_pod_registrars "$label" "${work_dir}/logs/broker.log"
 }
 
@@ -897,11 +1041,14 @@ psql_calls2="${temporary_dir}/psql-calls-2"
 curl_calls1="${temporary_dir}/curl-calls-1"
 curl_calls2="${temporary_dir}/curl-calls-2"
 go_calls1="${temporary_dir}/go-calls-1"
+argv1="${temporary_dir}/argv-1"
 
 # Both instances start before either is waited on: this is the scenario a port and a database of
 # each run's own exist to make safe, not two sequential runs that never contend for anything.
-# Instance 1 records its go calls, the control for (h): a run that builds is seen to call go.
-DEV_STACK_TEST_GO_CALL_FILE="$go_calls1" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+# Instance 1 records its go calls, the control for (h): a run that builds is seen to call go; and
+# the argument lists its fake env and fake python3 were handed, which (u2) reads.
+: >"$argv1"
+DEV_STACK_TEST_GO_CALL_FILE="$go_calls1" DEV_STACK_TEST_ARGV_FILE="$argv1" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 run_instance 2 "$log2" "$psql_calls2" "$curl_calls2"
 
 assert_instance_ready 'instance 1' "$log1" "$psql_calls1" "$curl_calls1"
@@ -929,6 +1076,35 @@ grep -q -- '-callout-keys' "${work_dir1}/logs/natsd.log" && fail "instance 1, ru
 grep -q 'nats-token=$' "${work_dir1}/logs/listener.log" || fail "instance 1, run without --callout, gave its listener a NATS token"
 [[ -z "$(exported "$log1" DEV_STACK_CALLOUT)" ]] || fail "instance 1, run without --callout, exported DEV_STACK_CALLOUT"
 printf 'PASS: a run without --callout runs no auth service, no second broker and no NATS token\n'
+# (u2) The broker, the listener and Dispatch are started with exactly the settings env -i gave
+# them, and neither the database URL, whose password is s3cret, nor the listener's bearer token
+# (the banner's ENVOY_TOKEN) is in any process's arguments: not the broker's, the listener's or
+# Dispatch's own (each stub reads its /proc/<pid>/cmdline), and not those of any env or python3
+# the run started along the way (the fakes of both record theirs), where env -i put every
+# setting.
+declare -A want_environ=(
+  [broker]="BROKER_ACCESS_TOKEN_SECONDS BROKER_API_ACCOUNTS BROKER_DATABASE_URL BROKER_DRAIN_SECONDS BROKER_EXCHANGE_ACCOUNTS BROKER_EXCHANGE_K8S_AUDIENCE BROKER_FAKE_SECRETS_FILE BROKER_GOOGLE_OIDC_AUDIENCE BROKER_GOOGLE_OIDC_ISSUER BROKER_K8S_OIDC_AUDIENCE BROKER_K8S_OIDC_ISSUER BROKER_LISTEN_ADDR BROKER_MACHINE_LOGIN_URL BROKER_METRICS_LISTEN_ADDR BROKER_POD_REGISTRARS BROKER_PUBLIC_URL BROKER_SECRETS_KMS_KEY_ARN BROKER_SECRETS_PREFIX BROKER_SERVICE_LOGINS BROKER_SIGNIN_CLIENT_ID BROKER_SIGNIN_CLIENT_SECRET_FILE BROKER_SIGNIN_DEVICE_AUDIENCE BROKER_SIGNIN_DOMAIN BROKER_SIGNIN_ISSUER BROKER_VM_EXCHANGE_ACCOUNTS BROKER_VM_SERVICES PATH "
+  [listener]="ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE ENVOY_AGENT_SECRETS_URL ENVOY_API_TOKEN ENVOY_DISPATCH_PRINCIPAL ENVOY_HOST_BRIDGE ENVOY_LISTEN_FD ENVOY_LISTEN_HOST ENVOY_MACHINE_ID ENVOY_OIDC_AUDIENCE ENVOY_OIDC_ISSUER ENVOY_PUBLIC_URL NATS_URLS PATH "
+  [dispatch]="DATABASE_URL DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE DISPATCH_AGENT_SECRETS_URL DISPATCH_AGENT_TOKEN DISPATCH_DEV_SIGNIN DISPATCH_IDENTITY DISPATCH_INSECURE_COOKIE DISPATCH_LISTEN_FD DISPATCH_LISTEN_HOST DISPATCH_SERVER_URL DISPATCH_WEB_DIST ENVOY_ACCOUNT_TOKEN_FILE ENVOY_TOKEN ENVOY_URL HOME NATS_URLS PATH XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME "
+)
+listener_token="$(exported "$log1" ENVOY_TOKEN)"
+[[ -n "$listener_token" ]] || fail "instance 1 exported no ENVOY_TOKEN, so (u2) cannot look for the listener's token"
+for server in broker listener dispatch; do
+  got="$(sed -n "s/^fake ${server}: environ=//p" "${work_dir1}/logs/${server}.log" | head -n1 || true)"
+  [[ "$got" == "${want_environ[$server]}" ]] ||
+    fail "instance 1 started its ${server} with the environment '${got}', not exactly '${want_environ[$server]}'"
+  cmdline="$(sed -n "s/^fake ${server}: cmdline=//p" "${work_dir1}/logs/${server}.log" | head -n1 || true)"
+  [[ -n "$cmdline" && "$cmdline" != *s3cret* && "$cmdline" != *"$listener_token"* ]] ||
+    fail "instance 1's ${server} read no arguments of its own, or holds the database URL's password or the listener's token in them: '${cmdline}'"
+done
+[[ -s "$argv1" ]] || fail "instance 1 recorded no argument list of its env or python3, so (u2) reads nothing"
+if grep -n s3cret "$argv1" >&2; then
+  fail "instance 1 handed the database URL's password to a process's arguments (above, from its fake env and python3)"
+fi
+if grep -qF -- "$listener_token" "$argv1"; then
+  fail "instance 1 handed the listener's bearer token to a process's arguments: $(grep -F -- "$listener_token" "$argv1" | cut -c1-80 | head -n 1)"
+fi
+printf 'PASS: instance 1 started its broker, listener and Dispatch with exactly the settings env -i gave them, and neither the database URL'"'"'s password nor the listener'"'"'s token in any process'"'"'s arguments\n'
 
 assert_instance_ready 'instance 2' "$log2" "$psql_calls2" "$curl_calls2"
 work_dir2="$work_dir"
@@ -978,7 +1154,7 @@ assert_databases_dropped 'instance 1' "$psql_calls1" "$suffix1"
 printf 'PASS: a normal exit stopped every process instance 1 started and dropped both its databases\n'
 
 # (e2) An interrupt: the same stop, with 130, the status a run interrupted by Ctrl-C reports.
-kill -INT "${instance_pid[2]}"
+interrupt 2 'instance 2' "$log2"
 wait_for_exit 2
 [[ "$exited_status" -eq 130 ]] || fail "instance 2 exited $exited_status on INT, not 130"
 process_port=()
@@ -994,8 +1170,12 @@ printf 'PASS: INT stopped every process instance 2 started, dropped both its dat
 # is running. Both databases are dropped, exactly as on a normal exit. The run that found this
 # left them on the server: cleanup disarmed its own TERM trap, so a signal bash had taken and
 # not yet handled was re-raised with the shell back on the default disposition, which killed the
-# run between the kills and the drops.
-run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+# run between the kills and the drops. Every process of the stack takes that SIGTERM and exits, so
+# the stop waits on none of them: the run is given a grace of 60 s, which no row waits out, and a
+# stop that waited out a grace on a process already gone (bash lists a child whose exit a trapped
+# signal took from it as running; dev-stack.sh's running_child) fails wait_for_exit's 15 s here.
+# That stop also said, falsely, that the process did not stop.
+DEV_STACK_STOP_GRACE_SECONDS=60 run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready 'the SIGTERM stop' "$log1" "$psql_calls1" "$curl_calls1"
 term_suffix="$run_suffix"
 term_kept_port="$kept_port"
@@ -1018,6 +1198,9 @@ wait_for_exit 1 15 'the SIGTERM stop'
   fail "the SIGTERM stop exited $exited_status, neither 143 nor the status of a process of its own"
 grep -q 'dev-stack: stopped; logs kept in' "$log1" ||
   fail "the SIGTERM stop did not reach the end of its cleanup"
+if grep -q 'did not stop within' "$log1"; then
+  fail "the SIGTERM stop waited out its grace on a process that took the signal: $(grep 'did not stop within' "$log1")"
+fi
 process_port=()
 for name in "${!term_port[@]}"; do process_port["$name"]="${term_port[$name]}"; done
 kept_port="$term_kept_port"
@@ -1057,8 +1240,9 @@ printf 'PASS: a broker that refuses to start leaves nothing running: the issuer,
 # pipes it: the group's SIGTERM stops tee too, before the run has finished its own stop, so every
 # line that stop writes goes to a pipe nobody reads. Both databases are dropped all the same. The
 # run that found this left its Dispatch database on the server: the first line its stop wrote after
-# the broker's drop raised SIGPIPE, whose default action killed it between the two drops.
-run_piped_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+# the broker's drop raised SIGPIPE, whose default action killed it between the two drops. Its grace
+# is 60 s for the reason (e3) gives; this run's log cannot say what the stop wrote after tee went.
+DEV_STACK_STOP_GRACE_SECONDS=60 run_piped_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready 'the SIGTERM stop through tee' "$log1" "$psql_calls1" "$curl_calls1"
 for _ in $(seq 1 200); do
   kill -TERM -"${instance_pid[1]}" 2>/dev/null || break
@@ -1119,14 +1303,16 @@ collect_started() {
 # run with it, since bash runs a trap only once the command in the foreground has returned:
 # callout-check.sh's own stop then waited on that run until its caller's 40-minute timeout. Each
 # stub exits only once the run's request is outstanding at its port, so a run that never asked (its
-# reader saw the server gone first) cannot pass the row without testing it.
+# reader saw the server gone first) cannot pass the row without testing it. The run's bound is 1 s
+# here (DEV_STACK_READINESS_REQUEST_SECONDS), which the row reads back from the request; every ready
+# row checks the default 5 s.
 for server in listener dispatch; do
   asked_path=/healthz
   [[ "$server" == listener ]] || asked_path=/api/v1
   label="the run whose $server exited after it reported its address"
   : >"$unserved_file"
   : >"${unserved_file}.asked"
-  DEV_STACK_TEST_UNANSWERED="${server}:exits" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+  DEV_STACK_READINESS_REQUEST_SECONDS=1 DEV_STACK_TEST_UNANSWERED="${server}:exits" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
   wait_for_exit 1 15 "$label"
   [[ "$exited_status" -ne 0 ]] || fail "$label reported success"
   grep -q 'dev-stack: ready\.' "$log1" && fail "$label reported ready"
@@ -1135,8 +1321,8 @@ for server in listener dispatch; do
     fail "$label did not print the ${server}'s own log"
   asked_port="$(head -n1 "${unserved_file}.asked" 2>/dev/null || true)"
   [[ -n "$asked_port" ]] || fail "$label never sent it a readiness request, so the row tested nothing"
-  grep -qxF -e "-sf --max-time 5 http://127.0.0.1:${asked_port}${asked_path}" "$curl_calls1" ||
-    fail "$label asked port $asked_port without the 5 s bound"
+  grep -qxF -e "-sf --max-time 1 http://127.0.0.1:${asked_port}${asked_path}" "$curl_calls1" ||
+    fail "$label asked port $asked_port at $(calls_at_port "$asked_port" "$curl_calls1"), not at $asked_path with the 1 s bound it was given"
   exited_work_dir="$(work_dir_of "$log1")"
   [[ -n "$exited_work_dir" ]] || fail "$label named no work directory"
   collect_started "$exited_work_dir"
@@ -1150,17 +1336,19 @@ done
 
 # (e8) A SIGTERM to the run alone, as callout-check.sh's stop sends it, while a readiness request is
 # outstanding at a server that stays alive and answers nothing: the run takes the signal once that
-# request gives up, inside 15 s, and stops with 143. Before, the request waited for good and the
-# signal with it.
+# request gives up, after the run's bound (1 s here, as in (e7)), inside 15 s, and stops with 143.
+# Before, the request waited for good and the signal with it.
 label='the run whose listener answers nothing'
 : >"$unserved_file"
 : >"${unserved_file}.asked"
-DEV_STACK_TEST_UNANSWERED=listener:stays run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+DEV_STACK_READINESS_REQUEST_SECONDS=1 DEV_STACK_TEST_UNANSWERED=listener:stays run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 for _ in $(seq 1 150); do
   [[ -s "${unserved_file}.asked" ]] && break
   sleep 0.1
 done
 [[ -s "${unserved_file}.asked" ]] || fail "$label never sent it a health check, so the row tested nothing"
+grep -qxF -e "-sf --max-time 1 http://127.0.0.1:$(head -n1 "${unserved_file}.asked")/healthz" "$curl_calls1" ||
+  fail "$label asked its listener without the 1 s bound it was given"
 silent_work_dir="$(work_dir_of "$log1")"
 kill -TERM "${instance_pid[1]}"
 wait_for_exit 1 15 "$label"
@@ -1174,35 +1362,64 @@ assert_databases_dropped "$label" "$psql_calls1" "$(suffix_of "$silent_work_dir"
 : >"${unserved_file}.asked"
 printf 'PASS: SIGTERM to a run whose health check was outstanding at a listener that answers nothing stopped it with 143 inside 15 s, every process stopped and both databases dropped\n'
 
-# (e9) A process of the stack that ignores SIGTERM, as a server stuck in its shutdown does: the stop
-# gives each process 10 s after its SIGTERM, then SIGKILL, saying so, and still drops both
-# databases, inside 20 s here. Before, the stop waited on that process for good, with its
-# databases, and ignored every further INT and TERM while it waited. The same row takes the
-# SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop runs: it
-# is sent once natsd is gone and before either drop, which the row checks, so it lands inside the
-# stop's 10 s on the issuer, and the stop goes on. Before, HUP kept its default action there and
-# ended the run between the kills and the drops, with 129.
+# (e9a) A process of the stack that ignores SIGTERM, as a server stuck in its shutdown does: the
+# stop gives each process its grace after its SIGTERM, 2 s here (DEV_STACK_STOP_GRACE_SECONDS),
+# then SIGKILL, saying so with the time from its SIGTERM to the kill, and still drops both
+# databases, inside wait_for_exit's 20 s. Before, the stop waited on that process for good, with
+# its databases, and ignored every further INT and TERM while it waited. The time is the stop's
+# own record of when it signalled and when it killed, so a row that is slow to look cannot fail a
+# stop that kept its grace, and a kill before the grace fails here. How long past the grace a
+# loaded runner wakes the stop is no fault of it, so this row sets no upper bound of its own: the
+# exact grace, the one given and the default, is held by (e10b) under a clock of its own.
 label='the run whose issuer ignores SIGTERM'
-DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+DEV_STACK_STOP_GRACE_SECONDS=2 DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
 assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
 stubborn_issuer="${process_port[dev-oidc-issuer]}"
+interrupt 1 "$label" "$log1"
+wait_for_exit 1 20 "$label"
+[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status, not the 130 of the INT that began its stop"
+killed_line="$(grep -F "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did not stop within 2 s of its SIGTERM; killing it " "$log1" || true)"
+[[ "$killed_line" =~ \ killing\ it\ ([0-9]+)\.([0-9]{3})\ s\ after\ it$ ]] ||
+  fail "$label did not say it killed the issuer, and how long after its SIGTERM: $(grep 'did not stop' "$log1" || true)"
+issuer_held_ms=$((10#${BASH_REMATCH[1]} * 1000 + 10#${BASH_REMATCH[2]}))
+((issuer_held_ms >= 2000)) ||
+  fail "$label killed the issuer ${issuer_held_ms} ms after its SIGTERM, before its 2 s grace ran out"
+assert_everything_stopped "$label"
+assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
+printf "PASS: an issuer that ignores SIGTERM was killed once the stop's grace (2 s here) ran out, %s ms after its SIGTERM by the stop's own record, which the stop said, and both databases were dropped\n" "$issuer_held_ms"
+
+# (e9b) The SIGHUP a terminal sends the group as it closes, here to the run alone, while the stop
+# runs: the stop goes on and drops both databases. Before, HUP kept its default action there and
+# ended the run between the kills and the drops, with 129. The issuer ignores the stop's SIGTERM
+# under a grace of 60 s, which no row waits out, so the stop holds on it until this row lets it go
+# with SIGUSR1, on which the stub exits 0. The HUP is sent once natsd, which the stop stops just
+# before the issuer, is gone, and before either drop, which the row checks: the stop is then held
+# on the issuer, so the HUP lands inside it however late this row looks. Then the issuer is let go,
+# and the stop must end with the 130 of the INT that began it, having killed nothing.
+label='the run that takes a SIGHUP while its stop holds on an issuer'
+DEV_STACK_STOP_GRACE_SECONDS=60 DEV_STACK_TEST_IGNORES_TERM=dev-oidc-issuer run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
+held_issuer="${process_port[dev-oidc-issuer]}"
 stopped_natsd="${process_port[natsd]}"
-kill -INT "${instance_pid[1]}"
-for _ in $(seq 1 50); do
+interrupt 1 "$label" "$log1"
+for _ in $(seq 1 150); do
   kill -0 "$stopped_natsd" 2>/dev/null || break
   sleep 0.1
 done
-kill -0 "$stopped_natsd" 2>/dev/null && fail "$label had not stopped natsd 5 s after its INT"
+kill -0 "$stopped_natsd" 2>/dev/null && fail "$label had not stopped natsd 15 s after its INT"
 [[ -z "$(dropped_databases "$psql_calls1")" ]] ||
   fail "$label had dropped its databases before the SIGHUP, so the row tested nothing"
+kill -0 "$held_issuer" 2>/dev/null || fail "$label's issuer was gone before the SIGHUP, so the row tested nothing"
 kill -HUP "${instance_pid[1]}"
-wait_for_exit 1 20 "$label"
+kill -USR1 "$held_issuer"
+wait_for_exit 1 15 "$label"
 [[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status, not the 130 of the INT that began its stop"
-grep -qxF "dev-stack: dev-oidc-issuer (pid ${stubborn_issuer}) did not stop within 10 s of its SIGTERM; killing it" "$log1" ||
-  fail "$label did not say it killed the issuer: $(grep 'did not stop' "$log1" || true)"
+if grep -q 'did not stop within' "$log1"; then
+  fail "$label killed a process it was meant to wait for: $(grep 'did not stop within' "$log1")"
+fi
 assert_everything_stopped "$label"
 assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
-printf 'PASS: an issuer that ignores SIGTERM was killed 10 s into the stop, which said so, went on through a SIGHUP and dropped both databases\n'
+printf 'PASS: a SIGHUP while the stop held on an issuer that ignores SIGTERM did not end the stop: it went on, killed nothing and dropped both databases\n'
 
 # (e10) The stop signals only a process this run started that is still running. A process of the
 # stack that exited early (a crash, or the second broker callout-check.sh kills) is reaped, and the
@@ -1212,12 +1429,20 @@ printf 'PASS: an issuer that ignores SIGTERM was killed 10 s into the stop, whic
 # a shell of their own: one handed the pid of a child of that shell stops it; one handed the pid of
 # a child that has exited and been reaped signals nothing and prints nothing; and one handed, in
 # place of that child, the pid of a process that shell never started leaves it running, signals it
-# nothing and returns at once.
-stop_helpers="$(sed -n -e '/^running_child() {$/,/^}$/p' -e '/^stop_bounded() {$/,/^}$/p' \
-  -e '/^stop_process() {$/,/^}$/p' "$driver")"
+# nothing and returns at once. Bash can also list as running a child it has lost: one whose exit a
+# trapped signal took from `wait -n` (dev-stack.sh's running_child), which a group's SIGTERM does
+# to the run's own wait, and no test can make bash lose one on cue either. So the shell's `jobs` is
+# then a function that lists a reaped child and the stranger, as bash's table did, and the stop must
+# still wait on neither, signal neither and print nothing: before, it waited out the whole grace on
+# the lost child and said it killed it, and a restart's stop_process waited on it for good. The
+# driver's DEFAULT_STOP_GRACE_SECONDS line is read out with them, for the stop and for (e10b).
+stop_helpers="$(sed -n -e '/^DEFAULT_STOP_GRACE_SECONDS=[1-9][0-9]*$/p' -e '/^running_child() {$/,/^}$/p' \
+  -e '/^stop_bounded() {$/,/^}$/p' -e '/^stop_process() {$/,/^}$/p' "$driver")"
 for helper in running_child stop_bounded stop_process; do
   grep -q "^${helper}() {\$" <<<"$stop_helpers" || fail "dev-stack.sh defines no ${helper}() at the start of a line"
 done
+grep -qx "DEFAULT_STOP_GRACE_SECONDS=${stop_grace_default}" <<<"$stop_helpers" ||
+  fail "dev-stack.sh has no line DEFAULT_STOP_GRACE_SECONDS=${stop_grace_default}, the pinned default grace: $(grep '^DEFAULT_STOP_GRACE_SECONDS' "$driver" || true)"
 stop_out="${temporary_dir}/stop-helpers.out"
 # A process this test's shells did not start: its own shell exits at once, so it belongs to no one
 # here, as a process that took a reused pid belongs to no one in the run.
@@ -1237,6 +1462,14 @@ stop_process "$early"
 reused="$1"
 stop_bounded "a process that exited early" "$reused"
 stop_process "$reused"
+sleep 0.1 &
+lost=$!
+wait "$lost"
+jobs() { printf "%s\n" "$lost" "$reused"; }
+stop_bounded "a child bash lost" "$lost"
+stop_process "$lost"
+stop_bounded "a process bash lists in place of one it lost" "$reused"
+stop_process "$reused"
 echo returned' _ "$stranger" >"$stop_out" 2>&1 || stop_status=$?
 stranger_alive=no
 kill -0 "$stranger" 2>/dev/null && stranger_alive=yes
@@ -1245,7 +1478,60 @@ kill "$stranger" 2>/dev/null || true
 [[ "$stranger_alive" == yes ]] ||
   fail "the stop signalled pid $stranger, a process the run never started, in place of one that exited: $(cat "$stop_out")"
 [[ "$(cat "$stop_out")" == returned ]] || fail "the stop's helpers printed more than they should: $(cat "$stop_out")"
-printf 'PASS: the stop stopped a running child and left alone pid %s, which a process it never started held in place of one that exited\n' "$stranger"
+printf 'PASS: the stop stopped a running child, waited on no child that had exited, even one bash still listed, and left alone pid %s, which a process it never started held in place of one that exited\n' "$stranger"
+
+# (e10b) The stop's grace, the default and one a caller gives, held by what the stop does: the
+# same helpers run in a shell of their own on a child that ignores SIGTERM, under that shell's own
+# clock. EPOCHREALTIME, once unset, is a plain variable, and `sleep` there is a function that moves
+# it on by the 0.1 s the stop asks for and returns at once, so the whole grace passes in the stop's
+# own polls, with no real wait and no scheduler to wake it late, and its kill line names the time
+# by that clock. With DEV_STACK_STOP_GRACE_SECONDS unset it must be the pinned default exactly, and
+# with it set to 3, 3 s exactly: a stop that took another grace, a literal of its own, or killed
+# before its grace names another. The child says it ignores SIGTERM before the stop signals it, so
+# the signal cannot end it first, and the shell kills its own child on any way out, a timeout's
+# TERM included, and writes its pid where this row kills it if the shell itself was killed, so no
+# such child outlives a failing row.
+grace_by_clock() { # <want seconds> [DEV_STACK_STOP_GRACE_SECONDS value]
+  local want="$1" out="${temporary_dir}/stop-grace-clock.out" child_file="${temporary_dir}/stop-grace-clock.pid"
+  local -a grace_env=(-u DEV_STACK_STOP_GRACE_SECONDS)
+  local label="the stop with no grace set" status=0 child
+  if [[ $# -ge 2 ]]; then
+    grace_env=("DEV_STACK_STOP_GRACE_SECONDS=$2")
+    label="the stop given a grace of $2 s"
+  fi
+  rm -f "$child_file" "${temporary_dir}/stop-grace-clock.ready"
+  # shellcheck disable=SC2016 # the helpers' shell expands these, not this one
+  env "${grace_env[@]}" timeout -k 5 15 bash -c "$stop_helpers"$'\n''
+ready="$1" child_file="$2"
+(trap "" TERM; : >"$ready"; exec sleep 600) &
+stubborn=$!
+printf "%s\n" "$stubborn" >"$child_file"
+trap '"'"'kill -KILL "$stubborn" 2>/dev/null; wait "$stubborn" 2>/dev/null'"'"' EXIT
+trap "exit 1" TERM
+for _ in $(seq 1 200); do [ -e "$ready" ] && break; sleep 0.05; done
+[ -e "$ready" ] || { echo "the child that ignores SIGTERM never said so"; exit 1; }
+unset EPOCHREALTIME
+EPOCHREALTIME=1000.000000
+sleep() {
+  local now=${EPOCHREALTIME//[!0-9]/}
+  now=$((now + 100000))
+  printf -v EPOCHREALTIME "%d.%06d" $((now / 1000000)) $((now % 1000000))
+}
+stop_bounded "a child that ignores SIGTERM" "$stubborn"
+kill -0 "$stubborn" 2>/dev/null && echo "a child that ignores SIGTERM outlived the grace"
+exit 0' _ "${temporary_dir}/stop-grace-clock.ready" "$child_file" >"$out" 2>&1 || status=$?
+  child="$(cat "$child_file" 2>/dev/null || true)"
+  if [[ "$child" =~ ^[1-9][0-9]*$ ]] && kill -0 "$child" 2>/dev/null; then
+    kill -KILL "$child" 2>/dev/null || true
+    fail "$label left its child that ignores SIGTERM (pid $child) running: $(cat "$out")"
+  fi
+  [[ "$status" -eq 0 ]] || fail "$label did not return within 15 s (status $status): $(cat "$out")"
+  [[ "$(cat "$out")" == "dev-stack: a child that ignores SIGTERM (pid "*") did not stop within ${want} s of its SIGTERM; killing it ${want}.000 s after it" ]] ||
+    fail "$label did not kill a child that ignores SIGTERM ${want} s after its SIGTERM by its own clock: $(cat "$out")"
+}
+grace_by_clock "$stop_grace_default"
+grace_by_clock 3 3
+printf "PASS: the stop killed a child that ignores SIGTERM exactly when its grace ran out by its own clock: %s s with no grace set, 3 s when given 3\n" "$stop_grace_default"
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
@@ -1261,6 +1547,54 @@ for source in --database-url LEGION_TEST_PG_DSN DATABASE_URL scripts/dev-postgre
 done
 [[ ! -e "${temporary_dir}/psql-calls-refusal" ]] || fail "a run with no database URL still called psql"
 printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DSN, DATABASE_URL and dev-postgres.sh, and exits 2\n'
+
+# (v) A developer's box, whose python3 on PATH is a version manager's shim (mise's): a script that
+# takes its own directory out of PATH and hands every call to the python3 it then finds there.
+# This test puts its fakes first on PATH, so there the shim's next python3 is a fake. The fake
+# python3 once ran the real interpreter by the path `command -v python3` gave, the shim's, so its
+# own `-c` came back to it; it answered with its pid and exited, the listener was never started,
+# and the run stopped with "dev-stack: listener exited during startup", the listener's log that
+# one pid, and no ready. Here the fake is written with the shim first on PATH, as a box's is, and
+# the run's PATH holds that fake, the other fakes, the shim and this test's own PATH, in that
+# order. The run reaches ready, held to all (a) to (c) hold a run to, and stops on INT as (e2)
+# does. The controls, which show the row could fail: python3 on the PATH the fake is written with
+# is the shim, and on the run's PATH the shim answers `-c` with the fake's pid rather than with
+# python. The shim takes its directory out of the PATH it hands on, not only out of its own
+# lookup: a box's own shim after it, which looks python3 up on PATH again when it falls through,
+# would otherwise find this one, and the two would hand the call to each other for good.
+python3_shim_dir="${temporary_dir}/python3-shim"
+python3_shim_fakes="${temporary_dir}/python3-shim-fakes"
+mkdir -p "$python3_shim_dir" "$python3_shim_fakes"
+{
+  printf '#!/usr/bin/env bash\nshim_dir=%q\n' "$python3_shim_dir"
+  cat <<'EOF'
+handed_path=""
+IFS=: read -r -a path_dirs <<<"$PATH"
+for dir in "${path_dirs[@]}"; do
+  [[ "$dir" == "$shim_dir" ]] || handed_path="${handed_path:+${handed_path}:}${dir}"
+done
+export PATH="$handed_path"
+exec python3 "$@"
+EOF
+} >"${python3_shim_dir}/python3"
+chmod +x "${python3_shim_dir}/python3"
+label='the run with a python3 shim on PATH'
+[[ "$(PATH="${python3_shim_dir}:${PATH}" command -v python3)" == "${python3_shim_dir}/python3" ]] ||
+  fail "$label: python3 on the PATH its fake is written with is not the shim, so the row tests nothing"
+PATH="${python3_shim_dir}:${PATH}" write_fake_python3 "$python3_shim_fakes"
+python3_shim_path="${python3_shim_fakes}:${fake_bin_dir}:${python3_shim_dir}:${PATH}"
+shim_answer="$(PATH="$python3_shim_path" "${python3_shim_dir}/python3" -c 'print("python")' 2>&1 || true)"
+[[ "$shim_answer" =~ ^[0-9]+$ ]] ||
+  fail "$label: on the run's PATH the shim answered -c with '$shim_answer', not the fake's pid, so a fake that hands its call to the shim would pass unseen"
+DEV_STACK_TEST_PATH="$python3_shim_path" run_instance 1 "$log1" "$psql_calls1" "$curl_calls1"
+assert_instance_ready "$label" "$log1" "$psql_calls1" "$curl_calls1"
+interrupt 1 "$label" "$log1"
+wait_for_exit 1 15 "$label"
+[[ "$exited_status" -eq 130 ]] || fail "$label exited $exited_status on INT, not 130"
+assert_everything_stopped "$label"
+assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
+printf 'PASS: a run whose PATH holds a python3 shim after the fakes, as a developer'"'"'s box does, reached ready (listener %s, dispatch %s) and stopped on INT\n' \
+  "${process_port[listener]}" "${process_port[dispatch]}"
 
 # (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
 # makes a stub of each binary in a directory of its own, and a run given that directory with
@@ -1293,7 +1627,7 @@ for binary in "${prebuilt_binaries[@]}"; do
   cmp -s "${prebuilt}/${binary}" "${work_dir}/bin/${binary}" ||
     fail "the --binaries run's own $binary is not the prebuilt one it was given"
 done
-kill -INT "${instance_pid[1]}"
+interrupt 1 'the --binaries run' "$log1"
 wait_for_exit 1 15 'the --binaries run'
 [[ "$exited_status" -eq 130 ]] || fail "the --binaries run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --binaries run'
@@ -1317,7 +1651,9 @@ refuse_run() { # <label> <status> <dev-stack.sh arguments...>
     rm -f "${temporary_dir}/${tool}-calls-binaries"
   done
   refusal_status=0
-  env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
+  # A refusal ends at once. A run that does not refuse starts its stack and stays up, so it is
+  # given 60 s and then stopped, and the row fails naming the status, not the job's deadline.
+  timeout -k 10 60 env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${DEV_STACK_TEST_PATH:-${fake_bin_dir}:${PATH}}" TMPDIR="$temporary_dir" \
     DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-binaries" \
     DEV_STACK_TEST_CURL_CALL_FILE="${temporary_dir}/curl-calls-binaries" \
     DEV_STACK_TEST_GO_CALL_FILE="${temporary_dir}/go-calls-binaries" \
@@ -1387,6 +1723,43 @@ refuse_pair() { # <dev-stack.sh arguments...>
 refuse_pair --callout --project-access
 refuse_pair --project-access --callout
 printf 'PASS: --callout and --project-access together, in either order, are refused with exit 2 and one line naming the pair, before anything is created or started\n'
+
+# (t2) DEV_STACK_STOP_GRACE_SECONDS and DEV_STACK_READINESS_REQUEST_SECONDS each take a whole number
+# of seconds from 1 to 9999, written without a leading zero (bash arithmetic reads 010 as 8). Any
+# other value, an empty one among them (set, but empty, which a `:-` default would take as unset),
+# is refused with exit 2 and one line naming the variable and the value, before anything is
+# created or started (refuse_run): a value bash arithmetic cannot read would end the stop between
+# its kills and its drops. The controls are (e3), (e7) and (e9a), which run with values the driver
+# takes, and every run with neither set. refuse_bound exports the variable it is given to that one
+# refusal alone (local -x).
+refuse_bound() { # <variable> <value>
+  local label="a run given $1='$2'"
+  local -x "$1=$2"
+  refuse_run "$label" 2
+  [[ "$(<"$refusal")" == "dev-stack: $1 must be a whole number of seconds from 1 to 9999, not '$2'" ]] ||
+    fail "$label printed '$(<"$refusal")', not the one line naming the variable and the value"
+}
+for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; do
+  for value in '' 0 010 1.5 ten -1 10000 ' 3'; do
+    refuse_bound "$bound" "$value"
+  done
+done
+printf 'PASS: a stop grace or readiness bound that is empty or no whole number of seconds from 1 to 9999 is refused with exit 2, naming the variable and the value, before anything is created or started\n'
+# (t2a) --approve beside --callout or --project-access, each of which takes the broker's proxy port,
+# and --approve-allow-all without --approve, whose block it opens: each refused with exit 2 and one
+# line naming it, before anything is created or started. The control is approve-check.sh, which
+# runs --approve and --approve-allow-all to ready against a real Postgres.
+approve_refused() { # <line> <dev-stack.sh arguments...>
+  local line="$1"
+  shift
+  refuse_run "a run given $*" 2 "$@"
+  [[ "$(<"$refusal")" == "$line" ]] || fail "a run given $* printed '$(<"$refusal")', not '$line'"
+}
+approve_pair_line="dev-stack: --approve runs alone of --callout and --project-access: each takes the broker's proxy port"
+approve_refused "$approve_pair_line" --approve --callout
+approve_refused "$approve_pair_line" --project-access --approve
+approve_refused "dev-stack: --approve-allow-all opens the allow list of --approve's block, so it needs --approve" --approve-allow-all
+printf 'PASS: --approve beside --callout or --project-access, and --approve-allow-all alone, are refused with exit 2 and one line each, before anything is created or started\n'
 
 # (j) --callout: natsd behind the auth callout with a monitor port, two brokers each running the
 # auth service on it with the listener and Dispatch listed under their machine ids, the issuer
@@ -1485,7 +1858,7 @@ kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped acro
 if grep -q 'a process of this stack stopped' "$log1"; then
   fail "the --callout run stopped across its restarts"
 fi
-kill -INT "${instance_pid[1]}"
+interrupt 1 'the --callout run' "$log1"
 wait_for_exit 1 15 'the --callout run'
 [[ "$exited_status" -eq 130 ]] || fail "the --callout run exited $exited_status on INT, not 130"
 assert_everything_stopped 'the --callout run'

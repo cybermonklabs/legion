@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,14 +16,11 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// consumerStatePoll is how often AwaitConsumerStored reads the consumer's info and its state file,
-// and consumerStateWait how long it waits for the two to agree: the 20 ms and 5 s the bus tests'
-// waitUntil polls with, for the same reason, a state that follows a publish the server answers
-// nothing to arriving a moment after it, from a server in this process.
-const (
-	consumerStatePoll = 20 * time.Millisecond
-	consumerStateWait = 5 * time.Second
-)
+// consumerStatePoll is how often AwaitConsumerStored and a cut's wait (awaitConsumersStored) read a
+// consumer's position and its state file. Neither sets a span of its own: nats-server writes that
+// file from a goroutine the machine can run late, so how soon it catches up is the machine's, and
+// each wait ends at the test's own end (boundOf) and nowhere else.
+const consumerStatePoll = 20 * time.Millisecond
 
 // servers maps the relay address of every Server start made, the host and port its URL names, to
 // that Server, from start until the cleanup start registers removes it, so AwaitConsumerStored can
@@ -90,7 +88,7 @@ type storedConsumer struct {
 // write to wait for. It fails the test when conn reaches no server this package started and
 // registered, when the server holds no connection by conn's client id, when the file is missing
 // or does not read that way (a consumer in memory storage, another format), naming the path, and
-// when the file has not caught up with the info within consumerStateWait.
+// when the file has not caught up with the info by the test's own end (boundOf).
 func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer string) {
 	t.Helper()
 	path := consumerStatePath(t, conn, stream, consumer)
@@ -98,22 +96,18 @@ func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer strin
 	if err != nil {
 		t.Fatalf("testnats: open JetStream to read consumer %s on stream %s: %v", consumer, stream, err)
 	}
-	deadline := time.Now().Add(consumerStateWait)
+	bound := boundOf(t)
 	for {
-		info, err := js.ConsumerInfo(stream, consumer)
+		// The read waits as MaxWait's do: a cut read fails the test below, and a dial's 1 s
+		// (dialTimeout, before) cut a server that answered late on a loaded machine.
+		info, err := js.ConsumerInfo(stream, consumer, MaxWait(t))
 		if errors.Is(err, natsgo.ErrConsumerNotFound) || errors.Is(err, natsgo.ErrStreamNotFound) {
 			return
 		}
 		if err != nil {
 			t.Fatalf("testnats: read the info of consumer %s on stream %s: %v", consumer, stream, err)
 		}
-		want := storedConsumer{
-			AckFloorConsumer:  info.AckFloor.Consumer,
-			AckFloorStream:    info.AckFloor.Stream,
-			DeliveredConsumer: info.Delivered.Consumer,
-			DeliveredStream:   info.Delivered.Stream,
-			Pending:           uint64(info.NumAckPending),
-		}
+		want := positionOf(info.AckFloor.Consumer, info.AckFloor.Stream, info.Delivered.Consumer, info.Delivered.Stream, info.NumAckPending)
 		stored, err := readStoredConsumer(path)
 		if err != nil {
 			t.Fatalf("testnats: the state file of consumer %s on stream %s: %v", consumer, stream, err)
@@ -121,16 +115,122 @@ func AwaitConsumerStored(t testing.TB, conn *natsgo.Conn, stream, consumer strin
 		if stored == want {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("testnats: waited %s for %s to hold the position the server reports for consumer %s; it held %+v, the server reports %+v", consumerStateWait, path, consumer, stored, want)
+		if bound.over() {
+			t.Fatalf("testnats: waited until %s for %s to hold the position the server reports for consumer %s; it held %+v, the server reports %+v", bound, path, consumer, stored, want)
 		}
-		time.Sleep(consumerStatePoll)
+		time.Sleep(bound.step(consumerStatePoll))
 	}
+}
+
+// positionOf is the position a consumer's info reports, as its state file holds it.
+func positionOf(ackFloorConsumer, ackFloorStream, deliveredConsumer, deliveredStream uint64, pending int) storedConsumer {
+	return storedConsumer{
+		AckFloorConsumer:  ackFloorConsumer,
+		AckFloorStream:    ackFloorStream,
+		DeliveredConsumer: deliveredConsumer,
+		DeliveredStream:   deliveredStream,
+		Pending:           uint64(pending),
+	}
+}
+
+// awaitConsumersStored waits until the state file of every consumer of stream in the global account
+// that keeps its state in a file holds the position the server reports for it: CutStream's wait
+// before it stops the server. A consumer's state must be on disk at the stop, or the server
+// restarted after the cut recovers the consumer from an older position than the one the test read.
+//
+// nats-server v2.15.1's stop of a consumer writes its state only while the store marks it dirty
+// (consumerFileStore.Stop, server/filestore.go:14524-14565), and waits at most 100 ms for a write of
+// the flusher's under way. The flusher encodes the state, releases the store's lock, and only then
+// clears that mark as it writes (flushLoop and writeState, filestore.go:13764-13777 and 14179), and
+// it writes again at the soonest 100 ms after its last write. So a delivery or an ack that lands
+// between that encode and that clear is in neither the write nor, for a stop in the next 100 ms,
+// the stop's own: the file keeps the earlier position. A machine that runs the flusher's goroutine
+// late widens the first window and a stop that follows the test's last ack closely lands in the
+// second: in a run at a load of 900 to 5,000, the server restarted after the cut reconciled a
+// consumer that had delivered sequence 24 as one that had delivered 21. The file is current once
+// it holds what the server reports; the flusher writes again only when the state changes.
+//
+// It reads each consumer from the server itself (Jsz), so it needs no connection, and it skips a
+// consumer in memory storage, which keeps no state file. It fails the test naming the files that
+// had not caught up when the test's own end (boundOf) passes.
+func (s *Server) awaitConsumersStored(t testing.TB, stream string) {
+	t.Helper()
+	srv := s.natsServer()
+	if srv == nil {
+		return
+	}
+	bound := boundOf(t)
+	for {
+		behind, err := s.consumersNotStored(srv, stream)
+		if err == nil && len(behind) == 0 {
+			return
+		}
+		if bound.over() {
+			if err != nil {
+				t.Fatalf("testnats: waited until %s to read the consumers of stream %s before the cut: %v", bound, stream, err)
+			}
+			t.Fatalf("testnats: waited until %s for the state files of the consumers of stream %s to hold the positions the server reports before the cut; %s", bound, stream, strings.Join(behind, "; "))
+		}
+		time.Sleep(bound.step(consumerStatePoll))
+	}
+}
+
+// consumersNotStored names each consumer of stream in the global account whose state file does not
+// hold the position srv reports for it, with both (awaitConsumersStored).
+func (s *Server) consumersNotStored(srv *natsserver.Server, stream string) ([]string, error) {
+	jsz, err := srv.Jsz(&natsserver.JSzOptions{Account: "$G", Streams: true, Consumer: true, Config: true})
+	if err != nil {
+		return nil, err
+	}
+	var behind []string
+	for _, account := range jsz.AccountDetails {
+		if account.Name != "$G" {
+			continue
+		}
+		for _, detail := range account.Streams {
+			if detail.Name != stream {
+				continue
+			}
+			for _, info := range detail.Consumer {
+				if info.Config != nil && info.Config.MemoryStorage {
+					continue
+				}
+				path := filepath.Join(s.store, "jetstream", "$G", "streams", stream, "obs", info.Name, "o.dat")
+				want := positionOf(info.AckFloor.Consumer, info.AckFloor.Stream, info.Delivered.Consumer, info.Delivered.Stream, info.NumAckPending)
+				stored, err := readStoredConsumer(path)
+				if err != nil {
+					behind = append(behind, err.Error())
+				} else if stored != want {
+					behind = append(behind, fmt.Sprintf("%s holds %+v, the server reports %+v", path, stored, want))
+				}
+			}
+		}
+	}
+	return behind, nil
 }
 
 // consumerStatePath is the path of consumer's state file on the server conn is connected to, in
 // the account conn belongs to (AwaitConsumerStored).
 func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string) string {
+	t.Helper()
+	server, account := connPlace(t, conn)
+	return filepath.Join(server.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
+}
+
+// ConnAccount is the account the server conn is connected to holds conn in, as that server's
+// Connz names it for conn's client id, "$G" where it names none: a test of where a hub placed a
+// client reads it here. It fails the test as connPlace does.
+func ConnAccount(t testing.TB, conn *natsgo.Conn) string {
+	t.Helper()
+	_, account := connPlace(t, conn)
+	return account
+}
+
+// connPlace is the server conn is connected to, and the account that server holds conn in, as its
+// Connz names it for conn's client id ("$G" when it names none). It fails the test when conn
+// reaches no server this package started and registered, and when the server holds no connection
+// by conn's client id.
+func connPlace(t testing.TB, conn *natsgo.Conn) (*Server, string) {
 	t.Helper()
 	connected := conn.ConnectedUrlRedacted()
 	parsed, err := url.Parse(connected)
@@ -163,7 +263,7 @@ func consumerStatePath(t testing.TB, conn *natsgo.Conn, stream, consumer string)
 	if account == "" {
 		account = "$G"
 	}
-	return filepath.Join(server.store, "jetstream", account, "streams", stream, "obs", consumer, "o.dat")
+	return server, account
 }
 
 // readStoredConsumer reads the position in the consumer state file at path (AwaitConsumerStored).

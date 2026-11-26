@@ -1,0 +1,203 @@
+{
+  "namespace": "dispatch",
+  "account": "envoy-broker",
+  "prefix": "envoy-broker-",
+  "objects": [
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "broker-pod-connect",
+      "spec": {
+        "failurePolicy": "Fail",
+        "matchConstraints": {
+          "resourceRules": [
+            {
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CONNECT"],
+              "resources": ["pods/exec"]
+            },
+            {
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CONNECT"],
+              "resources": ["pods/attach"]
+            },
+            {
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CONNECT"],
+              "resources": ["pods/portforward"]
+            }
+          ]
+        },
+        "validations": [
+          {
+            "expression": "!request.name.startsWith('envoy-broker-')",
+            "message": "no one may exec, attach or port-forward to an envoy-broker pod"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "broker-pod-connect",
+      "spec": {
+        "matchResources": {
+          "namespaceSelector": {
+            "matchExpressions": [
+              {
+                "key": "kubernetes.io/metadata.name",
+                "operator": "In",
+                "values": ["dispatch"]
+              }
+            ]
+          }
+        },
+        "policyName": "broker-pod-connect",
+        "validationActions": ["Deny"]
+      }
+    },
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "broker-pod-update",
+      "spec": {
+        "failurePolicy": "Fail",
+        "matchConstraints": {
+          "resourceRules": [
+            {
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["UPDATE"],
+              "resources": ["pods"]
+            },
+            {
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["UPDATE"],
+              "resources": ["pods/ephemeralcontainers"]
+            }
+          ]
+        },
+        "validations": [
+          {
+            "expression": "!((object != null && (object.metadata.name.startsWith('envoy-broker-') || (has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'envoy-broker') || (has(object.metadata.labels) && 'app' in object.metadata.labels && object.metadata.labels.app == 'envoy-broker'))) || (oldObject != null && (oldObject.metadata.name.startsWith('envoy-broker-') || (has(oldObject.spec.serviceAccountName) && oldObject.spec.serviceAccountName == 'envoy-broker') || (has(oldObject.metadata.labels) && 'app' in oldObject.metadata.labels && oldObject.metadata.labels.app == 'envoy-broker')))) || ((!has(request.subResource) || request.subResource == '') && object.spec == oldObject.spec)",
+            "message": "only metadata-only updates of a broker pod are allowed; no one may change its spec or its ephemeral containers"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "broker-pod-update",
+      "spec": {
+        "matchResources": {
+          "namespaceSelector": {
+            "matchExpressions": [
+              {
+                "key": "kubernetes.io/metadata.name",
+                "operator": "In",
+                "values": ["dispatch"]
+              }
+            ]
+          }
+        },
+        "policyName": "broker-pod-update",
+        "validationActions": ["Deny"]
+      }
+    },
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "broker-pod-create",
+      "spec": {
+        "failurePolicy": "Fail",
+        "matchConstraints": {
+          "resourceRules": [
+            {
+              "apiGroups": [""],
+              "apiVersions": ["v1"],
+              "operations": ["CREATE"],
+              "resources": ["pods"]
+            }
+          ]
+        },
+        "validations": [
+          {
+            "expression": "!has(object.spec.serviceAccountName) || object.spec.serviceAccountName != 'envoy-broker' || (request.userInfo.username == 'system:serviceaccount:kube-system:replicaset-controller' && object.metadata.name.startsWith('envoy-broker-') && (has(object.metadata.ownerReferences) && object.metadata.ownerReferences.exists(r, r.apiVersion == 'apps/v1' && r.kind == 'ReplicaSet' && has(r.controller) && r.controller && r.name.startsWith('envoy-broker-'))))",
+            "message": "only the ReplicaSet controller may create envoy-broker ServiceAccount pods, with a broker name and ReplicaSet owner"
+          }
+        ]
+      }
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "broker-pod-create",
+      "spec": {
+        "matchResources": {
+          "namespaceSelector": {
+            "matchExpressions": [
+              {
+                "key": "kubernetes.io/metadata.name",
+                "operator": "In",
+                "values": ["dispatch"]
+              }
+            ]
+          }
+        },
+        "policyName": "broker-pod-create",
+        "validationActions": ["Deny"]
+      }
+    },
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "broker-workload-create",
+      "digest": "sha256:e4741cd84191eeeb811934ceafbf5c64d1d43fa1e6c0acfc8225e1ae8d9d29fb"
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "broker-workload-create",
+      "spec": {
+        "matchResources": {
+          "namespaceSelector": {
+            "matchExpressions": [
+              {
+                "key": "kubernetes.io/metadata.name",
+                "operator": "In",
+                "values": ["dispatch"]
+              }
+            ]
+          }
+        },
+        "policyName": "broker-workload-create",
+        "validationActions": ["Deny"]
+      }
+    },
+    {
+      "kind": "ValidatingAdmissionPolicy",
+      "name": "broker-workload-update",
+      "digest": "sha256:300e59853d67a0d9f4e21f93e2a55f0d246598610eb3e10c33b71b34781b6ea5"
+    },
+    {
+      "kind": "ValidatingAdmissionPolicyBinding",
+      "name": "broker-workload-update",
+      "spec": {
+        "matchResources": {
+          "namespaceSelector": {
+            "matchExpressions": [
+              {
+                "key": "kubernetes.io/metadata.name",
+                "operator": "In",
+                "values": ["dispatch"]
+              }
+            ]
+          }
+        },
+        "policyName": "broker-workload-update",
+        "validationActions": ["Deny"]
+      }
+    }
+  ],
+  "residual": {
+    "text": "its use on the other pods of dispatch reaches Dispatch's own database login, dispatch, a built-in Cloud SQL user and so a member of cloudsqlsuperuser on the instance that holds the broker's database, which can take the broker's role and write the writer hold's tables: a residual until INFRA-4604's round C2 moves Dispatch to an IAM login, and the hold's preflight reads the hold's writers apart from this check",
+    "tracked_by": "INFRA-4604"
+  }
+}

@@ -1,5 +1,8 @@
 package capabilities
 
+//ci:reads packages/contracts/fixtures/capability-redaction.json readFixture reads it
+//ci:reads packages/contracts/fixtures/capability-redaction-plugin-report.json readFixture reads it
+
 import (
 	"encoding/json"
 	"fmt"
@@ -18,7 +21,7 @@ import (
 var names = []Name{
 	Subagents, EvalJS, EvalPython, Browser, LSP, CodeGraph, WebSearch, Skills, MCP, RepositoryExtensions,
 	DispatchEnvoyTools, GitHub, Secrets, ModelFallback, Toolchain, ClaudeCode, ResourceLimits, PoolCapacity,
-	Network, OperatorSetup, ProductionIdentities,
+	RepositoryCacheRoom, Network, OperatorSetup, ProductionIdentities,
 }
 
 // The table is the one declared list: every Name constant appears in it exactly once, and no row
@@ -53,10 +56,22 @@ func TestEveryRowHasASite(t *testing.T) {
 	}
 }
 
-// The deployment rows are what a legion.yaml decided line may name, in the table's order.
+// The deployment rows are what a legion.yaml decided line may name, in the table's order: the
+// repository caches' room last, after the pool's capacity.
 func TestDecidableIsTheDeploymentRowsInTableOrder(t *testing.T) {
-	if got, want := Decidable(), []Name{Secrets, ModelFallback, ResourceLimits, PoolCapacity}; !slices.Equal(got, want) {
+	if got, want := Decidable(), []Name{Secrets, ModelFallback, ResourceLimits, PoolCapacity, RepositoryCacheRoom}; !slices.Equal(got, want) {
 		t.Errorf("Decidable() = %v, want %v", got, want)
+	}
+}
+
+// Every deployment row says what the daemon measures it from, which the probe's table prints in
+// its place (CheckImage), and no other row says so: a row added without it would print an empty
+// source.
+func TestEveryDeploymentRowSaysWhatTheDaemonMeasuresItFrom(t *testing.T) {
+	for _, row := range Table {
+		if deployment := row.Site == SiteDeployment; deployment != (row.MeasuredFrom != "") {
+			t.Errorf("row %s at site %s is measured from %q, want a source on every deployment row and none elsewhere", row.Name, row.Site, row.MeasuredFrom)
+		}
 	}
 }
 

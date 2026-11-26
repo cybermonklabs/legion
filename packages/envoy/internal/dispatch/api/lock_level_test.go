@@ -4,7 +4,7 @@
 // and leaving it out of the -race run spares that job compiling the guard and running its scan
 // over every .go file of packages/envoy a second time.
 //
-// The tag is here for that saving rather than for the compiler. What this guard and the seven
+// The tag is here for that saving rather than for the compiler. What this guard and the eight
 // others share - moduleSource, moduleSources, stringConstants, sqlStatements, literalText,
 // sqlWhitespace - is declared in module_source_test.go, which carries no tag because tests of
 // this package use declarations of it untagged and so must have them under -race too
@@ -15,13 +15,15 @@
 // The work stays behind the tag: the constant fixpoint and the statement walk this guard runs
 // over the whole module, and
 // TestNoForUpdateOnOwnerTables, which would otherwise run twice, once under the detector and
-// once in the text-check run that names the seventeen tests of these eight guards and
+// once in the text-check run that names the twenty-two tests of these nine guards and
 // one_expression_guard_test.go. That file is where the module's second walk went: main had it
 // as a subtest of who_waits_test.go, parsing the same tree in the race binary, and its subject
 // is the module's text, which R15 of dispatch://INFRA-1066 has run in the text-check job rather
 // than inside a product suite - so it is on this side of the tag now.
 
 package api
+
+//ci:reads packages/envoy/**/*.go !**/*_test.go `packages/envoy/internal/dispatch/api/module_source_test.go#scanModuleSources` walks packages/envoy (infra, testdata and all) and parses every .go file it finds but the test files, for the tests that ask it for the module's sources: `packages/envoy/internal/dispatch/api/lock_level_test.go#TestNoForUpdateOnOwnerTables`, `packages/envoy/internal/dispatch/api/event_insert_guard_test.go#TestOnlyTheBrokerInsertsEvents`, `packages/envoy/internal/dispatch/api/review_order_guard_test.go#TestEveryReviewReadOrdersByReviewOrder`, `packages/envoy/internal/dispatch/api/review_write_guard_test.go#TestOnlyQueueReviewWritesReviews`, `packages/envoy/internal/dispatch/api/one_expression_guard_test.go#TestOneExpressionDecidesWhoWaitsInOneSpelling`, `packages/envoy/internal/dispatch/api/issue_route_writer_guard_test.go#TestOnlyTheIssuePatchWritesTheRoute`; that last also walks packages/envoy and reads every non-test file of it as text
 
 import (
 	"path/filepath"
@@ -45,15 +47,22 @@ var ownerRowTables = []string{"issues", "artifacts", "projects"}
 // ownerRowLockSites are the places allowed to lock an owner row, keyed by the file that declares
 // them, each named as a statement's locatedStatement names where it is: a function, or a
 // package-level value. They are the events' lockEventOwner, which takes the row `for no key
-// update` when the transaction appends, under the owner's advisory lock it takes first; and the
+// update` when the transaction appends, under the owner's advisory lock it takes first; the
 // store's three owner lock levels, the package-level variables ownerLockExclusive,
 // ownerLockShared and ownerLockTry, whose row locks are the statements the owner lock runs right
 // after its advisory lock, before the read it guards, while its fleet read answers that a process
-// of an earlier build is live (store.lockOwnerRows). Every other declaration and function of
-// ownerlock.go is under the rule.
+// of an earlier build is live (store.lockOwnerRows); and an issue create's `for share` of its
+// parent's row (createIssue). That one runs only with the parent-status rule on, in the create's
+// write phase, after the update of the project's next_number gave the transaction its id, as the
+// statement just before `insert into issues`. It orders the create against a close of that
+// parent: a close whose update ran first makes it wait and read `done`, and a create whose share
+// lock ran first makes the close's update wait, and the close's second read then sees the new
+// child. It takes no lock in the read phase and replaces no advisory lock. Every other
+// declaration and function of ownerlock.go is under the rule.
 var ownerRowLockSites = map[string][]string{
-	"internal/dispatch/events/broker.go":   {"lockEventOwner"},
-	"internal/dispatch/store/ownerlock.go": {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
+	"internal/dispatch/api/issue_create.go": {"createIssue"},
+	"internal/dispatch/events/broker.go":    {"lockEventOwner"},
+	"internal/dispatch/store/ownerlock.go":  {"ownerLockExclusive", "ownerLockShared", "ownerLockTry"},
 }
 
 var (
@@ -99,11 +108,11 @@ var (
 // makes.
 //
 // Row locks elsewhere are untouched: doc_checkpoints is read plainly under the document lock, and
-// message_deliveries, comment_mentions, comment_deliveries, repo_projects and
-// architecture_sources still use `for update`. A targeted message's own row is taken `for no key
-// update` (message_delivery.go), so the session's reply, whose foreign key takes it `for key
-// share`, never waits on it. The viewer's own state row takes none: its route serialises on the
-// project's advisory owner lock (state.go, store.LockOwner).
+// message_deliveries, comment_mentions, comment_deliveries and architecture_sources still use
+// `for update`. A targeted message's own row is taken `for no key update` (message_delivery.go),
+// so the session's reply, whose foreign key takes it `for key share`, never waits on it. The
+// viewer's own state row takes none: its route serialises on the project's advisory owner lock
+// (state.go, store.LockOwner).
 //
 // The match is statement-scoped and conservative, and it prints the statement rather than naming
 // a table, because which row a statement locks is a property of the whole statement. A lock
@@ -119,6 +128,7 @@ var (
 // strings.Repeat("issues", 0) prints `... for update issues`: the tell is a word the statement
 // did not spell, an owner table outside its `from` or a lock clause the query never assembles.
 func TestNoForUpdateOnOwnerTables(t *testing.T) {
+	t.Parallel()
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {

@@ -12,16 +12,23 @@ import type { InboxRow } from "../web/src/api/types";
 import {
   answerAsk,
   createAsk,
+  createComment,
   createIssue,
+  createIssueArtifact,
   createProject,
   createProjectDocument,
   editArtifact,
+  getArtifactText,
   getInbox,
+  handAskOn,
+  listMyReplies,
   patchIssue,
   requestApproval,
   withOpenedAsk,
 } from "./api";
+import { blockId } from "./editor";
 import { inboxList, inboxPane } from "./inbox-pane";
+import { replyRowId } from "./inbox-threads";
 
 export const session = {
   actor: { id: "e2e-reading-pane", kind: "session" as const },
@@ -32,10 +39,7 @@ export const session = {
  *  question - which nobody holds, a document having no assignee - is listed beside the rest. */
 export const INBOX = "/?assignee=everyone";
 
-/** The address the Inbox writes for a selected row (`buildInboxPath`: the item, then the filter). */
-export function inboxAt(askId: string): string {
-  return `/?item=${askId}&assignee=everyone`;
-}
+export { inboxAt } from "./inbox-pane-scroll";
 
 // ---------------------------------------------------------------------------
 // The first spec: one section of 36 lines above the decision block.
@@ -136,6 +140,7 @@ export interface Seed {
   decisionAskId: string;
   decisionIssueKey: string;
   documentAskId: string;
+  firstApprovalArtifactId: string;
   firstApprovalAskId: string;
   plainAskId: string;
 }
@@ -243,13 +248,16 @@ export async function seedInbox(): Promise<Seed> {
           title: "Lease handover",
         });
         await patchIssue(issue.key, { priority: 2 });
-        return withOpenedAsk(
-          await requestApproval(
-            issue.primary_artifact_id,
-            { summary: "The first handover draft." },
-            session
-          )
-        );
+        return {
+          ...withOpenedAsk(
+            await requestApproval(
+              issue.primary_artifact_id,
+              { summary: "The first handover draft." },
+              session
+            )
+          ),
+          artifactId: issue.primary_artifact_id,
+        };
       })(),
       (async () => {
         const anchoredIssue = await createIssue({
@@ -289,8 +297,210 @@ export async function seedInbox(): Promise<Seed> {
     decisionAskId: decision.row.id,
     decisionIssueKey: decision.issueKey,
     documentAskId: documentDecision.id,
+    firstApprovalArtifactId: firstApproval.artifactId,
     firstApprovalAskId: firstApproval.ask.id,
     plainAskId: plain.id,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Open page: one issue with a spec and a second document, a project document, and a question
+// of each kind the column draws.
+// ---------------------------------------------------------------------------
+
+export const OPEN_PROJECT = "OPEN";
+/** The heading of each document, which neither of the other two holds. */
+export const OPEN_SPEC_HEADING = "Spec heading only here";
+export const OPEN_TALK_HEADING = "Talk heading only here";
+export const OPEN_RUNBOOK_HEADING = "Runbook heading";
+/** The decision blocks, each id once across the three documents, since `indexedRow` matches a
+ *  row by its block id alone. */
+export const OPEN_TALK_DECISION = "open-talk-decision";
+export const OPEN_BEFORE_HEADING = "open-talk-before-heading";
+const OPEN_SPEC_DECISION = "open-spec-decision";
+const OPEN_RUNBOOK_DECISION = "open-runbook-decision";
+const OPEN_ANSWERED = "open-talk-answered";
+const ANSWERED_OPTIONS = ["The host", "The guest"] as const;
+
+/** A decision block as this file's documents write one, with the blank line after it. */
+function decisionBlock(id: string, question: string, options: readonly string[]): string[] {
+  return [
+    `:::ask{#${id} urgency="med" multiple="false" state="open"}`,
+    question,
+    "",
+    ...options.map((option) => `- ${option}`),
+    ":::",
+    "",
+  ];
+}
+
+const openSpec = [
+  `# ${OPEN_SPEC_HEADING}`,
+  "",
+  "The spec says what the talk covers.",
+  "",
+  ...decisionBlock(OPEN_SPEC_DECISION, "Which part of the talk comes first?", [
+    "The demo",
+    "The slides",
+  ]),
+].join("\n");
+
+/** `talk.md`: a decision block above any heading, then the heading, the paragraph question 4
+ *  quotes, and two decision blocks under it. */
+const talkContent = [
+  "The talk runs for forty minutes.",
+  "",
+  ...decisionBlock(OPEN_BEFORE_HEADING, "Does the talk need a rehearsal?", ["Yes", "No"]),
+  `# ${OPEN_TALK_HEADING}`,
+  "",
+  "The talk paragraph that a quote points at.",
+  "",
+  ...decisionBlock(OPEN_TALK_DECISION, "Which room holds the talk?", [
+    "The small room",
+    "The hall",
+  ]),
+  ...decisionBlock(OPEN_ANSWERED, "Who closes the talk?", ANSWERED_OPTIONS),
+].join("\n");
+
+const runbookContent = [
+  `# ${OPEN_RUNBOOK_HEADING}`,
+  "",
+  "The runbook says how the room is set up.",
+  "",
+  ...decisionBlock(OPEN_RUNBOOK_DECISION, "Which step of the set-up runs first?", [
+    "The lights",
+    "The sound",
+  ]),
+].join("\n");
+
+/** The questions of `seedOpenPage`, each by the Inbox row it is listed as and numbered as the
+ *  row walks them, and what their addresses are built from. */
+export interface OpenPageSeed {
+  /** 1: a decision block under the heading of the issue's second document. */
+  talkDecision: string;
+  /** 2: a decision block under the heading of the issue's spec. */
+  specDecision: string;
+  /** 3: the request to approve the second document, and the version it names. */
+  approval: string;
+  approvalVersion: number;
+  /** 4: a question on a quote of the second document, and the block the quote sits in. */
+  quoted: string;
+  quotedBlockId: string;
+  /** 5: a question in no document. */
+  plain: string;
+  /** 6: a decision block under the heading of a project document, handed to alice. */
+  runbookDecision: string;
+  /** 7: a decision block of the second document that no heading stands above. */
+  beforeHeading: string;
+  /** 8: the answered decision block under the second document's heading, by its ask id, and the
+   *  Reply thread row its answer and the session's reply make (`reply:<ask id>`). */
+  answeredAskId: string;
+  answeredThread: string;
+  /** The block id of each document's heading. */
+  headings: { runbook: string; spec: string; talk: string };
+  issueKey: string;
+  runbookSlug: string;
+  talkSlug: string;
+}
+
+/**
+ * One question of each kind an issue holds, a project document's decision block, and the Reply
+ * thread of an answered decision block, all waiting on alice, who makes the project and the issue
+ * and so is their assignee. The order is the point: answering question 8 writes its block's state
+ * and saves a new version of `talk.md`, and a request to approve keeps the person's turn only
+ * while no write has moved the document past the version it names, so every write to `talk.md`
+ * comes before question 3.
+ */
+export async function seedOpenPage(): Promise<OpenPageSeed> {
+  await createProject({ key: OPEN_PROJECT, name: "Open page" });
+  const issue = await createIssue({ project: OPEN_PROJECT, spec: openSpec, title: "Talk week" });
+  const { artifact: talk } = await createIssueArtifact(issue.key, {
+    content: talkContent,
+    name: "talk.md",
+  });
+  const { artifact: runbook } = await createProjectDocument(OPEN_PROJECT, {
+    content: runbookContent,
+    name: "runbook.md",
+  });
+  const [talkDecision, specDecision, runbookDecision, beforeHeading, answered] = await Promise.all([
+    indexedRow((row) => row.block_id === OPEN_TALK_DECISION),
+    indexedRow((row) => row.block_id === OPEN_SPEC_DECISION),
+    indexedRow((row) => row.block_id === OPEN_RUNBOOK_DECISION),
+    indexedRow((row) => row.block_id === OPEN_BEFORE_HEADING),
+    indexedRow((row) => row.block_id === OPEN_ANSWERED),
+  ]);
+
+  // Question 8's answer writes `state="answered"` into its block in the answer's own
+  // transaction, which the live text shows.
+  await answerAsk(
+    answered.id,
+    { expected_edited_at: null, selected: [ANSWERED_OPTIONS[0]] },
+    { login: "alice" }
+  );
+  await expect
+    .poll(async () => {
+      const { markdown } = await getArtifactText(talk.id);
+      return markdown.split("\n").find((line) => line.includes(`#${OPEN_ANSWERED}`)) ?? "";
+    }, INDEX_PROBE)
+    .toContain('state="answered"');
+
+  const quoted = await createAsk(
+    issue.key,
+    {
+      anchor: { artifact: talk.slug, quote: "a quote points at" },
+      question: "Does every talk quote its sources?",
+    },
+    session
+  );
+  const quotedBlockId = quoted.anchor?.block_id;
+  if (quotedBlockId === undefined || quotedBlockId === null) {
+    throw new Error("question 4's quote names no block");
+  }
+  const plain = await createAsk(
+    issue.key,
+    { options: [{ label: "Yes" }, { label: "No" }], question: "Should the talk be recorded?" },
+    session
+  );
+  await handAskOn(runbookDecision.id, "alice");
+
+  // The session's reply in question 8's thread, after alice's answer: her Reply thread.
+  await createComment(
+    issue.key,
+    { ask_id: answered.id, body: "The host closes it, then." },
+    session
+  );
+  await expect
+    .poll(
+      async () => ((await listMyReplies()).rows ?? []).some((row) => row.thread_id === answered.id),
+      { ...INDEX_PROBE, message: "item 8 is alice's Reply thread" }
+    )
+    .toBe(true);
+
+  const approval = withOpenedAsk(
+    await requestApproval(talk.id, { summary: "The talk as it stands." }, session)
+  );
+
+  const [talkHeading, specHeading, runbookHeading] = await Promise.all([
+    blockId(talk.id, `# ${OPEN_TALK_HEADING}`),
+    blockId(issue.primary_artifact_id, `# ${OPEN_SPEC_HEADING}`),
+    blockId(runbook.id, `# ${OPEN_RUNBOOK_HEADING}`),
+  ]);
+  return {
+    answeredAskId: answered.id,
+    answeredThread: replyRowId(answered.id),
+    approval: approval.ask.id,
+    approvalVersion: approval.version,
+    beforeHeading: beforeHeading.id,
+    headings: { runbook: runbookHeading, spec: specHeading, talk: talkHeading },
+    issueKey: issue.key,
+    plain: plain.id,
+    quoted: quoted.id,
+    quotedBlockId,
+    runbookDecision: runbookDecision.id,
+    runbookSlug: runbook.slug,
+    specDecision: specDecision.id,
+    talkDecision: talkDecision.id,
+    talkSlug: talk.slug,
   };
 }
 

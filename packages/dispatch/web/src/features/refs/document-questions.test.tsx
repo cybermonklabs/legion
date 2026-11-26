@@ -98,7 +98,7 @@ function linked(container: HTMLElement): string[] {
   );
 }
 
-const documentText: TextSource = { id: "doc-1", kind: "artifact" };
+const documentText: TextSource = { id: "doc-1", issue: "CORE-1", kind: "artifact" };
 
 test("a `#id` naming a copied question block names the ask it was copied from", async () => {
   // The server's map: `q2` is declared by this document as a copy, and the ask it carries is
@@ -149,7 +149,7 @@ test("a comment's `#id` resolves against the document it is anchored to, not its
       { ask: "ask-design", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-design" },
     ],
   });
-  const source: TextSource = { id: "comment-1", kind: "comment" };
+  const source: TextSource = { id: "comment-1", issue: "CORE-1", kind: "comment" };
   const view = render(
     withQueries(<MarkdownBody markdown="Holding on #q2 for now." source={source} />)
   );
@@ -210,7 +210,7 @@ test("a source whose text belongs to no document leaves its `#id` as plain text"
     new ApiError(404, { code: "NOT_FOUND", error: "the text of message m belongs to no document" })
   );
   restore = () => getReferenceQuestions.mockRestore();
-  const source: TextSource = { id: "message-1", kind: "message" };
+  const source: TextSource = { id: "message-1", issue: "CORE-1", kind: "message" };
   const view = render(
     withQueries(<MarkdownBody markdown="See #q2 for the rollout." source={source} />)
   );

@@ -1,9 +1,14 @@
 package approval_test
 
 import (
+	"context"
 	"crypto/ecdsa"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // privProject is the private project of the page's project tests: ada owns it and its access
@@ -22,8 +28,8 @@ const privProject = "PRIV"
 // projectRig is newRig with a Dispatch stand-in holding PRIV, served to the request machine and
 // the enrollment, and two secrets of PRIV beside the rig's four: PRIV_SECRET, ada's and human
 // tier, which ada approves; PRIV_SHARED, shared and human tier, which anyone signed in may approve
-// by owner and tier.
-func projectRig(t *testing.T) (*rig, *projectaccesstest.Server) {
+// by owner and tier. profiles, each one entry's JSON, are the rig's profiles file, none for none.
+func projectRig(t *testing.T, profiles ...string) (*rig, *projectaccesstest.Server) {
 	t.Helper()
 	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
 		privProject: {Visibility: "private", Owner: ada, Listed: []string{ben}},
@@ -36,6 +42,9 @@ func projectRig(t *testing.T) (*rig, *projectaccesstest.Server) {
 	r := newRig(t, func(s *rigSetup) {
 		s.secrets = []secrets.LocalSecret{tagged("PRIV_SECRET", ada), tagged("PRIV_SHARED", policy.OwnerShared)}
 		s.projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+		if len(profiles) > 0 {
+			s.profiles = policytest.KindsFile(profiles...)
+		}
 	})
 	return r, dispatch
 }
@@ -65,7 +74,7 @@ func (r *rig) requestSignedElsewhere(t *testing.T, enrollmentID string, key *ecd
 	}
 	current := r.machine.Audience
 	r.machine.Audience = elsewhere
-	created, err := r.machine.Create(t.Context(), enrollmentID, compact, "", nil)
+	created, err := r.machine.Create(t.Context(), enrollmentID, compact, "")
 	r.machine.Audience = current
 	if err != nil || created.RecordID == nil || created.State != "pending" {
 		t.Fatalf("Create under %s = %+v, %v; want a pending request on a record", elsewhere, created, err)
@@ -95,15 +104,46 @@ func TestTheApprovalPageShowsAPrivateSecretsProject(t *testing.T) {
 	}
 }
 
-// TestTheApprovalPageOfAnUntaggedRequestIsUnchanged: a request for a secret of no project, from a
-// session naming none, prints no project row, and its page asks Dispatch nothing, though the
-// broker holds a client of it. The enrollment itself asks Dispatch the person's member kind
-// (enroll.Service.checkProjects), so the count is read once the request exists.
-func TestTheApprovalPageOfAnUntaggedRequestIsUnchanged(t *testing.T) {
+// TestAPrivateProjectsProfileIsShownAndHiddenAsItsSource: PRIV_SHARED_READ, a profile of
+// PRIV_SHARED under a name of its own, belongs to PRIV as its source does. The page of a request
+// for it, from a session naming PRIV, says its project is PRIV, private and named by the session,
+// as TestTheApprovalPageShowsAPrivateSecretsProject's page says of PRIV_SECRET; and carol, outside
+// PRIV, who may approve the profile by owner and tier, gets the 404 an id no record has, as for
+// PRIV_SHARED (TestAnOutsiderSeesNoPrivateRequest).
+func TestAPrivateProjectsProfileIsShownAndHiddenAsItsSource(t *testing.T) {
+	r, _ := projectRig(t, `{"name": "PRIV_SHARED_READ", "source": "PRIV_SHARED", "proxy": "example"}`)
+	enrollmentID, key := r.benSession(t, "ben-profile-box")
+	r.nameProjects(t, enrollmentID, privProject)
+	profiled := r.request(t, enrollmentID, key, "rotate the shared key", nil, "", "PRIV_SHARED_READ")
+	wikiSession, wikiKey := r.benSession(t, "ben-profile-wiki-box")
+	visible := r.request(t, wikiSession, wikiKey, "rotate the wiki key", nil, "", "SHARED_SECRET")
+
+	owner := r.browser(t)
+	owner.SignIn(t, profiled.recordID, person(ada))
+	if got, want := pageText(t, owner.Page(t, profiled.recordID).Body), "Project of PRIV_SHARED_READ PRIV, private, which the session names"; !strings.Contains(got, want) {
+		t.Errorf("the page of %s does not say %q:\n%s", profiled.recordID, want, got)
+	}
+
+	outsider := r.browser(t)
+	outsider.SignIn(t, visible.recordID, person(carol))
+	if res := outsider.Get(t, "/approve/"+profiled.recordID); res.Status != http.StatusNotFound || !strings.Contains(pageText(t, res.Body), "No such request") {
+		t.Errorf("carol's page of %s = %d:\n%s\nwant the 404 an id no record has", profiled.recordID, res.Status, pageText(t, res.Body))
+	}
+}
+
+// TestTheApprovalPageOfAnUntaggedRequestAsksOnlyThePersonsMemberKind: a request for a secret of no
+// project, from a session naming none, prints no project row, and its page asks Dispatch one thing,
+// though the broker holds a client of it: what kind of member the signed-in person is. The page
+// shows a person Dispatch calls a restricted member no secret request at all (Page.ServeRecord),
+// and the list of the other secret requests waiting on the person asks the same
+// (requests.Machine.PendingForApprover), which the client answers from that one read. It asks
+// nothing of a project, a tag or a session. The enrollment itself asks Dispatch the person's member
+// kind (enroll.Service.checkProjects), so the count is read once the request exists.
+func TestTheApprovalPageOfAnUntaggedRequestAsksOnlyThePersonsMemberKind(t *testing.T) {
 	r, dispatch := projectRig(t)
 	enrollmentID, key := r.benSession(t, "ben-plain-box")
 	p := r.request(t, enrollmentID, key, "deploy the billing service", nil, "", "TEST_SECRET")
-	before := dispatch.Calls()
+	before, projectsBefore := dispatch.Calls(), dispatch.ProjectCalls()
 
 	b := r.browser(t)
 	b.SignIn(t, p.recordID, person(ada))
@@ -111,8 +151,11 @@ func TestTheApprovalPageOfAnUntaggedRequestIsUnchanged(t *testing.T) {
 	if strings.Contains(got, "Project") {
 		t.Errorf("the page of an untagged request prints a project row:\n%s", got)
 	}
-	if calls := dispatch.Calls() - before; calls != 0 {
-		t.Errorf("the page of an untagged request asked Dispatch %d times; want none", calls)
+	if calls := dispatch.Calls() - before; calls != 1 {
+		t.Errorf("the page of an untagged request asked Dispatch %d times; want once, the signed-in person's member kind", calls)
+	}
+	if calls := dispatch.ProjectCalls() - projectsBefore; calls != 0 {
+		t.Errorf("the page of an untagged request asked Dispatch's project route %d times; want none", calls)
 	}
 }
 
@@ -233,12 +276,13 @@ const unansweredNote = "the secrets broker could not ask Dispatch whether you ma
 // TestADispatchOutageShowsOnlyItsRequestAsUnavailable: nothing is tagged, and ben's request for
 // the shared secret names an issue, INFRA-12, beside one that names none. Both are listed for ben,
 // the person the session acts for (requests.responsiblePerson), and his page prints both while
-// Dispatch answers. Dispatch then goes down and he approves all he was shown: the request naming
-// no issue is granted, and the one naming INFRA-12 is decided by nobody and stays pending. The
-// page he lands on answers 200 with each outcome, the INFRA-12 one saying only that it is
-// unavailable; the INFRA-12 request's own page answers 503 showing that one request as
-// unavailable and nothing of it, its reason included. Once Dispatch answers it is shown and
-// decidable again.
+// Dispatch answers. Dispatch then cannot answer for a project, its person route still answering,
+// and he approves all he was shown: the request naming no issue is granted, and the one naming
+// INFRA-12 is decided by nobody and stays pending. The page he lands on answers 200 with each
+// outcome, the INFRA-12 one saying only that it is unavailable; the INFRA-12 request's own page
+// answers 503 showing that one request as unavailable and nothing of it, its reason included.
+// Once Dispatch answers it is shown and decidable again. (While the person route fails too, an
+// approval of either is refused, since it asks what kind of member the session's person is.)
 func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
 	access := &projectaccesstest.Swappable{}
@@ -256,7 +300,7 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 		t.Fatalf("ben's page offers %q; want both requests shown while Dispatch answers", label)
 	}
 	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
-	down.SetDown(true)
+	down.SetProjectsDown(true)
 	access.Serve(down)
 
 	res := b.FromPage(t, "/approve", all)
@@ -291,5 +335,263 @@ func TestADispatchOutageShowsOnlyItsRequestAsUnavailable(t *testing.T) {
 	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil))
 	if back := b.Page(t, keyed.recordID); back.Status != http.StatusOK || decisionForm(t, back.Body, keyed.recordID) == nil {
 		t.Fatalf("the INFRA-12 request's page once Dispatch answers = %d with no button; want it decidable again:\n%s", back.Status, pageText(t, back.Body))
+	}
+}
+
+// TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest: ben's page prints his
+// request for PRIV_SHARED, from a session naming PRIV, beside his request for the untagged
+// SHARED_SECRET while Dispatch answers. Dispatch's project routes then go down, its person route
+// still answering ben a full member, and he approves all he was shown. The profile check of the
+// approval (approval.Page.profilesMoved) reads each record's names and profiles without asking
+// Dispatch, so the POST answers 303: the untagged request is granted, and the PRIV_SHARED one is
+// decided by nobody and stays pending, its outcome saying only that it is unavailable, as
+// TestADispatchOutageShowsOnlyItsRequestAsUnavailable's request naming an issue does. An outage
+// is no error of the broker's, so no line of the POST is an error line. An outage of the person
+// route too leaves even the untagged request pending, since an approval asks what kind of member
+// the session's person is (TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable).
+func TestADispatchOutageLeavesATaggedRequestUnavailableAndDecidesTheRest(t *testing.T) {
+	capture := &logtest.Recorder{}
+	logtest.SetDefault(t, capture)
+	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		privProject: {Visibility: "private", Owner: ada, Listed: []string{ben}},
+	}, nil)
+	access := &projectaccesstest.Swappable{}
+	access.Serve(up)
+	r := newRig(t, func(s *rigSetup) {
+		shared := policytest.Secret("PRIV_SHARED", policy.OwnerShared, policy.TierHuman, "priv-shared-not-a-secret")
+		shared.Tags[policy.TagProject] = privProject
+		s.secrets = []secrets.LocalSecret{shared}
+		s.projects = access
+	})
+	plainSession, plainKey := r.benSession(t, "ben-plain-box")
+	plain := r.request(t, plainSession, plainKey, "rotate the wiki key", nil, "", "SHARED_SECRET")
+	taggedSession, taggedKey := r.benSession(t, "ben-tagged-box")
+	r.nameProjects(t, taggedSession, privProject)
+	tagged := r.request(t, taggedSession, taggedKey, "rotate the shared key", nil, "", "PRIV_SHARED")
+
+	b := r.browser(t)
+	b.SignIn(t, plain.recordID, person(ben))
+	all, label := approveAll(t, b.Page(t, plain.recordID).Body)
+	if label != "Approve all 2 shown" {
+		t.Fatalf("ben's page offers %q; want both requests shown while Dispatch answers", label)
+	}
+	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	down.SetProjectsDown(true)
+	access.Serve(down)
+	logged := len(capture.Records())
+
+	res := b.FromPage(t, "/approve", all)
+	// Errorf, not Fatalf: a POST that answers otherwise is still checked for its error line below,
+	// and the page it lands on is read only when it answered the redirect.
+	if res.Status != http.StatusSeeOther {
+		t.Errorf("approve all while Dispatch is down = %d, want 303:\n%s", res.Status, pageText(t, res.Body))
+	}
+	if state := r.state(t, plain.recordID); state != "approved" {
+		t.Errorf("the untagged request = %s, want approved: Dispatch is asked nothing for it", state)
+	}
+	// Read from its rows: the rig's requirePending reads the record through ReadRecord, which asks
+	// the down Dispatch for PRIV_SHARED's project.
+	if pending, grants := r.count(t, `select count(*) from requests where record_id = $1 and state = 'pending'`, tagged.recordID), r.grants(t, tagged.recordID); pending != 1 || grants != 0 {
+		t.Errorf("the PRIV_SHARED request has %d pending request rows and %d grants; want it still pending with none", pending, grants)
+	}
+	if res.Status == http.StatusSeeOther {
+		landed := b.Get(t, res.Header.Get("Location"))
+		if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, tagged.recordID+": unavailable: "+unansweredNote) {
+			t.Errorf("the page approve all lands on = %d; want 200 with the PRIV_SHARED request's outcome %q:\n%s", landed.Status, unansweredNote, text)
+		}
+	}
+	if down.Calls() == 0 {
+		t.Fatal("the down Dispatch was never asked: the test is blind")
+	}
+	requireNoErrorLine(t, "approve all while Dispatch is down", capture.Records()[logged:])
+}
+
+// TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable: ben's page prints his request, and
+// then Dispatch stops answering altogether, its person route included. His approval is refused,
+// since the broker cannot learn whether ben is a restricted member, and the request stays
+// pending; the address it lands on carries the refusal's code, error. The page there answers 503:
+// it cannot learn whether he may decide secret requests either, so it shows him none and says to
+// try again shortly. The broker writes no ERROR line: Dispatch not answering is no fault of the
+// page's. Once Dispatch answers, the same address says the request is still pending because the
+// broker could not decide it.
+func TestAnApprovalWhosePersonDispatchCannotReadIsUnavailable(t *testing.T) {
+	access := &projectaccesstest.Swappable{}
+	up := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	access.Serve(up)
+	r := newRig(t, func(s *rigSetup) { s.projects = access })
+	session, key := r.benSession(t, "ben-member-kind-box")
+	req := r.request(t, session, key, "rotate the wiki key", nil, "", "SHARED_SECRET")
+	b := r.browser(t)
+	b.SignIn(t, req.recordID, person(ben))
+	form := decisionForm(t, b.Page(t, req.recordID).Body, req.recordID)
+	if form == nil {
+		t.Fatalf("ben's page for %s offers no decision while Dispatch answers", req.recordID)
+	}
+	down := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	down.SetDown(true)
+	access.Serve(down)
+	var records logtest.Recorder
+	logtest.SetDefault(t, &records)
+
+	res := b.FromPage(t, "/approve", decision(form, "approve"))
+	to := res.Header.Get("Location")
+	if want := "&refused=" + req.recordID + ":error"; res.Status != http.StatusSeeOther || !strings.Contains(to, want) {
+		t.Fatalf("approve while Dispatch is down = %d to %q, want 303 carrying %q:\n%s", res.Status, to, want, res.Body)
+	}
+	r.requirePending(t, req.recordID)
+	landed := b.Get(t, to)
+	if text := pageText(t, landed.Body); landed.Status != http.StatusServiceUnavailable || !strings.Contains(text, kindUnreadNote) || strings.Contains(text, "SHARED_SECRET") {
+		t.Fatalf("the page the approval lands on = %d; want 503 saying %q, and nothing of the request:\n%s", landed.Status, kindUnreadNote, text)
+	}
+	for _, rec := range records.Records() {
+		if rec.Level >= slog.LevelError {
+			t.Errorf("the approval wrote the ERROR line %q; want none: Dispatch not answering is no fault of the page's", rec.Message)
+		}
+	}
+	if down.Calls() == 0 {
+		t.Fatal("the down Dispatch was never asked: the test is blind")
+	}
+
+	access.Serve(up)
+	const couldNotDecide = "SHARED_SECRET: still pending; it was not decided: the secrets broker could not decide it. Try again shortly."
+	if back := b.Get(t, to); back.Status != http.StatusOK || !strings.Contains(pageText(t, back.Body), couldNotDecide) {
+		t.Fatalf("the address the approval landed on, once Dispatch answers = %d; want 200 saying %q:\n%s", back.Status, couldNotDecide, pageText(t, back.Body))
+	}
+}
+
+// stalledKinds is a projectaccess.Access whose member-kind reads, once stall is set, Dispatch never
+// answers: each waits until its caller's context ends, and records how long that context had left.
+// A read whose context has no deadline would wait as long as its caller, so it is answered at once
+// with an error and counted as unbounded, which the row reads as the fault. Until stall is set,
+// and for every other question, it answers as answers does.
+type stalledKinds struct {
+	answers   projectaccess.Access
+	stall     atomic.Bool
+	mu        sync.Mutex
+	unbounded int
+	bounds    []time.Duration
+}
+
+func (s *stalledKinds) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	return s.answers.Access(ctx, project, person)
+}
+
+func (s *stalledKinds) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return s.answers.States(ctx, projects)
+}
+
+func (s *stalledKinds) MemberKind(ctx context.Context, person string) (string, error) {
+	if !s.stall.Load() {
+		return s.answers.MemberKind(ctx, person)
+	}
+	deadline, bounded := ctx.Deadline()
+	s.mu.Lock()
+	if !bounded {
+		s.unbounded++
+		s.mu.Unlock()
+		return "", errors.New("stalledKinds: a member-kind read with no deadline")
+	}
+	s.bounds = append(s.bounds, time.Until(deadline))
+	s.mu.Unlock()
+	<-ctx.Done()
+	return "", ctx.Err()
+}
+
+// TestTheApprovalPageReadsTheMemberKindWithinItsBound: the page reads the signed-in person's
+// member kind before it reads any record, and one call to Dispatch may take longer than a person
+// waits on a page (projectaccess's requestTimeout), so that read has a bound of its own,
+// projectaccess.RelayedReadBound. ben's page prints his request while Dispatch answers; once
+// Dispatch stops answering his member-kind read, the page answers 503 saying it could not ask,
+// and every member-kind read it made had no more than that bound to run.
+func TestTheApprovalPageReadsTheMemberKindWithinItsBound(t *testing.T) {
+	stand := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	stalled := &stalledKinds{answers: projectaccess.New(stand.URL, stand.Account, nil)}
+	r := newRig(t, func(s *rigSetup) { s.projects = stalled })
+	session, key := r.benSession(t, "ben-stalled-box")
+	req := r.request(t, session, key, "rotate the wiki key", nil, "", "SHARED_SECRET")
+	b := r.browser(t)
+	b.SignIn(t, req.recordID, person(ben))
+	b.Page(t, req.recordID)
+	stalled.stall.Store(true)
+
+	got := b.Get(t, "/approve/"+req.recordID)
+	if text := pageText(t, got.Body); got.Status != http.StatusServiceUnavailable || !strings.Contains(text, kindUnreadNote) {
+		t.Fatalf("ben's page while Dispatch does not answer = %d; want 503 saying %q:\n%s", got.Status, kindUnreadNote, text)
+	}
+	stalled.mu.Lock()
+	defer stalled.mu.Unlock()
+	if stalled.unbounded != 0 || len(stalled.bounds) == 0 {
+		t.Fatalf("the page asked %d member-kind reads with no deadline and %d with one; want at least one, each bounded", stalled.unbounded, len(stalled.bounds))
+	}
+	for _, bound := range stalled.bounds {
+		if bound > projectaccess.RelayedReadBound {
+			t.Fatalf("the page read a member kind with %s to run; want no more than %s", bound, projectaccess.RelayedReadBound)
+		}
+	}
+}
+
+// The page's own words for a person it shows no secret request: one Dispatch calls a restricted
+// member, and one whose member kind it cannot learn.
+const (
+	restrictedNote = "A person Dispatch calls a restricted member is no approver of a secret, and Dispatch calls you one, so this page shows you no secret request."
+	kindUnreadNote = "The secrets broker could not ask Dispatch whether you may decide secret requests, so this page shows you none, nor what became of a decision you made. Try again shortly."
+)
+
+// TestTheApprovalPageShowsARestrictedMemberNothing: the page signs in only the deployment's
+// domain, and does not rest on that alone: a person Dispatch calls a restricted member decides no
+// secret request (requests.ErrRestrictedDecider), so the page shows them none, and refuses their
+// decision saying why. Here Dispatch held no row for ada when her page printed the request for
+// TEST_SECRET, her own secret, and calls her a restricted member before she approves it. Her
+// approval is refused, the request stays pending, and the address it lands on carries the
+// refusal's code, restricted. That page then answers her 403 NOT_APPROVER saying Dispatch calls her
+// a restricted member, and prints nothing of the request, nor offers a decision; the page of an id
+// no record has answers her the same, since it reads no record before it refuses. While Dispatch
+// answers a kind this broker does not know, the page answers 503, saying so, and prints nothing of
+// the request either. The control: once Dispatch holds no row for her again, the same address
+// prints the request, its outcome line saying why it is still pending, and its decision.
+func TestTheApprovalPageShowsARestrictedMemberNothing(t *testing.T) {
+	access := &projectaccesstest.Swappable{}
+	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{}, nil)
+	access.Serve(dispatch)
+	r := newRig(t, func(s *rigSetup) { s.projects = access })
+	session, key := r.benSession(t, "ben-restricted-box")
+	p := r.request(t, session, key, "deploy the billing service", nil, "", "TEST_SECRET")
+	b := r.browser(t)
+	b.SignIn(t, p.recordID, person(ada))
+	form := decisionForm(t, b.Page(t, p.recordID).Body, p.recordID)
+	if form == nil {
+		t.Fatalf("%s's page for %s offers no decision while Dispatch holds no row for her", ada, p.recordID)
+	}
+	dispatch.SetMemberKind(ada, projectaccess.MemberRestricted)
+	access.Serve(dispatch)
+
+	res := b.FromPage(t, "/approve", decision(form, "approve"))
+	to := res.Header.Get("Location")
+	if want := "&refused=" + p.recordID + ":restricted"; res.Status != http.StatusSeeOther || !strings.Contains(to, want) {
+		t.Fatalf("%s's Approve as a restricted member = %d to %q; want 303 carrying %q", ada, res.Status, to, want)
+	}
+	r.requirePending(t, p.recordID)
+	shows := func(t *testing.T, what, path string, status int, note string) {
+		t.Helper()
+		got := b.Get(t, path)
+		text := pageText(t, got.Body)
+		if got.Status != status || !strings.Contains(text, note) || strings.Contains(text, "TEST_SECRET") || decisionForm(t, got.Body, p.recordID) != nil {
+			t.Fatalf("%s = %d; want %d saying %q, and nothing of the request:\n%s", what, got.Status, status, note, text)
+		}
+	}
+	shows(t, "the page her approval lands on", to, http.StatusForbidden, restrictedNote)
+	shows(t, "the request's page", "/approve/"+p.recordID, http.StatusForbidden, restrictedNote)
+	shows(t, "the page of an id no record has", "/approve/"+strings.Repeat("a", 64), http.StatusForbidden, restrictedNote)
+
+	dispatch.SetMemberKind(ada, "guest-of-honour")
+	access.Serve(dispatch)
+	shows(t, "the request's page while her kind cannot be read", "/approve/"+p.recordID, http.StatusServiceUnavailable, kindUnreadNote)
+
+	dispatch.SetMemberKind(ada, projectaccess.MemberNone)
+	access.Serve(dispatch)
+	landed := b.Get(t, to)
+	const why = "TEST_SECRET: still pending; it was not decided: Dispatch called you a restricted member, who decides no secret request."
+	if text := pageText(t, landed.Body); landed.Status != http.StatusOK || !strings.Contains(text, why) || decisionForm(t, landed.Body, p.recordID) == nil {
+		t.Fatalf("the address her approval landed on, once Dispatch holds no row for her = %d; want 200 saying %q, and the decision:\n%s", landed.Status, why, text)
 	}
 }

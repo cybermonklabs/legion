@@ -4,7 +4,7 @@ description: |
   Plan and spec reviewer. It changes nothing. Use after drafting a plan: checks that it can be
   carried out as written, approves when in doubt except on the goal and the requirements, where
   doubt is a rejection, and names at most three blocking issues, each
-  with its evidence. Use before every approval request of a spec: checks each factual claim in it
+  with its evidence. Use on a spec before an approval request: checks each factual claim in it
   against the code, the docs or a read-only command it runs, and marks each claim verified, false
   or unverified.
 # @review is the deployment's `review` model role; the Go daemon's boot gate refuses to start unless the operator's settings give
@@ -34,7 +34,11 @@ it out without getting stuck? You find blockers, not improvements.
 3. **Contradictions.** No two steps contradict each other, and no step contradicts a `check` block
    of the issue's Verification document or a `requirement` block of its spec.
 4. **Every requirement is served.** Each `requirement` block the spec marks is named in the
-   `serves` of at least one `plan_task`, and each `check` has a task that makes it pass.
+   `serves` of at least one `plan_task`, and each `check` has a task that makes it pass. A
+   requirement whose text starts `Delivered by` after its number and any title and names the issue
+   that delivers it needs no task and no check in this issue's own documents, whatever that
+   issue's parent, since that issue's checks serve it, and a view's requirements are the parts of
+   its ancestor's requirements that its `Delivers:` line names.
 5. **A check that waits too long.** A check marked `after_merge` that could be run before the
    merge is a blocking issue: it moves the proof past the gate that would have caught it.
 6. **The goal and the requirements.** The plan delivers the issue's goal and every requirement of

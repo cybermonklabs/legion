@@ -5,6 +5,14 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./device-login": {
+      "types": "./src/device-login.ts",
+      "bun": "./src/device-login.ts"
+    },
+    "./device-login-file": {
+      "types": "./src/device-login-file.ts",
+      "bun": "./src/device-login-file.ts"
+    },
     "./dpop": {
       "types": "./src/dpop.ts",
       "bun": "./src/dpop.ts"
@@ -45,6 +53,10 @@
       "types": "./src/source.ts",
       "bun": "./src/source.ts"
     },
+    "./test/device-logins": {
+      "types": "./test/device-logins.ts",
+      "bun": "./test/device-logins.ts"
+    },
     "./test/sign-ins": {
       "types": "./test/sign-ins.ts",
       "bun": "./test/sign-ins.ts"
@@ -63,7 +75,7 @@
     }
   },
   "scripts": {
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ test/ scripts/"
   },

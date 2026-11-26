@@ -4,7 +4,6 @@
 #
 #   e2e/visual-run.sh                      # compare every baseline
 #   e2e/visual-run.sh --update-snapshots   # take them again
-#   DISPATCH_E2E_VISUAL_ORDER=reverse e2e/visual-run.sh   # compare them with the rows reversed
 #
 # Every argument it is given is passed on to Playwright, so the update path is the same command
 # with one more flag: a baseline a person takes and a baseline CI compares come out of the same
@@ -21,12 +20,10 @@
 #      moved was meant to and a second run gave the same bytes (else the page is not settled),
 #      and say why in the commit message.
 #
-# WHY A SECOND ORDER. One seed serves the whole run, so a page that writes state as it draws
-# changes what every row after it compares. The review seed writes each such mark before any row
-# runs (`seedReviewRoutes`, e2e/review-seed.ts), and CI's visual job runs the rows a second time
-# with `DISPATCH_E2E_VISUAL_ORDER=reverse` (e2e/visual-order.ts): the phone rows first, and each
-# project's rows last first. A row that reads another row's write then fails one of the two runs
-# by its own name. The variable reaches the container through the `DISPATCH_E2E_` sweep below.
+# ONE SEED, NO WRITES. One seed serves the whole run, so a page that writes state as it draws
+# would change what every row after it compares. The review seed writes each read mark a page of
+# the shot set writes before any row runs (`seedReviewRoutes`, e2e/review-seed.ts), and every
+# other write a row's page tries is stopped and fails that row by name (e2e/visual-guard.ts).
 #
 # WHY THE SEED RUNS ON THE HOST AND THE SHOTS IN THE CONTAINER. `e2e/psql.ts` spawns the `psql`
 # binary, and both `resetDatabase()` (e2e/seed.ts) and the delivery fixtures
@@ -106,7 +103,10 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-mkfifo "$exports_fifo"
+# The fifo carries the stack's variables, DATABASE_URL among them with any password it holds, so it
+# is made for this user alone: under a umask of 022 a plain mkfifo would make it prw-r--r--, and any
+# user of the machine could open it and read those lines.
+mkfifo -m 600 "$exports_fifo"
 bun e2e/harness-up.ts > "$exports_fifo" &
 harness=$!
 # Opened for the rest of the script, not for the loop alone: the harness writes nothing on
@@ -183,22 +183,17 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
   --project=visual --project=visual-phone "$@" || status=$?
 
-# A failed run says where a failed row's shots go, and what a failure in reverse order alone
-# means, each as what holds if a row ran and failed: the script cannot tell that a row ran.
+# A failed run says where a failed row's shots go, as what holds if a row ran and failed: the
+# script cannot tell that a row ran.
 # Playwright refuses an argument it cannot read (`-uG`, or an option it does not know) before it
 # runs a row, and exits 1 as a failed row does, and a run that clears its results directory may
 # still run no row (a `--grep` that matches none), so neither the status nor the directory says
 # so; Playwright's own output above the lines does.
 # Playwright writes a failed row's `-actual.png`, `-expected.png` and `-diff.png` under the run's
 # output directory: `e2e/test-results` (e2e/playwright.config.ts's `outputDir`) unless `--output`
-# names another, as CI's reverse step names `e2e/test-results-reverse`. Both are relative to this
-# package, where the run works, so the line names them from the repository root, as a CI log's
-# reader and the job's upload do (`packages/dispatch/e2e/test-results-reverse`); an absolute
-# `--output` is printed as given. A row that fails in the reverse order and passes in the normal
-# one most likely reads a mark another row writes as it draws (a run under load can also draw a
-# frame mid-change, so run the row again before acting). Its fix is that mark in the seed
-# (`markWhatTheShotPagesRead`, e2e/review-seed.ts), not a new baseline: a baseline taken from the
-# reverse run's shot holds the state the normal order never draws, and fails that run instead.
+# names another. It is relative to this package, where the run works, so the line names it from
+# the repository root, as a CI log's reader and the job's upload do
+# (`packages/dispatch/e2e/test-results`); an absolute `--output` is printed as given.
 # The loop reads the arguments as Playwright's `test` command does: `--output=DIR` and `--output
 # DIR`, the last one wins, an empty value names nothing, arguments after `--` are no options, and
 # the word after an option that takes a value is that value, whatever it looks like - so
@@ -262,9 +257,6 @@ if [ "$status" -ne 0 ]; then
     *) output=packages/dispatch/${output#./} ;;
   esac
   printf '%s\n' "e2e/visual-run.sh: the run failed. If a row ran and failed, its shots (-actual.png, -expected.png, -diff.png) are under ${output%/}/. Playwright's own output above says whether any row ran." >&2 || :
-  if [ "${DISPATCH_E2E_VISUAL_ORDER:-}" = reverse ]; then
-    printf '%s\n' "e2e/visual-run.sh: this run put the rows in reverse order. If a row ran and failed here and passes in the normal order, it most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
-  fi
 fi
 
 exit "$status"

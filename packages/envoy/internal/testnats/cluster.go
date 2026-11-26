@@ -20,8 +20,8 @@ import (
 // route URL.
 type Cluster struct {
 	Servers []*Server
-	// routes are the relays of the members' route ports, member i's at i, which a test in this
-	// package freezes to hold every message between the members.
+	// routes are the relays of the members' route ports, member i's at i, which FreezeRoutes
+	// freezes to hold every message between the members.
 	routes []*relay
 }
 
@@ -48,6 +48,16 @@ func StartCluster(t testing.TB, n int) *Cluster {
 // with no credential and asks JetStream for its account info, so a config that declares users names
 // a no_auth_user whose account has JetStream.
 func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
+	t.Helper()
+	cluster := startCluster(t, n, config)
+	cluster.AwaitReady(t)
+	return cluster
+}
+
+// startCluster starts the n members StartClusterConfig describes, each member's relay listening on
+// a loopback address of its own (testport.ListenLoopback), and returns without waiting for
+// JetStream.
+func startCluster(t testing.TB, n int, config string) *Cluster {
 	t.Helper()
 	if n < 2 {
 		t.Fatalf("a cluster needs at least 2 servers, not %d", n)
@@ -81,7 +91,6 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 		members[i].Store(server)
 		cluster.Servers[i] = server
 	}
-	cluster.AwaitReady(t)
 	return cluster
 }
 
@@ -109,6 +118,25 @@ func memberName(i int) string { return fmt.Sprintf("n%d", i+1) }
 
 // Name is member i's server_name (Server.Name).
 func (c *Cluster) Name(i int) string { return c.Servers[i].Name() }
+
+// FreezeRoutes stops the members' routes moving bytes, in either direction, and returns the func
+// that thaws them, which runs once however often it is called. Every route keeps its connection,
+// as Server.Freeze keeps a client's: no member hears another until the thaw, so a replicated
+// stream's leader takes a publish its own clients send it and cannot store it, since no follower
+// hears the proposal, and a second publish under the same message id meanwhile is refused as
+// still in process (nats-server's JSStreamDuplicateMessageConflict).
+func (c *Cluster) FreezeRoutes(t testing.TB) func() {
+	t.Helper()
+	thaws := make([]func(), len(c.routes))
+	for i, route := range c.routes {
+		thaws[i] = route.freeze()
+	}
+	return func() {
+		for _, thaw := range thaws {
+			thaw()
+		}
+	}
+}
 
 // Member is the index of the member whose server_name is name, or -1 when none has it.
 func (c *Cluster) Member(name string) int {
@@ -158,14 +186,27 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 // another reason.
 func (c *Cluster) AwaitReady(t testing.TB) {
 	t.Helper()
+	c.awaitMeta(t)
+	for _, server := range c.Servers {
+		if server.running() {
+			Connect(t, server.URL()).Close()
+		}
+	}
+}
+
+// awaitMeta is AwaitReady's wait for the meta group alone, restarting a mute member as AwaitReady
+// says, without the account info request on each member, which a client with no credential
+// cannot send to a member with an auth callout (StartClusterWithCallout).
+func (c *Cluster) awaitMeta(t testing.TB) {
+	t.Helper()
 	bound := boundOf(t)
-	// listening is when AwaitReady began listening for the members: its call, or its last restart.
+	// listening is when the wait began listening for the members: its call, or its last restart.
 	listening := time.Now()
 	restarts := 0
 	for {
 		err := c.metaReady()
 		if err == nil {
-			break
+			return
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
@@ -181,11 +222,6 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 			t.Fatalf("JetStream was not ready by %s, short of the test's deadline (%d members restarted): %v", bound, restarts, err)
 		}
 		bound.pause()
-	}
-	for _, server := range c.Servers {
-		if server.running() {
-			Connect(t, server.URL()).Close()
-		}
 	}
 }
 

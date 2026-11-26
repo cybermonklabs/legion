@@ -145,7 +145,8 @@ func TestASecretFileThatCannotBeReadIsNamedBySetting(t *testing.T) {
 // TestARefusedSettingIsNamedAndNotEchoed: a value this package refuses from the environment - an
 // identity kind it does not know, a project list that is not one - is where a credential pasted
 // into the wrong variable shows up, so the refusal names the setting and what it takes, and not
-// the value. A value it accepts is read.
+// the value. A value it accepts is read. An identity missing one of its variables names that one,
+// and none of the values of those that are set.
 func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 	env := map[string]string{IdentityVar: printedSecret}
 	getenv := func(name string) string { return env[name] }
@@ -154,7 +155,28 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 		t.Fatal("MachineIdentity took an identity kind it does not know")
 	}
 	holdsNoSecret(t, "MachineIdentity's error", err.Error())
-	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool)
+	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+
+	run := map[string]string{
+		ActionsIDTokenRequestURLVar:   "https://token.actions.example/idtoken?api-version=" + printedSecret,
+		ActionsIDTokenRequestTokenVar: printedSecret,
+		MachineAudienceVar:            "https://cipher.example/" + printedSecret,
+	}
+	for _, missing := range []string{ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar} {
+		t.Run(IdentityGitHubActions+" without "+missing, func(t *testing.T) {
+			env := map[string]string{IdentityVar: IdentityGitHubActions}
+			for name, value := range run {
+				if name != missing {
+					env[name] = value
+				}
+			}
+			source, err := MachineIdentity(func(name string) string { return env[name] })
+			want := missing + " is required by " + IdentityVar + "=" + IdentityGitHubActions
+			if err == nil || err.Error() != want {
+				t.Fatalf("MachineIdentity = %v, %v; want %q", source, err, want)
+			}
+		})
+	}
 
 	for _, projects := range []string{"lower-" + printedSecret, "HUNTER2 HUNTER2"} {
 		env[ProjectsVar] = projects
@@ -177,6 +199,47 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 	} else {
 		holdsNoSecret(t, "New's error", err.Error())
 	}
+}
+
+// TestADeviceLoginIsRefusedByName: device-login is the TypeScript client's own identity, which a
+// laptop sets for its sessions, and no Go tool trades it. A Go tool started on that laptop says
+// so by name, rather than calling it a kind it does not know.
+func TestADeviceLoginIsRefusedByName(t *testing.T) {
+	env := map[string]string{IdentityVar: "device-login"}
+	source, err := MachineIdentity(func(name string) string { return env[name] })
+	if err == nil || source != nil {
+		t.Fatalf("MachineIdentity = %#v, %v; want device-login refused", source, err)
+	}
+	namesAll(t, "MachineIdentity's error", err.Error(), IdentityVar, "device-login", "TypeScript",
+		IdentityKubernetes, IdentityMetadata, IdentityPool, IdentityGitHubActions)
+}
+
+// TestGitHubActionsDescribePrintsNeitherTheRequestURLNorItsToken: GitHub gives a job its request
+// URL and its request token, and either can carry what lets another ask for the job's tokens, so
+// Describe, which every trade's log line and error carries, names each by its variable alone. The
+// audience prints as written where it is a plain URL, and by its variable otherwise.
+func TestGitHubActionsDescribePrintsNeitherTheRequestURLNorItsToken(t *testing.T) {
+	env := map[string]string{
+		IdentityVar:                   IdentityGitHubActions,
+		ActionsIDTokenRequestURLVar:   "https://tokuser9f3:" + printedSecret + "@token.actions.example/idtoken?api-version=2.0",
+		ActionsIDTokenRequestTokenVar: printedSecret,
+		MachineAudienceVar:            "https://cipher.example",
+	}
+	getenv := func(name string) string { return env[name] }
+	source, err := MachineIdentity(getenv)
+	if err != nil {
+		t.Fatalf("MachineIdentity: %v", err)
+	}
+	holdsNoSecret(t, "Describe", source.Describe())
+	namesAll(t, "Describe", source.Describe(), "GitHub Actions", ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar, "https://cipher.example")
+
+	env[MachineAudienceVar] = "https://cipher.example/?token=" + printedSecret
+	source, err = MachineIdentity(getenv)
+	if err != nil {
+		t.Fatalf("MachineIdentity: %v", err)
+	}
+	holdsNoSecret(t, "Describe", source.Describe())
+	namesAll(t, "Describe", source.Describe(), ActionsIDTokenRequestURLVar, ActionsIDTokenRequestTokenVar, MachineAudienceVar)
 }
 
 // TestAnIssuerThatCarriesACredentialIsNotPrinted: AGENT_SECRETS_SIGNIN_ISSUER is a URL, and every
@@ -249,7 +312,7 @@ func TestAnIssuersAnswerPrintsItsStatusAndCodeAlone(t *testing.T) {
 		t.Fatal("Start read a discovery document the issuer did not serve")
 	} else {
 		holdsNoSecret(t, "the failed discovery", err.Error())
-		namesAll(t, "the failed discovery", err.Error(), "500")
+		namesAll(t, "the failed discovery", err.Error(), "HTTP 500")
 	}
 	discoveryFails = false
 	flow = exampleFlow(base)
@@ -257,13 +320,13 @@ func TestAnIssuersAnswerPrintsItsStatusAndCodeAlone(t *testing.T) {
 		t.Fatal("Start took a device code the issuer refused")
 	} else {
 		holdsNoSecret(t, "the refused device code", err.Error())
-		namesAll(t, "the refused device code", err.Error(), "502")
+		namesAll(t, "the refused device code", err.Error(), "HTTP 502")
 	}
 	if _, err := flow.Refresh(context.Background(), "a-refresh-token"); err == nil {
 		t.Fatal("Refresh took a refresh the issuer refused")
 	} else {
 		holdsNoSecret(t, "the refused refresh", err.Error())
-		namesAll(t, "the refused refresh", err.Error(), "400", "invalid_client")
+		namesAll(t, "the refused refresh", err.Error(), "HTTP 400", "invalid_client")
 	}
 }
 
@@ -310,7 +373,9 @@ func TestDiscoveryGoesThroughTheClientEveryOtherCallDoes(t *testing.T) {
 // TestARedirectedDiscoveryPrintsWhereItEnded: the status a failed discovery prints is the last
 // request's, so a 302 whose target refuses the connection prints as the refused connection it
 // ended in, and unwraps to it, not as the 302 that sent it there. A discovery the issuer answered
-// 404 prints that status, and its error still unwraps to go-oidc's own: the control.
+// 404 prints that status, and its error still unwraps to go-oidc's own: the control. Each status is
+// looked for as the error prints one ("HTTP 302"), never as its digits alone, which the issuer's
+// own address in the same error can hold (port 33025 did).
 func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 	// A port held refused for the whole test (testport.Refused), not one a closed listener freed.
 	closed := testport.Refused(t)
@@ -322,7 +387,7 @@ func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 		t.Fatal("Start read a discovery document from a port that is closed")
 	}
 	namesAll(t, "the redirected discovery", err.Error(), "connection refused")
-	if strings.Contains(err.Error(), "302") || !errors.Is(err, syscall.ECONNREFUSED) {
+	if strings.Contains(err.Error(), "HTTP 302") || !errors.Is(err, syscall.ECONNREFUSED) {
 		t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
 	}
 

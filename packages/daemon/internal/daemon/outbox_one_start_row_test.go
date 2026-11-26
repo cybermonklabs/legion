@@ -91,7 +91,7 @@ func newOneStartRig(t *testing.T) oneStartRig {
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Planning, Generation: 1, Status: "in_progress"}
 	putOutboxIssue(t, pool, records, issue)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RolePlanner, Claim: "plan-claim"})
 	}); err != nil {
 		t.Fatalf("record the planner's phases row: %v", err)
@@ -130,6 +130,7 @@ func newOneStartRig(t *testing.T) oneStartRig {
 // Each case drives the executor on the row the transition wrote, as the package's other start
 // cases do, and reads what the claim holds afterwards.
 func TestOneStartRowDoesTheWholeStart(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("a role with no claim is created, provisioned, spawned and given the task", func(t *testing.T) {

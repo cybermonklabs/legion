@@ -6,12 +6,18 @@
 // entry they refuse, so the forms say a refusal in words of their own.
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+
+	"github.com/sjawhar/envoy/internal/cipher/record"
+)
 
 // TestARefusedTagValueOrNameIsNotPrinted: each tag flag's rule, and the NAME a form takes, refuses
 // a made-up secret put where a person types the value, naming the flag (or NAME) and its rule,
 // and no part of the secret. Control: each rule still takes a value it accepts.
 func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	// The secret holds a '.', which no GitHub login holds, an upper-case letter, which no scope
 	// name or email entry holds, and lower case, which no secret NAME holds.
 	const secret = "hunter2pw-Tags.7c3e91"
@@ -83,32 +89,31 @@ func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
 	})
 }
 
-// TestARefusedGitHubNarrowingFlagIsNotPrinted: the exec form's --github-owner and --github-repo
-// refuse a value that is no GitHub login or repository name, naming the flag and its rule and no
-// part of the value, which the broker's parser (policy.ParseGitHubNarrowing) quotes. Control: a
-// login and a repository name still narrow.
-func TestARefusedGitHubNarrowingFlagIsNotPrinted(t *testing.T) {
+// TestARefusedTargetIsNotPrinted: the exec form's --target refuses a value that is no GitHub login
+// or repository name, naming the flag and its rule and no part of the value, since a value in the
+// wrong flag may be a pasted credential (valueNotPrinted): the rule the removed GitHub flags kept
+// before --target replaced them. Control: a login and a repository name still narrow.
+func TestARefusedTargetIsNotPrinted(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2pw.narrow-77aa"
 	for _, row := range []struct {
-		name, owner string
-		repos       []string
-		says        string
+		name, target, says string
 	}{
-		{"--github-owner that is no login", secret, nil, "--github-owner names one GitHub login (the value is not printed)"},
-		{"--github-repo that is no repository name", "ada", []string{secret + "/x"}, "--github-repo names at least one and at most 100 of the owner's repositories"},
+		{"an account that is no login", secret, "--target names no GitHub login as its account"},
+		{"a repository that is no repository name", "ada/" + secret + "/x", "--target names no repository name GitHub can hold"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			_, err := githubNarrowing(row.owner, true, row.repos, false, false)
+			_, err := record.TargetLocations([]string{"APP"}, []string{row.target})
 			if err == nil {
-				t.Fatal("the flags narrowed")
+				t.Fatal("the target narrowed")
 			}
-			wantNamedNotPrinted(t, "the refusal", err.Error(), []string{row.says}, secret, "hunter2pw", "77aa")
+			wantNamedNotPrinted(t, "the refusal", err.Error(), []string{row.says, valueNotPrinted}, secret, "hunter2pw", "77aa")
 		})
 	}
 	t.Run("control: a login and a repository name narrow", func(t *testing.T) {
-		got, err := githubNarrowing("Ada", true, []string{"proofs"}, true, false)
-		if err != nil || got == nil || got.Owner != "ada" || len(got.Repositories) != 1 || got.Repositories[0] != "proofs" {
-			t.Fatalf("githubNarrowing = %+v, %v; want ada's proofs", got, err)
+		got, err := record.TargetLocations([]string{"APP"}, []string{"Ada/proofs"})
+		if err != nil || !slices.Equal(got, []string{"https://github.com/ada/proofs"}) {
+			t.Fatalf("TargetLocations = %v, %v; want ada's proofs", got, err)
 		}
 	})
 }

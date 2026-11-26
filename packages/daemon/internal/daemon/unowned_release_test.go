@@ -68,7 +68,7 @@ func (r *idleRig) wrote(t *testing.T, token claim.Token, minutes int) {
 
 // releaseMark is the kind of release the pod's mark records and the role it names
 // (issue_releases): `unowned` with no role at all is the release of a pod no role can use, which
-// has no live claim to stop and no role whose shim a bundle could be asked of.
+// has no live claim to stop and no role whose shim could read the workspace.
 func (r *idleRig) releaseMark(t *testing.T) (kind, role string) {
 	t.Helper()
 	if err := r.pool.QueryRow(context.Background(), `select kind, role from issue_releases where issue = $1`,
@@ -178,7 +178,7 @@ func (r *idleRig) closedIssuesWithStoppedClaims(t *testing.T, count int) {
 		if err := r.st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key,
 			Issue: key, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, ServingGeneration: 1,
 			State: supervise.StateRetired, Session: "ses-" + key, SessionFile: "/tmp/" + key + ".jsonl",
-			PluginContract: api.DaemonAPIVersion}); err != nil {
+			PluginContract: api.DaemonAPIVersion()}); err != nil {
 			t.Fatalf("seed the retired claim of %s: %v", key, err)
 		}
 	}
@@ -201,24 +201,25 @@ func (s *countedSandboxReads) IssueSandbox(issue string) (string, bool) {
 	return s.issuePods.IssueSandbox(issue)
 }
 
-// An issue whose every claim is failed, retired or suspended holds a Kubernetes pod of 3 CPU and
-// 19 GiB that no role can take a turn in, and the second release rule takes it
-// (workflow.UnownedPodRelease). That release is one act and one row, the teardown: it suspends no
-// role, saves no bundle and changes no claim, because there is no live claim to stop, no shim
-// left to build a bundle and no role coming back to a workspace that would need one.
+// An issue whose every claim is failed, retired or suspended holds a Kubernetes pod no role can
+// take a turn in, and the pod's reservation with it (2 CPU and 8 GiB at the defaults), and the
+// second release rule takes it (workflow.UnownedPodRelease). That release is one act and one row,
+// the teardown: it suspends no role, checks no workspace and changes no claim, because there is no
+// live claim to stop, no shim left to read the workspace through and no role coming back to it.
 //
 // The four pods below are the four answers the rule gives a pod with no live claim in it: the one
 // it takes, the one that is already gone, the one a process still runs in, and the one that holds
 // a claim an earlier release left `released`.
 func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the pod of an issue whose one claim failed", func(t *testing.T) {
 		rig := newIdleRig(t)
 		rig.stoppedImplementer(t, false)
 
-		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown alone: this release saves no bundle and stops no role", got)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+			t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: this release stops no role, and reads the disk it deletes (R6)", got)
 		}
 		// The mark says which rule wrote it, and that kind is what the teardown and the cancel
 		// read to tell what the release did rather than guess it from a missing role.
@@ -243,18 +244,18 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		if stored.Pending == nil || stored.Pending.ID != "outbox:7" || stored.Pending.Phase != phase.Implementing {
 			t.Fatalf("the claim's task = %+v, want the task it was holding kept", stored.Pending)
 		}
-		bundled, suspended := rig.rt.reads()
+		read, suspended := rig.rt.reads()
 		if suspended != 1 {
 			t.Fatalf("Sandbox teardowns = %d, want the one this release is made of", suspended)
 		}
 		if asked := rig.rt.teardownsAsked(); !slices.Equal(asked, []string{"ReleaseIssue"}) {
 			t.Fatalf("teardowns asked = %v, want the release's alone: the issue stays in the workflow", asked)
 		}
-		if len(bundled) != 0 {
-			t.Fatalf("the bundle was asked of %v, want no role: no shim is left to build one", bundled)
+		if len(read) != 0 {
+			t.Fatalf("the workspace was read through %v, want no role: no shim is left to read it", read)
 		}
-		if rig.bundled(t) {
-			t.Fatal("the release saved a bundle, which no role of this pod is coming back for")
+		if rig.declined(t) {
+			t.Fatal("the release recorded a decline, which only an idle release's check writes")
 		}
 		if rig.marked(t) {
 			t.Fatal("the finished release left its mark behind")
@@ -314,7 +315,8 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 		}
 		// The locator reaches the rule through the store's own read of the claims row
 		// (pods.IdleClaim.HasProcess), and the hold is recorded because such a pod stands past
-		// the quiet period with 3 CPU and 19 GiB held by something that is not work.
+		// the quiet period with its reservation (2 CPU and 8 GiB at the defaults) held by
+		// something that is not work.
 		holds := rig.records(t).Holds
 		if len(holds) != 1 || holds[0].Reason != workflow.IdleHoldUnownedClaimProcess.String() {
 			t.Fatalf("holds = %+v, want the one %s", holds, workflow.IdleHoldUnownedClaimProcess)
@@ -336,8 +338,8 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 			t.Fatalf("the pod was left owing %v, want the earlier release's backstop and open resume", owed)
 		}
 
-		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown alone: the released architect is already stopped", got)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+			t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: the released architect is already stopped", got)
 		}
 
 		rig.drain(t)
@@ -364,6 +366,7 @@ func TestAnIssueWithNoLiveClaimHasItsSandboxReleased(t *testing.T) {
 // mark: a mark standing is a state no later row could read around, so the three readings that
 // keep the pod come first and the release that takes it is last.
 func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
@@ -425,8 +428,8 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 		rig.wrote(t, rig.token, 11)
 		rig.wrote(t, architect, 11)
 
-		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown: the pod has recorded nothing for 11 minutes", got)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+			t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: the pod has recorded nothing for 11 minutes", got)
 		}
 		if !rig.marked(t) {
 			t.Fatal("the release left no mark")
@@ -447,6 +450,7 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 // claim, so an issue it has decided stands in the answer for ever, and deciding a gone pod inside
 // a transaction would cost one of them a minute for ever.
 func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	rig := newIdleRig(t)
 	rig.stoppedImplementer(t, false)
@@ -507,6 +511,7 @@ func TestThePassDecidesOnlyTheIssuesTheRuleCouldRelease(t *testing.T) {
 // deletes the Secrets, each one already gone counted as deleted, keeps the Sandbox with its uid,
 // and records the delete, and the next pass holds the issue and writes no row.
 func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, tc := range []struct {
 		name    string
@@ -579,8 +584,8 @@ func TestAnUnownedReleaseLeavesAKeptSuspendedSandboxAlone(t *testing.T) {
 			var hold workflow.IdleHold
 			var marked bool
 			queued := rig.queuedBy(t, func() { hold, marked = rig.w.releaseUnownedPod(ctx, rig.issue.Key) })
-			if !marked || len(queued) != 1 || queued[0] != "issue_release" {
-				t.Fatalf("the pass = %s, released %t, queued %v; want the release's teardown queued", hold, marked, queued)
+			if !marked || !slices.Equal(queued, []string{"issue_bundle", "issue_release"}) {
+				t.Fatalf("the pass = %s, released %t, queued %v; want the launcher's workspace check and the release's teardown queued", hold, marked, queued)
 			}
 			if !tc.keeps {
 				return
@@ -648,6 +653,7 @@ const secretsReleased = "legion.dev/secrets-released"
 // left, counts each delete as done, writes the record and keeps the uid. Both cases run the real
 // Sandbox runtime over the test's API.
 func TestAReleasedKeptSandboxWhoseLaunchFailedIsReleasedOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// overKeptSandbox is the idle rig whose issue's kept Sandbox the test API holds, Running, with
 	// its seven Secrets, behind a recorder of every write, and the real runtime of a deployment

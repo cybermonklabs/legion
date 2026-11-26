@@ -5,6 +5,8 @@
 // extracted so this test can drive it without exiting the test process.
 package main
 
+//ci:reads packages/envoy/docker/rds-global-bundle.pem TestMainMintsTokensBeforeOpeningTheDatabase names it as sslrootcert=../../docker/rds-global-bundle.pem, which the broker it starts opens
+
 import (
 	"bytes"
 	"crypto/ecdsa"
@@ -14,11 +16,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"maps"
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"net/url"
 	"os"
@@ -34,12 +38,13 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxy"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -99,26 +104,91 @@ func productionEnv(t *testing.T) []string {
 	}
 }
 
-func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
-	err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "")
-	if err == nil {
-		t.Fatal("BROKER_PUBLIC_URL port 0 with no BROKER_FAKE_SECRETS_FILE: want an error, got nil")
+// TestAnHTTPEdgeURLIsRefusedOutsideALocalRun: a BROKER_EDGE_URL or BROKER_EDGE_MACHINE_LOGIN_URL
+// that is not https, however its scheme is written, refuses a start that is not a local run,
+// naming that setting and never the rest of the URL's text but what redact.URL keeps; https ones
+// start, a broker with no edge is refused nothing, and a local run (BROKER_FAKE_SECRETS_FILE set)
+// may use http for either.
+//
+// The named reverts: drop refuseHTTPEdgeURLsInProduction's scheme check, and the http rows start;
+// check BROKER_EDGE_URL alone, as before, and the plain-http machine login page starts.
+func TestAnHTTPEdgeURLIsRefusedOutsideALocalRun(t *testing.T) {
+	const edgeURL, machineLoginURL = "https://edge.invalid", "https://dispatch.edge.invalid/credentials/machine"
+	for _, plain := range []string{"http://edge.invalid", "HTTP://edge.invalid:8080", "ws://edge.invalid", "edge.invalid"} {
+		for _, row := range []struct{ setting, edgeURL, machineLoginURL string }{
+			{"BROKER_EDGE_URL", plain, machineLoginURL},
+			{"BROKER_EDGE_MACHINE_LOGIN_URL", edgeURL, plain},
+		} {
+			err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "")
+			if err == nil || !strings.HasPrefix(err.Error(), row.setting+" ") || !strings.Contains(err.Error(), "must be https in production") {
+				t.Errorf("%s %s with no BROKER_FAKE_SECRETS_FILE = %v, want the https refusal naming %s", row.setting, plain, err, row.setting)
+			}
+			if err := refuseHTTPEdgeURLsInProduction(row.edgeURL, row.machineLoginURL, "/dev/fake-secrets.json"); err != nil {
+				t.Errorf("%s %s in a local run = %v, want nil", row.setting, plain, err)
+			}
+		}
 	}
-	const want = `BROKER_PUBLIC_URL "http://127.0.0.1:0": port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention`
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err.Error(), want)
+	for _, row := range [][2]string{{edgeURL, machineLoginURL}, {"HTTPS://edge.invalid:8443", "HTTPS://dispatch.edge.invalid:8443/m"}, {"", ""}} {
+		if err := refuseHTTPEdgeURLsInProduction(row[0], row[1], ""); err != nil {
+			t.Errorf("BROKER_EDGE_URL %q and BROKER_EDGE_MACHINE_LOGIN_URL %q with no BROKER_FAKE_SECRETS_FILE = %v, want nil", row[0], row[1], err)
+		}
+	}
+}
+
+// portZeroPublicURLs are BROKER_PUBLIC_URLs whose port is 0 as the bind reads a port: each spelling
+// of zero, which the production refusal and main's derive-from-bind rewrite both take as port 0.
+var portZeroPublicURLs = []string{"http://127.0.0.1:0", "http://127.0.0.1:00", "http://[::1]:000", "http://localhost:0000"}
+
+// TestPortZeroPublicURLRefusedInProduction: a BROKER_PUBLIC_URL whose port is 0, however the zero
+// is written, refuses a start that is not a local run.
+//
+// The named revert: compare the port as the text "0", and the ":00" rows load.
+func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
+	for _, publicURL := range portZeroPublicURLs {
+		err := refusePortZeroPublicURLInProduction(publicURL, "")
+		if err == nil {
+			t.Errorf("BROKER_PUBLIC_URL %s with no BROKER_FAKE_SECRETS_FILE: want an error, got nil", publicURL)
+			continue
+		}
+		want := "BROKER_PUBLIC_URL " + strconv.Quote(publicURL) + ": port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention"
+		if err.Error() != want {
+			t.Errorf("error = %q, want %q", err.Error(), want)
+		}
 	}
 }
 
 func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("BROKER_PUBLIC_URL port 0 with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+	for _, publicURL := range portZeroPublicURLs {
+		if err := refusePortZeroPublicURLInProduction(publicURL, "/dev/fake-secrets.json"); err != nil {
+			t.Errorf("BROKER_PUBLIC_URL %s with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", publicURL, err)
+		}
 	}
 }
 
 func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("https://broker.invalid", ""); err != nil {
-		t.Fatalf("a real BROKER_PUBLIC_URL: want nil, got %v", err)
+	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:"} {
+		if err := refusePortZeroPublicURLInProduction(publicURL, ""); err != nil {
+			t.Errorf("BROKER_PUBLIC_URL %s: want nil, got %v", publicURL, err)
+		}
+	}
+}
+
+// TestThePublicURLsPortIsReadAsTheBindReadsIt holds publicURLPortZero, the one reading of the
+// port that both the production refusal and main's derive-from-bind rewrite take, to the number
+// the bind reads: every spelling of zero is port 0, and a URL naming another port, or none (an
+// empty port included), or not parsing, names no port 0.
+//
+// The named revert: compare the port as the text "0", and the ":00" rows read as no port 0.
+func TestThePublicURLsPortIsReadAsTheBindReadsIt(t *testing.T) {
+	for _, publicURL := range portZeroPublicURLs {
+		if !publicURLPortZero(publicURL) {
+			t.Errorf("publicURLPortZero(%q) = false, want true: the bind reads that port as 0", publicURL)
+		}
+	}
+	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:", "http://127.0.0.1:%30", "://no-scheme"} {
+		if publicURLPortZero(publicURL) {
+			t.Errorf("publicURLPortZero(%q) = true, want false", publicURL)
+		}
 	}
 }
 
@@ -135,8 +205,8 @@ func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the nine test-only settings of the broker's local stack, the
-// airlock's eight and the judge's one, each as a Config the refusal below reads and as the
+// airlockTestSettings is the eleven test-only settings of the broker's local stack, the
+// airlock's ten and the judge's one, each as a Config the refusal below reads and as the
 // environment a real broker is started with. One row per setting: the refusal has to name
 // whichever one it found, since an operator reads from it which setting to take out.
 func airlockTestSettings() []struct {
@@ -151,6 +221,8 @@ func airlockTestSettings() []struct {
 	}{
 		{"BROKER_AIRLOCK_TEST_GITHUB_API_BASE", func(c *config.Config) { c.AirlockTestGitHubAPIBase = "http://127.0.0.1:18080" }, "http://127.0.0.1:18080"},
 		{"BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL", func(c *config.Config) { c.AirlockTestGoogleTokenURL = "http://127.0.0.1:18081/token" }, "http://127.0.0.1:18081/token"},
+		{"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL", func(c *config.Config) { c.AirlockTestAnthropicTokenURL = "http://127.0.0.1:18082/v1/oauth/token" }, "http://127.0.0.1:18082/v1/oauth/token"},
+		{"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL", func(c *config.Config) { c.AirlockTestIAMCredentialsURL = "http://127.0.0.1:18083" }, "http://127.0.0.1:18083"},
 		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", func(c *config.Config) { c.AirlockTestDialAllow = []string{"s.airlock.test:443"} }, "s.airlock.test:443"},
 		{"BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE", func(c *config.Config) { c.AirlockTestUpstreamCAFile = "/run/airlock/ca.crt" }, "/run/airlock/ca.crt"},
 		{"BROKER_AIRLOCK_TEST_RESOLVE", func(c *config.Config) {
@@ -163,7 +235,7 @@ func airlockTestSettings() []struct {
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the nine points the broker at
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the eleven points the broker at
 // a stand-in, lets it dial what no production proxy may, or turns a check off, so each on its
 // own refuses a start that is not a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
@@ -181,7 +253,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all nine at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all eleven at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -190,7 +262,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all nine with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all eleven with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -198,7 +270,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the nine, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the eleven, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
@@ -241,7 +313,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, proxyrules.Rules{}, "", nil, nil, nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",
@@ -256,6 +328,66 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	}
 	if len(m.Minters) != len(policy.Types) {
 		t.Errorf("request Machine has %d minters for %d types: %v", len(m.Minters), len(policy.Types), m.Minters)
+	}
+}
+
+// TestTheAnthropicMinterMintsAtTheLocalStacksStandIns: the anthropic-federation minter
+// newRequestMachine builds reads the bound account's Google identity token at the IAM that
+// BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL names, for Anthropic's audience, and trades it at the
+// exchange that BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL names. The local stack's check of the
+// anthropic kind reads both stand-ins' records, so a minter that kept Google's and Anthropic's own
+// endpoints would send the stack's mint to the internet and the check would read nothing.
+func TestTheAnthropicMinterMintsAtTheLocalStacksStandIns(t *testing.T) {
+	const (
+		account   = "robot-1@acme-deployment.iam.gserviceaccount.com"
+		standIn   = "sk-ant-oat01-the-stand-ins-token"
+		secret    = "ANTHROPIC_K"
+		storedVal = `{"organization_id":"00000000-0000-4000-8000-000000000000","federation_rule_id":"fdrl_01examplerule","service_account_id":"svac_01exampletarget","service_account":"` + account + `"}`
+	)
+	ciphertokentest.NewMetadataStand(t)
+	iam := ciphertokentest.NewIAMStand(t)
+	var exchanged []map[string]any
+	exchange := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		exchanged = append(exchanged, body)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": standIn, "expires_in": 3600, "token_type": "bearer"})
+	}))
+	t.Cleanup(exchange.Close)
+	secretFile := signInClientSecretFile(t)
+	cfg, err := config.Load(func(name string) string {
+		return map[string]string{
+			"BROKER_DATABASE_URL":                     "postgres://unused",
+			"BROKER_PUBLIC_URL":                       "https://secrets.internal.example",
+			"BROKER_MACHINE_LOGIN_URL":                "https://dispatch.example/credentials/machine",
+			"BROKER_SECRETS_PREFIX":                   "example/agent-secrets/",
+			"BROKER_SECRETS_KMS_KEY_ARN":              "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+			"BROKER_SIGNIN_ISSUER":                    testSignInIssuer,
+			"BROKER_SIGNIN_CLIENT_ID":                 ciphertest.SignInClientID,
+			"BROKER_SIGNIN_CLIENT_SECRET_FILE":        secretFile,
+			"BROKER_SIGNIN_DOMAIN":                    ciphertest.SignInDomain,
+			"BROKER_SERVICE_ACCOUNT_SECRETS":          secret + "=" + account,
+			"BROKER_AIRLOCK_TEST_ANTHROPIC_TOKEN_URL": exchange.URL + "/v1/oauth/token",
+			"BROKER_AIRLOCK_TEST_IAM_CREDENTIALS_URL": iam.Server.URL,
+		}[name]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newRequestMachine(cfg, nil, nil, nil, nil, "", nil, nil, nil)
+	minted, err := m.Minters[policy.TypeAnthropicFederation](t.Context(), secrets.MintRequest{
+		Name: secret, Source: secret, Type: policy.TypeAnthropicFederation, HumanTier: true, Value: storedVal,
+	})
+	if err != nil || minted.Value != standIn {
+		t.Fatalf("the anthropic-federation minter answered a value of %d bytes, %v; want the stand-in exchange's token", len(minted.Value), err)
+	}
+	asked := iam.Requests()
+	if len(asked) != 1 || !strings.Contains(asked[0].Path, "/serviceAccounts/"+account+":generateIdToken") || asked[0].Body["audience"] != secrets.AnthropicAudience {
+		t.Fatalf("the stand-in IAM was asked %+v; want one generateIdToken of %s for %s", asked, account, secrets.AnthropicAudience)
+	}
+	if len(exchanged) != 1 || exchanged[0]["assertion"] != ciphertokentest.IAMIdentityToken || exchanged[0]["service_account_id"] != "svac_01exampletarget" {
+		t.Fatalf("the stand-in exchange was sent %d bodies, the first %v; want one whose assertion is the stand-in IAM's identity token", len(exchanged), exchanged)
 	}
 }
 
@@ -289,6 +421,38 @@ func TestMainRefusesPortZeroPublicURLInProduction(t *testing.T) {
 	}
 	if strings.Contains(string(out), "broker listening") {
 		t.Fatalf(`broker refused to boot but still logged "broker listening" first — the guard ran after binding: %s`, out)
+	}
+}
+
+// TestMainRefusesAnHTTPEdgeURLInProduction: the binary, with an edge whose BROKER_EDGE_URL is
+// plain http and no BROKER_FAKE_SECRETS_FILE, exits non-zero naming the https refusal before it
+// reaches the database or binds a socket (refuseHTTPEdgeURLsInProduction runs beside the port-0
+// refusal, before store.Open), as TestMainRefusesPortZeroPublicURLInProduction holds for that one.
+//
+// The named revert: drop the call of refuseHTTPEdgeURLsInProduction from main, and the broker goes
+// on to dial the unreachable database instead of naming the refusal.
+func TestMainRefusesAnHTTPEdgeURLInProduction(t *testing.T) {
+	cmd := exec.Command(buildBroker(t))
+	cmd.Env = append(append(os.Environ(), productionEnv(t)...),
+		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+		"BROKER_PUBLIC_URL=https://broker.invalid",
+		"BROKER_MACHINE_LOGIN_URL=https://dispatch.invalid/credentials/machine",
+		"BROKER_EDGE_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_EDGE_URL=http://edge.invalid",
+		"BROKER_EDGE_MACHINE_LOGIN_URL=https://dispatch.edge.invalid/credentials/machine",
+	)
+	out, err := cmd.CombinedOutput()
+	exitErr, isExit := err.(*exec.ExitError)
+	if err == nil || !isExit || exitErr.ExitCode() == 0 {
+		t.Fatalf("broker BROKER_EDGE_URL=http://edge.invalid in production: want a nonzero exit, got err=%v output=%s", err, out)
+	}
+	const wantSubstring = `must be https in production`
+	if !strings.Contains(string(out), wantSubstring) {
+		t.Fatalf("broker refused to boot (exit %d) but its output didn't name the reason: %s\nwant it to contain: %s",
+			exitErr.ExitCode(), out, wantSubstring)
+	}
+	if strings.Contains(string(out), "broker listening") || strings.Contains(string(out), "broker edge listening") {
+		t.Fatalf(`broker refused to boot but still logged that it was listening first: %s`, out)
 	}
 }
 
@@ -488,24 +652,20 @@ func TestTheBrokerRefusesABadSessionAccountPair(t *testing.T) {
 	}
 }
 
-// listenTimeout bounds how long startBroker waits for a broker's "broker listening" line: long
-// enough for a cold binary to migrate an empty database, short enough that a broker which will
-// never bind fails its row rather than its package's deadline.
-const listenTimeout = 10 * time.Second
-
-// stopTimeout bounds how long a broker gets to exit after the SIGTERM its test's cleanup sends,
-// before it is killed outright. It covers the whole stop budget the process logs at boot — its
-// drain plus its shutdown — so a broker that honours that budget is never killed mid-drain, and
-// one that hangs leaves no stray process behind holding a port and a database connection.
-const stopTimeout = 90 * time.Second
+// stopGrace is how long a broker gets to exit after the SIGTERM its test's cleanup sends. It is
+// the whole stop budget the process logs at boot — its drain plus its shutdown — so a broker
+// that honours that budget is never killed mid-drain. It is a span the cleanup holds open, not a
+// wait: a broker still running at the end of it is killed by cmdtest's own cleanup, and the row
+// that was about its stop is the one that says so (AwaitExit).
+const stopGrace = 90 * time.Second
 
 // brokerOptions varies how startBroker starts a broker.
 type brokerOptions struct {
 	// Env is what the broker is started with on top of the test process's own environment and
 	// productionEnv: its addresses, its database, and whatever else the row configures.
 	Env []string
-	// Binary is the broker to start, buildBroker's own when empty. A file that starts several
-	// processes builds once and names the result here rather than paying a `go build` per start.
+	// Binary is the broker to start, buildBroker's when empty, which every test of this process
+	// shares (cmdtest.BuildCommand builds each command once per test process).
 	Binary string
 	// NoWaitForListening returns from startBroker as soon as the child is running, before it has
 	// logged "broker listening" — before it has migrated, even. A row about two processes racing
@@ -536,7 +696,7 @@ const metricsListenEnv = "BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
 
 // startBroker starts the broker binary with productionEnv, metricsListenEnv and options.Env,
 // waits for its "broker listening" line unless options.NoWaitForListening says not to, and stops
-// it with SIGTERM when t ends, killing it if it has not gone within stopTimeout.
+// it with SIGTERM when t ends, killing it if it has not gone within stopGrace.
 func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 	t.Helper()
 	binary := options.Binary
@@ -549,16 +709,18 @@ func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 	// Cleanups run last-registered-first, so this one — registered after cmdtest.Start's own —
 	// asks the broker to stop and waits its whole stop budget out before cmdtest's cleanup kills
 	// the child. The signal's own error is dropped because a process that has already exited is
-	// nothing for a teardown to fail on.
+	// nothing for a teardown to fail on. The wait is a plain select rather than the shared wait
+	// because a broker that will not stop is this teardown's to kill, never this row's to fail:
+	// a row about the stop itself asks AwaitExit for it.
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		select {
 		case <-p.Exited:
-		case <-time.After(stopTimeout):
+		case <-time.After(stopGrace):
 		}
 	})
 	if !options.NoWaitForListening {
-		p.AwaitListening(t, listenTimeout)
+		p.AwaitListening(t)
 	}
 	return p
 }
@@ -571,39 +733,31 @@ func (p *brokerProcess) Log() string {
 	return p.Output.String()
 }
 
-// awaitTimeout bounds how long Await waits for the line it asks for.
-const awaitTimeout = 10 * time.Second
-
 // Await answers everything the broker has logged once a whole line carrying want has arrived, one
 // a newline closes, so a test that goes on to read that line's fields reads all of them. The
 // binary logs the rest of its boot — the state of its token exchange — after the bind line
 // startBroker synchronises on, so a test that reads one of those later lines asks Await for it
-// rather than reading Boot. It fails t if that line has not come within awaitTimeout.
+// rather than reading Boot.
 func (p *brokerProcess) Await(t *testing.T, want string) string {
 	t.Helper()
-	var text string
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		text = p.Log()
+	return testwait.Until(t, fmt.Sprintf("the broker to log a whole line carrying %q", want), func() (string, bool) {
+		text := p.Log()
 		text = text[:strings.LastIndexByte(text, '\n')+1]
-		return strings.Contains(text, want)
-	}) {
-		t.Fatalf("the broker never logged a line carrying %q:\n%s", want, p.Log())
-	}
-	return text
+		return text, strings.Contains(text, want)
+	})
 }
 
 // AwaitRecord answers the first line the broker has logged whose message is message and that
-// carries every field of fields (recordsWith), once one has arrived, and fails t if none has
-// within awaitTimeout. It is Await for a line whose fields a test reads.
+// carries every field of fields (recordsWith), once one has arrived. It is Await for a line whose
+// fields a test reads. What it reads is the whole log, so a wait that gives up prints that.
 func (p *brokerProcess) AwaitRecord(t *testing.T, message string, fields map[string]any) map[string]any {
 	t.Helper()
 	var found []map[string]any
-	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-		found = recordsWith(p.Log(), message, fields)
-		return len(found) != 0
-	}) {
-		t.Fatalf("the broker never logged a %q line carrying %v:\n%s", message, fields, p.Log())
-	}
+	testwait.Until(t, fmt.Sprintf("the broker to log a %q line carrying %v", message, fields), func() (string, bool) {
+		log := p.Log()
+		found = recordsWith(log, message, fields)
+		return log, len(found) != 0
+	})
 	return found[0]
 }
 
@@ -663,20 +817,15 @@ func scrapeMetric(t *testing.T, addr, metric string) map[string]float64 {
 	return samples
 }
 
-// listeningPoll is how often AwaitListening looks for the broker's listening line. The line is
-// logged synchronously, only after Listen has already succeeded — the bind fix's whole point —
-// so this is how soon a test reads the bind, never how soon the broker makes it.
-const listeningPoll = 20 * time.Millisecond
-
-// AwaitListening waits up to within for the broker's "broker listening" line and records the
-// address it names in Addr and the log up to it in Boot. It fails t when the broker exits without
-// ever logging that line, and when within passes with no such line.
-func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
+// AwaitListening waits for the broker's "broker listening" line and records the address it names
+// in Addr and the log up to it in Boot. It fails t when the broker exits without ever logging
+// that line.
+func (p *brokerProcess) AwaitListening(t *testing.T) {
 	t.Helper()
-	if !testwait.Holds(within, listeningPoll, func() bool {
+	testwait.Until(t, "the broker's listening line", func() (string, bool) {
 		if addr, boot, ok := listeningIn(p.Log()); ok {
 			p.Addr, p.Boot = addr, boot
-			return true
+			return boot, true
 		}
 		select {
 		case <-p.Exited:
@@ -686,15 +835,13 @@ func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
 			// did bind, instead of being failed for the exit.
 			if addr, boot, ok := listeningIn(p.Log()); ok {
 				p.Addr, p.Boot = addr, boot
-				return true
+				return boot, true
 			}
 			t.Fatalf("the broker exited without ever logging %q:\n%s", "broker listening", p.Log())
 		default:
 		}
-		return false
-	}) {
-		t.Fatalf("no %q line within %s:\n%s", "broker listening", within, p.Log())
-	}
+		return p.Log(), false
+	})
 }
 
 // listeningIn finds the broker's first "broker listening" line in log and answers the address it
@@ -783,23 +930,22 @@ func rereadRateIn(log string) (rate rereadRateLine, ok bool) {
 	return rate, ok
 }
 
-// AwaitExit waits up to within for the broker to exit and answers what its exit was: nil for a
-// clean one, an *exec.ExitError naming the code otherwise, which is what Wait itself answers. It
-// fails t when the broker is still running after within. The bound is its caller's rather than
-// cmdtest.WaitExit's fixed thirty seconds, because a broker's stop budget is its whole drain plus
-// its shutdown, which the drain row gives ninety.
-func (p *brokerProcess) AwaitExit(t *testing.T, within time.Duration) error {
+// AwaitExit waits for the broker to exit and answers what its exit was: nil for a clean one, an
+// *exec.ExitError naming the code otherwise, which is what Wait itself answers.
+func (p *brokerProcess) AwaitExit(t *testing.T) error {
 	t.Helper()
-	select {
-	case <-p.Exited:
-		if p.Cmd.ProcessState.Success() {
-			return nil
+	testwait.Until(t, fmt.Sprintf("the broker at %s to exit after it was asked to stop", p.Addr), func() (string, bool) {
+		select {
+		case <-p.Exited:
+			return "", true
+		default:
+			return p.Log(), false
 		}
-		return &exec.ExitError{ProcessState: p.Cmd.ProcessState}
-	case <-time.After(within):
-		t.Fatalf("the broker at %s was still running %s after it was asked to stop:\n%s", p.Addr, within, p.Log())
+	})
+	if p.Cmd.ProcessState.Success() {
 		return nil
 	}
+	return &exec.ExitError{ProcessState: p.Cmd.ProcessState}
 }
 
 // requireHealthy fails t unless GET /healthz at addr answers 200.
@@ -1042,15 +1188,11 @@ func TestFakeSecretsFileServesUnderTheGCPStore(t *testing.T) {
 	}
 }
 
-// airlockRulesFile writes rules into a file of t's own and answers its path, the file
-// BROKER_AIRLOCK_RULES_FILE names.
-func airlockRulesFile(t *testing.T, rules string) string {
+// profilesFile writes profiles into a file of t's own and answers its path, the file
+// BROKER_PROFILES_FILE names.
+func profilesFile(t *testing.T, profiles string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "airlock.json")
-	if err := os.WriteFile(path, []byte(rules), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
+	return writeTempFile(t, "profiles.json", []byte(profiles))
 }
 
 // airlockCAFiles writes a self-signed certificate authority and its key into files of t's own
@@ -1103,11 +1245,11 @@ func writeTempFile(t *testing.T, name string, content []byte) string {
 	return path
 }
 
-// airlockEnv is what a broker with an airlock is started with besides its rules file: the proxy
-// the release names, the certificate authority it hands over and the key behind it, without
-// which config.Load refuses a broker that reads rules it could not proxy, and an address of its
-// own for the proxy port, since a fixed one would be a port two rows of this package could not
-// both hold.
+// airlockEnv is what a broker with an airlock is started with besides its profiles file: the proxy
+// the release names, the certificate authority it hands over and the key behind it, without which
+// the boot refuses a broker whose profiles file declares a kind or a dpop block it could not proxy
+// (config.Config.RequireAirlock), and an address of its own for the proxy port, since a fixed one
+// would be a port two rows of this package could not both hold.
 func airlockEnv(t *testing.T) []string {
 	t.Helper()
 	certFile, keyFile := airlockCAFiles(t)
@@ -1119,15 +1261,18 @@ func airlockEnv(t *testing.T) []string {
 	}
 }
 
-// TestMainRefusesAnAirlockRulesFileItCannotServe drives the real binary with each kind of rules
-// file it must refuse — one whose entry the airlock will not validate, one whose entry names a
-// secret by a name no session can ask for, one for each host spelling of ruleHostRows (the rows
-// TestAirlockCheckRefusesAHostTheProxyNeverCompares drives through airlock-check, which read that
-// the host the grammar reads is the host the file writes), one that is not JSON, and a path that
-// is not there — and asserts it exits non-zero naming the file and what is wrong with it, without
-// ever binding. The database it is given is unreachable, so a broker that read the file after
-// opening the store would fail on the host instead of on the file.
-func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
+// TestMainRefusesAProfilesFileItCannotServe drives the real binary with each kind of profiles
+// file it must refuse — one holding a proxy block of a kind other than dpop, the form the kinds
+// replaced, one whose dpop block still sets a judge, one declaring a kind that names no host, one
+// whose profile has a name no session can ask for, one naming a requester service the deployment
+// does not register (CheckRequesters, the boot's own read), one for each host spelling of
+// ruleHostRows (the rows TestProfilesCheckRefusesAHostTheProxyNeverCompares drives through
+// `profiles check`, which read that the host the grammar reads is the host the file writes),
+// today's airlock rules file, one that is not JSON, and a path that is not there — and asserts it
+// exits non-zero naming the setting and what is wrong with the file, without ever binding. The
+// database it is given is unreachable, so a broker that read the file after opening the store
+// would fail on the host instead of on the file.
+func TestMainRefusesAProfilesFileItCannotServe(t *testing.T) {
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
 	refused := func(t *testing.T, path string, want, absent []string) {
@@ -1135,10 +1280,10 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		out := runRefusedBroker(t, binary, append(airlockEnv(t),
 			"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 			"BROKER_PUBLIC_URL=https://secrets.internal.example",
-			"BROKER_AIRLOCK_RULES_FILE="+path,
+			"BROKER_PROFILES_FILE="+path,
 		)...)
-		if !strings.Contains(out, "BROKER_AIRLOCK_RULES_FILE") {
-			t.Fatalf("broker refused, but its output does not name BROKER_AIRLOCK_RULES_FILE: %s", out)
+		if !strings.Contains(out, "BROKER_PROFILES_FILE") {
+			t.Fatalf("broker refused, but its output does not name BROKER_PROFILES_FILE: %s", out)
 		}
 		// The refusal names the file, whose path is a temporary directory: it holds the test's or
 		// the subtest's name and whatever the temporary directory's own path holds, so every want
@@ -1165,23 +1310,60 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		want []string
 	}{
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
-		// inside it comes out escaped; these rows look for the parts around it.
-		"an entry the airlock refuses": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "judge": 1800}]}`),
-			want: []string{"secrets[0]", "DEEL_API_KEY", "1800", "900"},
+		// inside it comes out escaped; these rows look for the parts around it, or write it
+		// escaped.
+		//
+		// A proxy block of a kind other than dpop is the form the kinds replaced, so in a file
+		// that declares kinds it is refused naming them and the source to tag, rather than served
+		// with its rules missing.
+		"a proxy block of a kind the kinds replaced, in a file of kinds": {
+			path: profilesFile(t, `{"kinds": [{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"]}], "profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "kind": "gcp"}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy is a proxy block, and a proxy block is no longer read", "declare the kind under kinds", "tag the source, DEEL_API_KEY, proxy="},
 		},
-		// An entry whose name is not of the policy's form matches no release, so the file
-		// would hold back nothing of the secret a reviewer read it as covering.
-		"an entry name in lower case": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "deel_api_key", "hosts": ["api.deel.com"]}]}`),
-			want: []string{"secrets[0]", "deel_api_key", "not an agent secret name", "holds nothing back"},
+		// A file that declares no kinds reads its blocks as the broker before the kinds did, so a
+		// block of a kind no block ever took is refused, naming the kinds a block takes.
+		"a proxy block of a kind no block took, in a file of no kinds": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.com"], "kind": "gcp"}}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "proxy.kind is", "gcp", "a proxy block's kind is"},
 		},
-		"an entry name written with hyphens": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL-API-KEY", "hosts": ["api.deel.com"]}]}`),
-			want: []string{"secrets[0]", "DEEL-API-KEY", "not an agent secret name", "holds nothing back"},
+		// Who decides a request is the key's own judge tag, and a dpop block is made from no
+		// stored key, its grant decided by its kind, so a dpop block that still sets a judge is
+		// refused, naming the field, rather than served with a judge that decides nothing.
+		"a dpop block that sets a judge": {
+			path: profilesFile(t, `{"profiles": [{"name": "RESULTS_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"],
+				"allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop", "judge": 1800}}]}`),
+			want: []string{"profiles[0]", "RESULTS_TOKEN", "proxy.judge", "a profile of kind dpop has no judge"},
+		},
+		// A kind binds its credential to the hosts it names, so one that names none is refused,
+		// where it would hold back the value of every secret of the kind and carry it nowhere.
+		"a kind with no host": {
+			path: profilesFile(t, `{"kinds": [{"name": "deel", "headers": ["x-api-key"], "ways": ["swap"]}], "profiles": []}`),
+			want: []string{`kinds[0] \"deel\": names no host`},
+		},
+		// A profile whose name is not of the policy's form matches no request, so the file
+		// would serve nothing of the secret a reviewer read it as covering.
+		"a profile name in lower case": {
+			path: profilesFile(t, `{"profiles": [{"name": "deel_api_key"}]}`),
+			want: []string{"profiles[0]", "deel_api_key", "not an agent secret name", "no caller can ask for it"},
+		},
+		"a profile name written with hyphens": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL-API-KEY"}]}`),
+			want: []string{"profiles[0]", "DEEL-API-KEY", "not an agent secret name", "no caller can ask for it"},
+		},
+		// `profiles check` holds a requester to its shape alone; the boot holds the services
+		// setting, and refuses a service it does not register.
+		"a requester service the deployment does not register": {
+			path: profilesFile(t, `{"profiles": [{"name": "DEEL_API_KEY", "requesters": ["unregistered-service"]}]}`),
+			want: []string{"profiles[0]", "DEEL_API_KEY", "requesters", "unregistered-service", "no registered service"},
+		},
+		// A deployment that points the new setting at today's rules file is refused at its first
+		// field, rather than served with no profile.
+		"today's airlock rules file": {
+			path: profilesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`),
+			want: []string{"unknown field", "secrets"},
 		},
 		"a file that is not JSON": {
-			path: airlockRulesFile(t, "these are not the rules you are looking for\n"),
+			path: profilesFile(t, "these are not the profiles you are looking for\n"),
 			want: []string{"not JSON", "byte offset 2, line 1, column 2"},
 		},
 		"a path that cannot be read": {
@@ -1192,11 +1374,12 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		t.Run(name, func(t *testing.T) { refused(t, c.path, c.want, nil) })
 	}
 	// The broker logs a refusal as a JSON string in its error field, so a quotation mark inside
-	// it comes out escaped; no row's want holds one.
+	// it comes out escaped: the kind's name is written escaped here, and no row's own want holds
+	// one. A host is refused as the kind's that binds it (profilesWithHosts).
 	for _, c := range ruleHostRows {
 		t.Run("a host: "+c.name, func(t *testing.T) {
-			path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
-			refused(t, path, append([]string{"secrets[0]", "DEEL_API_KEY", "hosts[1]"}, c.want...), []string{c.absent})
+			path := profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", "api.deel.com", c.host))
+			refused(t, path, append([]string{`kinds[0] \"` + hostsKind + `\": hosts[1]`}, c.want...), []string{c.absent})
 		})
 	}
 	// The binary's own log (setUpLogging, the first thing main does): a host the file writes in
@@ -1205,16 +1388,34 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	// A broker whose main does not set its logging up writes the refusal as text, with the
 	// placeholder in it.
 	t.Run("a host made of a placeholder in upper case, which the broker's log masks", func(t *testing.T) {
-		placeholder := strings.ToUpper(requests.PlaceholderPrefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
-		path := airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE."))
+		placeholder := strings.ToUpper(placeholder.Prefix + "zzyyxxwwvvuuttssrrqqppoonnmmllkk")
+		path := profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", "api.deel.com", placeholder+".EXAMPLE."))
 		refused(t, path, []string{`"severity":"ERROR"`, `"message":"broker: fatal"`, "write it as [placeholder].example"},
 			[]string{placeholder, strings.ToLower(placeholder)})
 	})
 }
 
-// TestMainStartsWithAnAirlockRulesFile: a file the airlock parses and validates is no obstacle to
-// the boot, and the broker goes on to serve.
-func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
+// TestTheBootRefusesTheRemovedRulesSetting: BROKER_AIRLOCK_RULES_FILE is gone, its entries now
+// the kinds of BROKER_PROFILES_FILE, so a deployment that still sets it is refused by
+// config.Load before anything binds, naming the setting that replaces it, rather than started
+// with no proxy rules and every credential it named released as its value.
+func TestTheBootRefusesTheRemovedRulesSetting(t *testing.T) {
+	out := runRefusedBroker(t, buildBroker(t), append(airlockEnv(t),
+		"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
+		"BROKER_PUBLIC_URL=https://secrets.internal.example",
+		"BROKER_AIRLOCK_RULES_FILE="+writeTempFile(t, "airlock.json", []byte(`{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`)),
+	)...)
+	for _, want := range []string{"BROKER_AIRLOCK_RULES_FILE is removed", "replaced by BROKER_PROFILES_FILE"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("broker refused, but its output does not say %q: %s", want, out)
+		}
+	}
+}
+
+// TestMainStartsWithAProfilesFile: a file the broker parses and validates is no obstacle to the
+// boot, and the broker goes on to serve: a kind with an allow list, and a profile whose own allow
+// narrows its source at the proxy within the kind's.
+func TestMainStartsWithAProfilesFile(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1224,17 +1425,43 @@ func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [
-			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}
+		"BROKER_PROFILES_FILE="+profilesFile(t, `{"kinds": [
+			{"name": "deel", "hosts": ["api.deel.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}
+		], "profiles": [
+			{"name": "DEEL_READ", "source": "DEEL_API_KEY", "allow": [{"method": "GET", "pathPrefix": "/rest/v1/"}]}
 		]}`),
 	)})
 	requireHealthy(t, broker.Addr)
 }
 
-// TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the host rows above:
+// TestMainStartsWithAFileOfProxyBlocks: a broker that reads kinds starts against a deployment's
+// profiles file of proxy blocks and no kinds (testdata/profiles-proxy-blocks.json, the file every
+// deployment ran before the kinds), and goes on to serve: the file declares no kind, so the
+// broker reads its blocks as the broker before the kinds did (policy.ParseProfiles).
+func TestMainStartsWithAFileOfProxyBlocks(t *testing.T) {
+	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := filepath.Abs(proxyBlocksFixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
+		"BROKER_DATABASE_URL="+storetest.URL(t),
+		"BROKER_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_SERVICES=legion-daemon=system:serviceaccount:legion:legion-daemon",
+		"BROKER_PROFILES_FILE="+profiles,
+	)})
+	requireHealthy(t, broker.Addr)
+}
+
+// TestMainStartsWithAProxyHostWrittenAsTheProxyReadsIt is the control of the host rows above:
 // hosts the one grammar a rules host is written in serves, in a case a reader of the file could
 // fold (foldedRuleHosts), are no obstacle to the boot, and the broker goes on to serve.
-func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
+func TestMainStartsWithAProxyHostWrittenAsTheProxyReadsIt(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -1244,7 +1471,7 @@ func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
-		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, rulesWithHosts(t, "DEEL_API_KEY", foldedRuleHosts...)),
+		"BROKER_PROFILES_FILE="+profilesFile(t, profilesWithHosts(t, "DEEL_API_KEY", foldedRuleHosts...)),
 	)})
 	requireHealthy(t, broker.Addr)
 }
@@ -1281,7 +1508,7 @@ func TestMainRefusesAnAirlockCertificateItCannotRead(t *testing.T) {
 			out := runRefusedBroker(t, binary,
 				"BROKER_DATABASE_URL=postgres://nonexistent-host-this-test-must-never-reach/db",
 				"BROKER_PUBLIC_URL=https://secrets.internal.example",
-				"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"]}]}`),
+				"BROKER_PROFILES_FILE="+profilesFile(t, deelKindFile),
 				"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
 				"BROKER_AIRLOCK_CA_CERT_FILE="+c.path,
 				"BROKER_AIRLOCK_CA_KEY_FILE="+keyFile,

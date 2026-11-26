@@ -31,13 +31,13 @@ func cutStream(name string) natsgo.StreamConfig {
 // so the create's answer cannot exist before the drop; it is then sent while the creating client
 // is connected nowhere and its subscription for the answer is gone, so it reaches no one. member
 // sees the create on its own, as a client's publish reaches the member it is connected to without
-// a route.
+// a route. The wait for the stream to be answered ends on it, bounded only by the test binary's
+// deadline (testwait.Context); it runs in the watcher's handler, on nats.go's goroutine, where a
+// Fatal would end the handler rather than the test, so a wait that gives up fails the test by Errorf.
 func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string) func() int {
 	t.Helper()
-	var thaws []func()
-	for _, route := range cluster.routes {
-		thaws = append(thaws, route.freeze())
-	}
+	thawRoutes := cluster.FreezeRoutes(t)
+	settle := testwait.Context(t)
 	var mu sync.Mutex
 	creates := 0
 	watch := func(*natsgo.Msg) {
@@ -61,11 +61,13 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 				_ = srv.DisconnectClientByID(conn.Cid)
 			}
 		}
-		for _, thaw := range thaws {
-			thaw()
-		}
-		if !testwait.Holds(connectTimeout, testwait.Poll, func() bool { return streamAnswered(cluster, stream) }) {
-			t.Errorf("no member led stream %s with every member current within %s of the drop", stream, connectTimeout)
+		thawRoutes()
+		for !streamAnswered(cluster, stream) {
+			if settle.Err() != nil {
+				t.Errorf("no member led stream %s with every member current after the drop, by the test binary's deadline less testwait's margin", stream)
+				return
+			}
+			time.Sleep(testwait.Poll)
 		}
 	}
 	watcher, err := natsgo.Connect(member.URL(), natsgo.Name("create-watcher"))
@@ -79,11 +81,7 @@ func dropAtCreate(t *testing.T, cluster *Cluster, member *Server, stream string)
 	if err := watcher.Flush(); err != nil {
 		t.Fatalf("watch member %s's creates: %v", member.Name(), err)
 	}
-	t.Cleanup(func() {
-		for _, thaw := range thaws {
-			thaw()
-		}
-	})
+	t.Cleanup(thawRoutes)
 	return func() int {
 		mu.Lock()
 		defer mu.Unlock()

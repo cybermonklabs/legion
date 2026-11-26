@@ -108,11 +108,14 @@ func newHarness(t *testing.T) *harness {
 	return &harness{t: t, webhook: webhook, client: client, state: state, database: database, limits: limits, logs: &lockedBuffer{}, clock: c}
 }
 
-// openState opens the sweep's state bucket on a NATS server of the test's own, since the package's
-// TestMain is storetest.Main and not testnats.Main (main_test.go).
+// openState opens the sweep's state bucket on the package's shared NATS server, in a JetStream
+// account no other test holds (testnats.URL): the bucket's name is the production one for every
+// test, and an account of its own is what keeps one test's bucket out of another's reach. The
+// package's TestMain runs both harnesses so this server is shut down after the tests
+// (main_test.go).
 func openState(tb testing.TB) bus.KeyValue {
 	tb.Helper()
-	_, natsURL := testnats.Start(tb)
+	natsURL := testnats.URL(tb)
 	nc, err := natsgo.Connect(natsURL)
 	if err != nil {
 		tb.Fatalf("connect NATS: %v", err)
@@ -274,6 +277,7 @@ func outcome(report redeliver.Report, guid string) redeliver.Outcome {
 }
 
 func TestSweepRedeliversAServerFailureOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-a", http.StatusServiceUnavailable, time.Minute)
 
@@ -306,6 +310,7 @@ func TestSweepRedeliversAServerFailureOnce(t *testing.T) {
 // INFO, how many requests the delivery took. Each request is due nine tenths of its backoff after
 // the one before (duty.LeasePeriod), the least time the sweeps that many intervals on can take.
 func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	answers := []int{
 		http.StatusBadRequest, http.StatusUnprocessableEntity, http.StatusUnauthorized,
@@ -360,6 +365,7 @@ func TestSweepAsksAgainForEveryFailedDeliveryUntilGitHubRecordsItOK(t *testing.T
 // every request but the last, so its log holds no failed attempt of this delivery inside any
 // later window and the record is the only thing that brings it back.
 func TestADeliveryRecoveredDuringTheLongestBackoffIsDeliveredAndAskedForNoMore(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-recovered", http.StatusServiceUnavailable, 0)
 	h.webhook.Refuse(failed.ID, http.StatusInternalServerError)
@@ -413,6 +419,7 @@ func TestADeliveryRecoveredDuringTheLongestBackoffIsDeliveredAndAskedForNoMore(t
 // GitHub keeps a delivery 72 hours. One still failing 72 hours after its first failed attempt is
 // expired: the sweep says so once, at ERROR, and never asks for it again.
 func TestSweepExpiresADeliveryStillFailingAfter72Hours(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.webhook.SetRedeliver(func(githubapptest.Attempt) int { return http.StatusServiceUnavailable })
 	first := h.fail("guid-down", http.StatusServiceUnavailable, 0)
@@ -457,6 +464,7 @@ func TestSweepExpiresADeliveryStillFailingAfter72Hours(t *testing.T) {
 // after five failed requests (exhausted). Such a record reads as open, so a delivery lost before
 // the deploy, and still inside GitHub's 72 hours, is asked for again.
 func TestSweepAsksAgainForALegacyTerminalOrExhaustedRecord(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		status int
@@ -512,6 +520,7 @@ func (g *acceptingGitHub) requested() []int64 {
 // redelivery never appears in the log delivered nothing, so the delivery is asked for again when
 // its next request is due.
 func TestSweepAsksAgainWhenDueForAnAcceptedRequestWithNoNewAttempt(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-dropped", http.StatusServiceUnavailable, time.Minute)
 	github := &acceptingGitHub{GitHub: h.client}
@@ -550,6 +559,7 @@ func TestSweepAsksAgainWhenDueForAnAcceptedRequestWithNoNewAttempt(t *testing.T)
 // attempts: here an operator's sweep asked for a failure two hours old, GitHub accepted and never
 // made the redelivery, and the next running sweep asks again.
 func TestSweepDecidesAnOpenDeliveryWhoseAttemptsLeftTheWindowFromItsRecord(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	github := &acceptingGitHub{GitHub: h.client}
 	sweeper := h.sweeper()
@@ -584,6 +594,7 @@ func TestSweepDecidesAnOpenDeliveryWhoseAttemptsLeftTheWindowFromItsRecord(t *te
 // GitHub answers a redelivery request 404 when it no longer has the delivery. No later request can
 // succeed, so the delivery is expired with that reason, logged once, and never asked for again.
 func TestSweepExpiresADeliveryWhoseRequestIsAnswered404(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-gone", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Refuse(failed.ID, http.StatusNotFound)
@@ -607,6 +618,7 @@ func TestSweepExpiresADeliveryWhoseRequestIsAnswered404(t *testing.T) {
 // A redelivery request GitHub refuses delivered nothing, so it must not read as a redelivery
 // that succeeded: it is asked again after the backoff.
 func TestARefusedRequestIsRetriedNotMistakenForDelivered(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-refused-request", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Refuse(failed.ID, http.StatusUnprocessableEntity)
@@ -668,7 +680,7 @@ func (r *readRecorder) take() []recordedRead {
 func runningSweep(sweeper *redeliver.Sweeper) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sweeper.RunUnderLease(ctx, time.Hour, func(ctx context.Context, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
+	sweeper.RunUnderLease(ctx, time.Hour, func(ctx context.Context, _ *slog.Logger, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
 		pass(ctx)
 		cancel()
 		return true
@@ -680,6 +692,7 @@ func runningSweep(sweeper *redeliver.Sweeper) {
 // cause; the next sweep, which GitHub answered, records succeeded; and a sweep that asked GitHub
 // nothing -- NATS not connected, so it opened no state -- records nothing at all.
 func TestEachRunningSweepRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	reads := &readRecorder{}
 	sweeper := h.sweeper()
@@ -723,6 +736,7 @@ func TestEachRunningSweepRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // redelivery request GitHub answers 404 is GitHub saying it no longer has the delivery, which the
 // sweep expires as data, and the sweep records succeeded.
 func TestARunningSweepRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		// arrange sets up GitHub's answers and the shared limits before the one sweep.
@@ -801,6 +815,7 @@ func TestARunningSweepRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
 // delivery is redelivered, and a redelivery that got no answer is asked again rather than read as
 // delivered.
 func TestADeliveryThatGotNoAnswerIsRedelivered(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-no-answer", 0, time.Minute)
 	h.webhook.SetRedeliver(func(githubapptest.Attempt) int { return 0 })
@@ -822,6 +837,7 @@ func TestADeliveryThatGotNoAnswerIsRedelivered(t *testing.T) {
 // still asked again after the backoff, and a delivery GitHub keeps refusing is asked for at every
 // due time, past five requests, like one listed every time.
 func TestARefusedDeliveryOutsideTheWindowIsAskedAgain(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		first func(h *harness) redeliver.Options
@@ -877,6 +893,8 @@ func TestARefusedDeliveryOutsideTheWindowIsAskedAgain(t *testing.T) {
 // included, until that time has passed by the database's clock: its own backoff holds at least a
 // minute, and the App's limit holds GitHub's wait as given.
 func TestARateLimitStopsTheSweepUntilGitHubsRetryTime(t *testing.T) {
+	// Not parallel: it reads the limit's time left on Postgres's clock, which must be within 10 s of
+	// the 60 s GitHub asked for: load between the record and the read could fail a correct sweep.
 	retryAfter := func(*harness) http.Header { return http.Header{"Retry-After": {"60"}} }
 	for _, tc := range []struct {
 		name   string
@@ -958,6 +976,7 @@ func (p pausedListing) Deliveries(context.Context, time.Time, func() error) ([]g
 // and finished clear of it deletes that row and no other: a limit another sweeper recorded while
 // it ran stands, and a third sweeper sends GitHub nothing before it.
 func TestASweepClearsOnlyTheRateLimitItRead(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-limited", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodPost, http.StatusTooManyRequests, http.Header{"Retry-After": {"60"}})
@@ -1015,6 +1034,7 @@ func (p *pausedClaim) Create(key string, value []byte) (uint64, error) {
 // claimed a delivery before another sweeper recorded a limit sends nothing once it is in force,
 // and undoes its claim.
 func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-older", http.StatusServiceUnavailable, 2*time.Minute)
 	h.fail("guid-newer", http.StatusServiceUnavailable, time.Minute)
@@ -1059,6 +1079,8 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 // (one, two, then four minutes), and only the sweep's: the App's limit holds GitHub's minute, so
 // once that minute has passed the App's own calls reach GitHub while the sweep still waits.
 func TestARedeliveryBackoffHoldsTheSweepAndNotTheApp(t *testing.T) {
+	// Not parallel: it reads the backoff's time left on Postgres's clock, which must be within 10 s
+	// of the 240 s it set: load between the record and the read could fail a correct sweep.
 	h := newHarness(t)
 	h.fail("guid-limited", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodPost, http.StatusForbidden, nil) // a secondary limit: GitHub asks for a minute
@@ -1094,6 +1116,7 @@ func TestARedeliveryBackoffHoldsTheSweepAndNotTheApp(t *testing.T) {
 
 // A dry run that meets a rate limit reports the backoff it would record and records none.
 func TestADryRunAtARateLimitRecordsNoBackoff(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-listed", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.Limit(http.MethodGet, http.StatusTooManyRequests, http.Header{"Retry-After": {"90"}})
@@ -1111,6 +1134,7 @@ func TestADryRunAtARateLimitRecordsNoBackoff(t *testing.T) {
 // carried out a redelivery request but its answer was lost (a 500), so the sweep first recorded a
 // refusal.
 func TestADeliveryGitHubRecordsAsDeliveredIsNotAskedAgain(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-answer-lost", http.StatusBadGateway, time.Minute)
 	h.webhook.AnswerAfterRedelivering(failed.ID, http.StatusInternalServerError)
@@ -1132,6 +1156,7 @@ func TestADeliveryGitHubRecordsAsDeliveredIsNotAskedAgain(t *testing.T) {
 // A 403 that carries no rate limit (the App lacks a permission) is GitHub refusing that one
 // request: the sweep records the refusal and goes on to the next delivery.
 func TestAForbiddenAnswerWithoutARateLimitIsARefusal(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	for i := range 3 {
 		failed := h.fail(fmt.Sprintf("guid-%d", i), http.StatusServiceUnavailable, time.Minute)
@@ -1145,6 +1170,7 @@ func TestAForbiddenAnswerWithoutARateLimitIsARefusal(t *testing.T) {
 
 // Two sweepers over one state bucket (a deploy's overlap) request each delivery once.
 func TestConcurrentSweepersRequestEachDeliveryOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	for i := range 20 {
 		h.fail(fmt.Sprintf("guid-%02d", i), http.StatusServiceUnavailable, time.Minute)
@@ -1212,6 +1238,7 @@ func (h *harness) sweepAndDie(landed bool) {
 // lost node) never asked GitHub for it. Its claim stands for claimDeadline, longer than any live
 // request takes; past that, the next sweep asks GitHub for the delivery as its first attempt.
 func TestADeliveryWhoseSweeperDiedBeforeItsRequestIsRequestedPastTheClaimDeadline(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-orphaned", http.StatusServiceUnavailable, time.Minute)
 	h.sweepAndDie(false)
@@ -1237,6 +1264,7 @@ func TestADeliveryWhoseSweeperDiedBeforeItsRequestIsRequestedPastTheClaimDeadlin
 // (writeRecord): a claim whose entry the bucket refused leaves no record either, and is a
 // delivery the listing still has.
 func TestADeliveryWhoseSweeperDiedBeforeItsRequestIsRequestedOutsideTheWindow(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // the cursor, so the sweeps below look back an hour and not 72
 	failed := h.fail("guid-orphaned", http.StatusServiceUnavailable, 50*time.Minute)
@@ -1259,6 +1287,7 @@ func TestADeliveryWhoseSweeperDiedBeforeItsRequestIsRequestedOutsideTheWindow(t 
 // the redelivery and logged it OK under the same GUID, so the sweep past the claim deadline finds
 // the delivery delivered and asks GitHub nothing more, then or later.
 func TestADeliveryWhoseSweeperDiedAfterGitHubAcceptedItsRequestIsNotRequestedAgain(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-landed", http.StatusServiceUnavailable, time.Minute)
 	h.sweepAndDie(true)
@@ -1295,6 +1324,7 @@ func (h heldRedeliver) Redeliver(ctx context.Context, deliveryID int64) error {
 // once the claimant has it, is what the record keeps. Here the redelivery fails again, so the
 // record's backoff, not the claim, is what the next sweep past the deadline waits on.
 func TestALiveClaimantsDeliveryIsClaimedElsewhereInsideTheDeadline(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-in-flight", http.StatusServiceUnavailable, time.Minute)
 	h.webhook.SetRedeliver(func(githubapptest.Attempt) int { return http.StatusServiceUnavailable })
@@ -1335,6 +1365,7 @@ func TestALiveClaimantsDeliveryIsClaimedElsewhereInsideTheDeadline(t *testing.T)
 // A dry run reports a dead sweeper's claim inside its deadline as claimed elsewhere and a void
 // one as a redelivery it would request, and requests nothing and writes nothing over the claim.
 func TestADryRunReportsAClaimByItsDeadline(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-orphaned", http.StatusServiceUnavailable, time.Minute)
 	h.sweepAndDie(false)
@@ -1366,6 +1397,7 @@ func TestADryRunReportsAClaimByItsDeadline(t *testing.T) {
 // every delivery GitHub still has is in its listing. After a gap it resumes from its cursor, so a
 // failure while it was not running is still caught.
 func TestFirstSweepLooksBack72HoursThenResumesFromItsCursor(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-gone", http.StatusServiceUnavailable, 73*time.Hour)
 	backlog := h.fail("guid-backlog", http.StatusServiceUnavailable, 50*time.Hour)
@@ -1390,6 +1422,7 @@ func TestFirstSweepLooksBack72HoursThenResumesFromItsCursor(t *testing.T) {
 // A sweep that stops at its request cap leaves its cursor where it was, so the next sweep lists
 // the same window and takes the rest.
 func TestASweepCutShortKeepsItsCursor(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // sets the cursor
 	h.clock.advance(3 * time.Hour)
@@ -1414,6 +1447,7 @@ func TestASweepCutShortKeepsItsCursor(t *testing.T) {
 
 // Several failed attempts under one GUID are one delivery: it is requested once, by its newest id.
 func TestOneDeliveryFailedTwiceIsRequestedOnce(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-twice", http.StatusServiceUnavailable, 2*time.Minute)
 	newest := h.fail("guid-twice", http.StatusServiceUnavailable, time.Minute)
@@ -1429,6 +1463,7 @@ func TestOneDeliveryFailedTwiceIsRequestedOnce(t *testing.T) {
 // it leaves in the bucket is the whole of what a sweep writes: its cursor, the index's back-fill
 // marker, a record for every delivery it decided and an index entry for every one still open.
 func TestDryRunReportsWithoutActing(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-expiring", http.StatusServiceUnavailable, 72*time.Hour)
 	h.fail("guid-backlog", http.StatusServiceUnavailable, 2*time.Hour)
@@ -1485,6 +1520,7 @@ func TestDryRunReportsWithoutActing(t *testing.T) {
 // run writes nothing at all, so it leaves that entry where it is and the next sweep that acts is
 // what repairs it.
 func TestAContinuousDryRunLeavesAStrayIndexEntry(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	// The key is the index's own (redeliver.PendingKey): a minute inside the sweep's window and
 	// older than the margin the repair leaves an entry another sweeper may be about to name
@@ -1521,6 +1557,7 @@ func TestAContinuousDryRunLeavesAStrayIndexEntry(t *testing.T) {
 // altogether rather than reported as waiting, and the entries the index watch delivered are
 // counted (Report.IndexEntries) so the cost of a window is something a test can hold.
 func TestASweepReadsOnlyDuePendingEntries(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // the cursor, so the sweeps below look back 66 minutes and not 72 hours
 	for _, guid := range []string{"guid-later-1", "guid-later-2"} {
@@ -1577,6 +1614,7 @@ func (r refusingIndex) Put(key string, value []byte) (uint64, error) {
 // decide the delivery again. A record written with no entry behind it would be a delivery nothing
 // ever looks at again once its failed attempt leaves the listing's window.
 func TestAFailedIndexWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // the cursor the failed write must leave where it is
 	cursor := h.cursor()
@@ -1643,6 +1681,7 @@ func (r refusingRecord) Update(key string, value []byte, last uint64) (uint64, e
 // carry its cursor past the entry, and nothing would read that delivery again. So a refused write
 // leaves the sweep incomplete, its cursor where it was, and the delivery to the sweep after it.
 func TestARefusedRecordWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // the cursor the refused write must leave where it is
 	cursor := h.cursor()
@@ -1702,6 +1741,7 @@ func TestARefusedRecordWriteLeavesTheDeliveryForTheNextSweep(t *testing.T) {
 // names is closed or names an entry of its own, and the delivery the same window really does owe
 // a sweep is acted on all the same.
 func TestAStaleIndexEntryIsDeletedAndTheDeliveryIsNotLost(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{})                            // the cursor
 	h.fail("guid-closed", http.StatusServiceUnavailable, 0) // its redelivery succeeds, so the sweep after closes it
@@ -1763,6 +1803,7 @@ func TestAStaleIndexEntryIsDeletedAndTheDeliveryIsNotLost(t *testing.T) {
 // before it, which the margin keeps, and one five minutes back, which it deletes. The record of
 // the delivery all three name is waiting out the longest backoff, so it names none of them.
 func TestAStrayIndexEntryIsDeletedOnlyPastTheMargin(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	// The margin is measured from now against a key truncated to its minute, so it stands clear
 	// of a key only on a clock that is not on a minute boundary. The harness starts on whatever
@@ -1850,6 +1891,7 @@ func (c *countingBucket) counts() (scans, windows int) {
 // and no sweep inside the Lookback after it scans again, so the repair stands without being paid
 // for every two minutes.
 func TestARecordWithNoIndexEntryIsBackfilledOnTheFirstSweep(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	// The bucket as an older build left it: its cursor, and an open record that names no index
 	// entry, whose failed attempt is two hours old and so outside every window these sweeps list.
@@ -1930,6 +1972,7 @@ func recordWithoutPending(tb testing.TB, now time.Time, failed githubapptest.Del
 // nothing at all, and a compare-and-set it lost may have been lost to a build that writes no
 // index entry.
 func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	// The bucket as a build without the index left it: its cursor, and an open record that names
 	// no index entry, whose failed attempt is two hours old and so outside the window this sweep
@@ -1967,7 +2010,8 @@ func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) 
 // conflictingRecord is the sweep's state bucket whose first record write loses its
 // compare-and-set, as one whose record another writer moved between the read and the write does:
 // NATS answers a write over a revision that is no longer the last with a wrong last sequence
-// error. Every write after that first one is the bucket's own.
+// error, which nats.go v1.55.0 wraps in nats.ErrKeyRevisionMismatch. Every write after that first
+// one is the bucket's own.
 type conflictingRecord struct {
 	natsgo.KeyValue
 	lost atomic.Bool
@@ -1975,7 +2019,8 @@ type conflictingRecord struct {
 
 func (c *conflictingRecord) Update(key string, value []byte, last uint64) (uint64, error) {
 	if strings.HasPrefix(key, "guid.") && c.lost.CompareAndSwap(false, true) {
-		return 0, errors.New("nats: wrong last sequence: 1")
+		moved := &natsgo.APIError{Code: 400, ErrorCode: natsgo.JSErrCodeStreamWrongLastSequence, Description: "wrong last sequence: 1"}
+		return 0, fmt.Errorf("%w: %w", moved, natsgo.ErrKeyRevisionMismatch)
 	}
 	return c.KeyValue.Update(key, value, last)
 }
@@ -1986,6 +2031,7 @@ func (c *conflictingRecord) Update(key string, value []byte, last uint64) (uint6
 // until the marker went stale, about 68 minutes on, so a lost race leaves the bucket unmarked
 // exactly as a refused write does.
 func TestABackfillThatLosesItsRecordRaceLeavesTheIndexUnmarked(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	// The bucket as a build without the index left it: its cursor, and an open record that names
 	// no index entry, whose failed attempt is two hours old and so outside the window this sweep
@@ -2026,6 +2072,7 @@ func TestABackfillThatLosesItsRecordRaceLeavesTheIndexUnmarked(t *testing.T) {
 // build goes on creating more; a cursor an older build wrote -- one without the mark every sweep
 // of this build writes -- runs the back-fill whatever the marker says.
 func TestABackfillRunsUnderAnOlderBuildsCursorWhateverTheMarkerSays(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	// The bucket as a rollback leaves it: a fresh marker, one whose moment is inside this
 	// sweep's Lookback, so the marker alone would hold the whole-record scan off, a cursor the
@@ -2067,6 +2114,7 @@ func TestABackfillRunsUnderAnOlderBuildsCursorWhateverTheMarkerSays(t *testing.T
 // as a stray would lose the delivery until the marker went stale and a back-fill found the
 // record, about 68 minutes later.
 func TestAnIndexEntryWhoseRecordNamesNoneIsAdopted(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // the cursor, and the marker that says every open record is indexed
 	if _, err := h.state.Get("index"); err != nil {
@@ -2117,6 +2165,7 @@ func TestAnIndexEntryWhoseRecordNamesNoneIsAdopted(t *testing.T) {
 // sweep, and the delivery's failed attempt is two hours old, so nothing but the index brings it
 // back.
 func TestALiveClaimOverARecordNamingNoIndexEntryIsIndexedAtItsClaimEnd(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.sweep(redeliver.Options{}) // the cursor, and the marker that says every open record is indexed
 	h.clock.advance(5 * time.Minute)
@@ -2196,6 +2245,7 @@ func (r refusingPending) Put(key string, value []byte) (uint64, error) {
 // no `pending` field. Its failed attempt is two hours old, so nothing but the back-fill's scan
 // reads it, and its claimant is still waiting on GitHub while this sweep runs.
 func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	now := h.clock.Now().UTC()
 	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q}`, now.Format(time.RFC3339))); err != nil {
@@ -2288,6 +2338,7 @@ func TestABackfillLeavesALiveClaimToItsClaimant(t *testing.T) {
 // ago, and a record an older build created at a claim whose request GitHub refused: no `pending`
 // field, and a failed attempt four minutes older than Lookback, which no sweep lists any more.
 func TestAMarkerOlderThanTheLookbackIsBackfilledAgain(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	now := h.clock.Now().UTC()
 	if _, err := h.state.Put("cursor", fmt.Appendf(nil, `{"at":%q,"indexed":true}`, now.Format(time.RFC3339))); err != nil {
@@ -2361,7 +2412,7 @@ func TestAMarkerOlderThanTheLookbackIsBackfilledAgain(t *testing.T) {
 // summary left closed out, production logged deliveries=65 with every count at zero for the hour
 // after all 65 were redelivered and delivered.
 func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
-	leases := redeliverTestLeases(t)
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-settled", http.StatusServiceUnavailable, time.Minute)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-settled"); got != redeliver.Redelivered {
@@ -2373,21 +2424,11 @@ func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
 	}
 	h.clock.advance(redeliver.Interval)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		h.sweeper().Run(ctx, time.Hour, leases)
-	}()
-	for deadline := time.Now().Add(10 * time.Second); h.logs.count("webhook redelivery sweep") == 0; {
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("no summary line:\n%s", h.logs)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	<-done
+	// One sweep of the running loop, under a lease of the test's own (runningSweep), so no
+	// statement of a real lease, each bounded by duty's five-second leaseCallTimeout, can skip the
+	// one sweep this test reads; that the running sweep takes the real lease is
+	// sweep_lease_test.go's.
+	runningSweep(h.sweeper())
 
 	want := []string{
 		" failed_attempts=1", " deliveries=1",
@@ -2498,6 +2539,7 @@ func BenchmarkSweepWithLongPendingRecords(b *testing.B) {
 // and the redeliver-webhooks command, and only once: the command calls Sweep directly, with no
 // loop ahead of it to open the bucket.
 func TestASweepOpensTheStateItWasBuiltWithout(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	failed := h.fail("guid-a", http.StatusServiceUnavailable, time.Minute)
 	sweeper := h.sweeper()
@@ -2527,6 +2569,7 @@ func TestASweepOpensTheStateItWasBuiltWithout(t *testing.T) {
 
 // A sweep whose state cannot be opened returns the error and asks GitHub nothing.
 func TestASweepWhoseStateWillNotOpenFails(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.fail("guid-a", http.StatusServiceUnavailable, time.Minute)
 	sweeper := h.sweeper()

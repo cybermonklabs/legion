@@ -19,7 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -240,9 +240,19 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// whole seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is
 	// settled here — the check's words and its `when` are the document's, not the issue's — and
 	// what it does protect, the block's indexed version and digest, is read again under it
-	// below.
-	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
+	// below. A credential scoped to one project does not see a check of a private project that it
+	// does not name, which resolveCheck leaves out before it counts the matches: a private check
+	// alone is 400 UNKNOWN_CHECK there, the answer of a check that does not exist.
+	callerProject, _ := s.callerProject(r)
+	check, err := s.resolveCheck(r.Context(), pool, issueKey, callerProject, input.Check)
 	if err != nil {
+		return refused(err)
+	}
+	// The check may be on an issue of another project, which a parent of another project puts
+	// above the recording issue, and the result is appended to that issue. The pre-handler
+	// check read only the path's issue, so a credential scoped to one project is asked about
+	// such a check here, before anything is written (refuseUncoveredCheck).
+	if err := refuseUncoveredCheck(r.Context(), pool, callerProject, check.IssueKey, input.Check); err != nil {
 		return refused(err)
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
@@ -316,6 +326,29 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 		issueKey: issueKey, input: input, actor: actor, check: check,
 		repo: checkRepo, linkedCommitRepo: linkedCommitRepo, words: words,
 	}, true
+}
+
+// refuseUncoveredCheck asks, for a result on a check of the issue checkIssue, whether the
+// request's credential covers that issue's project, with the visibility of that project read in
+// the same statement (checkIssueProject). caller is the one project the credential names, empty
+// for a credential that names none, which is refused nothing here. A credential that names one
+// project records on the check of every project that access.CredentialCovers covers. A check of a
+// private project that the credential does not name answers as a check that does not exist,
+// unknownCheck of check, the value the body names, for the record and its dry run. resolveCheck
+// has left out such a check already, so this check refuses one only where its project became
+// private between the two reads.
+func refuseUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue, check string) error {
+	if caller == "" {
+		return nil
+	}
+	project, private, err := checkIssueProject(ctx, q, caller, checkIssue)
+	if err != nil {
+		return err
+	}
+	if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return unknownCheck(check)
+	}
+	return nil
 }
 
 // checkContended is the code of a results write whose check a document version moved at every
@@ -576,7 +609,19 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
+	// The reader learns the heads GitHub names before any check CI proves is derived
+	// (deriveCIResults). A derived result is read at the issue's newest pull request head, which
+	// may be a head this read's read-through learns: derived first, a first read would answer
+	// that Dispatch holds no head while it names the head it learned as another check's basis. A
+	// derived result is at that newest head, which the learned heads already hold, so it leaves
+	// nothing to learn. Every head GitHub has to be asked for is learned before the first check is
+	// answered, and where the learn stored or learned any head every check's bases are read again,
+	// so each check of the answer is answered on the heads as they stand after this read's
+	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
+	// (comparisonReader.learn).
+	reader := newComparisonReader(r.Context(), s, at)
+	reader.learn(r.Context(), checks)
+	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -587,11 +632,6 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
 		}
 	}
-	// Every head GitHub has to be asked for is learned before the first check is answered, so
-	// two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
-	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
 	}
@@ -601,7 +641,9 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, body)
 }
 
-// refusal is every refusal a result's own fields earn, before anything is read.
+// refusal is every refusal a result's own fields earn, before anything is read. The three counts
+// are each a non-negative number check_results keeps in an integer column, so a count past that
+// column (fitsIntegerColumn) is refused here, before the query that would fail to encode it.
 func (input checkResultInput) refusal() error {
 	if strings.TrimSpace(input.Check) == "" {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "check names the check block the result proves")
@@ -616,9 +658,12 @@ func (input checkResultInput) refusal() error {
 	if !resultCommitSHA.MatchString(input.Commit) {
 		return errorf(http.StatusBadRequest, "RESULT_INPUT", "commit is the 40-character lowercase hex commit the check ran at")
 	}
-	for name, count := range map[string]int{"failed": input.Failed, "skipped": input.Skipped, "excluded": input.Excluded} {
-		if count < 0 {
-			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases and cannot be negative", name)
+	for _, count := range []struct {
+		name  string
+		cases int
+	}{{"failed", input.Failed}, {"skipped", input.Skipped}, {"excluded", input.Excluded}} {
+		if count.cases < 0 || !fitsIntegerColumn(count.cases) {
+			return errorf(http.StatusBadRequest, "RESULT_INPUT", "%s counts cases, from 0 to %d", count.name, maxIntegerColumn)
 		}
 	}
 	if input.Verdict == "pass" && (input.Failed > 0 || input.Skipped > 0 || input.Excluded > 0) {
@@ -709,7 +754,13 @@ func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, 
 // not unique in that set: an id two documents share is 409 CHECK_AMBIGUOUS, and an id no
 // Verification document of the set holds — or one that is not a `check` block — is 400
 // UNKNOWN_CHECK.
-func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value string) (resolvedCheck, error) {
+//
+// caller is the one project the request's credential names, empty for a credential that names
+// none. Such a caller does not see a check of an issue of a private project that the credential
+// does not name, so resolveCheck leaves out each such check before it counts the matches (seenBy):
+// a private check alone is 400 UNKNOWN_CHECK, the answer of a check that does not exist, and a
+// 409 CHECK_AMBIGUOUS names no issue that the caller does not see.
+func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, caller, value string) (resolvedCheck, error) {
 	ancestors, err := refs.IssueAncestors(ctx, q, issueKey)
 	if err != nil {
 		return resolvedCheck{}, err
@@ -735,9 +786,12 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	}
 
 	rows, err := q.Query(ctx, `
-		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256
+		select a.issue_key, a.slug, d.artifact_id::text, d.changed_version, d.text_sha256,
+		       i.project_key, p.visibility = 'private'
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
+		join issues i on i.key = a.issue_key
+		join projects p on p.key = i.project_key
 		where `+aliasedVerificationRole+`
 		  and a.issue_key = any($1) and d.type = 'check' and d.block_id = $2
 		  and ($3 = '' or d.artifact_id = $3::uuid)
@@ -746,38 +800,44 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
 	}
-	defer rows.Close()
-	var found []resolvedCheck
-	var references []string
-	for rows.Next() {
-		check := resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}
-		var slug string
-		if err := rows.Scan(&check.IssueKey, &slug, &check.ArtifactID, &check.Version, &check.SHA256); err != nil {
-			return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
-		}
-		found = append(found, check)
-		if reference, ok := text.FormatBlockRef(text.Ref{
-			Kind: "block", IssueKey: check.IssueKey, ID: slug, Block: blockID,
-		}); ok {
-			references = append(references, reference)
-		}
+	// matchedCheck is one check the value matches, with its document's slug, which its reference
+	// names, and its issue's project and whether that project is private.
+	type matchedCheck struct {
+		check         resolvedCheck
+		slug, project string
+		private       bool
 	}
-	if err := rows.Err(); err != nil {
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (matchedCheck, error) {
+		match := matchedCheck{check: resolvedCheck{checkBlockRef: checkBlockRef{BlockID: blockID}}}
+		err := row.Scan(&match.check.IssueKey, &match.slug, &match.check.ArtifactID, &match.check.Version, &match.check.SHA256,
+			&match.project, &match.private)
+		return match, err
+	})
+	if err != nil {
 		return resolvedCheck{}, fmt.Errorf("resolve check %q of %s: %w", value, issueKey, err)
+	}
+	if caller != "" {
+		found = seenBy(caller, found, func(match matchedCheck) (string, bool) { return match.project, match.private })
 	}
 	if len(found) == 0 {
 		return resolvedCheck{}, unknownCheck(value)
 	}
 	if len(found) > 1 {
 		issues := make([]string, len(found))
-		for index, check := range found {
-			issues[index] = check.IssueKey
+		var references []string
+		for index, match := range found {
+			issues[index] = match.check.IssueKey
+			if reference, ok := text.FormatBlockRef(text.Ref{
+				Kind: "block", IssueKey: match.check.IssueKey, ID: match.slug, Block: blockID,
+			}); ok {
+				references = append(references, reference)
+			}
 		}
 		return resolvedCheck{}, errorf(http.StatusConflict, "CHECK_AMBIGUOUS",
 			"check %s is a check of the Verification document of %s: name one with its reference, %s",
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
-	check := found[0]
+	check := found[0].check
 	if check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
@@ -1424,7 +1484,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if repo == nil || s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
 	}
-	known, err := delivery.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
+	known, err := s.deps.Attributor.HeadAttributedTo(ctx, s.deps.Store.Pool, checkIssueKey, sha)
 	if err != nil {
 		slog.Warn("dispatch: read the pull request heads of a recorded result", "issue", checkIssueKey, "error", err)
 		return
@@ -1432,7 +1492,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, checkIssueKey, sha
 	if known {
 		return
 	}
-	if _, _, err := delivery.ReadThroughCommitPulls(
+	if _, _, err := s.deps.Attributor.ReadThroughCommitPulls(
 		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)

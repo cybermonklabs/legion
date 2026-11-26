@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { main } from "../analyze";
 import type { CaseRow } from "../build-corpus";
-import type { DispatchEvent } from "../dispatch-read";
+import {
+  type DispatchEvent,
+  resetRetryWaitUnitForTests,
+  setRetryWaitUnitForTests,
+} from "../dispatch-read";
 import type { FinalTestTree } from "../draw-io";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
 import { RANKS_STATEMENT, ruleVerdictOf, type S10Analysis } from "../s10-analysis";
@@ -1669,10 +1673,12 @@ describe("the walk of Dispatch's log through the build's pin", () => {
     expect(existsSync(join(claim.directory, "analysis"))).toBe(false);
   });
 
-  // The read waits 1, 2, 4 and 8 seconds between its five tries, so this case takes 15 seconds.
+  // The read waits 1, 2, 4 and 8 units between its five tries, a unit a second in production:
+  // here a millisecond, so the row reads the same five tries and the same refusal at once.
   test("refuses a walk Dispatch fails past its retries, writing nothing", async () => {
     const claim = await writeClaim(SPECS);
     dispatch.failure = 503;
+    setRetryWaitUnitForTests(1);
     try {
       const refused = await run(argsOf(claim));
       expect(refused.status).toBe(2);
@@ -1681,10 +1687,11 @@ describe("the walk of Dispatch's log through the build's pin", () => {
           "failure 503"
       );
     } finally {
+      resetRetryWaitUnitForTests();
       dispatch.failure = null;
     }
     expect(existsSync(join(claim.directory, "analysis"))).toBe(false);
-  }, 30_000);
+  });
 
   test("refuses a run whose digest changes while it reads, or can no longer be taken, writing nothing", async () => {
     const claim = await writeClaim(SPECS);

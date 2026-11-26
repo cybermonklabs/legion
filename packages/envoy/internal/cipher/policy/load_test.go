@@ -197,8 +197,9 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	for _, id := range slices.Sorted(maps.Keys(want)) {
 		lines.WriteString(refusedLine(id, want[id].Reason, want[id].Owner, true, ""))
 	}
+	lines.WriteString(noProfilesLine)
 	if logged.String() != lines.String() {
-		t.Errorf("the first load logged:\n%s\nwant one line for each refused secret, in the order of their names:\n%s", logged, lines.String())
+		t.Errorf("the first load logged:\n%s\nwant one line for each refused secret, in the order of their names, then the profiles line:\n%s", logged, lines.String())
 	}
 }
 
@@ -337,11 +338,11 @@ func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
 		if _, served := cur.Get().Secrets["SEEDED_LATER"]; served {
 			t.Fatalf("served SEEDED_LATER before it had a value: %+v", cur.Get().Secrets)
 		}
-		refused := refusedLine(policytest.ID("SEEDED_LATER"), policy.ReasonNoCurrentValue, owner, true, "")
+		refused := refusedLine(policytest.ID("SEEDED_LATER"), policy.ReasonNoCurrentValue, owner, true, "") + noProfilesLine
 		time.Sleep(time.Second) // a hundred reloads that find it as the first load did
 		synctest.Wait()
 		if logged.String() != refused {
-			t.Fatalf("logged:\n%s\nwant the first load's line alone:\n%s", logged, refused)
+			t.Fatalf("logged:\n%s\nwant the first load's lines alone:\n%s", logged, refused)
 		}
 
 		store.Put(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, "seeded-v1"))
@@ -463,45 +464,41 @@ func TestVersionNamesThePolicyNotItsListingOrder(t *testing.T) {
 	}
 }
 
-// TestTheAirlockDigestIsInTheVersion pins the three things a rules file may do to a deployment's
-// policy version. A loader with no AirlockDigest — a deployment with no rules file — gives every
-// secret an empty digest; a file naming no served secret leaves the version exactly where such a
-// deployment has it, so this release does not end a running deployment's grants; and a change to
-// one secret's entry moves it, which is what ends the grants that entry affects.
-func TestTheAirlockDigestIsInTheVersion(t *testing.T) {
+// TestTheProfileDigestIsInTheVersion pins the three things a profiles file may do to a
+// deployment's policy version. A deployment with no profiles file gives every secret an empty
+// digest; a file whose one profile serves nothing (its source is absent) leaves the version
+// exactly where such a deployment has it, so the file alone ends no running grant; and a profile
+// of one secret's own name, behind the kind its proxy string names, moves it, as an edit of that
+// entry moves it again, which is what ends the grants that entry affects.
+func TestTheProfileDigestIsInTheVersion(t *testing.T) {
 	store := secrets.NewLocal(
 		policytest.Secret("A_KEY", owner, policy.TierAgent, "v"),
 		policytest.Secret("B_KEY", policy.OwnerShared, policy.TierHuman, "v"),
 	)
-	load := func(digests map[string]string) *policy.Set {
+	served := func(profiles ...string) *policy.Set {
 		t.Helper()
-		loader := policytest.Loader(store)
-		if digests != nil {
-			loader.AirlockDigest = func(name string) string { return digests[name] }
+		if profiles == nil {
+			return policytest.Current(t, store).Get()
 		}
-		set, err := loader.Load(context.Background())
-		if err != nil {
-			t.Fatalf("Load: %v", err)
-		}
-		return set
+		return policytest.ProfiledCurrent(t, store, policytest.KindsFile(profiles...)).Get()
 	}
-	none := load(nil)
+	none := served()
 	for _, name := range []string{"A_KEY", "B_KEY"} {
-		if d := none.Secrets[name].AirlockDigest; d != "" {
-			t.Errorf("a loader with no AirlockDigest gave %s the digest %q, want none", name, d)
+		if d := none.Secrets[name].ProfileDigest; d != "" {
+			t.Errorf("a deployment with no profiles file gave %s the digest %q, want none", name, d)
 		}
 	}
-	if unnamed := load(map[string]string{"OTHER_KEY": "d1"}); unnamed.Version != none.Version {
-		t.Errorf("rules naming no served secret moved the version to %s, want %s", unnamed.Version, none.Version)
+	if unnamed := served(`{"name": "OTHER_KEY", "proxy": "example"}`); unnamed.Version != none.Version {
+		t.Errorf("a profile that serves nothing moved the version to %s, want %s", unnamed.Version, none.Version)
 	}
-	named := load(map[string]string{"B_KEY": "d1"})
-	if got := named.Secrets["B_KEY"].AirlockDigest; got != "d1" {
-		t.Errorf("B_KEY's digest = %q, want d1", got)
+	named := served(`{"name": "B_KEY", "proxy": "example"}`)
+	if got := named.Secrets["B_KEY"].ProfileDigest; got == "" {
+		t.Error("B_KEY, which a profile holds, has no digest")
 	}
 	if named.Version == none.Version {
-		t.Error("a secret the rules name left the version unchanged")
+		t.Error("a secret a profile holds left the version unchanged")
 	}
-	if changed := load(map[string]string{"B_KEY": "d2"}); changed.Version == named.Version {
+	if changed := served(`{"name": "B_KEY", "proxy": "github"}`); changed.Version == named.Version {
 		t.Error("a changed entry left the version unchanged")
 	}
 }

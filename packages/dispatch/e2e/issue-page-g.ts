@@ -34,7 +34,7 @@ import {
 import { blockId } from "./editor";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { asUser } from "./users";
 
 /**
@@ -114,10 +114,13 @@ export async function phase<T>(
   }
 }
 
-/** Opens issue `key` at its own address and waits for the new page's tree. */
+/** Opens issue `key` at its own address and waits for the new page's tree, and for the page's
+ *  opening to put the focus on a row of it (`expectOpeningLanded`), so a row that leaves the
+ *  focus for the page after this (`focusThePage`, `unfoldEveryBranch`) leaves it for good. */
 export async function openIssue(page: Page, key: string): Promise<void> {
   await page.goto(`/issues/${key}`);
   await expectIssuePageDrawn(page);
+  await expectOpeningLanded(page);
 }
 
 /** Fails unless the new page is on screen with its tree, so every reading after it reads the
@@ -177,11 +180,67 @@ export async function focusRow(page: Page, id: string): Promise<Locator> {
   return row;
 }
 
-/** Leaves whatever control holds the focus. `body.focus()` does not do it: `body` takes no
- *  focus and the control keeps it. */
+/**
+ * Waits until the page has put the focus on a row of its own after a load: the outline's opening
+ * (`IssueTree.tsx`'s `opening`) puts it on the first open question that waits on the reader, else
+ * on the first row, and an address that names a node puts it on that node's row, in the outline
+ * or a view's tree. A row that leaves the focus for the page after a load (`focusThePage`), or
+ * reads which row the load focused, waits for this first. The opening waits until every read its
+ * rows come from has answered (`readsSettled`), which can be after the issue's own read that
+ * `gotoIssue` and `openIssue` wait for, and until it lands it takes a focus nobody holds as its
+ * own to place: a blur made before the landing is undone by it, which leaves the row holding the
+ * focus. That is how dispatch-browser job 136853210753 failed: the opening's frame came between
+ * the blur and the check.
+ *
+ * It has no clock of its own, since how long the reads take is the machine's and not the row's.
+ * Playwright reads a `timeout` of 0 as no deadline of the poll's own, so the row's own timeout
+ * ends the wait, a quarter of a second before it, and the failure prints this message under "Test
+ * timeout of ...ms exceeded".
+ */
+export async function expectOpeningLanded(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          (nodeRow) => (document.activeElement?.closest(nodeRow) ?? null) !== null,
+          SELECTORS.nodeRow
+        ),
+      { message: "the page opened with the focus on no row of its own", timeout: 0 }
+    )
+    .toBe(true);
+}
+
+/**
+ * Leaves whatever control holds the focus, for the page itself. `body.focus()` does not do it:
+ * `body` takes no focus and the control keeps it. The page places a focus of its own a frame
+ * after it decides to - the outline's opening (`landOnRow`), a view's take of its row or Retry
+ * (`slots/stage.tsx`) - and while nothing holds the focus it gives that focus again, so a blur
+ * made before that frame is undone. So the blur waits two frames, for a focus the page has
+ * already asked of the next one, and the focus is read two frames after it, failing the row with
+ * the element that holds it then. A focus the page has not decided on yet is not one the frames
+ * see: after a load, wait for the page's opening first (`expectOpeningLanded`).
+ */
 export async function focusThePage(page: Page): Promise<void> {
-  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-  await expect.poll(() => page.evaluate(() => document.activeElement === document.body)).toBe(true);
+  const holder = await page.evaluate(async () => {
+    const twoFrames = () => {
+      const frames = Promise.withResolvers<void>();
+      requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
+      return frames.promise;
+    };
+    await twoFrames();
+    const left = document.activeElement;
+    if (left instanceof HTMLElement || left instanceof SVGElement) left.blur();
+    await twoFrames();
+    const active = document.activeElement;
+    if (active === null || active === document.body) return null;
+    const role = active.getAttribute("role");
+    const words = (active.getAttribute("aria-label") ?? active.textContent ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+    return `${active.tagName.toLowerCase()}${role === null ? "" : ` role="${role}"`} "${words}"`;
+  });
+  expect(holder, `the focus left for the page itself, and ${holder} took it back`).toBeNull();
 }
 
 /** A `"` inside an attribute value would end the selector's string, and no id the page draws
@@ -301,7 +360,9 @@ export interface DrawnRow {
   readonly answerAuthor: string | null;
   /** The text of the answer line an answered ask draws on its own row, or null where none. */
   readonly answerLine: string | null;
-  /** The whole of what the person wrote, every character kept; null where none is drawn. */
+  /** The whole of what the person wrote, every word and every paragraph kept, in order: each
+   *  paragraph the renderer draws, joined by the blank line the store holds between them, or
+   *  the text as drawn where the answer draws no paragraph; null where none is drawn. */
   readonly answerText: string | null;
   /** The author the row's group names, or null where it names none. An open body names an
    *  author of its own, "Author unknown" included, which this leaves out. */
@@ -366,6 +427,17 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       if (rect.width === 0 && rect.height === 0) return null;
       return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
     };
+    // The renderer draws each paragraph of a stored text as a <p> of its own, so the blank line
+    // between two of them is a block boundary and no character of the page: the answer's words
+    // are its paragraphs' text, joined as the store joins them. An answer drawn with no <p> - as
+    // stored, where the read sent no reading - is its text as drawn.
+    const answerWords = (element: Element | null): string | null => {
+      if (element === null) return null;
+      const paragraphs = [...element.querySelectorAll("p")];
+      return paragraphs.length === 0
+        ? element.textContent
+        : paragraphs.map((paragraph) => paragraph.textContent ?? "").join("\n\n");
+    };
     const lineBox = (element: Element | null | undefined) =>
       element === null || element === undefined
         ? null
@@ -382,7 +454,7 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       return {
         answerAuthor: text(answerLine?.querySelector(selectors.answerAuthor) ?? null),
         answerLine: text(answerLine),
-        answerText: row.querySelector(selectors.answerText)?.textContent ?? null,
+        answerText: answerWords(row.querySelector(selectors.answerText)),
         author: text(row.querySelector(`${selectors.nodeMargin} ${selectors.nodeAuthor}`)),
         authorShape:
           row

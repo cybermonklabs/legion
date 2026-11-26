@@ -42,6 +42,9 @@ type fixture struct {
 	dsn      string
 	pool     *pgxpool.Pool
 	provider *oauth.Provider
+	// store is the store the provider runs on, for a test that sets what a deployment sets on it
+	// before the broker serves (SetSessionPairs).
+	store *oauthstore.Store
 
 	mu        sync.Mutex
 	userCodes []string
@@ -92,7 +95,7 @@ func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture
 	if err != nil {
 		t.Fatalf("oauth.New: %v", err)
 	}
-	f := &fixture{dsn: dsn, pool: pool, provider: provider}
+	f := &fixture{dsn: dsn, pool: pool, provider: provider, store: store}
 	hooks := oauth.TokenHooks{
 		Before: func(_ context.Context, _ oauth2.GrantType, _ map[string]any) error {
 			f.mu.Lock()
@@ -109,7 +112,7 @@ func newFixtureOn(t *testing.T, dsn string, adjust func(*oauth.Config)) *fixture
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /device_authorization", func(w http.ResponseWriter, r *http.Request) {
-		provider.DeviceAuthorize(w, r, func(ctx context.Context, _ url.Values, userCode string) error {
+		provider.DeviceAuthorize(w, r, provider.VerificationURL(), func(ctx context.Context, _ url.Values, userCode string) error {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			_, f.sawTx = oauthstore.TxFrom(ctx)

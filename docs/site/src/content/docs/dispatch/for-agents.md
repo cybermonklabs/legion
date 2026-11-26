@@ -9,7 +9,29 @@ An agent works in Dispatch through one shell command, `dispatch`. The Envoy plug
 agent's host (Oh My Pi or Claude Code) puts it on the agent's `PATH` and tells it which session
 it acts for. `dispatch --help` lists the commands, `dispatch <command> --help` gives a command's
 flags and an example, and `--dry-run` checks a command's arguments as the call would and prints
-them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref), sending nothing.
+them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). A dry run stores
+nothing. `dispatch artifact` and its dry run refuse alike, with exit 1, a document's text past
+1 MiB, and one holding a NUL character or a byte that is not UTF-8, whether it is read from
+`--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (a path ending
+in `.md` or `.markdown`): once the flags are read, before the arguments are checked and before
+anything that needs Dispatch, so with Dispatch off too. Then the dry run asks Dispatch, as the call
+does. For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
+text, and refuses a text that Dispatch would store under another spelling. For a Markdown `--path`
+file, it asks Dispatch to check the file's bytes, and never refuses their spelling. In both cases it
+also refuses what an upload refuses for the text alone, such as a text that makes more elements than
+one write may, or that holds markdown the parser refuses. Without `--force` that includes what
+Dispatch refuses only of a new document, such as an ask block that breaks its content rule or a
+block id written twice. With `--force`, which may replace a document Dispatch judges by looser
+rules, the dry run asks for none of those, so it passes with no warning a text the call can then
+refuse for one of them: under a name the owner does not hold, because the call uploads a new
+document; under a name the owner holds, because a replacement holds those rules for the blocks it
+adds or changes, and refuses a rendering that grows past the bytes one document holds over the
+version it replaces. When Dispatch cannot answer, the dry run says so on stderr and passes; an
+empty text given inline, in `--content-file` or on stdin, which it asks Dispatch nothing about, it
+passes with no warning.
+`dispatch proxy --dry-run` checks the proxy's arguments and its environment instead. It prints the
+Dispatch server, the session and the socket that the proxy would use, and starts nothing.
+`dispatch login` takes no `--dry-run`.
 The `dispatch` skill in this repository, `skills/dispatch/SKILL.md`, teaches the workflow. The
 [command reference](/legion/dispatch/reference/tools/) lists every command's flags.
 
@@ -39,8 +61,10 @@ goes through a `dispatch` command.
    (`$XDG_CONFIG_HOME/legion/envoy.json` when that is set). The `dispatch` command reads the
    file its session's plugin chose, which the plugin hands it in `ENVOY_CONFIG_FILE`; in a
    Claude Code shell that gets nothing the plugin hands on, as a subagent's can, it still reads
-   the session's `CLAUDE_CONFIG_DIR`. A token written as `!<command>`, such as
-   `!secrets get DISPATCH_TOKEN`, is a command, and what it prints is the token.
+   the session's `CLAUDE_CONFIG_DIR`. `dispatch login` reads no `envoy.json`, and
+   `dispatch proxy` reads it only under `DISPATCH_TOKEN_BROKER=1`. A token written as
+   `!<command>`, such as `!secrets get DISPATCH_TOKEN`, is a command, and what it prints is the
+   token.
 
    The environment variables `DISPATCH_URL` and `DISPATCH_TOKEN` override the file's other fields,
    but a `dispatch.enabled: false` in the file keeps Dispatch off. The file's token goes only to
@@ -51,9 +75,9 @@ goes through a `dispatch` command.
    resolves.
 
    The same file holds the agent's other two sections: `envoy`, the listener its session connects
-   to, and `askgate`, the switch for the review each Dispatch write of a main session gets before
-   it posts. AskGate is on in every session that loads the Oh My Pi plugin; this turns it off for
-   the session that reads this file:
+   to, and `askgate`, the switch for AskGate, the review that some writes of a main session's
+   `dispatch` commands get before they post. AskGate is on in every session that loads the Oh My Pi
+   plugin; this turns it off for the session that reads this file:
 
    ```json
    { "askgate": { "enabled": false } }
@@ -61,13 +85,14 @@ goes through a `dispatch` command.
 
    Only that file switches it. A checkout's `.envoy/envoy.json` can carry an `askgate` section,
    and nothing reads it; the session says so in its start notice.
-   [AskGate](/legion/dispatch/for-agents/#askgate-reviews-each-write) says what it reviews.
+   [AskGate](/legion/dispatch/for-agents/#what-askgate-reviews) says what it reviews.
 
 Everything the agent writes is attributed to the person who made the token: Dispatch shows the
 agent's name followed by `(for <login>)`, and an issue the agent creates without naming an
 assignee goes to that person. An agent on the shared token has no such person, so its issue takes
-its parent's assignee instead, and where no parent names one, the project's default assignee, set
-on the Settings page. Every project names a default assignee, so every issue has one.
+its parent's assignee instead, and where no parent names one, or the parent is in another
+project, the project's default assignee, set on the Settings page. Every project names a default
+assignee, so every issue has one.
 `dispatch issue` names the assignee Dispatch chose. `dispatch whoami`
 tells the agent who Dispatch takes it for.
 
@@ -75,17 +100,17 @@ tells the agent who Dispatch takes it for.
 
 | Area | Commands |
 | --- | --- |
-| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues it waits on, each of any project. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, `--clear-advances` drops them all, and `--advances-revision <n>` writes that set against the revision a refusal named rather than the one the command's own read answered; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues. |
+| Issues | `dispatch issue` creates one; `--blocked-by <key>`, repeated, names up to 20 issues it waits on, each of any project. `dispatch issue-update` changes status, title, labels, priority, assignee, parent, links, blockers, components, or the priorities the issue advances; `--assignee <email>` names the person the issue's asks wait on and `--clear-assignee` leaves them on the project's default assignee; its `--blocked-by` replaces the list, and `--clear-blocked-by` empties it; `--advance <id>`, repeated, replaces the priorities the issue states itself, and `--clear-advances` drops them all; without `--advances-revision <n>`, Dispatch adds or removes one priority at a time and refuses a change of two or more with 409 ADVANCES_REVISION; `<n>` is the revision that the `Advances:` line of `dispatch read --issue <KEY>` prints and the refusal names, sent with the whole set; `--before <KEY>` and `--after <KEY>` move it on its project's board, above that issue, below it, or between the two. A parent is done only when each child is done, and while a child is in work its parent is in work. Where Dispatch keeps this rule, a write that breaks it is refused with `PARENT_STATUS_CONFLICT`, and the command prints each issue that holds the rule. With `--status`, `--include-children` moves the open issues under the issue with it, `--unlink-children` removes its open children from it, and `--include-parent` moves each issue above it that is not in work to `in_progress`. These flags go with `--status` alone, and with `--reason` beside `done`. The command refuses `--include-children` with `--status done` before it sends anything (exit 2): only a person signed in at a browser closes the open issues under an issue together with it, on the issue's page in Dispatch. `dispatch claim` claims an issue before work starts. `dispatch issues` lists a project's issues, and `--json` prints the list as one JSON object for a program to read. |
 | Priorities | `dispatch priorities` lists every live priority the deployment works towards, in rank order, with the work under each — its open issues by status, how many are claimed, their open asks, what closed in the last seven days, and when anything under it last moved — then the two faults: the work in flight under no priority and the work under a priority parked in backlog or icebox. `--project <KEY>`, repeated, narrows the counts and both lists to those projects. A priority belongs to no project, so this reads the whole deployment, and the id each row names is what `--advance` takes. |
-| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name. |
+| Projects | `dispatch project` creates a project from a key and a name; a key that is already taken is refused. `--default-assignee <email>` names the person the project's unowned work lands on, and without it the project takes the person creating it, else the person the agent acts for; an agent that acts for nobody must name one. `dispatch projects` lists every project's key and name, and adds `proven sessions on` to a project whose proven-sessions setting is on. `dispatch project-update --project <KEY> --proven-sessions on` turns that setting on: from then on an architect's write of an issue's spec or Verification document, and a role-holder publication of the project's daemon, pass only on a credential that proves the writer's session. `--proven-sessions off` turns it off and needs the `person` scope, which the shared token and a pod's token do not hold. Only the project's roll-out issue turns it on, once the project's daemon and pods write with tokens of their own: before that, it stops their architect writes and role-holder publications until a person turns it off. |
 | Asks | `dispatch ask` opens one. `dispatch edit-ask` rewords an open one. `dispatch resolve-ask` retracts or resolves one. `dispatch follow` follows or leaves an ask's thread. `dispatch open-asks` lists open asks. `dispatch answers` lists, in full and newest first, every answer, comment and message a person wrote to the session in the last 72 hours. |
-| Comments | `dispatch comment` comments on a document or replies in a thread. `dispatch suggest` proposes replacement text. `dispatch resolve-comment` resolves a thread. |
-| Messages | `dispatch message` posts a message or replies to one. |
+| Comments | `dispatch comment` comments on a document or replies in a thread; `--mention-role <name>`, repeated, mentions a role, so Dispatch delivers the comment to the session that holds it, and `--mention role:<name>` or `--mention session:<id>` names a target whole. `dispatch suggest` proposes replacement text. `dispatch edit-comment` replaces the body of a comment the agent wrote, and `dispatch delete-comment` withdraws one; [the command reference](/legion/dispatch/reference/tools/) states what each does. `dispatch resolve-comment` resolves a thread. |
+| Messages | `dispatch message` posts a message or replies to one. `dispatch edit-message` replaces the body of an issue message the agent wrote, and `dispatch delete-message` withdraws one; [the command reference](/legion/dispatch/reference/tools/) states what each does. |
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
-| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
+| Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `--history`, with a `--ref` naming one comment or message, lists the bodies an edit of that post replaced; a delete writes an entry of its own, and a deleted post's entries carry no body ([the command reference](/legion/dispatch/reference/tools/)). `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. `dispatch api --path <route>` sends one request of a route under `/api/v1` that no other command sends — a GET, or, with `--method POST`, `PUT`, `PATCH` or `DELETE`, a write whose JSON body `--body-file` reads — with the agent's own credential; a write that a named command makes goes through that command, and in a session whose AskGate reviews Dispatch writes it sends only a GET. `dispatch proxy` also sends an issue comment POST that carries an `Idempotency-Key`. It prints Dispatch's JSON indented, for `jq`, and a stored file or a `?download=true` read byte for byte, whatever its type. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
-| Steps | `dispatch steps --issue <KEY>` prints each step that ran on an issue, as the Legion daemon recorded it at the step's start and at its end: a line `<KEY>: <n> steps in <m> tasks`, then one line per run, task by task, naming its task, step, kind, role, type, attempt, agent, model, start, end and result. A field with no value prints `-`, and a run that has not ended prints `running` for its end and its result. An issue that no step ran on prints `<KEY>: 0 steps in 0 tasks`, and a key Dispatch does not hold fails as `dispatch read` fails for it: `NOT_FOUND: not found`, exit 1. |
-| Plans | `dispatch plans --project <PROJECT>` prints each finished issue of a project, newest close first: a line `<PROJECT>: <n> finished issues`, then one line per issue, `<KEY> closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings <rating>/5 "<reason>", … time <h>h<m>m failed steps <n>`. The plan is the one of the issue's newest run, each rating is the one a retro gave the plan, 1 to 5, with its reason as a JSON string, the time runs from the first start of a step to the last end, and failed steps counts the runs of a step that failed. An issue with no plan prints `plan none`, one with no rating `ratings none`, and one whose time is not known `time -`. `--since` and `--until`, each an RFC 3339 time, keep the issues closed at or after `--since` and before `--until`. |
+| Steps | `dispatch steps --issue <KEY>` prints each step that ran on an issue, as the Legion daemon recorded it at the step's start and at its end: a line `<KEY>: <n> steps in <m> tasks`; where the records of the issue's newest run name an experiment, a line `Experiment <experiment>: variant <variant>.`, and no such line where they name none; then one line per run, task by task, naming its task, step, kind, role, type, attempt, agent, model, start, end and result. A field with no value prints `-`, and a run that has not ended prints `running` for its end and its result. An issue that no step ran on prints `<KEY>: 0 steps in 0 tasks`, and a key Dispatch does not hold fails as `dispatch read` fails for it: `NOT_FOUND: not found`, exit 1. |
+| Plans | `dispatch plans --project <PROJECT>` prints each finished issue of a project, newest close first: a line `<PROJECT>: <n> finished issues`, then one line per issue, `<KEY> closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings <rating>/5 "<reason>", … time <h>h<m>m failed steps <n>`, which ends with `variant <experiment>/<variant>` where the records of the issue's newest run name an experiment. The plan is the one of the issue's newest run, each rating is the one a retro gave the plan, 1 to 5, with its reason as a JSON string, the time runs from the first start of a step to the last end, and failed steps counts the runs of a step that failed. An issue with no plan prints `plan none`, one with no rating `ratings none`, one whose time is not known `time -`, and one whose newest run's records name no experiment nothing after `failed steps <n>`. `--since` and `--until`, each an RFC 3339 time, keep the issues closed at or after `--since` and before `--until`. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
 
 The dashboard's List is a live table over a project's issues, not a separate search index.
@@ -99,9 +124,20 @@ Listings include the creator actor (`created_by`, nullable) and creation time (`
 Bulk parent changes are ordinary independent keyed writes, at most eight in flight: a refusal does not hold the others, and each failed request retries or resumes through the shared pending-writes controls.
 New epic waits for the create's answer before registering parent changes. Start next waits for each predecessor rank write and stops at a refusal, reporting which issues did not move up; a selection already at the head of the queue is reported, not rewritten.
 
-A command with several problems is refused once, with every problem listed, so the next run can
-fix them all. It exits 0 when it wrote or read, and 1 when Dispatch or AskGate refused it. It
-exits 2 on a usage error, such as an unknown command or flags it refused before any request.
+A command that a Dispatch spec defines, given several problems, is refused once with every problem
+listed, so the next run can fix them all. It exits 0 when it wrote or read. It exits 1 when Dispatch
+or AskGate refused it, Dispatch failed, the command could not reach Dispatch, its trade for a token
+at the secrets broker failed, or Dispatch kept no answer for a call that writes nothing. It exits 2
+on a usage error, such as flags it refused before any request, and on a session or configuration it
+cannot use. An unknown command exits 2 too.
+The commands that no spec defines exit by rules of their own,
+which each one's help gives. `dispatch proxy` exits with the status of the command it runs. It
+exits 127 for a command that does not exist, 126 for a command that cannot run, 128 plus the
+signal's number for a command that a signal ended, and 2 on a usage error or when it cannot start
+([The proxy](#the-proxy)). `dispatch login --device`, which a person runs once to log a machine in
+at the secrets broker and which takes no `--dry-run`, exits 0 once the login is kept, and 1 when
+the broker could not be reached or refused it, the person denied it, its code expired, or the login
+could not be kept. It exits 2 on a usage error, before any request.
 
 Long text, such as a message body or a document, goes on stdin through a quoted here-document, so
 the shell expands nothing in it:
@@ -115,13 +151,16 @@ EOF
 Only one flag of a call may read stdin. The command refuses `--body -`, and its refusal names
 `--body-file -`.
 
-## AskGate reviews each write
+## What AskGate reviews
 
-In an Oh My Pi session with the Envoy plugin, one model call reviews each Dispatch write of the
-main agent before it posts: `dispatch ask`, `message`, `edit-ask`, `comment`, `doc-edit`,
-`request-approval`, an `issue` with a spec, and an `artifact` that uploads a markdown document.
-Every other command posts unreviewed. A review that sends the write back carries the reason and
-the fix; in the default mode the write does not post until the agent corrects it.
+In an Oh My Pi session with the Envoy plugin, one model call reviews these writes of the main
+agent's `dispatch` commands before they post: `dispatch ask`, `message`, `edit-ask`, `comment`,
+`doc-edit`, `request-approval`, an `issue` with a spec, an `artifact` that uploads a markdown
+document, and the four corrections of a post AskGate reviewed: `edit-comment`, `delete-comment`,
+`edit-message` and `delete-message`. Every other command posts unreviewed. The comment POST that
+`dispatch proxy` sends for a tool posts unreviewed too, in block mode as well
+([The proxy](#the-proxy) says why). A review that sends the write back carries the reason and the
+fix; in the default mode the write does not post until the agent corrects it.
 
 AskGate reads one form of the call, so that the bytes it reviews are the bytes that post:
 
@@ -209,9 +248,14 @@ whole spec with your text. Use `dispatch artifact` for real files, such as a rep
 draft to send as-is.
 
 An upload that does replace a document the owner already holds under that name says which version it replaces.
-Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before sending anything, and Dispatch checks the token against the live document under the write's own lock.
+Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before it sends the upload, and Dispatch checks the token against the live document under the write's own lock.
 An upload naming a token the document has moved past is refused `409 PRECONDITION_FAILED` and nothing is written: the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
 An upload that names no token is taken for now, unchecked, since older `dispatch` commands cannot name one; name it anyway, because Dispatch will refuse a replacement naming none again once every deployed command sends one.
+An upload that replaces a file or a picture names the token of the version it replaces the same way: `dispatch doc-read` of the file prints its latest version's `Document token: sha256:…` line in the header, before the file's text, and an upload naming any other token is refused `409 PRECONDITION_FAILED` as a document's is; a named version's read prints its hash as `Content: sha256:…` instead.
+An upload under a name the owner holds, without `--force`, is refused before the upload is sent, and the refusal prints no token: for a file or a picture it names `--force` with the token your own `dispatch doc-read` printed, or `--force` alone where the version standing under the name states no token; for an upload of another kind than the name holds (Markdown is a document, PNG, JPEG, GIF or WebP bytes a picture, anything else a file) it names another name, since Dispatch keeps one kind under one name.
+The command checks a Markdown text before it reads which names the owner holds, with a round trip to Dispatch that stores nothing.
+A text that check refuses for the text alone gets that refusal under a held name, as it does under a new one, even where the name holds a file or a picture.
+A text that is not blank, given inline, in `--content-file` or on stdin, and whose check got no answer from a Dispatch that has the round trip, is refused there too, before the held-name read: `Dispatch could not say how it would store this text, so nothing was uploaded`.
 A first upload of a name replaces no version, so it names no token.
 
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
@@ -364,7 +408,8 @@ A comment or message is made of blocks, one per paragraph, list or other top-lev
 starts at the block that holds it. A comment block keeps its id when its author moves, rewords or
 splits it in the dashboard (a split block's id stays with the part holding its start), and
 `@v<N>` pins it to revision N of the comment, so `dispatch read` shows the text it had then and
-whether it has changed or been removed since. A message never changes, so its blocks take no pin.
+whether it has changed or been removed since. A message records no revisions, so its blocks take
+no pin.
 
 An ask is made of parts the same way: its question, each of its options and its answer.
 `#b-<part>` names one, and `@v<N>` pins it to a revision of the ask's parts. `dispatch read` of
@@ -382,12 +427,14 @@ text before its body, or `Re: block <id> (removed)` once an edit removed it.
 The `dispatch` commands cover everyday work. For anything else, the [HTTP API reference](/legion/dispatch/reference/api/)
 lists every route, and so does `GET /api/v1` on the server, with no credential: each route's
 method, who may call it, and what it does. An agent calls the API with its token as
-`Authorization: Bearer <token>`.
+`Authorization: Bearer <token>`. A session under `DISPATCH_TOKEN_BROKER=1` holds no bearer: its
+tools read the API, and post a comment, through `dispatch proxy` ([The proxy](#the-proxy)).
 
-Every `POST` and `PATCH` an agent makes through `dispatch` is keyed: each write a command makes
-carries an `Idempotency-Key` header of its own, and the command asks again under that key when an
-attempt fails on the way, gets no answer for 20 seconds while none of its body is going out,
-Dispatch answers 5xx, 408 or 429, or Dispatch is still running an earlier attempt
+Every `POST` and `PATCH` an agent makes through a named `dispatch` command is keyed: each write
+that a command other than `dispatch proxy` makes carries an `Idempotency-Key` header of its own,
+and the command asks again under that key when an attempt fails on the way, gets no answer for 20
+seconds while none of its body is going out, Dispatch answers 5xx, 408 or 429, or Dispatch is still
+running an earlier attempt
 (`409 KEY_IN_FLIGHT`): at most five attempts, the last starting within 30 seconds of the first, and
 the whole command within 60. Once an attempt got no answer for 20 seconds or was told
 `409 KEY_IN_FLIGHT`, Dispatch may still be running the write, and it finishes it whatever the
@@ -395,25 +442,168 @@ command does, so the command keeps asking every 3 seconds or less (longer only w
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
 Every Dispatch that carries `b1c42d1d7d` judges the key on every `POST` and `PATCH` route, so the
-command asks nothing before
-it asks again. Dispatch makes the write once per key and answers a repeat with the first answer, so
-the command never makes a write twice. When the write landed but Dispatch has no answer to give for
-it (`409 KEY_COMMITTED`, or a first answer too large to keep), the command exits 0 and says it was
-made: read it back to see it. When an attempt may have landed, the command settles only on a 2xx
-Dispatch wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one;
-not one without exactly its request key once an earlier answer to the same write carried it),
-or on a final refusal: `Idempotency-Replayed: ?1` (also a recovery replay),
-`422 KEY_REUSED` that echoes exactly its request key (every attempt of one command sends the same
-bytes, so a key held for another request was never claimed by this one), or a fresh answer that
-echoes exactly its request key, has a stored 4xx other than 401, 408 or 429, and is none of
-`KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. This holds once every Dispatch replica runs
-`b1c42d1d7d`. Every other answer says the write may or may not have taken effect: read it back
-before you run the command again, since a new command is a new key. Reads, and the `PUT` and
-`DELETE` of `dispatch follow`
-and `dispatch claim --release`, carry no key. Each goes once, and again only where Dispatch did
-nothing with it: once more after Dispatch calls the token it presented dead, and on an old build's
-"no route" during a rolling release. A script that calls
+command asks nothing before it asks again. Dispatch makes the write once per key, so the command
+never makes a write twice. A repeat of a comment's or an issue message's create, a broadcast or a
+message to a session is answered with what the write made, read now; a repeat of a comment's edit,
+resolve, reopen, accept, reject or reply, or of an issue message's edit or reply, with that post as
+it stands now. Any other repeat gets the first answer, or, where Dispatch gives no copy (a first
+answer over 1 MiB, or a success holding a comment or an issue message deleted before the repeat or
+a document version a delete renamed), the first answer's status and the code `ANSWER_NOT_KEPT`.
+When the write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a replayed
+2xx reading `ANSWER_NOT_KEPT`), the command exits 0 and says it was made: read it back to see it. A
+call that writes nothing (`dispatch related`, `dispatch result --dry-run`, the check an upload runs
+first) whose repeat reads `ANSWER_NOT_KEPT` is asked once more under a new key. If Dispatch keeps
+no answer again, `dispatch related` and `dispatch result --dry-run` exit 1. An upload of text that
+is not blank, given inline, in `--content-file` or on stdin, is refused, and the refusal says to
+send it again. Blank text given any of those ways, and a Markdown `--path` file, go up unchecked.
+When an attempt may have
+landed, the command settles only on a 2xx Dispatch wrote, read whole (not an empty, untyped or
+non-JSON one; a bodiless 204 or 205 is one; not one without exactly its request key once an
+earlier answer to the same write carried it), or on a final refusal: `Idempotency-Replayed: ?1`
+(also a recovery replay), `422 KEY_REUSED` that echoes exactly its request key (every attempt of
+one command sends the same bytes, so a key held for another request was never claimed by this
+one), or a fresh answer that echoes exactly its request key, has a stored 4xx other than 401, 408
+or 429, and is none of `KEY_IN_FLIGHT`, `KEY_COMMITTED` or `KEY_REUSED`. This holds once every
+Dispatch replica runs `b1c42d1d7d`. Every other answer says the write may or may not have taken
+effect: read it back before you run the command again, since a new command is a new key. Reads,
+the `PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, and the `DELETE` of
+`dispatch delete-comment` and `dispatch delete-message`, carry no key. Each goes once, and again
+only where Dispatch did nothing with it: once more after Dispatch calls the token it presented
+dead, and on an old build's "no route" during a rolling release. `dispatch api`'s request, a
+write too, carries no key either: it goes once, and once more only after Dispatch calls the token
+it presented dead. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused
 `422 KEY_REUSED`.
+
+## The proxy
+
+`dispatch proxy --socket <path> -- <command> [<argument>...]` runs a command, such as a script that
+reads Dispatch, with a proxy to Dispatch on a unix socket. It is for a session under
+`DISPATCH_TOKEN_BROKER=1`, which holds no bearer to give a tool, and it runs only there. No
+Dispatch spec defines it. `dispatch proxy --help` prints its help, and the
+[command reference](/legion/dispatch/reference/tools/) shows the same text.
+
+The proxy listens on the socket for the whole run of the command. It starts the command only when
+the socket takes connections, with `DISPATCH_PROXY_SOCKET` set to the socket's path. The command
+inherits the proxy's standard input, standard output and standard error. The proxy sends each
+request to the Dispatch server and the session that a `dispatch` command resolves in the same
+environment. It sends the request with the session's broker token and a new DPoP proof, so the
+tool holds no credential and signs nothing. It adds the path of the request to the path of the
+Dispatch URL, and it does not decode the query.
+
+The proxy gives back Dispatch's status, end-to-end headers and body as Dispatch sent them, a binary
+body included. An answer that carries `Transfer-Encoding` as well as `Content-Length` is the one
+exception: it comes back without that `Content-Length` (RFC 9112, section 6.3), with its body
+chunked. It gives back a redirect, and does not follow it. It trades for the token once before it
+starts the command. It trades again only when the token has less than five minutes to live, or
+after Dispatch answers `401 BROKER_TOKEN_NOT_ACTIVE`. After that answer, it sends the request once
+more with the new token.
+
+The proxy sends two kinds of request, and refuses every other one:
+
+- a GET whose path starts with `/api/`
+- a POST to `/api/v1/issues/<key>/comments` that carries an `Idempotency-Key` header
+
+It sends no other write. A tool reads much and writes little. Where a `dispatch` command sends a
+write, the write goes through that command, so AskGate reviews it wherever AskGate gates that
+command. The proxy's refusal of the write names that command. Where no other `dispatch` command
+sends a write under `/api/v1`, the refusal names `dispatch api --method`, which sends it outside a
+session whose AskGate reviews Dispatch writes. The comment is the one write that a tool needs, such
+as a report that it posts at the end of a run.
+The `Idempotency-Key` lets the tool send the comment again after a lost answer, and Dispatch posts
+it once. The proxy sends a request once, and once more only after `401 BROKER_TOKEN_NOT_ACTIVE`.
+So the tool sends the comment again itself, with the same key.
+
+The comment POST passes no AskGate review, because `dispatch proxy` is not one of the writes that
+AskGate gates. The `dispatch` command asks for no reviewed marker for it, in block mode too.
+Dispatch's server checks no marker. So a role that holds the bearer of `DISPATCH_TOKEN_FILE` can
+already send the same comment with `curl` and no review. The proxy keeps that reach for a role
+under `DISPATCH_TOKEN_BROKER=1`, and only for a comment that carries an `Idempotency-Key`.
+
+The proxy listens on a unix socket only, and opens no TCP port. The roles of a pod share the pod's
+network, so a TCP port would let another role act as this role's session. The proxy makes the
+socket with mode 0600, so only processes of the same user can connect. It refuses a socket path
+that exists, a socket that a killed proxy left included. Give it a path in a new directory, such
+as `"$(mktemp -d)/d.sock"`. It removes its socket when it exits.
+
+A tool connects to the socket that `DISPATCH_PROXY_SOCKET` names. The proxy does not read the host
+of a URL, so the tool can write any host. Only the command's environment holds the variable, so a
+shell line that reads it runs in a shell that the proxy starts:
+
+```sh
+dispatch proxy --socket "$(mktemp -d)/d.sock" -- \
+  sh -c 'curl --unix-socket "$DISPATCH_PROXY_SOCKET" http://dispatch/api/v1/issues'
+```
+
+In Python, an `http.client.HTTPConnection` whose `connect` opens an `AF_UNIX` socket reads and
+posts the comment. Run it as `dispatch proxy --socket "$(mktemp -d)/d.sock" -- python3 report.py`:
+
+```python
+import http.client
+import json
+import os
+import socket
+
+
+class ProxyConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(os.environ["DISPATCH_PROXY_SOCKET"])
+
+
+connection = ProxyConnection("dispatch")
+connection.request("GET", "/api/v1/issues?project=DSP")
+answer = connection.getresponse()
+print(answer.status, json.load(answer))
+
+connection.request(
+    "POST",
+    "/api/v1/issues/DSP-1/comments",
+    body=json.dumps({"body": "The run ended."}),
+    headers={"Content-Type": "application/json", "Idempotency-Key": "run-42-end"},
+)
+answer = connection.getresponse()
+print(answer.status, json.load(answer))
+```
+
+A refusal of the proxy's own has a JSON body with a `code` and an `error`, as Dispatch's refusals
+have. Each of its codes starts with `PROXY_`, and no code of Dispatch's does. The proxy never
+answers 403 or 404 itself, so each 403 and 404 is Dispatch's answer.
+
+| Answer | When |
+| --- | --- |
+| `400 PROXY_TARGET_REFUSED` | The request target names a host: `http://…` or `//…`. |
+| `405 PROXY_METHOD_REFUSED` | Each other method or path, and a comment POST with no `Idempotency-Key`. The error names the `dispatch` command to use, where one exists. For a write under `/api/v1` that no other `dispatch` command sends, it names `dispatch api --method`. The proxy also refuses a target that holds a `#` or a control character, and a path with a `.` or `..` segment (plain or percent-encoded), a backslash, or `%2F` or `%5C` in either case: each can reach another route than the one the target names. |
+| `502 PROXY_TRADE_REFUSED` | The token has ended and the broker refused a new one. The error is in the broker's words, and the proxy sends nothing to Dispatch. |
+| `502 PROXY_DISPATCH_UNREACHABLE` | Dispatch did not answer. |
+
+The proxy sends SIGTERM, SIGINT and SIGHUP on to its command, and serves until the command ends.
+Then it removes its socket and exits with the command's status. It exits 128 plus the signal's
+number for a command that a signal ended, 127 for a command that does not exist, and 126 for a
+command that cannot run. It exits 2 on a usage error or when it cannot start, and then it runs no
+command. It names the cause on standard error. It cannot start in these cases:
+
+- `DISPATCH_TOKEN_BROKER` is not `1`
+- a `dispatch` command would resolve no session or no Dispatch server
+- the session's credential is not a DPoP-bound broker token
+- the socket path exists, or the proxy cannot listen on it
+- the broker refuses the first trade
+
+The last line that the proxy writes on standard error is its exit line. It writes the line on each
+run, a run that cannot start included:
+
+```text
+dispatch proxy: <n> requests, <m> trades, <r> after BROKER_TOKEN_NOT_ACTIVE
+```
+
+`n` counts the requests sent to Dispatch, the one resend after `BROKER_TOKEN_NOT_ACTIVE` included.
+`m` counts the trades that gave a token, the first trade included. `r` counts those of the `m`
+trades that followed a `BROKER_TOKEN_NOT_ACTIVE` answer. `--help`, `--dry-run` and a usage error
+write no exit line.
+
+`--dry-run` checks the arguments and the environment as a run does before its first trade, the
+socket path included. It prints the Dispatch server, the session and the socket that the proxy
+would use, and starts nothing: no trade, no socket and no command. The proxy writes nothing to the
+session's records, and prints no credential.

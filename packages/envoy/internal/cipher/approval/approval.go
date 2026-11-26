@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -98,10 +99,13 @@ type Config struct {
 	MachineLoginURL string
 	// Store holds the sessions.
 	Store *store.Store
-	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision),
-	// and its group reader (requests.Machine.Groups) says whether the signed-in person is a member
-	// of a group approver and so sees the buttons (record.MayDecide).
+	// Machine reads the records and decides them (ReadRecord, PendingForApprover,
+	// ApplyPageDecision), and its group reader (requests.Machine.Groups) says whether the signed-in
+	// person is a member of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 }
 
 // Page is the approval page and its sign-in, whose methods are the broker's routes for them.
@@ -318,6 +322,9 @@ const (
 	codeRecordIDInput = "RECORD_ID_INPUT"
 	// A signed-in person's GET /approve/{record} of a record the broker does not have.
 	codeRecordNotFound = "NOT_FOUND"
+	// A signed-in person's GET /approve/{record} when Dispatch calls them a restricted member, who
+	// decides no secret request, so the page shows them none (Page.mayShowRecords).
+	codeRestrictedViewer = "NOT_APPROVER"
 	// A POST whose form could not be read: a decision's or a sign-out's.
 	codeFormUnreadable = "FORM_UNREADABLE"
 	// A decision that is neither approve nor deny.
@@ -330,6 +337,9 @@ const (
 	codePageExpired = "PAGE_EXPIRED"
 	// A decision form naming a record its page did not print.
 	codeRecordNotPrinted = "RECORD_NOT_PRINTED"
+	// An approval whose form's profile fingerprints are not the live ones (profilesMoved): a
+	// profile it names changed since its page was made.
+	codeProfileChanged = "PROFILE_CHANGED"
 	// A POST from another origin than the broker's own (refuseOrigin).
 	codeOriginRefused = "ORIGIN_REFUSED"
 	// A request over the address bucket the page's routes spend (WriteRateLimited).
@@ -342,10 +352,15 @@ const (
 	codeSignInNextInvalid = "SIGN_IN_NEXT_INVALID"
 	// A sign-in the provider itself refused, returning an error and no code.
 	codeSignInProviderRefused = "SIGN_IN_PROVIDER_REFUSED"
+	// A sign-in callback whose code is longer than the broker sends a provider (oidc.MaxCallbackCode).
+	codeSignInCodeInvalid = "SIGN_IN_CODE_INVALID"
 	// A sign-in whose code the provider would not exchange, or whose ID token did not verify.
 	codeSignInUnverified = "SIGN_IN_UNVERIFIED"
 	// A verified sign-in the Workspace rule refuses (oidc.WorkspaceLogin).
 	codeSignInAccountRefused = "SIGN_IN_ACCOUNT_REFUSED"
+	// A verified sign-in by a Google account that no longer holds the person's address, which
+	// Dispatch named replaced when another account took it (store.ErrSubjectReplaced).
+	codeSignInAccountReplaced = "SIGN_IN_ACCOUNT_REPLACED"
 )
 
 // writeMessage writes m as the page's answer with status, noting code on the answer's record

@@ -28,10 +28,10 @@ package deletes it from the published reference with no error anywhere.
   own graph so the answer still comes from the real code.
 - **Add the assertion that fails when the answer goes missing again**, at the level the reference
   prints it.
-- **A new parsed directory, a new file read through `..`, a new `go` command: each owes
-  `.github/scripts/ci_job_reads.py` its entry**, whatever the filters already cover. The gate
-  proves the filters cover the model, not that the model is complete, so an unmodelled read
-  leaves a glob nothing requires and a later narrowing drops it with the gate still green.
+- **A new parsed directory, a new file read through `..`, a new `go` command: each owes a
+  declaration**, a `//ci:` line at the top of the test that does it or a read of its job's gate in
+  `.github/ci-gates`, whatever the filters already cover. The filters are computed from what is
+  declared, so an undeclared read is in no filter, and a later narrowing drops it unseen.
 
 ## Evidence
 

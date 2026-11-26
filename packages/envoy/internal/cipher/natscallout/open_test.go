@@ -76,17 +76,20 @@ func TestAGrantWithAnEmptyDirectionIsRefused(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "grant opens every subject: its "+direction+" allow list is empty", response.Error)
 			require.Empty(t, response.Jwt, "a user was encoded for a grant that opens its %s direction", direction)
-			_, refused := admit(Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
+			_, refused := admit(config.GlobalNATSAccount, Request{UserNkey: userKey}, Decision{Grant: grant}, nil)
 			require.Equal(t, labelOpenDirection, refused.Label)
 		})
 	}
 	t.Run("every grant natsgrant builds closes both directions", func(t *testing.T) {
 		session, err := natsgrant.Session("ses_a")
 		require.NoError(t, err)
+		edge, err := natsgrant.Edge("edge-a", []string{"PRIV"})
+		require.NoError(t, err)
 		for name, grant := range map[string]natsgrant.Permissions{
 			"Session": session, "Daemon": natsgrant.Daemon(), "Measure": natsgrant.Measure(),
 			"Listener": natsgrant.Listener("example-hub"), "Dispatch": natsgrant.Dispatch("example-dispatch"),
 			"Host": natsgrant.Host("example-host-a"), "ListenerHost": natsgrant.ListenerHost("example-hub"),
+			"Edge": edge,
 		} {
 			direction, open := natsgrant.OpenDirection(grant)
 			require.False(t, open, "%s opens its %s direction", name, direction)
@@ -190,7 +193,7 @@ func openRequest(xkey nkeys.KeyPair, msg *nats.Msg) (*jwt.AuthorizationRequestCl
 // server sent one.
 func admitUnchecked(issuer, xkey nkeys.KeyPair, claims *jwt.AuthorizationRequestClaims, serverXKey string, publish, subscribe []string) ([]byte, error) {
 	user := jwt.NewUserClaims(claims.UserNkey)
-	user.Audience = globalAccount
+	user.Audience = config.GlobalNATSAccount
 	user.Pub.Allow.Add(publish...)
 	user.Sub.Allow.Add(subscribe...)
 	userJWT, err := user.Encode(issuer)

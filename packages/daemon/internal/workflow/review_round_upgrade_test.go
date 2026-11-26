@@ -45,7 +45,7 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 		if migration.Version == phaseReviewedHeadMigration {
 			continue
 		}
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -78,6 +78,7 @@ func storeBeforeTheReviewedHead(t *testing.T) (*store.Store, *pgxpool.Pool) {
 // The owed entry sent after the upgrade (SendOwedEntry) delivers the stored task word for word,
 // ending with the two sentences.
 func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st, pool := storeBeforeTheReviewedHead(t)
 	const (

@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"strconv"
 	"sync"
 	"time"
@@ -99,14 +98,14 @@ func (realJobClock) At(at time.Time, f func()) jobTimer { return time.AfterFunc(
 
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
 // scheduling its reads by clock, checking each job event against settings, and holding its
-// durable and taking it over under a hold and a lease it takes on leases.
-func newJobIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
+// durable and taking it over under a hold and a lease it takes on leases, timed by tuning.
+func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases intakeLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
 	j := &JobIntake{
 		pool: pool, github: github, clock: clock, settings: settings,
 		ctx: context.Background(), pending: map[runKey]*pendingRun{},
 		reads: make(chan struct{}, reconcilePartialConcurrency),
 	}
-	j.heldDurable = newHeldDurable(natsClient, leases, jobConsumerConfig, jobKey, j.deliver)
+	j.heldDurable = newHeldDurable(tuning, natsClient, leases, jobConsumerConfig, jobKey, j.deliver)
 	return j
 }
 
@@ -125,15 +124,16 @@ func jobKey(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "job", nil
 func (j *JobIntake) Run(ctx context.Context) {
 	j.ctx = ctx
 	defer j.stopPending()
-	j.run(ctx, nil, func() bool { return true })
+	j.run(ctx)
 }
 
 // jobConsumerConfig is the durable's policy: deliveryConsumerConfig's shape with this consumer's
 // name and filter, starting at new messages, since a job event older than the process says nothing
-// the run's end event and the reconcile do not. A take-over recreates it at its ack floor
-// (takeOverConfig). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
-// deliveryConsumerConfig gives.
-func jobConsumerConfig() natsgo.ConsumerConfig {
+// the run's end event and the reconcile do not. A take-over creates it at the stream's next
+// sequence when it does not exist, and otherwise right after its ack floor (takeOver,
+// takeOverStart). Its FilterSubject, AckWait and MaxAckPending keep their values for the reason
+// deliveryConsumerConfig gives, so it takes none of the intake's tuning.
+func jobConsumerConfig(*intakeTuning) natsgo.ConsumerConfig {
 	return natsgo.ConsumerConfig{
 		Durable:        bus.DispatchJobDurable,
 		DeliverSubject: natsgo.NewInbox(),
@@ -163,17 +163,17 @@ func jobConsumerConfig() natsgo.ConsumerConfig {
 func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg := message.msg
 	if j.ctx.Err() != nil || d.stopping.Load() {
-		slog.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
+		d.tuning.log.Warn("dispatch delivery: the job intake stopped before this event was handled; handing it back", "subject", msg.Subject)
 		d.giveBack(msg)
 		return
 	}
 	// The acknowledgement waits for NATS at most bus.ConnLockWait (callNATS): a stop waits for this
 	// handler. One NATS has not taken by then goes on without it, and a failure is logged, as
 	// before: the event's read below does not depend on it.
-	callNATS("acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
+	callNATS(d.tuning, "acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
-		slog.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
+		d.tuning.log.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(j.ctx, jobCheckTimeout)
@@ -199,12 +199,12 @@ func (j *JobIntake) receive(ctx context.Context, payload string) {
 	}
 	runID, err := strconv.ParseInt(job.RunID, 10, 64)
 	if err != nil {
-		slog.Warn("dispatch delivery: job event with a malformed run_id", "run_id", job.RunID)
+		j.tuning.log.Warn("dispatch delivery: job event with a malformed run_id", "run_id", job.RunID)
 		return
 	}
 	tracked, err := RunTracked(ctx, j.pool, job.Repo, runID)
 	if err != nil {
-		slog.Error("dispatch delivery: read whether a job's run is tracked", "repo", job.Repo, "run_id", runID, "error", err)
+		j.tuning.log.Error("dispatch delivery: read whether a job's run is tracked", "repo", job.Repo, "run_id", runID, "error", err)
 		return
 	}
 	if !tracked {
@@ -252,7 +252,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 		return
 	}
 	defer func() { <-j.reads }()
-	ctx, cancel := context.WithTimeout(j.ctx, intakeMessageTimeout)
+	ctx, cancel := context.WithTimeout(j.ctx, j.tuning.messageTimeout)
 	defer cancel()
 	j.read(ctx, key, run.production)
 }
@@ -263,17 +263,17 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 func (j *JobIntake) read(ctx context.Context, key runKey, production Production) {
 	owner, repo, err := refs.SplitGitHubRepo(key.repo)
 	if err != nil {
-		slog.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
+		j.tuning.log.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
 		return
 	}
 	fetched, err := ListWorkflowRunJobs(ctx, j.github, owner, repo, key.runID)
 	if err != nil {
-		slog.Warn("dispatch delivery: read the jobs of a running deploy run; its end reads them again", "repo", key.repo, "run_id", key.runID, "error", err)
+		j.tuning.log.Warn("dispatch delivery: read the jobs of a running deploy run; its end reads them again", "repo", key.repo, "run_id", key.runID, "error", err)
 		return
 	}
 	jobs := RunJobs(key.repo, key.runID, fetched, production)
 	if err := UpsertRunJobs(ctx, j.pool, key.repo, key.runID, jobs, JobsComplete(jobs)); err != nil {
-		slog.Error("dispatch delivery: store the jobs of a running deploy run", "repo", key.repo, "run_id", key.runID, "error", err)
+		j.tuning.log.Error("dispatch delivery: store the jobs of a running deploy run", "repo", key.repo, "run_id", key.runID, "error", err)
 	}
 }
 

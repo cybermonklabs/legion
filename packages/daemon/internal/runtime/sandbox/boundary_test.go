@@ -1,5 +1,7 @@
 package sandbox
 
+//ci:builds packages/daemon ./cmd/legion buildLegion go build .../daemon/cmd/legion
+
 import (
 	"archive/tar"
 	"bytes"
@@ -23,13 +25,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -148,7 +153,9 @@ type initRig struct {
 	// network is what every process reaching a remote is told: the egress proxy, the trust store
 	// holding the stand-in's CA, and the hosts reached directly.
 	network []string
-	pod     int
+	// cpus is what an agent's own command is told in place of the issue pod's CPU limit (podCPUs).
+	cpus []string
+	pod  int
 	// host is the server a plant named, when it named one.
 	host *recordingHost
 }
@@ -214,6 +221,7 @@ func newInitRigOf(t *testing.T, legion string, opts Options) *initRig {
 		"HTTPS_PROXY=" + rig.github.proxy.URL, "https_proxy=" + rig.github.proxy.URL,
 		"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost", "GIT_SSL_CAINFO=" + rig.github.caFile,
 	}
+	rig.cpus = podCPUs(opts.Resources.Issue.Limits[corev1.ResourceCPU])
 	askpass := filepath.Join(root, "any-host-askpass")
 	if err := os.WriteFile(askpass, []byte(anyHostAskpass), 0o700); err != nil {
 		t.Fatal(err)
@@ -498,6 +506,7 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 	}
 	env = append(env, "PATH="+rig.bin+":/usr/bin:/bin", "HOME="+home)
 	env = append(env, rig.network...)
+	env = append(env, podCPUs(c.Resources.Limits[corev1.ResourceCPU])...)
 	argv := make([]string, len(c.Command))
 	for i, arg := range c.Command {
 		argv[i] = remap(kubeExpand(arg, declared))
@@ -552,6 +561,17 @@ func (rig *initRig) runContainer(podDir string, volumes map[string]string, c cor
 	return nil
 }
 
+// podCPUs is what the rig tells a process in place of the CPU limit, limit, of the container it
+// would run in. In a pod that limit is the cgroup quota the Go runtime sizes GOMAXPROCS to, the
+// host's CPUs or max(ceil(limit), 2) where that is fewer (runtime/cgroup_linux.go), and jj its
+// thread pool to. The rig runs every process under no quota, where both size themselves to the
+// host: on a 288-CPU host each legion started about 80 threads and each jj about 290, with the
+// vectors' pods side by side.
+func podCPUs(limit resource.Quantity) []string {
+	cpus, host := (limit.MilliValue()+999)/1000, int64(goruntime.NumCPU())
+	return []string{"GOMAXPROCS=" + strconv.FormatInt(min(host, max(cpus, 2)), 10), "RAYON_NUM_THREADS=" + strconv.FormatInt(min(host, max(cpus, 1)), 10)}
+}
+
 // chmodTree adds or removes every owner write permission under dir.
 func chmodTree(dir string, writable bool) error {
 	return filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
@@ -594,11 +614,11 @@ func (rig *initRig) tool(dir, name string, args ...string) string {
 // agent runs a tree agent's own commands: in the rig's network, with the defeated git and jj in
 // rig.bin first on its PATH.
 func (rig *initRig) agent() fixturegit.Runner {
-	return fixturegit.Runner{TB: rig.t, Env: append([]string{
+	return fixturegit.Runner{TB: rig.t, Env: slices.Concat([]string{
 		"PATH=" + rig.bin + ":" + os.Getenv("PATH"), "HOME=" + filepath.Join(rig.root, "home"),
 		"XDG_CONFIG_HOME=" + filepath.Join(rig.root, "config"), "JJ_USER=Legion test", "JJ_EMAIL=legion-test@example.invalid",
 		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_TERMINAL_PROMPT=0",
-	}, rig.network...)}
+	}, rig.network, rig.cpus)}
 }
 
 // holdsNoCanary fails when a file under dir, what names, holds the provisioning token in any of
@@ -791,6 +811,7 @@ func mountsClaim(t *testing.T, pod *rigPod, name string) {
 // nothing it runs reads the provisioning token, no host the plant named receives it, and no file
 // on the disk holds it.
 func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	testbin.RequireJJFilters(t)
 
@@ -1065,6 +1086,7 @@ func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *t
 // project without keep_volume gives each pod a disk of its own, and its next pod finds nothing that
 // the first pod's agent left.
 func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
+	t.Parallel()
 	legion := buildLegion(t)
 	for _, tc := range []struct {
 		name     string
@@ -1158,6 +1180,51 @@ func TestAKeptVolumeCarriesItsWorkspaceToTheIssuesNextPod(t *testing.T) {
 				t.Errorf("the next pod's workspace records its creation at %v, want the first pod's %v", recreated, created)
 			}
 		})
+	}
+}
+
+// The rig stands in for each container's CPU limit, the cgroup quota a pod's processes size their
+// threads to, by giving each process it starts GOMAXPROCS and RAYON_NUM_THREADS from that limit
+// (podCPUs). This row fails by name when the two do not reach a process: each init container of an
+// issue pod, which runContainer starts with its own container's limit, and an agent's own command,
+// which agent() starts with the issue pod's limit. Without the row a lost cap shows only on a host
+// whose CPU count carries the rig's processes past a task limit, and no CI runner has that many
+// CPUs. Each child prints the two variables as it has them. The rig builds each child's environment
+// from nothing; the test process's own values are emptied here all the same, so that a child that
+// took them would not pass for one that has the cap.
+func TestEveryProcessTheRigStartsHasItsContainersCPULimit(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
+	t.Setenv("GOMAXPROCS", "")
+	t.Setenv("RAYON_NUM_THREADS", "")
+	const report = `printf 'GOMAXPROCS=%s RAYON_NUM_THREADS=%s' "${GOMAXPROCS-unset}" "${RAYON_NUM_THREADS-unset}"`
+	// The stand-in for the Go legion appends one line for each init container that runs it.
+	record := filepath.Join(t.TempDir(), "record")
+	standIn := filepath.Join(t.TempDir(), "legion")
+	if err := os.WriteFile(standIn, []byte("#!/bin/sh\n{ "+report+"; echo; } >> "+shellprefix.Literal(record)+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rig := newInitRig(t, standIn)
+	pod, err := rig.start(rig.launch(rootSpec(t)))
+	if err != nil {
+		t.Fatalf("the issue's pod: %v", err)
+	}
+	body, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("no init container ran the stand-in: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+	if len(pod.spec.InitContainers) == 0 || len(lines) != len(pod.spec.InitContainers) {
+		t.Fatalf("%d lines from the stand-in, want one for each of the pod's %d init containers: %q", len(lines), len(pod.spec.InitContainers), lines)
+	}
+	for i, c := range pod.spec.InitContainers {
+		limit := c.Resources.Limits[corev1.ResourceCPU]
+		if want := strings.Join(podCPUs(limit), " "); lines[i] != want {
+			t.Errorf("init container %s ran with %q, want %q from its CPU limit %s", c.Name, lines[i], want, limit.String())
+		}
+	}
+	issue := goldenOptions().Resources.Issue.Limits[corev1.ResourceCPU]
+	if got, want := rig.agent().Out(rig.root, "/bin/sh", "-c", report), strings.Join(podCPUs(issue), " "); got != want {
+		t.Errorf("an agent's own command ran with %q, want %q from the issue pod's CPU limit %s", got, want, issue.String())
 	}
 }
 

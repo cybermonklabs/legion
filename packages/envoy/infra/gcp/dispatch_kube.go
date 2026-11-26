@@ -478,7 +478,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// selects app=<hostname>, sends user traffic to the app's pods and to no other workload's.
 	// checksums names the component Secrets the pod's environment reads (secretChecksum). The
 	// template carries safe-to-evict only when no budget covers it (safeToEvictAnnotation).
-	deployment := func(name string, replicas int, pdbMinAvailable int, checksums map[string]*corev1.Secret, pod corev1.PodSpecArgs, opts ...pulumi.ResourceOption) (*appsv1.Deployment, error) {
+	// creator is whether the workload's pods create JetStream consumers, which the app's and the
+	// listener's do and the front door's do not: a creator's Deployment takes the writer hold's
+	// update rule (heldReplacement) while replaceUnderHold is set, and every other Deployment keeps
+	// the strategy its replica count gives it (dispatchStrategyFor) and is waited for.
+	deployment := func(name string, replicas int, pdbMinAvailable int, checksums map[string]*corev1.Secret, pod corev1.PodSpecArgs, creator bool, opts ...pulumi.ResourceOption) (*appsv1.Deployment, error) {
 		selector := &metav1.LabelSelectorArgs{MatchLabels: pulumi.StringMap{"app": pulumi.String(name)}}
 		pod.Affinity, pod.TopologySpreadConstraints = dispatchSpread(selector)
 		annotations := pulumi.StringMap{}
@@ -490,11 +494,15 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		}
 		pod.PriorityClassName = priorityClassName
 		opts = append(opts, priorityClassWait...)
+		meta, strategy := metadata(name), dispatchStrategyFor(replicas)
+		if creator && s.replaceUnderHold {
+			strategy = heldReplacement(meta)
+		}
 		workload, err := appsv1.NewDeployment(ctx, name, &appsv1.DeploymentArgs{
-			Metadata: metadata(name),
+			Metadata: meta,
 			Spec: appsv1.DeploymentSpecArgs{
 				Replicas: pulumi.Int(replicas),
-				Strategy: deploymentStrategy(dispatchStrategyFor(replicas)),
+				Strategy: deploymentStrategy(strategy),
 				Selector: selector,
 				Template: corev1.PodTemplateSpecArgs{
 					Metadata: &metav1.ObjectMetaArgs{Labels: pulumi.StringMap{"app": pulumi.String(name)}, Annotations: annotations},
@@ -548,7 +556,8 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		return labelPeer(map[string]string{"app": app})
 	}
 	policy := func(name string, ingress networkingv1.NetworkPolicyIngressRuleArray) error {
-		return networkPolicy(ctx, name, s.namespace, map[string]string{"app": name}, ingress, child...)
+		_, err := networkPolicy(ctx, name, s.namespace, map[string]string{"app": name}, ingress, child...)
+		return err
 	}
 
 	// The front door, one thing and registered as one: the Tailscale Service svc:<hostname> itself
@@ -579,7 +588,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		if err != nil {
 			return err
 		}
-		tailnet, err := deployment(tailnetName, s.frontDoorReplicas, s.disruption.frontDoorPDBMinAvailable, map[string]*corev1.Secret{authKeyName: authKeySecret}, frontDoorPod, frontDoorOpts...)
+		tailnet, err := deployment(tailnetName, s.frontDoorReplicas, s.disruption.frontDoorPDBMinAvailable, map[string]*corev1.Secret{authKeyName: authKeySecret}, frontDoorPod, false, frontDoorOpts...)
 		if err != nil {
 			return err
 		}
@@ -652,7 +661,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			},
 		},
 		Volumes: seedVolume,
-	}, frontDoor, seedGrant); err != nil {
+	}, true, frontDoor, seedGrant); err != nil {
 		return err
 	}
 	if _, err := service(listenerName, core.DefaultListenerPort); err != nil {
@@ -697,7 +706,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// never a second spelling of it.
 	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, and DISPATCH_SIGNIN_PASSKEY follows
 	// that only with signInPasskey, which needs outsideOrigin, so a deployment that sets none of the
-	// outside inputs renders byte for byte what it always rendered.
+	// outside inputs renders byte for byte what it always rendered. DISPATCH_PARENT_STATUS_RULE=on
+	// comes next, only with parentStatusRule, in every mode: it is no sign-in setting, and after the
+	// origins it moves none of the variables above it. DISPATCH_LEGION_STATUS_SCOPE=on comes after
+	// it, or in its place without parentStatusRule, only with legionStatusScope and in every mode,
+	// for the same reasons.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
@@ -720,6 +733,12 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_PASSKEY", "1"))
 		}
 	}
+	if s.parentStatusRule {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PARENT_STATUS_RULE", "on"))
+	}
+	if s.legionStatusScope {
+		appEnv = append(appEnv, valueEnv("DISPATCH_LEGION_STATUS_SCOPE", "on"))
+	}
 	appEnv = append(appEnv, valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
 		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
 	// The proxy renders only in the SOCKS5 mode, and each JetStream number only when it is set,
@@ -734,6 +753,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	}
 	if s.streamMaxBytes > 0 {
 		appEnv = append(appEnv, valueEnv("ENVOY_STREAM_MAX_BYTES", strconv.Itoa(s.streamMaxBytes)))
+	}
+	// The consumer-name setting, after the JetStream numbers and only when it is set, for the same
+	// reason; the listener's copy comes from core's Env (dispatchListenerEnv).
+	if s.consumerNames != "" {
+		appEnv = append(appEnv, valueEnv(core.EnvConsumerNames, s.consumerNames))
 	}
 	// Dispatch presents its own ServiceAccount's token to the listener, which verifies it against
 	// this cluster's issuer and takes a send's role mark from that account alone
@@ -779,10 +803,18 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
 			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
 	}
+	if s.projectOwnerFallback != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PROJECT_OWNER_FALLBACK", s.projectOwnerFallback))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.
 		appEnv = append(appEnv, valueEnv("DISPATCH_APP_CLIENT_ID", s.appClientID), valueEnv("DISPATCH_APP_ID", s.appID), secretEnv("DISPATCH_APP_PEM_B64", s.appKeySecretName, s.appKeySecretKey))
+		// The verdict App's id follows the App it runs under, only when given, so a deployment
+		// that gives none renders what it rendered before the input.
+		if s.verdictAppID != "" {
+			appEnv = append(appEnv, valueEnv("DISPATCH_VERDICT_APP_ID", s.verdictAppID))
+		}
 	}
 	if s.azure.embedder {
 		// Meaning search embeds on Azure AI Foundry. The endpoint, and the deployment when given,
@@ -890,7 +922,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// envoy-dispatch reads the dispatch Secret and ENVOY_TOKEN from the listener's, so a change to
 	// either rolls the app.
 	appChecksums := map[string]*corev1.Secret{dispatchSecretName: dispatchSecret, listenerName: listenerSecret}
-	if _, err := deployment(s.hostname, s.replicas, s.disruption.appPDBMinAvailable, appChecksums, appPod, pulumi.DependsOn(appGrants)); err != nil {
+	if _, err := deployment(s.hostname, s.replicas, s.disruption.appPDBMinAvailable, appChecksums, appPod, true, pulumi.DependsOn(appGrants)); err != nil {
 		return err
 	}
 	// With networkEndpointGroupName, GKE makes a standalone network endpoint group of that name for

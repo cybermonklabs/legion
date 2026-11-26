@@ -17,6 +17,7 @@ import (
 // names its own. What the release before wrote of the settlement - the checked head and its check
 // runs - reads back as it was written.
 func TestAPullRequestRecordedBefore20261117112334HasNoStatuses(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 20261114061900)
@@ -45,7 +46,7 @@ func TestAPullRequestRecordedBefore20261117112334HasNoStatuses(t *testing.T) {
 		t.Fatalf("statuses after 20261117112334 = %s, want [] for a pull request recorded before it", column)
 	}
 	var pr *record.PullRequest
-	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		pr, err = record.NewStore().PullRequest(ctx, tx, "LEGION-208")
 		return err

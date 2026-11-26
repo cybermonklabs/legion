@@ -1,0 +1,31 @@
+-- 20261125002856_issue_role_holders_daemon_proven.up.sql — whether the Legion daemon's own token
+-- wrote each role holder pair.
+--
+-- INFRA-4732, R26 of dispatch://INFRA-3320: with DISPATCH_LEGION_STATUS_SCOPE on, the architect
+-- that owns a Legion issue may write its status, and Dispatch reads that architect from
+-- issue_role_holders. Before this release any caller whose credential proves no session could
+-- name the daemon's session and write a pair. So the pair records which credential wrote it.
+--
+--   daemon_proven   true when the credential of the publication that wrote the pair last proved
+--                   the session legion-daemon:<PROJECT> of the issue's project and held the
+--                   legion-status scope: the daemon's own broker token
+--                   (api/issue_role_holders.go, putIssueRoleHolders). Each publication writes it
+--                   on each pair it stores, a pair it keeps unchanged included, with the setting
+--                   on or off. Only a marked pair names an architect whose write R26 lets
+--                   through (api/legion_status_scope.go).
+--
+-- A row stored before this migration reads false, unmarked: no record says which credential wrote
+-- it. The next publication of the issue from the daemon's own token marks it.
+--
+-- Adding a column with a constant default writes the catalog alone, so it rewrites no row. The
+-- ALTER takes ACCESS EXCLUSIVE on issue_role_holders, which each publication writes and each read
+-- of an issue's role holders reads, and holds it for the catalog write alone. It must first wait
+-- for each transaction that holds the table: the runner bounds that wait at
+-- pgmigrate.LockTimeout (five seconds) and tries again up to pgmigrate.LockTimeoutAttempts times.
+--
+-- The release before this one neither reads nor writes the column, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"): a pair that release inserts names its own
+-- columns alone and takes the default, unmarked, and a pair it keeps keeps its mark. The census
+-- answers 0. Rolling back past this migration is an image rollback alone; the column left behind
+-- is read by nothing.
+alter table issue_role_holders add column daemon_proven boolean not null default false;

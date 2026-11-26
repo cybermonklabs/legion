@@ -32,8 +32,8 @@ import (
 const corpusPath = "testdata/wire.json"
 
 // tokenFieldNames maps each field of Token to the name the corpus gives it in expect.token.
-// Every field must be named here: a field added to Token without an entry fails
-// TestTheCorpusNamesEveryFieldAClientReads, which is how "the corpus is the whole of what a
+// Every field corpusFields answers must be named here: a field added to Token without an entry
+// fails TestTheCorpusNamesEveryFieldAClientReads, which is how "the corpus is the whole of what a
 // client reads" is kept true as this package changes.
 var tokenFieldNames = map[string]string{
 	"AccessToken":         "acc" + "ess_token",
@@ -41,6 +41,21 @@ var tokenFieldNames = map[string]string{
 	"Expiry":              "expires_in",
 	"CredentialID":        "credential_id",
 	"CredentialExpiresAt": "credential_expires_at",
+}
+
+// corpusFields is the fields of Token both corpus checks range over: every one but renewsAt, which
+// is no member of the broker's answer but the moment the client works out from expires_in as the
+// token lands (by renewalAt). testdata/wire.json is the whole of what a client reads out of an
+// answer, so it has nothing to name that field by; testdata/renewal.json holds its rule.
+func corpusFields() []reflect.StructField {
+	fields := reflect.TypeFor[Token]()
+	read := make([]reflect.StructField, 0, fields.NumField())
+	for i := range fields.NumField() {
+		if field := fields.Field(i); field.Name != "renewsAt" {
+			read = append(read, field)
+		}
+	}
+	return read
 }
 
 type corpus struct {
@@ -119,8 +134,11 @@ func TestTheWireCorpusHoldsThisClient(t *testing.T) {
 				Session:   exchange.Session,
 				Projects:  exchange.Projects,
 				// The entry's own form says whether this trade declines the launcher
-				// credential, so the one place the corpus states it is the form it asserts.
+				// credential, and the scope and the cut it asks for, so the one place the corpus
+				// states them is the form it asserts.
 				NoLauncherCredential: exchange.Form[oauthwire.FormLauncherCredential] == oauthwire.FormLauncherCredentialDeclined,
+				Scope:                exchange.Form["scope"],
+				AsOf:                 exchange.Form[oauthwire.FormAsOf],
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -147,10 +165,13 @@ func TestTheWireCorpusHoldsThisClient(t *testing.T) {
 }
 
 // corpusSource is the identity an entry's subject names, built from the real reader wherever one
-// exists: a projected token is read from a file this test writes, and a machine's Google
-// identity token is read from a metadata server this test serves. A person's sign-in is scripted
-// here, its own reader being the device grant, which TestDeviceSignIn drives against a real
-// issuer.
+// exists: a projected token is read from a file this test writes, a machine's Google identity
+// token from a metadata server this test serves, and a GitHub Actions run's token from a GitHub
+// endpoint this test serves. A person's sign-in is scripted here, its own reader being the device
+// grant, which TestDeviceSignIn drives against a real issuer. A machine login's access token is
+// scripted too: this client trades none of its own, and the TypeScript client's device login
+// (packages/cipher-client/src/device-login.ts) is the reader that suite builds for it, so the
+// entry holds this client to the same request.
 func corpusSource(t *testing.T, spec corpusToken) Source {
 	t.Helper()
 	switch spec.Kind {
@@ -162,8 +183,12 @@ func corpusSource(t *testing.T, spec corpusToken) Source {
 		return NewProjectedToken(path)
 	case "google-metadata":
 		return metadataSource(t, spec.Token)
+	case "github-actions-run":
+		return actionsSource(t, spec.Token)
 	case "person-device-sign-in":
 		return &scriptedSource{token: spec.Token, tokenType: spec.TokenType, describe: "a person's sign-in"}
+	case "machine-login-access-token":
+		return &scriptedSource{token: spec.Token, tokenType: spec.TokenType, describe: "a machine login"}
 	default:
 		t.Fatalf("the corpus names the subject kind %q, which this suite does not know", spec.Kind)
 		return nil
@@ -187,6 +212,26 @@ func metadataSource(t *testing.T, token string) Source {
 	server := newStubMetadata(t, audience, token)
 	t.Setenv("GCE_METADATA_HOST", server)
 	return NewMetadataIdentity(audience)
+}
+
+// actionsSource serves GitHub's OIDC token endpoint answering token, and the identity of the run
+// that reads it. It refuses a request that does not ask the way the contract says: the request
+// token as its bearer and the audience in its query.
+func actionsSource(t *testing.T, token string) Source {
+	t.Helper()
+	const audience = "https://cipher.example"
+	server := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Header.Get("Authorization") != "bearer "+actionsRequestToken:
+			http.Error(w, "another request token", http.StatusUnauthorized)
+		case r.URL.Query().Get("audience") != audience:
+			http.Error(w, "another audience", http.StatusBadRequest)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]string{"value": token})
+		}
+	})
+	return &GitHubActionsIdentity{RequestURL: server + "/idtoken", RequestToken: actionsRequestToken, Audience: audience, HTTP: HTTPClient()}
 }
 
 // checkRequest holds one trade to the corpus entry: the endpoint, the whole form, and the whole
@@ -288,8 +333,8 @@ func checkPublicJWK(t *testing.T, embedded any) {
 }
 
 // checkToken holds what the client took out of the answer to the corpus's expect.token, whole:
-// every field of Token is read through tokenFieldNames, so a field this package adds without an
-// entry in the corpus is caught here as well as in the name test below.
+// every field corpusFields answers is read through tokenFieldNames, so a field this package adds
+// without an entry in the corpus is caught here as well as in the name test below.
 func checkToken(t *testing.T, exchange corpusExchange, token *Token) {
 	t.Helper()
 	got := tokenAsCorpus(t, token)
@@ -310,24 +355,24 @@ func checkToken(t *testing.T, exchange corpusExchange, token *Token) {
 func tokenAsCorpus(t *testing.T, token *Token) map[string]any {
 	t.Helper()
 	value := reflect.ValueOf(*token)
-	fields := value.Type()
 	read := map[string]any{}
-	for i := range fields.NumField() {
-		name, named := tokenFieldNames[fields.Field(i).Name]
+	for _, field := range corpusFields() {
+		name, named := tokenFieldNames[field.Name]
 		if !named {
-			t.Fatalf("Token has the field %s, which testdata/wire.json names nowhere: add it to the corpus, so the TypeScript client is held to it too", fields.Field(i).Name)
+			t.Fatalf("Token has the field %s, which testdata/wire.json names nowhere: add it to the corpus, so the TypeScript client is held to it too", field.Name)
 		}
+		got := value.FieldByIndex(field.Index).Interface()
 		switch name {
 		case "expires_in":
-			read[name] = int(math.Round(time.Until(value.Field(i).Interface().(time.Time)).Seconds()))
+			read[name] = int(math.Round(time.Until(got.(time.Time)).Seconds()))
 		case "credential_expires_at":
-			at := value.Field(i).Interface().(time.Time)
+			at := got.(time.Time)
 			if at.IsZero() {
 				continue
 			}
 			read[name] = at.UTC().Format(time.RFC3339)
 		default:
-			read[name] = value.Field(i).Interface()
+			read[name] = got
 		}
 	}
 	return read
@@ -349,7 +394,7 @@ func checkRefusal(t *testing.T, exchange corpusExchange, token *Token, err error
 	var refused *RefusedError
 	permanent := asRefused(err, &refused) && refused.Permanent()
 	if permanent != exchange.Expect.Permanent {
-		t.Errorf("the client reads the refusal as permanent=%t, want %t: only a refusal no later trade can cure stops a renewal loop, and the broker's 429 is not one", permanent, exchange.Expect.Permanent)
+		t.Errorf("the client reads the refusal as permanent=%t, want %t: only a refusal no later trade can cure stops a renewal loop, and an outage (a 408 or a 429) is not one", permanent, exchange.Expect.Permanent)
 	}
 }
 
@@ -369,8 +414,8 @@ func asRefused(err error, target **RefusedError) bool {
 }
 
 // TestTheCorpusNamesEveryFieldAClientReads is the other direction of the same rule, checked
-// without a stub broker: every field of Token is named in the corpus, so neither client can read
-// a member of an answer that the other knows nothing about.
+// without a stub broker: every field corpusFields answers is named in the corpus, so neither
+// client can read a member of an answer that the other knows nothing about.
 func TestTheCorpusNamesEveryFieldAClientReads(t *testing.T) {
 	read := readCorpus(t)
 	named := map[string]bool{}
@@ -379,11 +424,10 @@ func TestTheCorpusNamesEveryFieldAClientReads(t *testing.T) {
 			named[name] = true
 		}
 	}
-	fields := reflect.TypeOf(Token{})
-	for i := range fields.NumField() {
-		name, inMap := tokenFieldNames[fields.Field(i).Name]
+	for _, field := range corpusFields() {
+		name, inMap := tokenFieldNames[field.Name]
 		if !inMap {
-			t.Fatalf("Token.%s is in no corpus entry's expect.token: add it to testdata/wire.json and to tokenFieldNames", fields.Field(i).Name)
+			t.Fatalf("Token.%s is in no corpus entry's expect.token: add it to testdata/wire.json and to tokenFieldNames", field.Name)
 		}
 		if !named[name] {
 			t.Errorf("no corpus entry names %q in its expect.token, so the TypeScript client is held to nothing about it", name)

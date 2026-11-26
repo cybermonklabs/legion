@@ -1,0 +1,52 @@
+{
+  "nodes": [
+    {
+      "id": "messages-reach-sessions",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#messages-reach-sessions kind=\"behavior\"}\nEnvoy delivers each message to the session that it is for.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "a-stored-message-survives-a-restart",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::requirement{#a-stored-message-survives-a-restart kind=\"behavior\" parent=\"messages-reach-sessions\"}\nEnvoy delivers each stored message to its session after the listener starts again.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "a-production-restart-loses-no-message",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#a-production-restart-loses-no-message serves=\"a-stored-message-survives-a-restart\" subject=\"production\" procedure=\"program\" runner=\"go\" selector=\"github.com/sjawhar/envoy/cmd/listener TestAProductionRestartLosesNoMessage\" job=\"production-checks\"}\nClaim: A message that production stores before a restart reaches its session after the restart.\nProcedure: The program stores one message in production, starts the listener again and reads the messages of the session.\nIt must find the message one time.\nFailing example: A listener that deletes its stored messages when it starts.\n:::\n"
+        }
+      ]
+    },
+    {
+      "id": "the-graph-holds-a-delivery-of-each-message",
+      "removed": false,
+      "partly_checked": false,
+      "versions": [
+        {
+          "version": 1,
+          "at": "2026-11-10T00:00:00Z",
+          "block": ":::check{#the-graph-holds-a-delivery-of-each-message serves=\"a-stored-message-survives-a-restart\" subject=\"graph\" procedure=\"query\"}\nClaim: Each message record of the graph has a delivery record.\nProcedure: The query reads each message record of the graph.\nIt returns each message record that has no delivery record.\nFailing example: A copy of the graph with one message record that has no delivery record.\n:::\n"
+        }
+      ]
+    }
+  ]
+}

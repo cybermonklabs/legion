@@ -100,17 +100,61 @@ func everyonesPod(t *testing.T, m *Machine, name, project string) (string, *ecds
 	return insertEnrollment(t, m.Store, "pod", name, nil, nil, &subject)
 }
 
+// jobPod is a pod of a service account an operator's job entry lists
+// (BROKER_EXCHANGE_JOB_ACCOUNTS): its credential names the entry's list and no person
+// (Exchange.MappedProjects). list is the entry's projects as the setting spells them.
+type jobPod struct {
+	list         string
+	enrollmentID string
+	key          *ecdsa.PrivateKey
+}
+
+// jobPods replaces m's exchange set with one job entry for each of lists, each spelled as the
+// setting spells it (exchange.ParseJobProjects), and enrolls a pod of each entry's account, with
+// the fixture's service as its launcher's, as TestAPodOfThePrivateProjectGetsItsSecret's pods are.
+func jobPods(t *testing.T, m *Machine, lists ...string) []jobPod {
+	t.Helper()
+	entries := make([]exchange.AccountEntry, len(lists))
+	for i, list := range lists {
+		job, err := exchange.ParseJobProjects(list)
+		if err != nil {
+			t.Fatalf("exchange.ParseJobProjects(%q): %v", list, err)
+		}
+		name := "job-" + strings.ToLower(strings.ReplaceAll(list, ",", "-"))
+		entries[i] = exchange.AccountEntry{Account: "system:serviceaccount:example:" + name, Job: job}
+	}
+	set, err := exchange.NewSet(entries, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+	pods := make([]jobPod, len(lists))
+	for i, entry := range entries {
+		id, key := newServiceEnrollment(t, m.Store, fixtureService, entry.Account, "pod-"+entry.Account+"-"+t.Name())
+		pods[i] = jobPod{list: lists[i], enrollmentID: id, key: key}
+	}
+	return pods
+}
+
 // newProjectFixture is newPlaceholderFixture on a broker that checks projects: its loader serves
-// projectSecrets (Loader.ProjectChecks), rules are in force, and Dispatch answers rows. The
-// enrollment is a session of the fixture's operator naming no project.
+// projectSecrets (Loader.ProjectChecks), each name rules binds is behind its kind as a profile of
+// its own name (rulesProfiles), and Dispatch answers rows. The enrollment is a session of the
+// fixture's operator naming no project.
 func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
+	t.Helper()
+	return newProfiledProjectFixture(t, rulesProfiles(t, rules), team)
+}
+
+// newProfiledProjectFixture is newProjectFixture serving file, a profiles file, whose kinds and the
+// proxy tags of the secrets it serves put names behind the proxy.
+func newProfiledProjectFixture(t *testing.T, file string, team projectaccesstest.Row) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, dispatch *projectaccesstest.Server) {
 	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(append(fixtureSecrets(), projectSecrets()...)...)
 	enrollmentID, key = newEnrollment(t, st, "session", "box-p-"+t.Name(), new(fixtureOperator), nil)
 	loader := policytest.Loader(local, fixtureService)
 	loader.ProjectChecks = true
-	loader.AirlockDigest = rules.Digest
+	loader.Profiles = policytest.Profiles(t, file, fixtureService)
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatalf("policy.NewCurrent: %v", err)
@@ -125,8 +169,8 @@ func newProjectFixture(t *testing.T, rules proxyrules.Rules, team projectaccesst
 		Replay:            replayer(st),
 		ServicesByAccount: map[string]string{fixtureSubject: fixtureService},
 	}
-	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
-	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
+	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Policy)
+	m.AirlockProxyURL, m.AirlockCACertificate = testProxyURL, testCACertificate
 	return m, enrollmentID, key, answerFrom(t, m, dispatchRows(team))
 }
 
@@ -169,9 +213,9 @@ func deniedFor(t *testing.T, what string, request Request, err error, name, reas
 // hold is denied with the same words, so the session cannot tell the two apart.
 func TestARequestForAPrivateSecretFromASessionNamingNoProjectIsDenied(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "")
 	deniedFor(t, "a request for PRIV_KEY from a session naming no project", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
-	request, err = m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "GONE_KEY"), "", nil)
+	request, err = m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "GONE_KEY"), "")
 	deniedFor(t, "a request for GONE_KEY, tagged with a project Dispatch does not hold", request, err, "GONE_KEY", policy.ReasonProjectNotNamed)
 	if strings.Contains(*request.Detail, policy.ReasonProjectMissing) {
 		t.Fatalf("the session was told %q; want project-not-named alone, so a refusal never says whether a project exists", *request.Detail)
@@ -184,7 +228,7 @@ func TestASessionNamingThePrivateProjectGetsItsSecret(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
 	_, grantID := grantOf(t, m, enr, key, "read it", "PRIV_KEY")
-	release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{})
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil || release.Values["PRIV_KEY"] != "priv-v1" {
 		t.Fatalf("Values(PRIV_KEY) = %v, %v; want its value", release.Values, err)
 	}
@@ -209,8 +253,45 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 		t.Fatal("the PRIV pod got no grant")
 	}
 	other, otherKey := newServiceEnrollment(t, m.Store, fixtureService, otherSubject, "pod-team-"+t.Name())
-	request, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "deploy", "PRIV_KEY"), "", nil)
+	request, err := m.Create(t.Context(), other, signRequest(t, m, otherKey, "deploy", "PRIV_KEY"), "")
 	deniedFor(t, "a request for PRIV_KEY from a pod mapped to TEAM", request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
+}
+
+// TestAJobPodGetsNoSecretOfAPrivateProjectItsListNames: a job entry's pod names its entry's list
+// and no person, so it sees no private project. A pod of the named list PRIV, and one of the public
+// list naming PRIV, are each denied PRIV_KEY project-not-named, a refusal and never
+// ErrProjectAccessUnavailable, and each is granted and released a shared secret of public TEAM.
+// Dispatch is asked each tagged project's visibility and nothing else: no question names a person,
+// and none asks whether nobody may see PRIV, whose answer a credential naming no person holds
+// already.
+func TestAJobPodGetsNoSecretOfAPrivateProjectItsListNames(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+	retag(t, m, taggedSecret("TEAM_SHARED", policy.OwnerShared, policy.TierAgent, teamProject, "team-shared-v1"))
+	dispatch := m.Projects
+	for _, pod := range jobPods(t, m, privProject, "public,"+privProject) {
+		t.Run(pod.list, func(t *testing.T) {
+			asked := &askLog{inner: dispatch}
+			m.Projects = asked
+			request, err := m.Create(t.Context(), pod.enrollmentID, signRequest(t, m, pod.key, "deploy", "PRIV_KEY"), "")
+			deniedFor(t, "a request for PRIV_KEY from the pod of the job list "+pod.list, request, err, "PRIV_KEY", policy.ReasonProjectNotNamed)
+			_, grantID := grantOf(t, m, pod.enrollmentID, pod.key, "deploy", "TEAM_SHARED")
+			if release, err := m.Values(t.Context(), grantID, pod.enrollmentID, ReleaseCall{}); err != nil || release.Values["TEAM_SHARED"] != "team-shared-v1" {
+				t.Fatalf("Values(TEAM_SHARED) for the pod of the job list %s = %v, %v; want public TEAM's secret released", pod.list, release.Values, err)
+			}
+			if about := asked.askedAbout(); len(about) != 0 {
+				t.Errorf("the job pod's requests asked Dispatch's access route about %q; want no access question, since its credential names no person", about)
+			}
+			questions := asked.questions()
+			for _, q := range questions {
+				if !strings.HasPrefix(q, "states of ") {
+					t.Errorf("the job pod's requests asked Dispatch %q (they asked %v); want each tagged project's visibility and nothing else", q, questions)
+				}
+			}
+			if !slices.Contains(questions, "states of "+privProject) {
+				t.Errorf("the job pod's requests never asked PRIV's visibility (they asked %v); the refusal rests on nothing read", questions)
+			}
+		})
+	}
 }
 
 // TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt: a grant of TEAM's secret, made
@@ -220,29 +301,29 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 func TestAGrantOfAPrivateSecretEndsWhenTheSessionNoLongerNamesIt(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values while TEAM is public: %v", err)
 	}
 	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
-	if release, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+	if release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
 		t.Fatalf("Values of grant %s after TEAM turned private = %v, %v; want ErrGrantNotLive", grantID, release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {
 		t.Fatalf("grant %s revoked by %q, want %q", grantID, by, GrantEndedActor)
 	}
 	answerFrom(t, m, dispatchRows(publicTeam))
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of grant %s after TEAM turned public again = %v; want it still ended", grantID, err)
 	}
 
 	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
 	nameProjects(t, m, enr, teamProject)
 	_, named := grantOf(t, m, enr, key, "read it again", "TEAM_TOKEN")
-	if _, err := m.Values(t.Context(), named, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), named, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values while the session names private TEAM: %v", err)
 	}
 	answerFrom(t, m, dispatchRows(privateTeam()))
-	if _, err := m.Values(t.Context(), named, enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
+	if _, err := m.Values(t.Context(), named, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 		t.Fatalf("Values of grant %s after its person left TEAM's list = %v; want ErrGrantNotLive", named, err)
 	}
 }
@@ -254,37 +335,39 @@ func TestAskingAgainAfterTheProjectIsLostSaysProjectNotNamed(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "TEAM_TOKEN"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "TEAM_TOKEN"), "")
 	deniedFor(t, "asking again for TEAM_TOKEN after TEAM turned private", request, err, "TEAM_TOKEN", policy.ReasonProjectNotNamed)
 	if by, _ := endedForGood(t, m, grantID); by != GrantEndedActor {
 		t.Fatalf("grant %s revoked by %q, want %q: asking again ends the grant it would have reused", grantID, by, GrantEndedActor)
 	}
 }
 
-// TestK3OutageWithholdsOnlyTaggedSecrets: while Dispatch cannot be reached, a request for a
-// tagged secret fails ErrProjectAccessUnavailable and a release of a tagged grant releases
+// TestK3OutageWithholdsOnlyTaggedSecrets: while Dispatch cannot answer for a project, a request
+// for a tagged secret fails ErrProjectAccessUnavailable and a release of a tagged grant releases
 // nothing and leaves the grant live, while an untagged secret is requested and released as
-// before.
+// before. Dispatch's person route goes on answering here: while it cannot say what kind of member
+// the session's person is, every request and release of that session is refused
+// (TestARestrictedOperatorGetsNoSecret).
 func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	_, tagged := grantOf(t, m, enr, key, "read it", "TEAM_TOKEN")
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
-	dispatch.SetDown(true)
-	if request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), "", nil); !errors.Is(err, ErrProjectAccessUnavailable) {
+	dispatch.SetProjectsDown(true)
+	if request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_KEY"), ""); !errors.Is(err, ErrProjectAccessUnavailable) {
 		t.Fatalf("a request for PRIV_KEY while Dispatch is down = %+v, %v; want ErrProjectAccessUnavailable", request, err)
 	}
-	if release, err := m.Values(t.Context(), tagged, enr, nil, ReleaseCall{}); !errors.Is(err, ErrProjectAccessUnavailable) || release.Values != nil {
+	if release, err := m.Values(t.Context(), tagged, enr, ReleaseCall{}); !errors.Is(err, ErrProjectAccessUnavailable) || release.Values != nil {
 		t.Fatalf("Values of the TEAM grant while Dispatch is down = %v, %v; want ErrProjectAccessUnavailable", release.Values, err)
 	}
 	if by, _ := endedForGood(t, m, tagged); by != "" {
 		t.Fatalf("an outage ended grant %s (revoked by %q); want it live once Dispatch answers", tagged, by)
 	}
 	_, untagged := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if release, err := m.Values(t.Context(), untagged, enr, nil, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
+	if release, err := m.Values(t.Context(), untagged, enr, ReleaseCall{}); err != nil || release.Values["AUTO_TOKEN"] != "auto-v1" {
 		t.Fatalf("Values(AUTO_TOKEN) while Dispatch is down = %v, %v; want its value", release.Values, err)
 	}
-	dispatch.SetDown(false)
-	if _, err := m.Values(t.Context(), tagged, enr, nil, ReleaseCall{}); err != nil {
+	dispatch.SetProjectsDown(false)
+	if _, err := m.Values(t.Context(), tagged, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values of the TEAM grant once Dispatch answers: %v", err)
 	}
 }
@@ -297,7 +380,7 @@ func TestK3OutageWithholdsOnlyTaggedSecrets(t *testing.T) {
 func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
 	}
@@ -322,7 +405,7 @@ func TestOnlyAPersonWhoSeesTheProjectDecidesItsRequest(t *testing.T) {
 func TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	nameProjects(t, m, enr, privProject)
-	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
 	if err != nil || request.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v; want pending", request, err)
 	}
@@ -350,17 +433,17 @@ func TestOnlyAPersonWhoSeesTheProjectDismissesItsExpiredRequest(t *testing.T) {
 func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	privPod, privKey := everyonesPod(t, m, "pod-t-priv", privProject)
-	tagged, err := m.Create(t.Context(), privPod, signRequest(t, m, privKey, "read it", "PRIV_HUMAN"), "", nil)
+	tagged, err := m.Create(t.Context(), privPod, signRequest(t, m, privKey, "read it", "PRIV_HUMAN"), "")
 	if err != nil || tagged.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", tagged, err)
 	}
 	plain, plainKey := everyonesPod(t, m, "pod-q-plain", "")
-	reasoned, err := m.Create(t.Context(), plain, signRequest(t, m, plainKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+	reasoned, err := m.Create(t.Context(), plain, signRequest(t, m, plainKey, "PRIV-12: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || reasoned.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v", reasoned, err)
 	}
 	hashed, hashedKey := everyonesPod(t, m, "pod-h-hashed", "")
-	hashedReason, err := m.Create(t.Context(), hashed, signRequest(t, m, hashedKey, "SHA-256 of the PRIV-12 bundle", "SHARED_KEY"), "", nil)
+	hashedReason, err := m.Create(t.Context(), hashed, signRequest(t, m, hashedKey, "SHA-256 of the PRIV-12 bundle", "SHARED_KEY"), "")
 	if err != nil || hashedReason.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY) = %+v, %v", hashedReason, err)
 	}
@@ -393,16 +476,19 @@ func TestPendingLeavesOutAPrivateRequestForAnOutsider(t *testing.T) {
 }
 
 // TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor: nothing is tagged, the broker holds a
-// client of Dispatch, and Dispatch is down. A pending request and a grant whose reasons name an
-// issue key are rows Dispatch cannot answer for: each is left out of its list (fail closed for
-// that row alone) and logged once with its id and the error, however often the list is read, and
-// the rest of each list is answered. An approval of the pending one answers
-// ErrProjectAccessUnavailable and leaves it pending, while the request whose reason names no key
-// is approved. Once Dispatch answers, the request is listed again. The two pending requests come
-// from pods that name no person, so the insider's list reads them (everyonesPod), and the two
-// grants are of SERVICE_KEY on pods of the fixture's service, which name no approver and no
-// operator, so the insider's list reads them too: a grant's own approver and operator list it
-// whatever Dispatch answers (namedOnGrant).
+// client of Dispatch, and Dispatch cannot answer any question about a project. A pending request
+// and a grant whose reasons name an issue key are rows Dispatch cannot answer for: each is left
+// out of its list (fail closed for that row alone) and logged once with its id and the error,
+// however often the list is read, and the rest of each list is answered. An approval of the
+// pending one answers ErrProjectAccessUnavailable and leaves it pending, while the request whose
+// reason names no key is approved. Once Dispatch answers, the request is listed again. The two
+// pending requests come from pods that name no person, so the insider's list reads them
+// (everyonesPod), and the two grants are of SERVICE_KEY on pods of the fixture's service, which
+// name no approver and no operator, so the insider's list reads them too: a grant's own approver
+// and operator list it whatever Dispatch answers (namedOnGrant). Dispatch still answers what kind
+// of member insider is, which a list of secret requests the reader approves asks
+// (listApprovesSecrets); while it cannot say that either, the list holds none of those requests
+// (TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover).
 func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	keyedService, keyedServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-keyed-"+t.Name())
@@ -410,17 +496,17 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 	plainService, plainServiceKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-g-plain-"+t.Name())
 	_, plainGrant := grantOf(t, m, plainService, plainServiceKey, "no issue named", "SERVICE_KEY")
 	keyedPod, keyedKey := everyonesPod(t, m, "pod-o-keyed", "")
-	keyed, err := m.Create(t.Context(), keyedPod, signRequest(t, m, keyedKey, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "", nil)
+	keyed, err := m.Create(t.Context(), keyedPod, signRequest(t, m, keyedKey, "INFRA-12: rotate the deploy key", "SHARED_KEY"), "")
 	if err != nil || keyed.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY, INFRA-12) = %+v, %v; want pending", keyed, err)
 	}
 	plainPod, plainKey := everyonesPod(t, m, "pod-o-plain", "")
-	plain, err := m.Create(t.Context(), plainPod, signRequest(t, m, plainKey, "no issue named", "SHARED_KEY"), "", nil)
+	plain, err := m.Create(t.Context(), plainPod, signRequest(t, m, plainKey, "no issue named", "SHARED_KEY"), "")
 	if err != nil || plain.RecordID == nil {
 		t.Fatalf("Create(SHARED_KEY, no issue) = %+v, %v; want pending", plain, err)
 	}
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
-	dispatch.SetDown(true)
+	dispatch.SetProjectsDown(true)
 	logged := policytest.CaptureLog(t)
 
 	pendingIDs := func() []string {
@@ -473,7 +559,7 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 		t.Fatal("Dispatch was never asked, so the outage was never met: the test is blind")
 	}
 
-	dispatch.SetDown(false)
+	dispatch.SetProjectsDown(false)
 	if ids := pendingIDs(); !slices.Contains(ids, *keyed.RecordID) {
 		t.Fatalf("%s's pending list once Dispatch answers = %v; want %s again", insider, ids, *keyed.RecordID)
 	}
@@ -484,19 +570,22 @@ func TestADispatchOutageLeavesOutOnlyTheRowsItCannotAnswerFor(t *testing.T) {
 // Dispatch nothing of a tag, a session or a channel. Their reasons name an issue key, as nearly
 // every agent's does (the judge's issue check needs one), and "SHA-256", which has an issue key's
 // form. A broker with no project-access client then asks Dispatch nothing at all. A broker holding
-// one asks one thing and nothing else: whether the person reading a row may see the project of
+// one asks three things and nothing else: whether the person reading a row may see the project of
 // each key its reason names (HideUnseen), every key and not the first alone, since a reason
-// naming a private project's issue is that project's text. "Asks Dispatch nothing" is true of the
-// first broker; of the second it is true of everything but those reads.
+// naming a private project's issue is that project's text; what kind of member the session's
+// person is, which every request, approval, release and airlock connection of a person's session
+// asks (restrictedOperator); and what kind of member the deciding person is, which every person's
+// decision asks, since a restricted member decides nothing (ApplyDecision). "Asks Dispatch nothing"
+// is true of the first broker; of the second it is true of everything but those reads.
 func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 	const reason = "INFRA-12: check the SHA-256 of the deploy bundle"
-	reasonReads := []string{"access INFRA", "access SHA"}
+	reasonReads := []string{"access INFRA", "access SHA", "member kind of " + fixtureOperator, "member kind of " + insider}
 	for _, c := range []struct {
 		name   string
 		client bool
 	}{{"no project-access client", false}, {"a project-access client", true}} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", "")}}, publicTeam)
+			m, enr, key, _ := newProjectFixture(t, bound(rule("AUTO_TOKEN", "example")), publicTeam)
 			dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 			asked := &askLog{inner: m.Projects}
 			m.Projects = asked
@@ -504,7 +593,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 				m.Projects = nil
 			}
 			_, grantID := grantOf(t, m, enr, key, reason, "AUTO_TOKEN")
-			if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+			if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 				t.Fatalf("Values: %v", err)
 			}
 			if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["AUTO_TOKEN/"+SlotValue]); err != nil {
@@ -513,7 +602,7 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
 				t.Fatalf("AirlockValues: %v", err)
 			}
-			pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, reason, "SHARED_KEY"), "", nil)
+			pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, reason, "SHARED_KEY"), "")
 			if err != nil || pending.RecordID == nil {
 				t.Fatalf("Create(SHARED_KEY) = %+v, %v", pending, err)
 			}
@@ -537,12 +626,12 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 			}
 			for _, q := range questions {
 				if !slices.Contains(reasonReads, q) {
-					t.Errorf("an untagged deployment asked Dispatch %q; want only the reason keys' project reads %v", q, reasonReads)
+					t.Errorf("an untagged deployment asked Dispatch %q; want only the reason keys' project reads and the session's and the decider's member kinds %v", q, reasonReads)
 				}
 			}
 			for _, want := range reasonReads {
 				if !slices.Contains(questions, want) {
-					t.Errorf("an untagged deployment never asked Dispatch %q (it asked %v): a key of the reason went unread", want, questions)
+					t.Errorf("an untagged deployment never asked Dispatch %q (it asked %v): a key of the reason or the person went unread", want, questions)
 				}
 			}
 		})
@@ -642,12 +731,12 @@ func (p *lockProbe) States(ctx context.Context, projects []string) (map[string]p
 // airlock connection and an approver's list ask Dispatch is asked while no transaction holds the
 // requesting enrollment's row (lockProbe). The probe must have run, or the test proves nothing.
 func TestNoK3CallRunsInsideATransaction(t *testing.T) {
-	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("PRIV_KEY", "")}}, publicTeam)
+	m, enr, key, _ := newProjectFixture(t, bound(rule("PRIV_KEY", "example")), publicTeam)
 	nameProjects(t, m, enr, privProject)
 	probe := &lockProbe{inner: m.Projects, t: t, m: m, enrollmentID: enr}
 	m.Projects = probe
 	_, grantID := grantOf(t, m, enr, key, "read it", "PRIV_KEY")
-	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if _, err := m.AirlockConnection(t.Context(), placeholderRows(t, m, grantID)["PRIV_KEY/"+SlotValue]); err != nil {
@@ -656,7 +745,7 @@ func TestNoK3CallRunsInsideATransaction(t *testing.T) {
 	if _, _, err := m.AirlockValues(t.Context(), grantID); err != nil {
 		t.Fatalf("AirlockValues: %v", err)
 	}
-	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "", nil)
+	pending, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_HUMAN"), "")
 	if err != nil || pending.RecordID == nil {
 		t.Fatalf("Create(PRIV_HUMAN) = %+v, %v", pending, err)
 	}

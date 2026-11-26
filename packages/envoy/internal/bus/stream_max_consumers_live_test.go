@@ -20,7 +20,7 @@
 // (.github/workflows/ci-job-envoy-go.yaml, "Test the container-backed NATS matrix (natslive)").
 // The runtime is reached only through testnats.StartImageConfig, as every package outside the
 // three container rigs must (TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime,
-// testnats/nats_test.go).
+// textcheck/container_runtime_test.go).
 
 package bus
 
@@ -46,11 +46,14 @@ var liveServerArgs = []string{"-js", "--store_dir", "/data"}
 const olderServerDeployedCap = 1000
 
 // liveServerEnvironment is the environment the starts below read (WithEnvironment): the opt-in to
-// a NATS server that is not this machine's, and nothing else. A container's client URL is a
-// mapped port on the Docker host, which is this machine on a CI runner and whatever DOCKER_HOST
-// names anywhere else, and a start refuses every URL it cannot read as this machine's
-// (LocalNATSURL, refuseRemoteNATS). Handing the environment also keeps a NATS_NKEY_SEED the run
-// happens to hold out of a connect to a server that wants no credential.
+// a NATS server that is not this machine's, and nothing else. A container's client URL is the port
+// Docker publishes (testnats.ImageURL): on a loopback address of the container's own when the
+// Docker daemon is this machine (a unix socket, as on a CI runner), and otherwise at the daemon's
+// host, which is the machine DOCKER_HOST names, or the gateway through which a test running in a
+// container reaches the host's daemon. A start refuses every URL it cannot read as this machine's
+// (LocalNATSURL, refuseRemoteNATS) unless the environment opts in. Handing the environment also
+// keeps a NATS_NKEY_SEED the run happens to hold out of a connect to a server that wants no
+// credential.
 func liveServerEnvironment(key string) (string, bool) {
 	if key == AllowRemoteEnvVar {
 		return "1", true
@@ -160,15 +163,15 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 
 	t.Run("2.10", func(t *testing.T) {
 		t.Run("a stream with no cap is left exactly as it is", func(t *testing.T) {
-			// Captured before the start, so every keeper pass of this subtest logs into it.
-			logs := captureLogs(t)
+			// The client's logger, so every keeper pass of this subtest logs into it.
+			logs := captureLogs()
 			uri, js := liveServerJetStream(t, testnats.Image)
 			deployed := deployStreamWithCap(t, js, 0)
 			if deployed != -1 && deployed != 0 {
 				t.Fatalf("the deployed stream's consumer cap = %d, want the -1 or 0 a server answers for a stream deployed without one", deployed)
 			}
 
-			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithKeepInterval(testKeepInterval))
+			client, err := ConnectOwningStream([]string{uri}, WithEnvironment(liveServerEnvironment), WithKeepInterval(testKeepInterval), WithLogger(logs.logger))
 			if err != nil {
 				t.Fatalf("the start against a stream with no cap on a server that caps none: %v, want no update and no refusal", err)
 			}

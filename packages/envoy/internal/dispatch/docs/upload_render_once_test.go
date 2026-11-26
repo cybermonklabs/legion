@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // countRenders records every rendering of a document tree the package makes from here to the end
@@ -15,14 +16,14 @@ import (
 // acceptance counts the renders of one document and not the renders of anything: a write that
 // renders the text it was given twice costs the same count as one that renders the document it
 // replaces and then that text. One test records at a time, as one test at a time sets a hook on
-// Service, and the record is taken away in t.Cleanup.
+// Service, and the record is taken away in a cleanup (testcleanup.Add).
 func countRenders(t *testing.T) func() []string {
 	t.Helper()
 	record := &renderRecord{}
 	if !documentRenders.CompareAndSwap(nil, record) {
 		t.Fatal("another test is recording the document's renders already")
 	}
-	t.Cleanup(func() { documentRenders.Store(nil) })
+	testcleanup.Add(t, func() { documentRenders.Store(nil) })
 	return record.rendered
 }
 
