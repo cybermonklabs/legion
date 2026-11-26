@@ -783,7 +783,9 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	}
 	// The rules are recorded before the spans' rows are written: the project a rule names reads the
 	// repository's source key (eval_project_owners), so the change trigger logs the rows' changes,
-	// and the spans' folds fold them, for the project the new rule names.
+	// and the spans' folds fold them, for the project the new rule names. It is the rules' place in
+	// the eval tables' lock order too (defaults.go), before eval_days, where the boot's rename pass
+	// locks them (store's repoRenameLines), so the two wait for each other in turn.
 	if work.record {
 		if err := recordRules(ctx, tx, r.builtUnder); err != nil {
 			return err

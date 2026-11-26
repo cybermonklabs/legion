@@ -49,9 +49,12 @@ import (
 //     the readings and register writes, the seed, the zero fill, and each fold of a logged eval's
 //     stored figures in a transaction of its own (lockLogged). The commit of a refresher's page
 //     takes none (foldMarkedFirstPaints).
-//  2. eval_days: its rows, in the byte order of their keys (writeDays); or, in the boot's rename
-//     pass, the whole table in share row exclusive mode, before any other lock of the pass's line
-//     of the eval tables (store's repoRenameLines).
+//  2. eval_days_rules and then eval_days. A transaction that writes both writes its rule rows first:
+//     a refresher page's commit (commitPage, recordRules) and a settings rewrite's publication
+//     (rewriteSettings, recordRule) record their rules before their first day row. eval_days: its
+//     rows, in the byte order of their keys (writeDays). The boot's rename pass takes both tables
+//     whole in share row exclusive mode, eval_days_rules first, before any other lock of the pass's
+//     line of the eval tables (store's repoRenameLines).
 //  3. eval_day_owners: the change trigger of eval_days writes a key's row in the statement that
 //     writes the key's day rows (migration 20261117100014), a rebuild's stage writes rows with no
 //     day row (recordOwners), and the rename pass writes them behind eval_days' lock.

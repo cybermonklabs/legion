@@ -1267,7 +1267,9 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	}
 	// The rule is recorded before any row is written: the project it names reads the repository's
 	// source key (eval_project_owners), so the change trigger logs the rows' changes, and the fold
-	// below folds them, for the project the new rule names.
+	// below folds them, for the project the new rule names. It is the rules' place in the eval
+	// tables' lock order too (defaults.go), before eval_days, where the boot's rename pass locks them
+	// (store's repoRenameLines), so the two wait for each other in turn.
 	if err := recordRule(ctx, tx, next); err != nil {
 		return err
 	}
