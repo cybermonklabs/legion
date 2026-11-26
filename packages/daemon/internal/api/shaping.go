@@ -963,8 +963,8 @@ const shapedAnswersContract = 193
 // served the keys of 256 without this object.
 //
 // It is a literal of its own and never DaemonAPIVersion(): the number a later contract takes moves
-// that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract,
-// the last number of answers.go's frozenContracts (contracts.go), which names the constant rather
+// that constant, and the contract the key arrived at stays where it is. It is LastNumberedContract
+// (contracts.go), the last number of answers.go's frozenContracts, which names the constant rather
 // than its number, and it never moves.
 const dispatchCredentialContract = 275
 

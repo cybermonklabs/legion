@@ -46,10 +46,7 @@ var releaseDeliveries = []struct {
 	{"a role message", claim.RoleImplementer, func(token claim.Token) record.OutboxPayload {
 		return record.RoleMessage{Role: string(token), Body: "CI settled at the head"}
 	}},
-	{"a phase-ended message", claim.RoleImplementer, func(claim.Token) record.OutboxPayload {
-		return record.PhaseEnded{Role: claim.RoleImplementer, From: phase.Implementing, To: phase.AwaitingChildren,
-			Reason: "the admission pass stopped the implementer's implementing phase, while these Dispatch children of LEGION-208 were open: LEGION-209 (todo)"}
-	}},
+	{"a phase-ended message", claim.RoleTester, func(claim.Token) record.OutboxPayload { return endedByTheWait }},
 	{"a hook prompt", claim.RoleImplementer, func(claim.Token) record.OutboxPayload { return firedHook }},
 }
 

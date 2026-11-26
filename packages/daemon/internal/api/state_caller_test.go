@@ -1259,8 +1259,12 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // stateMachineContract is served the issue without the seven keys that contract added
 // (withoutStateMachineFields); and a caller below causeTimesContract is served each claim view
 // without `lastDeathAt` and `lastStartFailureAt` (withoutCauseTimes): every row of those tables
-// but the three served this daemon's own body is below it. Every other key of the settings block is
-// served as this contract writes it, since no reader types it (answers.go's typedSettings). One
+// but the ones served this daemon's own body is below it. Those are four rows of
+// TestTheStateRouteServesAPodItsPluginContractsClaimViews's table (a pod at shapedAnswersContract,
+// a pod at the project release entry's number, a pod whose claims record no contract and a caller
+// in no pod) and three of memory_test.go's, whose one pod at this contract stands where this
+// file's table has the first two. Every other key of the settings block is served as this
+// contract writes it, since no reader types it (answers.go's typedSettings). One
 // contract decides the stand-ins, because the two sides of a caller's shaping part only below
 // ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {

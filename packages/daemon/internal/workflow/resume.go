@@ -161,14 +161,14 @@ type releaseStopped struct {
 //     (ReturnFromChildren) — gets one start with no task and the ruleResume mark, enqueued
 //     directly as admission's start of a role that does not own its member's phase is
 //     (startMidPhaseMembers), so it waits for no slot. The outbox's start resumes the claim by
-//     rule, paced as every launch is (supervise's reserveWake), and its pending task, if it holds
-//     one, is sent on that resume, since a project release does not retire it
-//     (supervise.SuspendSource.RetiresPhaseTask). A phase owner's start names its phase, so the
-//     phase rules that read a queued start of the owner (StartFor, OwedEntry, readyWorkerTask's
-//     cover) see it; any other role's names none, as an architect's start names none, so the
-//     outbox's phase fence cannot end it when the phase moves while it waits its turn. Its cover
-//     is read under both, the issue's phase and none, since a promotion's start of such a role
-//     names the member's phase.
+//     rule, paced as every launch is (supervise's reserveWake), and its pending task of no phase,
+//     or of the phase its issue is still in, is sent on that resume, since a project release does
+//     not retire it (supervise.SuspendSource.RetiresPhaseTask). A phase owner's start names its
+//     phase, so the phase rules that read a queued start of the owner (StartFor, OwedEntry,
+//     readyWorkerTask's cover) see it; any other role's names none, as an architect's start
+//     names none, so the outbox's phase fence cannot end it when the phase moves while it waits
+//     its turn. Its cover is read under both, the issue's phase and none, since a promotion's
+//     start of such a role names the member's phase.
 //   - The production check's role gets the open look's start again: a start carrying that look
 //     (CheckLook) and the check it belongs to, the shape startLook writes, without startLook's
 //     Looks++, which opens the next look rather than this one. It is the one start an issue out
