@@ -1,4 +1,4 @@
--- 20261125005338_check_states.up.sql
+-- 20261125125704_check_states.up.sql
 --
 -- The state of each `before_merge` check at each open pull request head of an issue, as Dispatch
 -- last published it in a check.state_changed event, and the marks that say an issue's states may

@@ -732,7 +732,7 @@ type PhaseRow struct {
 	// release before, which reads and writes it in each of its statements over a phase row while
 	// it runs beside this one during a roll or after a rollback, and no statement of this release
 	// names it, so each row this release inserts takes its default, '', which that release reads
-	// as no verdict (migration 20261125000602_phase_verdict_gone). A later release drops it.
+	// as no verdict (migration 20261126110301_phase_verdict_gone). A later release drops it.
 	StatesSerial int64
 	// ReturnTo is, on the tester's row, the step of the issue's running task its completion of
 	// testing named for the task to return to (intake.HandoffComplete.ReturnTo), by its place in

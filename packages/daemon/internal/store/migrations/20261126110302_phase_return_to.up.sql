@@ -1,4 +1,4 @@
--- 20261125000603_phase_return_to.up.sql — the step a tester's completion names for its task to
+-- 20261126110302_phase_return_to.up.sql — the step a tester's completion names for its task to
 -- return to, kept with the completion until Dispatch's check states decide the testing step.
 --
 -- phases.return_to is, on the tester's row, the place in the issue's running task of the step the
@@ -31,6 +31,6 @@
 --
 -- begin;
 -- alter table phases drop column if exists return_to;
--- delete from schema_version where version = 20261125000603;
+-- delete from schema_version where version = 20261126110302;
 -- commit;
 alter table phases add column return_to integer not null default 0 check (return_to >= 0);

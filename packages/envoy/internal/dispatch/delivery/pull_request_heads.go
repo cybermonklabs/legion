@@ -71,7 +71,7 @@ type PullRequestHead struct {
 	// (GitHub's base.sha), "" where the writer read none, which stores null: "not known". The
 	// check states settler's read of a pull request's commits is GitHub's comparison of the head
 	// and this base revision as its claim read them (PullRequestMembership), and applies only where
-	// the row still names them (pull_request_former_heads_snapshot, migration 20261125005352); a
+	// the row still names them (pull_request_former_heads_snapshot, migration 20261125125718); a
 	// row that names none is not read.
 	BaseSHA           string
 	State             string
@@ -608,7 +608,7 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // a pull request read closed under its canonical name is, that write is the close the check states
 // settler captures, and once a close of the pull request is known it counts a row written closed
 // as a close only while a row of the pull request is open (pull_request_former_heads_apply,
-// migration 20261125005352). The write before the delete leaves the old name's row open when the
+// migration 20261125125718). The write before the delete leaves the old name's row open when the
 // close is recorded, so the close ends the lifecycle; the delete first would leave no row open,
 // and a reopen would bring back the heads of the lifecycle the close ended.
 //
@@ -616,7 +616,7 @@ func storedInputsOf(head PullRequestHead) storedInputs {
 // row's head where it is another than the canonical row's, to the canonical name, where that row
 // is open: they are heads of the same pull request, which the check states settler keeps computing
 // while it stays open. The delete's own trigger records it (pull_request_former_heads_keep,
-// migration 20261125005352) with the canonical row it reads open, taking no lock beyond the old
+// migration 20261125125718) with the canonical row it reads open, taking no lock beyond the old
 // row the delete holds, and marks the canonical row's issue owed; the settler applies the record
 // in the order of the pull request's writes (pull_request_former_heads_fold), so a head write to
 // either row and a close of the canonical one keep their effect on the carry whichever commits

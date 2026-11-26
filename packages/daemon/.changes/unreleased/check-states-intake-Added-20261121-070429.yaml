@@ -6,7 +6,7 @@ body: |-
     checks alone), with its reason, roles, CI case, serial and the event's sequence. A payload of
     another issue, with no `repo`, a `head` that is not 40 lowercase hex digits, a `state` other than
     `yes`, `no` or `unknown`, a check with no state, a state of no check, or no serial is an error, so
-    the consumer terminates it as poison. Migration `20261125000601_check_states` adds the tables
+    the consumer terminates it as poison. Migration `20261126110300_check_states` adds the tables
     `check_states`, `check_state_sets` and `check_state_serials` and the column
     `issues.check_states_seq` (nullable, 0 on every row). The store keeps the newest state of each check at
     each head and each head's set of checks, a write at a lower Dispatch sequence changing nothing

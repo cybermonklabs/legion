@@ -13,7 +13,7 @@ import (
 
 // checkStatesVersion is the version of the migration this file tests, so the test can migrate
 // through everything before it whatever lands beside it.
-const checkStatesVersion = 20261125000601
+const checkStatesVersion = 20261126110300
 
 // checkStatesWayBack is the transaction the header of checkStatesVersion gives an operator to run
 // through psql: its lines from `begin;` through `commit;`, each without the header's marker. A
@@ -50,7 +50,7 @@ func checkStatesWayBack(t *testing.T) string {
 	return ""
 }
 
-// 20261125000601 creates the three tables of the check states, empty, and gives every issue the
+// 20261126110300 creates the three tables of the check states, empty, and gives every issue the
 // release before recorded a catch-up cursor of 0, so its first catch-up reads its event log from
 // the start. The release before names none of them, and its insert of an issue still lands, at
 // that cursor.
@@ -89,7 +89,7 @@ func TestTheCheckStatesMigrationAndItsWayBack(t *testing.T) {
 	exec(`insert into check_state_serials (issue, serial) values ('ACME-1', 1)`)
 
 	exec(checkStatesWayBack(t))
-	const left = `select row((select count(*) from issues), (select count(*) from schema_version where version = 20261125000601),
+	const left = `select row((select count(*) from issues), (select count(*) from schema_version where version = 20261126110300),
 		(select count(*) from information_schema.columns where table_schema = current_schema() and table_name = 'issues' and column_name = 'check_states_seq'))::text`
 	if got, want := rowsAsText(t, store, tables), []string{"", "", ""}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the tables after the way back = %v, want none of the three", got)

@@ -2,7 +2,7 @@ kind: Fixed
 body: |-
   A `phase-finished` notice the release before published with the tester's `verdict`, and that a
   listener reports it could not forward after the upgrade, is queued again for its architect
-  without the key, as migration `20261125000602_phase_verdict_gone` strips it from every queued
+  without the key, as migration `20261126110301_phase_verdict_gone` strips it from every queued
   notice. The daemon read the report's notice strictly and refused the key, so it dropped the
   report as one about something else and the architect never got that notice. The outbox reads a
   queued notice the same way, so a `phase-finished` notice that a daemon of the release before

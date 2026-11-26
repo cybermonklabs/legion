@@ -1,4 +1,4 @@
--- 20261125005350_pull_request_heads_base_sha.up.sql
+-- 20261125125716_pull_request_heads_base_sha.up.sql
 --
 -- The commit a pull request's base branch was at when the pull request was last read
 -- (pull_request_heads.base_sha): GitHub's pull_request.base.sha, which each read of the pull
@@ -6,7 +6,7 @@
 -- (delivery.UpsertPullRequestHead). base_ref names the branch, which can move with no change of
 -- its name; base_sha names the revision. The check states settler's read of which commits are a
 -- pull request's own is GitHub's comparison of the head and the base revision the row stores
--- (migration 20261125005352, pull_request_former_heads_claim), so its answer is about those two
+-- (migration 20261125125718, pull_request_former_heads_claim), so its answer is about those two
 -- commits; the claim's snapshot names the stored revisions, and the answer applies only where they
 -- are unchanged.
 --
@@ -19,7 +19,7 @@
 -- ceil(n / delivery.PullRequestHeadBatch) passes that try their whole batch, each stamp
 -- acknowledged, whatever their reads answer, a row never tried first, and a pass a rate limit
 -- stops leaves the rows it did not try in their places, so the next pass takes them first
--- (migration 20261125005351, delivery.ListStalePullRequestHeads); a try whose stamp's call times
+-- (migration 20261125125717, delivery.ListStalePullRequestHeads); a try whose stamp's call times
 -- out or loses its connection may still commit the stamp with no read, at a moment the reconcile
 -- never learns, so the bound counts no pass with such a stamp and holds again only once the stamp
 -- has settled, with no bound while such stamps recur, and the stamp stores no revision.

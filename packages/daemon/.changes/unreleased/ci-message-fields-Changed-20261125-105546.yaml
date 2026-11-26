@@ -11,7 +11,7 @@ body: |-
   and on a wait or a move back `waits_for`, `waiting` and the failing checks' ids) where it
   writes the tester's notice of a wait, of a move back and the move to reviewing; the last
   replaces `workflow: the testing move waits for check states`. The way back of migration
-  `20261125000602_phase_verdict_gone` also deletes the role messages' six keys, since the release
+  `20261126110301_phase_verdict_gone` also deletes the role messages' six keys, since the release
   before decodes a role message strictly. No test reads the words of a CI message: the
   comparisons of a settlement message's whole body, of the wake task of a settlement, and the
   searches of the CI messages' bodies are gone, and the tests read these fields and lines.
