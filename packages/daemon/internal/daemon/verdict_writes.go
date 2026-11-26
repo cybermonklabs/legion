@@ -31,7 +31,7 @@ const (
 // verdictNoAnswer is the WARN of a head GitHub gave no answer for on noAnswerSweeps of the writers'
 // sweeps in a row, which names the bound from noAnswerSweeps itself, so the two cannot part.
 var verdictNoAnswer = "verdict: GitHub has given no answer to the read of a head's change on " + strconv.Itoa(noAnswerSweeps) +
-	" of the writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there, until GitHub answers"
+	" of the writers' sweeps in a row, so legion-verdict is now failure there with the no-answer summary, until GitHub's next answer decides the head again"
 
 // noAnswerSweeps is how many of the writers' sweeps in a row may find GitHub giving no answer to
 // the read of one head's change before the head is decided failure, with a summary that says GitHub
@@ -423,7 +423,8 @@ func (w *workflowRuntime) writeVerdicts(ctx context.Context) {
 // undecided (verdict.Undecided): no run of the daemon's own is written, and one written before
 // stands until a read is answered, while the writers' sweep still writes over each run and status
 // of the App its record does not hold (writeDecided); and once noAnswerSweeps of its sweeps in a row
-// found the head so, it is failure, as a change the daemon cannot read (boundUnanswered).
+// found the head so, it is failure with the no-answer summary until GitHub's next answer decides it
+// again (boundUnanswered).
 //
 // Once a pass writes a Legion head's success, or turns its run or status to success, the issue's
 // merge state is read once more, a ladder's wait later (mergeStateWait): GitHub can answer the read
@@ -513,9 +514,9 @@ func (w *workflowRuntime) wroteAt(ctx context.Context, target verdictTarget, wri
 
 // boundUnanswered is decided, the decision of target's head, with no answer bounded (readCommits):
 // it counts the decision (countUnanswered), and an undecided head whose count has reached
-// noAnswerSweeps is one whose change the daemon cannot read, so failure (unreadAfterNoAnswer); the
-// WARN that says so, naming the repository, the head, the count and the last error, is logged once,
-// when the count reaches the bound. Every other decision is left as it is.
+// noAnswerSweeps is failure with the no-answer summary (noAnswerFailure), until GitHub's next answer
+// decides it again; the WARN that says so, naming the repository, the head, the count and the last
+// error, is logged once, when the count reaches the bound. Every other decision is left as it is.
 func (w *workflowRuntime) boundUnanswered(target verdictTarget, decided verdictDecision) verdictDecision {
 	sweeps, reached := w.verdicts.countUnanswered(target.repository.String(), target.head, decided, target.overForeign)
 	if decided.conclusion != verdict.Undecided || sweeps < noAnswerSweeps {
@@ -524,14 +525,14 @@ func (w *workflowRuntime) boundUnanswered(target verdictTarget, decided verdictD
 	if reached {
 		w.log.Warn(verdictNoAnswer, "repository", target.repository.String(), "head", target.head, "sweeps", sweeps, "error", decided.unanswered)
 	}
-	return unreadAfterNoAnswer(decided)
+	return noAnswerFailure(decided)
 }
 
-// unreadAfterNoAnswer is decided, a head the writers' sweeps found undecided noAnswerSweeps times
-// in a row, as one whose change has no reader yet: failure for that reason
-// (verdict.ChangeUnanswered), whose run keeps the no-reader title and whose summary says GitHub gave
-// no answer, which the next answered read decides again (verdictOutput).
-func unreadAfterNoAnswer(decided verdictDecision) verdictDecision {
+// noAnswerFailure is decided, a head the writers' sweeps found undecided noAnswerSweeps times in a
+// row, at the bound: failure for GitHub's silence (verdict.ChangeUnanswered), whose run keeps the
+// no-reader title and whose summary says GitHub gave no answer, which is no answer that the commits
+// cannot be read, and that the next answered read decides the head again (verdictOutput).
+func noAnswerFailure(decided verdictDecision) verdictDecision {
 	decided.conclusion, decided.reason, decided.noReader = verdict.Failure, verdict.ChangeUnanswered, nil
 	return decided
 }

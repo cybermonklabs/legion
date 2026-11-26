@@ -2175,7 +2175,7 @@ const changeUnreadLine = "verdict: the change's commits could not be read, so no
 // writers' sweeps in a row, when the head is decided failure.
 const (
 	changeUnansweredLine = "verdict: GitHub gave no answer to the read of the change's commits, so this read decides nothing; the next write or sweep reads it again"
-	noAnswerLine         = "verdict: GitHub has given no answer to the read of a head's change on 3 of the writers' sweeps in a row, so the change counts as unread and legion-verdict is now failure there, until GitHub answers"
+	noAnswerLine         = "verdict: GitHub has given no answer to the read of a head's change on 3 of the writers' sweeps in a row, so legion-verdict is now failure there with the no-answer summary, until GitHub's next answer decides the head again"
 )
 
 // A read of the change GitHub gives no answer to (a 5xx, as a transport error or a timeout) decides

@@ -115,11 +115,12 @@ type listedStatus struct {
 // sweep's ask to put failure over each run and status of the App there that does not show it; a
 // write a fact asks for (writeVerdictOver without overForeign) writes nothing there and makes no
 // GitHub call. A head with no decision yet (verdict.Undecided) gets no new run of the daemon's own;
-// only the writers' sweep's write there puts the conclusion of the daemon's newest write at the
-// head, or failure where it has none, over each run and status of the App that shows another: one
-// the record does not hold, and one it holds that another token of the App turned (R19); the output
-// of such a run then names the conclusion alone, as the head has no decision to name. In token mode
-// the daemon mints no verdict token (appauth.ErrNoVerdictToken): it writes nothing and logs that
+// only the writers' sweep's write there puts the conclusion undecidedOver gives (success only where
+// the store's newest write is success and GitHub shows each run the store holds at success, failure
+// otherwise) over each run and status of the App that shows another: one the record does not hold,
+// and one it holds that another token of the App turned (R19); the output of such a run then names
+// the conclusion alone, as the head has no decision to name. In token mode the daemon mints no
+// verdict token (appauth.ErrNoVerdictToken): it writes nothing and logs that
 // once. So it does while it holds no App id: an id that is no number tells no run as the App's, its
 // own among them, and a write would make a new run at each write; the one ERROR where the writer is
 // built says why (newVerdictWriter). One goroutine makes every write (writeVerdicts), so no two
