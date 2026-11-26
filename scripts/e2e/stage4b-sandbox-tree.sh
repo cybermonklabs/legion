@@ -295,12 +295,13 @@ run_pods_at_once=$admission_cap
 # daemon's, config.DefaultResources() in packages/daemon/internal/config/kubernetes.go, written once
 # here as data. The override is this run's, chosen so that the issue pod's reservation comes from
 # both paths the loader has — its cpu and memory set, its ephemeral-storage limit and request the
-# defaults — while staying within the defaults' 3 CPU and 19 GiB. The controller's default is data
-# for the checks alone: the file names the controller only while controller_cpu is set
+# defaults — and so that each value it sets differs from the default's: a pod that carried the
+# default instead departs at pod-shape. The controller's default is data for the checks alone: the
+# file names the controller only while controller_cpu is set
 # (daemon-controller-liveness, under `controller: daemon`), and the image probe pod carries its own
 # fixed 500m / 1Gi (internal/daemon/kubernetes.go probeReservation), never the controller's — so
 # that checkpoint's restart with the controller at 100000 CPU still places its probe pod.
-declare -A default_issue=([cpu]=3 [memory]=19Gi [ephemeral_storage]=80Gi [ephemeral_storage_request]=6Gi)
+declare -A default_issue=([cpu]=2 [memory]=8Gi [ephemeral_storage]=80Gi [ephemeral_storage_request]=6Gi)
 declare -A default_controller=([cpu]=1 [memory]=4Gi [ephemeral_storage]=10Gi [ephemeral_storage_request]=1Gi)
 declare -A override_issue=([cpu]=2950m [memory]=16Gi)
 reservation_fields="cpu memory ephemeral_storage ephemeral_storage_request"

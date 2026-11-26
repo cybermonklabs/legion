@@ -320,6 +320,7 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 			}
 		}
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -603,15 +604,18 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
 // DeletePlan deletes the plan of issue at generation, every row of it in each of the three tables
 // (the tasks and the steps go with their versions, on delete cascade).
 func (s *Postgres) DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error {
-	if _, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
+	tag, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation))
+	if err != nil {
 		return fmt.Errorf("delete the plan of %s at generation %d: %w", issue, generation, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -638,6 +642,9 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 	}
 	if len(kept) > 0 {
 		return fmt.Errorf("%s: the plan holds no waiting or stopped task %v", describe, kept)
+	}
+	if len(deleted) > 0 {
+		noteRecordWrite(ctx)
 	}
 	return nil
 }
@@ -672,6 +679,7 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is in the workflow, or the task no such step", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -691,6 +699,7 @@ func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is not done and in the workflow", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -778,6 +787,7 @@ func (s *Postgres) PutReturnCounts(ctx context.Context, tx pgx.Tx, issue string,
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 

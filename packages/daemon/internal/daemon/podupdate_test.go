@@ -338,8 +338,8 @@ func newPodUpdateRigWith(t *testing.T, opts podUpdateRigOptions, roles ...podUpd
 // and records, and one handler, a real engine over those same records. The engine alone is
 // handler enough for the facts this supervision applies, which are the silence sweep's: its
 // handler reads the record and writes its start row and its notice itself. Production runs
-// admission as a second handler, which promotes the waiting line for every fact whatever its
-// kind (admit's Apply, promote); this rig admits nothing and holds no line, so that pass would
+// admission as a second handler, which promotes the waiting line on the facts its pass rule
+// names (admit's Apply, promote); this rig admits nothing and holds no line, so that pass would
 // read an empty waiting line and decide nothing (workflow.(*Engine).workerSilent). The engine
 // runs on the rig's clock, so the record it writes measures a silence from the moment the test
 // moved the clock to, and on the rig's logger, so the line it writes beside the notice is in

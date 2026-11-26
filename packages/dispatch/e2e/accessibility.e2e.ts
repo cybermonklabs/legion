@@ -10,7 +10,7 @@ import AxeBuilder from "@axe-core/playwright";
 
 import { type AccessibilityExclusion, accessibilityExclusions } from "./accessibility-exclusions";
 import { expectTimeout } from "./expect-timeout";
-import { scannedRoutes, waitForRouteSettled } from "./review-routes";
+import { listedRequests, scannedRoutes, waitForRouteSettled } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { expect, test } from "./test";
 import { withAlice } from "./users";
@@ -91,7 +91,7 @@ for (const route of scannedRoutes) {
         // a 404 or a page still resolving itself: the first two would pass with no findings at
         // all, and the third would report findings about a state no reader sees
         // (`waitForRouteSettled`).
-        await waitForRouteSettled(page, route);
+        await waitForRouteSettled(page, route, listedRequests(page));
         const results = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
         await testInfo.attach(`axe ${route.name} ${colorScheme}.json`, {
           body: JSON.stringify(results, null, 2),
