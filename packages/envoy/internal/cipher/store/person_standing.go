@@ -27,35 +27,48 @@ import (
 // transaction rolls back both attempted writes on failure, though either row can already hold a
 // later answer. person is a login as record.CanonicalLogin spells it, which each table's check
 // refuses any other spelling of.
+const keepMemberKindSQL = `insert into person_member_kind (person, member_kind, as_of) values ($1, nullif($2, ''), $3)
+	on conflict (person) do update set member_kind = excluded.member_kind, as_of = excluded.as_of
+	where person_member_kind.as_of < excluded.as_of`
+
+const keepPersonStandingSQL = `insert into person_standing (person, held, answered_at, not_held_until) values ($1, $2, $3, $4)
+	on conflict (person) do update set held = excluded.held, answered_at = excluded.answered_at, not_held_until = excluded.not_held_until
+	where person_standing.answered_at < excluded.answered_at`
+
 func (s *Store) KeepPersonAnswer(ctx context.Context, person, memberKind string, held *bool, asOf time.Time, notHeldUntil *time.Time) error {
+	if held == nil {
+		_, err := s.Pool.Exec(ctx, keepMemberKindSQL, person, memberKind, asOf)
+		return err
+	}
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `insert into person_member_kind (person, member_kind, as_of) values ($1, nullif($2, ''), $3)
-			on conflict (person) do update set member_kind = excluded.member_kind, as_of = excluded.as_of
-			where person_member_kind.as_of < excluded.as_of`, person, memberKind, asOf); err != nil {
+		if _, err := tx.Exec(ctx, keepMemberKindSQL, person, memberKind, asOf); err != nil {
 			return err
 		}
-		if held == nil {
-			return nil
-		}
-		_, err := tx.Exec(ctx, `insert into person_standing (person, held, answered_at, not_held_until) values ($1, $2, $3, $4)
-			on conflict (person) do update set held = excluded.held, answered_at = excluded.answered_at, not_held_until = excluded.not_held_until
-			where person_standing.answered_at < excluded.answered_at`, person, *held, asOf, notHeldUntil)
+		_, err := tx.Exec(ctx, keepPersonStandingSQL, person, *held, asOf, notHeldUntil)
 		return err
 	})
 }
 
-// KeptMemberKind is the member kind kept for person, as Dispatch spelled it and "" for an answer
-// that named none, and the time that answer rests on (its as_of). found is false when no kind is
-// kept, which is no error.
-func (s *Store) KeptMemberKind(ctx context.Context, person string) (kind string, asOf time.Time, found bool, err error) {
-	err = s.Pool.QueryRow(ctx, `select coalesce(member_kind, ''), as_of from person_member_kind where person = $1`, person).Scan(&kind, &asOf)
+// MemberKind is the member kind Dispatch named for a person and the time its answer rests on.
+type MemberKind struct {
+	// Kind is Dispatch's member kind, or "" for an answer that named none.
+	Kind string
+	// AsOf is the time the answer rests on (its as_of).
+	AsOf time.Time
+}
+
+// KeptMemberKind is the member kind kept for person. found is false when no kind is kept, which is
+// no error.
+func (s *Store) KeptMemberKind(ctx context.Context, person string) (member MemberKind, found bool, err error) {
+	err = s.Pool.QueryRow(ctx, `select coalesce(member_kind, ''), as_of from person_member_kind where person = $1`, person).
+		Scan(&member.Kind, &member.AsOf)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", time.Time{}, false, nil
+		return MemberKind{}, false, nil
 	}
 	if err != nil {
-		return "", time.Time{}, false, err
+		return MemberKind{}, false, err
 	}
-	return kind, asOf, true, nil
+	return member, true, nil
 }
 
 // Standing is an answer of whether Dispatch holds a person, as person_standing keeps it.

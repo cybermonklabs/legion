@@ -73,6 +73,11 @@ const (
 // before the removal (BROKER_ACCESS_TOKEN_SECONDS).
 const CacheTTL = 30 * time.Second
 
+// KeptAnswerTTL is the longest a client serves a kept full member kind or a kept visible project
+// while Dispatch cannot be asked. It bounds the stale access of a person demoted, or removed from
+// a project's list, before the outage that prevented the broker from learning the change.
+const KeptAnswerTTL = time.Hour
+
 // RelayedReadBound is how long a member-kind read made for a route Dispatch's server relays may
 // run: Dispatch waits 5 seconds for the broker's whole answer (internal/dispatch/cipher's
 // defaultTimeout), and one call to Dispatch may take requestTimeout, so a read with no bound of its

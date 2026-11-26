@@ -64,16 +64,13 @@ type Keeper interface {
 	// whether Dispatch holds the person, with the deadline notHeldUntil (nil for none); each
 	// unless its row holds an answer Dispatch gave later.
 	KeepPersonAnswer(ctx context.Context, person, memberKind string, held *bool, asOf time.Time, notHeldUntil *time.Time) error
-	// KeptMemberKind is the member kind kept for person and the as_of it rests on: "" for an
-	// answer that named none; found is false when no kind is kept.
-	KeptMemberKind(ctx context.Context, person string) (kind string, asOf time.Time, found bool, err error)
+	// KeptMemberKind is the member kind kept for person. found is false when no kind is kept.
+	KeptMemberKind(ctx context.Context, person string) (member store.MemberKind, found bool, err error)
 	// PersonStanding is the last answer kept of whether Dispatch holds person; found is false
 	// when none is kept.
 	PersonStanding(ctx context.Context, person string) (standing store.Standing, found bool, err error)
-	// KeepProjectStanding writes Dispatch's answer for person ("" for none) and project, asked at
-	// askedAt, unless the row holds one asked later: its visibility and whether person may see
-	// the project, or, for visibility "", that Dispatch holds no such project.
-	KeepProjectStanding(ctx context.Context, person, project, visibility string, visible bool, askedAt time.Time) error
+	// KeepProjectStanding writes standing, Dispatch's answer for person and project.
+	KeepProjectStanding(ctx context.Context, person, project string, standing store.ProjectStanding) error
 	// KeptProjectStanding is the last answer kept for person and project, as KeepProjectStanding
 	// wrote it, and when it was asked; found is false when no answer is kept.
 	KeptProjectStanding(ctx context.Context, person, project string) (standing store.ProjectStanding, found bool, err error)
@@ -202,6 +199,12 @@ const (
 	keptUnreadable = "unreadable"
 )
 
+// keptAnswerExpired reports whether an answer kept at at is too old to serve while Dispatch cannot
+// be asked. A zero time is no bounded answer and is never served.
+func (c *Client) keptAnswerExpired(at time.Time) bool {
+	return at.IsZero() || c.now().Sub(at) >= KeptAnswerTTL
+}
+
 // keptKind is MemberKind's answer for person while Dispatch cannot be asked (cause): MemberFull
 // where the last answer kept for them is full, and cause otherwise, wrapped with what was kept, so
 // the caller refuses as it refuses with no Keeper (Restricted's *MemberKindUncheckable, in
@@ -213,26 +216,29 @@ const (
 // person.
 func (c *Client) keptKind(ctx context.Context, person string, cause error) (string, error) {
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keptReadTimeout)
-	kind, asOf, found, readErr := c.kept.keeper.KeptMemberKind(readCtx, person)
+	member, found, readErr := c.kept.keeper.KeptMemberKind(readCtx, person)
 	cancel()
 	c.mu.Lock()
 	unkept, remembered := c.kept.unkept[person]
 	c.mu.Unlock()
 	var kept string
 	switch {
-	case remembered && (readErr != nil || !found || !unkept.asOf.Before(asOf)):
-		kept, asOf = keptLabel(unkept.kind), unkept.asOf
+	case remembered && (readErr != nil || !found || !unkept.asOf.Before(member.AsOf)):
+		member, kept = store.MemberKind{Kind: unkept.kind, AsOf: unkept.asOf}, keptLabel(unkept.kind)
 	case readErr != nil:
 		kept = keptUnreadable
 	case !found:
 		kept = keptNone
 	default:
-		kept = keptLabel(kind)
+		kept = keptLabel(member.Kind)
+	}
+	if kept == keptFull && c.keptAnswerExpired(member.AsOf) {
+		return "", fmt.Errorf("%w; the member kind kept for %s is older than %s; the broker serves a kept full for at most %s while Dispatch cannot be asked", cause, person, KeptAnswerTTL, KeptAnswerTTL)
 	}
 	if noted(c, c.kept.kindNoted, person, kept) {
 		c.kept.kindUnchecked.Inc([2]string{"kept", kept})
 		if kept == keptFull {
-			c.kept.log.Warn(KeptFullMessage, "person", person, "as_of", asOf.UTC().Format(time.RFC3339Nano), "error", cause)
+			c.kept.log.Warn(KeptFullMessage, "person", person, "as_of", member.AsOf.UTC().Format(time.RFC3339Nano), "error", cause)
 		}
 	}
 	switch {
@@ -448,18 +454,18 @@ func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, 
 	if c.kept == nil {
 		return
 	}
-	visibility, visible := answer.Visibility, answer.Visible
+	standing := store.ProjectStanding{Visibility: answer.Visibility, Visible: answer.Visible, AskedAt: asked}
 	if missing {
-		visibility, visible = "", false
+		standing.Visibility, standing.Visible = "", false
 	}
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keepTimeout)
-	err := c.kept.keeper.KeepProjectStanding(writeCtx, key.person, key.project, visibility, visible, asked)
+	err := c.kept.keeper.KeepProjectStanding(writeCtx, key.person, key.project, standing)
 	cancel()
 	c.mu.Lock()
 	switch remembered, ok := c.kept.unkeptProjects[key]; {
 	case err == nil && ok && !remembered.After(asked):
 		delete(c.kept.unkeptProjects, key)
-	case err != nil && !missing && !visible && (!ok || asked.After(remembered)):
+	case err != nil && !missing && !standing.Visible && (!ok || asked.After(remembered)):
 		c.kept.unkeptProjects[key] = asked
 	}
 	switch remembered, ok := c.kept.unkeptExists[key.project]; {
@@ -469,14 +475,14 @@ func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, 
 		c.kept.unkeptExists[key.project] = asked
 	}
 	switch remembered, ok := c.kept.unkeptPrivate[key.project]; {
-	case err == nil && ok && !remembered.After(asked) && (missing || visibility == VisibilityPrivate):
+	case err == nil && ok && !remembered.After(asked) && (missing || standing.Visibility == VisibilityPrivate):
 		delete(c.kept.unkeptPrivate, key.project)
-	case err != nil && !missing && visibility == VisibilityPrivate && (!ok || asked.After(remembered)):
+	case err != nil && !missing && standing.Visibility == VisibilityPrivate && (!ok || asked.After(remembered)):
 		c.kept.unkeptPrivate[key.project] = asked
 	}
 	c.mu.Unlock()
 	if err != nil {
-		c.kept.log.Warn(keepProjectFailedMessage, "person", key.person, "project", key.project, "visible", visible && !missing,
+		c.kept.log.Warn(keepProjectFailedMessage, "person", key.person, "project", key.project, "visible", standing.Visible && !missing,
 			"asked_at", asked.UTC().Format(time.RFC3339Nano), "error", err)
 	}
 }
@@ -496,7 +502,6 @@ func (c *Client) keepProject(ctx context.Context, key accessKey, answer Answer, 
 func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (Answer, error) {
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), keptReadTimeout)
 	standing, found, readErr := c.kept.keeper.KeptProjectStanding(readCtx, key.person, key.project)
-	visibility, visible, askedAt := standing.Visibility, standing.Visible, standing.AskedAt
 	cancel()
 	c.mu.Lock()
 	unkept, remembered := c.kept.unkeptProjects[key]
@@ -505,38 +510,41 @@ func (c *Client) keptProject(ctx context.Context, key accessKey, cause error) (A
 	c.mu.Unlock()
 	var kept string
 	switch {
-	case remembered && (readErr != nil || !found || !unkept.Before(askedAt)):
-		kept, askedAt = keptNotVisible, unkept
+	case remembered && (readErr != nil || !found || !unkept.Before(standing.AskedAt)):
+		kept = keptNotVisible
 	case readErr != nil:
 		kept = keptUnreadable
 	case !found:
 		kept = keptNone
-	case visibility == "" && existsUnkept && !exists.Before(askedAt):
+	case standing.Visibility == "" && existsUnkept && !exists.Before(standing.AskedAt):
 		kept = keptNone
-	case visibility == "":
+	case standing.Visibility == "":
 		kept = keptMissing
-	case visibility == VisibilityPublic && privateUnkept && !private.Before(askedAt):
+	case standing.Visibility == VisibilityPublic && privateUnkept && !private.Before(standing.AskedAt):
 		kept = keptNone
-	case !visible:
+	case !standing.Visible:
 		kept = keptNotVisible
-	case visibility == VisibilityPublic:
+	case standing.Visibility == VisibilityPublic:
 		kept = keptPublic
-	case visibility == VisibilityPrivate:
+	case standing.Visibility == VisibilityPrivate:
 		kept = keptVisible
 	default:
 		kept = keptUnreadable
+	}
+	if (kept == keptPublic || kept == keptVisible) && c.keptAnswerExpired(standing.AskedAt) {
+		return Answer{}, fmt.Errorf("%w; the answer kept for %q and project %s is older than %s; the broker serves a kept visible project for at most %s while Dispatch cannot be asked", cause, key.person, key.project, KeptAnswerTTL, KeptAnswerTTL)
 	}
 	if noted(c, c.kept.projectNoted, key, kept) {
 		c.kept.projectUnchecked.Inc([2]string{"kept", kept})
 		switch kept {
 		case keptPublic, keptVisible, keptMissing:
 			c.kept.log.Warn(KeptProjectMessage, "person", key.person, "project", key.project, "kept", kept,
-				"asked_at", askedAt.UTC().Format(time.RFC3339Nano), "error", cause)
+				"asked_at", standing.AskedAt.UTC().Format(time.RFC3339Nano), "error", cause)
 		}
 	}
 	switch kept {
 	case keptPublic, keptVisible:
-		return Answer{Project: key.project, Visibility: visibility, Person: key.person, Visible: true}, nil
+		return Answer{Project: key.project, Visibility: standing.Visibility, Person: key.person, Visible: true}, nil
 	case keptMissing:
 		return Answer{}, &ProjectNotFoundError{Project: key.project}
 	case keptUnreadable:

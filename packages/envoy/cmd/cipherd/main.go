@@ -597,7 +597,7 @@ func main() {
 		// 0045, which records no account, only where BROKER_PROJECT_ACCESS_URL is set
 		// (store.SignInTrade.EndUnrecorded); unset, such a sign-in goes on as before.
 		exchangeConfig.PersonAudience = cfg.SignInDeviceAudience
-		exchangeConfig.PersonSignIns = enroll.PersonSignIns(projectAccess != nil)
+		exchangeConfig.PersonSignIns = enroll.PersonSignIns(endUnrecordedSignIns(projectAccess))
 		slog.Info("google person sign-in", "issuer", cfg.GoogleOIDCIssuer, "audience", cfg.SignInDeviceAudience, "domain", cfg.SignIn.Domain)
 	}
 	if cfg.ExchangeGitHubIssuer != "" {
@@ -1478,6 +1478,13 @@ func projectAccessHTTPClient() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost = requests.MaySeeAtOnce
 	return &http.Client{Transport: transport}
+}
+
+// endUnrecordedSignIns reports whether a trade ends the sessions of a sign-in from before
+// migration 0045 that recorded no account. The broker does that only where it can ask Dispatch:
+// projectAccess is nil exactly when BROKER_PROJECT_ACCESS_URL is unset.
+func endUnrecordedSignIns(projectAccess projectaccess.Access) bool {
+	return projectAccess != nil
 }
 
 // projectAccessClients is the broker's two clients of the Dispatch at baseURL, both reading the
