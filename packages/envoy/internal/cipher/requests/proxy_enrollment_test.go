@@ -144,13 +144,13 @@ func TestARestrictedMembersEnrollmentGrantsAreEndedNotAnswered(t *testing.T) {
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, first := grantOf(t, m, enr, key, "read the first", "AUTO_TOKEN")
 	_, second := grantOf(t, m, enr, key, "read the second", "SECOND_TOKEN")
-	for _, grantID := range []string{first, second} {
+	listed := slices.Sorted(slices.Values([]string{first, second}))
+	for _, grantID := range listed {
 		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 			t.Fatalf("Values(%s): %v", grantID, err)
 		}
 	}
 	both := []string{"AUTO_TOKEN", "SECOND_TOKEN"}
-	listed := slices.Sorted(slices.Values([]string{first, second}))
 	dispatch := projectaccesstest.NewServer(t, nil, map[string]string{fixtureOperator: projectaccess.MemberFull})
 	// A client of its own for each read, as a broker reads Dispatch again once its cached answer
 	// has aged past projectaccess.CacheTTL.
@@ -186,16 +186,15 @@ func TestARestrictedMembersEnrollmentGrantsAreEndedNotAnswered(t *testing.T) {
 func TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule("AUTO_TOKEN", ""), rule("SECOND_TOKEN", "")}}, publicTeam)
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
+	both := []string{"AUTO_TOKEN", "SECOND_TOKEN"}
 	nameOf := map[string]string{}
-	values := map[string]string{"AUTO_TOKEN": "auto-v1", "SECOND_TOKEN": "second-v1"}
-	for _, name := range []string{"AUTO_TOKEN", "SECOND_TOKEN"} {
+	for _, name := range both {
 		_, grantID := grantOf(t, m, enr, key, "read it", name)
 		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
 			t.Fatalf("Values(%s): %v", grantID, err)
 		}
 		nameOf[grantID] = name
 	}
-	both := []string{"AUTO_TOKEN", "SECOND_TOKEN"}
 	listed := slices.Sorted(maps.Keys(nameOf))
 	ended, healthy := listed[0], listed[1]
 	read := func(what string, want []string) {
@@ -206,7 +205,7 @@ func TestAGrantTheProjectRuleEndsIsLeftOutBesideAHealthyGrant(t *testing.T) {
 	}
 
 	read("before any tag", listed)
-	retag(t, m, taggedSecret(nameOf[ended], fixtureOperator, policy.TierAgent, teamProject, values[nameOf[ended]]))
+	retag(t, m, taggedSecret(nameOf[ended], fixtureOperator, policy.TierAgent, teamProject, "tagged-v1"))
 	read("with "+nameOf[ended]+" tagged TEAM while TEAM is public", listed)
 	for _, grantID := range listed {
 		requireGrantLive(t, m, grantID)

@@ -78,12 +78,9 @@ const (
 )
 
 // GitHubSlot is the slot of a github-app secret's installation on owner: SlotGitHubPrefix and
-// owner with its ASCII letters lowered (fold.ASCII), since GitHub reads a login without regard to
-// case. It is the one spelling of that key: the release writes each installation's slot with it
-// (githubAppSplit) and the proxy reads the slot of the account a request's path names with it
-// (internal/cipher/proxy's accountSlot), so the two cannot fold one owner two ways. The fold is
-// ASCII-only, as every login comparison of the module is: a GitHub login is ASCII, and Unicode's
-// lowering would fold some other letters onto ASCII ones (U+212A KELVIN SIGN onto "k").
+// owner with its ASCII letters lowered (fold.ASCII). githubAppSplit writes each installation's
+// slot with it and the proxy reads the slot of the account a request's path names with it
+// (internal/cipher/proxy's accountSlot), so the release and proxy cannot fold one owner two ways.
 func GitHubSlot(owner string) string {
 	return SlotGitHubPrefix + fold.ASCII(owner)
 }
