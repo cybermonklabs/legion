@@ -802,9 +802,9 @@ fires first.
 
 ## The two load legs, what they run and their limits
 
-Two legs of this job, `alone (chromium-load)` and `alone (iphone-load)`, run the load rows of
-the new issue page (dispatch://INFRA-5939): the one file e2e/issue-page-load.e2e.ts, in the
-Playwright projects of those names. `chromium-load` opens the page at 1440 by 900 with the
+Two legs of this job, `alone (chromium-load)` and `alone (iphone-load)`, run the load rows of the new issue page: `e2e/issue-page-load.e2e.ts`, in the Playwright projects of those names.
+Both projects also select `e2e/issue-page-load-longest.e2e.ts`, whose profiler rows skip unless `ISSUE_PAGE_LOAD_LONGEST=1`, so routine CI legs do not run them.
+`chromium-load` opens the page at 1440 by 900 with the
 processor slowed by 2, and `iphone-load` opens it as Playwright's iPhone 13 in Chromium, 390 px
 wide, with the processor slowed by 4. Each of the two runs one worker and no retry, as the
 three `-alone` projects do. Each row reads each of its bounds over five loads of one seed, each
@@ -895,12 +895,11 @@ pgvector; the binaries directory is set on the command line, not in this step's
 
 No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
 legs run is a clock spec, and no clock spec uploads or downloads anything.
-chromium-alone runs three of the four wall-clock specs. Its `testMatch` is `clockSpecPattern`,
-the pattern built from `packages/dispatch/e2e/configurations.ts#clockSpecNames`, which names
-agent-workspace-timing, heavy-bodies, nested-directive and issue-page-load; its `testIgnore`
-leaves issue-page-load out, so it runs agent-workspace-timing, heavy-bodies and
-nested-directive. firefox-alone and webkit-alone run heavy-bodies alone, and chromium-load and
-iphone-load run issue-page-load.
+`chromium-alone` runs three of the five wall-clock specs.
+Its `testMatch` is `clockSpecPattern`, the pattern built from `packages/dispatch/e2e/configurations.ts#clockSpecNames`, which names `agent-workspace-timing`, `heavy-bodies`, `nested-directive`, `issue-page-load` and `issue-page-load-longest`.
+Its `testIgnore` leaves the two load specs out, so it runs `agent-workspace-timing`, `heavy-bodies` and `nested-directive`.
+`firefox-alone` and `webkit-alone` run `heavy-bodies` alone.
+`chromium-load` and `iphone-load` run `issue-page-load` and the env-gated `issue-page-load-longest`, which skips unless `ISSUE_PAGE_LOAD_LONGEST=1`.
 And `packages/dispatch/e2e/harness-pool.ts#stackBucket` makes no bucket at one stack: it
 answers `undefined` on `count === 1`. A store serving nothing would be charged
 to the very reading these rows exist for, which is why the `weed` the image carries is

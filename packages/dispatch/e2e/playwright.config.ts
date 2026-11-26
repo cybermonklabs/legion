@@ -255,10 +255,10 @@ const readersPlaceRows =
 // spec in this directory, so the ignore is what keeps this file to its own two projects.
 const visualSpecs = /visual\.e2e\.ts$/;
 
-// The load rows' one file (`issue-page-load.e2e.ts`), a wall-clock spec that `chromium-load` and
-// `iphone-load` run at the widths its rows are read at, and that `chromium-alone`, whose
-// `testMatch` is every wall-clock spec, leaves to them.
-const loadSpec = /issue-page-load\.e2e\.ts/;
+// The load rows' files (`issue-page-load.e2e.ts` and the env-gated `issue-page-load-longest.e2e.ts`),
+// wall-clock specs that `chromium-load` and `iphone-load` run at the widths their rows are read at,
+// and that `chromium-alone`, whose `testMatch` is every wall-clock spec, leaves to them.
+const loadSpec = /issue-page-load(-longest)?\.e2e\.ts/;
 
 // Every project that runs as wide as the run's own workers.
 const parallelProjects = [
@@ -495,9 +495,10 @@ const parallelProjects = [
  * `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged projects ignore it.
  *
  * `chromium-load` and `iphone-load` run the load rows of the new issue page,
- * `issue-page-load.e2e.ts`, which `chromium-alone` leaves to them: at the two widths those rows
- * are read at, 1440 by 900 and Playwright's iPhone 13 in Chromium (390 px), where
- * `chromium-alone` opens 1280 by 720. The file declares the row of each act of both widths once,
+ * `issue-page-load.e2e.ts` and the env-gated `issue-page-load-longest.e2e.ts`, which
+ * `chromium-alone` leaves to them: at the two widths those rows are read at, 1440 by 900 and
+ * Playwright's iPhone 13 in Chromium (390 px), where `chromium-alone` opens 1280 by 720. The
+ * load file declares the row of each act of both widths once,
  * and each of the two inverts the row of the act its width does not have: below 1280 px the view
  * row is one control, which 1440 px does not draw, and at 760 px and below it draws no Keys.
  * Neither records a trace, whose snapshots of the document would run in the page they time.

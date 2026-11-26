@@ -283,7 +283,8 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
  *  for less than a second, measured through `e2e/main-thread-hold.ts`, what the agent surfaces
  *  cost in time, measured by `agent-workspace-timing.e2e.ts` itself, and how soon the new issue
  *  page draws and answers on a load, at 1440 px and 390 px (`chromium-load` and `iphone-load`,
- *  `e2e/issue-page-load.e2e.ts`). They run one row at a time so that a reading is the page's own
+ *  `e2e/issue-page-load.e2e.ts` and the env-gated profiler `e2e/issue-page-load-longest.e2e.ts`).
+ *  They run one row at a time so that a reading is the page's own
  *  work rather than what three other lanes took. They are named here rather than in the config
  *  for the reason `stubProjectNames` above gives: the config selects its own projects with this
  *  list, a bun test holds each of them to the fields that keep them out of the default selection
@@ -299,23 +300,24 @@ export const clockProjectNames: readonly string[] = [
   "iphone-load",
 ];
 
-/** The four specs those projects run, each by the part of its file name that is its own:
- *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts` and
- *  `issue-page-load.e2e.ts`. A wall-clock file is spelled once here and read twice - by the
- *  pattern below, which is how the projects select their files, and by `clockFileOnCommandLine`,
- *  which is how a command that names one of those files with no project is refused - so another
- *  such file is one edit of this list. */
+/** The five specs those projects run, each by the part of its file name that is its own:
+ *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts`,
+ *  `issue-page-load.e2e.ts` and `issue-page-load-longest.e2e.ts`. A wall-clock file is spelled
+ *  once here and read twice - by the pattern below, which is how the projects select their files,
+ *  and by `clockFileOnCommandLine`, which is how a command that names one of those files with no
+ *  project is refused - so another such file is one edit of this list. */
 export const clockSpecNames: readonly string[] = [
   "agent-workspace-timing",
   "heavy-bodies",
   "nested-directive",
   "issue-page-load",
+  "issue-page-load-longest",
 ];
 
 /** The files the wall-clock projects select, which is `chromium-alone`'s `testMatch` in
- *  `e2e/playwright.config.ts`, less the load rows' file, which that project's `testIgnore` leaves
- *  to `chromium-load` and `iphone-load`, and the `testIgnore` of the four parallel projects that
- *  would otherwise see them - `chromium`, `iphone`, `webkit` and `firefox`: built from
+ *  `e2e/playwright.config.ts`, less the load rows' files, which that project's `testIgnore`
+ *  leaves to `chromium-load` and `iphone-load`, and the `testIgnore` of the four parallel projects
+ *  that would otherwise see them - `chromium`, `iphone`, `webkit` and `firefox`: built from
  *  `clockSpecNames` rather than written a second time, so the two cannot drift apart. The
  *  `.e2e.ts` suffix is part of it, since `heavy-bodies.ts` and `heavy-bodies-page.ts` are
  *  modules those specs import and no project may select them as test files, and

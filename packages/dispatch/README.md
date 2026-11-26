@@ -1235,9 +1235,8 @@ every recording no row writes any more.
 
 ## Projects
 
-The suite has seventeen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-four the wall-clock projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
-stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
+The suite has seventeen projects.
+`chromium` runs every spec except the two plain-HTTP specs, the five wall-clock specs the projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the stubbed layer's own ("The stubbed layer" above), which the last two projects of the list run.
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title). A phone width is one under 768 px. A test takes the tag
 only where the phone can change what it asserts: its layout, touch (`e2e/touch.ts`), a surface
@@ -1297,22 +1296,14 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-`chromium-load` (1440 by 900, the processor slowed by 2) and `iphone-load` (Playwright's iPhone
-13 in Chromium, slowed by 4) run `e2e/issue-page-load.e2e.ts`, which `chromium-alone` leaves to
-them: on an issue of the largest issue's shape, each view of the new issue page paints its first
-screen within 2.5 s, each act shows its result within 200 ms during the load and after it, and
-nothing the page drew moves, each bound read over five cold loads and held at the fourth
-smallest, with one line printed for each (`e2e/load-instruments.ts`, `readingLine`).
-`ISSUE_PAGE_LOAD_CPU_RATE` sets another slowing for both. Each of the five sets
+`chromium-load` (1440 by 900, the processor slowed by 2) and `iphone-load` (Playwright's iPhone 13 in Chromium, slowed by 4) run `e2e/issue-page-load.e2e.ts` and the env-gated profiler `e2e/issue-page-load-longest.e2e.ts`, which `chromium-alone` leaves to them.
+Every row of `e2e/issue-page-load-longest.e2e.ts` skips unless `ISSUE_PAGE_LOAD_LONGEST=1`, so routine CI and `e2e:clock` runs stay fast.
+In `e2e/issue-page-load.e2e.ts`, on an issue of the largest issue's shape, each view of the new issue page paints its first screen within 2.5 s, each act shows its result within 200 ms during the load and after it, and nothing the page drew moves, each bound read over five cold loads and held at the fourth smallest, with one line printed for each (`e2e/load-instruments.ts`, `readingLine`).
+`ISSUE_PAGE_LOAD_CPU_RATE` sets another slowing for both.
+Each of the five sets
 `default: false`, so a run that names no project holds none of their rows, and each caps its
 own workers at one.
-What holds a reading to a quiet machine is the run being one worker wide, and the four files
-reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of
-`e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts`, and every row of
-`e2e/issue-page-load.e2e.ts`, in a run of more than one worker,
-since four workers on one machine make a second of wall clock unmeasurable, and the rows of
-`e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from
-the command that runs them.
+What holds a reading to a quiet machine is the run being one worker wide, and the five files reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts`, and every row of `e2e/issue-page-load.e2e.ts` and `e2e/issue-page-load-longest.e2e.ts`, in a run of more than one worker, since four workers on one machine make a second of wall clock unmeasurable, and the rows of `e2e/agent-workspace-timing.e2e.ts`, which read a clock of their own, take that one worker from the command that runs them.
 `bun run e2e:clock` is the command that runs all five projects, and it names `--workers=1`
 beside them; one file in one engine is
 `bun run e2e -- --project=chromium-alone e2e/heavy-bodies.e2e.ts --workers=1`, which names that
