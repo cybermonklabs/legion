@@ -368,45 +368,56 @@ func (r *operatorRig) stalledRestores(stream string) int {
 	return count
 }
 
-// restoreCommand is the held restore as the operator's command runs it on the clustered hub:
-// before each attempt a forced reconnect, so the attempt starts on a decision less than a second
-// old, and a wait for the reconnect; an attempt that the connection's close cuts short is waited
-// out until the server has ended it as stalled, its leftover stream is deleted
-// (deleteCutRestore), and the restore runs again from its first chunk, attempts times at most.
-// After the last attempt's cut it deletes the leftover too, so a stopped command leaves no stream,
-// and answers an error naming the bucket and every attempt's error.
-//
-// The stall is a real server's timer, so the wait keeps a wall-clock ceiling (stallWait), but ends
-// on the fact, the member's log line, rather than on a clock.
+// restoreCommand is the held restore as the operator's command runs it on the clustered hub: each
+// attempt is one restoreAttempt, and an attempt that the connection's close cuts short has its
+// leftover stream deleted (deleteCutRestore), and the restore runs again from its first chunk,
+// attempts times at most. After the last attempt's cut it deletes the leftover too, so a stopped
+// command leaves no stream, and answers an error naming the bucket and every attempt's error.
 func restoreCommand(t *testing.T, r *operatorRig, o *operatorConn, b streamBackup, attempts int, paced func(context.Context)) error {
 	t.Helper()
 	var failures []string
 	for range attempts {
-		o.reconnect(t)
-		stalled := r.stalledRestores(b.stream)
-		ctx, cancel := context.WithCancel(context.Background())
-		stop := make(chan struct{})
-		go func() {
-			select {
-			case <-o.disconnected:
-				cancel()
-			case <-stop:
-			}
-		}()
-		_, err := restoreStream(ctx, o.Conn, b, paced)
-		close(stop)
-		cancel()
+		err := restoreAttempt(t, r, o, b, paced)
 		if err == nil {
 			return nil
 		}
 		failures = append(failures, err.Error())
-		testwait.WithinPolling(t, stallWait, 100*time.Millisecond, "the server ending the cut restore of "+b.stream+" as stalled", func() bool {
-			return r.stalledRestores(b.stream) > stalled
-		})
-		testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "the connection after the cut", o.IsConnected)
 		deleteCutRestore(t, o, b.stream)
 	}
 	return fmt.Errorf("restore of %s stopped after %d closes, with the hold still set: %s", b.stream, len(failures), strings.Join(failures, "; "))
+}
+
+// restoreAttempt is one attempt of restoreCommand: a forced reconnect, so the attempt starts on a
+// decision less than a second old, and a wait for the reconnect; then the restore. An attempt that
+// the connection's close cuts short is waited out until the server has ended it as stalled and the
+// connection is back, and its error is answered; a restore of every message answers nil.
+//
+// The stall is a real server's timer, so the wait keeps a wall-clock ceiling (stallWait), but ends
+// on the fact, the member's log line, rather than on a clock.
+func restoreAttempt(t *testing.T, r *operatorRig, o *operatorConn, b streamBackup, paced func(context.Context)) error {
+	t.Helper()
+	o.reconnect(t)
+	stalled := r.stalledRestores(b.stream)
+	ctx, cancel := context.WithCancel(context.Background())
+	stop := make(chan struct{})
+	go func() {
+		select {
+		case <-o.disconnected:
+			cancel()
+		case <-stop:
+		}
+	}()
+	_, err := restoreStream(ctx, o.Conn, b, paced)
+	close(stop)
+	cancel()
+	if err == nil {
+		return nil
+	}
+	testwait.WithinPolling(t, stallWait, 100*time.Millisecond, "the server ending the cut restore of "+b.stream+" as stalled", func() bool {
+		return r.stalledRestores(b.stream) > stalled
+	})
+	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "the connection after the cut", o.IsConnected)
+	return err
 }
 
 // deleteCutRestore deletes the stream a cut restore leaves on the clustered hub, through the held
@@ -421,15 +432,69 @@ func restoreCommand(t *testing.T, r *operatorRig, o *operatorConn, b streamBacku
 // restore assignments for explicit cleanup"), and the members other than the restoring one built
 // the stream from it. A delete of that name answers success, and the next restore restores every
 // message. So the command deletes the name, rather than read an absence that does not last.
+//
+// That delete can land and draw no answer. nats-server answers a clustered stream delete from the
+// member that leads the stream alone (jetstream_cluster.go:7291-7298), and a cut restore's stream
+// has no leader but the restoring member, which answers through the Raft node it deleted at the
+// stall (:7182-7184): the other two members still name it their leader and send nothing. So the
+// delete has one answer, from one member, and nothing sends it later. In envoy-go-race job
+// 139874670585 the delete drew no answer within answerWait, and no member elected a leader of the
+// leftover in the 30 s after it, which they do 4 to 7 s after the stall when nothing deletes the
+// name (ten cut restores of ten measured): the delete had landed. A member that sees no meta
+// leader answers any delete 10008, "JetStream system temporarily unavailable"
+// (jetstream_api.go:3717-3720), which says no more of whether it landed. So a delete that draws no
+// answer, or 10008, is sent again until a definitive answer comes (deleteAnswered). The meta
+// leader answers a delete of a name it no longer holds, or holds a delete in flight for, itself:
+// 10059 (jetstream_cluster.go:11517-11523, :6381-6387), which the first delete accepts; a delete
+// that never landed is made by the next send.
 func deleteCutRestore(t *testing.T, o *operatorConn, stream string) {
 	t.Helper()
-	answer := answered(t, o.Conn, "$JS.API.STREAM.DELETE."+stream, nil)
+	deleteCutRestoreWith(t, o, stream, requestAnswer)
+}
+
+// deleteCutRestoreWith is deleteCutRestore with the request function its first delete is sent
+// with. Its caller can make the answer unavailable after the server applied the delete, the loss
+// the send again recovers.
+func deleteCutRestoreWith(t *testing.T, o *operatorConn, stream string, ask streamRequester) {
+	t.Helper()
+	subject := "$JS.API.STREAM.DELETE." + stream
+	answer := deleteAnswered(t, o, subject, ask)
 	if answer.Error != nil {
 		require.Equal(t, 10059, answer.Error.ErrCode, "the delete of %s's cut restore: %s", stream, answer.raw)
 	}
-	gone := answered(t, o.Conn, "$JS.API.STREAM.DELETE."+stream, nil)
+	gone := deleteAnswered(t, o, subject, requestAnswer)
 	require.NotNil(t, gone.Error, "%s was still there after its cut restore's delete: %s", stream, gone.raw)
 	require.Equal(t, 10059, gone.Error.ErrCode, "%s after its cut restore's delete: %s", stream, gone.raw)
+}
+
+// clusterUnavailable is nats-server's err_code for a JetStream request a member answers while it
+// sees no meta leader (JSClusterNotAvailErr), "JetStream system temporarily unavailable".
+const clusterUnavailable = 10008
+
+// deleteResend is the pause between two sends of deleteAnswered. A member answers
+// clusterUnavailable at once for as long as it sees no meta leader, and at testwait.Poll's 10 ms
+// one election of about five seconds drew 436 sends; at this pace it draws about fifty.
+const deleteResend = 100 * time.Millisecond
+
+// deleteAnswered sends the delete on subject through ask until it draws a definitive answer, and
+// returns that answer: a send that draws no answer, or clusterUnavailable, is sent again, every
+// deleteResend, its one bound the test binary's deadline (testwait.UntilPolling); any other
+// answer, success and every refusal, ends the sends and is the caller's to judge.
+func deleteAnswered(t *testing.T, o *operatorConn, subject string, ask streamRequester) apiAnswer {
+	t.Helper()
+	return testwait.UntilPolling(t, deleteResend, "a definitive answer to "+subject, func() (apiAnswer, bool) {
+		answer, err := ask(t, o.Conn, subject, nil)
+		if errors.Is(err, nats.ErrTimeout) {
+			t.Logf("%s drew no answer (%v); sending it again", subject, err)
+			return answer, false
+		}
+		require.NoError(t, err, "%s", subject)
+		if answer.Error != nil && answer.Error.ErrCode == clusterUnavailable {
+			t.Logf("%s answered %s; sending it again", subject, answer.raw)
+			return answer, false
+		}
+		return answer, true
+	})
 }
 
 // A held restore survives one close of its connection: with the held user living a few seconds,
@@ -441,7 +506,7 @@ func deleteCutRestore(t *testing.T, o *operatorConn, stream string) {
 //
 // The close is a real server's, at the user's expiry, so the pacing keeps a wall-clock ceiling
 // (closeWait) but waits on the fact, the attempt's context ended by the disconnect, and holds no
-// attempt whose user lives longer than a minute.
+// attempt whose user lives longer than a minute (heldUntilClose).
 //
 // Run by hand, the control is the restore without its retry (one attempt): the stream is missing
 // after the cut, and the test fails naming the bucket.
@@ -451,17 +516,7 @@ func TestARestoreSurvivesOneReconnect(t *testing.T) {
 	_, js := r.admin(t)
 	r.makeStreams(t, 40, 16*1024, 0)
 	sessions := kvBucket(bus.SessionBucket)
-	const closeWait = 30 * time.Second
-	paced := func(ctx context.Context) {
-		if latest := r.decisions.latest(operatorName); time.Until(latest.Expires) > time.Minute {
-			return
-		}
-		select {
-		case <-ctx.Done():
-		case <-time.After(closeWait):
-			t.Errorf("the server did not close the held user's connection within %s of its decision", closeWait)
-		}
-	}
+	paced := heldUntilClose(t, r)
 
 	// Reads: the first connect, the first attempt's forced reconnect (3 s), the reconnect after its
 	// cut, the second attempt's forced reconnect: an hour each but the second.
@@ -500,6 +555,69 @@ func TestARestoreSurvivesOneReconnect(t *testing.T) {
 			return !errors.Is(err, nats.ErrStreamNotFound)
 		}, 12*time.Second, 500*time.Millisecond, "the stopped restore left %s", sessions)
 	})
+}
+
+// closeWait is the wall-clock ceiling of heldUntilClose's wait for the server to close the held
+// user's connection at its expiry.
+const closeWait = 30 * time.Second
+
+// heldUntilClose is a restore's pacing that holds it after each chunk while the operator's latest
+// decision expires within a minute, until the attempt's context ends, which the disconnect at that
+// expiry does, and fails t when the server has not closed the connection within closeWait. A
+// decision living longer holds nothing.
+func heldUntilClose(t *testing.T, r *operatorRig) func(context.Context) {
+	return func(ctx context.Context) {
+		if latest := r.decisions.latest(operatorName); time.Until(latest.Expires) > time.Minute {
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(closeWait):
+			t.Errorf("the server did not close the held user's connection within %s of its decision", closeWait)
+		}
+	}
+}
+
+// A cut restore's delete can land while its one answer is lost (deleteCutRestore). Here the first
+// delete's answer, a success the server sent once it applied the delete, is dropped; the delete is
+// sent again, the meta leader answers that send 10059, stream not found, and the name is gone.
+//
+// Run by hand, the control is deleteCutRestoreWith sending the delete once: it fails "got no
+// answer", as envoy-go-race job 139874670585 did.
+func TestACutRestoresDeleteIsSentAgainWhenItsAnswerIsLost(t *testing.T) {
+	r := newOperatorRig(t, nil)
+	r.setPhase(t, natsgrant.OperatorPhaseHeld)
+	r.makeStreams(t, 40, 16*1024, 0)
+	sessions := kvBucket(bus.SessionBucket)
+	// Reads: the first connect, the attempt's forced reconnect (3 s), the reconnect after its cut.
+	reader := &tokenLives{account: operatorAccount, lives: []time.Duration{time.Hour, 3 * time.Second, time.Hour}}
+	operator := r.connectOperator(t, reader)
+	backup, err := backupStream(operator.Conn, sessions)
+	require.NoError(t, err)
+	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+sessions, nil)
+	require.Error(t, restoreAttempt(t, r, operator, backup, heldUntilClose(t, r)), "the restore was not cut")
+
+	var dropped, resent *apiAnswer
+	sends := 0
+	ask := func(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error) {
+		sends++
+		answer, err := requestAnswer(t, nc, subject, body)
+		switch {
+		case dropped == nil && err == nil:
+			dropped = &answer
+			return apiAnswer{}, nats.ErrTimeout
+		case resent == nil && err == nil:
+			resent = &answer
+		}
+		return answer, err
+	}
+	deleteCutRestoreWith(t, operator, sessions, ask)
+	require.NotNil(t, dropped, "the delete's answer was not dropped")
+	require.Nil(t, dropped.Error, "the dropped answer was no success: %s", dropped.raw)
+	require.Equal(t, 2, sends, "the delete whose answer was lost was not sent again once")
+	require.NotNil(t, resent, "the delete sent again drew no answer")
+	require.NotNil(t, resent.Error, "the delete sent again was answered success: %s", resent.raw)
+	require.Equal(t, 10059, resent.Error.ErrCode, "the delete sent again: %s", resent.raw)
 }
 
 // awaitStream waits until the clustered hub answers stream's info, and returns it. Right after a
@@ -541,13 +659,40 @@ func TestTheBarrierIsAStream(t *testing.T) {
 	requireOperatorDecision(t, r.decisions.after(t, operatorName, 0), natsgrant.OperatorPhaseHeld)
 	barrier := map[string]any{"name": natsgrant.HoldBarrierStream, "subjects": []string{"_ENVOY_HOLD_BARRIER.hold-1"},
 		"storage": "memory", "num_replicas": 1, "max_msgs": 1}
-	succeeds(t, operator.Conn, "$JS.API.STREAM.CREATE."+natsgrant.HoldBarrierStream, barrier)
+	createsStream(t, operator.Conn, "$JS.API.STREAM.CREATE."+natsgrant.HoldBarrierStream, barrier)
 	requireStreamListed(t, operator.Conn, natsgrant.HoldBarrierStream)
 	succeeds(t, operator.Conn, "$JS.API.STREAM.DELETE."+natsgrant.HoldBarrierStream, nil)
 	requireStreamGone(t, js, natsgrant.HoldBarrierStream)
 
 	other := map[string]any{"name": "ENVOY_HOLD_OTHER", "subjects": []string{"_ENVOY_HOLD_OTHER.hold-1"}, "storage": "memory", "num_replicas": 1}
 	operator.refused(t, "$JS.API.STREAM.CREATE.ENVOY_HOLD_OTHER", other)
+}
+
+// A stream create can reach the cluster while its reply is lost. The create is sent again, and the
+// cluster answers that identical create with the stream the first one made, so the barrier stands
+// with no read of it, which the held operator's grant does not name.
+func TestTheBarrierCreateRetriesALostReply(t *testing.T) {
+	r := newOperatorRig(t, nil)
+	r.setPhase(t, natsgrant.OperatorPhaseHeld)
+	r.makeStreams(t, 1, 16, 2)
+	operator := r.connectOperator(t, hourLong(operatorAccount))
+	requireOperatorDecision(t, r.decisions.after(t, operatorName, 0), natsgrant.OperatorPhaseHeld)
+	barrier := map[string]any{"name": natsgrant.HoldBarrierStream, "subjects": []string{"_ENVOY_HOLD_BARRIER.hold-1"},
+		"storage": "memory", "num_replicas": 1, "max_msgs": 1}
+	create := "$JS.API.STREAM.CREATE." + natsgrant.HoldBarrierStream
+	dropped := false
+	ask := func(t *testing.T, nc *nats.Conn, subject string, body any) (apiAnswer, error) {
+		answer, err := requestAnswer(t, nc, subject, body)
+		if subject == create && !dropped && err == nil {
+			dropped = true
+			return apiAnswer{}, nats.ErrTimeout
+		}
+		return answer, err
+	}
+
+	createsStreamWith(t, operator.Conn, create, barrier, ask)
+	require.True(t, dropped, "the create reply was not dropped")
+	requireStreamListed(t, operator.Conn, natsgrant.HoldBarrierStream)
 }
 
 // requireStreamListed requires conn's STREAM.NAMES to list stream, asking again until it does,

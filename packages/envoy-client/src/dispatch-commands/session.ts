@@ -129,18 +129,21 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   } else {
     acting = `Session ${session} runs under the shared token: ${unowned}`;
   }
-  // A job's public token and an exchange entry's token naming its account name no one project,
-  // and Dispatch holds them to none: a job entry's list of private projects limits none of its
-  // writes at this release. A read-only credential writes no project at all.
-  const writable = readOnly
+  // A token that names a project also writes other projects' objects, as a credential that
+  // names none does, except in a private project it does not name. So the line names the
+  // project and claims no limit on what the token writes. A job's public token and an exchange
+  // entry's token naming its account name no one project, and Dispatch holds them to none: a
+  // job entry's list of private projects limits none of its writes at this release. A read-only
+  // credential's line names none, as it names no write.
+  const projectSentence = readOnly
     ? ""
     : project !== null
-      ? ` It may write project ${project} and no other.`
+      ? ` Its token names project ${project}.`
       : writesAsService
         ? " It names no one project, so it may write wherever a token that names no project may."
         : "";
   return {
-    text: acting + elsewhere + writable,
+    text: acting + elsewhere + projectSentence,
     details: { session, owner, service, project, project_scope: projectScope },
   };
 }
@@ -369,10 +372,11 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request still waiting on a decision, which is the viewer's by
- * construction because the list is read as `?approver=me`. Here that is the band's own rows and
+ * construction because the list is read as `?approver=me`. Its asks are the band's own rows and
  * nothing narrower, since `?assignee=me` keeps only the asks that wait on the caller, as the
- * page's default view does; counting the rows it prints is therefore the page's rule, and it is
- * the one count that cannot disagree with the lines under it. An expired credential request
+ * page's default view does. The count is the page's rule: those rows plus the pending credential
+ * requests, which are listed under `Credential requests` and not under this heading, so the
+ * count is higher than the rows under it by that number. An expired credential request
  * waits on nobody (`awaitsDecision`), so it is not counted here, as the page does not count it,
  * though `Credential requests` lists and counts it until somebody dismisses it.
  *

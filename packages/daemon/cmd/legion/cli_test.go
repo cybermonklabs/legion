@@ -69,7 +69,7 @@ var legionCommands = [][]string{
 	{"claims"}, {"claims", "spawn"}, {"claims", "deliver"}, {"claims", "suspend"}, {"claims", "resume"},
 	{"claims", "stop"}, {"claims", "retry"}, {"claims", "compact"}, {"claims", "forget-session"},
 	{"claims", "release-names"}, {"claims", "close"}, {"claims", "list"},
-	{"project"}, {"project", "pause"}, {"project", "resume"},
+	{"project"}, {"project", "pause"}, {"project", "resume"}, {"project", "set-p0-bound"}, {"project", "clear-p0-bound"},
 	{"sessions"}, {"sessions", "import"},
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},
@@ -110,7 +110,7 @@ func TestConformanceCaseIsTheTree(t *testing.T) {
 			walk(child, path)
 		}
 	}
-	walk(newRoot(io.Discard, io.Discard), nil)
+	walk(newRoot(io.Discard, io.Discard, processWorkspace()), nil)
 	for _, list := range []struct {
 		name         string
 		tree, listed [][]string
