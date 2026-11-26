@@ -12,6 +12,7 @@ import { expectActivePreset, pickPreset } from "./issue-page-i";
 import { contentsEntries } from "./issue-page-j";
 import { FILTERS, loadViews, PAGE_VIEWS, ROW_MS } from "./issue-page-t-rows";
 import {
+  decisionsViewGate,
   heldAnswer,
   outlineAnswerOf,
   outlineReads,
@@ -87,9 +88,11 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
           .toBeGreaterThan(0);
         entries = await entriesOf(contentsPane(page));
         // The two rows under the three sentences take their counts from reads the page already
-        // makes: the load sends no read of the tree but Conversation's and R4's view reads.
+        // makes: the load sends no read of the tree but Conversation's, R4's view reads and, where
+        // the decisions read is the tree read's `view=decisions`, that one (`decisionsViewGate`).
         const views = loadViews(issue, await heldAnswer(conversation, "Conversation's read"));
         const sent = traffic.requests;
+        const decisions = decisionsViewGate(sent, seeded.key).met ? ["decisions"] : [];
         expect(
           {
             graph: outlineReads(sent, seeded.key, "graph"),
@@ -98,8 +101,9 @@ test("the Contents pane stands beside each filter and Graph @phone", async ({ br
               treeReads(sent, seeded.key, one) > 0 ? [one] : []
             ).sort(),
           },
-          "Conversation's load sends no tree read but its kind= read and R4's view reads"
-        ).toEqual({ graph: 0, kind: 1, views: [...views].sort() });
+          "Conversation's load sends no tree read but its kind= read, R4's view reads and the " +
+            "Decisions view's read where the decisions read is one"
+        ).toEqual({ graph: 0, kind: 1, views: [...views, ...decisions].sort() });
         // Spec turned on after Conversation has loaded reads Conversation's read from the cache.
         const pressed = traffic.requests.length;
         await pickPreset(page, PRESET_NAMES.spec);

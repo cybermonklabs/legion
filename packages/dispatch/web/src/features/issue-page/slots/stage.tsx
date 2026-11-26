@@ -205,7 +205,11 @@ const SLOT_TREE = '[role="tree"]';
  * page itself, or on an element that holds the stage, as the app's main element does when a
  * view's address is opened from another page - so a reader who pressed a control keeps it there,
  * and once it is taken this does nothing more for that view until the view's tree itself takes
- * the focus.
+ * the focus, but for one thing: a view's reads are refused in any order, and a view draws its
+ * lines in an order of its own, so a line it draws above the Retry the focus was given to, while
+ * the focus still rests on that Retry, takes the focus to its own Retry. The focus then rests on
+ * the first line the view draws, as where that line had been drawn first. A focus that moves
+ * anywhere else, or a tab-stop row drawn, ends that.
  *
  * The chord that opens a view (`t` then the view's key) reaches the stage through the view's
  * tree: where the tree draws no tab-stop row the chord focuses the tree itself (`reachPart`,
@@ -269,6 +273,35 @@ export function ViewStage({
       if (bring) focusOn(to);
       else to.focus({ preventScroll: true });
     };
+    // The Retry the take gave the focus to, while the focus rests there or nothing holds it: a
+    // line the view draws above it later takes the focus to its own Retry (`firstLine`), so the
+    // focus rests on the first line the view draws. Undefined once the focus moved anywhere else,
+    // or the view drew a tab-stop row, and while the take gave the focus to no Retry.
+    let held: HTMLElement | undefined;
+    const release = (): void => {
+      held = undefined;
+      firstLine.disconnect();
+    };
+    const firstLine = new MutationObserver(() => {
+      if (held === undefined) return;
+      if (
+        stage.querySelector(TAB_STOP_ROW) !== null ||
+        (document.activeElement !== held && !focusIsLoose(stage))
+      ) {
+        release();
+        return;
+      }
+      const first = stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
+      if (first === null || first === held) return;
+      held = first;
+      place(first);
+    });
+    // Any focus the take did not place ends `held`, but for one nothing holds: the app's on its
+    // main element, which the frame after the take gives back.
+    const moved = (event: FocusEvent): void => {
+      if (held !== undefined && event.target !== held && !focusIsLoose(stage)) release();
+    };
+    document.addEventListener("focusin", moved);
     // True once the focus is placed, or once something other than the view's tree holds it.
     // Nothing holds it on the page itself, or on an element that holds the stage
     // (`focusIsLoose`): the app focuses its main element at each page change but the first
@@ -291,12 +324,15 @@ export function ViewStage({
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
       if (to === null) return false;
+      held = to.matches(FAILED_READ_RETRY) ? to : undefined;
       place(to);
       placed = to;
+      if (held === undefined) firstLine.disconnect();
+      else firstLine.observe(stage, { childList: true, subtree: true });
       const frame = requestAnimationFrame(() => {
         ending.delete(frame);
         placed = null;
-        if (focusIsLoose(stage)) place(to);
+        if (focusIsLoose(stage)) place(held ?? to);
       });
       ending.add(frame);
       return true;
@@ -333,6 +369,8 @@ export function ViewStage({
     stage.addEventListener("focusin", treeFocused);
     return () => {
       drawn.disconnect();
+      firstLine.disconnect();
+      document.removeEventListener("focusin", moved);
       stage.removeEventListener("focusin", treeFocused);
       document.removeEventListener("focusin", focusTaken);
       for (const frame of ending) cancelAnimationFrame(frame);

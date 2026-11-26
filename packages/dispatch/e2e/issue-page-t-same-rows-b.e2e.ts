@@ -29,7 +29,7 @@ for (const [name, seed] of SAME_ROWS_B_SEEDS) {
   });
 
   if (DECISION_SEEDS.has(name)) {
-    // c-same-rows' decision clauses on one seed, owed on `decisionNodesGate`.
+    // c-same-rows' decision clauses on one seed, owed on `partUGate`.
     // SLOW(>=2s): a whole seeded issue, read as it opens and again with every branch opened,
     // each reading taken twice until it holds still.
     test(`${title}, its decisions as nodes of the tree read @owed`, async ({ browser }) => {
