@@ -325,7 +325,7 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
-	return e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
+	if err := e.eachRecipient(issue.Project, recipients, func(to roleRecipient, token claim.Token) error {
 		next, err := e.ciNext(ctx, tx, issue, w, to.role)
 		if err != nil {
 			return err
@@ -333,7 +333,27 @@ func (e *Engine) reportRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return e.enqueue(ctx, tx, to.row, record.CINews{Purpose: record.CINewsRuns, Role: string(token), Generation: issue.Generation,
 			Task: w.Task, Repo: pr.Repo, PullRequest: pr.Number, Head: head, Reader: readerOf(readers, to), Next: next.Next,
 			Tested: next.Tested, Runs: runs, Statuses: statuses, Body: runsBody(issue.Key, pr.Number, head, runs, statuses, next)})
-	})
+	}); err != nil {
+		return err
+	}
+	row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.Conclusion != string(record.RunFailed) && run.Conclusion != "failure" {
+			continue
+		}
+		if err := e.eachRecipient(issue.Project, []roleRecipient{{issue: issue.Key, role: claim.RoleImplementer, row: issue.Key}}, func(to roleRecipient, token claim.Token) error {
+			return e.enqueue(ctx, tx, to.row, record.CINews{Purpose: record.CINewsAssignment, Role: string(token), Generation: issue.Generation,
+				Task: w.Task, Repo: pr.Repo, PullRequest: pr.Number, Head: pr.CheckedHead,
+				Reader:   &record.CIReader{Phase: phase.Implementing, Entry: row.Entry},
+				Assigned: &record.CIAssigned{Check: run.Name, Head: pr.CheckedHead, CICase: run.Conclusion}, Body: "Run " + run.Name + " failed."})
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // promptReaders is the prompt to read Dispatch again (record.CINewsState) of a change that fact,
