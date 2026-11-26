@@ -42,8 +42,8 @@ import (
 //
 //  1. The eval locks (lockEvals), one for each key in the order of the keys, before any row lock:
 //     the readings and register writes, the seed, the zero fill, and each fold of a logged eval's
-//     stored figures in a transaction of its own (lockLogged). The commit of a refresher's page
-//     takes none (foldMarkedFirstPaints).
+//     stored figures in a transaction of its own (lockLogged). The commit of a refresher's page and
+//     the transaction of a settings rewrite take none (foldMarkedFirstPaints).
 //  2. eval_days: its rows, in the byte order of their keys (writeDays); or, in the boot's rename
 //     pass, the whole table in share row exclusive mode, before any other lock of the pass's line
 //     of the eval tables (store's repoRenameLines).
@@ -58,12 +58,13 @@ import (
 //     rename pass's markRenamedCuts those of the old name.
 //  7. eval_figure_cuts_stale, in the byte order of its keys (markStaleCuts, markRenamedCuts).
 //
-// The commit of a move folds the first paints it folds (5) after the marks it writes (7), where a
-// batch of a stale cut's refold folds (5) before it records with its mark where it stands (7):
-// every writer of both is the refresher, whose lease runs one pass at a time, or a write that marks
-// its own eval's cuts in its transaction, before it folds a first paint (a readings write past
-// inlineFoldDaySeries, foldWrittenPaints) or with no fold (a register write that moves the eval's
-// fold key), and the rename pass marks and no stored figure.
+// The commit of a move and the transaction of a settings rewrite fold the first paints they fold
+// (5) after the marks they write (7), where a batch of a stale cut's refold folds (5) before it
+// records with its mark where it stands (7): every writer of both is the refresher, whose lease
+// runs one pass at a time (a rewrite runs in the pass's page, as the commit of a move does), or a
+// write that marks its own eval's cuts in its transaction, before it folds a first paint (a
+// readings write past inlineFoldDaySeries, foldWrittenPaints) or with no fold (a register write
+// that moves the eval's fold key), and the rename pass marks and no stored figure.
 
 // defaultsMove is what a page publishes of the projects' default repositories (syncDefaults):
 // every project's default repository as it stands (live, by project), the projects whose published
@@ -246,7 +247,7 @@ func publishDefaults(ctx context.Context, tx pgx.Tx, build string, move *default
 	for _, evals := range marks {
 		published.evals += len(evals)
 	}
-	if published.paints, err = foldMarkedFirstPaints(ctx, tx, build, slices.SortedFunc(maps.Keys(marks), compareStaleCuts), written); err != nil {
+	if published.paints, err = foldMarkedFirstPaints(ctx, tx, figureScopeReader(ctx, tx, build), written, firstPaintOf); err != nil {
 		return movePublished{}, err
 	}
 	if move.judgingWas != move.judge {
@@ -275,44 +276,37 @@ func (p movePublished) log(began, committed time.Time) {
 		"transaction_ms", committed.Sub(began).Milliseconds())
 }
 
-// markedPaints is what a fold of the first paints of the cuts a move marked did
-// (foldMarkedFirstPaints): how many it folded and how long it took.
+// markedPaints is how many first paints foldMarkedFirstPaints folded and how long it took.
 type markedPaints struct {
 	folded int
 	took   time.Duration
 }
 
-// foldMarkedFirstPaints folds, in tx, as build, the first paint of each of cuts, in their order, the
-// cuts the commit of a move of the default repositories marked stale in tx (publishDefaults), whose
-// marks are marks, those markStaleCuts wrote (a cut it left has none): each whose mark owes one, of
-// a project whose figures are folded (readFigureScope), and whose evals the mark names are all
-// computed, is folded under the new defaults and recorded with its mark (foldFirstPaintOf), so a
-// first paint of it reads the stored figures from the move's commit on. It reads each project's
-// evals once, those the marks of all its owed cuts name (owedEvals), of which each cut takes those
-// its mark names (entriesNamed). It takes no eval lock: the commit has locked rows by then, and the
-// eval tables' lock order puts the eval locks before every row lock, while a computed eval's rows
-// are the refresher's alone, whose lease runs one pass at a time. So a cut whose mark names a
-// logged eval, whose rows its readings writes and its zero fill write too, is left with its first
-// paint owed, and the commit never waits for such a writer while it holds the rows it wrote: the
-// pass's refold folds that first paint before any other batch, in a transaction of its own that
-// takes the logged evals' locks before any row lock (refoldStaleCuts, FoldFirstPaint), and a read
-// of the cut folds the day rows of the evals its mark names until then. A mark names a logged eval
-// where it names every eval, such as a rename's (store.markRenamedCuts) that the move marks again,
-// or where the eval's readings name legionfacts.DefaultRepo as their repository, a row staleMarksOf
-// reads. Beside the stored figures of the days the page's spans wrote (writeSpans), it is the one
-// fold of stored figures in the commit.
-func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []staleCut, marks map[staleCut]cutMark) (markedPaints, error) {
+// foldMarkedFirstPaints folds, in tx, the first paints of the cuts markStaleCuts marked, in key
+// order (publishDefaults, rewriteSettings). It folds each cut that owes its first paint under
+// scopeOf and whose mark names only computed evals, and records the paint with the mark
+// (foldPaintOf). paintOf selects the end days and day rows to fold: the settings rewrite also
+// folds the day rows back to the paint's reach (paintReached). It reads each project's evals
+// once, those the marks of all its owed cuts name (owedEvals), of which each cut takes those its
+// mark names (entriesNamed).
+//
+// It takes no eval lock: the transaction has locked rows by then, and the eval tables' lock
+// order puts eval locks first. Computed evals need no eval lock under the refresher's lease.
+// Where a standing mark also names a logged eval, explicitly or by naming every eval, the
+// transaction leaves that cut's paint owed. The pass's refold folds it under the logged evals'
+// locks before any other batch; a read folds the marked evals' day rows until then.
+func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, scopeOf func(string) (*figureScope, error), marks map[staleCut]cutMark, paintOf func(time.Time) figureEnds) (markedPaints, error) {
 	began := time.Now()
 	var paints markedPaints
-	scopeOf := figureScopeReader(ctx, tx, build)
+	cuts := slices.SortedFunc(maps.Keys(marks), compareStaleCuts)
 	read := map[string][]Entry{}
 	for _, cut := range cuts {
-		mark, held := marks[cut]
+		mark := marks[cut]
 		scope, err := scopeOf(cut.project)
 		if err != nil {
 			return markedPaints{}, err
 		}
-		if !held || scope == nil || !mark.owesFirstPaint(*scope) {
+		if scope == nil || !mark.owesFirstPaint(*scope) {
 			continue
 		}
 		entries, done := read[cut.project]
@@ -326,7 +320,7 @@ func foldMarkedFirstPaints(ctx context.Context, tx pgx.Tx, build string, cuts []
 		if slices.ContainsFunc(entries, func(entry Entry) bool { return !entry.Definition.Computed() }) {
 			continue
 		}
-		if _, err := foldFirstPaintOf(ctx, tx, *scope, cut, mark, entries); err != nil {
+		if _, err := foldPaintOf(ctx, tx, *scope, cut, mark, entries, paintOf(scope.through)); err != nil {
 			return markedPaints{}, err
 		}
 		paints.folded++

@@ -80,16 +80,13 @@ type StoredFigures struct {
 // `union all` of two ranges of eval_range_figures' primary key, and the day rows of the window of
 // those with a headline series, one range of eval_day_figures' primary key for each project. Every
 // other eval the caller folds from the day rows: those of a project not built yet, and those whose
-// rows in the cut a stale mark names (a move of a default repository, a readings write past the
-// days and series it folds itself, inlineFoldDaySeries, and a register write that moves an eval's
-// fold key, each mark written in that write's own transaction), until the refresher or the boot
+// rows in the cut a stale mark names, until the refresher or the boot
 // has folded again the stored rows this read reads of them: a first paint's from its first-paint
 // batch on, and those of an older window and compare range once the refold, newest end day first,
-// has come down past them. A refresher pass rewrites the stored rows and the marks in one
-// transaction, so in one answer's snapshot (BeginSnapshot), as the eval list reads them, an eval's
-// window figures are the fold of the days read beside them, and an eval read as served is one no
-// mark names since the figures it reads were folded; on the pool each statement reads the rows that
-// stand when it runs.
+// has come down past them. A default move, settings rewrite, large readings write or register
+// write can mark cuts in its own transaction. A read in one snapshot (BeginSnapshot), as the
+// eval list reads, sees the day rows, marks and figures from the same state. On the pool each
+// statement reads the rows that stand when it runs.
 func ReadStoredFiguresIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) (StoredFigures, error) {
 	repo := ""
 	if len(repos) == 1 {

@@ -98,8 +98,8 @@ const RefresherLease = "eval-days"
 // most one is owed, a change that commits while a pass runs earns the one pass after it, which
 // starts as soon as the running one ends, and any number of changes during a pass earn that one
 // pass. A pass that begins no batch and continues none does the changes' work alone - its pages,
-// the days its writes left owed, the figures of the change log and the refold of the cuts a move
-// of a default repository marked stale - and asks for a pass at the gap's end, which begins the
+// the days its writes left owed, the figures of the change log and the refold of stale cuts -
+// and asks for a pass at the gap's end, which begins the
 // next batch where the walks have days left or a page began one again. A computed eval's view
 // wakes once the refresher has rewritten its rows (R10), so a change reaches the view one running
 // pass and its own pass after its commit, the 2 s R14 allows.
@@ -108,8 +108,8 @@ const RefresherLease = "eval-days"
 // folds each stale cut again batch after batch until its mark is cleared (refoldStaleCuts), and its
 // batches are none of the gap's. The refold runs after the pass's pages, and, in a pass that builds
 // the gap's batch of the walks, after that batch's walks and the figures walk's batch too
-// (refresh): the pass that publishes a move begins the refold of the cuts it marks once that work
-// is done.
+// (refresh): the pass that publishes a move or commits a settings rewrite begins the refold of
+// the cuts it marks once that work is done.
 //
 // A batch's walks stop between two days when a wake is owed (duty.WakeOwed), once the pass has
 // built a day, so a change waits behind one day's build rather than a whole batch. The owed pass,
@@ -213,16 +213,16 @@ var serverRefresherSchedule = refresherSchedule{
 // RunRefresher keeps every project's day rows true to their inputs (the refresher's rules above)
 // until ctx is done: one pass at start; a pass on each wake, which starts as soon as the pass
 // running when it came ends; a pass RefresherGap after the last pass that began a batch of the
-// walks, where the walks had work left after it or its refold of the cuts a default move marked
-// stale stopped for an owed wake (refreshed.walksLeft), or a pass since then began none
+// walks, where the walks had work left or the refold yielded with cuts still stale
+// (refreshed.walksLeft), or a pass since then began none
 // (RefresherGap); a pass horizonRetry after one that left an event above the safe horizon it
 // read, the wait doubling with each such pass in a row up to RefresherGap; a pass RefresherGap
 // after one that failed; and a pass at the earliest of the next UTC midnight, which begins a day
 // every walk builds, and pruneSlack after the oldest delivery change passes
 // delivery.ChangeRetention, which the pass then prunes (delivery.PruneChanges), so the change log
 // keeps its retention where no GitHub App runs the reconcile that prunes it too. Every pass folds
-// again each stale cut to its end (refoldStaleCuts), so the pass a move's wake runs begins the
-// refold of the cuts the move marks, and one that stops for an owed wake is followed at once by
+// again each stale cut to its end (refoldStaleCuts), including cuts it marked during its pages.
+// A pass that stops for an owed wake is followed at once by
 // the owed pass, which goes on with it.
 func (s *Store) RunRefresher(ctx context.Context, deps RefresherDeps) {
 	s.runRefresher(ctx, deps, serverRefresherSchedule)
@@ -381,8 +381,8 @@ func (s *Store) RefreshThrough(ctx context.Context, deps RefresherDeps, now time
 // what a check of which days a change touches reads, and each project whose seed it ran, in the
 // order it ran them. The unowned-p0 row of today is recorded under its slug, and a logged eval's
 // zero fill under walkLogged and the day it filled through. walksLeft is whether a walk of the day
-// rows or a figures walk has days left after the pass's batch, the refold of a cut a default move
-// marked stale stopped for an owed wake with a mark left (refoldStaleCuts), or the rebuild or its
+// rows or a figures walk has days left after the pass's batch, the refold stopped for an owed
+// wake with a mark left (refoldStaleCuts), or the rebuild or its
 // cleanup has work left (finishRebuild), yielded whether its walks or its refold stopped for an
 // owed wake with work left (refresh.yields), heldBack whether its safe horizon held an event back
 // (refresh), and parts how long each part of it took (passParts).
@@ -540,7 +540,7 @@ func (r refreshed) sorted() []string {
 // one comes back short and writes the days each names: the changes' work, which every pass does.
 // Given batch, the walks' batch of the gap (gapBatch), it then does the background work: it builds
 // what the batch has left of each walk (walk), makes the stored figures' part (figuresPass), folds
-// again each cut a default move marked stale (refoldStaleCuts), does the rebuild's rest
+// again each stale cut, including cuts just marked by its pages (refoldStaleCuts), does the rebuild's rest
 // (finishRebuild), prunes the change log, and answers when the loop should run again with no wake
 // (nextPass). Given none, it reads the stored figures' part of the change log (figureChanges),
 // folds again each stale cut and answers no due time: its loop asks for the pass that begins the

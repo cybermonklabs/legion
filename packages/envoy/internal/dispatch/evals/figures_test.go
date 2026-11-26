@@ -658,8 +658,8 @@ func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 // figures the fold of the rows that stand: a pull request merged a day earlier, a deploy run that
 // is cancelled, a production job that fails, an issue's facts, a logged reading (in the readings
 // write's own transaction, after which the pass writes nothing), a register write that gives the
-// logged eval another fold, a settings change (every day of the eval it moves, in one
-// transaction), and the daily tick (the new day's rows and the ranges of the new last end day). A
+// logged eval another fold, a settings change (the first paints in the rewrite's commit and the
+// rest in the refold), and the daily tick (the new day's rows and ranges of the new last end day). A
 // release whose folds agree then rebuilds every figure aside and its flip writes none, the stored
 // figures read as built throughout; and the rebuild of one that meets figures another build folded
 // otherwise rewrites exactly those, in its flip.
@@ -757,15 +757,57 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	r.pass(t)
 	state = r.expectRewrites(t, "a register write of the logged eval's fold", state, false, func(line string) bool { return strings.HasSuffix(line, " "+evalID) })
 
-	// A settings change: the staging e2e job is named one no run holds, and one pass rewrites every
-	// day of staging-e2e, folding the figures of the days it moved in its own transaction.
+	// Stop after the settings rewrite commits to check what a view reads before the refold.
 	settings := deliveries.Settings
 	settings.StagingE2EJobName = new("no-such-job")
 	if _, err := delivery.PutSettings(t.Context(), r.database.Pool, settings, model.Actor{Kind: "system", ID: "figures-test"}); err != nil {
 		t.Fatalf("rename the staging e2e job: %v", err)
 	}
-	r.settle(t)
-	state = r.expectFoldedInTx(t, "a settings change", state, r.expectRewrites(t, "a settings change", state, true, nil))
+	r.pageAlone(t)
+	readers, defaults := r.ownerReaders(t), r.publishedDefaults(t)
+	named := map[staleCut][]string{}
+	for _, moved := range movedRows(state.days, r.dayRows(t)) {
+		for _, row := range asReaders(moved, readers) {
+			if repo, held := cutOfRow(moved.ProjectKey, row.ProjectKey, row.Repo, defaults); held {
+				cut := staleCut{project: row.ProjectKey, repo: repo}
+				named[cut] = append(named[cut], row.EvalID)
+			}
+		}
+	}
+	if len(named) < 2 {
+		t.Fatalf("the rewrite moved %d cuts, and the check needs more than one", len(named))
+	}
+	for cut, ids := range named {
+		slices.Sort(ids)
+		named[cut] = slices.Compact(ids)
+	}
+	r.expectMarks(t, "the settings rewrite's commit", named)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	paint := firstPaintOf(through)
+	painted, truth := r.storedFigures(t), r.truthFigures(t)
+	expectPaintTruth(t, "the settings rewrite's commit", through, named, painted, truth)
+	for _, line := range writtenFigures(state.figures, painted) {
+		cut, evalID, day, ranged := figureLineKey(t, line)
+		if !slices.Contains(named[cut], evalID) || ranged && !paint.holds(day) || !ranged && (day.Before(paintReach(paint)) || !day.Before(through)) {
+			t.Errorf("the settings rewrite's commit wrote %s outside the first paints of the evals it moved", line)
+		}
+	}
+	r.expectReads(t, "right after the settings rewrite", named, readsOf(moveShapes()), func(staleCut) bool { return true })
+	past := readsOf(pastShapes())
+	r.expectReads(t, "before the settings refold", named, past, func(staleCut) bool { return false })
+
+	// The day rows do not change during the refold, so the reads on either side must both answer
+	// their fold, from the day rows before and from the stored figures after.
+	seq := r.latestSeq(t)
+	r.pass(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the pass left the settings rewrite's marks %v, want its refold done", marks)
+	}
+	if changed := r.changedEvals(t, seq); len(changed) != 0 {
+		t.Errorf("the settings refold logged eval_days changes %v, want none", changed)
+	}
+	r.expectReads(t, "after the settings refold", named, past, func(staleCut) bool { return true })
+	state = r.expectRewrites(t, "a settings change", state, true, nil)
 
 	// The daily tick: a pass of the next UTC day writes its rows, and the ranges of the end day it
 	// adds, two days after the new today, of every eval. The day it brings before the figures' last
@@ -1133,17 +1175,24 @@ type listState struct {
 // ranges (at least one).
 func (r *refresherRig) readListState(t *testing.T, project string, repos []string, ranges ...Range) listState {
 	t.Helper()
-	ctx, pool := t.Context(), r.database.Pool
-	state := listState{q: pool, project: project, repos: repos, rows: map[string][]WindowRow{}}
+	ctx := t.Context()
 	page, err := r.registry.Current(ctx, []string{project}, "", 200, 0)
 	if err != nil {
 		t.Fatalf("read %s's evals: %v", project, err)
 	}
-	state.entries = page.Items
-	if state.deployRepo, err = DeployRepoIn(ctx, pool); err != nil {
+	return readListStateIn(t, r.database.Pool, project, repos, page.Items, ranges...)
+}
+
+// readListStateIn reads the inputs for the cuts and ranges from q, which can hold a snapshot.
+func readListStateIn(t *testing.T, q delivery.Querier, project string, repos []string, entries []Entry, ranges ...Range) listState {
+	t.Helper()
+	ctx := t.Context()
+	state := listState{q: q, project: project, repos: repos, entries: entries, rows: map[string][]WindowRow{}}
+	var err error
+	if state.deployRepo, err = DeployRepoIn(ctx, q); err != nil {
 		t.Fatal(err)
 	}
-	if state.firsts, err = FirstDaysIn(ctx, pool, state.entries, state.deployRepo); err != nil {
+	if state.firsts, err = FirstDaysIn(ctx, q, state.entries, state.deployRepo); err != nil {
 		t.Fatalf("read the first days of %s's evals: %v", project, err)
 	}
 	span := ranges[0]
@@ -1155,7 +1204,7 @@ func (r *refresherRig) readListState(t *testing.T, project string, repos []strin
 			span.To = one.To
 		}
 	}
-	rows, err := DayWindowIn(ctx, pool, []string{project}, state.entries, state.deployRepo, repos, span, nil)
+	rows, err := DayWindowIn(ctx, q, []string{project}, state.entries, state.deployRepo, repos, span, nil)
 	if err != nil {
 		t.Fatalf("read %s's day rows of %v over %s: %v", project, repos, daysText(span), err)
 	}

@@ -1,7 +1,6 @@
 package evals
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -428,6 +427,53 @@ func TestASettingsChangeRewritesInOnePassWhatAWholeWalkWrites(t *testing.T) {
 		compare(move.name)
 		t.Logf("%s: no row written, the keyed evals read %d rows", move.name, len(move.want))
 	}
+}
+
+// TestASettingsRewriteFoldsTheFirstPaintOnlyIfAllMarkedEvalsAreComputed covers two cuts with
+// refolds still owed. The rewrite folds the standing computed eval as well as the staging gate
+// it moves, but defers the paint of the cut whose standing mark names a logged eval.
+func TestASettingsRewriteFoldsTheFirstPaintOnlyIfAllMarkedEvalsAreComputed(t *testing.T) {
+	t.Parallel()
+	r, deliveries := newSettingsHistory(t, walkBatch)
+	project, repo := deliveries.Project, deliveries.DeployRepo
+	r.logReviews(t, project, refresherToday.AddDate(0, 0, -1), repo)
+	r.settle(t)
+
+	own, named := staleCut{project: project}, staleCut{project: project, repo: repo}
+	gate, other := EvalID(project, SlugStagingE2E), EvalID(project, SlugDeployFrequency)
+	logged := EvalID(project, "review-latency")
+	// Both cuts already owe a paint, just as after a mark that has not been refolded yet.
+	r.exec(t, "leave first paints owed for a computed eval and a logged eval", `
+		insert into eval_figure_cuts_stale (project_key, repo, generation, evals)
+		values ($1, '', 1, array[$2::text]), ($1, $3, 1, array[$4::text])`, project, other, repo, logged)
+	r.exec(t, "leave the computed eval's range figures older than its rows", `
+		update eval_range_figures set oldest_updated_at = oldest_updated_at - interval '1 day'
+		where project_key = $1 and repo = '' and eval_id = $2`, project, other)
+
+	settings := deliveries.Settings
+	settings.StagingE2EJobName = new("no-such-job")
+	r.putSettings(t, settings, alice)
+	r.pageAlone(t)
+
+	marks := r.staleMarks(t)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	computed := []string{other, gate}
+	mixed := []string{logged, gate}
+	if mark := marks[own]; mark.generation != 2 || mark.ready == nil || !mark.ready.Equal(through) || mark.next != nil || !slices.Equal(mark.evals, computed) {
+		t.Errorf("the rewrite's own cut has %s, want generation 2 with %v and its first paint folded", mark, computed)
+	}
+	if mark := marks[named]; mark.generation != 2 || mark.ready != nil || mark.next != nil || !slices.Equal(mark.evals, mixed) {
+		t.Errorf("the rewrite's repository cut has %s, want generation 2 with %v and its first paint owed", mark, mixed)
+	}
+	expectPaintTruth(t, "the settings rewrite's computed first paint", through, map[staleCut][]string{own: computed}, r.storedFigures(t), r.truthFigures(t))
+	want := map[staleCut][]string{own: computed, named: mixed}
+	r.expectReads(t, "after the settings rewrite", want, readsOf(moveShapes()), func(cut staleCut) bool { return cut == own })
+	r.wokenPass(t)
+	if marks := r.staleMarks(t); len(marks) != 0 {
+		t.Errorf("the refold left stale cuts %v, want none", marks)
+	}
+	expectTruth(t, "after the settings refold", r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "after the settings refold", want, readsOf(moveShapes()), func(staleCut) bool { return true })
 }
 
 // dayRowXmins and memberXmins read the transaction that last wrote each day row and each member,
@@ -1709,34 +1755,67 @@ func recordWrites(t *testing.T, r rig) func() map[int64][]string {
 	}
 }
 
+const dayRowsAndMembersPrint = `
+		coalesce((select string_agg(md5(d::text), '' order by d.project_key, d.eval_id, d.writer, d.deploy_repo, d.series, d.repo, d.day) from eval_days d), '') || '|' ||
+		coalesce((select string_agg(md5(m::text), '' order by m.project_key, m.family, m.deploy_repo, m.row_key) from eval_day_members m), '')`
+
 // storedPrint is one fingerprint of every stored day row, member and stored figure, read by one
 // statement, so of one snapshot: what a reader of that moment can see of them.
 const storedPrint = `
-	select md5(
-		coalesce((select string_agg(md5(d::text), '' order by d.project_key, d.eval_id, d.writer, d.deploy_repo, d.series, d.repo, d.day) from eval_days d), '') || '|' ||
-		coalesce((select string_agg(md5(m::text), '' order by m.project_key, m.family, m.deploy_repo, m.row_key) from eval_day_members m), '') || '|' ||
+	select md5(` + dayRowsAndMembersPrint + ` || '|' ||
 		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_range_figures f), '') || '|' ||
 		coalesce((select string_agg(md5(f::text), '' order by md5(f::text)) from eval_day_figures f), ''))`
 
-// storedSettingsPrint is storedPrint beside the delivery settings the rows stand built under
-// (eval_days_settings, the fields a read takes of them, BuiltSettingsIn and DeployRepoIn), read by
-// one statement, so of one snapshot: what a reader of the evals can see of the rows and of the
-// settings it reads them under at that moment.
+// storedSettingsPrint fingerprints the rows, members and recorded settings in one snapshot.
+// Use readSettingsSnapshot beside it: a settings rewrite can leave raw stored figures stale.
 const storedSettingsPrint = `
-	select (` + storedPrint + `) || ' ' || coalesce((
+	select md5(` + dayRowsAndMembersPrint + `) || ' ' || coalesce((
 		select md5(s::text) from (
 			select production_job_names, production_apply_step_name, staging_e2e_job_name, staging_apply_job_name, deploy_repo
 			from eval_days_settings) s), 'none')`
 
-// commitPrints is a tracer (storetest.TracedStore) that reads query (storedPrint where it is
-// empty), on the rig's own pool, after each transaction the traced pool commits: every state of
-// what the query reads that a reader can see between two commits of a pass.
+// readSettingsSnapshot fingerprints the day rows, members and recorded settings beside what
+// the project's own and deploy repository cuts answer, not the raw figures of marked evals.
+func readSettingsSnapshot(t *testing.T, registry *Store, project, repo string) string {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := registry.BeginSnapshot(ctx)
+	if err != nil {
+		t.Errorf("begin the settings snapshot: %v", err)
+		return ""
+	}
+	defer tx.Rollback(ctx)
+	var print string
+	if err := tx.QueryRow(ctx, storedSettingsPrint).Scan(&print); err != nil {
+		t.Errorf("read the day rows, members and settings: %v", err)
+		return ""
+	}
+	page, err := CurrentIn(ctx, tx, []string{project}, "", 200, 0)
+	if err != nil {
+		t.Errorf("read %s's evals in the settings snapshot: %v", project, err)
+		return ""
+	}
+	first, past := moveShapes()[0], pastShapes()[0]
+	var out strings.Builder
+	out.WriteString(print)
+	for _, repos := range [][]string{nil, {repo}} {
+		state := readListStateIn(t, tx, project, repos, page.Items, first.window, first.compare, past.window, past.compare)
+		for _, shape := range []readShape{first, past} {
+			stated, _, _ := state.values(t, shape.window, &shape.compare)
+			fmt.Fprint(&out, " ", stated)
+		}
+	}
+	return out.String()
+}
+
+// commitPrints records what snapshot reads (or storedPrint by default) on the rig's own pool
+// after each commit by the traced pool, so a test can check what a reader sees between commits.
 type commitPrints struct {
-	t     *testing.T
-	rig   rig
-	query string
-	mu    sync.Mutex
-	seen  []string
+	t        *testing.T
+	rig      rig
+	snapshot func() string
+	mu       sync.Mutex
+	seen     []string
 }
 
 type commitPrintAt struct{}
@@ -1758,10 +1837,13 @@ func (c *commitPrints) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.
 	c.seen = append(c.seen, print)
 }
 
-// read is the query (storedPrint where it is empty) as it stands now.
+// read records the current state the test's snapshot reads, or the raw rows by default.
 func (c *commitPrints) read() string {
+	if c.snapshot != nil {
+		return c.snapshot()
+	}
 	var print string
-	if err := c.rig.database.Pool.QueryRow(context.Background(), cmp.Or(c.query, storedPrint)).Scan(&print); err != nil {
+	if err := c.rig.database.Pool.QueryRow(context.Background(), storedPrint).Scan(&print); err != nil {
 		c.t.Errorf("read the fingerprint of the stored rows: %v", err)
 	}
 	return print
@@ -2505,9 +2587,9 @@ func TestAPullRequestLeavingTheDaysBeforeItsRepositorysHistoryRewritesTheDeployT
 // takes (DeployRepoIn's deploy repository, BuiltSettingsIn's every field eval_days_settings
 // records) at the old settings until the refresher's pass commits, and at the new ones once it
 // has: the record moves in the commit that brings the rows to the settings, not at the save. And
-// no reader sees the one move without the other: the fingerprint of the rows, the members, the
-// stored figures and the recorded settings, read in one snapshot after each commit of the pass
-// (commitPrints of storedSettingsPrint), is the one before the pass or the one after it.
+// no reader sees the one move without the other: at each commit of the pass, the rows, members,
+// recorded settings and the answers of a first paint and an older window all agree with the
+// state before the pass or the state after it. Raw stored figures can change during the refold.
 func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) {
 	t.Parallel()
 	r, deliveries := newSettingsRig(t, walkBatch)
@@ -2523,7 +2605,11 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 		}
 		return repo, *built
 	}
-	prints, rows := &commitPrints{t: t, rig: r.rig, query: storedSettingsPrint}, &commitPrints{t: t, rig: r.rig}
+	plain := r.registry
+	prints := &commitPrints{t: t, rig: r.rig, snapshot: func() string {
+		return readSettingsSnapshot(t, plain, deliveries.Project, deliveries.DeployRepo)
+	}}
+	rows := &commitPrints{t: t, rig: r.rig}
 	r.registry = r.tracedStore(t, prints)
 	settings := deliveries.Settings
 	for _, change := range []struct {
@@ -2544,6 +2630,7 @@ func TestTheReadsSettingsMoveWithTheCommitThatBringsTheRowsToThem(t *testing.T) 
 		}
 		rowsBefore, before := rows.read(), prints.read()
 		r.pass(t)
+		expectTruth(t, change.name, r.storedFigures(t), r.truthFigures(t))
 		after := prints.read()
 		if repo, built := read(change.name + ", after the pass"); repo != settings.DeployRepo || !sameBuiltSettings(built, settings) {
 			t.Errorf("%s: after the pass a read takes the deploy repository %s and the production jobs %v, want the new ones, %s and %v",

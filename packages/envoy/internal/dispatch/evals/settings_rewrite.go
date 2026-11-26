@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -41,8 +42,8 @@ import (
 // pass reads nothing. A production job name no run holds moves the rule's names but its verdict
 // on no run and no card's part, so the rewrite reads the history and, once the delivery walk has
 // written today, builds no day: it builds only the days whose rows the change
-// can move (movedDeliveryDays). Until then it builds every day (rewriteSettings says why). Each
-// of its writes sends a row, a member or a figure only where its value moved.
+// can move (movedDeliveryDays). Until then it builds every day (rewriteSettings says why). It
+// sends only rows and members that moved and marks only the cuts those rows reach.
 
 // settingsMoves is the delivery and CI evals (by slug) whose day rows a change of the delivery
 // settings from prev to next can move, and the families of eval_day_members it can move, read from
@@ -537,11 +538,14 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //     and no row that stands sent, by a writer that runs beside the build of the next chunk; the
 //     members of families of those repositories whose day, repository or shipping run moved, or
 //     that are new, upserted, and those of the days written that the days no longer hold deleted,
-//     and no other member sent, once the last chunk is built; the stored figures of every day whose
-//     rows moved folded again, over each eval's runs of the days whose rows moved or went and no
-//     day between two runs (foldFiguresInTx, whose quantiles read each rank across the days'
-//     sorted samples, measures.SortedSamples); and the settings recorded as the ones the rows stand
-//     built under, the repositories they stand built for left as they are (syncKept's).
+//     and no other member sent, once the last chunk is built; the cuts the changed and deleted
+//     rows reach marked stale, naming the evals those rows moved (markMovedCuts); the first
+//     paints of the cuts whose marks name only computed evals folded (foldMarkedFirstPaints);
+//     and the settings recorded as the ones the rows stand built under, the repositories they
+//     stand built for left as they are (syncKept's). The same pass refolds the marked cuts after
+//     the commit, starting with any first paints still owed (refoldStaleCuts). Until then, a read
+//     folds a marked eval's day rows wherever the stored figures are not ready (builtCut.serves).
+//     The refold writes no day rows and logs no change.
 //     Its eval_days changes are one per eval, as every transaction's are (migration
 //     20261117100014), each under the project that reads the eval (an owner key's under each
 //     project that reads the key), so the evals views of each project whose rows moved hear of the
@@ -874,12 +878,14 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// zeros is each project's zero rows of a day of no input under the new settings
 	// (ZeroDeliveryDay), of today: a day's are the same rows on that day (zeroRowsOn).
 	zeros := map[string][]DayRow{}
-	// moved is, by project and eval, the days whose rows moved or went, each run of them apart:
-	// what the stored figures are folded again over.
-	moved := writtenSpans{}
+	// moved is the eval and repository of each day row the rewrite changed or deleted, by the
+	// project or owner key that held it. All deploy repositories of a cut share one stale mark.
+	moved := map[string]map[evalRepo]bool{}
 	note := func(row *DayRow) {
-		day := measures.Midnight(row.Day)
-		moved.add(row.ProjectKey, row.EvalID, day, day)
+		if moved[row.ProjectKey] == nil {
+			moved[row.ProjectKey] = map[evalRepo]bool{}
+		}
+		moved[row.ProjectKey][evalRepo{eval: row.EvalID, repo: row.Repo}] = true
 	}
 
 	tx, err := pool.Begin(ctx)
@@ -1055,12 +1061,17 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return err
 	}
 	times.memberWrites = times.lap()
-	// The rewrite folds on as many goroutines as it builds days on: the views that wait for its
-	// commit wait for its fold, and no view reads beside it what the fold takes CPUs from.
-	if err := foldFiguresInTx(withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers), tx, r.build, moved.sets()...); err != nil {
+	scopeOf := figureScopeReader(ctx, tx, r.build)
+	marks, err := markMovedCuts(ctx, tx, scopeOf, moved)
+	if err != nil {
 		return err
 	}
-	times.figureScope = times.lap() - times.figures.moved - times.figures.plan - times.figures.fold
+	times.cutsMarked, times.markCuts = len(marks), times.lap()
+	paintCtx := withFoldWorkers(withFigureTimes(ctx, &times.figures), rewriteWorkers)
+	if times.paints, err = foldMarkedFirstPaints(paintCtx, tx, scopeOf, marks, paintReached); err != nil {
+		return err
+	}
+	times.paints.took = times.lap()
 	if err := recordBuiltUnder(ctx, tx, next); err != nil {
 		return err
 	}
@@ -1082,6 +1093,73 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	times.drain = times.lap()
 	times.log(after.minus(before), builtDays, builtRows, sent, repoMoved)
 	return nil
+}
+
+// evalRepo is a written row's eval and repository, without its deploy repository.
+type evalRepo struct {
+	eval, repo string
+}
+
+// markMovedCuts marks stale the cuts that fold the rows a settings rewrite changed or deleted,
+// where those projects' figures are folded (scopeOf). An owner key has no figures of its own:
+// its rows reach each project that reads the key under the published defaults (readersOf), under
+// that project's eval id (asReader). Resolve repositories to cuts once per project (cutsOfRepos),
+// then write the marks together in the eval tables' lock order (markStaleCuts).
+func markMovedCuts(ctx context.Context, tx pgx.Tx, scopeOf func(string) (*figureScope, error), moved map[string]map[evalRepo]bool) (map[staleCut]cutMark, error) {
+	var owners []string
+	for key := range moved {
+		if isOwner(key) {
+			owners = append(owners, key)
+		}
+	}
+	slices.Sort(owners)
+	readers, err := readersOf(ctx, tx, owners)
+	if err != nil {
+		return nil, err
+	}
+	for _, owner := range owners {
+		for _, project := range readers[owner] {
+			if moved[project] == nil {
+				moved[project] = map[evalRepo]bool{}
+			}
+			for row := range moved[owner] {
+				// Only the project's own rows under this repository fold into its default's cut.
+				if row.repo != legionfacts.DefaultRepo {
+					moved[project][evalRepo{eval: asReader(owner, project, row.eval), repo: row.repo}] = true
+				}
+			}
+		}
+		delete(moved, owner)
+	}
+	marks := map[staleCut][]string{}
+	for _, project := range slices.Sorted(maps.Keys(moved)) {
+		scope, err := scopeOf(project)
+		if err != nil {
+			return nil, err
+		}
+		if scope == nil {
+			continue
+		}
+		repos := map[string]bool{}
+		for row := range moved[project] {
+			repos[row.repo] = true
+		}
+		cuts, err := cutsOfRepos(ctx, tx, project, slices.Sorted(maps.Keys(repos)))
+		if err != nil {
+			return nil, err
+		}
+		for row := range moved[project] {
+			if repo, held := cuts[row.repo]; held {
+				cut := staleCut{project: project, repo: repo}
+				marks[cut] = append(marks[cut], row.eval)
+			}
+		}
+	}
+	for cut, ids := range marks {
+		slices.Sort(ids)
+		marks[cut] = slices.Compact(ids)
+	}
+	return markStaleCuts(ctx, tx, marks)
 }
 
 // markSettingsApplied logs, in tx, that the day rows stand at the delivery settings once tx
@@ -1128,10 +1206,9 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 //     the gone ones deleted by a writer beside the build of the next chunk (dayRows, the
 //     writer's own time): the wall time of the whole, which ends with the last write;
 //   - memberWrites, the members written;
-//   - the figures' refold (foldFiguresInTx): figureScope, its reads of the projects that read
-//     the owner keys written, of each project's figure scope and of its evals, and whatever it
-//     does between its timed parts, and figures, its reads of the moved days, of the rows it folds
-//     and its fold and write, and of that the statements' own time (figureTimes);
+//   - markCuts, the cuts the moved rows reach found and marked stale;
+//   - paints, the marked cuts' first paints folded, with the reads of the day rows they folded
+//     (figures);
 //   - commit, and drain, the change log's outbox moved into the log once it has committed.
 type rewriteTimes struct {
 	stopwatch
@@ -1141,7 +1218,9 @@ type rewriteTimes struct {
 	firstDaysRead, rowsRead, lost, pushMembers time.Duration
 	membersRead, buildDays, diff, dayRows      time.Duration
 	bookkeeping, memberWrites                  time.Duration
-	figureScope                                time.Duration
+	markCuts                                   time.Duration
+	cutsMarked                                 int
+	paints                                     markedPaints
 	figures                                    figureTimes
 	commit, drain                              time.Duration
 }
@@ -1160,10 +1239,9 @@ func (t *rewriteTimes) log(wrote rewriteCounts, days, built, sent int, repoMoved
 		"members_read_ms", t.membersRead.Milliseconds(),
 		"build_ms", t.build.Milliseconds(), "build_days_ms", t.buildDays.Milliseconds(), "diff_ms", t.diff.Milliseconds(),
 		"day_rows_ms", t.dayRows.Milliseconds(), "member_writes_ms", t.memberWrites.Milliseconds(),
-		"figure_scope_ms", t.figureScope.Milliseconds(),
-		"moved_figure_days_ms", t.figures.moved.Milliseconds(), "figure_plan_ms", t.figures.plan.Milliseconds(),
-		"figure_plan_reads", t.figures.reads, "figure_plan_rows", t.figures.rows, "fold_and_write_ms", t.figures.fold.Milliseconds(),
-		"figure_writes_ms", t.figures.writes.Milliseconds(), "figure_ranges_sent", t.figures.rangesSent, "figure_days_sent", t.figures.daysSent,
+		"mark_cuts_ms", t.markCuts.Milliseconds(), "cuts_marked", t.cutsMarked,
+		"first_paint_ms", t.paints.took.Milliseconds(), "first_paints", t.paints.folded,
+		"first_paint_reads", t.figures.reads, "first_paint_rows", t.figures.rows,
 		"bookkeeping_ms", t.bookkeeping.Milliseconds(),
 		"commit_ms", t.commit.Milliseconds(), "drain_ms", t.drain.Milliseconds(), "total_ms", t.total().Milliseconds(),
 		"days_built", days, "day_rows_built", built, "day_rows_sent", sent, "day_rows_written", wrote.dayRows,
