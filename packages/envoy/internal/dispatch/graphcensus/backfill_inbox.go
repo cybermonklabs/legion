@@ -791,10 +791,9 @@ type RollRows struct {
 // published_destinations after the event commits, appending no event, so no read of the log after
 // the tick's cursor finds a publish that lands after the tick has read its event. The pass over the
 // queue of an older build's events (inboxEventsPass) reads the queue migration 20261122100123
-// fills, here as in the backfill: a move of who an ask waits on and an edit of a comment or of an
-// issue message change no row's marker, so no pass over a marker reaches them, and the queue holds
-// each such event until the batch that states it deletes it, whichever of the backfill and the
-// tick takes it first.
+// fills, here as in the backfill: an ask assignment change or a comment or issue message edit or
+// delete does not change a row's marker. The queue keeps each event until the backfill or tick
+// records what the event owes and deletes its queue entry.
 // Each pass reads its rows through the index that holds the rows it owes
 // (TestTheRollPassesReadTheirOwedRowsThroughThePartialIndexes), but two: the asks pass reads asks
 // whole, as the object pass does, since its marker test reads an answer's moment through a cast no

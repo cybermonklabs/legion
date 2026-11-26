@@ -454,11 +454,12 @@ type ItemIndex struct {
 	own     []heldCitation
 	ownRead bool
 	// mentioned is each identity the store holds a mention of out of the item's node now, read
-	// with the block mentions of an indexed comment or message (heldItemBlockLinks): what the
-	// index appends no mention of again (identityMentions), and retracts each mention of that the
-	// text no longer names (unnamedMentions). routes is each identity a comment's delivery routes
-	// name, read beside them (its comment_mentions rows, api's commentMentionFacts): mentions the
-	// comment states apart from its text, which no change of its text retracts.
+	// with the block mentions of a comment or message whose node the store holds, indexed or not
+	// (heldItemBlockLinks, ReadItemIndex): what the index appends no mention of again
+	// (identityMentions), and retracts each mention of that the text no longer names
+	// (unnamedMentions). routes is each identity a comment's delivery routes name, read beside them
+	// (its comment_mentions rows, api's commentMentionFacts): mentions the comment states apart from
+	// its text, which no change of its text retracts.
 	mentioned, routes map[Target]struct{}
 }
 
@@ -486,8 +487,14 @@ type itemRefRow struct {
 // block and no block mention - the index writes them in the transaction that marks the state
 // indexed, and a state row goes only with its item - and so does one whose row q does not hold
 // yet, the item whose insert the calling transaction has queued, whose scope its caller hands over
-// instead (Scoped, WrittenItem). None of these reads takes a lock: the caller holds the item's
-// owner lock, and the index's write phase takes the state row (queueStateLock).
+// instead (Scoped, WrittenItem). The node of a comment or a message no block-aware build indexed
+// can hold identity mentions all the same: the backfill states those an older build's text names
+// without indexing its blocks (graphcensus' commentPointersPass, messagesPass and its pass over
+// the queue of that build's events), and a comment states its delivery routes as mentions too. So
+// they are read for such an item as for an indexed one (heldItemBlockLinks, mentioned and routes),
+// and its first index retracts each its text no longer names. None of these reads takes a lock:
+// the caller holds the item's owner lock, and the index's write phase takes the state row
+// (queueStateLock).
 func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string) (ItemIndex, error) {
 	tables, err := kind.tables()
 	if err != nil {
@@ -506,6 +513,11 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 		if index.scope.held {
 			if index.firstRefs, err = itemRefRows(ctx, q, kind, itemID); err != nil {
 				return ItemIndex{}, err
+			}
+			if kind != ItemAsk {
+				if _, _, _, index.mentioned, index.routes, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
+					return ItemIndex{}, err
+				}
 			}
 		}
 		return index, nil
@@ -849,8 +861,9 @@ func planItemBlocks(
 	// holds none from it already (identityMentions), and the retraction of each mention the store
 	// holds from it that the text no longer names and no delivery route of a comment names
 	// (unnamedMentions): a session's and a role's with the node's other facts, a person's through
-	// the store's one writer of a fact that names a person. An item no block-aware build indexed
-	// holds none (ReadItemIndex reads them with its links).
+	// the store's one writer of a fact that names a person. An item no block-aware build indexed is
+	// read with the mentions the backfill stated of its text and, a comment, its delivery routes
+	// (ReadItemIndex), so its first index retracts as a later one does.
 	if scope.held {
 		tuples, people := identityMentions(string(kind), itemID, scope.node.Visibility, scope.node.MadeBy, at, source.identities, index.mentioned)
 		unnamed, unnamedPeople := unnamedMentions(string(kind), itemID, scope.node.Visibility, scope.node.MadeBy, at, source.identities, index.mentioned, index.routes)
@@ -1184,9 +1197,10 @@ func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTab
 // of out of the item's node now (mentioned, IdentityMentionsRead), each a row with no block id
 // whose far end is an identity's kind, which no refs row names (TargetOf): what the index appends
 // no mention of again, and retracts the mention of where the text no longer names it. For a
-// comment it reads its delivery routes too (routes, routeRows): the session or the role each of
-// its comment_mentions rows targets, and the session that row resolved to, each a mention the
-// comment's write states apart from its text (api's commentMentionFacts), which no edit retracts.
+// comment it reads its delivery routes too (routes, routeRows, CommentRoutesRead): the session or
+// the role each of its comment_mentions rows targets, and the session that row resolved to, each a
+// mention the comment's write states apart from its text (api's commentMentionFacts), which no edit
+// retracts.
 func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, own []heldCitation, read bool, mentioned, routes map[Target]struct{}, err error) {
 	query, args := `
 		select block_id, kind, to_kind, to_id, node_kind is not null from `+tables.refs+` where `+tables.item+` = $1::uuid
@@ -1197,17 +1211,9 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 	`, []any{itemID, string(kind), itemID, IdentityKinds}
 	switch kind {
 	case ItemComment:
-		role, session := graphstore.RouteSQL(`m.target`)
 		query += `
 		union all
-		select null, '` + routeRows + `', routed.kind, routed.id, true
-		from comment_mentions m
-		cross join lateral (values
-			('` + graphstore.KindRole + `', ` + role + `),
-			('` + graphstore.KindSession + `', ` + session + `),
-			('` + graphstore.KindSession + `', m.resolved_session_id)
-		) routed (kind, id)
-		where m.comment_id = $1::uuid and routed.id is not null`
+		select null, '` + routeRows + `', route.to_kind, route.to_id, true from (` + CommentRoutesRead(`$1::uuid`) + `) route`
 	case ItemAsk:
 		query = `
 			select block_id, kind, to_kind, to_id, node_kind is not null from ask_block_refs where ask_id = $1::uuid
