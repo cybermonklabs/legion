@@ -3511,14 +3511,17 @@ const outboxUnleasedDue = `outbox.next_at <= $1 and (outbox.lease_until is null 
 // the row retries. And a start marked as waiting for the issue's admission slot
 // (SuperviseRequest.NeedsSlot) waits while the slots table names no slot of that issue: the
 // admission cap counts the issues the daemon has started, and this row is the delivery that puts one to work, so
-// it is where the cap is applied. Supervise rows need no other such rule: a stop names the run it
-// ends through the claim's own record of the newest start run against it (claims.last_start_row),
-// so ordering them here would buy nothing that survives a retry the runtime delayed. And a state
-// row ($6 is the state lane's kinds) waits while an unfinished state row of its project has a
-// lower sequence: every state row carries the bare project key as its issue, and takes its
-// sequence when its transaction commits (OutboxRow.StateSeq), so the project's one state lane
-// publishes its rows strictly in sequence order (OutboxLane's comment on LaneState says what a
-// failed row holds).
+// it is where the cap is applied. The store repeats this last rule (its slotWaitingStart, which
+// TestTheIdleRuleAndTheOutboxAgreeOnAStartWaitingForItsSlot holds to this one), so the idle release
+// keeps no pod for such a start; what the start means for a backstop is the store's
+// PodRecords.WaitsForItsSlot's to say. Supervise rows need no other such rule: a stop names the
+// run it ends through the claim's own record of the newest start run against it
+// (claims.last_start_row), so ordering them here would buy nothing that survives a retry the
+// runtime delayed. And a state row ($6 is the state lane's kinds) waits while an unfinished state
+// row of its project has a lower sequence: every state row carries the bare project key as its
+// issue, and takes its sequence when its transaction commits (OutboxRow.StateSeq), so the
+// project's one state lane publishes its rows strictly in sequence order (OutboxLane's comment on
+// LaneState says what a failed row holds).
 //
 // None of the four holds back any row but the ones it names. A row that is merely unclaimable
 // takes no lease, and the lane rule (outboxLaneFree) blocks only on a live lease, so an issue whose

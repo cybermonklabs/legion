@@ -335,13 +335,17 @@ func TestEveryDoorStartsTheChildsArchitect(t *testing.T) {
 // (workflow's noticeFor), so the child's own architect, which that move starts, is told nothing of
 // its own start: its first notice is its catch-up, and no later notice is of the start.
 //
-// Here the child's parent is a child of the root. The parent's architect works, or the idle
-// release took its pod, or it failed. A released claim holds its role (record.HoldsRole), so the
-// first attempt of the start's notice wakes the pod and waits on its backoff, as on INFRA's daemon
-// (INFRA-4640, INFRA-4318). The child's architect starts while the notice waits, and the attempt
-// after the backoff walks the owner again and finds that architect launching: the notice still
-// goes to the parent's architect. A failed claim holds no role, so the notice goes on up to the
-// root's architect.
+// Here the child's parent is a child of the root, in implementing. The release of an open child
+// under it holds the parent in awaiting_children (dispatch://INFRA-3320), and that move tells the
+// architect above the child first, with the awaiting-children notice of the parent; the child's
+// start is the one other notice it gets. The parent's architect works, or the idle release took
+// its pod, or it failed. A released claim holds its role (record.HoldsRole), so the first attempt
+// of each notice wakes the pod and waits on its backoff, as on INFRA's daemon (INFRA-4640,
+// INFRA-4318), and the child's start waits behind the parent's earlier notice to the same
+// architect. The child's architect starts while the notices wait, and the attempt after the
+// backoff walks the owner again and finds that architect launching: the notices still go to the
+// parent's architect. A failed claim holds no role, so the notices go on up to the root's
+// architect.
 func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 	const parent = "LEGION-5"
 	for _, tc := range []struct {
@@ -375,15 +379,27 @@ func TestAChildsStartTellsTheArchitectAboveItOnce(t *testing.T) {
 			if told := rig.noticesTo(parent); tc.released && len(told) != 0 {
 				t.Fatalf("the released architect of %s was published %+v before its pod came back, want nothing", parent, told)
 			}
-			// The backoff of a notice that woke the parent's pod runs out.
-			if _, err := rig.pool.Exec(rig.ctx, `update outbox set next_at = now() where kind = 'notice' and issue = $1`, doorChild); err != nil {
-				t.Fatalf("bring the notices of %s due: %v", doorChild, err)
+			// The backoff of each notice that woke the parent's pod runs out: the parent's own
+			// awaiting-children notice, and the child's start behind it.
+			if _, err := rig.pool.Exec(rig.ctx, `update outbox set next_at = now() where kind = 'notice' and issue in ($1, $2)`, doorChild, parent); err != nil {
+				t.Fatalf("bring the notices of %s and %s due: %v", doorChild, parent, err)
 			}
 			rig.wantChildsArchitectToldItsIssues([]string{doorChild})
 
 			want := workflow.ChildStartedNotice(doorChild, doorRoot, phase.Planning, nil)
-			if told := rig.noticesTo(tc.above); len(told) != 1 || !reflect.DeepEqual(told[0], want) {
-				t.Fatalf("the architect of %s was published %+v, want the one notice %+v of %s's start", tc.above, told, want, doorChild)
+			var started, waiting []record.Notice
+			for _, notice := range rig.noticesTo(tc.above) {
+				if notice.Kind == want.Kind {
+					started = append(started, notice)
+				} else {
+					waiting = append(waiting, notice)
+				}
+			}
+			if len(started) != 1 || !reflect.DeepEqual(started[0], want) {
+				t.Fatalf("the architect of %s was published %+v of the child-status kind, want the one notice %+v of %s's start", tc.above, started, want, doorChild)
+			}
+			if len(waiting) != 1 || waiting[0].Kind != workflow.AwaitingChildrenNoticeKind {
+				t.Fatalf("the architect of %s was published %+v beside the child's start, want the one awaiting-children notice of %s", tc.above, waiting, parent)
 			}
 			for _, notice := range rig.noticesTo(doorChild)[1:] {
 				if notice.Kind == "child-status" || notice.Phase == phase.Admitted {
