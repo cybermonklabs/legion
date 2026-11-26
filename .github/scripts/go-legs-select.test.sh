@@ -70,7 +70,7 @@ PY
 echo "case: a change to nothing selects no package, and only the legs that carry steps of their own"
 out=$(select_change)
 check "no envoy-go package" "$(is "$(packages "$out" envoy-go)" "")"
-check "daemon-go starts leg 2 alone, which runs the Stage 1 proof and the forced-order tests" "$(is "$(legs "$out" daemon-go)" "2")"
+check "daemon-go starts legs 2 and 3 alone, which run the Stage 1 proof, the forced-order tests and the stamped shape gate" "$(is "$(legs "$out" daemon-go)" "2 3")"
 check "envoy-go-race starts leg 5 alone, which runs the forced-order tests" "$(is "$(legs "$out" envoy-go-race)" "5")"
 check "envoy-go starts no leg" "$(is "$(legs "$out" envoy-go)" "")"
 

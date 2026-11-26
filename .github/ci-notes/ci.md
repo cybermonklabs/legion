@@ -1308,7 +1308,8 @@ restores the newest entry
 of the family, runs on it the build the job runs, which compiles only what changed since, deletes
 from the build cache every entry that build did not use (.github/scripts/go-cache-working-set.sh;
 without it an entry grew with each fill, go-envoy-test from 690 MB to 2,039 MB in a day, and every
-job that restores it downloaded the growth), and saves the result under the job's key followed by
+job that restores it downloaded the growth) and from the module cache every zip, which no build
+reads (.github/ci-notes/ci-caches.md#why-the-fills-delete-the-module-zips), and saves the result under the job's key followed by
 the commit (`-${{ github.sha }}`). No entry
 carries the job's key itself, so GitHub's matching gives each job the newest entry whose key
 starts with it, the last fill's, and ci-caches.yaml's refill-superseded job then deletes every
@@ -2639,11 +2640,12 @@ which measures the change from its base and runs .github/scripts/go_legs_select.
 job's `legs`, so a leg none of whose packages the change reaches starts no runner, and go_legs.py
 prints, in each leg that starts, only the leg's packages the selection holds (GO_LEGS_SELECTED);
 `xargs -r` then starts no go test for a leg left none. A leg that carries a step of its own
-(daemon-go's leg 2, with the Stage 1 proof, the stamped shape gate and the forced-order tests;
-envoy-go-race's leg 5, with the forced-order tests) starts whenever its job runs, and runs that
-step. A legs job none of whose legs starts is skipped, and its summary job, which keeps the
-check-run name, passes only when the selection says it started none. The jobs beside envoy-go's
-legs (alone, race-impossible, skip counter, natslive) run whenever envoy-go runs.
+(daemon-go's leg 2, with the race-impossible test, the forced-order tests and the Stage 1 proof,
+and its leg 3, with the stamped shape gate; envoy-go-race's leg 5, with the forced-order tests)
+starts whenever its job runs, and runs that step. A legs job none of whose legs starts is skipped,
+and its summary job, which keeps the check-run name, passes only when the selection says it
+started none. The jobs beside envoy-go's legs (alone, race-impossible, skip counter, natslive) run
+whenever envoy-go runs.
 
 **What selects a package.** For each legs job, one `go list -deps -test` of its packages under the
 build flags its legs pass go_legs.py (-race), over an empty module cache with GOPROXY=off, so the
@@ -2980,6 +2982,28 @@ dispatch-two-builds-same's "Build this tree as the previous build" reads the sam
 modules and the compiled dependencies match, while the tree's own packages, built from the
 script's `git archive` directory, compile again, since without -trimpath Go keys a package
 outside the module cache on its directory.
+
+## Why the envoy lanes with a database restore go-envoy-test
+
+dispatch-memory, dispatch-multiprocess, envoy-go-race and envoy-go-race-api restore go-envoy-test
+and save nothing, as the two-builds jobs and envoy-go-claim-model do. Until they did, they
+restored no cache at all, so their first go command, the ceiling step's
+`go run ./internal/dispatch/store/cmd/connections`, downloaded 17 modules and compiled the store
+from nothing: a median of 19 to 20 s of the step in each (16 to 23 s), against 1 s in envoy-go,
+which restores the entry (20 green merge groups of 2026-11-25, 18:43Z to 22:37Z). The tests
+after it downloaded more: 66 modules in dispatch-memory's memory step, which then compiled for
+44 s before its first test ran (job 139546656768), and 101 in envoy-go-race's race step (job
+139546656393). Each push to main fills the entry with the test binary of every package of the
+envoy module, so it holds every module those steps download and the plain objects of every
+package they build. The two plain jobs build cmd/dispatch's tests under `-tags memory` and
+`-tags multiprocess`, so they reuse the entry's modules and the objects of the packages the tag
+leaves as they are; the two race jobs reuse its modules, and the ceiling step's plain `go run`,
+since a `-race` build compiles every package again. The restore costs the entry's download:
+17 to 21 s in envoy-go on the same arm64 runner (12 jobs of that window, before #5600 took the
+module zips out of the entry, 676 MiB at 2026-11-26T02:56Z). envoy-go-race-docs and
+envoy-session-stall restore go-envoy, 192 MiB in 1 to 4 s, after which their ceiling step
+downloaded 9 modules and their tests 2 and none, fewer seconds than go-envoy-test's larger
+download would add, so they keep go-envoy.
 
 ## The server-change soak
 

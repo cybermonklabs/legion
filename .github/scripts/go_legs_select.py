@@ -50,9 +50,9 @@ The rest is read from the change's base (Base), as content rather than as a touc
   * go-legs.yaml: only the packages whose leg or group moved; a groups file its own package.
 Anything else selects no package unless a rule above names it: a changelog fragment, a dashboard
 file, another workflow. With no base (--paths), each of these rules selects every package.
-A leg that carries a step of its own (`if: matrix.leg == N`: daemon-go's Stage 1 proof, the
-forced-order tests) starts whenever its job runs, so that step runs; its go test then runs the
-leg's selected packages, or none.
+A leg that carries a step of its own (`if: matrix.leg == N`: daemon-go's Stage 1 proof and stamped
+shape gate, the forced-order tests) starts whenever its job runs, so that step runs; its go test
+then runs the leg's selected packages, or none.
 
 WHEN THE ANSWER IS EVERY LEG. --every; any failure (a go command that fails, a first-party package
 go list cannot load, a job of go-legs.yaml no workflow step runs the legs of, an exception), the
