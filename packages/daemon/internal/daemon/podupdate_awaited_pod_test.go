@@ -598,10 +598,10 @@ func TestTheWorkspaceLostMessageSaysWhyItNamesItsRoles(t *testing.T) {
 		want, not string
 	}{
 		"a read through a process that failed": {
-			read: workspaceRead{round: round, by: viaProcess, role: claim.RoleImplementer, err: errors.New("jj answered 1")},
+			read: workspaceRead{round: round, by: viaProcess, claim: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), err: errors.New("jj answered 1")},
 			want: notWaitedFor, not: unanswered},
 		"a read through a process that found work": {
-			read: workspaceRead{round: round, by: viaProcess, role: claim.RoleImplementer, work: runtime.WorkspaceWork{Head: "abc123", Commits: []string{"def456"}, Count: 1}},
+			read: workspaceRead{round: round, by: viaProcess, claim: mustClaimToken(t, podUpdateIssue, claim.RoleImplementer), work: runtime.WorkspaceWork{Head: "abc123", Commits: []string{"def456"}, Count: 1}},
 			want: notWaitedFor, not: unanswered},
 		"the sweep's replacement through a claim whose launch waits on the pod": {
 			read: processlessRead(round, viaProcess), want: unanswered, not: notWaitedFor},
