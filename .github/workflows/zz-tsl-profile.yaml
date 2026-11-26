@@ -1,4 +1,4 @@
-name: zz changes-job levers A/B (throwaway, not for merge)
+name: zz changes-job install A/B (throwaway, not for merge)
 on:
   push:
     branches: [scratch/changes-tsl-profile]
@@ -9,57 +9,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [tsgo, earlytsgo]
+        ref: [20ee90deba1e8af69a278a12c875dc4e86a6a548, 06d43bb841a158f04f9c5d9cbf54e9ec0d1f0847]
         rep: [1, 2, 3]
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: .github/scripts/go-install-archive.sh packages/daemon/go.mod
+          ref: ${{ matrix.ref }}
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-      - name: Warm the tsgo download
-        if: matrix.leg == 'earlytsgo' || matrix.leg == 'tsgo'
-        run: bunx --package @typescript/native-preview tsgo --version
-      - name: Compute every filter from what each job reads
-        env:
-          CI_TS_INSTALL: ''
-          CI_TSGO: '1'
-          CI_EARLY_GO: ${{ matrix.leg == 'earlytsgo' && '1' || '' }}
-          PROF_LOG: ${{ runner.temp }}/prof.json
-          PROF_SAMPLE: ${{ runner.temp }}/sample.json
+      - name: Install dependencies (timed)
         run: |
-          s=$(date +%s.%N)
-          .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
-          echo "TIME generate $(echo "$(date +%s.%N) - $s" | bc) s"
-          sha256sum "$RUNNER_TEMP/ci-filters.yaml" "$RUNNER_TEMP/ci-filters.computed.yaml" "$RUNNER_TEMP/ci-filters.computed.yaml.inputs"
-          python3 - "$RUNNER_TEMP/prof.json" <<'PY'
-          import json, sys
-          d = json.load(open(sys.argv[1]))
-          recs = sorted(d["recs"], key=lambda r: r["t0"])
-          print(f"engine total {d['total']} s")
-          for r in recs:
-              if r["wall"] >= 0.4:
-                  print(f"   {r['t0']:6.2f} +{r['wall']:5.2f} cpu {r['cpu']:5.2f}  {' '.join(r['args'])[:100]}")
-          PY
-          python3 - "$RUNNER_TEMP/sample.json" <<'PY'
-          import json, sys, itertools
-          d = json.load(open(sys.argv[1]))
-          print("inclusive main-thread seconds:")
-          for n, c in d["incl"][:60]:
-              print(f"  {c/100:6.2f}  {n}")
-          print("self:")
-          for n, c in d["self"][:25]:
-              print(f"  {c/100:6.2f}  {n}")
-          print("timeline (phase changes):")
-          last = None
-          for t, ph in d["timeline"]:
-              key = " > ".join(ph.split(" > ")[:4])
-              if key != last:
-                  print(f"  {t:6.2f}  {key[:180]}")
-                  last = key
-          PY
+          s=$(date +%s.%N); bun install --frozen-lockfile --verbose > "$RUNNER_TEMP/install.log" 2>&1; rc=$?
+          echo "TIME install $(echo "$(date +%s.%N) - $s" | bc) s exit $rc"
+          grep -iE "native-preview|download|extract|packages installed" "$RUNNER_TEMP/install.log" | grep -iv "^\s*$" | tail -15 | cut -c1-200
+          du -sm node_modules/@typescript 2>/dev/null
