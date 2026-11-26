@@ -1876,6 +1876,30 @@ async function seedEarlierDayUnderLastPage(): Promise<{ earlierAt: string; key: 
   return { earlierAt, key: issue.key };
 }
 
+/**
+ * The reader's own scroll of Details' box that puts `more`, Show more holding the focus, at the
+ * foot of Details' view, where a Tab can leave it, so the first entry a press draws stands below
+ * the view. Waits for the box to stand still, then fails the row where the scroll took the focus
+ * off Show more or left it anywhere but at the view's foot, since the row proves nothing then.
+ * `size` is the window's, whose width the message names.
+ */
+async function showMoreAtViewFoot(
+  page: Page,
+  more: Locator,
+  size: { readonly width: number }
+): Promise<void> {
+  const view = await historyViewport(page);
+  const reached = await boxOf(more, CONTROL_LABELS.show_more);
+  await scrollHistoryBy(page, reached.y + reached.height - view.bottom);
+  await detailsStandStill(page, "the reader's scroll");
+  await expect(more, "the reader's scroll took the focus off Show more").toBeFocused();
+  const pressedAt = await boxOf(more, CONTROL_LABELS.show_more);
+  expect(
+    Math.abs(pressedAt.y + pressedAt.height - view.bottom) <= 1,
+    `at ${size.width} px Show more stands at ${Math.round(pressedAt.y)} to ${Math.round(pressedAt.y + pressedAt.height)} px, not at the foot of Details' view at ${Math.round(view.bottom)}, so the row proves nothing`
+  ).toBe(true);
+}
+
 // Show more pressed by keyboard hands the focus to the first entry it drew, and brings that entry
 // into Details' view by the least scroll, a scroll of Details' box alone that leaves the page
 // where it was (`IssueHistory.tsx`). The last press of this history draws the entries of an
@@ -1939,16 +1963,7 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
       await expect(more, "the next press does not draw the earlier day's entries").toHaveText(
         showMoreName(EARLIER_DAY_ENTRIES)
       );
-      const view = await historyViewport(page);
-      const reached = await boxOf(more, CONTROL_LABELS.show_more);
-      await scrollHistoryBy(page, reached.y + reached.height - view.bottom);
-      await detailsStandStill(page, "the reader's scroll");
-      await expect(more, "the reader's scroll took the focus off Show more").toBeFocused();
-      const pressedAt = await boxOf(more, CONTROL_LABELS.show_more);
-      expect(
-        Math.abs(pressedAt.y + pressedAt.height - view.bottom) <= 1,
-        `at ${size.width} px Show more stands at ${Math.round(pressedAt.y)} to ${Math.round(pressedAt.y + pressedAt.height)} px, not at the foot of Details' view at ${Math.round(view.bottom)}, so the row proves nothing`
-      ).toBe(true);
+      await showMoreAtViewFoot(page, more, size);
       const daysBefore = await historyPanel(page)
         .locator("[data-history-day]")
         .evaluateAll((days) => days.map((day) => day.getAttribute("data-history-day")));
@@ -2023,6 +2038,29 @@ test("a keyboard press of the history's last Show more leaves the focus in view"
 const CITED_TITLE = "Cited:";
 
 /**
+ * Asks, as `actor`, for the approval of `issue`'s spec, the request's summary citing the issue
+ * `cited` by its address. Answers the `ask.opened` event the request recorded.
+ */
+async function approvalCiting(
+  issue: { readonly key: string; readonly primary_artifact_id: string },
+  cited: string,
+  actor: Parameters<typeof requestApproval>[2]
+): Promise<DispatchEvent> {
+  const requested = withOpenedAsk(
+    await requestApproval(
+      issue.primary_artifact_id,
+      { summary: `Follows dispatch://${cited} closely.` },
+      actor
+    )
+  );
+  const opened = (await getIssueEvents(issue.key, { limit: 100 })).find(
+    (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
+  );
+  if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+  return opened;
+}
+
+/**
  * An issue whose history's first Show more draws, as its first entry, the line of a person's
  * approval request whose question cites another issue by its address: that issue's title is long
  * enough to wrap over several lines of Details, and the person's name is no control, so the link
@@ -2041,20 +2079,10 @@ async function seedApprovalUnderFirstPage(): Promise<{ cited: string; key: strin
     spec: "The plan.",
     title: "An approval request under Show more",
   });
-  const requested = withOpenedAsk(
-    await requestApproval(
-      issue.primary_artifact_id,
-      { summary: `Follows dispatch://${cited.key} closely.` },
-      { login: "bob" }
-    )
-  );
+  const opened = await approvalCiting(issue, cited.key, { login: "bob" });
   for (let index = 0; index < PAGE_SIZE; index += 1) {
     await createMessage(issue.key, { body: `The daemon's note ${index}.` }, asDaemon);
   }
-  const opened = (await getIssueEvents(issue.key, { limit: 200 })).find(
-    (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
-  );
-  if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
   return { cited: cited.key, key: issue.key, seq: opened.seq };
 }
 
@@ -2096,11 +2124,7 @@ test("a keyboard press of the history's Show more keeps the reference link it fo
       await newestHistoryEntry(page);
       const more = historyShowMore(page);
       await more.focus();
-      const view = await historyViewport(page);
-      const reached = await boxOf(more, CONTROL_LABELS.show_more);
-      await scrollHistoryBy(page, reached.y + reached.height - view.bottom);
-      await detailsStandStill(page, "the reader's scroll");
-      await expect(more, "the reader's scroll took the focus off Show more").toBeFocused();
+      await showMoreAtViewFoot(page, more, size);
 
       await page.keyboard.press("Enter");
       const first = historyEntries(page).nth(PAGE_SIZE);
@@ -6374,18 +6398,7 @@ test("a reference in a question the history quotes is drawn in the words' ink, n
         spec: "The plan.",
         title: "Approval quoting a reference",
       });
-      const requested = withOpenedAsk(
-        await requestApproval(
-          issue.primary_artifact_id,
-          { summary: `Follows dispatch://${cited.key} closely.` },
-          activityAgent
-        )
-      );
-      const events = await getIssueEvents(issue.key, { limit: 100 });
-      const opened = events.find(
-        (event) => event.type === "ask.opened" && event.payload.id === requested.ask.id
-      );
-      if (opened === undefined) throw new Error(`the seed recorded no ask.opened for ${issue.key}`);
+      const opened = await approvalCiting(issue, cited.key, activityAgent);
       return { at: opened.created_at, cited: cited.key, key: issue.key, seq: opened.seq };
     },
     async (page, seeded) => {

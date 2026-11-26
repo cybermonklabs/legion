@@ -1,5 +1,6 @@
 import { type ReactNode, useContext, useMemo, useRef } from "react";
 import {
+  createPath,
   type Navigator,
   type Path,
   parsePath,
@@ -39,12 +40,6 @@ function keepNewPage(key: string, to: To): To {
   return { ...path, search: `${search.length > 1 ? `${search}&` : "?"}${PARAMETER}=${NEW_PAGE}` };
 }
 
-/** Whether `to` is the address `here`: the same path, parameters and hash. */
-function isAddress(to: To, here: Path): boolean {
-  const { hash = "", pathname = "", search = "" } = typeof to === "string" ? parsePath(to) : to;
-  return pathname === here.pathname && search === here.search && hash === here.hash;
-}
-
 /**
  * Keeps `?issue_page=new` on the addresses of the issue it opened the new page on. While the
  * address carries it, the router's navigator is handed on with `keepNewPage` applied to every
@@ -53,12 +48,13 @@ function isAddress(to: To, here: Path): boolean {
  * open). So the address carries the parameter before the page draws it, and every page that
  * reads the choice reads it there. A move to another issue or to a page that is no issue's adds
  * nothing, and from there the reader's setting holds again. A push to the address the reader is
- * at, once the parameter is added, replaces that entry, as a link to that address does with no
- * parameter: the router compares a link's target, which lacks the parameter, with the address,
- * which carries it, and so pushes where it would replace. A load of an address and a link
- * outside the router are not seen here. With no parameter in the address the router's own
- * navigator is handed on unchanged. No `<Router>` may stand inside another, so this provides the
- * router's own navigation context again, its navigator alone replaced.
+ * at, once the parameter is added, replaces that entry, by the router's own rule for a link
+ * (`createPath`, which counts an empty `?` or `#` as nothing): the router compares a link's
+ * target, which lacks the parameter, with the address, which carries it, and so pushes where it
+ * would replace. A load of an address and a link outside the router are not seen here. With no
+ * parameter in the address the router's own navigator is handed on unchanged. No `<Router>` may
+ * stand inside another, so this provides the router's own navigation context again, its
+ * navigator alone replaced.
  */
 export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNode {
   const outer = useContext(UNSAFE_NavigationContext);
@@ -77,7 +73,8 @@ export function KeepNewIssuePage({ children }: { children: ReactNode }): ReactNo
       go: (delta) => navigator.go(delta),
       push: (to, state, options) => {
         const kept = keepNewPage(key, to);
-        if (isAddress(kept, here.current)) navigator.replace(kept, state, options);
+        const at = typeof kept === "string" ? parsePath(kept) : kept;
+        if (createPath(at) === createPath(here.current)) navigator.replace(kept, state, options);
         else navigator.push(kept, state, options);
       },
       replace: (to, state, options) => navigator.replace(keepNewPage(key, to), state, options),

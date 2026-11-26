@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { act, type RenderResult, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useContext } from "react";
 import {
   Link,
   MemoryRouter,
   type NavigateFunction,
   type NavigateOptions,
+  type Navigator,
+  UNSAFE_NavigationContext,
   useLocation,
   useNavigate,
 } from "react-router-dom";
@@ -16,13 +18,15 @@ import { KeepNewIssuePage } from "./new-page-parameter";
 /** The address of the issue's activity, the target of the one link the probe draws. */
 const ACTIVITY = "/issues/CORE-1/activity";
 
-/** The `navigate` of the tree the row drew, for a move the page makes itself. */
-const held: { navigate?: NavigateFunction } = {};
+/** The `navigate` of the tree the row drew, for a move the page makes itself, and the navigator
+ *  the rule hands on, for a push no `navigate` has resolved. */
+const held: { navigate?: NavigateFunction; navigator?: Navigator } = {};
 
 /** The address the router is at, and one link to the issue's activity, both under the rule. */
 function Probe(): ReactNode {
   const { hash, pathname, search } = useLocation();
   held.navigate = useNavigate();
+  held.navigator = useContext(UNSAFE_NavigationContext).navigator;
   return (
     <>
       <output aria-label="Address">{`${pathname}${search}${hash}`}</output>
@@ -158,8 +162,9 @@ test("the href of a link drawn at the address carries the parameter, and followi
 // A link to the address the reader is at replaces that entry, as it does with no parameter: the
 // router compares the link's target, which lacks the parameter, with the address, which carries
 // it, and pushes, and the parameter added made that push an entry the same as the one the press
-// was made on, so Back stayed where the reader was.
-test("a link to the address the reader is at adds no history entry, where a link to another of the issue's addresses adds one", async () => {
+// was made on, so Back stayed where the reader was. The rule is the router's own for a link, which
+// counts an empty `#` as nothing: `navigate` drops one from its target, the navigator does not.
+test("a link to the address the reader is at adds no history entry, nor does a push there whose target ends in an empty #, where a link to another of the issue's addresses adds one", async () => {
   const user = userEvent.setup();
   const view = drawAt("/issues/CORE-1?issue_page=new");
   try {
@@ -178,6 +183,16 @@ test("a link to the address the reader is at adds no history entry, where a link
     expect(
       address(),
       "the link to the address the reader is at added a history entry, and Back stayed there"
+    ).toBe("/issues/CORE-1?issue_page=new");
+
+    const { navigator } = held;
+    if (navigator === undefined) throw new Error("the probe was not drawn");
+    act(() => held.navigate?.(1));
+    act(() => navigator.push(`${ACTIVITY}#`));
+    act(() => held.navigate?.(-1));
+    expect(
+      address(),
+      "a push to the address the reader is at, its target ending in an empty #, added a history entry"
     ).toBe("/issues/CORE-1?issue_page=new");
   } finally {
     view.unmount();
