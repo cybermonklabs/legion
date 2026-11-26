@@ -75,7 +75,7 @@ import {
   scrollHistoryBy,
   scrollHistoryTo,
 } from "./history-scroll";
-import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
+import { backToList, inboxList, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import { focusAfterStaleness } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
 import { seedConversationState } from "./issue-layout-seed";
@@ -138,10 +138,11 @@ import {
   watchStepsReads,
 } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
-import { viewportAt } from "./issue-page-p";
+import { approvalChip, viewportAt } from "./issue-page-p";
 import { tabWalk } from "./issue-page-v";
 import { withoutScrollAnchoring } from "./mermaid-helpers";
 import { ONE_PIXEL_PNG } from "./one-pixel-png";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { setCreatedAt, setEventCreatedAt } from "./seed";
 import { navigateInApp } from "./sends";
 import {
@@ -2778,7 +2779,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
   const hers = await createIssue({ project: "CORE", title: "Alice's rollout" }, { login: "alice" });
   expect(hers.assignee).toBe("alice");
   const moved = await createAsk(hers.key, { question: "Which rollout flag?" }, asker);
-  await createAsk(hers.key, { question: "Which region goes first?" }, asker);
+  const stays = await createAsk(hers.key, { question: "Which region goes first?" }, asker);
   const his = await createIssue({ project: "CORE", title: "Bob's migration" }, { login: "bob" });
   expect(his.assignee).toBe("bob");
   await createAsk(his.key, { question: "Drop the legacy column?" }, asker);
@@ -2815,8 +2816,8 @@ test("a person hands an ask to another person and it moves between the two Inbox
     bob = await asUser(browser, "bob");
     aliceNew = await reader(browser, "alice");
     bobNew = await reader(browser, "bob");
-    // Alice reads below the reading column's width, where every row draws its own card. Bob
-    // reads above it, where the card is the reading column's.
+    // Alice reads below the reading column's width, where the row she opens is read in place of
+    // the list. Bob reads above it, where the card is the reading column's.
     const alicePage = await alice.newPage();
     await alicePage.setViewportSize({ height: 900, width: 1100 });
     const bobPage = await bob.newPage();
@@ -2849,12 +2850,17 @@ test("a person hands an ask to another person and it moves between the two Inbox
       agentRow(bobAgents, asker.actor.id).getByRole("link", { name: "Needs you 1" })
     ).toBeVisible();
 
-    // 2. Alice hands it to bob with the control on her Inbox row.
-    const rowControl = handOnControl(inboxRow(alicePage, moved.id), moved.id);
+    // 2. Alice hands it to bob with the control on the question's card, in the view her row
+    // opens. The hand-on is her own write, so the view then reads her next question, as the
+    // column does, and she goes back to the list from there.
+    await selectRow(alicePage, moved.id);
+    const rowControl = handOnControl(inboxPane(alicePage), moved.id);
     await expect(rowControl).toHaveCount(1);
     await expect(rowControl).toHaveValue("alice");
-    await expect(inboxRow(alicePage, moved.id)).toContainText("Asked of alice");
+    await expect(inboxPane(alicePage)).toContainText("Asked of alice");
     await handTo(rowControl, "bob");
+    await expect(alicePage.locator(`[data-inbox-reading-row="${stays.id}"]`)).toBeVisible();
+    await backToList(alicePage);
     await handsOff(alicePage);
 
     // 3. Without a reload, the row leaves her list and enters his, and every count follows.
@@ -2905,9 +2911,9 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(handOnControl(bobIssueCard, moved.id)).toHaveCount(1);
     await bobIssue.close();
 
-    // 5. The control is on the card wherever the card renders an open ask: on the Inbox row
-    // (pressed above), on the reading column's card, in the facts of the focused ask, on a
-    // document's margin and in a document's ask block.
+    // 5. The control is on the card wherever the card renders an open ask: in the Inbox's view
+    // below the column's width (pressed above), on the reading column's card, in the facts of the
+    // focused ask, on a document's margin and in a document's ask block.
     await selectRow(bobPage, moved.id);
     const paneControl = handOnControl(inboxPane(bobPage), moved.id);
     await expect(paneControl).toHaveCount(1);
@@ -6370,46 +6376,73 @@ function excerptLinkTo(panel: Locator, key: string): Locator {
   return panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${key}"]`);
 }
 
-// At 767 px and below Details covers the page, and a link pressed inside it closes Details in the
-// capture phase (`Margin.tsx`'s `closeOnLink`), before the press reaches the document. A reference
-// to a known issue is drawn as its key in a span, then its title, so a press on the key lands on
-// that span; Details' unmount takes the span out of the link before the document's listener reads
-// the press, and that listener (`new-page-parameter.tsx`) then finds no link around it and leaves
-// the press to the browser, which loads the bare address and today's page. Found by the tester on
-// a running build of the redesign issue at 390 px. SLOW(>=2s): two issues and a citing comment
-// written, a sign-in, and one load of the issue with Referenced by opened.
-test("at 390 px a press on the key of a link in Details' Referenced by to the issue itself keeps ?issue_page=new and loads no document", async ({
-  browser,
-}) => {
+// What the rows below keep on the page's window.
+declare global {
+  interface Window {
+    /** Set by a row before its press; a load of a document drops it, a move of the router
+     *  keeps it. */
+    __stayed?: true;
+  }
+}
+
+/**
+ * Opens the issue `seedCitedIssue` writes at `?issue_page=new` as alice, who has never turned the
+ * new page on, at `width` px; opens Details' Referenced by; presses `part` of the excerpt's link
+ * to the issue itself (the key the link draws in a span of its own, or the link); and holds that
+ * the press kept the parameter and the new page, and loaded no document.
+ */
+async function pressLinkToItself(
+  browser: Browser,
+  width: number,
+  part: "key" | "link"
+): Promise<void> {
   const key = await seedCitedIssue();
   const opened = `/issues/${key}?issue_page=new`;
+  const pressed = part === "key" ? "the press on the key" : "the press";
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.setViewportSize(viewportAt(390));
+    await page.setViewportSize(viewportAt(width));
     await gotoIssue(page, opened);
     await openDetails(page);
     const { panel } = await openReferencedBy(page);
     const link = excerptLinkTo(panel, key);
     await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
-    const keyPart = link.locator("span").filter({ hasText: key });
-    await expect(keyPart, "the link draws no key of its own").toHaveCount(1);
+    let target = link;
+    if (part === "key") {
+      target = link.locator("span").filter({ hasText: key });
+      await expect(target, "the link draws no key of its own").toHaveCount(1);
+    }
     await page.evaluate(() => {
       window.__stayed = true;
     });
-    await keyPart.click();
-    await expect(
-      page,
-      "the press on the key loaded the issue's address without the parameter"
-    ).toHaveURL(opened);
+    await target.click();
+    await expect(page, `${pressed} loaded the issue's address without the parameter`).toHaveURL(
+      opened
+    );
     await expectIssuePageDrawn(page);
+    // A press that starts a load returns once that load has committed (Playwright's click waits
+    // for the navigation it began), so this read is of the document the press left the reader in.
     expect(
       await page.evaluate(() => window.__stayed === true),
-      "the press on the key loaded the document again"
+      `${pressed} loaded the document again`
     ).toBe(true);
   } finally {
     await alice.close();
   }
+}
+
+// At 767 px and below Details covers the page, and a link pressed inside it closes Details in the
+// capture phase (`Margin.tsx`'s `closeOnLink`), before the press reaches the document. A reference
+// to a known issue is drawn as its key in a span, then its title, so a press on the key lands on
+// that span, and Details' unmount takes the span out of the link before the document hears the
+// press. The page must still follow the link in place, with `?issue_page=new` kept, and load no
+// document. SLOW(>=2s): two issues and a citing comment written, a sign-in, and one load of the
+// issue with Referenced by opened.
+test("at 390 px a press on the key of a link in Details' Referenced by to the issue itself keeps ?issue_page=new and loads no document", async ({
+  browser,
+}) => {
+  await pressLinkToItself(browser, 390, "key");
 });
 
 // A comment of another issue cites the issue, so Details' Referenced by draws its whole excerpt
@@ -6622,15 +6655,6 @@ test("an issue address with ?issue_page=new opens the new page with the setting 
   }
 });
 
-// What the row below keeps on the page's window.
-declare global {
-  interface Window {
-    /** Set by the row before its press; a load of a document drops it, a move of the router
-     *  keeps it. */
-    __stayed?: true;
-  }
-}
-
 // alice has never turned the new page on, and opens the issue's address with `?issue_page=new`.
 // Details' Referenced by draws a comment's excerpt through the renderer, whose link to the issue
 // itself is a plain `<a href>` the router never drew, to the address without the parameter. A
@@ -6641,35 +6665,57 @@ declare global {
 test("a link in Details' Referenced by to the issue itself, pressed at ?issue_page=new with the setting off, keeps the new page and loads no document", async ({
   browser,
 }) => {
-  const key = await seedCitedIssue();
-  const opened = `/issues/${key}?issue_page=new`;
+  await pressLinkToItself(browser, 1440, "link");
+});
+
+// alice has never turned the new page on, and opens the address with `?issue_page=new` of an issue
+// whose spec bob sent back, for a reason that cites the issue itself. The Reviews dialog, opened
+// from the header's approval chip, draws that reason through the renderer, whose link to the issue
+// is a plain `<a href>` to the address without the parameter. The dialog does not close on a move
+// of the router, so a move in place would leave it, its scroll lock and its keys over the page:
+// the press loads the address with the parameter instead, and the dialog goes with the document.
+// SLOW(>=2s): an issue, the project's gated steps and a review written, a sign-in, one load of the
+// issue, and a press that loads it again.
+test("a link in the Reviews dialog, pressed at ?issue_page=new with the setting off, loads the issue's address with the parameter and leaves no dialog over the new page", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  await setGatedSteps("CORE", ["spec"]);
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "The plan.",
+    title: "A spec sent back",
+  });
+  await reviewArtifact(
+    issue.primary_artifact_id,
+    { reason: `Name the rollback path: see dispatch://${issue.key}`, state: "changes_requested" },
+    { login: "bob" }
+  );
+  const opened = `/issues/${issue.key}?issue_page=new`;
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.setViewportSize(DESKTOP);
     await gotoIssue(page, opened);
-    await openDetails(page);
-    const { panel } = await openReferencedBy(page);
-    const link = excerptLinkTo(panel, key);
-    await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
+    await approvalChip(page, issue.primary_artifact_id).click();
+    const reviews = page.getByRole("dialog", { name: "Reviews" });
+    const link = reviews.locator(`.dispatch-markdown a[href="/issues/${issue.key}"]`);
+    await expect(link, "the Reviews dialog draws no link to the issue in its reason").toHaveCount(
+      1
+    );
     await page.evaluate(() => {
       window.__stayed = true;
     });
     await link.click();
-    await expect(page, "the press loaded the issue's address without the parameter").toHaveURL(
-      opened
-    );
+    await expect(page, "the press lost the parameter").toHaveURL(opened);
     await expectIssuePageDrawn(page);
-    // A press that starts a load returns once that load has committed (Playwright's click waits
-    // for the navigation it began), so this read is of the document the press left the reader in.
+    await expect(reviews, "the Reviews dialog stayed over the page").toHaveCount(0);
+    // A press that starts a load returns once that load has committed, so this read is of the
+    // document the press left the reader in.
     expect(
       await page.evaluate(() => window.__stayed === true),
-      "the press loaded the document again"
-    ).toBe(true);
-    await expect(
-      page.getByRole("tab", { exact: true, name: "Spec" }),
-      "the press drew today's page"
-    ).toHaveCount(0);
+      "the press loaded no document"
+    ).toBe(false);
   } finally {
     await alice.close();
   }
