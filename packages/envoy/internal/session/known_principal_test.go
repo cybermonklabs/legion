@@ -674,9 +674,11 @@ func TestKnownSessionsAnAdmissionKeepsAStoppedSessionsRecord(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			conn := kvchunktest.SmallPayloadNATS(t)
 			stoppedAt := time.Now()
-			clock := stoppedAt
-			now := func() time.Time { return clock }
-			known := openKnownOn(t, conn, now)
+			// The store's watcher reads the clock on its own goroutine for each chunk it applies
+			// (knownCache.Apply), the chunk delete below among them, so the row moves the clock
+			// through knownClock's lock.
+			clock := &knownClock{at: stoppedAt}
+			known := openKnownOn(t, conn, clock.Now)
 			kv := rawKnown(t, conn)
 			topics := kvchunktest.Topics("stopped", row.topics)
 			if err := register(t, known, KnownSession{SessionID: row.sessionID, Title: "stopped session", Capabilities: []string{"steer"}, Topics: topics, Principal: service}); err != nil {
@@ -705,7 +707,7 @@ func TestKnownSessionsAnAdmissionKeepsAStoppedSessionsRecord(t *testing.T) {
 			}
 			// The session stopped: nothing writes its record for an hour, and then a registration
 			// of it as another principal is admitted, and refused after its admission.
-			clock = clock.Add(time.Hour)
+			clock.set(clock.Now().Add(time.Hour))
 			admission, err := known.AdmitRegistration(t.Context(), row.sessionID, person)
 			if err != nil {
 				t.Fatalf("admit the registration as %s: %v", person, err)
@@ -724,7 +726,7 @@ func TestKnownSessionsAnAdmissionKeepsAStoppedSessionsRecord(t *testing.T) {
 			if record.Principal != "" || record.PrincipalRecorded {
 				t.Errorf("the leader's record names %q, recorded %t; want no principal recorded", record.Principal, record.PrincipalRecorded)
 			}
-			for what, store := range map[string]*KnownSessions{"the writer's store": known, "a store that read the bucket afresh": openKnownOn(t, conn, now)} {
+			for what, store := range map[string]*KnownSessions{"the writer's store": known, "a store that read the bucket afresh": openKnownOn(t, conn, clock.Now)} {
 				held, ok := store.Get(row.sessionID)
 				if !ok {
 					t.Fatalf("%s answers no record of the stopped session; a send to it would answer 404", what)
