@@ -86,7 +86,11 @@ A parent's own first phase waits while Dispatch shows an open child under it (th
 
 Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
 Never message the implementer to start retro.
-A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
+A retro or a merger that finds a defect in the change reports it with `report_defect` and goes on with its step.
+The `defect-reported` notice tells you, and the next change of the issue carries the defect.
+You need not answer it.
+Withdraw a defect with `withdraw_defect` in two cases only.
+Another open defect is the same one, with the reason `same as <id>`, or a task that you add to the plan carries it.
 A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
 
 ## 6. Acceptance and the merge
