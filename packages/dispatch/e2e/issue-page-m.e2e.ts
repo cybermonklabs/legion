@@ -6370,6 +6370,48 @@ function excerptLinkTo(panel: Locator, key: string): Locator {
   return panel.locator(`[data-reference-rows] .dispatch-markdown a[href="/issues/${key}"]`);
 }
 
+// At 767 px and below Details covers the page, and a link pressed inside it closes Details in the
+// capture phase (`Margin.tsx`'s `closeOnLink`), before the press reaches the document. A reference
+// to a known issue is drawn as its key in a span, then its title, so a press on the key lands on
+// that span; Details' unmount takes the span out of the link before the document's listener reads
+// the press, and that listener (`new-page-parameter.tsx`) then finds no link around it and leaves
+// the press to the browser, which loads the bare address and today's page. Found by the tester on
+// a running build of the redesign issue at 390 px. SLOW(>=2s): two issues and a citing comment
+// written, a sign-in, and one load of the issue with Referenced by opened.
+test("at 390 px a press on the key of a link in Details' Referenced by to the issue itself keeps ?issue_page=new and loads no document", async ({
+  browser,
+}) => {
+  const key = await seedCitedIssue();
+  const opened = `/issues/${key}?issue_page=new`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize(viewportAt(390));
+    await gotoIssue(page, opened);
+    await openDetails(page);
+    const { panel } = await openReferencedBy(page);
+    const link = excerptLinkTo(panel, key);
+    await expect(link, "Referenced by draws no link to the issue in its excerpt").toHaveCount(1);
+    const keyPart = link.locator("span").filter({ hasText: key });
+    await expect(keyPart, "the link draws no key of its own").toHaveCount(1);
+    await page.evaluate(() => {
+      window.__stayed = true;
+    });
+    await keyPart.click();
+    await expect(
+      page,
+      "the press on the key loaded the issue's address without the parameter"
+    ).toHaveURL(opened);
+    await expectIssuePageDrawn(page);
+    expect(
+      await page.evaluate(() => window.__stayed === true),
+      "the press on the key loaded the document again"
+    ).toBe(true);
+  } finally {
+    await alice.close();
+  }
+});
+
 // A comment of another issue cites the issue, so Details' Referenced by draws its whole excerpt
 // through the renderer. The excerpt's wrapper carries `data-node-words`, so the link the renderer
 // draws for that reference takes the words' own ink rather than the old application's link blue.
