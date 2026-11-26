@@ -104,6 +104,14 @@ func (e *Engine) opensNewRun(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // a return above a waiting parent starts no role of it), or on a person — starts no phase worker
 // here: the line, the children's close or the person's answer is what starts it.
 //
+// These starts are the daemon's own and decide nothing (record.SuperviseRequest.Decided): none of
+// them launches again the agent of a claim held for OpenAI's cyber-policy refusal
+// (supervise.ErrHeldForCyberPolicy). The outbox finishes such a start without acting, and where it
+// is the start of the phase the issue stands in, by the role that works it, it holds the issue for
+// its architect (the daemon outbox's heldStartRefused), whose retry starts that agent again in a
+// new session. The start of a held phase's worker that a todo's release makes here (below) is
+// one of these starts too.
+//
 // A held issue returns held, its architect told nothing new: a todo releases the hold as a todo
 // on any held issue in work does (releaseHeldRoot), except that the worker of the phase the hold
 // came from is started at a new phase entry, as every return's worker is, and any other status
@@ -463,8 +471,13 @@ func (e *Engine) tellAbove(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // architect is told to request approval of the latest version. An open production check closes as
 // not run (markCheckClosed): the new run's generation fences a completion left by an interrupted
 // phase, and the closed check refuses an old look's report, so every claim stays live. The claims
-// come back on their sessions when the new run's starts reach them. The task of the run that
-// ended is left where it stood (leaveTaskOfRun), unless the merge's close ended it done.
+// come back on their sessions when the new run's starts reach them. These starts ask for no new
+// session themselves, and decide nothing but the promotion's start of the architect of an issue
+// that starts as a root (StartPromotedArchitect): none of the others launches again the agent of a
+// claim held for OpenAI's cyber-policy refusal (supervise.ErrHeldForCyberPolicy), and the outbox's
+// refusal of the start of its phase holds the issue for its architect (the daemon outbox's
+// heldStartRefused), whose retry starts that agent again in a new session. The task of the run
+// that ended is left where it stood (leaveTaskOfRun), unless the merge's close ended it done.
 //
 // A generation that ended takes what its architect handed back with it: the new run is a handout
 // (record.Store.StartHandout), so an ask or a hand-back of the old run, delivered late, declares
@@ -575,6 +588,13 @@ func (e *Engine) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string) e
 // queued for that claim is that start, so no second one is queued. It writes nothing for any other
 // issue or claim.
 //
+// The start is marked decided (record.SuperviseRequest.Decided), as the operator's `legion claims
+// retry` is: a person or the controller asked for it. So it takes that retry's rule exactly, the
+// claim's own session, or a new one for a claim held for OpenAI's cyber-policy refusal, which only
+// a decided start launches again (supervise's freshSession, supervise.Claim.RetryHeld). The root
+// and its architect are the Dispatch chain's (holdsOwnGate), and the outbox's start launches it
+// under the gate root it reads there, its own key (the daemon outbox's launchOf).
+//
 // The claim is read before the chain: a root whose architect has not failed is the common case,
 // and the keyed reads answer it without reading the chain at all.
 func (e *Engine) retryFailedArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
@@ -601,5 +621,7 @@ func (e *Engine) retryFailedArchitect(ctx context.Context, tx pgx.Tx, issue reco
 		return nil
 	}
 	e.logOnCommit(ctx, "workflow: a todo on a root whose architect failed starts that architect again", "issue", issue.Key, "phase", issue.Phase)
-	return e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue))
+	start := childArchitectStart(issue)
+	start.Decided = true
+	return e.enqueue(ctx, tx, issue.Key, start)
 }

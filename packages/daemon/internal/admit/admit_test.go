@@ -51,7 +51,7 @@ func TestApplyFactAdmitsRootAndQueuesWhenFull(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: promotedStatus},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-208", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-208", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-208", ""), Entry: 1}},
+			Task: architectStart(t, pool, admission, "LEGION-208", ""), Entry: 1, Decided: true}},
 	})
 
 	apply(t, pool, admission, "queued-todo", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated", Status: "todo", Title: "Queued", Rank: "A", HandedOver: handed}, engineStub{})
@@ -65,7 +65,7 @@ func TestApplyFactAdmitsRootAndQueuesWhenFull(t *testing.T) {
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-208", payload: promotedStatus},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-208", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-208", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-208", ""), Entry: 1}},
+			Task: architectStart(t, pool, admission, "LEGION-208", ""), Entry: 1, Decided: true}},
 	})
 }
 
@@ -166,7 +166,7 @@ func TestApplyFactReleasesSlotWhenEngineCompletesPhaseAndPromotesHead(t *testing
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-NEXT", payload: promotedStatus},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-NEXT", payload: record.IssueBranch{Generation: 1}},
 		{kind: record.OutboxKindSupervise, issue: "LEGION-NEXT", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-NEXT", Role: claim.RoleArchitect, Generation: 1,
-			Task: architectStart(t, pool, admission, "LEGION-NEXT", ""), Entry: 1}},
+			Task: architectStart(t, pool, admission, "LEGION-NEXT", ""), Entry: 1, Decided: true}},
 	})
 }
 
