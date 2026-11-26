@@ -644,7 +644,10 @@ Each hub pod's exporter runs with the chart's arguments (`-jsz=all -prefix=nats`
 serves one series per stream for each server holding a copy of it, labelled with the server's and
 the stream's names; it has no metric of whether a copy is current. An alert on a stream with fewer
 than three current copies therefore counts the servers whose copy's `nats_stream_last_seq` equals
-the stream's highest; a KV bucket is the stream `KV_<bucket>`, so the same query covers it.
+the stream's highest; a KV bucket is the stream `KV_<bucket>`, so the same query covers it. The
+PodMonitoring drops every series named `nats_consumer_*`, each of which names a JetStream consumer,
+so none reaches Managed Prometheus; `-jsz=streams` would serve none of them, but no
+`nats_stream_limit_bytes` or `nats_stream_limit_messages` either.
 [Metrics and alerts](docs/nats-hub.md#metrics-and-alerts) in `docs/nats-hub.md` gives the metric
 names, their labels and the PromQL. A pod that is down, a hub pod (container `nats`), a tailnet
 host (container `tailscale`) or the session listener's pod (container `listener`), is read from
