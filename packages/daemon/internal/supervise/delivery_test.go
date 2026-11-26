@@ -3,11 +3,13 @@ package supervise
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 func TestATaskQueuedBeforeReadyIsDeliveredOnceAtReady(t *testing.T) {
@@ -600,6 +602,85 @@ func TestARealTurnStartConfirmsTheDeliveryInFlight(t *testing.T) {
 	h.wantState(StateWorking)
 }
 
+// The stream hands the machine a turn's frames on its queue and the send's acknowledgement on the
+// send's own goroutine, so a turn the prompt started can start and end before the acknowledgement
+// is read. The claim is idle again then, holding the task its turn confirmed for the send's
+// answer (resultPending's send window), and the acknowledgement only records the prompt
+// (ackedInTurn). It arms no wait for a turn (acked): that turn has run, and a wait armed for it
+// would charge the prompt when the result comes after the bound, and take the task back under a
+// new id (noTurn) which the result then names no longer. The result retires the task, once.
+func TestAnAcknowledgementReadAfterItsTurnEndedArmsNoWaitForATurn(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	gated := newGatedConn()
+	h.conns.Register(testToken, gated)
+	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task", Generation: 7}); err != nil {
+		t.Fatal(err)
+	}
+	id := testwait.Receive(t, "the send", gated.entered)
+	for _, ev := range []Event{StreamTurnStart{Claim: testToken}, StreamTurnEnd{Claim: testToken}} {
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.wantState(StateIdle)
+	if p := h.pending(); p.ID != id || p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending after the turn's end = %+v, want %s still held, confirmed, for the send's answer", p, id)
+	}
+
+	gated.release <- struct{}{}
+	h.m.Wait()
+	if h.armed(TimerTurn) {
+		t.Error("a wait for a turn is armed after the acknowledgement of a task whose turn had ended, want none")
+	}
+	h.advance(3 * testRPC)
+	h.wantBudgets(Budgets{})
+	if p := h.pending(); p.ID != id || p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending after the wait for a turn would have run out twice = %+v, want %s unchanged, confirmed", p, id)
+	}
+
+	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true}); err != nil {
+		t.Fatal(err)
+	}
+	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+		t.Fatalf("after the result: pending %+v serving %d, want the task retired and run 7 served", c.Pending, c.ServingGeneration)
+	}
+	h.wantBudgets(Budgets{})
+}
+
+// A result can reach the machine while the turn is still working and its send's acknowledgement
+// is still in flight. The acknowledgement must not record the prompt as outstanding
+// (Machine.outstanding): the turn's end would then wait for a result the machine has already
+// decided.
+func TestAnAcknowledgementAfterItsResultDoesNotHoldTheTaskAtTurnEnd(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	gated := newGatedConn()
+	h.conns.Register(testToken, gated)
+	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task", Generation: 7}); err != nil {
+		t.Fatal(err)
+	}
+	id := testwait.Receive(t, "the send", gated.entered)
+	for _, ev := range []Event{
+		StreamTurnStart{Claim: testToken},
+		StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true},
+	} {
+		if err := h.m.Handle(h.ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.wantState(StateWorking)
+	if p := h.pending(); p.ID != id || p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending after the result, before the turn ended = %+v, want %s confirmed", p, id)
+	}
+	gated.release <- struct{}{}
+	h.m.Wait()
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+		t.Fatalf("after the acknowledgement and turn end: pending %+v serving %d, want the task retired and run 7 served", c.Pending, c.ServingGeneration)
+	}
+}
+
 // B1: only the shim's replayed agent_start carries a delivery id; one carrying an id the claim
 // has moved past is dropped and logged once, and one carrying the current id confirms it.
 func TestAReplayedTurnStartIsFencedOnItsDeliveryID(t *testing.T) {
@@ -779,6 +860,278 @@ func TestALateTurnOfAnOutstandingPromptSettlesItsTask(t *testing.T) {
 	}
 	if lines := h.logs.lines("dropped a stale event"); len(lines) != 0 {
 		t.Errorf("an event was dropped as stale: %v", lines)
+	}
+}
+
+// The first prompt's turn can finish while the resend is still in flight. Its result settles
+// the task, so the refusal of the resend cannot take the confirmation back or send it again.
+// A provider error in that turn instead keeps work owed to the retry ladder. A result saying
+// the first prompt ran no turn leaves the resend free to be acknowledged and run.
+func TestTheFirstPromptsResultDecidesTheTaskWhileItsResendIsInFlight(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		invoked bool
+		status  int
+	}{
+		{name: "successful turn", invoked: true},
+		{name: "provider error", invoked: true, status: 529},
+		{name: "no turn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			first := h.wantPrompts(1)[0].DeliveryID
+			h.advance(testRPC)
+
+			gated := newGatedConn()
+			h.conns.Register(testToken, gated)
+			// The sweep sends again. Drive stream frames without waiting for the gated send.
+			handle := func(ev Event) {
+				t.Helper()
+				if err := h.m.Handle(h.ctx, ev); err != nil {
+					t.Fatalf("handle %T: %v", ev, err)
+				}
+			}
+			handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})
+			resend := testwait.Receive(t, "the resend", gated.entered)
+			if resend == first || h.pending().ID != resend {
+				t.Fatalf("resend = %s, first = %s, pending = %s; want the resend under a new pending id", resend, first, h.pending().ID)
+			}
+			if tc.invoked {
+				handle(StreamTurnStart{Claim: testToken})
+				handle(StreamTurnEnd{Claim: testToken})
+				if p := h.pending(); p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the first prompt's turn ended = %+v, want it confirmed and awaiting the result", p)
+				}
+				gated.RefusePrompt("the resend was refused")
+			}
+			result := StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: tc.invoked, HTTPStatus: tc.status}
+			if tc.status != 0 {
+				result.Error = "overloaded_error"
+			}
+			handle(result)
+			gated.release <- struct{}{}
+			h.m.Wait()
+
+			switch {
+			case !tc.invoked:
+				if p := h.pending(); p.ID != resend || p.MarkedBy != resend || p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the first prompt ran no turn = %+v, want the resend %s acknowledged and unconfirmed", p, resend)
+				}
+			case tc.status != 0:
+				if p := h.pending(); p.ID == resend || p.SendFailures != 0 || !p.ConfirmedAt.IsZero() || !h.armed(TimerPromptRetry) {
+					t.Fatalf("pending after the provider error and resend refusal = %+v, want the task waiting under a new id on the retry ladder", p)
+				}
+			default:
+				if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+					t.Fatalf("after the first prompt's success and resend refusal: pending %+v serving %d, want the task retired and run 7 served", c.Pending, c.ServingGeneration)
+				}
+				if _, ok := h.store.delivery(testToken); ok {
+					t.Fatal("the store still holds the finished task")
+				}
+				h.conns.Register(testToken, h.conn)
+				h.observe(runtime.Alive)
+				h.wantPrompts(1)
+				h.wantBudgets(Budgets{})
+			}
+		})
+	}
+}
+
+// An earlier prompt's no-turn answer takes back the task a turn confirmed once a resend in flight
+// has answered too (waitedOutAnswer, sendUnanswered), and a refusal of the resend's prompt answers
+// its send as a result does (lateRefused). The order: the first prompt's wait for its turn runs out
+// and the sweep sends the task again; a turn of another input's starts with that resend in flight,
+// is taken for the task's, and ends; the resend's own answer, read before its acknowledgement, says
+// its prompt ran no turn; then the first prompt says the same. Neither turn was the task's. Read as
+// still waiting on the resend, the task kept its confirmation with nothing left to come, and settle
+// retired it as a finished turn's though no turn of it ran.
+func TestAnEarlierPromptsNoTurnAnswerTakesTheTaskBackOnceTheResendHasAnswered(t *testing.T) {
+	const refusal = "the model provider refused the request"
+	answers := []struct {
+		name string
+		of   func(prompt string) Event
+	}{
+		{name: "a result that says it ran no turn", of: func(prompt string) Event {
+			return StreamPromptResult{Claim: testToken, DeliveryID: prompt}
+		}},
+		{name: "a refusal after its acknowledgement", of: func(prompt string) Event {
+			return StreamLateRefusal{Claim: testToken, DeliveryID: prompt, Error: refusal}
+		}},
+	}
+	for _, resend := range answers {
+		for _, first := range answers {
+			t.Run("the resend: "+resend.name+"; the first prompt: "+first.name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateReady)
+				gated := newGatedConn()
+				h.conns.Register(testToken, gated)
+				// Handle, not must: must waits for the send, which the gate is holding.
+				handle := func(ev Event) {
+					t.Helper()
+					if err := h.m.Handle(h.ctx, ev); err != nil {
+						t.Fatalf("handle %T: %v", ev, err)
+					}
+				}
+				handle(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+				firstPrompt := testwait.Receive(t, "the first send", gated.entered)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				h.advance(testRPC)
+				handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})
+				resent := testwait.Receive(t, "the resend", gated.entered)
+				handle(StreamTurnStart{Claim: testToken})
+				handle(StreamTurnEnd{Claim: testToken})
+				if p := h.pending(); p.ID != resent || p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the turn's end = %+v, want the resend's task %s confirmed, kept for the answers to come", p, resent)
+				}
+
+				handle(resend.of(resent))
+				if p := h.pending(); p.ConfirmedAt.IsZero() {
+					t.Fatalf("pending after the resend's answer = %+v, want the confirmation kept for the first prompt, still outstanding", p)
+				}
+
+				handle(first.of(firstPrompt))
+				if c := h.claim(); c.Pending == nil || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
+					t.Fatalf("after the first prompt's answer: pending %+v serving %d, want the task kept, unconfirmed: no turn of it ran", c.Pending, c.ServingGeneration)
+				}
+
+				// The resend's outcome may send the task again: the plain connection takes that
+				// send, so no send waits at the gate.
+				h.conns.Register(testToken, h.conn)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				if c := h.claim(); c.Pending == nil || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
+					t.Fatalf("after the resend's outcome: pending %+v serving %d, want the task kept, unconfirmed", c.Pending, c.ServingGeneration)
+				}
+			})
+		}
+	}
+}
+
+// A turn that starts while the send of the task's prompt is in flight is taken for the task's only
+// while that send's answer is still to come (turnAnswers, sendUnanswered). Once the prompt has said
+// it ran no turn, by its result or by its refusal after the acknowledgement, read before the
+// send's outcome, the answer has taken the task back unconfirmed, under a new id or, where the
+// take-back's write fails, under the send's own id, and a turn that starts then is another
+// input's. Taken for the task's, it confirmed that task, its entry's handshake and the record of
+// the last let-go, and nothing left to come could take them back. So where the agent was in no
+// turn, a death in that foreign turn kept the handshake's confirmation and replaced launch 1's
+// untold record with its own rather than joining it: the relaunched agent was never told what
+// launch 1 ended. Where Oh My Pi's answer was its busy one, the end of the turn it named retired
+// the task as served, though no turn of it ran; where the take-back's write failed too, the task
+// kept the send's id, and a reading of the pending task's send by its id alone did the same. The
+// turn now confirms nothing: the death's record joins launch 1's, and the busy turn's end leaves
+// the task to go again once the send's outcome is read.
+func TestATurnThatStartsAfterTheSendsPromptRanNoTurnIsNotTheTasks(t *testing.T) {
+	const refusal = "the model provider refused the request"
+	for _, answer := range []struct {
+		name string
+		of   func(prompt, why string) Event
+	}{
+		{name: "a result that says it ran no turn", of: func(prompt, why string) Event {
+			return StreamPromptResult{Claim: testToken, DeliveryID: prompt, Error: why}
+		}},
+		{name: "a refusal after its acknowledgement", of: func(prompt, why string) Event {
+			return StreamLateRefusal{Claim: testToken, DeliveryID: prompt, Error: why}
+		}},
+	} {
+		t.Run(answer.name+", the agent in no turn, then a death in a turn of another input's", func(t *testing.T) {
+			c := queuedClaim()
+			c.Generation = 1
+			c.EndedWork = EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true,
+				Background: true, Kinds: []string{"subagent"}, Reported: true}
+			h := newHarnessOf(t, c)
+			h.reach(StateRegistered)
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "outbox:40", Row: 40,
+				Phase: phase.Implementing, Generation: 7, Entry: 1})
+			gated := newGatedConn()
+			h.conns.Register(testToken, gated)
+			// Handle, not must: must waits for the send, which the gate is holding.
+			handle := func(ev Event) {
+				t.Helper()
+				if err := h.m.Handle(h.ctx, ev); err != nil {
+					t.Fatalf("handle %T: %v", ev, err)
+				}
+			}
+			handle(RequestReady{Claim: testToken, Generation: h.generation(), Session: session})
+			sent := testwait.Receive(t, "the ready's send", gated.entered)
+			handle(answer.of(sent, refusal))
+			unconfirmed := h.claim().Handshake
+			if p := h.pending(); p.ID == sent || !p.ConfirmedAt.IsZero() || !unconfirmed.ConfirmedAt.IsZero() {
+				t.Fatalf("after the prompt's answer: pending %+v, handshake %+v, want the task taken back under a new id, unconfirmed: this test proves nothing", p, unconfirmed)
+			}
+			h.wantEndedTold(false, "", "once the prompt said it ran no turn")
+
+			handle(StreamTurnStart{Claim: testToken})
+			if p := h.pending(); !p.ConfirmedAt.IsZero() {
+				t.Errorf("the turn that started after %s's prompt said it ran no turn confirmed %+v, want it taken for another input's", sent, p)
+			}
+			cutOff := h.generation()
+			handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}})
+			gated.release <- struct{}{}
+			h.m.Wait()
+
+			for where, got := range map[string]EndedWork{"the machine": h.claim().EndedWork, "the store": h.store.load(h.token).EndedWork} {
+				if got.Generation != cutOff || got.Told || !slices.Contains(got.Kinds, "subagent") {
+					t.Errorf("%s records the death as %+v, want an untold record of launch %d that joins launch 1's subagent: no prompt told the agent what launch 1 ended", where, got, cutOff)
+				}
+			}
+			h.wantHandshake("after a death in the turn of another input's,", unconfirmed)
+		})
+
+		for _, unwritten := range []bool{false, true} {
+			name := answer.name + ", Oh My Pi busy, then the turn it named"
+			if unwritten {
+				name = answer.name + ", Oh My Pi busy and the take-back's write failing, then the turn it named"
+			}
+			t.Run(name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateReady)
+				gated := newGatedConn()
+				h.conns.Register(testToken, gated)
+				handle := func(ev Event) {
+					t.Helper()
+					if err := h.m.Handle(h.ctx, ev); err != nil {
+						t.Fatalf("handle %T: %v", ev, err)
+					}
+				}
+				handle(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+				sent := testwait.Receive(t, "the send", gated.entered)
+				if unwritten {
+					// The take-back's write fails, so the task stays under the send's id
+					// (takeBackPending), its confirmation cleared and the claim recorded working.
+					h.store.fail("PutDelivery", errBoom)
+					if err := h.m.Handle(h.ctx, answer.of(sent, busyAnswer)); !errors.Is(err, errBoom) {
+						t.Fatalf("the busy answer with the delivery's write failing = %v, want %v: this test proves nothing", err, errBoom)
+					}
+					h.store.fail("PutDelivery", nil)
+				} else {
+					handle(answer.of(sent, busyAnswer))
+				}
+				taken := h.pending()
+				if state := h.state(); state != StateWorking || (taken.ID == sent) != unwritten || !taken.ConfirmedAt.IsZero() {
+					t.Fatalf("after the busy answer the claim is %s holding %+v, want it recorded working for the turn Oh My Pi named and the task taken back unconfirmed, under the send's id %s = %v: this test proves nothing",
+						state, taken, sent, unwritten)
+				}
+
+				handle(StreamTurnStart{Claim: testToken})
+				handle(StreamTurnEnd{Claim: testToken})
+				if c := h.claim(); c.Pending == nil || c.Pending.ID != taken.ID || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
+					t.Fatalf("after the end of the turn the busy answer named: pending %+v serving %d, want %s kept, unconfirmed: no prompt carried it into that turn", c.Pending, c.ServingGeneration, taken.ID)
+				}
+
+				// The send's outcome sends the task again: the plain connection takes that send, so
+				// no send waits at the gate.
+				h.conns.Register(testToken, h.conn)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				if again := h.wantPrompts(1)[0]; again.DeliveryID != taken.ID {
+					t.Fatalf("the send's outcome sent %s, want the task again under %s", again.DeliveryID, taken.ID)
+				}
+			})
+		}
 	}
 }
 
