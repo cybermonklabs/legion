@@ -35,7 +35,9 @@ import (
 //
 // An issue already in Legion's work moves only on a todo: a todo on a held issue releases its hold
 // (releaseHeldRoot), and a todo on a root whose architect claim failed starts that claim again
-// (retryFailedArchitect). Any other status in work changes nothing here; admission records it.
+// (retryFailedArchitect); a held root whose architect claim failed takes both, the release first
+// and the architect restart on the updated record. Any other status in work changes nothing here;
+// admission records it.
 func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	switch {
 	case issue.Phase == phase.Done:
@@ -48,8 +50,16 @@ func (e *Engine) backInWork(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return e.ReturnToWork(ctx, tx, issue, fact)
 	case fact.Status != "todo":
 		return nil
-	case issue.Phase == phase.Held && issue.Hold != nil:
-		return e.releaseHeldRoot(ctx, tx, issue, fact, false)
+	}
+	if issue.Phase == phase.Held && issue.Hold != nil {
+		if err := e.releaseHeldRoot(ctx, tx, issue, fact, false); err != nil {
+			return err
+		}
+		updated, err := e.store.Issue(ctx, tx, issue.Key)
+		if err != nil || updated == nil {
+			return err
+		}
+		issue = *updated
 	}
 	return e.retryFailedArchitect(ctx, tx, issue)
 }
