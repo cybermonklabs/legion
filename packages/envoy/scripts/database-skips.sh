@@ -80,7 +80,8 @@ DEFAULT_EXCEPT=''
 # when the script starts. A test that skips on some servers only is not here: its skip is counted
 # where CI's server runs it (TestAdvancesListEachPriorityOnceHoweverTheDatabaseCollatesTheIDs
 # needs a PostgreSQL built with ICU, which CI's image is).
-EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/cipher/proxyrules FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
+EXPECTED_SKIPS='github.com/sjawhar/envoy/cmd/cipherd TestASurvivorsRenewerRenewsBeforeHalfItsLease is a service level only the timing lane reads (benchtime.TimedRow, DISPATCH_BENCH_TIMING), which CI leaves unset
+github.com/sjawhar/envoy/internal/cipher/proxyrules FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock, which the airlock-lean job builds and runs it with
 github.com/sjawhar/envoy/internal/cipher/proxyrules TestModelAgreesOnHostShapes needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/cipher/proxyrules TestTheModelRefusesAHostlessEntry needs AIRLOCK_MODEL, as FuzzAirlock does
 github.com/sjawhar/envoy/internal/dispatch/api TestDismissedScaleHoldsTheInboxsReads is a measurement, run only with LEGION_SCALE_TEST=1

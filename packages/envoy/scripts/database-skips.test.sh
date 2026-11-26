@@ -114,8 +114,10 @@ said() { grep -qF -- "$2" "$WORK/$1.err"; }
 # table, one per line.
 table_tests() { sed -n "s|^\(EXPECTED_SKIPS='\)\{0,1\}$1 \([A-Za-z0-9_]*\) .*|\2|p" "$COUNTER"; }
 airlock="$MODULE/internal/cipher/proxyrules"
+cmdbroker="$MODULE/cmd/cipherd"
 api_expected="$(table_tests "$API" | paste -sd '|')"
 airlock_expected="$(table_tests "$airlock" | paste -sd '|')"
+cmdbroker_expected="$(table_tests "$cmdbroker" | paste -sd '|')"
 if [ -z "$api_expected" ] || [ -z "$airlock_expected" ]; then
   echo "database-skips.test.sh: EXPECTED_SKIPS in $COUNTER names no test of $API or of $airlock, which controls 3 and 5 read" >&2
   echo "database-skips.test.sh: failed (UNKNOWN: the expected-skip table)"
@@ -142,10 +144,11 @@ WAIT_BODY='func TestPlantedWait(t *testing.T) { t.Parallel(); time.Sleep(3 * tim
 func TestPlantedQuick(t *testing.T) { t.Parallel(); time.Sleep(100 * time.Millisecond) }'
 
 echo "database-skips.test.sh: control 1, a planted skip in each of four packages" >&2
-# Each package's -run names the planted test and a test the package passes with the database set
-# (the API package's, the tests its table excuses), so the run without the overlay holds tests.
+# Each package's -run names the planted test, a test the package passes with the database set,
+# and the tests EXPECTED_SKIPS excuses for that package, so the run without the overlay holds
+# tests and satisfies the stale-table check.
 for row in "internal/cipher/api ^(TestPlantedSkip|TestHealthzIsPublic)$" \
-  "cmd/cipherd ^(TestPlantedSkip|TestBootBindsOnlyAfterTheCatchUp)$" \
+  "cmd/cipherd ^(TestPlantedSkip|TestBootBindsOnlyAfterTheCatchUp${cmdbroker_expected:+|$cmdbroker_expected})$" \
   "internal/holdrecord ^(TestPlantedSkip|TestNewRefusesAnIncompleteConfiguration)$" \
   "internal/dispatch/api ^(TestPlantedSkip|$API_ANCHOR|$api_expected)$"; do
   read -r dir run <<<"$row"
@@ -180,10 +183,11 @@ judge "$([ "$(code empty)" = 1 ] && [ "$(out empty)" = 'database_skips=UNKNOWN' 
   "control 2: with BROKER_TEST_DATABASE_URL empty the counter prints UNKNOWN naming it and runs no test" "$(seen empty)"
 
 echo "database-skips.test.sh: control 3, reports" >&2
-# airlock_skips: a skip event of each test EXPECTED_SKIPS lists for the proxyrules package.
-airlock_skips() { table_tests "$airlock" | while IFS= read -r test; do ev skip "$airlock" "$test"; done; }
+# table_skips PACKAGE: a skip event of each test EXPECTED_SKIPS lists for PACKAGE.
+table_skips() { table_tests "$1" | while IFS= read -r test; do [ -n "$test" ] && ev skip "$1" "$test"; done; }
+airlock_skips() { table_skips "$airlock"; }
+cmdbroker_skips() { table_skips "$cmdbroker"; }
 brokerapi="$MODULE/internal/cipher/api"
-cmdbroker="$MODULE/cmd/cipherd"
 # ev ACTION PACKAGE [TEST]: one event of a go test -json report.
 ev() {
   if [ $# -eq 3 ]; then
@@ -278,7 +282,7 @@ judge "$([ "$(code twice-unfinished)" = 1 ] && said twice-unfinished "UNFINISHED
   said twice-unfinished 'panic: test timed out after 1s' && echo 0 || echo 1)" \
   "control 3: a test that passed in the first run and was running when the second run's binary timed out is printed as unfinished" \
   "$(seen twice-unfinished); stderr $(tr '\n' '|' <"$WORK/twice-unfinished.err")"
-{ ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev skip "$cmdbroker" TestPlantedSkip; ev pass "$cmdbroker"; } >"$WORK/spelled.json"
+{ ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; cmdbroker_skips; ev skip "$cmdbroker" TestPlantedSkip; ev pass "$cmdbroker"; } >"$WORK/spelled.json"
 for spelling in ./cmd/./cipherd/ .//cmd/cipherd/ ./cmd/cipherd/../cipherd/; do
   count spelled bash "$COUNTER" --report "$WORK/spelled.json" "$spelling"
   judge "$([ "$(code spelled)" = 1 ] && grep -qxF "SKIP $cmdbroker TestPlantedSkip" "$WORK/spelled.out" &&
@@ -287,7 +291,7 @@ for spelling in ./cmd/./cipherd/ .//cmd/cipherd/ ./cmd/cipherd/../cipherd/; do
 done
 QUIET=(./internal/cipher/api/ ./cmd/cipherd/ ./internal/cipher/proxyrules/)
 { ev pass "$brokerapi" TestHealthzIsPublic; ev pass "$brokerapi"
-  ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; ev pass "$cmdbroker"
+  ev pass "$cmdbroker" TestBootBindsOnlyAfterTheCatchUp; cmdbroker_skips; ev pass "$cmdbroker"
   ev pass "$airlock" TestAnAirlockTestThatRan; airlock_skips
   ev pass "$airlock"; } >"$WORK/quiet.json"
 count quiet bash "$COUNTER" --report "$WORK/quiet.json" "${QUIET[@]}"
