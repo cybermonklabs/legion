@@ -2718,7 +2718,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	peer.waitHealthy(t)
 
 	waiting := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{NATSURL: pair.nats, SigningKey: "a-key-the-peer-does-not-share", Env: app, Binary: binary})
-	waiting.waitForLog(t, 30*time.Second, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
+	waiting.waitForLog(t, 30*time.Second, registryRefusalLine)
 	for _, durable := range deliveryDurables {
 		waiting.waitForLog(t, 10*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
 	}
@@ -4459,12 +4459,6 @@ func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *
 		}
 	}
 }
-
-// quickProcessHeartbeat is the registry pace every process of the row below runs at
-// (DISPATCH_TEST_PROCESS_HEARTBEAT) in place of production's five seconds: the live window stays
-// three beats of it (cmd/dispatch/main.go), so a refused process waits four seconds for its
-// refuser to lapse where a deployment's waits twenty, and the row waits no production period out.
-const quickProcessHeartbeat = time.Second
 
 // The registry of live server processes refuses a process whose signing key set a live peer does
 // not share both ways (processes.Register): with a pair live under one key, a process carrying a

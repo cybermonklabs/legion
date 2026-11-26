@@ -59,6 +59,13 @@ import (
 // alone.
 const promptShutdown = 3 * time.Second
 
+// quickHTTPDrain is the HTTP drain (DISPATCH_TEST_HTTP_DRAIN) of a process whose request in flight
+// holds the drain for its whole share, in place of httpDrainBeforeDocuments' eleven seconds: the
+// order of the shutdown's steps is the same at either length, and it stays longer than a
+// document's settle delay (docs.Deps.Settle's two seconds), so an edit's own settlement timer still
+// fires inside the drain.
+const quickHTTPDrain = 3 * time.Second
+
 // streamedSessionID is the session whose conversation the test's agent view watches; an agent
 // view names a session uuid.
 const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
@@ -111,12 +118,13 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // on the same lock: the edit's own timer starts one two seconds in, during the drain, and Shutdown
 // starts another. The lock is released once Shutdown's is queued behind it too, or two seconds after
 // the document service started, which is ample for it to read what is owed; a release before that
-// read could let the timer's settlement commit first.
+// read could let the timer's settlement commit first. The drain is quickHTTPDrain.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (WaitForOutput's 30 s
-	// around the 11 s HTTP drain).
+	t.Parallel()
 	database := storetest.Open(t)
-	process := startDispatchProcess(t, database.Pool.Config().ConnString())
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		Env: map[string]string{"DISPATCH_TEST_HTTP_DRAIN": quickHTTPDrain.String()},
+	})
 	process.waitHealthy(t)
 	key, artifactID := process.createIssue(t)
 	process.editOwingSettlement(t, database, artifactID)
@@ -512,7 +520,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil)
+		}, func() {}, func() {}, nil, httpDrainBeforeDocuments)
 	}()
 	select {
 	case <-entered:
@@ -644,7 +652,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped)
+		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments)
 	}()
 	select {
 	case <-done:
@@ -698,8 +706,7 @@ const githubAnswersAfterSignal = 3 * time.Second
 // pool closed under it, the handler's write failed and its message was acknowledged all the same,
 // which left the event to the reconcile minutes later.
 func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break (stopGrace, 30 s, around
-	// githubAnswersAfterSignal's 3 s).
+	t.Parallel()
 	database := storetest.Open(t)
 	// The fetched pull request's author is outside the population, so the handler deletes any row
 	// it has and records the event's time: two writes to the pool once GitHub has answered.
@@ -805,7 +812,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil)
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments)
 	}()
 	cancel()
 	select {
@@ -1022,17 +1029,19 @@ func TestSIGTERMWithAnEditorConnectedSettlesItsDocumentBeforeExit(t *testing.T) 
 // and closing the pool waits for every connection in use. Here that is an issue create's: it waits
 // in Postgres on another writer's lock on its project's row when the relay stops forwarding, so
 // whatever Postgres answers it never arrives. HTTP shutdown waits for that request, so the document
-// service starts httpDrainBeforeDocuments after the signal, with no document to settle: the issue
-// it would create has none yet. Dispatch then gives up on the connection when silentProbes health
-// probes in a row have failed with no connection taken back meanwhile, so it exits well inside a
-// runtime's grace period instead of being killed, and says why.
+// service starts the HTTP drain (quickHTTPDrain here) after the signal, with no document to settle:
+// the issue it would create has none yet. Dispatch then gives up on the connection when
+// silentProbes health probes in a row have failed with no connection taken back meanwhile, so it
+// exits well inside a runtime's grace period instead of being killed, and says why.
 func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testing.T) {
 	// Not parallel: it holds a step to a wall-clock bound load could break (the shutdown budget the
-	// exit is compared against).
+	// exit is compared against, with 5 s of slack).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
-	process := startDispatchProcess(t, relay.url)
+	process := startDispatchProcessWith(t, relay.url, dispatchOptions{
+		Env: map[string]string{"DISPATCH_TEST_HTTP_DRAIN": quickHTTPDrain.String()},
+	})
 	process.waitHealthy(t)
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"STOP","name":"Shutdown"}`, http.StatusCreated)
 
@@ -1064,7 +1073,7 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	// The request in flight holds the HTTP drain for its whole share, then the document service
 	// returns at once with no room to settle, and each failed probe takes its two seconds and a
 	// poll interval. The slack is a loaded box's jitter on this real binary.
-	if bound := httpDrainBeforeDocuments + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
+	if bound := quickHTTPDrain + silentProbes*(2*time.Second+drainPollInterval) + 5*time.Second; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
 	output := process.Output.String()

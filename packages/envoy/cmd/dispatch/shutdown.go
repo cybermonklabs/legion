@@ -61,9 +61,10 @@ const drainPollInterval = 250 * time.Millisecond
 // unless its database has stopped answering.
 const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
-// serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown), deregistering
-// it once HTTP has drained. It logs the address listener is bound to, whether main bound it or
-// inherited it (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
+// serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown, with
+// httpDrain as its drain before the document service), deregistering it once HTTP has drained. It
+// logs the address listener is bound to, whether main bound it or inherited it
+// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
 // serving before the signal does, each logged at ERROR and returned once shutdown has run, so main
 // exits 1 and a supervisor never reads either as a clean stop: serving failed, or the registry
 // refused to count this process as live again beside a live process whose signing keys it does not
@@ -71,7 +72,7 @@ const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 // makes: the listener closes at once, the requests in flight are answered, the intakes stop, and
 // the registry's row is deleted.
 func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *http.Server, listener net.Listener,
-	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}) error {
+	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}, httpDrain time.Duration) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("dispatch: listening", "addr", listener.Addr().String())
@@ -89,7 +90,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 		cancel()
 	}
 	slog.Info("dispatch: shutting down")
-	shutdown(server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped)
+	shutdown(server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain)
 	select {
 	case err := <-serveErr:
 		return err
@@ -101,8 +102,9 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // shutdown stops Dispatch once its process context is cancelled. HTTP drains the requests in flight
 // first, with no deadline of its own: a message send among them finishes, bounded by the listener
 // client's receipt timeout. The document service settles the documents owed within
-// documentShutdownTimeout once those requests are done, or httpDrainBeforeDocuments after the
-// signal with some still running. waitBackground then waits for the delivery hub, every live socket
+// documentShutdownTimeout once those requests are done, or httpDrain after the signal with some
+// still running: httpDrainBeforeDocuments in a deployment, and shorter only in a test process
+// (bootConfig.HTTPDrain). waitBackground then waits for the delivery hub, every live socket
 // and the subscriptions they ran to finish their Lifetime-driven shutdown, and waitIntakes for the
 // GitHub intakes to finish their stop (delivery.StartIntakes' stop), which began at the signal beside
 // the HTTP drain and document shutdown. A message in its handler finishes and is acknowledged, or is
@@ -133,7 +135,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // without them, and the database rolls back whatever they held open; it deregisters nothing then,
 // since the delete would wait on that database too, and its row's heartbeat stops with the process
 // instead.
-func shutdown(server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}) {
+func shutdown(server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}, httpDrain time.Duration) {
 	started := time.Now()
 	drained := make(chan struct{})
 	go func() {
@@ -144,7 +146,7 @@ func shutdown(server *http.Server, documentService *docs.Service, pool *store.Po
 	}()
 	select {
 	case <-drained:
-	case <-time.After(httpDrainBeforeDocuments):
+	case <-time.After(httpDrain):
 		slog.Warn("dispatch: settle documents with requests still in flight")
 	}
 	documentCtx, cancelDocuments := context.WithTimeout(context.Background(), documentShutdownTimeout)

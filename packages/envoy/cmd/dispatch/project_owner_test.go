@@ -17,6 +17,7 @@ import (
 // project holds, for a restricted member, for a login no people row holds, and for wrong
 // arguments.
 func TestProjectOwnerCommandGivesTheProject(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema (the command's openMigrated).
 	ctx := context.Background()
 	database := storetest.Open(t)
 	env := envGetter(map[string]string{"DATABASE_URL": database.Pool.Config().ConnString()})

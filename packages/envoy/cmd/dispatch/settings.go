@@ -231,6 +231,10 @@ var settings = []setting{
 		Description: "How often a test process's maintenance sweep runs - the Idempotency-Keys and spent DPoP proofs past their windows, and the deliveries a process that died left owed - in place of the minute a deployment runs it at; a positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_PROCESS_HEARTBEAT", Default: "`5s`", Required: "no",
 		Description: "How often a test process stamps its row in the registry of live server processes, in place of the five seconds a deployment runs it at; the live window a heartbeat is judged by stays three of it, so no run can set a window shorter than its own heartbeat, and a process refused at boot waits that window and one heartbeat for its refuser to lapse. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", Default: "`5s`", Required: "no",
+		Description: "The lock timeout of each read a test process booted with `DISPATCH_SEARCH_FILL=off` makes of the tables the keyword fill writes, in place of the five seconds a deployment waits; the statement timeout stays one second past it and the client's deadline four seconds past that, so a lock wait still ends with Postgres's lock timeout and a read that runs on with its statement timeout. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HTTP_DRAIN", Default: "`11s`", Required: "no",
+		Description: "How long a test process's shutdown waits for the requests in flight before its document service settles the documents owed with requests still running, in place of the eleven seconds a deployment waits; a positive Go duration, for an end-to-end test whose request holds the drain. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

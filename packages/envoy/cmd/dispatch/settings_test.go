@@ -864,25 +864,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		},
 		"ENVOY_NATS_SOCKS5_PROXY": func(t *testing.T) {
 			// With the reach opted in, the refusal is the address check's: a URL is not host:port.
+			// The connect through a proxy the setting names is TestTheNATSSOCKS5ProxyCarriesTheConnect,
+			// whose ten seconds of the bus's tries run beside the package's other tests.
 			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": "socks5://127.0.0.1:1055"}, localNATS); err == nil || errors.Is(err, bus.ErrRemoteNATS) || !strings.Contains(err.Error(), "ENVOY_NATS_SOCKS5_PROXY") || !strings.Contains(err.Error(), "is a URL") {
 				t.Errorf("ENVOY_NATS_SOCKS5_PROXY=socks5://127.0.0.1:1055: err = %v, want the address refused as a URL, naming the setting", err)
-			}
-			// The connect dials the proxy and hands it localNATS's address. This proxy refuses
-			// every request (connection refused), so the connect makes the bus's ten attempts a
-			// second apart, about ten seconds, and fails.
-			proxy := testsocks5.StartRefusing(t, 0x05)
-			if err := natsConnect(map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": proxy.Addr}, localNATS); err == nil {
-				t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: a connect through a proxy that refuses it succeeded", proxy.Addr)
-			}
-			got := proxy.Requests()
-			if len(got) == 0 {
-				t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: the proxy received no request", proxy.Addr)
-			}
-			for _, request := range got {
-				if request != (testsocks5.Request{AddressType: 0x01, Address: "127.0.0.1:1"}) {
-					t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: the proxy received %+v, want every request for 127.0.0.1:1 as an IPv4 address (type 1)", proxy.Addr, got)
-					break
-				}
 			}
 		},
 		"ENVOY_NATS_REPLICAS": func(t *testing.T) {
@@ -2184,6 +2169,42 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": func(t *testing.T) {
+			boot := resolveWith(t, map[string]string{})
+			if boot.SearchFillLockTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT unset: SearchFillLockTimeout = %v, want 0 (searchFillTableLockTimeout's five seconds)", boot.SearchFillLockTimeout)
+			}
+			if got, want := searchFillBounds(boot.SearchFillLockTimeout), (searchFillReadBounds{lock: 5 * time.Second, statement: 6 * time.Second, client: 10 * time.Second}); got != want {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT unset: the reads' bounds are %+v, want a deployment's %+v", got, want)
+			}
+			const quick = 500 * time.Millisecond
+			boot = resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                    "1",
+				"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": quick.String(),
+			})
+			if got, want := searchFillBounds(boot.SearchFillLockTimeout), (searchFillReadBounds{lock: quick, statement: quick + time.Second, client: quick + 5*time.Second}); got != want {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%s: the reads' bounds are %+v, want %+v", quick, got, want)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_HTTP_DRAIN": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.HTTPDrain != 0 {
+				t.Errorf("DISPATCH_TEST_HTTP_DRAIN unset: HTTPDrain = %v, want 0 (httpDrainBeforeDocuments' eleven seconds)", boot.HTTPDrain)
+			}
+			const quick = 2 * time.Second
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": quick.String()}); boot.HTTPDrain != quick {
+				t.Errorf("DISPATCH_TEST_HTTP_DRAIN: HTTPDrain = %v, want %v", boot.HTTPDrain, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HTTP_DRAIN": invalid},
+					fmt.Sprintf("DISPATCH_TEST_HTTP_DRAIN=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")
@@ -2327,6 +2348,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 	}
 	for name := range cases {
 		t.Errorf("a case for %s, which the settings table does not list", name)
+	}
+}
+
+// ENVOY_NATS_SOCKS5_PROXY reaches the bus's dial through the settings read alone: the connect dials
+// the proxy and hands it the NATS server's address. This proxy refuses every request (connection
+// refused), so the connect makes the bus's ten attempts a second apart, about ten seconds, and
+// fails; every request the proxy received is for 127.0.0.1:1 as an IPv4 address. It is
+// TestEverySettingReachesItsReader's case for the setting, apart so that it runs beside the other
+// tests: it reads no process environment and no log.
+func TestTheNATSSOCKS5ProxyCarriesTheConnect(t *testing.T) {
+	t.Parallel()
+	proxy := testsocks5.StartRefusing(t, 0x05)
+	values := map[string]string{"ENVOY_ALLOW_REMOTE_NATS": "1", "ENVOY_NATS_SOCKS5_PROXY": proxy.Addr}
+	client, err := bus.Connect([]string{"nats://127.0.0.1:1"}, bus.WithEnvironment(envGetter(values).lookup))
+	if err == nil {
+		client.Close()
+		t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: a connect through a proxy that refuses it succeeded", proxy.Addr)
+	}
+	got := proxy.Requests()
+	if len(got) == 0 {
+		t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: the proxy received no request", proxy.Addr)
+	}
+	for _, request := range got {
+		if request != (testsocks5.Request{AddressType: 0x01, Address: "127.0.0.1:1"}) {
+			t.Errorf("ENVOY_NATS_SOCKS5_PROXY=%s: the proxy received %+v, want every request for 127.0.0.1:1 as an IPv4 address (type 1)", proxy.Addr, got)
+			break
+		}
 	}
 }
 
