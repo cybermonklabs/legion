@@ -32,6 +32,7 @@ import {
 } from "../NodeRow";
 import { DeletedLine, lineOrKindWord, NodeParentLine, useNodeLine } from "../node-line";
 import { NodeMarks } from "../node-states/NodeMarks";
+import type { NodeStates } from "../node-states/node-states";
 import { shortDay } from "../node-time";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
@@ -302,7 +303,9 @@ export function DecisionsRow({
                   {/* The statement's marks, after its name in the chip's own size: the
                       statement node's own, which its shape holds, since an answered question's
                       chips are none of the ties of the decision that restates it. */}
-                  <NodeMarks compact marks={shape.node} />
+                  {/* `StatementWords` types the node as its words alone, but the value is the
+                      placed tree node, or a coverage row's words, which carry no mark. */}
+                  <NodeMarks compact marks={shape.node as NodeStates} />
                 </span>
               ))}
             </p>

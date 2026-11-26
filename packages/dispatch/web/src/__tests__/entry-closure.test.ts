@@ -139,11 +139,12 @@ test("the walk does not follow app.tsx's dynamic import of the issue page", () =
 });
 
 // The control of the erased edge: `decision-review.ts`, which today's Decisions tab and margin
-// import, imports a type of `issue-tree.ts` alone, which the build erases, and so does the walk.
+// import, imports a type of `page-words.ts`, a model file, alone, which the build erases, and so
+// does the walk.
 test("the walk erases an import of types alone, as the build does", () => {
   const review = join(SOURCES, "features/issue-page/decision-review.ts");
   expect(readFileSync(review, "utf8")).toContain(
-    'import type { DocumentBlocks } from "./issue-tree";'
+    'import type { DecisionState } from "./page-words";'
   );
-  expect(scannedImports(review).map(({ path }) => path)).not.toContain("./issue-tree");
+  expect(scannedImports(review).map(({ path }) => path)).not.toContain("./page-words");
 });

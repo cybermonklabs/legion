@@ -268,8 +268,8 @@ function drawList(root: TreeNode, width: number): { container: HTMLElement; unmo
     font: "",
     measureText: (text: string) => ({ width: text.length * CHARACTER }),
   })) as unknown as HTMLCanvasElement["getContext"]);
-  // On `HTMLElement.prototype`, where `IssueTree.test.tsx` spies the same method: a spy there
-  // left behind as the prototype's own property would hide one made on `Element.prototype`.
+  // On `Element.prototype`, which owns the method (`docs/testing.md`): a spy restored on
+  // `HTMLElement.prototype` leaves a copy there that hides a later file's spy on `Element`.
   const box = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: HTMLElement
   ) {

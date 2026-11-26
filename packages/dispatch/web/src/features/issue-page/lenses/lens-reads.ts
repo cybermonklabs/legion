@@ -2,11 +2,10 @@ import type { LensInvoked } from "@legion/contracts";
 import {
   type QueryClient,
   queryOptions,
-  useIsMutating,
   useMutationState,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useMemo, useRef } from "react";
 import { type Location, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { api, writeRequest } from "../../../api/client";
@@ -43,12 +42,11 @@ export const lensChainQuery = (address: string, enabled: boolean) =>
     queryKey: ["lens-read", address],
   });
 
-/** The lens catalogue, in its own order, read when the menu of lens kinds opens. A failed
- *  read is read again at the next opening. */
-export const lensKindsQuery = (enabled: boolean) =>
+/** The lens catalogue, in its own order, read when the menu of lens kinds opens, which is when
+ *  the menu that observes it is drawn. A failed read is read again at the next opening. */
+export const lensKindsQuery = () =>
   queryOptions({
     ...HELD_FOR_THE_LOAD,
-    enabled,
     queryFn: async () => (await api.getBlockSchema()).lens_kinds ?? [],
     queryKey: ["lens-kinds"],
   });
@@ -172,37 +170,95 @@ function readTreeAgain(
   return promise;
 }
 
-/** What the menu of one node needs of the lenses invoked on it. */
-export interface LensInvocation {
-  /** Invokes a lens of kind `kind` on the node (`useInvokeLens`). */
-  readonly invoke: (kind: string) => Promise<LensInvoked | null>;
+/** The head of every key the query client keeps a lens invocation under (`invocationKey`). */
+const INVOCATIONS = "lens-invocation";
+
+/** The key the query client keeps the invocations on the node at `on` of the issue `issueKey`
+ *  under: `INVOCATIONS`, then the issue, then the node. */
+function invocationKey(issueKey: string, on: string): readonly string[] {
+  return [INVOCATIONS, issueKey, on];
+}
+
+/** What the lenses invoked on one node say, as its row's act reads them. */
+export interface NodeInvocations {
   /** Whether an invocation on the node is out, whichever menu made it: from the pick until its
-   *  write settles, with Dispatch's answer or once the reader stopped trying. It ends before
-   *  `invoke` answers, since `invoke` reads the tree again after the write settles. */
+   *  write settles, with Dispatch's answer or once the reader stopped trying. It ends before the
+   *  pick's `invoke` answers, since `invoke` reads the tree again after the write settles. */
   readonly pending: boolean;
-  /** Why the newest invocation on the node was refused, until `forget`: Dispatch's answer
-   *  (`ApiError`), or the store's own error once the reader stopped trying. */
+  /** Why the newest invocation on the node was refused, until `forgetInvocations`: Dispatch's
+   *  answer (`ApiError`), or the store's own error once the reader stopped trying. */
   readonly refusal: Error | undefined;
-  /** Lets go of every invocation on the node that has its answer, and so of its refusal. */
-  readonly forget: () => void;
+}
+
+/**
+ * What has been invoked on each node of the issue `issueKey`, by the node's address, read once for
+ * every row of the outline (`useLensAct`): the act stands on every row, whatever the focus, and a
+ * focus move draws every row again, so no row reads the query client itself. A node with no
+ * invocation is not in it. One value while no invocation of a lens changes.
+ *
+ * The node's invocations are kept in the query client under a key of the node's own
+ * (`useInvokeLens`), and one that has its answer stays there until `forgetInvocations` lets it go,
+ * so its refusal outlives the menu that made it: the menu closes when the focus moves out of it
+ * and its act, and its row can be drawn again, a fold or a filter away, so a row whose pick was
+ * out says the refusal as soon as it is drawn. For the same reason whether one is out is read from
+ * there too (`pending`), as `useSending` reads a send: `mutate` counts the write as out from the
+ * pick's own task, before its first await, and a menu opened again while the write is out reads
+ * it.
+ *
+ * It reads the invocations of every issue and keeps this issue's: `useMutationState` reads a
+ * filter it is handed again only once the cache next changes, so a filter of this issue's keys
+ * would go on answering for the issue it was first drawn for after the address names another.
+ */
+export function useLensInvocations(
+  issueKey: string | undefined
+): ReadonlyMap<string, NodeInvocations> {
+  const invocations = useMutationState({
+    filters: { mutationKey: [INVOCATIONS] },
+    select: ({ options, state }) => ({
+      issue: options.mutationKey?.[1],
+      on: options.mutationKey?.[2],
+      pending: state.status === "pending",
+      refusal: state.status === "error" ? state.error : null,
+    }),
+  });
+  return useMemo(() => {
+    const byNode = new Map<string, NodeInvocations>();
+    // The cache lists the invocations in the order they were made, so the last is the newest.
+    for (const invocation of invocations) {
+      const { on } = invocation;
+      if (invocation.issue !== issueKey || typeof on !== "string") continue;
+      byNode.set(on, {
+        pending: invocation.pending || byNode.get(on)?.pending === true,
+        refusal: invocation.refusal ?? undefined,
+      });
+    }
+    return byNode;
+  }, [invocations, issueKey]);
+}
+
+/** Lets go of every invocation on the node at `on` of the issue `issueKey` that has its answer,
+ *  and so of its refusal. */
+export function forgetInvocations(queryClient: QueryClient, issueKey: string, on: string): void {
+  const cache = queryClient.getMutationCache();
+  for (const answered of cache.findAll({ exact: true, mutationKey: invocationKey(issueKey, on) })) {
+    if (answered.state.status !== "pending") cache.remove(answered);
+  }
 }
 
 /**
  * Invokes lenses on the node at the address `on`, on the issue `issueKey`, from the outline
- * `outline` the address opens as the menu is drawn, Conversation or Graph. Each pick is one
- * write, under a key minted at the pick and in the reader's name (`useKeyedWrite`), and sends
- * `on` and `kind` and nothing more. It answers the lens made, `null` where Dispatch made it and
- * kept no answer, or throws the refusal (`ApiError`). The menu says a refusal itself, so the
- * shell's indicator shows the write only while it is out.
+ * `outline` the address opens as the menu is drawn, Conversation or Graph. The open menu alone
+ * calls it, so a row whose menu is closed holds no write. Each pick is one write, under a key
+ * minted at the pick and in the reader's name (`useKeyedWrite`), and sends `on` and `kind` and
+ * nothing more. It answers the lens made, `null` where Dispatch made it and kept no answer, or
+ * throws the refusal (`ApiError`). The menu says a refusal itself, so the shell's indicator shows
+ * the write only while it is out.
  *
- * The node's invocations are kept in the query client under a key of the node's own, and one
- * that has its answer stays there until `forget` lets it go, so its refusal outlives the menu
- * that made it: the menu closes when the focus moves out of it and its act, and its row can be
- * drawn again, a fold or a filter away, so a row whose pick was out says the refusal as soon as
- * it is drawn.
- * For the same reason whether one is out is read from there too (`pending`), as `useSending`
- * reads a send: `mutate` counts the write as out from the pick's own task, before its first
- * await, and a menu drawn again while the write is out reads it.
+ * The write and its landing outlive the menu that made the pick, which closes when the focus
+ * moves out of it and its act and goes with its row, a fold or a filter away: `mutateAsync`
+ * answers once the write settles, though nothing observes it by then. The node's invocations are
+ * kept in the query client under the node's own key, where the rows read whether one is out and
+ * the newest refusal (`useLensInvocations`).
  *
  * A landing reads the outline's read again through the app's refresh scheduler, as the page does
  * for a write it sees, so it never calls off a read already out and keeps to one start a second:
@@ -224,16 +280,15 @@ export function useInvokeLens(
   on: string,
   outline: Outline,
   standing: StandingAddress
-): LensInvocation {
+): (kind: string) => Promise<LensInvoked | null> {
   const queryClient = useQueryClient();
-  const mutationKey = ["lens-invocation", issueKey, on];
   const made = useKeyedWrite({
     // An invocation that has its answer stays in the cache, though no menu observes it once its
-    // row's menu has closed or its row is gone, until `forget` lets it go.
+    // row's menu has closed or its row is gone, until `forgetInvocations` lets it go.
     gcTime: Number.POSITIVE_INFINITY,
     inline: true,
     label: () => LENS_WORDS.menu_title,
-    mutationKey,
+    mutationKey: invocationKey(issueKey, on),
     method: "POST",
     write: (kind: string, bounds) =>
       api.send(
@@ -241,34 +296,17 @@ export function useInvokeLens(
         bounds
       ),
   });
-  // The cache lists the invocations in the order they were made, so the last is the newest.
-  const refusal =
-    useMutationState({
-      filters: { exact: true, mutationKey },
-      select: ({ state }) => (state.status === "error" ? state.error : null),
-    }).at(-1) ?? undefined;
-  const pending = useIsMutating({ exact: true, mutationKey }) > 0;
-  return {
-    forget: () => {
-      const cache = queryClient.getMutationCache();
-      for (const answered of cache.findAll({ exact: true, mutationKey })) {
-        if (answered.state.status !== "pending") cache.remove(answered);
-      }
-    },
-    invoke: async (kind) => {
-      const invoked = await made.mutateAsync(kind);
-      await readTreeAgain(queryClient, issueKey, outline);
-      const now = standing.current;
-      const place =
-        now === undefined ? undefined : lensPlaceOf(now.location.pathname, now.location.search);
-      const same = place?.issueKey === issueKey && place.outline === outline;
-      if (invoked !== null && now !== undefined && same) {
-        const filter = new URLSearchParams(now.location.search).get("q") ?? undefined;
-        now.navigate(rowPathIn(outline, issueKey, lensReadId(invoked), filter), { replace: true });
-      }
-      return invoked;
-    },
-    pending,
-    refusal,
+  return async (kind) => {
+    const invoked = await made.mutateAsync(kind);
+    await readTreeAgain(queryClient, issueKey, outline);
+    const now = standing.current;
+    const place =
+      now === undefined ? undefined : lensPlaceOf(now.location.pathname, now.location.search);
+    const same = place?.issueKey === issueKey && place.outline === outline;
+    if (invoked !== null && now !== undefined && same) {
+      const filter = new URLSearchParams(now.location.search).get("q") ?? undefined;
+      now.navigate(rowPathIn(outline, issueKey, lensReadId(invoked), filter), { replace: true });
+    }
+    return invoked;
   };
 }

@@ -23,7 +23,6 @@ import type {
   IssueCheckResults,
   IssueCoverage,
   IssueDetails,
-  RequirementCoverage,
 } from "../../../api/types";
 import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -107,19 +106,19 @@ beforeAll(async () => {
 /** What a case gives the body beside its statements and its checks: the words the reader typed
  *  (`query`), which the view is filtered by (`presetView`), the nodes an address named, how the
  *  three reads stand (`reads`), which is all of them answered where a case gives nothing else,
- *  the coverage read's rows (`requirements`), which are the rows of the statements the case
- *  draws where it gives none (`coverageOf`), the view with no query where a case builds it
- *  itself (`whole`), which is otherwise built as the slot builds it, whether the body is drawn
- *  inside the stage the page draws a view in (`staged`), which moves the focus where a failed
- *  read's line leaves with it or the view's tree itself takes it (`ViewStage`), and what the page
- *  publishes of its batched names read (`published`), which is what it publishes for the issue's
- *  statements where a case gives nothing else (`publishedStatements`). */
+ *  the coverage read (`coverage`), which holds a row for each statement the case draws where it
+ *  gives none (`coverageOf`), the view with no query where a case builds it itself (`whole`),
+ *  which is otherwise built as the slot builds it, whether the body is drawn inside the stage the
+ *  page draws a view in (`staged`), which moves the focus where a failed read's line leaves with
+ *  it or the view's tree itself takes it (`ViewStage`), and what the page publishes of its
+ *  batched names read (`published`), which is what it publishes for the issue's statements where
+ *  a case gives nothing else (`publishedStatements`). */
 interface DrawOptions {
+  readonly coverage?: IssueCoverage;
   readonly named?: readonly string[];
   readonly published?: PublishedReferences;
   readonly query?: string;
   readonly reads?: VerificationReads;
-  readonly requirements?: readonly RequirementCoverage[];
   readonly staged?: boolean;
   readonly whole?: TreeNode;
 }
@@ -132,15 +131,22 @@ function statementsOf(root: TreeNode): TreeNode[] {
   ];
 }
 
-/** The coverage read's rows for `statements`, as the server answers them for an issue whose every
+/** The coverage read for `statements`, as the server answers it for an issue whose every
  *  statement the case draws: one row for each statement, with the checks the case gave it - its
  *  count of checks where it carries one (`TreeNode.counts`), else the checks drawn under it. */
-function coverageOf(statements: readonly TreeNode[]): RequirementCoverage[] {
-  const rows = new Map<string, RequirementCoverage>();
+function coverageOf(statements: readonly TreeNode[]): IssueCoverage {
+  const byReference = new Map<string, TreeNode>();
   for (const statement of statements) {
-    const ref = statement.reference;
-    if (ref === undefined || rows.has(ref)) continue;
-    rows.set(ref, {
+    const { reference } = statement;
+    if (reference !== undefined && !byReference.has(reference)) {
+      byReference.set(reference, statement);
+    }
+  }
+  return {
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: [...byReference].map(([ref, statement]) => ({
       block_id: ref.slice(ref.lastIndexOf("#b-") + "#b-".length),
       checks:
         statement.counts?.checks ??
@@ -149,9 +155,9 @@ function coverageOf(statements: readonly TreeNode[]): RequirementCoverage[] {
       plan_tasks: 0,
       ref,
       text: statement.text,
-    });
-  }
-  return [...rows.values()];
+    })),
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  };
 }
 
 /** What the page publishes for `statements`: what its batched read names them by, by the page's
@@ -190,11 +196,11 @@ function bodyOf(
   statements: readonly TreeNode[],
   checks: readonly CheckBlock[],
   {
+    coverage: givenCoverage,
     named = [],
     published: givenPublished,
     query = "",
     reads = { state: "answered" },
-    requirements: givenRequirements,
     staged = false,
     whole: given,
   }: DrawOptions = {},
@@ -206,17 +212,17 @@ function bodyOf(
     given ??
     (queryTyped(query) ? presetView(issue, "verification", "", new Set(named)).root : undefined);
   const published = givenPublished ?? publishedStatements(statementsOf(issue));
-  const requirements = givenRequirements ?? coverageOf(statementsOf(issue));
+  const coverage = givenCoverage ?? coverageOf(statementsOf(issue));
   const slot = (
     <NoTooltips>
       <Publisher published={published} />
       <VerificationFilterBody
         checks={checks}
         context={view.context}
+        coverage={coverage}
         namesLine={NO_FAILED_READS}
         published={published}
         reads={reads}
-        requirements={requirements}
         view={view.root}
         whole={whole}
       />
@@ -614,6 +620,86 @@ test("a statement whose coverage waits on a document still being indexed draws i
     expect(
       [...view.container.querySelectorAll("[data-coverage-note]")].map((note) => note.textContent)
     ).toEqual([owed]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// While a document of the issue is still being indexed the coverage read's counts may not hold
+// what serves a statement yet, so the summary claims no count of covered statements: where "N of
+// M covered" would stand it draws that document's line, in the server's own words. Once the
+// document is indexed the read answers its counts again and the summary counts.
+test("the summary draws the line of a document still being indexed in place of a covered count", () => {
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  const own = passing("c-one");
+  const statement = statementNode("r1", "The page waits for the index.", [checkNode(own)]);
+  const indexing = drawBody([statement], [own], {
+    coverage: { ...coverageOf([statement]), gaps: [owed] },
+  });
+  try {
+    expect(textsOf(indexing, "[data-verification-covered]")).toEqual([owed]);
+  } finally {
+    indexing.unmount();
+  }
+  const indexed = drawBody([statement], [own]);
+  try {
+    expect(textsOf(indexed, "[data-verification-covered]")).toEqual([
+      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`,
+    ]);
+  } finally {
+    indexed.unmount();
+  }
+});
+
+/** The issue of a statement nested inside another, which a sibling follows: three statements of
+ *  the spec, each with one check, in document order, and the checks' own blocks. */
+function nestedIssue() {
+  const checks = [passing("c1"), passing("c1a"), passing("c2")];
+  const [one, inside, two] = checks;
+  if (one === undefined || inside === undefined || two === undefined) throw new Error("no checks");
+  const nested = statementNode("r1a", "The statement inside the first.", [checkNode(inside)]);
+  const parent = statementNode("r1", "The first statement.", [checkNode(one), nested]);
+  const sibling = statementNode("r2", "The second statement.", [checkNode(two)]);
+  return { checks, nested, parent, sibling };
+}
+
+// A statement nested inside another statement is a statement of the issue as much as a top-level
+// one, and the coverage read counts it: so the view draws its card, under its parent's card and
+// in document order, with its own checks.
+test("every statement the coverage read holds is a card, a nested one under its parent's, in document order", () => {
+  const { checks, nested, parent, sibling } = nestedIssue();
+  const view = drawBody([parent, sibling], checks);
+  try {
+    expect(
+      [...view.container.querySelectorAll("[data-verification-card]")].map((card) => [
+        card.getAttribute("data-node-id"),
+        [...card.querySelectorAll("[data-verification-check]")].map((row) =>
+          row.getAttribute("data-node-id")
+        ),
+      ]),
+      "the cards are not the statements the coverage read holds"
+    ).toEqual([
+      [parent.id, [blockNodeId(VERIFICATION_SLUG, "c1")]],
+      [nested.id, [blockNodeId(VERIFICATION_SLUG, "c1a")]],
+      [sibling.id, [blockNodeId(VERIFICATION_SLUG, "c2")]],
+    ]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The cards are the statements the summary counts, so no card is missing from the count and no
+// count claims a statement the view draws no card for.
+test("the number of cards equals the summary's total of statements", () => {
+  const { checks, parent, sibling } = nestedIssue();
+  const view = drawBody([parent, sibling], checks);
+  try {
+    const cards = view.container.querySelectorAll("[data-verification-card]").length;
+    expect(textsOf(view, "[data-verification-covered]")).toEqual([
+      `3 ${VERIFICATION_WORDS.of} 3 ${VERIFICATION_WORDS.covered}`,
+    ]);
+    expect(cards, "the cards are not as many as the statements the summary counts").toBe(3);
+    expect(textsOf(view, "[data-verification-chip]")[0]).toBe(`${VERIFICATION_WORDS.all} 3`);
   } finally {
     view.unmount();
   }

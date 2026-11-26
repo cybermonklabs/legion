@@ -24,6 +24,7 @@ import { useAgentText } from "../../refs/AgentName";
 import {
   PublishedReferenceNames,
   type PublishedReferences,
+  type ReferenceNameReading,
   useKnownReferences,
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
@@ -46,6 +47,7 @@ import {
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
+import { usePublishViewReadings } from "../slots/view-readings";
 import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow, PageRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
@@ -139,10 +141,10 @@ const PAGE = 20;
  * list's tab stop where it was pressed on no row, as the outline's keys do (the tester's F16):
  * Left on a row of the parts says the list has no level above it; on a row of the foot, which
  * stands a level down, under the foot's control, it goes up to that control, as Left goes to a
- * row's parent in the outline. Until the view knows what the issue holds - the tree read its rows
- * come from and the asks have answered (`decisions-entries.ts`' `readsHeld`) - `q` and `w` with
- * nowhere to go say nothing: no question or decision to go to may mean only that they have not
- * arrived.
+ * row's parent in the outline. Until the view knows what the issue holds - Conversation's read,
+ * which says which statement a tie names, and the asks have answered (`decisions-entries.ts`'
+ * `readsHeld`) - `q` and `w` with nowhere to go say nothing: no question or decision to go to
+ * may mean only that they have not arrived.
  *
  * A read that says which entries there are and stands refused - the decisions' reads, the tree
  * read and the decisions view, and the asks - draws the page's one line for a failed read over
@@ -161,9 +163,12 @@ const PAGE = 20;
  * names place no entry, so their line takes none away.
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
- * by (`useIssueTree.ts`), so the body costs no request of its own (R20), and the names its rows
- * draw are the page's batched read's, which the body hands every row in the render that draws it
- * (`published`), so no row reads a reference the page asks for.
+ * by (`useIssueTree.ts`), and the decisions view read, so the body costs no request of its own
+ * (R20), and the names its rows draw are the page's batched read's, which the body hands every
+ * row in the render that draws it (`published`), so no row reads a reference the page asks for.
+ * The tree it is drawn over is the one that view read builds (`decisions-entries.ts`'
+ * `useDecisionsTree`), which its slot hands it, so its rows, its keys and the node an address
+ * names are the nodes of that read, whatever page of Conversation's read the page holds.
  */
 export function DecisionsFilterBody({
   artifacts,
@@ -224,7 +229,9 @@ export function DecisionsFilterBody({
    *  the row of the question it answers, where the list draws one. Undefined where the address
    *  names no node or the tree holds none it names. */
   reveal?: string;
-  /** The whole tree, which holds each ask and each decision and each statement a tie names. */
+  /** The whole tree `view` was drawn over, which holds each ask and each decision and each
+   *  statement a tie names: the tree the decisions view read builds, as the slot hands it
+   *  (`useDecisionsTree`), and Conversation's until that read holds an answer. */
   root: TreeNode;
   /** The tree as the Decisions filter leaves it (`presetView`). */
   view: TreeNode;
@@ -248,18 +255,42 @@ export function DecisionsFilterBody({
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
   // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
-  // one node, so its first placement in the page's reading order names it.
+  // one node, so its first placement in the page's reading order names it. A statement only the
+  // coverage read holds, past the pages of Conversation's read, is one the page's names read was
+  // never asked for: the body publishes the reading of that read's row of it to the names store
+  // (`ShapedStatement.reading`), as a view publishes the blocks only its own tree holds
+  // (`slots/view-readings.ts`), and names it by the same rule, by the row's own address.
   const { lines } = useKnownReferences();
+  const covered = useMemo(() => {
+    const readings = new Map<string, ReferenceNameReading>();
+    const references = new Map<string, string>();
+    for (const part of DECISIONS_PART_ORDER) {
+      for (const entry of parts[part]) {
+        for (const { id, node, reading } of entry.shapes) {
+          if (reading === undefined || node.reference === undefined) continue;
+          readings.set(node.reference, reading);
+          references.set(id, node.reference);
+        }
+      }
+    }
+    return { readings, references };
+  }, [parts]);
+  usePublishViewReadings(covered.readings);
   const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
     const names = new Map<string, string>();
-    for (const node of nodesInOrder(root)) {
-      const reference = node.type === "requirement" ? node.reference : undefined;
-      if (reference === undefined || names.has(node.id)) continue;
+    const name = (id: string, reference: string): void => {
+      if (names.has(id)) return;
       const line = lines.get(reference);
-      if (line !== undefined) names.set(node.id, chipName(parseNodeReference(reference), line));
+      if (line !== undefined) names.set(id, chipName(parseNodeReference(reference), line));
+    };
+    for (const node of nodesInOrder(root)) {
+      if (node.type === "requirement" && node.reference !== undefined) {
+        name(node.id, node.reference);
+      }
     }
+    for (const [id, reference] of covered.references) name(id, reference);
     return names;
-  }, [lines, root]);
+  }, [covered, lines, root]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);

@@ -784,10 +784,16 @@ function drawVerification(
               ...(addressed === undefined ? {} : { addressed }),
               checks,
               context: preset.context,
+              coverage: {
+                gaps: [],
+                has_plan: false,
+                issue: KEY,
+                requirements: coverageRows(root),
+                spec_artifact_id: "artifact-spec",
+              },
               namesLine: NO_FAILED_READS,
               published,
               reads: { state: "answered" },
-              requirements: coverageRows(root),
               view: preset.root,
               whole: queryTyped(query)
                 ? presetView(root, "verification", "", new Set()).root

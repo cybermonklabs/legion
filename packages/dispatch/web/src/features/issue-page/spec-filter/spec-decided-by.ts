@@ -49,9 +49,12 @@ import { statementStandings } from "../verification-filter/statement-state";
  * with each reference in it named in plain words once the sentence is cut
  * (`referenceStandIns`), or, where they wrote none, the options they chose; the whole answer is
  * carried beside it as stored, for the focus on the line to draw character for character (R5).
- * A decision node the server marks a person's whose answered question this tree does not hold
- * is the agent's record of that decision, so it is drawn as an agent's words and never quoted as
- * the person's (R9).
+ * A person's decision whose answered question Conversation's read has not reached - one past
+ * the pages of it the page holds - is drawn as that person's answer all the same, read from the
+ * Spec view read's own tree (`viewTree`), which holds each answered question whose `shaped` ties
+ * name a statement the view holds, as context (INFRA-1253 R8). A decision node the server marks a
+ * person's whose answered question neither tree holds is the agent's record of that decision, so
+ * it is drawn as an agent's words and never quoted as the person's (R9).
  *
  * An agent's decision carries its own text whole, which the cell draws as a row draws a node's
  * words (`RowText`), and is quoted by its first line, by R1's one-line rule (`lineWordsRaw`,
@@ -210,6 +213,9 @@ export interface SpecReading {
  * `view` is the Spec filter's own view of the tree (`presetView`), whose rows are the
  * statements in the order the page draws them; `root` is the whole tree, which holds the asks,
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
+ * `viewTree` is the tree the Spec view read builds (`TreeViews.trees.spec`), whose nodes `root`
+ * holds none of are read beside `root`'s: Conversation's read, which `root` is built from, is
+ * paged, and that tree holds each answered question whose ties name a statement the view holds.
  * `decisions` are the decisions of the Spec view read (`?view=spec`) as every reader of a
  * decision reads them (`decisionNodes`), in that answer's order. `nodeIdOf` is how this issue
  * addresses a node, which is the one rule the tree is built with (`tree-drafts.ts`'s
@@ -227,6 +233,7 @@ export function specDecidedBy({
   reader,
   root,
   view,
+  viewTree,
 }: {
   /** Whether the asks read holds an answer. A person's decision is drawn by the answer they
    *  gave, whose question the tree holds once that read is in; until it is, the decision is
@@ -243,8 +250,10 @@ export function specDecidedBy({
   readonly root: TreeNode;
   /** The tree as the Spec filter leaves it. */
   readonly view: TreeNode;
+  /** The tree the Spec view read builds, where the page holds one. */
+  readonly viewTree?: TreeNode;
 }): SpecReading {
-  const nodes = nodesById(root);
+  const nodes = nodesById(root, viewTree);
   const asks = asksById(nodes);
   const shaped = shapedBy({ asks, asksHeld, decisions, nameOf, nodeIdOf, nodes, reader });
   const standings = statementStandings(root, checks);
@@ -314,17 +323,19 @@ export function firstSentenceOf(text: string): string {
 }
 
 /** Every node of the tree by its id, at its first placement, which is where a node drawn under
- *  more than one parent is edited (`TreeNode.transcluded`). It is not
- *  `decisions-filter/decisions-parts.ts`'s `placements`, which cuts each node's parent line as
- *  well, from words that write each bare address as its short form (`lineWords`): the Spec view
- *  reads a parent's line by its own rule (`parentOf`), so this walks the nodes alone. */
-function nodesById(root: TreeNode): ReadonlyMap<string, TreeNode> {
+ *  more than one parent is edited (`TreeNode.transcluded`), and after them each node of `more`
+ *  the tree holds none of. It is not `decisions-filter/decisions-parts.ts`'s `placements`, which
+ *  cuts each node's parent line as well, from words that write each bare address as its short
+ *  form (`lineWords`): the Spec view reads a parent's line by its own rule (`parentOf`), so this
+ *  walks the nodes alone. */
+function nodesById(root: TreeNode, more?: TreeNode): ReadonlyMap<string, TreeNode> {
   const nodes = new Map<string, TreeNode>();
   const walk = (node: TreeNode): void => {
     if (!nodes.has(node.id)) nodes.set(node.id, node);
     for (const child of node.children) walk(child);
   };
   walk(root);
+  if (more !== undefined) walk(more);
   return nodes;
 }
 

@@ -166,34 +166,42 @@ function cites(raw: string | undefined): raw is string {
 
 /**
  * The runs of the one paragraph the stored string `raw` reads as with each store address in it
- * named (`lineOf` makes them a reading), of the very runs `codeOnlyRuns` reads from it: its
- * reading (`storedReading`) named (`storeAddressesIn`), read onto one line (`oneLineRuns`). A run
- * keeps two marks at most. One is code: a run marked as inline code, or inside a code block,
- * reads as written, as a rendered body draws it, so another address in code is not named by its
- * target. The other is a name's link: a bare address's, an autolink's, and an author's own words
- * linked to a node the index holds, words in a code span among them, which keep both marks, but
- * for code words that are the link's own address, which link nothing (`linkedRuns`). Every other
- * mark is left out, so an author's link to a node the index does not hold, or to anything else,
- * reads as its words. Each run of an author's link whose words carry marks,
- * `[the **HTTP** rule](…)`, stays a run of its own with the same link, the same `href` and the
- * same `title`: the row's renderer draws runs that carry one link as one link. A row draws a
- * verdict, a heading and a constraint's words that cite nothing from `codeOnlyRuns`, so the same
- * words that cite a node are drawn as the same one line, the cited words alone changed, with none
- * of the lists and emphasis a parse made in the page would draw (R20). Every other address stays
- * as its author wrote it, for the row's renderer to name. Undefined where the walk names nothing,
+ * named (`lineOf` makes them a reading): its reading (`storedReading`) named
+ * (`storeAddressesIn`), read onto one line (`namedLine`). Undefined where the walk names nothing,
  * so a draft keeps the words it has.
  */
 function lineRuns(raw: string | undefined, index: () => StoreIndex): DisplayTree[] | undefined {
   if (!cites(raw)) return undefined;
   const reading = storedReading(raw);
   const named = storeAddressesIn(reading, index);
-  if (named === reading) return undefined;
+  return named === reading ? undefined : namedLine(named);
+}
+
+/**
+ * The runs of the one paragraph `named`, a reading with each store address in it named
+ * (`storeAddressesIn`), reads as on one line (`oneLineRuns`). A run keeps one mark at most. A
+ * name's run keeps its link alone: a bare address's, an autolink's, and an author's own words
+ * linked to a node the index holds, but for code words that are the link's own address, which
+ * link nothing (`linkedRuns`). Words of such a link in a code span lose their code mark, so a
+ * name is one link however its words are marked: each run of an author's link whose words carry
+ * marks, `[the **HTTP** rule](…)` or ``[the `HTTP` rule](…)``, stays a run of its own with the
+ * same link, the same `href` and the same `title`, which the row's renderer draws as one link.
+ * Any other run in code - marked as inline code, or inside a code block - keeps code and reads as
+ * written, as a rendered body draws it, so another address in code is not named by its target.
+ * Every other mark is left out, so an author's link to a node the index does not hold, or to
+ * anything else, reads as its words. A reading that names nothing reads as the very runs
+ * `codeOnlyRuns` reads, since the walk names or drops every link to a store address: a row draws
+ * a verdict, a heading and a constraint's words that cite nothing from `codeOnlyRuns`, so the
+ * same words that cite a node are drawn as the same one line, the cited words alone changed, with
+ * none of the lists and emphasis a parse made in the page would draw (R20). Every other address
+ * stays as its author wrote it, for the row's renderer to name.
+ */
+function namedLine(named: DisplayTree): DisplayTree[] {
   return oneLineRuns(named, (run, inCode) => {
     // Outside a code block the walk leaves no link to a store address but a name's, in a code
     // span too: `linkedRuns` names or drops each other one.
     const link = inCode ? undefined : nameLink(run);
-    const code = codeOnly(run, inCode);
-    return link === undefined ? code : [...code, link];
+    return link === undefined ? codeOnly(run, inCode) : [link];
   });
 }
 
@@ -207,14 +215,14 @@ function sameLink(one: DisplayTree, other: DisplayTree): boolean {
 
 /**
  * `draft`'s words that `lensDrafts` read from the attributes of `node`, of kind `type`, read
- * again with each store address in them named (`lineRuns`): a lens's verdict and a risk's
+ * again with each store address in them named (`namedLine`): a lens's verdict and a risk's
  * heading (`storedRowWords`) with their named reading (`setRowLine`), so the row links the names,
  * and a constraint's words (`constraintRuns`) so too, one paragraph of each stored string's runs,
- * those of a string that names nothing as `lensDrafts` read them (`codeOnlyRuns`), each only
- * where it names one; and each fact line by the rule `lensDrafts` reads them by (`storedFacts`),
- * as `factWords` reads it: its words, or its parts where they keep a mark or name a node the
- * index holds, so the line links the names. A node none of whose attributes holds a
- * `dispatch://` span (`cites`) names nothing, so it is left as `lensDrafts` drafted it.
+ * those of a string that names nothing the very runs `lensDrafts` read (`codeOnlyRuns`); and each
+ * fact line by the rule `lensDrafts` reads them by (`storedFacts`), as `factWords` reads it: its
+ * words, or its parts where they keep a mark or name a node the index holds, so the line links
+ * the names. A node none of whose attributes holds a `dispatch://` span (`cites`) names nothing,
+ * so it is left as `lensDrafts` drafted it.
  */
 function nameStored(
   draft: Draft,
@@ -223,19 +231,12 @@ function nameStored(
   index: () => StoreIndex
 ): void {
   if (!Object.values(node.attributes ?? {}).some(cites)) return;
-  if (type === "constraint") {
-    let named = false;
-    const runs = constraintRuns(node, (raw) => {
-      const line = lineRuns(raw, index);
-      if (line === undefined) return codeOnlyRuns(raw);
-      named = true;
-      return line;
-    });
-    if (named) setRowLine(draft, runs);
-  } else {
-    const runs = lineRuns(storedRowWords(node, type), index);
-    if (runs !== undefined) setRowLine(draft, runs);
-  }
+  const line = (raw: string) =>
+    cites(raw) ? namedLine(storeAddressesIn(storedReading(raw), index)) : codeOnlyRuns(raw);
+  setRowLine(
+    draft,
+    type === "constraint" ? constraintRuns(node, line) : line(storedRowWords(node, type))
+  );
   if (draft.lens !== undefined) {
     draft.lens = { ...draft.lens, ...storedFacts(node, type, (raw) => factWords(raw, index)) };
   }
@@ -431,8 +432,8 @@ function nameRuns(
  * so it stays as its author wrote it. In a reading drawn as a body, each run of one author link
  * keeps its own link beside its other marks, and how the shared renderer draws a marked link
  * (several anchors) is decision 407's, part N's; a one-line row keeps the link alone on each run,
- * which its renderer draws as one link, and a fact line reads them as one chip (`lineRuns`,
- * `factWords`).
+ * words in code among them, which its renderer draws as one link, and a fact line reads them as
+ * one chip (`namedLine`, `factWords`).
  */
 function linkedRuns(
   run: DisplayTree,
