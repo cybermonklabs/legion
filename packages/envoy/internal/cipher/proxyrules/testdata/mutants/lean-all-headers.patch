@@ -1,16 +1,17 @@
-# lean-all-headers: the model's swap writes into every header. Caught by lake build: T1
-# and T1_structure prove a header the entry does not name is passed through byte for
-# byte, and that proof no longer holds. Applied with patch -p1 from a copy.
+# lean-all-headers: the model's swap writes into every header. Caught by lake build:
+# swapHeader_of_not_allowed states that a header the kind does not name comes out of the swap
+# byte for byte, and that proof no longer holds; T1 and T1_structure are read through it.
+# Applied with patch -p1 from a copy.
 
 --- a/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
 +++ b/packages/envoy/internal/cipher/proxyrules/lean/Airlock/Model.lean
-@@ -242,8 +242,9 @@
-   | .ok _ => .allow
-   | .error e => .refuse e
+@@ -505,8 +505,9 @@
+ /-- A header the rewrite keeps: every one but `Cipher-Repository`, in any case spelling. -/
+ def keepHeader (h : String × String) : Bool := lowerAscii h.1 != cipherRepositoryHeader
  
 -def swapHeader (allowed : List String) (p value : String) (h : String × String) : String × String :=
 -  if allowed.contains (lowerAscii h.1) then (h.1, substitute p value h.2) else h
-+-- MUTANT: the swap writes into every header, not only the ones the entry names.
++-- MUTANT: the swap writes into every header, not only the ones the kind names.
 +def swapHeader (_allowed : List String) (p value : String) (h : String × String) : String × String :=
 +  (h.1, substitute p value h.2)
  

@@ -766,7 +766,7 @@ type Prompt struct {
 // of cybermonklabs/oh-my-pi at the pinned tag). For a `prompt` or `abort_and_prompt` its one value
 // is `session_busy`: the prompt was refused, or failed, because the agent was busy (docs/rpc.md
 // there). Nothing in the daemon reads it; it is modelled so the frame survives this package
-// whole, as PromptError.Code is.
+// whole, the way every other frame does.
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
@@ -840,16 +840,21 @@ type PromptResult struct {
 // could not get through, where Retryable says it may still succeed later — and for one it failed
 // outright before any turn.
 //
-// Code is Oh My Pi's class of the failure, when it gives one, and it declares two values there:
-// `cost_cap`, the session reached `session.maxCost`, and `session_busy`, the agent was busy: the
-// prompt was refused, or it waited at least 30 s and another run still held the agent.
+// Code is Oh My Pi's class of the failure, when it gives one, and it declares three values there:
+// `cost_cap`, the session reached `session.maxCost` and Oh My Pi sent no request; `session_busy`,
+// the agent was busy: the prompt was refused, or it waited at least 30 s and another run still
+// held the agent; and `cyber_policy`, OpenAI refused the session's content for cybersecurity risk,
+// or Oh My Pi held the request after such a refusal. A `cyber_policy` failure always has Retryable
+// false, and the status it carries is whatever a gateway relayed the refusal under, a 503 among
+// them (`promptError` in packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts there).
 //
 // Message is the reason a failed prompt is recorded with (PromptResult.Reason), and
-// internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own PromptResult
-// event. Nothing in the daemon reads Code: it is modelled, as the other members are, so the frame
-// survives this package whole, the way every other frame does. A decode that kept only what
-// today's reader wants would quietly drop the class, the provider, the model and the status
-// behind a failure from anything that re-encodes it.
+// internal/stream carries Retryable, HTTPStatus, Provider, Model and Code onto its own
+// PromptResult event. Supervise's providerErrored decides on HTTPStatus and Code: a
+// `cyber_policy` failure holds the issue whatever its status, and a `cost_cap` one is named as the
+// cause. Every member is modelled, read or not, so the frame survives this package whole, the way
+// every other frame does. A decode that kept only what today's reader wants would quietly drop the
+// provider, the model and the status behind a failure from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`

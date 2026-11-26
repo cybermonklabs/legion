@@ -94,6 +94,8 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// a running step of that task at implementing, which no step at admitted is.
 	{file: "internal/daemon/issue_reads.go", fn: "issueRecords.implementing"}: {calls: 1, tests: []string{
 		"TestAMissingPullRequestIsOfTheCompletingTask", "TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest"}},
+	{file: "internal/daemon/outbox.go", fn: "outbox.heldStartRefused"}: {calls: 1, tests: []string{
+		"TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt"}},
 	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",
 		"TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused"}},

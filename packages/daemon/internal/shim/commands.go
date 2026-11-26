@@ -153,8 +153,9 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	}
 	ctx, cancel := context.WithTimeout(s.commands, budget)
 	started := time.Now()
+	start := s.children.Starter()
 	runIn := func(at string, stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, procgroup.NoReaper, budget, started, env, at, stdin, args)
+		return workspace.RunCommand(ctx, start, budget, started, env, at, stdin, args)
 	}
 	run := func(stdin []byte, args ...string) (string, error) { return runIn(dir, stdin, args...) }
 	return openedWorkspace{dir: dir, jj: jj, run: run, runIn: runIn, ctx: ctx}, cancel, nil
