@@ -1198,9 +1198,13 @@ test("psql_env gives psql a Postgres URL without its password in arguments", () 
   const argv = path.join(dir, "argv.log");
   const password = fixtureSecret("postgres");
   mkdirSync(bin);
-  writeFileSync(path.join(bin, "psql"), `#!/bin/sh\nprintf '%s\\n' "$@" >${JSON.stringify(argv)}\n`, {
-    mode: 0o755,
-  });
+  writeFileSync(
+    path.join(bin, "psql"),
+    `#!/bin/sh\nprintf '%s\\n' "$@" >${JSON.stringify(argv)}\n`,
+    {
+      mode: 0o755,
+    }
+  );
   const result = bash(
     `set -euo pipefail\n. "$1"\npsql_env SKILL_SCENARIOS_POSTGRES_URL -X -q -c 'select 1'`,
     [path.join(root, "scripts/e2e/lib/loopback-dsn.sh")],
