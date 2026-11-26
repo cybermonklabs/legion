@@ -744,13 +744,17 @@ func TestEachTickFetchesWithTheTokenFileAsItIsThen(t *testing.T) {
 	if tokens[0] != "ghs_first" || tokens[len(tokens)-1] != "ghs_rotated" {
 		t.Errorf("the transfers presented %q, want ghs_first first and the rotated ghs_rotated last", tokens)
 	}
-	for i, transfer := range run.transfers()[1:] {
+	transfers := run.transfers()
+	if len(transfers) < 2 || !inStaging(transfers[0], c.dir(), "ls-remote") || !inStaging(transfers[1], c.dir(), "fetch") {
+		t.Fatalf("the cache ran %q, want its first fill's read of GitHub's HEAD and its fetch first", transfers)
+	}
+	for i, transfer := range transfers[2:] {
 		want := "--git-dir=" + c.dir() + " ls-remote"
 		if i%3 == 1 {
 			want = "--git-dir=" + c.dir() + " fetch"
 		}
 		if transfer != want {
-			t.Errorf("a later tick's transfer %d is %q, want %q: each tick reads GitHub's HEAD, fetches that branch, then follows GitHub's HEAD", i+1, transfer, want)
+			t.Errorf("a later tick's transfer %d is %q, want %q: each tick reads GitHub's HEAD, fetches that branch, then follows GitHub's HEAD", i+2, transfer, want)
 		}
 	}
 }
@@ -945,19 +949,24 @@ func TestACacheFollowsARenamedDefaultBranch(t *testing.T) {
 	}
 }
 
-// A cache whose volume holds no clone and whose first clone fails has nothing to serve: Serve ends
-// with the clone's failure, so the container exits and the kubelet restarts it.
+// A cache whose volume holds no clone and whose first fill fails has nothing to serve: Serve ends
+// with the fill's failure, so the container exits and the kubelet restarts it. The fill's first
+// transfer, its read of GitHub's HEAD on the clone's temporary sibling, is the one that fails.
 func TestServeEndsWhenTheFirstCloneFails(t *testing.T) {
 	remote := newRemote(t)
 	opts := testOptions(t, newTestRunner(t, remote))
 	if err := os.RemoveAll(remote); err != nil {
 		t.Fatal(err)
 	}
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
 	opts.Log = func(string) {}
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	if err := Serve(ctx, opts); err == nil || !strings.Contains(err.Error(), "-c gc.auto=0 -c maintenance.auto=false clone") {
-		t.Fatalf("Serve = %v, want the clone's failure", err)
+	if err := Serve(ctx, opts); err == nil || !strings.Contains(err.Error(), "--git-dir="+dir+".clone-") || !strings.Contains(err.Error(), " ls-remote --symref ") {
+		t.Fatalf("Serve = %v, want the first fill's failure, its read of GitHub's HEAD in %s.clone-*", err, dir)
 	}
 }
 
