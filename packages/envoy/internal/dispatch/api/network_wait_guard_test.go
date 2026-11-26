@@ -1046,7 +1046,7 @@ var networkWaitFixedSites = []string{
 	"api.server.writeSubscribers",
 	"api.server.issueLegionAgents",
 	"api.server.getAppInstallation",
-	"api.server.readCIRuns",
+	"api.server.deriveCIResults",
 	"api.server.runSearch",
 	"api.server.listCredentialPending",
 	"api.server.judgeHolder",
