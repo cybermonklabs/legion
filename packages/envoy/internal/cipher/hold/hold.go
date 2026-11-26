@@ -4,9 +4,12 @@
 // person_standing (internal/cipher/store), so that while Dispatch cannot be asked it answers from
 // the last answer Dispatch gave: a person last answered held stays held, since only Dispatch ends
 // a hold, and everyone else is served, with one WARN line a minute per person and
-// broker_hold_unchecked_total. The answer is kept in the database rather than in this process, so
-// a restart or a second broker process answers alike, and each process keeps the latest answer by
-// Dispatch's own clock (the answer's as_of) whatever order the writes arrive in.
+// broker_hold_unchecked_total. A Dispatch older than the hold answers with no held field
+// (projectaccess.ErrNoHeldField); the gate answers each person from the last answer the same way,
+// with one WARN line a minute for every person at once and no count. The answer is kept in the
+// database rather than in this process, so a restart or a second broker process answers alike,
+// and each process keeps the latest answer by Dispatch's own clock (the answer's as_of) whatever
+// order the writes arrive in.
 //
 // An IAP deployment's Dispatch puts a deadline on every answer that a person is not held
 // (not_held_until). The gate serves such an answer, fresh, cached or kept, until its deadline and
@@ -81,7 +84,7 @@ const failureMemory = 5 * time.Second
 
 // logEvery is how often the gate logs the same thing about one person while it goes on: a person
 // it serves while Dispatch cannot be asked, and, for every person at once, Dispatch refusing the
-// broker's own account.
+// broker's own account and Dispatch answering with no held field.
 const logEvery = time.Minute
 
 // maxRemembered bounds the gate's per-person memories of failures, warnings and writes before it
@@ -133,6 +136,8 @@ type Gate struct {
 	warned map[string]time.Time
 	// refusalLogged is when the gate last logged Dispatch refusing the broker's own account.
 	refusalLogged time.Time
+	// noHeldLogged is when the gate last logged Dispatch answering with no held field.
+	noHeldLogged time.Time
 }
 
 type failure struct {
@@ -179,11 +184,14 @@ func (g *Gate) Check(ctx context.Context, person string) error {
 // answer, which it writes to person_standing, deadline included, unless it already wrote that
 // answer; the write runs apart from ctx, bounded by writeTimeout, so a caller that hangs up does
 // not stop it. Dispatch refusing the broker's own account is ErrUncheckable for every person,
-// logged at ERROR once a minute. Every other failure to ask, the ask's own bound running out among
-// them, is answered from the later, by as_of, of the kept row and a held answer the gate could not
-// write, read in the time the bound left the caller, and is remembered failureMemory unless the
-// caller itself hung up. A caller with no more than readReserve left asks nothing: it is answered
-// from the client's young cached answer when there is one (CacheTTL), and else from the kept row.
+// logged at ERROR once a minute. Dispatch's answer naming no held, a Dispatch older than the hold
+// (projectaccess.ErrNoHeldField), cached or fresh, is answered as a failure to ask is, logged at
+// WARN once a minute for every person at once rather than per person, and not counted. Every
+// other failure to ask, the ask's own bound running out among them, is answered from the later,
+// by as_of, of the kept row and a held answer the gate could not write, read in the time the bound
+// left the caller, and is remembered failureMemory unless the caller itself hung up. A caller with
+// no more than readReserve left asks nothing: it is answered from the client's young cached answer
+// when there is one (CacheTTL), and else from the kept row.
 //
 // A held answer, fresh or kept, is ErrHeld whatever deadline it carries. A not-held answer, fresh,
 // cached or kept, whose deadline is not after the gate's clock is ErrUncheckable, and so is
@@ -214,8 +222,13 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 	if bound <= 0 {
 		// No time to ask, but a young answer the client already holds is Dispatch's answer, served
 		// as one, with no WARN line and no count; only a person it holds none for is unasked.
-		if answer, err := g.access.Person(projectaccess.CachedOnly(ctx), person); err == nil {
+		answer, err := g.access.Person(projectaccess.CachedOnly(ctx), person)
+		switch {
+		case err == nil:
 			return g.answered(ctx, person, answer)
+		case errors.Is(err, projectaccess.ErrNoHeldField):
+			g.logNoHeld(person, err)
+			return g.unasked(ctx, person, err)
 		}
 		return g.unasked(ctx, person, errNoTimeToAsk)
 	}
@@ -231,6 +244,10 @@ func (g *Gate) CheckUntil(ctx context.Context, person string) (time.Time, error)
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
 		g.logRefusal(person, err)
 		return time.Time{}, fmt.Errorf("%w: %s: %w", ErrUncheckable, person, err)
+	case errors.Is(err, projectaccess.ErrNoHeldField):
+		// Dispatch answered, and its answer says nothing of a hold: the deployment's state, logged
+		// once a minute for everyone, and answered below as a failure to ask is.
+		g.logNoHeld(person, err)
 	}
 	if ctx.Err() != nil {
 		// The caller hung up, which is no failure of Dispatch's to remember for the next one. An ask
@@ -348,6 +365,10 @@ func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Ti
 			return time.Time{}, fmt.Errorf("%w, by Dispatch's last answer while it could not be asked (%w)", err, cause)
 		}
 	}
+	if errors.Is(cause, projectaccess.ErrNoHeldField) {
+		// logNoHeld says this once a minute for every person at once.
+		return until, nil
+	}
 	lastAnswer := "none"
 	if found {
 		lastAnswer = "not_held"
@@ -409,6 +430,23 @@ func (g *Gate) logRefusal(person string, err error) {
 	g.mu.Unlock()
 	if due {
 		g.log.Error("broker: Dispatch refused the broker's own account, so whether a person is held cannot be read",
+			"person", person, "error", err)
+	}
+}
+
+// logNoHeld logs Dispatch answering with no held field (err) at WARN, once a minute for every
+// person at once: a Dispatch older than the hold answers every person so, which is the
+// deployment's state during a roll, not this person's.
+func (g *Gate) logNoHeld(person string, err error) {
+	now := g.now()
+	g.mu.Lock()
+	due := g.noHeldLogged.IsZero() || now.Sub(g.noHeldLogged) >= logEvery
+	if due {
+		g.noHeldLogged = now
+	}
+	g.mu.Unlock()
+	if due {
+		g.log.Warn("broker: Dispatch answers no held, as a Dispatch older than the hold does; serving each person on the last answer Dispatch gave for them",
 			"person", person, "error", err)
 	}
 }
