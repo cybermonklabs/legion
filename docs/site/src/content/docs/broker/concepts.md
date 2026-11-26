@@ -40,7 +40,9 @@ the shared agent-tier ones, and no person's. The person a fleet's
 `BROKER_VM_EXCHANGE_ACCOUNTS` entry names reaches the Dispatch token and no secret, and is the
 person whose Inbox lists a request the machine makes for a shared human-tier secret
 ([Approvals](#approvals)); that person reaches their own secrets on the machine only by signing in
-on it.
+on it. A fleet whose account `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` lists is a job: its Dispatch token
+names the account as its service, no person, and the job's projects, and its machine login still
+names the fleet's service.
 
 A person signs in on a machine with `agent-secrets login`, which runs Google's device flow and then
 trades the person's own identity token at the exchange with the machine's as the actor token. That
@@ -57,25 +59,34 @@ pod's account decides what the token is. An entry of `BROKER_EXCHANGE_ACCOUNTS` 
 and the one Dispatch project it may write, or no project for an entry that names none
 (`<service account>==<person>`), or neither a person nor a project for an entry that names
 neither (`<service account>==`): such a token acts as the account itself, names the account as its
-service, and Dispatch records its writes under that account. An entry that names a project names
-its person, so no token held to a project is personless. An entry whose fixed session is
+service, and Dispatch records its writes under that account. An entry of that setting that names a
+project names its person. An entry of that setting whose fixed session is
 `legion-daemon:<its own project>` is a Legion daemon's own, and its token holds the OAuth scope
-`legion-status` too. Dispatch reads that scope (`DISPATCH_LEGION_STATUS_SCOPE`): where that
-setting is on, a write of a Legion issue's status needs it or the `person` scope, but for a status
-write of the architect of an issue above, which writes with its own broker token. No other token the
-exchange mints holds `legion-status`, whatever session it carries. A read entry, of
-`BROKER_EXCHANGE_READ_ACCOUNTS`, gives the pod's token a service and a fixed session instead, and
-no person and no project: the token holds the OAuth scope `read` alone. Dispatch serves such a
-token on the GET routes it classes as reads, and refuses it on every other route with
-`403 READ_ONLY_TOKEN`. The Envoy listener refuses it with `401`, and the
+`legion-status` too. Dispatch reads that scope (`DISPATCH_LEGION_STATUS_SCOPE`): where that setting
+is on, a write of a Legion issue's status needs it or the `person` scope, but for a status write of
+the architect of an issue above, which writes with its own broker token. No other token the exchange
+mints holds `legion-status`, whatever session it carries. A job entry, of
+`BROKER_EXCHANGE_JOB_ACCOUNTS`, gives the pod's token its projects and no person: the token names
+the account as its service and holds no OAuth scope, so a route that needs one refuses it before
+Dispatch's project check runs. For an entry that names one project, that check judges the token as
+it judges a person's named token for that project; for an entry that names `public`, the token
+reaches every public project and the private projects the entry lists. That list is the broker's
+grant: at this release Dispatch does not read a `public` token's list, so such a token writes
+wherever a token that names no project may. A read entry, of `BROKER_EXCHANGE_READ_ACCOUNTS`, gives
+the pod's token a service and a fixed session instead, and no person and no project: the token holds
+the OAuth scope `read` alone. Dispatch serves such a token on the GET routes it classes as reads,
+and refuses it on every other route with `403 READ_ONLY_TOKEN`. The Envoy listener refuses it with
+`401`, and the
 NATS auth service refuses a connection that presents it as `not_a_session`
 ([Operate](/legion/broker/operate/#what-to-run)). That token reads every read of Dispatch that
 needs no OAuth scope, for every project: each issue, closed and iceboxed ones included, with its
 documents, comments and asks. No setting holds a read entry to some projects.
 
-Any trade may also ask for the OAuth scope `read` (`scope=read`), whatever its subject. That
-includes a pod's token under any entry, an account entry that names no person among them, whose read token names its account as the service, a workflow run's token, a machine's Google identity, a
-person's sign-in and a machine login. The token keeps the session, the person or the service, and
+Any trade but a job entry's may also ask for the OAuth scope `read` (`scope=read`), whatever its
+subject. That includes a pod's token under any other entry, an account entry that names no person
+among them, whose read token names its account as the service, a workflow run's token, a
+machine's Google identity, a person's sign-in and a machine login. A job entry's trade that asks
+for `read` is refused `invalid_request`: a job's token is minted whole, with no OAuth scope. The token keeps the session, the person or the service, and
 the projects that the same trade would have named, and it writes nothing. Its project scope is
 the narrowed word of the one it would have had: `read-named`, `read-person` or `read-none`. It
 holds `read`, and `person` beside it when it acts for a person, never `approve` and never
@@ -108,6 +119,13 @@ proof is signed with a key made for the token's holder, and the broker binds the
 key. A person's read trade must always send one. This departs from RFC 9449, which binds a token
 to the key of the request's DPoP proof (`packages/envoy/internal/cipher/oauthstore/store.go`,
 `CreateAccessTokenSession` and `KeyHoldsReadToken`).
+
+A GitHub Actions run trades its own token at the exchange the same way, with
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions`, and that trade mints no machine login either. An
+entry of `BROKER_EXCHANGE_WORKFLOWS` gives the run a person and a project, and a job entry of
+`BROKER_EXCHANGE_JOB_WORKFLOWS` gives it its projects and no person, as for a pod. A job's token,
+of either kind, holds no OAuth scope, and Dispatch records its writes under its session and its
+service and under no person.
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews
@@ -243,7 +261,7 @@ and a pod.
 | `key-dir` | The `key.pem` and `enrollment` a launcher put in the key directory (`AGENT_SECRETS_KEY_DIR`, else `$XDG_RUNTIME_DIR/agent-secrets`): a box or a pod. | No `key.pem` there, and no `enrollment.pending` younger than 160 seconds. | A `key.pem` that does not parse, no `enrollment` beside it (with the launcher's `enrollment.error` when it left one), or a launcher still enrolling: a fresh `enrollment.pending` and no `key.pem` after `AGENT_SECRETS_ENROLL_WAIT`. |
 | `sign-in` | A person's `agent-secrets login` on this machine (`AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`). | Nobody has signed in on this machine. Or this machine cannot renew the sign-in (no sign-in client, or another client than the person signed in with) and it holds no live enrollment: none in its record, or one the broker answers not live to a read signed with the sign-in's key, made only for such a sign-in. The command then says so on stderr, in one line ending `; using the <source> source` where a later source serves, or `; tried the <source> source next` before that source's own refusal. `renew` never passes a sign-in over: it reports the ended enrollment. | Several people signed in and `AGENT_SECRETS_PERSON` names none of them, a record that does not parse, or a broker that refuses the sign-in or the read of its enrollment. |
 | `helper` | `agent-secrets-helper`, for a caller inside a session `agent-secrets register` registered. The command asks the helper first, so a process that only inherited the socket goes on. | No socket file where no helper is expected (`AGENT_SECRETS_HELPER_SOCK` unset and no helper unit installed), or the helper answers `NOT_A_SESSION`. | A stopped helper: no socket file where `AGENT_SECRETS_HELPER_SOCK` names one or the helper's unit is installed (a clean stop removes the socket). A socket that does not answer, `NO_CREDENTIAL` (the machine is not logged in), or any other refusal. |
-| `machine` | The machine's own cloud identity, found with no setting (below), whose session the **machine cache** keeps: `$XDG_STATE_HOME/agent-secrets/machine` (`~/.local/state/agent-secrets/machine`), a 0700 directory holding `key.pem` and `enrollment`, each 0600. A cached session signs with no network call. | No cached session, and no identity found: no `external_account` credential, no metadata server, or a broker that names no exchange audience. | A cached session that does not parse, a credentials file that does not parse, an `AGENT_SECRETS_MACHINE_IDENTITY` missing one of its variables or set to `kubernetes`, a plain-http broker off loopback, a Google audience other than the one the machine first read, or any refusal of the broker's exchange. |
+| `machine` | The machine's own cloud identity, found with no setting (below), whose session the **machine cache** keeps: `$XDG_STATE_HOME/agent-secrets/machine` (`~/.local/state/agent-secrets/machine`), a 0700 directory holding `key.pem` and `enrollment`, each 0600. A cached session signs with no network call. | No cached session, and no identity found: no `external_account` credential, no metadata server, or a broker that names no exchange audience. | A cached session that does not parse, a credentials file that does not parse, an `AGENT_SECRETS_MACHINE_IDENTITY` missing one of its variables or set to `kubernetes` or `github-actions`, a plain-http broker off loopback, a Google audience other than the one the machine first read, or any refusal of the broker's exchange. |
 
 A source that is present but broken, and any other refusal of the broker's, stop the command with
 that error: the command never acts under the next identity in its place. With no source, one refusal
@@ -258,9 +276,10 @@ Compute Engine metadata server, which a machine with none answers "no metadata s
 seconds (a GKE pod's metadata server answers for the pod's own Google service account). A pod's
 projected Kubernetes token is not one of them: the broker's exchange mints no launcher credential
 for a Kubernetes identity, so no session could be registered under it, and a pod enrolls through
-its launcher or `agent-secrets enroll --pod` instead. On EC2 with no such credential file the
-machine source has nothing, since the broker takes no AWS identity itself: such a machine reaches
-the broker through a launcher's key directory, a sign-in or the helper.
+its launcher or `agent-secrets enroll --pod` instead. A GitHub Actions run's token is not one of
+them either, for the same reason. On EC2 with no such credential file the machine source has
+nothing, since the broker takes no AWS identity itself: such a machine reaches the broker through a
+launcher's key directory, a sign-in or the helper.
 
 The credential file may take its subject token from a file, a URL, AWS, an executable (with
 `GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES=1`, as Google's libraries require) or an X.509
@@ -285,7 +304,8 @@ Which kind it is decides the token that mints the account's identity token with 
   `roles/iam.workloadIdentityUser` carries, and the account needs no role on itself.
 
 `AGENT_SECRETS_MACHINE_IDENTITY` still names the one identity to trade (`metadata` or `pool`,
-with its own variables; `kubernetes` is refused, exit 2, before anything is traded), and then
+with its own variables; `kubernetes` and `github-actions` are refused, exit 2, before anything is
+traded), and then
 nothing is detected. Because the cache sits below
 the sign-in, a person who runs `agent-secrets login` acts as themselves from their next command
 on, while the machine's session stays for every process no person signed in for. A machine
@@ -838,6 +858,13 @@ names that project** and whose person may still see it:
   session likewise names the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to.
   A [person's pod](#a-persons-pod) acts for its person, so it names its list as that person's
   session does.
+- A **job's pod** or a **job's machine**, whose account a job entry lists
+  (`BROKER_EXCHANGE_JOB_ACCOUNTS`, `BROKER_VM_EXCHANGE_JOB_ACCOUNTS`), names that entry's list and
+  no person. A credential of no person sees no private project, so it is denied every private
+  project's secret `project-not-named`, a project of its own list included, with no question to
+  Dispatch about a person. Where its list names a private project, it gets a `project-channels`
+  secret only behind the airlock and on no channel (below); a list of public projects alone leaves
+  that secret unlimited.
 
 Every other credential is denied the secret `project-not-named`: a session naming another project
 or none, a person on the project's access list whose session does not name it, and a pod whose

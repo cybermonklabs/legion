@@ -142,7 +142,7 @@ func TestAGitHubBodyReadFailureIsLogged(t *testing.T) {
 	}
 	_, _ = io.WriteString(conn, "POST /webhook/github HTTP/1.1\r\nHost: listener\r\nX-GitHub-Delivery: delivery-cut\r\nX-GitHub-Event: push\r\nContent-Length: 1000\r\n\r\n"+strings.Repeat("x", 300))
 	conn.Close() // the sender goes away with 700 bytes still owed
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !strings.Contains(logged.String(), "github body read failed") && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}

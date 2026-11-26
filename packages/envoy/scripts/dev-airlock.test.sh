@@ -158,10 +158,13 @@ AGENTSECRETS
     ;;
   */dev-oidc-issuer)
     # Writes each --token file and logs the line dev-airlock.sh reads each account, the
-    # broker's audience and the pod's uid out of, then its own URL, as the real one does.
+    # broker's audience and the pod's uid out of, then its own URL, as the real one does. Each
+    # --actions-token's request token file is written too, with the line dev-broker.sh reads that
+    # run's request URL out of.
     cat >"$out" <<'ISSUER'
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
+actions_runs=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token)
@@ -174,6 +177,17 @@ while [[ $# -gt 0 ]]; do
       echo "dev-oidc-issuer: $file holds $account's token for audience $audience (pod pod-uid-of-${account##*:})" >&2
       ;;
     --code-flow|--sign-in-as) ;;
+    --actions-token)
+      actions_runs=$((actions_runs + 1))
+      repository="${2%%=*}"
+      rest="${2#*=}"
+      workflow="${rest%%=*}"
+      rest="${rest#*=}"
+      ref="${rest%%=*}"
+      file="${rest#*=}"
+      printf 'fake-request-token\n' >"$file"
+      echo "dev-oidc-issuer: $file holds the request token of $repository/$workflow@$ref's Actions run (request URL http://127.0.0.1:$$/_actions/token/${actions_runs}?api-version=2.0)" >&2
+      ;;
     *)
       echo "fake dev-oidc-issuer: unexpected argument $1" >&2
       exit 2

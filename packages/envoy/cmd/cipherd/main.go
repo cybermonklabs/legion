@@ -528,8 +528,11 @@ func main() {
 	// The exchange's listed identities, read here, before the request machine, which reads the
 	// project an operator's entry maps a pod's or a machine's account to from the same entries
 	// the exchange mints from (exchange.Set.MappedProjects), so a token and a release cannot
-	// disagree on a credential's project.
-	exchangePolicy, err := exchange.NewSet(cfg.ExchangeAccounts, cfg.ExchangeReadAccounts, cfg.ExchangeWorkflows, cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
+	// disagree on a credential's project. A job's account and workflow entries are entries of the
+	// same kinds, each naming its projects in place of a person (exchange.JobProjects); Load has
+	// refused an identity a job setting and another setting both list, naming the two.
+	exchangePolicy, err := exchange.NewSet(slices.Concat(cfg.ExchangeAccounts, cfg.ExchangeJobAccounts), cfg.ExchangeReadAccounts,
+		slices.Concat(cfg.ExchangeWorkflows, cfg.ExchangeJobWorkflows), cfg.ExchangeGoogleAccounts, cfg.SignIn.Domain)
 	fatal(err)
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
@@ -606,7 +609,9 @@ func main() {
 		slog.Info("token exchange", "state", "unconfigured", "detail", "no subject token issuer is set, so no pod, workflow run or machine exchanges")
 	} else {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
-			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "job_accounts", len(cfg.ExchangeJobAccounts),
+			"workflows", len(cfg.ExchangeWorkflows), "job_workflows", len(cfg.ExchangeJobWorkflows),
+			"machines", len(cfg.ExchangeGoogleAccounts), "job_machines", jobMachines(cfg.ExchangeGoogleAccounts))
 	}
 	logPodRegistrars(cfg)
 	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
@@ -1534,6 +1539,18 @@ func vmPersonsByAccount(entries []exchange.GoogleEntry) map[string]string {
 		}
 	}
 	return persons
+}
+
+// jobMachines counts the BROKER_VM_EXCHANGE_JOB_ACCOUNTS entries among a set's machine entries:
+// the fleets whose machines write as a job, naming no person.
+func jobMachines(entries []exchange.GoogleEntry) int {
+	n := 0
+	for _, e := range entries {
+		if e.Job.Listed() {
+			n++
+		}
+	}
+	return n
 }
 
 // judgeDispatch is the broker's one read of Dispatch, at BROKER_JUDGE_DISPATCH_URL under the token
