@@ -115,9 +115,9 @@ type AppContextOptions struct {
 	// where the deployment configured neither. See api.DepsInput.
 	NewIssueLabel   string
 	NewIssueSession string
-	// SpecRoots names the roots of The Spec (cmd/dispatch: DISPATCH_SPEC_ROOTS), issue keys
-	// separated by commas; empty names none. See api.DepsInput.
-	SpecRoots      string
+	// SpecForm is the form of The Spec main built from DISPATCH_SPEC_ROOTS (api.NewSpecForm),
+	// which set the gate of Docs; nil names no root. See api.DepsInput.
+	SpecForm       *api.SpecForm
 	ServerURL      string
 	InsecureCookie bool
 	EnvoyURL       string
@@ -235,7 +235,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentTokens:            opts.AgentTokens,
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
-		SpecRoots:              opts.SpecRoots,
+		SpecForm:               opts.SpecForm,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,

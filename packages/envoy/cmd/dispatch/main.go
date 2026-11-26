@@ -104,7 +104,8 @@ type bootConfig struct {
 	NewIssueLabel   string
 	NewIssueSession string
 	// SpecRoots is DISPATCH_SPEC_ROOTS: the issue keys of the roots of The Spec, separated by
-	// commas, which the API parses (api.DepsInput.SpecRoots). Empty names no root.
+	// commas (specRootsSetting), which main builds the form of The Spec from (api.NewSpecForm).
+	// Empty names no root.
 	SpecRoots     string
 	EnvoyURL      string
 	GitHubAPIBase string
@@ -550,13 +551,13 @@ func main() {
 		BuildCommit: buildCommit,
 	})
 	// The restoration below schedules settlements, whose version writes carry approvals, before
-	// the API is built: the form gate is set first, so no carry passes it (api.FormGate).
-	formGate, err := api.FormGate(boot.SpecRoots, serverURL)
+	// the API is built: the form of The Spec is built first, and sets its gate on the service, so
+	// no carry passes it (api.NewSpecForm). The API judges with this same form.
+	specForm, err := api.NewSpecForm(boot.SpecRoots, serverURL, documentService)
 	if err != nil {
 		slog.Error("dispatch: read the roots of The Spec", "error", err)
 		os.Exit(1)
 	}
-	documentService.SetFormGate(formGate)
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	fillReviewContentHashes(ctx, database.Pool, reviewContentHashFillTimeout)
@@ -611,6 +612,7 @@ func main() {
 		Store:          database,
 		ServerURL:      serverURL,
 		Docs:           documentService,
+		SpecForm:       &specForm,
 		Embedder:       embedder,
 		Events:         broker,
 		Renames:        renames,
@@ -1512,7 +1514,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		ProjectOwnerFallback:  strings.TrimSpace(env.get("DISPATCH_PROJECT_OWNER_FALLBACK")),
 		NewIssueLabel:         strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_LABEL")),
 		NewIssueSession:       strings.TrimSpace(env.get("DISPATCH_NEW_ISSUE_SESSION")),
-		SpecRoots:             strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS")),
+		SpecRoots:             specRootsSetting(env),
 		GitHubAPIBase:         strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")),
 		SignInIssuer:          strings.TrimSpace(env.get("DISPATCH_SIGNIN_ISSUER")),
 		SignInClientID:        strings.TrimSpace(env.get("DISPATCH_SIGNIN_CLIENT_ID")),
@@ -1732,6 +1734,12 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		boot.DevSignIn = true
 	}
 	return boot, nil
+}
+
+// specRootsSetting is DISPATCH_SPEC_ROOTS as the server and the backfill commands read it: the
+// issue keys of the roots of The Spec, trimmed, which api.NewSpecForm parses.
+func specRootsSetting(env settingValues) string {
+	return strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS"))
 }
 
 // devSignInFence is the dev sign-in fence over the environment; devSignInLoadedFence covers what
@@ -2075,7 +2083,6 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.AgentTokens = boot.AgentTokens
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
-	built.SpecRoots = boot.SpecRoots
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken

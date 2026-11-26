@@ -660,7 +660,8 @@ func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login st
 
 // formKept is a form gate that finds no break. This package's tests of the carry give it to the
 // services they build, so each carry decides by the carry's rules alone: the form is judged by
-// the api package's gate (api.FormGate), which these tests do not build.
+// the api package's form (api.SpecForm, whose gate api.NewSpecForm sets), which these tests do
+// not build.
 func formKept(context.Context, pgx.Tx, *model.AskApproval, model.AskApprovalDocument) (bool, error) {
 	return false, nil
 }
@@ -824,11 +825,12 @@ func TestATransactionCannotCarryOneDocumentsApprovalTwice(t *testing.T) {
 	}
 }
 
-// A document service built with no form gate - as the backfill commands build theirs
-// (cmd/dispatch/subcommands.go), with a store and a broker alone - carries no approval: the
-// person's answer to a decision block, the whole change since her approval, leaves that approval
-// at the version she gave it, and no review is written in her name. The control: the same steps on
-// a service with a gate that finds no break carry her approval, so the steps can carry.
+// A document service built with no form gate - a store and a broker alone, which no process
+// builds, since the server and the backfill commands each set the gate (api.NewSpecForm) -
+// carries no approval: the person's answer to a decision block, the whole change since her
+// approval, leaves that approval at the version she gave it, and no review is written in her
+// name. The control: the same steps on a service with a gate that finds no break carry her
+// approval, so the steps can carry.
 func TestAServiceBuiltWithNoFormGateCarriesNoApproval(t *testing.T) {
 	t.Parallel()
 	run := func(t *testing.T, gate FormGate) (reviews, approvals int) {

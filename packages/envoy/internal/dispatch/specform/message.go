@@ -65,15 +65,10 @@ func UnreadLine(document string, version int, issue string) string {
 
 func refusal(head string, findings []Finding, total int, more string, notes []string, next string) Words {
 	var out strings.Builder
-	texts := textsOf(findings)
-	count := fmt.Sprintf("%d texts break", texts)
-	if texts == 1 {
-		count = "1 text breaks"
-	}
-	fmt.Fprintf(&out, "%s, because %s the form of The Spec.", head, count)
+	fmt.Fprintf(&out, "%s, because %s the form of The Spec.", head, textsBreak(textsOf(findings), false))
 	listed := findings[:min(len(findings), listedFindings)]
 	for _, finding := range listed {
-		fmt.Fprintf(&out, "\n- %s %s in %s: %s.", finding.Kind, finding.Node, finding.Where, finding.Said())
+		out.WriteString("\n" + findingLine(finding))
 	}
 	if rest := total - len(listed); rest > 0 {
 		if more == "" {
@@ -96,4 +91,45 @@ func textsOf(findings []Finding) int {
 		texts[[4]string{finding.Where, string(finding.Kind), finding.Node, finding.Excerpt}] = true
 	}
 	return len(texts)
+}
+
+// Listing is the lines that list findings, the findings of version of document that a read lists,
+// as the read route answers them and `dispatch spec-form` prints them. When refuses, the head
+// comes first: it counts the texts that break the form as a refusal's head counts them. Then each
+// finding has the line a refusal writes for it (findingLine). When findings is fewer than total,
+// a last line says how many it lists, and the head counts those texts "or more", since a finding
+// it leaves out can be of another text.
+func Listing(document string, version int, refuses bool, findings []Finding, total int) []string {
+	partial := total > len(findings)
+	lines := make([]string, 0, len(findings)+2)
+	if refuses && len(findings) > 0 {
+		lines = append(lines, fmt.Sprintf("Dispatch refuses an approval request of %s version %d, because %s the form of The Spec.",
+			document, version, textsBreak(textsOf(findings), partial)))
+	}
+	for _, finding := range findings {
+		lines = append(lines, findingLine(finding))
+	}
+	if partial {
+		lines = append(lines, fmt.Sprintf("Dispatch lists the first %d of the %d findings.", len(findings), total))
+	}
+	return lines
+}
+
+// findingLine is the line of one finding: its kind, its node, its place, and the finding as a
+// refusal writes it (Said).
+func findingLine(finding Finding) string {
+	return fmt.Sprintf("- %s %s in %s: %s.", finding.Kind, finding.Node, finding.Where, finding.Said())
+}
+
+// textsBreak says that texts texts break the form: "1 text breaks", "2 texts break", and with
+// more, "1 text or more breaks" and "2 texts or more break".
+func textsBreak(texts int, more bool) string {
+	or := ""
+	if more {
+		or = " or more"
+	}
+	if texts == 1 {
+		return "1 text" + or + " breaks"
+	}
+	return fmt.Sprintf("%d texts%s break", texts, or)
 }

@@ -215,14 +215,19 @@ const UNREAD = {
   line: "Dispatch cannot read spec.md version 1 of ACME-3, an approved document under the root, so no rule compared its texts. To change that, write a new version of that document and request its approval.",
 };
 
-/** What `GET /api/v1/artifacts/{id}/spec-form` answers for one document. */
+/**
+ * What `GET /api/v1/artifacts/{id}/spec-form` answers for one document. `findingLines` are the
+ * lines the server writes that list the findings (`finding_lines`, from `specform.Listing` in
+ * packages/envoy/internal/dispatch/specform/message.go), which the command prints as they are.
+ */
 function formRead(
   artifactID: string,
   name: string,
   version: number,
   scope: string,
   texts: Record<string, number>,
-  findings: readonly SpecFormFinding[] = []
+  findings: readonly SpecFormFinding[] = [],
+  findingLines: readonly string[] = []
 ): SpecFormRead {
   const inScope = scope === "covered" || scope === "list";
   return {
@@ -245,6 +250,7 @@ function formRead(
     },
     findings: [...findings],
     findings_total: findings.length,
+    finding_lines: [...findingLines],
     terms: [],
     unread: [],
     refuses_approval: inScope && findings.length > 0,
@@ -430,70 +436,62 @@ describe("dispatch spec-form", () => {
     ]);
   });
 
-  test("a covered document with findings prints that Dispatch refuses its approval, then each finding as a statement line", async () => {
-    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 2 }, [
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
-      finding("ACME-2-spec", "spec.md", 2, "one-write", "statement", LONG_SENTENCE),
-    ]);
+  test("a covered document with findings prints the lines Dispatch writes for them, the line of each finding as its refusal writes it", async () => {
+    forms["ACME-2-spec"] = formRead(
+      "ACME-2-spec",
+      "spec.md",
+      2,
+      "covered",
+      { statement: 2 },
+      [
+        finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
+        finding("ACME-2-spec", "spec.md", 2, "one-write", "statement", LONG_SENTENCE),
+      ],
+      [
+        "Dispatch refuses an approval request of spec.md version 2, because 2 texts break the form of The Spec.",
+        `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
+        `- statement one-write in spec.md version 2: ${LONG_SENTENCE}.`,
+      ]
+    );
 
     const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
 
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "Dispatch refuses an approval request of spec.md version 2, because 2 texts break the form of The Spec.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
-      `- statement one-write: ${LONG_SENTENCE}.`,
+      `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
+      `- statement one-write in spec.md version 2: ${LONG_SENTENCE}.`,
       "",
     ]);
   });
 
-  test("a statement with two faults is one text that breaks the form, with a line for each fault", async () => {
-    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 1 }, [
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", LONG_SENTENCE),
-    ]);
-
-    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
-
-    expect(code).toBe(0);
-    expect(stdout.split("\n")).toEqual([
-      "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
-      `- statement ship-at-head: ${LONG_SENTENCE}.`,
-      "",
-    ]);
-  });
-
-  test("a finding that gives ways out prints its detail, then its ways out, as the server's refusal writes them", async () => {
-    const stop =
-      'a stop in "Web.Config" has no space after it, so Dispatch cannot find the end of the sentence';
-    const ways = "Put a space after the stop, or put the name in code font";
-    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 1 }, [
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", stop, ways),
-    ]);
-
-    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
-
-    expect(code).toBe(0);
-    expect(stdout.split("\n")).toEqual([
-      "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
-      `- statement ship-at-head: ${stop}. ${ways}.`,
-      "",
-    ]);
-  });
-
-  test("a read that lists fewer findings than it counts says how many it lists, and that more texts can break the form", async () => {
-    // The read route lists at most 500 findings and counts them all in findings_total.
+  test("the lines of the findings are the server's words alone: a change of its wording is what the command prints", async () => {
+    // Words no release of the server writes: the command composes no line of a finding itself,
+    // so it prints these as they are, in scope and out of it, the count line among them.
+    const planted = [
+      "Planted head: the server counts the texts that break the form.",
+      "- planted line of the first finding.",
+      "- planted line of the second finding.",
+      "Planted count: the server lists 2 of 3.",
+    ];
     const listed = [
       finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
       finding("ACME-2-spec", "spec.md", 2, "one-write", "statement", LONG_SENTENCE),
     ];
     forms["ACME-2-spec"] = {
-      ...formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 3 }, listed),
+      ...formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 3 }, listed, planted),
       findings_total: 3,
     };
     forms["ACME-3-notes"] = {
-      ...formRead("ACME-3-notes", "notes.md", 2, "not_spec", { statement: 3 }, listed),
+      ...formRead(
+        "ACME-3-notes",
+        "notes.md",
+        2,
+        "not_spec",
+        { statement: 3 },
+        listed,
+        planted.slice(1)
+      ),
       findings_total: 3,
     };
 
@@ -501,20 +499,12 @@ describe("dispatch spec-form", () => {
     const outside = await run(["spec-form", "ACME-3", "--artifact", "notes.md"]);
 
     expect(covered.code).toBe(0);
-    expect(covered.stdout.split("\n")).toEqual([
-      "Dispatch refuses an approval request of spec.md version 2, because 2 texts or more break the form of The Spec.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
-      `- statement one-write: ${LONG_SENTENCE}.`,
-      "Dispatch lists the first 2 of the 3 findings.",
-      "",
-    ]);
+    expect(covered.stdout.split("\n")).toEqual([...planted, ""]);
     expect(outside.code).toBe(0);
     expect(outside.stdout.split("\n")).toEqual([
       "notes.md is not the spec or the Verification document of its issue, so Dispatch refuses no approval request of it for its form.",
       "The findings below are for you to read.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
-      `- statement one-write: ${LONG_SENTENCE}.`,
-      "Dispatch lists the first 2 of the 3 findings.",
+      ...planted.slice(1),
       "",
     ]);
   });
@@ -537,9 +527,15 @@ describe("dispatch spec-form", () => {
       "spec.md belongs to a root of The Spec, so Dispatch refuses no approval request of it for its form.",
     ],
   ])("a document of scope %s says why Dispatch refuses nothing for it, and still lists its findings", async (scope, line) => {
-    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, scope, { statement: 1 }, [
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
-    ]);
+    forms["ACME-2-spec"] = formRead(
+      "ACME-2-spec",
+      "spec.md",
+      2,
+      scope,
+      { statement: 1 },
+      [finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES)],
+      [`- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`]
+    );
 
     const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
 
@@ -547,7 +543,7 @@ describe("dispatch spec-form", () => {
     expect(stdout.split("\n")).toEqual([
       line,
       "The findings below are for you to read.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
+      `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
       "",
     ]);
   });
@@ -629,7 +625,11 @@ describe("dispatch spec-form", () => {
       1,
       "covered",
       { claim: 1, procedure: 1 },
-      [finding("ACME-5-verification", "verification.md", 1, "v-one", "claim", LONG_SENTENCE)]
+      [finding("ACME-5-verification", "verification.md", 1, "v-one", "claim", LONG_SENTENCE)],
+      [
+        "Dispatch refuses an approval request of verification.md version 1, because 1 text breaks the form of The Spec.",
+        `- claim v-one in verification.md version 1: ${LONG_SENTENCE}.`,
+      ]
     );
     forms["ACME-5-notes"] = formRead("ACME-5-notes", "notes.md", 1, "not_spec", { statement: 1 });
 
@@ -641,7 +641,7 @@ describe("dispatch spec-form", () => {
       "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions: no text breaks it.",
       "verification.md version 1:",
       "Dispatch refuses an approval request of verification.md version 1, because 1 text breaks the form of The Spec.",
-      `- claim v-one: ${LONG_SENTENCE}.`,
+      `- claim v-one in verification.md version 1: ${LONG_SENTENCE}.`,
       "",
     ]);
     expect(formReads()).toEqual([

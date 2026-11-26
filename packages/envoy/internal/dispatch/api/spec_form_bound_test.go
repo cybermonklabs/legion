@@ -59,7 +59,7 @@ const boundWorkTimes = 3
 // ends stops the judgment: it answers the context's error within a second.
 func TestTheReadRouteJudgesADocumentOfOneMebibyteInBoundedWork(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{})
-	served := &server{deps: tree.deps}
+	served := tree.deps.SpecForm
 	statements := (boundDocumentBytes - len("# Bound\n")) / len(boundStatements(boundBroken, 1))
 	documents := map[string]model.Artifact{
 		"broken": uploadFormDocument(t, tree.handler, tree.root, "broken.md", boundStatements(boundBroken, statements)),

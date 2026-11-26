@@ -157,8 +157,7 @@ type Service struct {
 	identity    identity.Identity
 	serverURL   string
 	// formGate is the form gate of The Spec that each carry of an approval asks (SetFormGate),
-	// nil until the API sets it: a carry with no gate writes nothing (writeCarriedReview), so a
-	// process that builds this service with no API carries no approval.
+	// nil until api.NewSpecForm sets it: a carry with no gate writes nothing (writeCarriedReview).
 	formGate          atomic.Pointer[FormGate]
 	settle            time.Duration
 	markWait          time.Duration
