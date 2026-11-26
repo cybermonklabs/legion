@@ -4555,7 +4555,7 @@ function textOnly(
   from: number,
   to: number
 ): boolean {
-  const word = new RegExp(`(?<![\\w$])${name.replace(/\$/g, "\\$")}(?![\\w$])`);
+  const word = new RegExp(`(?<![\\w$])${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w$])`);
   const uses = [...code.matchAll(new RegExp(word, "g"))]
     .map((hit) => hit.index ?? 0)
     .filter((at) => at < from || at >= to);
