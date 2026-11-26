@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // heldHandshakeClient is a client of its own, owning the stream and connected with options, through
@@ -56,11 +57,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		t.Helper()
 		heard := heardReconnects(client)
 		hold.Release()
-		select {
-		case <-heard:
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the client did not hear of its reconnect within 30 s of the hold's release")
-		}
+		testwait.Receive(t, "control: the client to hear of its reconnect once the hold is released", heard)
 		w := client.WindowUntil(nil).(*window)
 		for send := range 2 {
 			if err := w.pinToSend(); err != nil {
@@ -121,13 +118,8 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		testnats.RequireLockHeld(t, conn)
 		hold.Release()
 		for send := range 2 {
-			select {
-			case err := <-answers:
-				if err != nil {
-					t.Errorf("first send %d answered %v once the hold was released, want nil", send+1, err)
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatalf("first send %d gave no answer within 30 s of the hold's release", send+1)
+			if err := testwait.Receive(t, fmt.Sprintf("first send %d to answer once the hold is released", send+1), answers); err != nil {
+				t.Errorf("first send %d answered %v once the hold was released, want nil", send+1, err)
 			}
 		}
 	})
@@ -216,11 +208,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 		t.Errorf("the old window's send on the reconnected connection, before the client heard of the drop, answered %v, want ErrUnavailable", err)
 	}
 	unlock()
-	select {
-	case <-entered:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the client's disconnect hook never ran once the row let the client's lock go")
-	}
+	testwait.Receive(t, "control: the client's disconnect hook to run once the row lets the client's lock go", entered)
 	select {
 	case <-heard:
 		t.Fatal("control: the client heard of the reconnect while its disconnect hook held nats.go's callbacks, so the second gap was not held")
@@ -234,11 +222,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 		t.Fatalf("control: the new window's first send, after nats.go had reconnected, answered %v, want nil", err)
 	}
 	open()
-	select {
-	case <-heard:
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the client did not hear of the reconnect within 30 s of the disconnect hook's release")
-	}
+	testwait.Receive(t, "control: the client to hear of the reconnect once the disconnect hook is released", heard)
 	if err := w.pinToSend(); err != nil {
 		t.Errorf("the new window's next send, once the client heard of the reconnect its pin already counted, answered %v, want nil", err)
 	}
@@ -292,13 +276,8 @@ func TestAWindowDoesNotTakeAHeldWriteForALostConnection(t *testing.T) {
 	}
 	thaw()
 	for what, answer := range map[string]<-chan error{"send": sent, "probe": probed} {
-		select {
-		case err := <-answer:
-			if err != nil {
-				t.Errorf("the %s of a window whose connection stayed connected under a held write answered %v, want nil", what, err)
-			}
-		case <-time.After(30 * time.Second):
-			t.Fatalf("the %s gave no answer within 30 s of the link moving again", what)
+		if err := testwait.Receive(t, "the "+what+" to answer once the link moves again", answer); err != nil {
+			t.Errorf("the %s of a window whose connection stayed connected under a held write answered %v, want nil", what, err)
 		}
 	}
 }
