@@ -19,7 +19,11 @@ export LEGION_TEST_NATS_URL=nats://127.0.0.1:14222 LEGION_TEST_NATS_MONITOR_URL=
 
 ## Reading a shared database
 
-Read a database outside your pod through the read-only login whose URL is in the file that `SESSION_READER_DSN_FILE` names. Put no URL on a command line, which any process of the pod can read. Pipe its parts to psql as a service file, with the command in `skill://legion-worker/references/tools-steps.md#reading-a-shared-database`.
+Read a database outside your pod through the read-only login whose URL is in the file that `SESSION_READER_DSN_FILE` names. Put no URL on a command line, which any process of the pod can read. Pipe its parts to psql as a service file, in one read-only transaction, with no `COMMIT` in `<file>`:
+
+```sh
+PGSERVICEFILE=<(python3 -c 'from urllib.parse import*;u=urlsplit(input());q=unquote;print(f"[r]\nhost={u.hostname}\nport={u.port or 5432}\ndbname={q(u.path[1:])}\nuser={q(u.username)}\npassword={q(u.password)}",*map("=".join,parse_qsl(u.query)),sep="\n")' <"$SESSION_READER_DSN_FILE" 2>/dev/null) PGSERVICE=r psql -1qX -v ON_ERROR_STOP=1 -c 'SET TRANSACTION READ ONLY' -f <file>
+```
 
 ## A tool the image lacks
 

@@ -24,7 +24,7 @@ Check the child and its parent in `read_state` and Dispatch. When the child stil
 
 ## An update round that is not finishing (`update-stalled`)
 
-The daemon replaces a pod whose configuration moved, or one that you asked `replace_pod` for, only after an update round. This wake says that the round's bound has passed, and `reason` names what still holds the round. At the end of the round the daemon reads the workspace. Where that read finds work that no branch or tag on origin holds, or fails, the round keeps the pod and ends with no replacement, unless the round is over a drift that breaks the pod. A round that you asked for is never over such a drift. Work that a role did not push goes with a pod that the daemon replaces.
+This wake says that an update round's bound has passed, and `reason` names what still holds the round.
 
 For each hold that `reason` names:
 

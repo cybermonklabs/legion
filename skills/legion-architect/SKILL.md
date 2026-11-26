@@ -12,7 +12,7 @@ Read a page below when its condition holds.
 - Children to file, adopt, review or make wait: `skill://legion-architect/references/decomposition.md`.
 - An issue's plan, or a stopped task: `skill://legion-architect/references/plan.md`.
 - An issue in `accepting`, a merge hold, a parent's last round, the merge or the close: `skill://legion-architect/references/acceptance.md`.
-- A `provider-errors` wake, an agent of your tree that needs an action, a clear defect that another role writes to you, a re-run of your tree's CI run, an enqueue of its pull request that no merger merges, or a GitHub write that your `gh` cannot make: `skill://legion-architect/references/operations.md`.
+- A `provider-errors` wake, an agent of your tree that needs an action, a re-run of your tree's CI run, an enqueue of its pull request that no merger merges, or a GitHub write that your `gh` cannot make: `skill://legion-architect/references/operations.md`.
 
 ## Every turn
 
@@ -72,4 +72,4 @@ Nothing after the close is yours.
 - An action on an agent is the controller's. Ask for it with a `dispatch comment` on that agent's issue that mentions the controller's role, never with `envoy_publish`.
 - Your tree's failed CI runs, and its pull requests that no merger merges, are yours, never another session's.
 
-Read `skill://legion-architect/references/operations.md` before each of the last three.
+Read `skill://legion-architect/references/operations.md` before each of the last two.

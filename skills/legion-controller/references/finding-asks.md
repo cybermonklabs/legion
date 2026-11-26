@@ -30,9 +30,7 @@ Open it on the report issue with `dispatch ask`, and follow it. Its question beg
 
 A role writes a clear defect to you only when it found no tree that owns the code: a comment that mentions your role, on the report issue or on its own issue, with the first line `Clear defect from <role>`. A clear defect that you find yourself goes to its owner as `skill://legion-worker/references/findings.md#write-to-the-owner` says. When no tree owns it, post its evidence on the report issue with `controller` as the role.
 
-File it only when it is clear, in a repository that both role GitHub Apps are installed on, no open issue tracks it, and no live tree's repository and component match. An open issue that no live tree owns gets the evidence as a comment, and the reply `Filed dispatch://<KEY>`. Otherwise file nothing, and reply under its evidence, mentioning the finder: `Not filed:` with the owner that the finder writes to itself, or the reason why the finder opens its ask.
-
-Read the reply's form and the five steps in `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect-no-tree-owns` before every such defect.
+Before each such defect, take the five steps of `skill://legion-controller/references/finding-asks-steps.md#file-a-clear-defect-no-tree-owns`. They say when you file it and how you reply under its evidence.
 
 ## Follow it
 

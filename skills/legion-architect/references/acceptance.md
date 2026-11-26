@@ -19,9 +19,9 @@ No worker holds `accepting`. Read, against the goal:
 
 ## A merge hold
 
-Before every `sign_off`, read the project's merge holds, `merge-holds-md`. A line that names the pull request's repository, or `all`, and whose end is not past holds the sign-off.
-While one holds, end the turn with a WAITING line that names it. Send the controller no message about a hold: it lifts a hold by deleting its line.
-Read `skill://legion-architect/references/acceptance-steps.md#a-merge-hold` before every `sign_off`: it says how to read the document and a line, and what each wake does.
+Before every `sign_off`, read the project's merge holds: `dispatch doc-read --project <PROJECT> --artifact merge-holds-md`, where `<PROJECT>` is the project of the issue's key. A line under `Holds` reads `- <repositories> | <reason> | <end>`. It holds the sign-off when it names the pull request's repository, or `all`, and its end is not past. An end is past only when it is an RFC 3339 time before now. `not found by slug` is no hold. Any other failed read decides nothing: sign off nothing.
+
+While a line holds the sign-off, or after a failed read, end the turn with a WAITING line that names the hold or the read, and subscribe to nothing for it. On a `merge-holds-changed` notice, and before you sign off on any wake, read the document again. Send the controller no message about a hold: it lifts a hold by deleting its line.
 
 ## The last round
 

@@ -3510,8 +3510,8 @@ test("read_state's summary prints the pause's line while the project is paused a
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
 // many wakes the pacing holds until their turn and when the earliest of them is due. The
 // controller's skill has it read that count before it asks for a start again
-// (`skills/legion-controller/references/operations.md`, step 3 of "Actions on an agent"), so a
-// summary without the line leaves that step with nothing to read.
+// (`skills/legion-controller/references/operations.md`, "Actions on an agent"), so a summary
+// without the line leaves that rule with nothing to read.
 test("read_state's summary counts the wakes the pacing holds and says when the earliest is due", async () => {
   const wakesLines = (lines: readonly string[]) =>
     lines.filter((line) => line.startsWith("wakes waiting"));

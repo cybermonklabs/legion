@@ -42,16 +42,16 @@ The daemon could not ask the session store for a role's start. Open one finding 
 
 ## `provider-errors`
 
-Six turns of `role` in a row ended in a provider error, and the daemon keeps prompting. It tells an architect too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one agent stays stuck, `compact` it. `fresh_session` it only when a later notice says that it is still refused. A dead role (`CLAIM_NOT_RUNNING`) takes `fresh_session`.
+Six turns of `role` in a row ended in a provider error, and the daemon keeps prompting. It tells an architect too, except for a tree root architect's own run, which comes to you alone. Name the run and its model in the day's report, and send no architect anything. When one agent stays stuck, `compact` it. `fresh_session` it only when a later notice says that it is still refused.
 
 ## A root architect's stuck tool call
 
-Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot recover from on its own: <reason>``. The session will not end that call. `suspend` the root's architect, then `resume_agent` it once `read_state` shows its claim suspended, so that it starts again in its own session with the task it owes (`skill://legion-controller/references/operations.md`).
+Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot recover from on its own: <reason>``. The session will not end that call. `suspend` the root's architect, then `resume_agent` it once `read_state` shows its claim suspended.
 
 ## GitHub mentions
 
 Answer a mention that asks for triage, or for what `read_state` or Dispatch holds, as a Dispatch comment on the issue that the mention is about. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect. Never build a role token from a partial issue reference. Then reply to the person on GitHub with that comment's link alone. Their words go there because the owner can read them nowhere else. A person's answer on a Dispatch ask is taken as catch-up step 5 of `skill://legion-controller/references/finding-asks.md` says, copying nothing.
 
-Post that reply with the implement App token that the secrets broker lends, narrowed to the repository, as `skill://legion-controller/references/operations-steps.md#a-reply-to-a-github-mention` says. It is your one GitHub write for a mention, and you post it once.
+Post that reply once, as `skill://legion-controller/references/operations.md#a-reply-to-a-github-mention` says. It is your one GitHub write for a mention.
 
 A person who asks how to pass a design gate approves, in Dispatch, the document of each step that your `Design gate steps:` line names. Where the root registered its Verification document as `criteria`, the person approves that document too. A project that wants no gate sets `gates.design: []` in `legion.yaml`.
