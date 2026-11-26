@@ -68,7 +68,9 @@ const StepRecordsRollForward = 20261117064152
 // 20261120055717_dispatch_issue_value_sequences.up.sql carries another, one statement that
 // docs/kubernetes.md gives too: internal/store's
 // TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack runs it, and no textcheck holds its
-// text to the guide's.
+// text to the guide's. The header of 20261124033010_plan_earlier_givers.up.sql carries one that
+// docs/kubernetes.md names and does not give, so no textcheck holds it: internal/daemon's
+// rollBackOwnersPlans runs it before the block of 20261117034837_issue_plans.up.sql.
 func WayBack(version int) (string, error) {
 	all, err := All()
 	if err != nil {

@@ -66,6 +66,12 @@ var (
 	legionErr  error
 )
 
+// TestMain runs this binary as the fake OMP where fakeOMPEnv is set, and runs the tests otherwise.
+// Only TestMain makes the fake of a copy the shim starts: in a build of these tests without it,
+// such a copy runs the tests, each of which starts shims whose copies run them again.
+// fakeOMPCopy refuses to start a shim in such a process (fakeOMPCopyRefusal), and so does
+// buildLegion, before it builds anything; TestACopyStartedAsTheFakeOMPRunsAsTheFake fails in such a
+// build by name.
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeOMPEnv) == "1" {
 		os.Exit(fakeOMP())
@@ -79,6 +85,62 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Exit(runRemovingTheBuiltLegion(m))
+}
+
+// fakeOMPCopy is the path of this test binary, which the shim a test starts runs as the fake OMP,
+// with fakeOMPEnv=1 in its environment. It fails t where fakeOMPCopyRefusal refuses.
+func fakeOMPCopy(t *testing.T) string {
+	t.Helper()
+	if err := fakeOMPCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return self
+}
+
+// fakeOMPCopyRefusal is why this process may start no copy of this test binary, nil when it may. A
+// process that has fakeOMPEnv=1 was started as the fake OMP, and TestMain runs such a process as
+// the fake, so one that runs the tests runs in a build without TestMain, and a copy started there
+// would run the tests again.
+func fakeOMPCopyRefusal() error {
+	if os.Getenv(fakeOMPEnv) == "1" {
+		return fmt.Errorf("this process has %s=1, so a shim started it as the fake OMP, but it runs the tests: this build of the tests has no TestMain that runs the fake, and a copy started here would run the tests again", fakeOMPEnv)
+	}
+	return nil
+}
+
+// fakeOMPCopyRefusal, which fakeOMPCopy and buildLegion ask first, refuses a process that has
+// fakeOMPEnv=1 and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal.
+func TestAProcessStartedAsTheFakeOMPStartsNoCopy(t *testing.T) {
+	fixtureenv.Unset(t, fakeOMPEnv)
+	if err := fakeOMPCopyRefusal(); err != nil {
+		t.Fatalf("with %s unset: %v, want no refusal", fakeOMPEnv, err)
+	}
+	t.Setenv(fakeOMPEnv, "1")
+	if err := fakeOMPCopyRefusal(); err == nil || !strings.Contains(err.Error(), fakeOMPEnv+"=1") {
+		t.Fatalf("with %s=1: %v, want a refusal that names it", fakeOMPEnv, err)
+	}
+}
+
+// A copy started with fakeOMPEnv=1 runs as the fake OMP: it publishes its pid. The fake does not
+// read -h. In a build without TestMain, the testing package reads -h before any test runs, prints
+// its own flag usage and exits, so the copy publishes nothing, this test fails there by name, and
+// the copy starts no copy of its own.
+func TestACopyStartedAsTheFakeOMPRunsAsTheFake(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "omp.pid")
+	cmd := exec.Command(fakeOMPCopy(t), "-h")
+	cmd.Env = append(os.Environ(), fakeOMPEnv+"=1", "FAKE_OMP_STDIN="+filepath.Join(dir, "stdin"), "FAKE_OMP_PID="+pidFile)
+	out, err := cmd.CombinedOutput()
+	published, readErr := os.ReadFile(pidFile)
+	if err != nil || readErr != nil || string(published) != strconv.Itoa(cmd.Process.Pid) {
+		t.Fatalf("a copy started as the fake OMP with -h: %v, published %q (%v), want exit 0 and its pid %d\n%s", err, published, readErr, cmd.Process.Pid, out)
+	}
 }
 
 func TestTheTestProcessIsGuarded(t *testing.T) {
@@ -155,9 +217,14 @@ func fakeOMP() int {
 	return 0
 }
 
-// buildLegion builds cmd/legion once per test binary: the shim under test is the real command.
+// buildLegion builds cmd/legion once per test binary: the shim under test is the real command. A
+// copy started as the fake OMP builds nothing (fakeOMPCopyRefusal): it runs no shim, and in a build
+// without TestMain no TestMain would remove what it built.
 func buildLegion(t *testing.T) string {
 	t.Helper()
+	if err := fakeOMPCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
 	legionOnce.Do(func() {
 		if legionDir, legionErr = os.MkdirTemp("", "legion-it-bin"); legionErr != nil {
 			return
@@ -353,10 +420,7 @@ func startFakeOMPShim(t *testing.T, legion, addr string, env []string, flags ...
 	if err := os.WriteFile(tokenPath, []byte(integrationToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
+	self := fakeOMPCopy(t)
 	shim := &fakeOMPShim{
 		output:      &lockedBuffer{},
 		pidPath:     filepath.Join(work, "omp.pid"),

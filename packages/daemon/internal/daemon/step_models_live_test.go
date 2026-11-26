@@ -57,12 +57,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -70,7 +68,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -1401,27 +1398,17 @@ func (r *stepModelsLive) boot() {
 		r.dispatch.base, r.cfg.Project, liveRepo, r.issues[0].key, r.issues[1].key, r.cfg.DispatchURL)
 }
 
-// overrides is the daemon this run boots. It holds the local runtime over the real worker stream
-// and the API listener the fixture holds. It holds the workflow's App tokens stood in for, and
-// GitHub's stand-in. It also holds an environment that names the pinned Claude Code, the bun its
-// MCP server runs on and the claude-envoy build. The boot resolves its Claude Code launch from that
-// environment (resolveClaude). That environment is the daemon's alone, not the process's. The
-// panes' launcher scripts exec the legion this run built (paneLegion). The daemon's own executable
-// is this test binary, so each implementer's completion would run this package's tests as its jj.
+// overrides is the daemon this run boots: the local runtime's own wiring (daemonOverrides), the
+// workflow's App tokens stood in for, and GitHub's stand-in. It also holds an environment that
+// names the pinned Claude Code, the bun its MCP server runs on and the claude-envoy build. The boot
+// resolves its Claude Code launch from that environment (resolveClaude). That environment is the
+// daemon's alone, not the process's.
 func (r *stepModelsLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		listen:         heldListen,
-		workflowTokens: r.tokens,
-		githubAPI:      r.githubAPI,
-		paneLegion:     r.legion,
-		environ: append(os.Environ(),
-			toolEnv("claude")+"="+r.claude, toolEnv("bun")+"="+r.bun, claudePluginDirEnv+"="+r.pluginDir),
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.workflowTokens, o.githubAPI = r.tokens, r.githubAPI
+	o.environ = append(os.Environ(),
+		toolEnv("claude")+"="+r.claude, toolEnv("bun")+"="+r.bun, claudePluginDirEnv+"="+r.pluginDir)
+	return o
 }
 
 // stepModelsLogs is one log written to each of its handlers.
