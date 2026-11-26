@@ -81,9 +81,10 @@ type Deps struct {
 	Events      *events.Broker
 	Identity    identity.Identity
 	// Origins is the web origins the server answers at, the canonical one (DISPATCH_SERVER_URL)
-	// first, then the outside one (DISPATCH_OUTSIDE_ORIGIN) when it has one: a dashboard URL of
-	// either that a text writes is read as the reference its page names. The zero value reads only
-	// `dispatch://` references.
+	// first: a dashboard URL of any of them that a text writes is read as the reference its page
+	// names. cmd/dispatch passes the canonical origin alone; the second origin
+	// (DISPATCH_OUTSIDE_ORIGIN) is set from slice S6a. The zero value reads only `dispatch://`
+	// references.
 	Origins           text.Origins
 	Settle            time.Duration
 	MarkWait          time.Duration
