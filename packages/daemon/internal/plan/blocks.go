@@ -152,33 +152,47 @@ func resolveNeeds(p Plan, issue string) Plan {
 	}
 	tasks := make([]Task, len(p.Tasks))
 	for i, task := range p.Tasks {
-		words := task.Needs
-		task.Needs, task.Unresolved, task.OutsideIssue, task.ElementNeeds = nil, nil, nil, nil
-		for _, word := range words {
-			if of, reference := issueOf(word); reference && of != issue {
-				if !slices.Contains(task.OutsideIssue, word) {
-					task.OutsideIssue = append(task.OutsideIssue, word)
-				}
-				continue
-			}
-			id := neededID(word)
-			switch {
-			case elements[id]:
-				if !slices.Contains(task.ElementNeeds, word) {
-					task.ElementNeeds = append(task.ElementNeeds, word)
-				}
-			case !ids[id]:
-				if !slices.Contains(task.Unresolved, word) {
-					task.Unresolved = append(task.Unresolved, word)
-				}
-			case !slices.Contains(task.Needs, id):
-				task.Needs = append(task.Needs, id)
-			}
-		}
+		task.Needs, task.Unresolved, task.OutsideIssue, task.ElementNeeds = resolved(task.Needs, issue, ids, elements)
 		tasks[i] = task
 	}
 	p.Tasks = tasks
 	return p
+}
+
+// resolved is one task's `needs` words read as resolveNeeds reads them: the ids of the tasks of
+// ids they name, the words that name no task, the words into another issue or none, and the words
+// that name an element of elements, each kept once in the block's order. Each word is looked up in
+// a set of what each list keeps already, so the read takes time linear in the words, where a scan
+// of the kept list for each word would be quadratic in the words of one block, and one `needs`
+// attribute within Dispatch's document limit holds hundreds of thousands of words.
+// TestEachNeedOfAPlanIsReadInLinearTime holds the read to its thread's CPU time, since no count
+// kept here would see a scan.
+func resolved(words []string, issue string, ids, elements map[string]bool) (needs, unresolved, outside, elementNeeds []string) {
+	if len(words) == 0 {
+		return nil, nil, nil, nil
+	}
+	needed, left, away, ofElements := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
+	keep := func(list *[]string, kept map[string]bool, value string) {
+		if !kept[value] {
+			kept[value] = true
+			*list = append(*list, value)
+		}
+	}
+	for _, word := range words {
+		if of, reference := issueOf(word); reference && of != issue {
+			keep(&outside, away, word)
+			continue
+		}
+		switch id := neededID(word); {
+		case elements[id]:
+			keep(&elementNeeds, ofElements, word)
+		case !ids[id]:
+			keep(&unresolved, left, word)
+		default:
+			keep(&needs, needed, id)
+		}
+	}
+	return needs, unresolved, outside, elementNeeds
 }
 
 // issueOf is the issue a `needs` word names when it is a `dispatch://` reference, as Dispatch reads
