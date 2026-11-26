@@ -87,6 +87,8 @@ export function CredentialRecordFacts({ record }: { record: RecordResponse }): R
           <blockquote
             className={`mt-1 border-l-2 pl-3 text-sm whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
           >
+            {/* The reason the agent typed, as it typed it: the reading list's
+                `credential-request-reason`. */}
             {record.reason}
           </blockquote>
         </div>

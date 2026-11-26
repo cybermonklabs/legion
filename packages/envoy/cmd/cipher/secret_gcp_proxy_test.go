@@ -97,6 +97,7 @@ func (gcpAirlockGrant) AirlockRules() proxyrules.Rules {
 // before the proxy carried HTTP/2. The process is the command's own so the SDK's proxy and root
 // certificate caches, each read once per process, read this row's environment.
 func TestGCPSecretListReachesSecretManagerThroughTheAirlockOverGRPC(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (proxy.New, (*Server).serveBound, (*Server).valuesFor, (*Machine).AirlockValues, (*Machine).channelLimit, (*Machine).channelsOf, (*Client).Access, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (proxy.New, (*Server).serveBound, (*Server).valuesFor, (*Machine).AirlockValues, (*Machine).channelLimit, (*Machine).channelsOf, (*Client).Access, (*Client).get, (Reader).Get, (*GoogleAccount).Read, (*GoogleAccount).read, (*GoogleAccount).mint, (*GoogleAccount).generateIDToken, (*GoogleAccount).accessToken, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
 
 	// Secret Manager: the fake, behind TLS with a certificate for its real name.

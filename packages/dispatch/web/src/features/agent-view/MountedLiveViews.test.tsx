@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import type { AgentStreamFrame } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -23,6 +23,13 @@ import { LiveViewRoute, MountedLiveViews } from "./MountedLiveViews";
 // wait out that whole module graph inside a `findBy` timeout. Loading it with this file costs
 // the rows nothing and leaves the host's own `lazy` where the shell needs it.
 import "./AgentConversationPage";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * The shell's host of the live views (INFRA-812, D5 to D8): what the person finds on the page as

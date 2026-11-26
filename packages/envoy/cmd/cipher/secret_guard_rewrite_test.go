@@ -38,6 +38,7 @@ import (
 // guard is said the same way, for the last proxy tag removed and for a secret that keeps a proxy
 // tag written without it.
 func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, c := range []struct {
 		name, held, args, want, notWant string
 		tags                            map[string]string
@@ -167,6 +168,7 @@ func (r *raceOnTag) DescribeSecret(ctx context.Context, in *secretsmanager.Descr
 // broker refuses the github-app the other writer left with no owners (github-owners-missing), as
 // its loader does, and the retag prints that refusal.
 func TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rewrite := guarded("ada@example.com")
 	written := "the removal stands, and API_KEY's requesters were written as " + `"` + rewrite + `"`
 	notMade := "its second write, API_KEY's requesters as " + `"` + rewrite + `"` + ", was not made"
@@ -251,6 +253,7 @@ func TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded(t *testing.T) {
 // owner and tier. It says the write landed and its read-back failed, and asks the broker to reread
 // the secret, whose tier did change.
 func TestALandedRetagOfASharedSecretIsNotCalledRefused(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal(policytest.Secret("API_KEY", policy.OwnerShared, policy.TierAgent, "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	useAWS(t, &raceOnTag{secretsAPI: local, failReadBack: "tag", readBackErr: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:DescribeSecret"}}, testAccount, adaSignIn)
@@ -397,6 +400,7 @@ func (s *sdkServer) count(op string) int {
 // second write after an open removal, and neither names the administrator nor points the person
 // at another sign-in.
 func TestAnAWSTagWriteIsJudgedByItsAttempts(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rewrite := guarded("ada@example.com")
 	open := []string{"does not hold", "still holds", sharedRetagRefused, "choose another with AWS_PROFILE"}
 	for _, c := range []struct {
@@ -516,6 +520,7 @@ func TestAnAWSTagWriteIsJudgedByItsAttempts(t *testing.T) {
 // write IAM refused before acting changed nothing, and one whose answer was lost may not have
 // changed anything, so neither says "the tags are written".
 func TestTheUncheckedLineFollowsOnlyALandedWrite(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, c := range []struct {
 		name          string
 		store         func(*valueReads) secretsAPI
@@ -546,6 +551,7 @@ func TestTheUncheckedLineFollowsOnlyALandedWrite(t *testing.T) {
 // the `secret show` that reads them, and claims nothing about what the requesters tag holds, which
 // is that writer's. The broker is asked to reread once, since the removal landed.
 func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
@@ -605,6 +611,7 @@ func TestARewriteGCPRefusesForARaceSaysAnotherWriterChangedTheTags(t *testing.T)
 // clean write: the write landed, so the value went unchecked as surely. It also says the read-back
 // failed, and asks the broker to reread the secret.
 func TestALandedRetagWhoseValueWasNotCheckedSaysSo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	local := secrets.NewLocal(policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	broker := startSecretBroker(t, servedBy(local))
 	refused := &valueReads{Local: local, refuse: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue"}}
@@ -641,6 +648,7 @@ func TestALandedRetagWhoseValueWasNotCheckedSaysSo(t *testing.T) {
 //     refuses the secret after it, which a person may read as "nothing more to check". After a
 //     rewrite, the one thing it says stands is the removal, which landed.
 func TestATagWriteWhoseAnswerIsLostSaysTheOutcomeIsUnknown(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	rewrite := guarded("ada@example.com")
 	notGuessed := []string{"does not hold " + policy.RequestersRollbackGuard + " yet", "still holds " + policy.RequestersRollbackGuard, "the removal landed, so", "and API_KEY's requesters were written as"}
 	const show = "secret show API_KEY`"
