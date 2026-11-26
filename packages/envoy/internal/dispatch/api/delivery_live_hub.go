@@ -248,11 +248,15 @@ type deliveryHub struct {
 // project whose rows it moves, and each recompute is one snapshot read of the shared pool: on the
 // build farm, 168 evals views marked at once were answered one after another for 1.0-1.6 s, 6-10
 // ms each, which with the rewrite's own commit passed the 2 s R14 gives a settings write. Four at
-// once bring a project's 52 open views to 13 rounds, about 0.13-0.2 s, and hold at most four of
-// the shared pool's 64 connections (store's sharedPoolSize), as a broadcast's delivery does for
-// the same reason (broadcastDeliveryWorkers). Evals views alone run aside: they judge no
-// freshness, where the delivery views' reads set the one verdict in the order they run.
-const evalsRecomputes = 4
+// once brought a project's 52 open views to 13 rounds, and at ten times the stated run rate the
+// last of the 8 views a change of the production job names moved was sent 290 ms after the
+// rewrite's commit (dispatch://INFRA-2916); eight at once bring them to 7 rounds. Each recompute's
+// read holds one connection (readContext), so the recomputes hold at most eight of the shared
+// pool's 64 connections (store's sharedPoolSize), as many as a Delivery timeline request holds for
+// its reads side by side (readDeliveryRows) and twice the four a broadcast's delivery holds for the
+// same reason (broadcastDeliveryWorkers). Evals views alone run aside: they judge no freshness,
+// where the delivery views' reads set the one verdict in the order they run.
+const evalsRecomputes = 8
 
 // hubGeneration is one run of the hub. ctx, stop and the channels are set once at its start; the
 // rest is guarded by the hub's mu. views and conns are emptied by the drops that stop it, and no
