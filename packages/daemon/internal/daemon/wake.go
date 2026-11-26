@@ -470,7 +470,9 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 // period — and neither does an issue whose phase no role works.
 //
 // It also cancels the backstops the release before this one armed: that pod is gone, and its
-// backstop has nothing left to bring back.
+// backstop has nothing left to bring back. A backstop of an issue that waits for its admission
+// slot is armed all the same and wakes no one when it fires (the workflow's podBackstopDue): the
+// issue can give its slot back after the release, so the fire is where that is read.
 func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	if err := r.trees.CancelPodBackstopsOf(ctx, r.project, issue.Key, ""); err != nil {
 		return err

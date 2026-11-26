@@ -696,6 +696,61 @@ failure under the cause word `provider_error` for the first, and `cyber_policy` 
 with the same sentence as its `detail`; a plugin older than the contract of entry
 20261125174608 (cyber-policy) is served `provider_error` for both.
 
+**Before a `cyber_policy` refusal reaches the daemon, the plugin tries four times inside the same
+turn.** A content filter is often stochastic, so pi-legion climbs one ladder
+(`packages/pi-legion/src/cyber-policy-ladder.ts`), one try per rung:
+
+1. It sends the refused request again as it was.
+2. It sends the request again with one message appended:
+   `LEGION_CYBER_POLICY_RETRY_MESSAGE`, by default "The provider's content filter blocked your
+   last response. Continue the task, and do not reproduce exploit code, payloads or credentials
+   verbatim; describe them instead."
+3. It compacts the session into a text summary written by the session's model (Oh My Pi's `soft`
+   method, whatever `compaction.methodOrder` says, since provider-native compaction and
+   snapcompact keep the refused text) and sends the request from the summary. The newest turn
+   group, which holds the refused request, is summarized too, so the request no longer carries
+   the refused text; the summary request itself carries it once more. A session with nothing to
+   compact, as a new one is at the shipped `compaction.keepRecentTokens` of 20000, gets the turn
+   Oh My Pi resumes after the empty compaction instead, which sends the request again as it was.
+4. It sends the request again on the first model below the session's own in its
+   `retry.fallbackChains` whose family is the same as the session model's family. For an OpenAI
+   model, that is an OpenAI model. A model whose family Oh My Pi cannot tell (a gateway's alias
+   name) gets no fourth rung. The model returns after the refusal cooldown, as after a content
+   filter's step.
+
+Each rung waits first: `LEGION_CYBER_POLICY_RETRY_WAIT_MS` (15000),
+`LEGION_CYBER_POLICY_MESSAGE_WAIT_MS`, `LEGION_CYBER_POLICY_COMPACT_WAIT_MS` and
+`LEGION_CYBER_POLICY_FALLBACK_WAIT_MS` (25000 each). A wait is 0 to 25000 milliseconds, because Oh
+My Pi gives the plugin's settle handler 30 seconds; a larger value is cut to 25000, with a warning.
+Set these variables, and the message, in `runtime.kubernetes.pod.env` or `runtime.tmux.pane_env`.
+Each rung's request goes as input from outside the session, so Oh My Pi's hold ends for that one
+request, and the next refusal starts the hold again. A compaction whose own summary is refused
+counts as a refused rung, and the fourth rung comes next. A compaction that fails for another
+reason sends the request again as it was, and one that is stopped ends the pass. Once 28 seconds
+have passed since a rung's settle handler started, it starts no model switch and sends nothing,
+because Oh My Pi stops waiting for it at 30; a switch already under way runs to its end, and the
+refusal cooldown brings the model back. An abort ends the pass too. The bound is one pass per
+refusal: each rung once, and no refusal starts another pass until a model answers. The daemon's
+prompt stays open through the pass, so its result is the result of the last rung that ran. If a rung
+succeeds, the agent continues its work and the daemon gets no refusal. Only when the last rung is
+refused does the refusal reach the daemon, with its code, as described below. Two kinds of turn
+get no pass, and their refusal reaches the daemon at once: a refused reply that carries tool
+calls, and a turn that ends while a background job's result is due.
+
+**A pane whose ladder has compacted once runs no background compaction for the rest of its
+process.** To summarize the newest turn group, the ladder registers a `session_before_compact`
+handler at its first compaction. Oh My Pi runs no speculative or background compaction while any
+such handler is registered, and it has no way to remove one, so from then on that pane's
+threshold compactions run in the foreground and hold the turn while they summarize. Only a pane
+whose session model is OpenAI's, refused three times in a row, reaches that rung; no other pane
+changes. The ladder has no setting that turns it off: the daemon's hold of a claim failed under
+`cyber_policy`, described below, stays the backstop.
+
+**Keep the fallback chain of an OpenAI role inside the OpenAI family.** Oh My Pi itself walks the
+chain on a `cyber_policy` refusal before the plugin sees the turn: when a model of another family
+follows an OpenAI model in `retry.fallbackChains`, Oh My Pi switches to that family at once, and
+the ladder does not run. The ladder's own rungs never change family.
+
 **The agent of a claim failed under `cyber_policy` is launched again only by a decision, and
 always in a new session.** Each copy of the refused content sent to OpenAI again adds a refusal to
 the organization's record, and a prompt from the daemon is input from outside the session, which
@@ -954,9 +1009,11 @@ of its own, and a root whose tree lingers or stands at `phase: done` is re-admit
 generation, which is what the restart above does.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
-provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
-sends the claim whatever task it owed again, so the session, its workspace and everything the
-worker knows of its issue stay, and only the transcript the provider is asked to read gets shorter.
+provider keeps refusing: the daemon has Oh My Pi write a handoff document of that session, with
+Oh My Pi's `handoff` request and never its `compact` request, whose summary request Anthropic
+refuses for a long Claude session, and then sends the claim whatever task it owed again, so the
+session, its workspace and everything the worker knows of its issue stay, and only the
+transcript the provider is asked to read gets shorter.
 It reaches a claim whose agent is ready or idle, a root architect included, and refuses a
 suspended, failed or retired claim naming what starts it again: `--fresh-session` for a workflow
 role, and the daemon's controller keeper for the project's own controller claim, which only
@@ -973,17 +1030,20 @@ forgets, and that read records what it finds as the sweep's report of the proces
 it finds the process running and clears a death charge, it writes the claim as the daemon holds
 it, as that report's write does, and it stops, suspends, forgets, takes back and starts nothing.
 A process that read finds running is refused
-`CLAIM_IN_A_TURN`, because a compaction would abort the turn that may be the one ending the run
-of refusals. A claim whose session is being compacted takes that code too. A claim whose process
-the runtime would not answer for, and a claim that records no process to read, are refused
-`CLAIM_UNSETTLED` instead, each left exactly as the request found it, since nobody read whether
-a turn of it runs. A claim stored working that no process stands behind is refused
+`CLAIM_IN_A_TURN`, because Oh My Pi refuses a handoff in a turn, and that turn may be the one
+ending the run of refusals. A claim whose session is being compacted takes that code too. A
+claim whose process the runtime would not answer for, and a claim that records no process to
+read, are refused `CLAIM_UNSETTLED` instead, each left exactly as the request found it, since
+nobody read whether a turn of it runs. A claim stored working that no process stands behind is
+refused
 `CLAIM_NOT_RUNNING`, naming `--fresh-session` as what starts it again, because this command has
 no agent to ask; for the project's own controller claim, which `--fresh-session` refuses and
 whose keeper does nothing while it is stored working, it names
 `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>`.
-A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
-printed with its reason, and whatever task the claim owed has gone again all the same.
+A handoff Oh My Pi refused — one asked for in a turn, a session with nothing to hand off — or
+answered with no document, or with a result that is not an object (`Oh My Pi gave a handoff
+result that is not an object. The daemon cannot say if the session changed.`), is printed with
+its reason, and whatever task the claim owed has gone again all the same.
 
 `legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
 left refused, and for a claim stored working that no process stands behind, which the compaction
@@ -1689,34 +1749,44 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
   confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
   prompt, since it can acknowledge and then answer busy. Nothing to do.
+
 - **`supervise: the confirmation of the prompt that told the agent what became of its earlier
   work was taken back; the next prompt tells it again`** at Info, with the `delivery`, is the
   turn that confirmed the task no longer counted as the agent reading that prompt: the turn was
   another input's (an Envoy notice's, say), the prompt came to nothing (a refusal, a busy answer,
-  or no turn), a provider error failed a model call of the turn, a compaction aborted the turn,
-  or the process ended in a turn that confirmed the task before the prompt's result came (while
-  its send was in flight or it waited on its result), since only that result says the turn was
-  the prompt's. The record is untold again, and the next prompt carries the sentence. Nothing to
-  do.
+  or no turn), a provider error failed a model call of the turn, or the process ended in a turn
+  that confirmed the task before the prompt's result came (while its send was in flight or it
+  waited on its result), since only that result says the turn was
+  the prompt's.
+  The record is untold again, and the next prompt carries the sentence.
+  Nothing to do.
+
 - **`supervise: the claim abandons its session, so the record of what the old session's process
   ended is not told to the fresh agent; the abandoned session's sentence says that work is
   gone`** at Info is a fresh session: the claim's first task names the session it left behind,
-  and the record of the old process's end is marked told with no prompt. A record written later,
-  of the fresh session's own process, is told after the abandoned session's sentence, in the
-  same prompt. Nothing to do.
+  and the record of the old process's end is marked told with no prompt.
+  A record written later, of the fresh session's own process, is told after the abandoned session's
+  sentence, in the same prompt.
+  Nothing to do.
+
 - **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
   record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
   that the claim still held when its record was told by other means, as a fresh session's
-  start tells it. Nothing to do.
+  start tells it.
+  Nothing to do.
+
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
-  state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
-  daemon relaunches its session once its orphan reconciliation has run. Nothing to do.
+  state it was stored in (`stored=`): a launch the previous daemon began and never recorded.
+  The daemon relaunches its session once its orphan reconciliation has run.
+  Nothing to do.
+
 - **`supervise: refused a registration: the launch at its generation records no process`** and
   **`supervise: dropped a stale event`** with `event=StreamHello fence=process` mean a process
   registered or said hello for a launch the claim records no process for: a launch the daemon's
-  stop cut short, or a retired process whose relaunch is waiting. The registration is refused with
-  409 and the claim stays `launching`; the next boot, or the relaunch, starts the claim's process.
+  stop cut short, or a retired process whose relaunch is waiting.
+  The registration is refused with 409 and the claim stays `launching`; the next boot, or the
+  relaunch, starts the claim's process.
   Nothing to do.
 
 ## The work loops or stops

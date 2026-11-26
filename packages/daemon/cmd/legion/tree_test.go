@@ -54,7 +54,7 @@ func treeOf(root *cobra.Command) string {
 // after the walk is a full invocation against a test double, with its exit code and effect.
 func TestLegionTreeGolden(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (legionState).
-	got := treeOf(newRoot(io.Discard, io.Discard))
+	got := treeOf(newRoot(io.Discard, io.Discard, processWorkspace()))
 	if *updateTree {
 		if err := os.WriteFile(treeGolden, []byte(got), 0o644); err != nil {
 			t.Fatal(err)
@@ -126,7 +126,7 @@ func TestLegionTreeGolden(t *testing.T) {
 		}
 	})
 	t.Run("a mutant that keeps config-reference at the top fails the walk", func(t *testing.T) {
-		mutant := newRoot(io.Discard, io.Discard)
+		mutant := newRoot(io.Discard, io.Discard, processWorkspace())
 		moved := newConfigReferenceCommand(io.Discard, io.Discard)
 		moved.Use = "config-reference --json"
 		mutant.AddCommand(moved)
