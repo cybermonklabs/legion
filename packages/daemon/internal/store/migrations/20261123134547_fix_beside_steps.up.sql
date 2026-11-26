@@ -13,9 +13,11 @@
 -- started for, the place of the step it runs again and the entry it raised, its state (reading
 -- while the daemon reads the failed job, running once its entry is raised, then ended), and how it
 -- ended. pushed holds, for each role, the head of that role's branch beside the fix that a push
--- showed, '{}' for none. A task holds at most one fix that is reading or running
--- (task_fixes_one_open). ci_failures holds each failure of a CI check at a head of a task once
--- (record.CIFailure): whom it went to, the fix that took it and whether the owner was told.
+-- showed, '{}' for none. move_carried says a start of the task carried the fix's move of the task's
+-- working copy (record.TaskFix.MoveCarried), so no later start moves that copy for the fix; the way
+-- back's drop of task_fixes drops it with the table. A task holds at most one fix that is reading
+-- or running (task_fixes_one_open). ci_failures holds each failure of a CI check at a head of a task
+-- once (record.CIFailure): whom it went to, the fix that took it and whether the owner was told.
 --
 -- step_starts.start_commit, end_commit and fix_check are the commits a step's record names at its
 -- start and at its end, and the check a fix's record names. step_starts.beside_fix is the open fix
@@ -110,6 +112,7 @@ create table task_fixes (
   job_name text not null default '', job_url text not null default '', read_failed text not null default '',
   claim_failed text not null default '',
   way int not null default 0 check (way between 0 and 4),
+  move_carried boolean not null default false,
   pushed jsonb not null default '{}', started_at timestamptz, ended_at timestamptz,
   primary key (issue, generation, task, fix));
 create unique index task_fixes_one_open on task_fixes (issue, generation, task) where state in ('reading', 'running');

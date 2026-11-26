@@ -2347,7 +2347,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"issue_plans":   {"issue", "generation", "version", "source", "artifact_id", "given_by", "given_at"},
 		"plan_tasks":    {"issue", "generation", "task", "plan_version", "block_text", "needs", "part_of", "owner_role", "merges", "steps_by_default", "fixes_ci", "state", "stopped_reason", "running_kind", "position", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told"},
 		"task_fixes": {"issue", "generation", "task", "fix", "state", "check_id", "head", "place", "entry", "got_report", "return_to", "failed",
-			"end_head", "result", "job_name", "job_url", "read_failed", "claim_failed", "way", "pushed", "started_at", "ended_at"},
+			"end_head", "result", "job_name", "job_url", "read_failed", "claim_failed", "way", "move_carried", "pushed", "started_at", "ended_at"},
 		"ci_failures":       {"issue", "generation", "task", "check_id", "head", "went_to", "fix", "owner_told", "at"},
 		"plan_steps":        {"issue", "generation", "task", "position", "role", "type", "agent_key"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
