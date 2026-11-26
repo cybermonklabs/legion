@@ -168,7 +168,8 @@ func TestAStepBesideAFixIsToldToPushToItsOwnBranch(t *testing.T) {
 }
 
 // deletions is each deletion of branches beside a fix queued for LEGION-208, oldest first, as
-// `<generation> <task> fix <n>` (record.BesideBranchesDelete, fix 0 for every fix of the task).
+// `<generation> <task> fix <n>`, and `<generation> <task> fix 0 through <m>` for every fix of the
+// task to m, the newest fix it held when the row was queued (record.BesideBranchesDelete).
 func (r *fixRig) deletions() []string {
 	r.t.Helper()
 	var lines []string
@@ -177,7 +178,11 @@ func (r *fixRig) deletions() []string {
 		if err := json.Unmarshal(row.payload, &deletion); err != nil {
 			r.t.Fatalf("decode the deletion %s: %v", row.payload, err)
 		}
-		lines = append(lines, fmt.Sprintf("%d %s fix %d", deletion.Generation, deletion.Task, deletion.Fix))
+		line := fmt.Sprintf("%d %s fix %d", deletion.Generation, deletion.Task, deletion.Fix)
+		if deletion.Fix == 0 {
+			line += fmt.Sprintf(" through %d", deletion.Through)
+		}
+		lines = append(lines, line)
 	}
 	return lines
 }
@@ -237,7 +242,7 @@ func (r *fixRig) parks() {
 // with deleteAfterEveryCompletion the no-commit way 2 and the way 3 each do.
 func TestBesideBranchesAreDeletedAtTheirEnds(t *testing.T) {
 	fix1 := []string{"1 a fix 1"}
-	task := []string{"1 a fix 0"}
+	task := []string{"1 a fix 0 through 1"}
 	t.Run("a new-commit way 2 deletes none", func(t *testing.T) {
 		r := fixAtTheEnd(t, returnEngine())
 		r.fixEnds(headTwo)
