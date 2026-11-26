@@ -913,9 +913,6 @@ func standingTerms(issue record.Issue, stored record.StoredWait, lingers bool) [
 	if change := stored.NextChange; change != nil {
 		terms = append(terms, fmt.Sprintf("Its next change %d is open since %s.", change.Generation, since(change.Since)))
 	}
-	if lingers && (len(stored.Defects) > 0 || stored.NextChange != nil) {
-		terms = append(terms, fmt.Sprintf("The tree of %s does not run while its root lingers, so no next change starts.", issue.Key))
-	}
 	return terms
 }
 
