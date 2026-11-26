@@ -584,7 +584,7 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 // presentation writes, under the class membership_held.
 func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, caller ciphertoken.Caller) {
 	logger.Warn("listener: broker token rejected",
-		slog.String("reason", "membership_held"),
+		slog.String("reason", relaySocketReasonMembershipHeld),
 		slog.String("path", r.URL.Path))
 	writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: "MEMBERSHIP_HELD", Error: fmt.Sprintf(
 		"Dispatch holds %s's credentials; they work again once Dispatch confirms them", caller.Person)})
@@ -599,7 +599,7 @@ func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *htt
 // the rejection line every refused presentation writes, under the class deadline_passed.
 func refuseLapsedBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request) {
 	logger.Warn("listener: broker token rejected",
-		slog.String("reason", "deadline_passed"),
+		slog.String("reason", relaySocketReasonDeadlinePassed),
 		slog.String("path", r.URL.Path))
 	w.Header().Set("Retry-After", "60")
 	writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{Code: "BROKER_UNAVAILABLE",
