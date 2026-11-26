@@ -1,13 +1,20 @@
 package store
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	neturl "net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -19,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -1825,11 +1833,15 @@ func TestCensusRefusesALockHeldOnATouchedTableByAnOldTransaction(t *testing.T) {
 // The holder waits for its client, idle in its transaction, until the test ends, but its wait event
 // is not a fact it holds for the whole wait: a signal that wakes its backend (the process-signal
 // barrier a dropdb sends to every backend, as the tests beside this one drop their databases)
-// takes it out of the wait until it waits again, and a census that reads it then prints its wait
-// as none. So the census is taken again until its diagnosis reads the wait. Every census the row
-// reads is held to everything else: the refusal, the holder's state, transaction start, query and
-// locks, which a wake does not change, and a report that prints no literal of the holder's query,
-// awake or asleep. Only a missing wait is taken again.
+// takes it out of the wait until it waits again, and Postgres, reading it then, answers its wait as
+// null. So the census runs through a relay (waitRelay) that keeps the wait Postgres answered the
+// census's diagnosis query, as Postgres sent it, and the refusal must print that wait: the wait for
+// the client where Postgres answered it, none where Postgres answered null. Only a census whose
+// diagnosis Postgres answered with no wait is taken again: Postgres's answer, which no census code
+// writes or moves, says the holder was out of its wait when the census read it. Every census the
+// row reads is held to everything else: the refusal, the holder's state, transaction start, query
+// and locks, which a wake does not change, and a report that prints no literal of the holder's
+// query, awake or asleep.
 func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -1848,6 +1860,7 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 	if _, err := held.Exec(ctx, "select count(*) from things where kind = '"+sentinel+"'"); err != nil {
 		t.Fatal(err)
 	}
+	relay, relayed := relayWaits(t, url, sentinel)
 	time.Sleep(1100 * time.Millisecond)
 	pid := "pid " + strconv.FormatUint(uint64(holder.PgConn().PID()), 10)
 	steady := []string{
@@ -1858,13 +1871,14 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 		"relation things AccessShareLock granted",
 		"virtualxid ExclusiveLock granted",
 	}
-	reads := 0
-	refusal := testwait.UntilPolling(t, 100*time.Millisecond, "a census whose diagnosis of "+pid+" reads its wait for its client", func() (string, bool) {
-		report, err := census(ctx, url, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
+	reads, unwaited := 0, 0
+	refusal := testwait.UntilPolling(t, 100*time.Millisecond, "a census whose diagnosis of "+pid+" Postgres answered with its wait for its client", func() (string, bool) {
+		report, err := census(ctx, relayed, withCheck("select 0"), pgmigrate.CensusOptions{LongTransaction: time.Second})
 		if err != nil {
 			t.Fatalf("census: %v", err)
 		}
 		reads++
+		answers := relay.take()
 		if out := reportText(report); strings.Contains(out, sentinel) {
 			t.Fatalf("census %d prints a literal of the holder's query:\n%s", reads, out)
 		}
@@ -1877,20 +1891,275 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 				t.Fatalf("census %d: refusal lacks %q:\n%s", reads, want, got[0])
 			}
 		}
-		switch {
-		case strings.Contains(got[0], ", wait_event Client/ClientRead, "):
+		if len(answers) != 1 {
+			t.Fatalf("census %d: Postgres answered %d diagnoses of %s, %v, where the census reads one:\n%s", reads, len(answers), pid, answers, got[0])
+		}
+		switch answered := answers[0]; {
+		case answered.is("Client", "ClientRead"):
+			if !strings.Contains(got[0], ", wait_event Client/ClientRead, ") {
+				t.Fatalf("census %d: Postgres answered the census's diagnosis of %s with %s, and the refusal prints another wait:\n%s", reads, pid, answered, got[0])
+			}
 			return got[0], true
-		case strings.Contains(got[0], ", wait_event none, "):
-			// A wake took the holder out of its wait: the one case taken again.
+		case answered.eventType == nil && answered.event == nil:
+			if !strings.Contains(got[0], ", wait_event none, ") {
+				t.Fatalf("census %d: Postgres answered the census's diagnosis of %s with %s, and the refusal prints a wait:\n%s", reads, pid, answered, got[0])
+			}
+			// A wake took the holder out of its wait as Postgres read it: the one case taken again.
+			unwaited++
 			return got[0], false
 		default:
-			t.Fatalf("census %d: refusal names a wait that is neither the holder's wait for its client nor none:\n%s", reads, got[0])
+			t.Fatalf("census %d: Postgres answered the census's diagnosis of %s with %s, which is neither its wait for its client nor none:\n%s", reads, pid, answered, got[0])
 			return "", false
 		}
 	})
+	t.Logf("%d censuses read; Postgres answered %d of their diagnoses of %s with no wait, each taken again", reads, unwaited, pid)
 	if want := ", backend_xid none, wait_event Client/ClientRead, query \"select count(*) from things where kind = ?\"; its locks: "; !strings.Contains(refusal, want) {
 		t.Errorf("refusal lacks %q:\n%s", want, refusal)
 	}
+}
+
+// waitRelay is a TCP relay between a census's connection and the Postgres server. It passes every
+// byte both ways as it comes, and reads the server's messages as they pass: of the first row of
+// each statement's answer whose query column holds marker, a literal of the holder's query, it
+// keeps the wait_event_type and wait_event columns that the RowDescription before it names, as
+// Postgres sent them, before it passes the row on. Of the census's statements only the diagnosis
+// query reads another session's pg_stat_activity.query, so what it keeps is Postgres's answer to
+// that query: the wait the census read, which no census code writes or moves.
+type waitRelay struct {
+	listener net.Listener
+	marker   string
+	mu       sync.Mutex
+	// answers are the waits kept since the last take.
+	answers []postgresWait
+	// conns are the connections the relay made or took, each closed at close; closed says close
+	// has run.
+	conns  []net.Conn
+	closed bool
+}
+
+// postgresWait is a session's wait as one answer of Postgres names it: its wait_event_type and
+// wait_event columns, each nil where Postgres sent null.
+type postgresWait struct{ eventType, event *string }
+
+func (w postgresWait) is(eventType, event string) bool {
+	return w.eventType != nil && *w.eventType == eventType && w.event != nil && *w.event == event
+}
+
+func (w postgresWait) String() string {
+	column := func(value *string) string {
+		if value == nil {
+			return "null"
+		}
+		return strconv.Quote(*value)
+	}
+	return "wait_event_type " + column(w.eventType) + " and wait_event " + column(w.event)
+}
+
+// relayWaits starts a waitRelay to the server databaseURL names, keeping the waits of the rows whose
+// query column holds marker, and answers it with databaseURL pointed at it. It closes the relay and
+// every connection it made when t ends. It skips t, by name, where databaseURL does not say
+// sslmode=disable, since the relay reads Postgres's messages, which TLS hides, or names its server
+// by anything but the URL's host and port, as CI's and the build cluster's URLs both do.
+func relayWaits(t *testing.T, databaseURL, marker string) (*waitRelay, string) {
+	t.Helper()
+	server, err := neturl.Parse(databaseURL)
+	if err != nil {
+		// url.Parse's own error quotes the URL, which carries a credential.
+		t.Fatal("the test database's URL does not parse")
+	}
+	query := server.Query()
+	if query.Get("sslmode") != "disable" {
+		t.Skip("DISPATCH_TEST_DATABASE_URL does not say sslmode=disable, and the relay this row reads the holder's wait through reads Postgres's messages, which TLS hides")
+	}
+	if server.Hostname() == "" || query.Has("host") || query.Has("hostaddr") || query.Has("port") {
+		t.Skip("DISPATCH_TEST_DATABASE_URL does not name its server by the URL's host and port alone, so this row cannot send the census through the relay it reads the holder's wait through")
+	}
+	port := server.Port()
+	if port == "" {
+		port = "5432"
+	}
+	listener, err := testport.ListenLoopback()
+	if err != nil {
+		t.Fatalf("listen for the relay: %v", err)
+	}
+	relay := &waitRelay{listener: listener, marker: marker}
+	go relay.serve(net.JoinHostPort(server.Hostname(), port))
+	t.Cleanup(relay.close)
+	relayed := *server
+	relayed.Host = listener.Addr().String()
+	return relay, relayed.String()
+}
+
+// take answers the waits kept since the last take, in the order Postgres sent them.
+func (r *waitRelay) take() []postgresWait {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	answers := r.answers
+	r.answers = nil
+	return answers
+}
+
+// track keeps conn for close, and answers false, closing conn, once the relay is closed.
+func (r *waitRelay) track(conn net.Conn) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		_ = conn.Close()
+		return false
+	}
+	r.conns = append(r.conns, conn)
+	return true
+}
+
+func (r *waitRelay) close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	_ = r.listener.Close()
+	for _, conn := range r.conns {
+		_ = conn.Close()
+	}
+}
+
+func (r *waitRelay) serve(upstream string) {
+	for {
+		client, err := r.listener.Accept()
+		if err != nil {
+			return
+		}
+		go r.relay(client, upstream)
+	}
+}
+
+// relay carries one client connection to upstream: the client's bytes on as they come, and the
+// server's messages back (pass).
+func (r *waitRelay) relay(client net.Conn, upstream string) {
+	if !r.track(client) {
+		return
+	}
+	server, err := net.Dial("tcp", upstream)
+	if err != nil {
+		_ = client.Close()
+		return
+	}
+	if !r.track(server) {
+		_ = client.Close()
+		return
+	}
+	go func() {
+		_, _ = io.Copy(server, client)
+		_ = server.Close()
+	}()
+	r.pass(bufio.NewReader(server), client)
+	_ = client.Close()
+}
+
+// pass sends the client each message the server sends, a type byte and a length that counts
+// itself, and keeps the wait of the first row of a statement's answer whose query column holds the
+// relay's marker, by the columns the last RowDescription named, before it sends that row on. A
+// statement's answer ends with its CommandComplete, an ErrorResponse, an EmptyQueryResponse or a
+// PortalSuspended. A connection the client makes with sslmode=disable sends no SSLRequest, so
+// every message the server sends it is typed.
+func (r *waitRelay) pass(server *bufio.Reader, client net.Conn) {
+	var columns map[string]int
+	kept := false
+	for {
+		kind, err := server.ReadByte()
+		if err != nil {
+			return
+		}
+		length, body, err := readPostgresMessage(server)
+		if err != nil {
+			return
+		}
+		switch kind {
+		case 'T':
+			columns = rowColumns(body)
+		case 'D':
+			if wait, ok := markedWait(columns, body, r.marker); ok && !kept {
+				kept = true
+				r.mu.Lock()
+				r.answers = append(r.answers, wait)
+				r.mu.Unlock()
+			}
+		case 'C', 'E', 'I', 's':
+			kept = false
+		}
+		if _, err := client.Write(append(append([]byte{kind}, length[:]...), body...)); err != nil {
+			return
+		}
+	}
+}
+
+// readPostgresMessage reads a message's length, which counts itself, and the body that follows it.
+func readPostgresMessage(from *bufio.Reader) ([4]byte, []byte, error) {
+	var length [4]byte
+	if _, err := io.ReadFull(from, length[:]); err != nil {
+		return length, nil, err
+	}
+	size := binary.BigEndian.Uint32(length[:])
+	if size < 4 {
+		return length, nil, fmt.Errorf("a message length of %d, shorter than the length itself", size)
+	}
+	body := make([]byte, size-4)
+	_, err := io.ReadFull(from, body)
+	return length, body, err
+}
+
+// rowColumns is the index of each column a RowDescription body names: a count, then for each column
+// its name, ended by a zero byte, and 18 bytes of its table, type and format. It is nil for a body
+// of any other shape.
+func rowColumns(body []byte) map[string]int {
+	if len(body) < 2 {
+		return nil
+	}
+	count := int(binary.BigEndian.Uint16(body))
+	body = body[2:]
+	columns := make(map[string]int, count)
+	for i := range count {
+		name, rest, ok := bytes.Cut(body, []byte{0})
+		if !ok || len(rest) < 18 {
+			return nil
+		}
+		columns[string(name)] = i
+		body = rest[18:]
+	}
+	return columns
+}
+
+// markedWait is the wait a DataRow body names, by the columns of columns, where its query column
+// holds marker: a count, then for each column a length, -1 for null, and that many bytes. A text
+// column's bytes are its text in either format Postgres answers in. ok is false for any other row.
+func markedWait(columns map[string]int, body []byte, marker string) (wait postgresWait, ok bool) {
+	query, hasQuery := columns["query"]
+	eventType, hasType := columns["wait_event_type"]
+	event, hasEvent := columns["wait_event"]
+	if !hasQuery || !hasType || !hasEvent || len(body) < 2 {
+		return postgresWait{}, false
+	}
+	count := int(binary.BigEndian.Uint16(body))
+	body = body[2:]
+	values := make([]*string, count)
+	for i := range count {
+		if len(body) < 4 {
+			return postgresWait{}, false
+		}
+		size := int32(binary.BigEndian.Uint32(body))
+		body = body[4:]
+		if size < 0 {
+			continue
+		}
+		if int(size) > len(body) {
+			return postgresWait{}, false
+		}
+		value := string(body[:size])
+		values[i] = &value
+		body = body[size:]
+	}
+	if query >= count || eventType >= count || event >= count || values[query] == nil || !strings.Contains(*values[query], marker) {
+		return postgresWait{}, false
+	}
+	return postgresWait{eventType: values[eventType], event: values[event]}, true
 }
 
 // A foreign key an earlier pending migration adds is not in the catalog yet, but the migrations
