@@ -408,7 +408,8 @@ case "${args[*]}" in
     # The built-in cluster-admin binding (unless the world drops it), the bootstrap RoleBinding
     # kube-system/system::extension-apiserver-authentication-reader, and one binding of each grant,
     # naming its subject: a RoleBinding when the grant names a namespace, to the grant's Role when
-    # it has role_kind Role. A world marked no-rolebindings answers the ClusterRoleBindings alone,
+    # it has role_kind Role, named by the grant's binding_name and role_name when it has them. A
+    # world marked no-rolebindings answers the ClusterRoleBindings alone,
     # as an answer whose RoleBinding half came back empty would (row cu).
     shaped_answer bindings
     [ ! -e "$dir/refuse-bindings" ] || forbidden clusterrolebindings.rbac.authorization.k8s.io 'list resource "clusterrolebindings" in API group "rbac.authorization.k8s.io"' container.clusterRoleBindings.list
@@ -425,8 +426,8 @@ case "${args[*]}" in
       + [to_entries[] | .key as $i | .value as $g | {
           apiVersion: "rbac.authorization.k8s.io/v1",
           kind: (if $g.namespace == null then "ClusterRoleBinding" else "RoleBinding" end),
-          metadata: ({name: "planted-\($i)"} + (if $g.namespace == null then {} else {namespace: $g.namespace} end)),
-          roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: ($g.role_kind // "ClusterRole"), name: "planted-\($i)"},
+          metadata: ({name: ($g.binding_name // "planted-\($i)")} + (if $g.namespace == null then {} else {namespace: $g.namespace} end)),
+          roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: ($g.role_kind // "ClusterRole"), name: ($g.role_name // "planted-\($i)")},
           subjects: [$g.subject | if .kind == "ServiceAccount" then . else . + {apiGroup: "rbac.authorization.k8s.io"} end]}]
       | map(select($rolebindings == "on" or .kind != "RoleBinding")))}' \
       "$dir/grants.json"
