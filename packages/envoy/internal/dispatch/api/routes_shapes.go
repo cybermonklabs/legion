@@ -476,6 +476,14 @@ type issueAsksQuery struct {
 	// (asks.go) refuses every other value with 400 INVALID_ASK_THREAD, so a client that sent
 	// `true` would be refused.
 	Thread string `query:"thread" enum:"1"`
+	// Order, `activity`, answers a page instead of the list. The keys below require it.
+	Order string `query:"order" enum:"activity"`
+	// Limit is the page size, 1 to 100, default 20.
+	Limit int `query:"limit"`
+	// Before is the previous page's position: UTC time with six fractional digits, then a comma and a lower-case UUID.
+	Before string `query:"before"`
+	// Author keeps threads the login or session ID wrote in.
+	Author string `query:"author"`
 }
 
 // artifactAsksQuery is GET /api/v1/artifacts/{id}/asks's query.
@@ -536,6 +544,31 @@ type openAsksQuery struct {
 type issueCommentsQuery struct {
 	// Artifact scopes the comments to one document of the issue.
 	Artifact string `query:"artifact"`
+	// Order, `activity`, answers a page instead of the list. The keys below require it.
+	Order string `query:"order" enum:"activity"`
+	// Limit is the page size, 1 to 100, default 20.
+	Limit int `query:"limit"`
+	// Before is the previous page's position: UTC time with six fractional digits, then a comma and a lower-case UUID.
+	Before string `query:"before"`
+	// Author keeps threads the login or session ID wrote in.
+	Author string `query:"author"`
+	// Person, `in`, keeps threads involving a person or on text.
+	Person string `query:"person" enum:"in"`
+}
+
+// issueMessagesQuery is GET /api/v1/issues/{key}/messages's query.
+type issueMessagesQuery struct {
+	// Order, `activity`, answers a page instead of the list. The keys below require it.
+	Order string `query:"order" enum:"activity"`
+	// Limit is the page size, 1 to 100, default 20.
+	Limit int `query:"limit"`
+	// Before is the previous page's position: UTC time with six fractional digits, then a comma and a lower-case UUID.
+	Before string `query:"before"`
+	// Author keeps threads the login or session ID wrote in.
+	Author string `query:"author"`
+	// Person, `in`, keeps threads involving a person or with no target. `none` keeps targeted
+	// threads with no person. Both omit roots from the issue project's Legion daemon.
+	Person string `query:"person" enum:"in,none"`
 }
 
 // credentialApproverQuery is the query GET /api/v1/credential-requests and
@@ -830,7 +863,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createMessageInput{}, Advice: writeAdvice{},
 	},
-	"GET /api/v1/issues/{key}/messages":      {Status: http.StatusOK, Response: []messageRead{}},
+	"GET /api/v1/issues/{key}/messages": {
+		Status: http.StatusOK, Response: []messageRead{}, Params: issueMessagesQuery{},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: messageThreadPage{}}},
+	},
 	"GET /api/v1/issues/{key}/messages/{id}": {Status: http.StatusOK, Response: messageRead{}},
 	"POST /api/v1/issues/{key}/handoffs/{phase}": {
 		Status: http.StatusCreated, Response: model.HandoffSummary{}, Request: createHandoffInput{},
@@ -954,7 +990,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/asks": {
 		Status: http.StatusCreated, Response: shapedAsk{}, Request: createAskInput{}, Advice: writeAdvice{},
 	},
-	"GET /api/v1/issues/{key}/asks":                   {Status: http.StatusOK, Response: []issueAskRow{}, Params: issueAsksQuery{}},
+	"GET /api/v1/issues/{key}/asks": {
+		Status: http.StatusOK, Response: []issueAskRow{}, Params: issueAsksQuery{},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: askThreadPage{}}},
+	},
 	"GET /api/v1/issues/{key}/decisions":              {Status: http.StatusOK, Response: issueDecisions{}},
 	"GET /api/v1/asks/open":                           {Status: http.StatusOK, Response: openAsksResponse{}, Params: openAsksQuery{}},
 	"GET /api/v1/asks/{id}":                           {Status: http.StatusOK, Response: askRead{}},
@@ -968,6 +1007,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/asks/{id}/decline":                  {Status: http.StatusOK, Response: shapedAsk{}, Request: declineAskInput{}},
 	"GET /api/v1/issues/{key}/comments": {
 		Status: http.StatusOK, Response: []shapedComment{}, Params: issueCommentsQuery{},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: commentThreadPage{}}},
 	},
 	"POST /api/v1/issues/{key}/comments": {
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},

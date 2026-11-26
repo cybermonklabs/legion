@@ -478,7 +478,7 @@ AUDITED_SCRIPTS = {
         xargs={
             f"--timeout 20m --skip {UNIT_SKIP} --count-table": f"go test -json -count=1 -skip {UNIT_SKIP} -timeout 20m",
         },
-        sha256="2036a3b9b54514efe0fe409055b778aa202ad189053623c3a1f6a39147ec7e52",
+        sha256="48e5b36b35d949366c05045c074c872a7f86a0b993c69a2292b41672a7fd70fe",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its

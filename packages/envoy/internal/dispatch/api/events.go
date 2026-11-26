@@ -478,13 +478,15 @@ type postKey struct {
 // reply_block.text of a message reply's message.answered and of its message.edited written
 // before the delete, and the reply_block.text of a comment reply's comment.created or
 // comment.answered and of each later event of that reply written before the delete but its
-// comment.deleted. A reply's own delete event, message.deleted or comment.deleted, carries no
-// text of the post it answers whenever it is written (deleteEventReplyBlock), and an event of
-// the reply written after the delete carries no text of it. Each is part of an event of the post
-// that quoted it, and only the quoted post's own events are marked here. So are the document
-// events of an accepted suggestion, which are no event of the post: the accept's
-// artifact.version, and an artifact.renamed written before the delete, which carries every
-// version, keep the name the accept gave the version.
+// comment.deleted. So do the reply_block.quote and reply_block.occurrence of those events, the
+// words of the post the reply quotes. A reply's own delete event, message.deleted or
+// comment.deleted, carries no text, quote or occurrence of the post it answers whenever it is
+// written (deleteEventReplyBlock), and an event of the reply written after the delete carries none
+// of them (refs.ReplyBlocks). Each is part of an event of the post that quoted it, and only the
+// quoted post's own events are marked here. So are the document events of an accepted
+// suggestion, which are no event of the post: the accept's artifact.version, and an
+// artifact.renamed written before the delete, which carries every version, keep the name the
+// accept gave the version.
 func (s *server) attachPostMarks(ctx context.Context, events []model.Event) error {
 	// The ids the page names, by the kind of post each is an id of; that kind names the table
 	// readPostMarks reads it in.
