@@ -1484,6 +1484,46 @@ for (const [board, lanes] of [
   });
 }
 
+// A keyboard move of a card with a parent or an open child places nothing before its dry run
+// answers, and focus follows the card once it is placed. A reader who acts in that wait - a press
+// in another field, and words typed there - has put the focus where they want it, and focus that
+// followed the card then would leave the rest of their keys on the board, where its keys read
+// them. Here the dry run is held until the reader has typed, as a slow server holds it.
+test("a reader who moves to another field before a move's dry run answers keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const dryRun = Promise.withResolvers<StatusChangeAnswer>();
+  const statusChanges = answerStatusChanges().mockImplementation(() => dryRun.promise);
+  const patchIssue = patchInFlight();
+  const { cleanup } = renderBoard({}, undefined, parentIssues);
+  const elsewhere = document.createElement("input");
+  elsewhere.setAttribute("aria-label", "Elsewhere");
+  document.body.append(elsewhere);
+  try {
+    const shown = await screen.findByRole("region", { name: "Project board" });
+    act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
+    await user.keyboard("{Shift>}L{/Shift}");
+    // Checking: the card has not moved.
+    expect(statusChanges).toHaveBeenCalledTimes(1);
+    expect(patchIssue).not.toHaveBeenCalled();
+    await user.click(elsewhere);
+    await user.keyboard("ab");
+
+    await act(async () => {
+      dryRun.resolve(fixtureAnswer("dry-run"));
+      await settle();
+    });
+    const inProgress = within(shown).getByRole("region", { name: "In progress" });
+    await waitFor(() => expect(articleLabels(inProgress)).toContain("CORE-1 Parent"));
+    expect(document.activeElement, "focus followed the card from the other field").toBe(elsewhere);
+    expect(elsewhere.value).toBe("ab");
+  } finally {
+    elsewhere.remove();
+    cleanup();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
 // A keyboard move of a card with a parent or an open child places nothing before its dry run, so
 // focus follows the card only once the move places it. A move that ends without placing it takes no
 // focus later: the next change of the board's columns leaves focus where the reader put it.
@@ -1563,6 +1603,43 @@ test("Shift+H of a card with an open child, its question's Move them with it lan
         .getAllByRole("article")
         .map((node) => node.textContent)
     ).toEqual([expect.stringContaining("Parent"), expect.stringContaining("Child")]);
+  } finally {
+    cleanup();
+    patchIssue.mockRestore();
+    statusChanges.mockRestore();
+  }
+});
+
+// The question a keyboard move asks is answered by a press in it, which asks for the move again:
+// focus follows the card from that press once the choice lands and the card is placed, though the
+// reader's presses in the question came after the move's own key.
+test("Shift+H of a card with an open child, its question's Move them with it landed, puts the focus on the moved card", async () => {
+  const user = userEvent.setup();
+  const statusChanges = answerTheQuestion(async () => ({
+    changed: [
+      { key: "CORE-2", parent: "CORE-1", previous_last_seq: 1, status: "backlog" },
+      { key: "CORE-1", parent: null, previous_last_seq: 1, status: "backlog" },
+    ],
+    issue: { ...patched, status: "backlog" },
+  }));
+  const patchIssue = patchInFlight();
+  const { cleanup } = renderBoard({}, undefined, childIssues);
+  try {
+    const shown = await screen.findByRole("region", { name: "Project board" });
+    const status = within(shown).getByRole("status", { name: "Board announcements" });
+    act(() => within(shown).getByRole("article", { name: "CORE-1 Parent" }).focus());
+    await user.keyboard("{Shift>}H{/Shift}");
+    const question = await screen.findByRole("dialog", { name: "Move CORE-1 to Backlog?" });
+    const moveThem = within(question).getByRole("button", { name: "Move them with it" });
+    await waitFor(() => expect(moveThem).toBeEnabled());
+
+    await user.click(moveThem);
+    await waitFor(() => expect(status.textContent).toBe("CORE-1 → Backlog, position 1 of 2"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const backlog = within(shown).getByRole("region", { name: "Backlog" });
+    await waitFor(() =>
+      expect(within(backlog).getByRole("article", { name: "CORE-1 Parent" })).toHaveFocus()
+    );
   } finally {
     cleanup();
     patchIssue.mockRestore();

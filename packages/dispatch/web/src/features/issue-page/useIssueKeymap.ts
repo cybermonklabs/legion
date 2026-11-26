@@ -1,5 +1,6 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
+import { abortOnReaderAct } from "../../lib/reader-acts";
 import { type IssueTab, parseIssuePath } from "../refs/page-routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { bringOnScreen } from "./identity-block";
@@ -52,14 +53,17 @@ function showPart(found: HTMLElement, takes: HTMLElement): HTMLElement {
  * has drawn it: a chord navigates, and what it opens is on the page a frame or two later (R9,
  * c-keyboard, which reads both the box and the focus). A part that is mounted inside a hidden
  * element is not drawn yet either, and a hidden control takes no focus. A page that draws no
- * such part leaves the focus where it was.
+ * such part leaves the focus where it was, and so does a reader who acts first (`acted`).
  */
-function reachPart(part: keyof typeof PARTS, left = DRAWING_FRAMES): void {
+function reachPart(part: keyof typeof PARTS, acted: AbortController, left = DRAWING_FRAMES): void {
+  if (acted.signal.aborted) return;
   const found = document.querySelector<HTMLElement>(PARTS[part]);
   if (found === null || found.closest("[hidden]") !== null) {
-    if (left > 0) requestAnimationFrame(() => reachPart(part, left - 1));
+    if (left > 0) requestAnimationFrame(() => reachPart(part, acted, left - 1));
+    else acted.abort();
     return;
   }
+  acted.abort();
   const inside = TAKES_FOCUS[part];
   const takes = inside === undefined ? found : (found.querySelector<HTMLElement>(inside) ?? found);
   // The focus is taken without scrolling to it, and what the chord opens is then shown from its
@@ -174,8 +178,13 @@ export function useIssueKeymap(issueKey: string): void {
         navigate(path(issueKey, active));
         // The part is looked for once the address has drawn: the outline is the same element
         // under every view, and a row of the view being left would take the focus and then be
-        // unmounted with it - a view draws its rows at another depth than the outline does.
-        requestAnimationFrame(() => reachPart(part));
+        // unmounted with it - a view draws its rows at another depth than the outline does. A
+        // reader who acts before the part takes the focus (`READER_ACTS`) - a key, or a press in
+        // another field and words typed there - has put the focus where they want it, so the
+        // frames that wait for the part do nothing then. The chord's own keys reached the window
+        // before the guard is made, so they do not end it.
+        const acted = abortOnReaderAct();
+        requestAnimationFrame(() => reachPart(part, acted));
       },
     }))
   );

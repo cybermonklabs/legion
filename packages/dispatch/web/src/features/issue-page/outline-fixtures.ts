@@ -6,10 +6,13 @@ import type { Comment } from "../../api/types";
 import { KEY } from "./decisions-filter/decisions-fixtures";
 
 /**
- * What the outline's unit tests share (`IssueTree.test.tsx`, `outline-reads.test.tsx`, and the
- * stage's tests): frames run by hand (`framesByHand`), the
- * comments the comments' read answers for the fixtures' issue (`issueDetails`), and a wait inside
- * `act`.
+ * What the issue page's unit tests share. Frames run by hand (`framesByHand`), for each row that
+ * holds the frames the page waits on before it moves the focus: the outline's
+ * (`IssueTree.test.tsx`, `view-decisions-slot.test.tsx`), the outline's line
+ * (`outline-writer.test.tsx`), Details' (`details-rows.test.tsx`, `IssueMargin.test.tsx`) and a
+ * view chord's (`useIssueKeymap.test.tsx`). The comments the comments' read answers for the
+ * fixtures' issue (`readComment`, `TWO_THREADS`), which the outline's and the stage's tests read.
+ * And a wait inside `act` (`waitInAct`), which the outline's and the Decisions view's tests use.
  */
 
 /** Lets `ms` pass inside `act`, after `first` where given, and React draw what changed by then. */

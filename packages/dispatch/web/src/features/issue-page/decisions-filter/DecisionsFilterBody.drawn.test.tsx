@@ -27,6 +27,7 @@ import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
 import { type TreeNode, targetNaming } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
+import { waitInAct } from "../outline-fixtures";
 import { NO_FAILED_READS } from "../outline-reads";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS, PAGE_CHROME_ATTRIBUTE } from "../page-structure";
@@ -1879,6 +1880,44 @@ test("the page's ask and the address put the focus on an entry, unfolding the fo
   view.again({ reveal: D("replaced") });
   await waitFor(() => expect(focusedRow(view)).toBe(D("replaced")));
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
+});
+
+// R19 under a reader's act. An address that names a decision puts the focus on its row only once
+// the asks read has answered, which says whether the decision is a person's write-up of a
+// question. A reader who acts before then - a press in another field, and words typed there - has
+// put the focus where they want it, and the row taking it once the read answers would leave the
+// rest of their keys on the row, where the outline's keys read them. Here the asks read is held
+// until the reader has typed, as a slow server holds it.
+test("a reader who moves to another field before the address's reads answer keeps the focus and the words typed there", async () => {
+  const user = userEvent.setup();
+  const asksOut = Promise.withResolvers<never[]>();
+  const asksRead = spyOn(api, "listIssueAsks").mockReturnValue(asksOut.promise);
+  const elsewhere = document.createElement("input");
+  elsewhere.setAttribute("aria-label", "Elsewhere");
+  document.body.append(elsewhere);
+  const view = renderBody({ ...wholeIssue(), asks: null }, { reveal: D("first") });
+  try {
+    // The decision's row is drawn, and waits for the asks read.
+    expect(rowOf(view, D("first"))).toBeTruthy();
+    expect(focusedRow(view)).toBeUndefined();
+    await user.click(elsewhere);
+    await user.keyboard("ab");
+    await act(async () => {
+      asksOut.resolve([]);
+      await view.client.getQueryCache().find({ queryKey: ["asks", KEY] })?.promise;
+    });
+    // The read's answer is drawn.
+    await waitInAct(20);
+    expect(view.client.getQueryData(["asks", KEY])).toEqual([]);
+    expect(document.activeElement, "the address's row took the focus from the other field").toBe(
+      elsewhere
+    );
+    expect(elsewhere.value).toBe("ab");
+  } finally {
+    view.unmount();
+    elsewhere.remove();
+    asksRead.mockRestore();
+  }
 });
 
 // R1, R6: an address that names a node that is neither a question nor a decision, a comment
