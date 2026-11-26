@@ -45,8 +45,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -55,7 +53,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -351,10 +348,11 @@ const forwardCountVerification = ":::check{#" + forwardCountCheck +
 	` negative_control="Break the unit limits and watch the run fail." ci_check="` + forwardCountJob + "\"}\n" +
 	"The unit limits hold at the head.\n:::\n"
 
-// proof is one project's liveProof over the run's shared broker: newLiveProofOn's own work, with
-// the stream made once for the run. Three daemons share one broker here, and newLiveProofOn
-// creates ENVOY_NOTIFICATIONS itself, which the second project's call refuses (`stream name
-// already in use`); a reset would empty the stream under the daemons already consuming it.
+// proof is one project's liveProof over the run's shared broker: newLiveProofOn's own work with
+// its stream create left out. `workflowNATS` made ENVOY_NOTIFICATIONS when the run started, and
+// the scratch Dispatch reconciles that stream as it starts, so a later create of the bare
+// configuration is refused (`stream name already in use`, err_code 10058) and a reset would empty
+// the stream under the daemons already consuming it. Three daemons share this one broker.
 func (l *forwardCountLive) proof() liveProof {
 	t := l.t
 	t.Helper()
@@ -369,10 +367,6 @@ func (l *forwardCountLive) proof() liveProof {
 		t.Fatal(err)
 	}
 	p.js = workflowJetStream(t, l.natsURL)
-	if !l.streamMade {
-		testnats.CreateStream(t, p.js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
-		l.streamMade = true
-	}
 	ctx := context.Background()
 	if p.st, err = store.Open(ctx, p.cfg.PostgresDSN); err != nil {
 		t.Fatalf("open the store: %v", err)
