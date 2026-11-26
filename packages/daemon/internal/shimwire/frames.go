@@ -33,7 +33,7 @@ const (
 	TypePrompt                 = "prompt"
 	TypeResponse               = "response"
 	TypeGetState               = "get_state"
-	TypeCompact                = "compact"
+	TypeHandoff                = "handoff"
 	TypeAgentStart             = "agent_start"
 	TypeAgentEnd               = "agent_end"
 	TypeToolExecutionStart     = "tool_execution_start"
@@ -192,6 +192,12 @@ type AgentSecretsTokenResult struct {
 // it finds (LauncherStart.ResumeSession). A launcher built before the member sends none, and the
 // daemon names a session only to a launcher that said resumesBySession: to any other it names no
 // session, and the agent's own command carries `--resume=<session id>` instead.
+//
+// ReadsWorkspace is this launcher saying it answers WorkspaceWork on its own connection: it reads
+// the issue workspace of its pod, which the pod sets as its working directory, whether or not a
+// role process runs there (R6 of #5285). A launcher's command loop closes its
+// connection on a frame it does not know, so the daemon asks only a launcher whose hello said
+// readsWorkspace, and a pod with no such launcher is one whose workspace the daemon cannot read.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -201,6 +207,7 @@ type LauncherHello struct {
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
+	ReadsWorkspace     bool   `json:"readsWorkspace,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -745,7 +752,7 @@ type Prompt struct {
 // of cybermonklabs/oh-my-pi at the pinned tag). For a `prompt` or `abort_and_prompt` its one value
 // is `session_busy`: the prompt was refused, or failed, because the agent was busy (docs/rpc.md
 // there). Nothing in the daemon reads it; it is modelled so the frame survives this package
-// whole, as PromptError.Code is.
+// whole, the way every other frame does.
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
@@ -767,18 +774,26 @@ type GetState struct {
 	ID string `json:"id"`
 }
 
-// Compact asks Oh My Pi to compact the session's context: `{id?, type: "compact",
-// customInstructions?: string}` (omp://rpc.md, "Compaction"). The shim answers none of it — it
-// forwards it to Oh My Pi as it forwards a prompt — and Oh My Pi answers a `response` of the
-// same command, carrying its CompactionResult on success and `success: false` with the reason
-// when the compaction was refused or skipped.
+// Handoff asks Oh My Pi to shorten the session's context with a handoff: `{id?, type:
+// "handoff", customInstructions?: string}` (`RpcCommand` in
+// packages/coding-agent/src/modes/rpc/rpc-types.ts of cybermonklabs/oh-my-pi at the pinned tag).
+// Oh My Pi has the session's own model write a handoff document over the live system prompt,
+// tools and turns, with no tool to call, and commits that document as the session's compaction
+// entry, method `handoff`, on the same session. The shim answers none of it — it forwards it to
+// Oh My Pi as it forwards a prompt — and Oh My Pi answers a `response` of the same command:
+// `success: true` with the handoff's result in `data` for a session shortened, `success: true`
+// with `data: null` for a handoff that made no document, and `success: false` with the reason
+// for one it refused, a turn in progress among them.
 //
-// CustomInstructions is what the summary is written to, and the daemon always sends one: Oh My
-// Pi runs the image-based snapcompact method only for a compaction with no instructions and no
-// internal guidance (`runsManually`, packages/coding-agent/src/session/session-maintenance.ts at
-// the pinned tag), so instructions are what make the summary text the resumed session can read
-// back without a vision model. A frame with none is refused here rather than sent.
-type Compact struct {
+// The daemon sends it where it sent `compact` before dispatch://INFRA-5798, and never `compact`:
+// `compact` writes its summary from the history quoted as text in one message, which
+// Anthropic's classifier refuses for a long Claude session.
+//
+// CustomInstructions is the focus the handoff document is written to, and the daemon always
+// sends one: the instructions keep the reviewer's entry in the document (api's
+// compactInstructions), and a document that dropped it leaves the reviewer no entry to write. A
+// frame with none is refused here rather than sent.
+type Handoff struct {
 	ID                 string `json:"id"`
 	CustomInstructions string `json:"customInstructions"`
 }
@@ -812,23 +827,28 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
-// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
-// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// provider?, model?, httpStatus?, retryable, code?}`, the "Failure detail for a `prompt_result`
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts
+// of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
 // whose last assistant message ended with stopReason "error" — a provider request its own retries
 // could not get through, where Retryable says it may still succeed later — and for one it failed
 // outright before any turn.
 //
-// Code is Oh My Pi's class of the failure, when it gives one, and it declares two values there:
-// `cost_cap`, the session reached `session.maxCost`, and `session_busy`, the agent was busy: the
-// prompt was refused, or it waited at least 30 s and another run still held the agent.
+// Code is Oh My Pi's class of the failure, when it gives one, and it declares three values there:
+// `cost_cap`, the session reached `session.maxCost` and Oh My Pi sent no request; `session_busy`,
+// the agent was busy: the prompt was refused, or it waited at least 30 s and another run still
+// held the agent; and `cyber_policy`, OpenAI refused the session's content for cybersecurity risk,
+// or Oh My Pi held the request after such a refusal. A `cyber_policy` failure always has Retryable
+// false, and the status it carries is whatever a gateway relayed the refusal under, a 503 among
+// them (`promptError` in packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts there).
 //
 // Message is the reason a failed prompt is recorded with (PromptResult.Reason), and
-// internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own PromptResult
-// event. Nothing in the daemon reads Code: it is modelled, as the other members are, so the frame
-// survives this package whole, the way every other frame does. A decode that kept only what
-// today's reader wants would quietly drop the class, the provider, the model and the status
-// behind a failure from anything that re-encodes it.
+// internal/stream carries Retryable, HTTPStatus, Provider, Model and Code onto its own
+// PromptResult event. Supervise's providerErrored decides on HTTPStatus and Code: a
+// `cyber_policy` failure holds the issue whatever its status, and a `cost_cap` one is named as the
+// cause. Every member is modelled, read or not, so the frame survives this package whole, the way
+// every other frame does. A decode that kept only what today's reader wants would quietly drop the
+// provider, the model and the status behind a failure from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`
@@ -904,7 +924,10 @@ type AdoptWorkingCopyResult struct {
 // on origin holds: a read, which moves no bytes of the work and writes only jj's snapshot of the
 // working copy. The daemon names the issue whose workspace it asks about and the budget, never a
 // command or a path: the shim reads the one workspace its environment names, which is that
-// issue's, with the jj it already works with.
+// issue's, with the jj it already works with. The daemon sends the same frame to an issue pod's
+// launcher whose hello said readsWorkspace (LauncherHello.ReadsWorkspace), where no role process
+// runs to read through, and that launcher answers WorkspaceWorkResult on its own connection with
+// the same count (internal/launcher's readWorkspace, workspace.ReadWork).
 type WorkspaceWork struct {
 	ID        string `json:"id"`
 	Issue     string `json:"issue"`
@@ -1004,7 +1027,7 @@ func (NegotiateProtocol) FrameType() string            { return TypeNegotiatePro
 func (Prompt) FrameType() string                       { return TypePrompt }
 func (Response) FrameType() string                     { return TypeResponse }
 func (GetState) FrameType() string                     { return TypeGetState }
-func (Compact) FrameType() string                      { return TypeCompact }
+func (Handoff) FrameType() string                      { return TypeHandoff }
 func (AgentStart) FrameType() string                   { return TypeAgentStart }
 func (AgentEnd) FrameType() string                     { return TypeAgentEnd }
 func (ToolExecutionStart) FrameType() string           { return TypeToolExecutionStart }
@@ -1062,9 +1085,9 @@ func (f GetState) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeGetState, plain(f))
 }
 
-func (f Compact) MarshalJSON() ([]byte, error) {
-	type plain Compact
-	return marshalFrame(TypeCompact, plain(f))
+func (f Handoff) MarshalJSON() ([]byte, error) {
+	type plain Handoff
+	return marshalFrame(TypeHandoff, plain(f))
 }
 
 func (f AgentStart) MarshalJSON() ([]byte, error) {
@@ -1233,16 +1256,15 @@ func (f AdoptWorkingCopy) Validate() error {
 	return nil
 }
 
-// Validate refuses a compaction request Oh My Pi could not answer for this daemon: one with no
-// request id to correlate its response by, and one with no instructions, which is the frame that
-// would let Oh My Pi archive the history onto snapcompact's images instead of writing a text
-// summary (Compact).
-func (f Compact) Validate() error {
+// Validate refuses a handoff request Oh My Pi could not answer for this daemon: one with no
+// request id to correlate its response by, and one with no instructions, whose document would
+// not keep the reviewer's entry (Handoff).
+func (f Handoff) Validate() error {
 	switch {
 	case f.ID == "":
-		return fmt.Errorf("%w: compact carries no id", ErrMalformedFrame)
+		return fmt.Errorf("%w: handoff carries no id", ErrMalformedFrame)
 	case f.CustomInstructions == "":
-		return fmt.Errorf("%w: compact carries no customInstructions", ErrMalformedFrame)
+		return fmt.Errorf("%w: handoff carries no customInstructions", ErrMalformedFrame)
 	}
 	return nil
 }
@@ -1647,8 +1669,8 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[Response](trimmed)
 	case TypeGetState:
 		return decodeInto[GetState](trimmed)
-	case TypeCompact:
-		return decodeInto[Compact](trimmed)
+	case TypeHandoff:
+		return decodeInto[Handoff](trimmed)
 	case TypeAgentStart:
 		return decodeInto[AgentStart](trimmed)
 	case TypeAgentEnd:

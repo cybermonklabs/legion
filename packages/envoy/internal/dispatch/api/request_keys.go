@@ -119,9 +119,9 @@ const (
 	// spill does, so a keyed 25 MiB upload costs no more memory than an unkeyed one.
 	keyedBodyInMemory = 1 << 20
 	// keyedBodyMax is the largest body an upload route reads: an upload's file and a megabyte of
-	// fields (uploadArtifactFor). The handoff write reads handoffRequestLimit, the markdown round
-	// trip markdownRoundTripLimit, and every other route a JSON body of at most
-	// maxJSONRequestBytes (routeBody).
+	// fields (uploadArtifactFor). The handoff write reads handoffRequestLimit, the inline and the
+	// file round trips markdownRoundTripLimit and fileRoundTripLimit, and every other route a JSON
+	// body of at most maxJSONRequestBytes (routeBody).
 	keyedBodyMax = maxArtifactBlobSize + 1<<20
 	// keyedBookkeeping bounds the layer's work around the handler - the claim before it, and each
 	// statement recording its answer after it - which runs on past a client that went away, since
@@ -345,17 +345,27 @@ type resolvedCaller struct {
 	err   error
 }
 
-// readOnlyCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
-// caller resolved and its credential is read-only (model.Credential.ReadOnly), and nil otherwise,
-// as it is for a context that carries no caller. The read-only gate (refuseReadOnlyToken) and a
-// results read (newComparisonReader) both read the caller by it: the one the gate found decided
-// or resolved itself.
-func readOnlyCredential(ctx context.Context) *model.Credential {
+// resolvedCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
+// caller resolved, and nil otherwise: for a context that carries no caller, for a caller whose
+// credential did not resolve (resolvedCaller.err), and for a caller with no credential. It is the
+// one read of the caller the two token gates share: readOnlyCredential and approveOnlyRequest.
+func resolvedCredential(ctx context.Context) *model.Credential {
 	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
-	if caller.err != nil || caller.actor.Credential == nil || !caller.actor.Credential.ReadOnly {
+	if caller.err != nil {
 		return nil
 	}
 	return caller.actor.Credential
+}
+
+// readOnlyCredential is the credential of the caller ctx carries where that caller resolved and
+// its credential is read-only (model.Credential.ReadOnly), and nil otherwise (resolvedCredential).
+// The read-only gate (refuseReadOnlyToken) and a results read (newComparisonReader) both read the
+// caller by it: the one the gate found decided or resolved itself.
+func readOnlyCredential(ctx context.Context) *model.Credential {
+	if credential := resolvedCredential(ctx); credential != nil && credential.ReadOnly {
+		return credential
+	}
+	return nil
 }
 
 // keyedWrites wraps the handler of a POST or PATCH route, method and pattern, in the keyed path
@@ -494,8 +504,8 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 
 // routeBody is the largest body a route reads and the 413 it answers one past that with: an
 // upload's file and a megabyte of fields (uploadArtifactFor) for an upload route, a handoff
-// write's own limit (handoffRequestLimit) for that one, the markdown round trip's
-// (markdownRoundTripLimit) for that one, and a JSON body (decodeJSON) for every other. The
+// write's own limit (handoffRequestLimit) for that one, each round trip's (markdownRoundTripLimit,
+// fileRoundTripLimit) for those two, and a JSON body (decodeJSON) for every other. The
 // limit is the most the keyed layer spools before its handler runs - a body past it is
 // refused whatever its key, so the layer answers the 413 itself rather than spool it - and
 // the most an early answer discards before it is written (drainBeforeAnswer). One answer serves
@@ -508,6 +518,8 @@ func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
 		return handoffRequestLimit, errHandoffTooLarge
 	case route == markdownRoundTripRoute:
 		return markdownRoundTripLimit, errMarkdownRoundTripTooLarge
+	case route == fileRoundTripRoute:
+		return fileRoundTripLimit, errFileRoundTripTooLarge
 	default:
 		return maxJSONRequestBytes, errJSONTooLarge
 	}
