@@ -1120,16 +1120,26 @@ func requestApprovalWithVerification(t *testing.T, handler http.Handler, artifac
 // agent's edit, which holds the approved text (docs.restoresApprovedText) - writes the spec's
 // review in the human's name and leaves the request open, because nobody has approved the
 // Verification document; his approval of that document then answers the request, reviewing both.
+// The issue has not converted (holdIssuesUnconverted), so each document's approval covers its
+// stored markdown: on a converted issue R14 reads the spec's approval by the Spec query's record,
+// which a spec holding no requirement leaves empty at every version, so that approval stands
+// across the agent's edit and the request needs no ask.
 func TestACarryOnOneDocumentOfATwoDocumentRequestLeavesItOpen(t *testing.T) {
 	t.Parallel()
-	handler := approvalCarryHandler(t)
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Carry one of two", "Context\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
 	request := requestApprovalWithVerification(t, handler, issue.PrimaryArtifactID)
 	if request.Approval.Version != 2 || request.Approval.Approved == nil || request.Approval.Approved.Version != 1 {
-		t.Fatalf("request = %#v, want one at spec version 2 following the approval of version 1", request.Approval)
+		approved := "none"
+		if request.Approval.Approved != nil {
+			approved = fmt.Sprintf("%+v", *request.Approval.Approved)
+		}
+		t.Fatalf("request at version %d (requested %d), approved %s, want one at spec version 2 following the approval of version 1",
+			request.Approval.Version, request.Approval.RequestedVersion, approved)
 	}
 
 	// The undo restores the text he approved, so the spec's review is carried; the Verification
