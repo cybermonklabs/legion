@@ -1,11 +1,12 @@
 // Command spec-check judges a directory of spec files, a checkout's .dispatch/spec, by the rules
 // of package specgraph, lists what changed between two such directories, compares one with an
-// approved spec and prints the approved text, and checks that no CI file of a repository runs that
-// comparison. It reads the directory as the Dispatch server's importer reads
-// .dispatch/architecture: notes.ReadSet takes each .md file directly in it, within the size
-// bound, and passes over every other entry. Every rule of the spec files is specgraph's (Parse,
-// Validate and Compare); the command states none of its own. The rule of guard is the command's
-// (cifiles.go), since it reads CI files and no spec file.
+// approved spec and prints the approved text, checks that no CI file of a repository runs that
+// comparison, and derives the states of a scenario. It reads the directory as the Dispatch
+// server's importer reads .dispatch/architecture: notes.ReadSet takes each .md file directly in it,
+// within the size bound, and passes over every other entry. Every rule of the spec files and of a
+// scenario is specgraph's (Parse, Validate, Compare, ReadScenario, Derive and WaitCycle); the
+// command states none of its own. The rule of guard is the command's (cifiles.go), since it reads
+// CI files and no spec file.
 //
 // Usage:
 //
@@ -15,6 +16,16 @@
 //	spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]
 //	spec-check print --approved <approved.json> --id <id> [--id <id>...]
 //	spec-check guard --root <dir>
+//	spec-check state --scenario <dir> [--json]
+//	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
+//	  a check of production or of the graph is judged only at a deploy, and one of the graph reads
+//	  unknown there when no result read the subject's graph_tx; a run of a check of the code counts
+//	  only at the commit that it read, and a failing example at the commit that it counts from, its
+//	  planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
+//	  and a failing example that the test caught, or a run of the test of a program check of
+//	  production or of the graph, counts at another commit only when the check's tie is known at both
+//	  and no path that changed between them is covered by the tie at either; one that the test missed
+//	  never counts at another commit)
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -39,7 +50,7 @@
 // statements as added, and a checkout with no spec file has no program check.
 //
 // compare compares the files of one directory with an approved spec in the form of approved.json
-// (specgraph.ApprovedFile). It exits 1 when the files hold a node in a text that the approved spec
+// (specgraph.ReadApproved). It exits 1 when the files hold a node in a text that the approved spec
 // never held, with one line for each such node on standard error, "spec-check:
 // <dir>/<file>:<line>: <node>: <detail>", and "spec-check: <dir>: the comparison fails on <n>
 // nodes" on standard output. It exits 0 otherwise, with "spec-check: <dir>: the approved spec held
@@ -50,26 +61,28 @@
 // version 1, and version 2 is current", and one line for each node that the files hold and the
 // approved spec removed, "spec-check: <kind> <id>: the files hold it, and the approved spec removed
 // it" (R28). The kind is statement, check, component, interface or term. It exits 2, and makes no
-// comparison, for files with a problem of Parse that can lose a node or change one (its Effect is
-// specgraph.LosesNode), such as a block whose opening line the grammar refuses or a line outside a
-// block, since the comparison would not see that text; it names only those problems. A directory
-// that does not exist or holds no spec file is exit 2 too, with a line that names --allow-empty.
-// With --allow-empty, compare reads it as the empty tree, with a line on standard error that says
-// so, since git keeps no empty directory and a revert of the last spec file leaves none. A problem
-// of Parse that keeps each node (specgraph.KeepsEachNode), such as a heading that names code, is
-// tree's to judge, and compare compares those files: each node holds the text that the files
-// write, except a raw 0xA0 or 0x85 byte where its opening line's attributes take white space (after
-// {, between two attributes or before }), which it drops as white space. A heading is no node, so
-// compare never compares it. R2 gives the comparison at each push to
-// Dispatch, and no CI job runs compare. So compare exits 2, before it reads an argument, when
-// GITHUB_ACTIONS is "true", with the one line "spec-check: compare does not run in a CI job
-// (GITHUB_ACTIONS=true): R2 gives the comparison of the files with the approved spec at each push
-// to Dispatch". GitHub sets GITHUB_ACTIONS=true in each step of each job. CI=true alone, as an
-// agent's shell sets it, is no CI job, and compare runs there. The refusal covers each route that
-// passes the runner's environment on to the command. A route that drops it, such as sudo or a
-// container that docker run starts, does not pass GITHUB_ACTIONS, and the command compares there:
-// only guard names such a line, in the files that it reads, when the command's name and compare
-// stand next to each other there.
+// comparison, for an approved.json that ReadApproved refuses (JSON that is not UTF-8, or that
+// gives a member that the format does not name in its own letters or one member two times, is one
+// of them), and for files with a problem of Parse that can lose a node or change one (its Effect
+// is specgraph.LosesNode), such as a block whose opening line the grammar refuses or a line
+// outside a block, since the comparison would not see that text; it names only those problems. A
+// directory that does not exist or holds no spec file is exit 2 too, with a line that names
+// --allow-empty. With --allow-empty, compare reads it as the empty tree, with a line on standard
+// error that says so, since git keeps no empty directory and a revert of the last spec file leaves
+// none. A problem of Parse that keeps each node (specgraph.KeepsEachNode), such as a heading that
+// names code, is tree's to judge, and compare compares those files: each node holds the text that
+// the files write, except a raw 0xA0 or 0x85 byte where its opening line's attributes take white
+// space (after {, between two attributes or before }), which it drops as white space. A heading is
+// no node, so compare never compares it. R2 gives the comparison at each push to Dispatch, and no
+// CI job runs compare. So compare exits 2, before it reads an argument, when GITHUB_ACTIONS is
+// "true", with the one line "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2
+// gives the comparison of the files with the approved spec at each push to Dispatch". GitHub sets
+// GITHUB_ACTIONS=true in each step of each job. CI=true alone, as an agent's shell sets it, is no
+// CI job, and compare runs there. The refusal covers each route that passes the runner's
+// environment on to the command. A route that drops it, such as sudo or a container that docker
+// run starts, does not pass GITHUB_ACTIONS, and the command compares there: only guard names such
+// a line, in the files that it reads, when the command's name and compare stand next to each other
+// there.
 //
 // print writes the current approved block of each node it is named, in the order named, and after
 // a statement the block of each current check that serves it, each block once and the blocks
@@ -119,6 +132,44 @@
 // and .github included, resolves as the system resolves it), and it reads each file whole, with
 // no bound on its size.
 //
+// state reads a scenario of The Spec in the format of specgraph.ReadScenario (the directories of
+// internal/dispatch/specgraph/testdata/scenarios; packages/envoy/docs/spec-check-state.md is its
+// guide for a user) and derives the state of each check and each statement at each subject of it.
+// For each subject it prints "spec-check: subject <commit>, the
+// head of <branch>", "spec-check: subject <commit>, the commit that production runs at deploy
+// <deploy>", or with the graph_tx of the subject "…, the commit that production runs at deploy
+// <deploy>, and the graph at transaction <graph_tx>", then each current approved statement in
+// preorder, "statement <id>: met", "met, partly checked", "not built (…)", "not met (…)" or
+// "unknown (…)", each followed by its own checks that read the subject, "  check <id>: true
+// (passed, counted from <x>)", "false (failed, counted from <x>)" or "unknown (<reason>)", where
+// <x> is the commit, the deploy or the transaction of the graph that the counted result read; then
+// each check whose statement the approved spec removed, "check <id> (serves no current statement):
+// <state>", its state in the same words. With units.json, at the head of main, it prints "wait of
+// <unit> on <statement>: ends" or "holds (<own state>)" for each wait, and after the last subject
+// "spec-check: cycle of waits: <unit> -> <statement> -> … -> <unit>" or "spec-check: cycle of
+// waits: none". --json prints the states as one line of JSON instead, []State, or with units.json
+// {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
+// error naming the file and the fault, for one it does not: a file or a field that the format does
+// not hold (JSON that is not UTF-8, a member written in other letters or given two times, or a
+// value of another type, named with the form of the file and its place, too), a missing file, a
+// member that the derivation reads and that a file does not set (such as the at of a result), spec
+// files that do not parse or that the rules of tree refuse, or a loop of parent and support
+// relations in the approved spec. A check of production or of the graph is judged only
+// at a subject that names a deploy, and there a check of the graph counts only the results at the
+// subject's graph_tx, so it reads unknown when the subject names no graph_tx or one that no result
+// read; a result of a graph check at another transaction reads as a subject that moved. A subject
+// names graph_tx only with a deploy, each name of a subject has a letter or a digit, and a result
+// names one subject, so the reader refuses graph_tx on a branch, a commit, branch, deploy or
+// graph_tx of no letter and no digit, and a result that names two of commit, deploy and graph_tx.
+// ties.json holds the tie of each check at each commit. A run of a check of the code counts only at
+// the commit that it read, and a failing example at the commit that it counts from, its planted_on
+// for a program check of the code; a failing example that its test caught, or a run of the test of
+// a program check of production or of the graph, counts at another commit only when the check's tie
+// is known at both commits and no path that changed between them is covered by the tie at either
+// commit, and one that its test missed never counts at another commit; the reader refuses a commit
+// of ties.json of no letter and no digit, as it refuses such a commit of a subject, and names the
+// form that ties.json needs when a value in it is of another type, such as ties by check alone.
+//
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
 // standard output that does not take all of its text, its product, such as a full disk, with the
@@ -127,13 +178,16 @@
 // is closed at the start reads as /dev/null, since the Go runtime opens /dev/null on it before the
 // program starts, so the text is lost as with >/dev/null. Each entry of a directory that is
 // not a spec file is a warning on standard error, since the importer passes over it in silence.
-// Paths are printed absolute. Every line but the usage, the JSON of checks and the blocks of print
-// is written by runnerlog.Say with the prefix "spec-check: ", so no text a file name, a file or an
-// argument holds starts a line of the runner's log or names a workflow command. The JSON line holds
-// no raw line break, as encoding/json escapes each control character, and checks writes the "[" of
-// each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block as the
-// approved spec holds it, since a change copies it byte for byte, so the output of print must not
-// reach a CI log: a line of a block that starts with "::" would be a workflow command there.
+// Paths are printed absolute. Every line but the usage, the JSON of checks and of state, the
+// blocks of print, and the statement, check and wait lines of state is written by runnerlog.Say
+// with the prefix "spec-check: ", so no text a file name, a file or an argument holds starts a line
+// of the runner's log or names a workflow command. Each statement, check and wait line starts with
+// its fixed word and passes through runnerlog.Printable for the same reason. A JSON line holds no
+// raw line break, as encoding/json escapes each control character, and checks and state write the
+// "[" of each "##[" in it as \u005b, which a JSON reader reads back as "[". print writes each block
+// as the approved spec holds it, since a change copies it byte for byte, so the output of print
+// must not reach a CI log: a line of a block that starts with "::" would be a workflow command
+// there.
 package main
 
 import (
@@ -155,10 +209,20 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check checks --dir <dir> --job <job>
        spec-check compare --dir <dir> --approved <approved.json> [--allow-empty]
        spec-check print --approved <approved.json> --id <id> [--id <id>...]
-       spec-check guard --root <dir>`
+       spec-check guard --root <dir>
+       spec-check state --scenario <dir> [--json]
+         (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
+         a check of production or of the graph is judged only at a deploy, and one of the graph reads
+         unknown there when no result read the subject's graph_tx; a run of a check of the code counts
+         only at the commit that it read, and a failing example at the commit that it counts from, its
+         planted_on for a program check of the code; <dir>/ties.json holds each check's tie by commit,
+         and a failing example that the test caught, or a run of the test of a program check of
+         production or of the graph, counts at another commit only when the check's tie is known at both
+         and no path that changed between them is covered by the tie at either; one that the test missed
+         never counts at another commit)`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
-// checks and the blocks of print.
+// checks and of state, the blocks of print, and the statement, check and wait lines of state.
 const prefix = "spec-check: "
 
 // subcommands is each subcommand by its name: it takes the arguments after the name and answers
@@ -170,6 +234,7 @@ var subcommands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"compare": runCompare,
 	"print":   runPrint,
 	"guard":   runGuard,
+	"state":   runState,
 }
 
 func main() {
