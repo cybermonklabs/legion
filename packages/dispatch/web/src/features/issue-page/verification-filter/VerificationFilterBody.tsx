@@ -293,13 +293,12 @@ export function VerificationFilterBody({
   if (chosen !== only) setChosen(only);
   const counts = useMemo(() => statementCounts(issue.statements), [issue]);
   // No count reads a proposed statement, or one at or under an overtaken node (R3).
-  const covered = useMemo(
-    () =>
-      issueCovered(
-        requirements.filter((row) => row.coverage !== "proposed" && row.coverage !== "closed")
-      ),
+  const countable = useMemo(
+    () => requirements.filter((row) => row.coverage !== "proposed" && row.coverage !== "closed"),
     [requirements]
   );
+  requirements = countable;
+  const covered = useMemo(() => issueCovered(requirements), [requirements]);
   // Whether the view read holds nodes no page read yet holds, so each count of the statements
   // and checks it has loaded carries "+" (R15).
   const more = (whole ?? view).moreToRead === true;
