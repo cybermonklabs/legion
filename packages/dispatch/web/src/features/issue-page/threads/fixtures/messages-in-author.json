@@ -1,0 +1,715 @@
+{
+  "threads": [
+    {
+      "message": {
+        "id": "1d7c4317-60a0-4fb2-9777-86544f29f3f0",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 35 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:06.826542Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "1d7c4317-60a0-4fb2-9777-86544f29f3f0",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:06.826542Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:06.826542Z"
+    },
+    {
+      "message": {
+        "id": "3295fd2d-203c-4a68-a59a-6ec74f6b3ddc",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 30 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:06.649907Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "3295fd2d-203c-4a68-a59a-6ec74f6b3ddc",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:06.649907Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:06.649907Z"
+    },
+    {
+      "message": {
+        "id": "0d7bfef6-6402-404b-b715-17406e3bdee1",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "The row draws its first line.\n\nThe line is cut at a word with an ellipsis.",
+        "target": "role:tester",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:06.596439Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "0d7bfef6-6402-404b-b715-17406e3bdee1",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role tester",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:06.596439Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [
+        {
+          "id": "b788d337-a700-48fd-b900-da01fcec341d",
+          "issue_key": "PDFD720CB-1",
+          "author": {
+            "kind": "session",
+            "id": "threads-tester",
+            "origin": { "session_title": "Tester (threads)" }
+          },
+          "body": "Cut where, at the row's edge?",
+          "target": null,
+          "in_reply_to": "0d7bfef6-6402-404b-b715-17406e3bdee1",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:06.618282Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [],
+          "reply_block": {
+            "node": "message/0d7bfef6-6402-404b-b715-17406e3bdee1#b2",
+            "ref": "dispatch://PDFD720CB-1/message/0d7bfef6-6402-404b-b715-17406e3bdee1#b-b2",
+            "block_id": "b2",
+            "text": "The line is cut at a word with an ellipsis.",
+            "removed": false,
+            "quote": "cut at a word",
+            "occurrence": 0
+          }
+        }
+      ],
+      "last_activity_at": "2026-11-26T11:38:06.618282Z"
+    },
+    {
+      "message": {
+        "id": "a59f2ee7-ebb8-4420-a00c-cb8c51563654",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "This first line runs well past the width of any row the list can draw, because a row shows the first line of its root and cuts it at a word with an ellipsis where the line is longer than the row, so a reader sees where the words stop and that more of them follow in the thread.\n\nThe rest of the message.",
+        "target": "role:reviewer",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:06.531751Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "a59f2ee7-ebb8-4420-a00c-cb8c51563654",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role reviewer",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:06.531751Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [
+        {
+          "id": "56e70e5f-d12d-44c5-a00a-7e14981ca9b3",
+          "issue_key": "PDFD720CB-1",
+          "author": {
+            "kind": "session",
+            "id": "threads-reviewer",
+            "origin": { "session_title": "Reviewer (threads)" }
+          },
+          "body": "Agreed.",
+          "target": null,
+          "in_reply_to": "a59f2ee7-ebb8-4420-a00c-cb8c51563654",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:06.55501Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [],
+          "reply_block": null
+        },
+        {
+          "id": "85b98670-46c4-4714-9c11-97f100492ce0",
+          "issue_key": "PDFD720CB-1",
+          "author": { "kind": "user", "id": "alice", "proven": true },
+          "body": "Then I will write it so.",
+          "target": "role:reviewer",
+          "in_reply_to": "56e70e5f-d12d-44c5-a00a-7e14981ca9b3",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:06.572931Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [
+            {
+              "message_id": "85b98670-46c4-4714-9c11-97f100492ce0",
+              "attempt": 1,
+              "delivery": "aside",
+              "session_id": "",
+              "envelope_id": null,
+              "duplicate": false,
+              "state": "failed",
+              "error": "no holder for role reviewer",
+              "reply_id": null,
+              "created_at": "2026-11-26T11:38:06.572931Z",
+              "requested_by": { "kind": "user", "id": "alice", "proven": true },
+              "accepted_at": null,
+              "accepted_as": null
+            }
+          ],
+          "reply_block": null
+        }
+      ],
+      "last_activity_at": "2026-11-26T11:38:06.572931Z"
+    },
+    {
+      "message": {
+        "id": "2dc5b959-dc04-409f-953f-9462d75953ac",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Can the list show who is in each thread?",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:05.855352Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "2dc5b959-dc04-409f-953f-9462d75953ac",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:05.855352Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [
+        {
+          "id": "077c7fbb-6966-4333-b54c-1fba00e4d358",
+          "issue_key": "PDFD720CB-1",
+          "author": {
+            "kind": "session",
+            "id": "threads-planner",
+            "origin": { "session_title": "Planner (threads)" }
+          },
+          "body": "Yes, each author once.",
+          "target": null,
+          "in_reply_to": "2dc5b959-dc04-409f-953f-9462d75953ac",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:05.880674Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [],
+          "reply_block": null
+        },
+        {
+          "id": "5dde05a0-2c62-45b6-a663-983e25746bae",
+          "issue_key": "PDFD720CB-1",
+          "author": { "kind": "user", "id": "alice", "proven": true },
+          "body": "In the order they first wrote?",
+          "target": "role:planner",
+          "in_reply_to": "077c7fbb-6966-4333-b54c-1fba00e4d358",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:05.899178Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [
+            {
+              "message_id": "5dde05a0-2c62-45b6-a663-983e25746bae",
+              "attempt": 1,
+              "delivery": "aside",
+              "session_id": "",
+              "envelope_id": null,
+              "duplicate": false,
+              "state": "failed",
+              "error": "no holder for role planner",
+              "reply_id": null,
+              "created_at": "2026-11-26T11:38:05.899178Z",
+              "requested_by": { "kind": "user", "id": "alice", "proven": true },
+              "accepted_at": null,
+              "accepted_as": null
+            }
+          ],
+          "reply_block": null
+        },
+        {
+          "id": "5d027993-6dee-4e1b-ab6f-1cd215e57b14",
+          "issue_key": "PDFD720CB-1",
+          "author": {
+            "kind": "session",
+            "id": "threads-planner",
+            "origin": { "session_title": "Planner (threads)" }
+          },
+          "body": "Yes, in that order.",
+          "target": null,
+          "in_reply_to": "5dde05a0-2c62-45b6-a663-983e25746bae",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:06.339159Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [],
+          "reply_block": null
+        },
+        {
+          "id": "ada59c63-6df4-485a-99e3-93623a9da3c1",
+          "issue_key": "PDFD720CB-1",
+          "author": {
+            "kind": "session",
+            "id": "threads-planner",
+            "origin": { "session_title": "Planner (threads)" }
+          },
+          "body": "And each name once.",
+          "target": null,
+          "in_reply_to": "5dde05a0-2c62-45b6-a663-983e25746bae",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:06.356844Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [],
+          "reply_block": null
+        }
+      ],
+      "last_activity_at": "2026-11-26T11:38:06.356844Z"
+    },
+    {
+      "message": {
+        "id": "b8a85377-e320-42aa-9479-100465fe52a2",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 27 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:06.189551Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "b8a85377-e320-42aa-9479-100465fe52a2",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:06.189551Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:06.189551Z"
+    },
+    {
+      "message": {
+        "id": "895aef15-6b0b-41c9-88f5-097d430555b2",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 23 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:06.08176Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "895aef15-6b0b-41c9-88f5-097d430555b2",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:06.08176Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:06.081760Z"
+    },
+    {
+      "message": {
+        "id": "cc32fc53-e95a-4ffa-8c36-1d64f01e6650",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "bob", "proven": true },
+        "body": "Does Agents list the agents' notes?",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:05.687178Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "cc32fc53-e95a-4ffa-8c36-1d64f01e6650",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:05.687178Z",
+            "requested_by": { "kind": "user", "id": "bob", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [
+        {
+          "id": "8fa9620d-615a-4ea8-8cb2-267f246423d0",
+          "issue_key": "PDFD720CB-1",
+          "author": {
+            "kind": "session",
+            "id": "threads-planner",
+            "origin": { "session_title": "Planner (threads)" }
+          },
+          "body": "No, only the threads between agents.",
+          "target": null,
+          "in_reply_to": "cc32fc53-e95a-4ffa-8c36-1d64f01e6650",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:05.710147Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [],
+          "reply_block": null
+        },
+        {
+          "id": "64cb42d8-61fc-447a-8f45-9b8b2d807082",
+          "issue_key": "PDFD720CB-1",
+          "author": { "kind": "user", "id": "alice", "proven": true },
+          "body": "Good, that keeps it short.",
+          "target": "role:planner",
+          "in_reply_to": "8fa9620d-615a-4ea8-8cb2-267f246423d0",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:05.730875Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [
+            {
+              "message_id": "64cb42d8-61fc-447a-8f45-9b8b2d807082",
+              "attempt": 1,
+              "delivery": "aside",
+              "session_id": "",
+              "envelope_id": null,
+              "duplicate": false,
+              "state": "failed",
+              "error": "no holder for role planner",
+              "reply_id": null,
+              "created_at": "2026-11-26T11:38:05.730875Z",
+              "requested_by": { "kind": "user", "id": "alice", "proven": true },
+              "accepted_at": null,
+              "accepted_as": null
+            }
+          ],
+          "reply_block": null
+        }
+      ],
+      "last_activity_at": "2026-11-26T11:38:05.730875Z"
+    },
+    {
+      "message": {
+        "id": "8bb0cec1-a2cc-4f6d-95cc-b6250c841773",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 20 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:05.188901Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "8bb0cec1-a2cc-4f6d-95cc-b6250c841773",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:05.188901Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:05.188901Z"
+    },
+    {
+      "message": {
+        "id": "a2dbfe5a-81e4-47c5-b520-eabd40b9cf52",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 17 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:05.110526Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "a2dbfe5a-81e4-47c5-b520-eabd40b9cf52",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:05.110526Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:05.110526Z"
+    },
+    {
+      "message": {
+        "id": "0b2be66d-c05d-41cc-ab96-612294e83525",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 12 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:04.990194Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "0b2be66d-c05d-41cc-ab96-612294e83525",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:04.990194Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:04.990194Z"
+    },
+    {
+      "message": {
+        "id": "3eb7c871-9b28-421a-8e1e-eb47074d36b6",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 9 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:04.919996Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "3eb7c871-9b28-421a-8e1e-eb47074d36b6",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:04.919996Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:04.919996Z"
+    },
+    {
+      "message": {
+        "id": "92930886-0aa4-44dd-aca0-e54a46974bab",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 6 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:04.82578Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "92930886-0aa4-44dd-aca0-e54a46974bab",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:04.82578Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:04.825780Z"
+    },
+    {
+      "message": {
+        "id": "21c0f166-bc1f-45f1-b229-36aad235fd9e",
+        "issue_key": "PDFD720CB-1",
+        "author": { "kind": "user", "id": "alice", "proven": true },
+        "body": "Filler message 3 to the planner.",
+        "target": "role:planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:04.689916Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "21c0f166-bc1f-45f1-b229-36aad235fd9e",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "",
+            "envelope_id": null,
+            "duplicate": false,
+            "state": "failed",
+            "error": "no holder for role planner",
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:04.689916Z",
+            "requested_by": { "kind": "user", "id": "alice", "proven": true },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [],
+      "last_activity_at": "2026-11-26T11:38:04.689916Z"
+    }
+  ],
+  "before": null,
+  "remaining": 0
+}

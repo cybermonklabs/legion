@@ -1,0 +1,156 @@
+{
+  "rows": [
+    {
+      "thread_id": "0d7bfef6-6402-404b-b715-17406e3bdee1",
+      "kind": "message",
+      "ref": "/issues/PDFD720CB-1/messages/0d7bfef6-6402-404b-b715-17406e3bdee1",
+      "issue": { "key": "PDFD720CB-1", "title": "Threads of one issue" },
+      "project": "PDFD720CB",
+      "subject": "The row draws its first line.",
+      "reply": {
+        "id": "b788d337-a700-48fd-b900-da01fcec341d",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "threads-tester",
+          "origin": { "session_title": "Tester (threads)" }
+        },
+        "first_line": "Cut where, at the row's edge?",
+        "created_at": "2026-11-26T11:38:06.618282Z"
+      },
+      "root_author": { "kind": "user", "id": "alice", "proven": true },
+      "read_through": "2026-11-26T11:38:06.596439Z",
+      "unread": true,
+      "unread_count": 1,
+      "version": 1
+    },
+    {
+      "thread_id": "73914aae-2432-4b6c-83d5-626e8b326327",
+      "kind": "comment",
+      "ref": "/issues/PDFD720CB-1/comments/73914aae-2432-4b6c-83d5-626e8b326327",
+      "issue": { "key": "PDFD720CB-1", "title": "Threads of one issue" },
+      "project": "PDFD720CB",
+      "subject": "The list should name the daemon by its project.",
+      "reply": {
+        "id": "f9c5aff5-f8f4-4756-83b7-5318ad1bd294",
+        "kind": "reply",
+        "author": { "kind": "session", "id": "legion-daemon:PDFD720CB" },
+        "first_line": "Noted.",
+        "created_at": "2026-11-26T11:38:06.522662Z"
+      },
+      "root_author": { "kind": "user", "id": "alice", "proven": true },
+      "read_through": "2026-11-26T11:38:06.47405Z",
+      "unread": true,
+      "unread_count": 2,
+      "version": 2
+    },
+    {
+      "thread_id": "83d287f7-8a23-467a-838f-61e709f6d7ae",
+      "kind": "message",
+      "ref": "/issues/PDFD720CB-1/messages/83d287f7-8a23-467a-838f-61e709f6d7ae",
+      "issue": { "key": "PDFD720CB-1", "title": "Threads of one issue" },
+      "project": "PDFD720CB",
+      "subject": "Planning started.",
+      "reply": {
+        "id": "dd36556c-fdd8-4e2b-a589-b8b3bcac140f",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "threads-planner",
+          "origin": { "session_title": "Planner (threads)" }
+        },
+        "first_line": "The plan is on its way.",
+        "created_at": "2026-11-26T11:38:06.456695Z"
+      },
+      "root_author": { "kind": "session", "id": "legion-daemon:PDFD720CB" },
+      "read_through": "2026-11-26T11:38:06.419876Z",
+      "unread": true,
+      "unread_count": 1,
+      "version": 1
+    },
+    {
+      "thread_id": "2dc5b959-dc04-409f-953f-9462d75953ac",
+      "kind": "message",
+      "ref": "/issues/PDFD720CB-1/messages/2dc5b959-dc04-409f-953f-9462d75953ac",
+      "issue": { "key": "PDFD720CB-1", "title": "Threads of one issue" },
+      "project": "PDFD720CB",
+      "subject": "Can the list show who is in each thread?",
+      "reply": {
+        "id": "ada59c63-6df4-485a-99e3-93623a9da3c1",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "threads-planner",
+          "origin": { "session_title": "Planner (threads)" }
+        },
+        "first_line": "And each name once.",
+        "created_at": "2026-11-26T11:38:06.356844Z"
+      },
+      "root_author": { "kind": "user", "id": "alice", "proven": true },
+      "read_through": "2026-11-26T11:38:05.899178Z",
+      "unread": true,
+      "unread_count": 2,
+      "version": 3
+    },
+    {
+      "thread_id": "c1d04870-9f68-462b-a03a-7fbb33090183",
+      "kind": "comment",
+      "ref": "/issues/PDFD720CB-1/comments/c1d04870-9f68-462b-a03a-7fbb33090183",
+      "issue": { "key": "PDFD720CB-1", "title": "Threads of one issue" },
+      "project": "PDFD720CB",
+      "subject": "Is a tie broken by the id?",
+      "reply": {
+        "id": "b213f6e9-ecca-4486-88d4-f25458e0b49c",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "threads-reviewer",
+          "origin": { "session_title": "Reviewer (threads)" }
+        },
+        "first_line": "Which id, the root's?",
+        "created_at": "2026-11-26T11:38:05.818911Z"
+      },
+      "root_author": { "kind": "user", "id": "alice", "proven": true },
+      "read_through": "2026-11-26T11:38:05.761533Z",
+      "unread": true,
+      "unread_count": 2,
+      "anchor": {
+        "artifact_id": "e48eae7b-04a2-4417-b7ad-69d5f08b9cc7",
+        "block_id": "6a86c7d7-7a9b-476e-87c6-819fc7259c8e",
+        "mark_id": "c1d04870-9f68-462b-a03a-7fbb33090183",
+        "version": 1,
+        "quote": "merges them by last activity",
+        "orphaned": false
+      },
+      "version": 2
+    },
+    {
+      "thread_id": "18ddeb81-955f-4937-8dd0-71df6b4b8354",
+      "kind": "comment",
+      "ref": "/issues/PDFD720CB-1/comments/18ddeb81-955f-4937-8dd0-71df6b4b8354",
+      "issue": { "key": "PDFD720CB-1", "title": "Threads of one issue" },
+      "project": "PDFD720CB",
+      "subject": "The list reads three routes.",
+      "reply": {
+        "id": "fa70efe5-c335-47d8-aa4d-0ef3e8dc7321",
+        "kind": "reply",
+        "author": {
+          "kind": "session",
+          "id": "threads-reviewer",
+          "origin": { "session_title": "Reviewer (threads)" }
+        },
+        "first_line": "Fifty would not fit the first screen.",
+        "created_at": "2026-11-26T11:38:04.574451Z"
+      },
+      "root_author": { "kind": "user", "id": "alice", "proven": true },
+      "read_through": "2026-11-26T11:38:04.521119Z",
+      "unread": true,
+      "unread_count": 3,
+      "version": 3
+    }
+  ],
+  "total": 6,
+  "limit": 200,
+  "offset": 0,
+  "as_of": "2026-11-26T11:39:08.000184Z"
+}
