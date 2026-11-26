@@ -401,8 +401,8 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// stored body second is the order the write and the edit ran in, and it leaves
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer, origins,
-					comment.CreatedAt, text.ExtractAt(longer, origins), nil); err != nil {
+				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer, seedOrigins.Canonical(),
+					comment.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
 				}
 			}
@@ -410,8 +410,8 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 			if comment.Edited {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
-			located := text.ExtractAt(body, origins)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, origins, at,
+			located := text.ExtractAt(body, seedOrigins)
+			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, seedOrigins.Canonical(), at,
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
 			}
@@ -523,13 +523,13 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			}
 			if message.Reindexed {
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer, origins,
-					message.CreatedAt, text.ExtractAt(longer, origins), nil); err != nil {
+				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer, seedOrigins.Canonical(),
+					message.CreatedAt, text.ExtractAt(longer, seedOrigins), nil); err != nil {
 					return fmt.Errorf("index message %s under the older parser: %w", message.ID, err)
 				}
 			}
-			located := text.ExtractAt(body, origins)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body, origins,
+			located := text.ExtractAt(body, seedOrigins)
+			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body, seedOrigins.Canonical(),
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)
 			}

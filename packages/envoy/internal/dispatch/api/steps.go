@@ -184,7 +184,7 @@ func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) 
 	if input.Variant != nil {
 		write.Experiment.Variant = *input.Variant
 	}
-	s.writeIssueStep(w, r, write, actor, key)
+	s.writeIssueStep(w, r, write, actor, key, false)
 }
 
 // writeIssueStep is the one write of a step record behind the three routes, by actor to the issue

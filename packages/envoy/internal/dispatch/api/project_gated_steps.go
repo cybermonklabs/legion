@@ -114,7 +114,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	// assigns the transaction id, so it adds no statement to the window an open transaction id
 	// holds (TestXidWindowRouteTable). An unknown project is 404 PROJECT_NOT_FOUND here, before
 	// anything is written.
-	project, err := s.loadProject(r.Context(), tx, key)
+	project, err := s.loadProject(r.Context(), tx, who, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

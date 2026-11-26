@@ -129,7 +129,7 @@ func (s *server) queueNewAskReferences(ctx context.Context, tx pgx.Tx, ledger *d
 func (s *server) queueEditedReferences(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, writer model.Actor, fromKind, fromID, previous, body string) (model.ReferenceChanges, error) {
 	ctx = ledger.ReadContext(ctx)
 	found := text.Refs(refs.NewReader(ctx, tx, writer, fromKind, fromID, s.deps.Origins).Mentions(body))
-	replacement, changes, err := planFoundReferences(ctx, tx, fromKind, fromID, found, refs.EditedTargets(previous, body, s.deps.Origins, found))
+	replacement, changes, err := planFoundReferences(ctx, tx, fromKind, fromID, found, refs.EditedTargets(previous, body, s.deps.Origins.Canonical(), found))
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -199,7 +199,7 @@ func (s *server) planEditedItem(
 	ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit,
 ) (model.ReferenceChanges, docs.WriteStep, error) {
 	return s.planItemWrite(ctx, tx, writer, kind, itemID, body, nil, at, true, carried, func(found []text.Ref) []refs.Target {
-		return refs.EditedTargets(previous, body, s.deps.ServerURL, found)
+		return refs.EditedTargets(previous, body, s.deps.Origins.Canonical(), found)
 	})
 }
 
@@ -249,7 +249,7 @@ func (s *server) planItemWrite(
 	if cites {
 		located = refs.NewReaderInScope(ctx, tx, writer, string(kind), itemID, s.deps.Origins, document).Mentions(body)
 	}
-	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, s.deps.ServerURL, at, located, carried)
+	indexing, err := refs.PlanItemIndex(index, kind, itemID, body, s.deps.Origins.Canonical(), at, located, carried)
 	if err != nil {
 		return model.ReferenceChanges{}, nil, err
 	}

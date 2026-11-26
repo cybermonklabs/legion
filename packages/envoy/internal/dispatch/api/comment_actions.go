@@ -505,7 +505,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 			// The check of who writes an issue's spec or Verification document, on the document
 			// the suggestion is anchored in, before the document call. The accept and the reject
 			// need the person scope at the route's gate, so the check passes them at once.
-			if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, comment.Anchor.ArtifactID); err != nil {
+			if err := refuseSpecWriterOfDocuments(r.Context(), tx, who, writer, comment.Anchor.ArtifactID); err != nil {
 				s.writeHandlerError(w, err)
 				return
 			}

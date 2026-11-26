@@ -146,7 +146,7 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named, s.deps.ServerURL)
+	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named, s.deps.Origins.Canonical())
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +192,7 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, &who, asked, s.deps.ServerURL)
+	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, &who, asked, s.deps.Origins.Canonical())
 	if err != nil {
 		return nil, err
 	}

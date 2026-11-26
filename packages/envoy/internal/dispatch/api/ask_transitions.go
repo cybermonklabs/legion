@@ -377,7 +377,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 		Apply: func(ctx context.Context, tx pgx.Tx, _ *docs.Ledger, ask model.Ask) (model.Ask, error) {
 			// The check of who writes an issue's spec or Verification document, on the block's
 			// document and each copy of the ask, before the first document call.
-			if err := s.refuseSpecWriterOfAsk(ctx, tx, writer, ask); err != nil {
+			if err := s.refuseSpecWriterOfAsk(ctx, tx, who, writer, ask); err != nil {
 				return model.Ask{}, err
 			}
 			if err := s.writeClosedBlockState(ctx, ask, actor); err != nil {

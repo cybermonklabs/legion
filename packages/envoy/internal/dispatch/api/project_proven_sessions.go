@@ -55,7 +55,11 @@ func (s *server) deleteProjectProvenSessions(w http.ResponseWriter, r *http.Requ
 // transaction id.
 func (s *server) setProjectProvenSessions(w http.ResponseWriter, r *http.Request, actor model.Actor, on bool) {
 	key := r.PathValue("key")
-	if err := s.storeProjectProvenSessions(r.Context(), key, actor, on); err != nil {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
+	if err := s.storeProjectProvenSessions(r.Context(), key, actor, who, on); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -72,7 +76,7 @@ func (s *server) setProjectProvenSessions(w http.ResponseWriter, r *http.Request
 // PROJECT_NOT_FOUND (loadProject), before anything is written. A write that finds the setting
 // already as asked changes nothing: the update names `proven_sessions is distinct from $2`, so
 // it touches no row, and no event is appended.
-func (s *server) storeProjectProvenSessions(ctx context.Context, key string, actor model.Actor, on bool) error {
+func (s *server) storeProjectProvenSessions(ctx context.Context, key string, actor model.Actor, who model.Actor, on bool) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
@@ -87,7 +91,7 @@ func (s *server) storeProjectProvenSessions(ctx context.Context, key string, act
 	// The row is read under the owner lock, which every writer of the row takes first, so the
 	// event carries the row as this write leaves it; the read comes before the update, so it adds
 	// no statement to the window an open transaction id holds (putProjectGatedSteps).
-	project, err := s.loadProject(ctx, tx, key)
+	project, err := s.loadProject(ctx, tx, who, key)
 	if err != nil {
 		return err
 	}

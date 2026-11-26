@@ -85,7 +85,7 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, who mod
 // checks still decide, under the owner's lock. With no refusal it answers the id of the artifact
 // the upload writes a version of, "" for a new one, for the check of the token the upload names
 // (refuseFileBase).
-func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifactTarget, writer specWriter, name, kind string, namesToken bool) (string, error) {
+func (s *server) refuseUploadBeforeItsObject(ctx context.Context, who model.Actor, target artifactTarget, writer specWriter, name, kind string, namesToken bool) (string, error) {
 	pool := s.deps.Store.Pool
 	if target.IssueKey == nil && target.Session == "" {
 		if _, err := s.loadProject(ctx, pool, who, target.Project); err != nil {

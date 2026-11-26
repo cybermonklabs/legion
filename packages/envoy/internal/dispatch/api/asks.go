@@ -580,7 +580,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		// The check of who writes an issue's spec or Verification document, on the block's
 		// document alone: an edit settles no copy of the ask, and a copy takes only its source's
 		// server attributes, not its wording.
-		if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, blockArtifact); err != nil {
+		if err := refuseSpecWriterOfDocuments(r.Context(), tx, who, writer, blockArtifact); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

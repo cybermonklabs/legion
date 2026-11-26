@@ -441,12 +441,12 @@ func refuseSpecWriterOfDocument(ctx context.Context, q queryer, writer specWrite
 // in their order. The first document the check holds decides, and the refusal names it: the
 // documents one write changes together are documents of one owner (a block ask's document and
 // each copy of the ask), so one check of the issue decides them all.
-func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, writer specWriter, ids ...string) error {
+func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, who model.Actor, writer specWriter, ids ...string) error {
 	if writer.person {
 		return nil
 	}
 	for _, id := range ids {
-		artifact, err := loadArtifactRowByID(ctx, q, id)
+		artifact, err := loadArtifactRowByID(ctx, q, who, id)
 		if err != nil {
 			return err
 		}
@@ -463,7 +463,7 @@ func refuseSpecWriterOfDocuments(ctx context.Context, q queryer, writer specWrit
 // decide: a document the check holds decides alone, and a copy is a document of the same owner, so
 // a block on a document of no issue has no copy the check holds. ctx is joined to the caller's
 // transaction tx, which holds the ask's owner lock. An ask with no block writes no document.
-func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, writer specWriter, ask model.Ask) error {
+func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, who model.Actor, writer specWriter, ask model.Ask) error {
 	if writer.person || ask.BlockID == nil {
 		return nil
 	}
@@ -471,7 +471,7 @@ func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, writer sp
 	if err != nil {
 		return err
 	}
-	artifact, err := loadArtifactRowByID(ctx, tx, block)
+	artifact, err := loadArtifactRowByID(ctx, tx, who, block)
 	if err != nil {
 		return err
 	}
@@ -482,7 +482,7 @@ func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, writer sp
 	if err != nil {
 		return err
 	}
-	return refuseSpecWriterOfDocuments(ctx, tx, writer, copies...)
+	return refuseSpecWriterOfDocuments(ctx, tx, who, writer, copies...)
 }
 
 // refuseSpecWriterOfIssueWrite is the check of one write of an issue: a PATCH's (writeIssue) or a

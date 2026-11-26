@@ -148,7 +148,7 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		}
 		r = r.WithContext(withReader(r.Context(), who))
 		viewer := refs.Viewer{
-			Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session")), Origins: s.deps.Origins,
+			Human: human, Session: strings.TrimSpace(r.URL.Query().Get("session")), ServerURL: s.deps.Origins.Canonical(),
 		}
 		if id != "" {
 			scope := refs.Scope{}

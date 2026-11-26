@@ -2055,11 +2055,12 @@ func listedArtifacts(ctx context.Context, q queryer, who model.Actor, query stri
 
 // writeArtifactList answers a list route with the artifacts query names (listedArtifacts), each
 // as a read shape carrying the display trees the caller asked for. A list route is therefore its
-// own authorization, its own statement and this call: a project's list and an agent
+// own authorization, its own statement and this call, each list read as who reads it: a
+// project's list and an agent
 // conversation's differ in nothing else, and a route added later says what it reads and who may
 // read it rather than repeating how a list is read.
-func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query string, args ...any) {
-	artifacts, err := listedArtifacts(r.Context(), s.deps.Store.Pool, query, args...)
+func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, who model.Actor, query string, args ...any) {
+	artifacts, err := listedArtifacts(r.Context(), s.deps.Store.Pool, who, query, args...)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

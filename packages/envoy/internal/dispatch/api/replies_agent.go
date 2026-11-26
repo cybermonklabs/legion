@@ -366,8 +366,8 @@ func (s *server) readMyAgentRows(
 			return nil, 0, fmt.Errorf("decode my agent reply author: %w", err)
 		}
 		row.Ref = "/agents/" + session + "/live"
-		row.Subject = refs.FirstLine(subject, s.deps.ServerURL)
-		row.Reply.FirstLine = refs.FirstLine(body, s.deps.ServerURL)
+		row.Subject = refs.FirstLine(subject, s.deps.Origins.Canonical())
+		row.Reply.FirstLine = refs.FirstLine(body, s.deps.Origins.Canonical())
 		row.Unread = row.UnreadCount > 0
 		row.Session = &model.MyReplySession{ID: session}
 		read = append(read, row)
