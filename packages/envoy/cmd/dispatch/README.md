@@ -5986,7 +5986,7 @@ Each item below names a path with its method and identity, then its purpose.
   - **When the daemon publishes.**
     The daemon publishes the set when a claim readies, at each boot, and at each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its session, or the claim retires, fails, or is suspended by any source but the idle release.
     A claim whose idle pod the daemon released keeps its role, and so does a claim that a project pause's stop suspended: each keeps its session, its phase and its task, and the next wake resumes the same session, so the release, the wake and the launch that resumes the session change nothing in the set.
-    A claim launched again over the session it kept holds its role through the launch.
+    A claim launched again over the session it kept holds its role through the launch, and after a suspension by any source but the idle release the resume's first write over that session, `queued` or `launching`, queues a publication that names the session again, before the agent registers.
     The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
     An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published when the daemon makes that write again at the claim's next decision, and not before: until then the store still holds the claim live.
     The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
