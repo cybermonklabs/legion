@@ -33,7 +33,7 @@ import {
 } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
-import { ONE_PIXEL_PNG } from "./sends";
+import { ONE_PIXEL_PNG } from "./one-pixel-png";
 import { asUser } from "./users";
 
 /**
@@ -1340,8 +1340,8 @@ export async function seedRows(): Promise<RowSeed> {
     },
     asPlanner
   );
-  // The outline draws a message thread only once a person wrote in it (`agents-only.ts`), so the
-  // reader answers each of the planner's two messages.
+  // The reader answers each of the planner's two messages, so the outline draws a person's reply
+  // under each.
   const replies: string[] = [];
   for (const message of [longMessage, linked]) {
     replies.push((await createMessage(key, { body: "Read.", in_reply_to: message.id })).id);
