@@ -407,11 +407,16 @@ func chainRoot(chain []survival.Commit) time.Time {
 
 // estimate is the requests a pass will make after its chain read, counted before it makes any
 // (R12): the pages of the closed pull requests list, one per 100 of the chain's commits dated on
-// or after d0, the oldest selected day, each a pull request at most, and one more; one for each
-// commit of the range, its patch; and one for each commit of the range whose pull request
-// attribution has not judged under its rule, its first page of commit messages, where every commit
-// of the range whose merged pull request Dispatch has not stored counts as one. A pull request
-// over 100 commits takes more pages, which the counts the pass logs hold.
+// or after d0, the oldest selected day, and one more; one for each commit of the range, its patch;
+// and one for each commit of the range whose pull request attribution has not judged under its
+// rule, its first page of commit messages, where every commit of the range whose merged pull
+// request Dispatch has not stored counts as one. The list's pages are an estimate and no bound:
+// a commit of the chain landed one merged pull request at most, but the list holds every closed
+// pull request updated on or after d0, of every base, and so also those that never merged and
+// those merged into a branch that has not landed, which no read before the list counts. A list
+// longer than the estimate, and a pull request over 100 commits, which takes more pages of
+// commit messages, are met by the budget check after the list (daily), and the counts the pass
+// logs hold them.
 func (r *Run) estimate(ctx context.Context, gh *GitHub, opened Repository, chain, replayed []survival.Commit, d0 time.Time) (int, error) {
 	since := 0
 	for _, commit := range chain {

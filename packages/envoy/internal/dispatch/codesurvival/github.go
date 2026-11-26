@@ -538,22 +538,25 @@ type listedPull struct {
 	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
-// PullRequests is the merged pull requests of r's branch that landed as a commit of chain, by
-// that commit's SHA (merge_commit_sha). It reads GitHub's closed pull requests of the branch,
-// newest update first (`GET /repos/{owner}/{repo}/pulls?state=closed&base={branch}&sort=updated&direction=desc&per_page=100`),
+// PullRequests is the merged pull requests of r's repository that landed as a commit of chain, by
+// that commit's SHA (merge_commit_sha). It reads GitHub's closed pull requests of the repository,
+// whatever their base, newest update first (`GET /repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=100`),
 // page by page as each page's Link header names the next, and stops after the first page whose
 // last pull request was updated before d0, the oldest selected day: a pull request merged on or
-// after d0 was updated then too. A closed pull request that never merged is no change, whatever
-// commit GitHub names for it, and a commit no pull request landed as -- a push, or the earlier
-// commits of a rebase merge, whose last commit alone is its merge_commit_sha -- has no entry.
+// after d0 was updated then too. The list names no base: a pull request merged into another
+// branch, one of a stack, lands on the branch's chain when that branch does, as PR #1284 of
+// cybermonklabs/legion landed as fb96b8da on main with its base legion/LEGION-208-4b-predicates.
+// A closed pull request that never merged is no change, whatever commit GitHub names for it,
+// neither is one that merged as no commit of chain, and a commit no pull request landed as -- a
+// push, or the earlier commits of a rebase merge, whose last commit alone is its
+// merge_commit_sha -- has no entry.
 func (g *GitHub) PullRequests(ctx context.Context, r Repository, d0 time.Time, chain []survival.Commit) (map[string]PullRequest, error) {
 	onChain := make(map[string]bool, len(chain))
 	for _, commit := range chain {
 		onChain[commit.SHA] = true
 	}
 	query := url.Values{
-		"state": {"closed"}, "base": {r.Branch}, "sort": {"updated"}, "direction": {"desc"},
-		"per_page": {strconv.Itoa(perPage)},
+		"state": {"closed"}, "sort": {"updated"}, "direction": {"desc"}, "per_page": {strconv.Itoa(perPage)},
 	}
 	pulls := map[string]PullRequest{}
 	for path := r.repoPath() + "/pulls?" + query.Encode(); path != ""; {

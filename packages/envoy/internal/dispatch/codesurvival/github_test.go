@@ -365,11 +365,11 @@ func TestTheChainReadStopsAtTheFirstDayLessThreeDays(t *testing.T) {
 	}
 }
 
-// The pull request facts come from the closed pull requests list of the branch, newest update
-// first, read page by page until a page's last pull request was updated before D0, and a pull
-// request is a commit's when it merged as that commit (merge_commit_sha). A closed pull request
-// that never merged is no change, whatever commit GitHub names for it, and neither is a commit no
-// pull request merged as.
+// The pull request facts come from the closed pull requests list of the repository, of every base,
+// newest update first, read page by page until a page's last pull request was updated before D0,
+// and a pull request is a commit's when it merged as that commit (merge_commit_sha). A closed pull
+// request that never merged is no change, whatever commit GitHub names for it, and neither is a
+// commit no pull request merged as.
 func TestThePullRequestFactsMatchByMergeCommit(t *testing.T) {
 	page := capture(t, "pulls-page.txt")
 	var captured []struct {
@@ -393,9 +393,9 @@ func TestThePullRequestFactsMatchByMergeCommit(t *testing.T) {
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/cybermonklabs/legion/pulls", func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
-		if query.Get("state") != "closed" || query.Get("base") != "main" || query.Get("sort") != "updated" ||
+		if query.Get("state") != "closed" || query.Has("base") || query.Get("sort") != "updated" ||
 			query.Get("direction") != "desc" || query.Get("per_page") != "100" {
-			t.Errorf("the pulls list was asked for %q, want state=closed, base=main, sort=updated, direction=desc and per_page=100", r.URL.RawQuery)
+			t.Errorf("the pulls list was asked for %q, want state=closed, sort=updated, direction=desc and per_page=100, and no base", r.URL.RawQuery)
 		}
 		switch query.Get("page") {
 		case "":
@@ -440,6 +440,53 @@ func TestThePullRequestFactsMatchByMergeCommit(t *testing.T) {
 	}
 	if got := reader.Counts().Pulls; got != 2 {
 		t.Fatalf("the pulls list counted %d pages, want the 2 it read", got)
+	}
+}
+
+// A pull request merged into another branch, one of a stack, is the change of the commit it
+// merged as where that commit is on the chain: the list names no base, so PR #1284 of
+// cybermonklabs/legion, whose base was legion/LEGION-208-4b-predicates and whose merge commit
+// fb96b8da is on main's first-parent chain, is matched, and a stacked pull request whose merge
+// commit is on no commit of the chain is not.
+func TestAPullRequestOfAnotherBaseIsMatchedByItsMergeCommit(t *testing.T) {
+	const (
+		stacked  = "fb96b8da5256494583eea9494b3404c7bb7df86c"
+		offChain = "7e57000000000000000000000000000000000004"
+		onMain   = "7e57000000000000000000000000000000000005"
+	)
+	pull := func(number int, base, head, sha, merged string) map[string]any {
+		return map[string]any{
+			"number": number, "html_url": fmt.Sprintf("https://github.com/cybermonklabs/legion/pull/%d", number), "title": head,
+			"user": map[string]any{"login": "legion-implementer[bot]"}, "head": map[string]any{"ref": head, "repo": map[string]any{"full_name": legion}},
+			"base": map[string]any{"ref": base}, "merge_commit_sha": sha, "merged_at": merged, "updated_at": merged,
+		}
+	}
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/cybermonklabs/legion/pulls", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("base") {
+			t.Errorf("the pulls list was asked for %q, which names a base", r.URL.RawQuery)
+			writeJSON(t, w, []any{})
+			return
+		}
+		writeJSON(t, w, []map[string]any{
+			pull(1300, "main", "legion/LEGION-208-4b", onMain, "2026-09-25T01:00:00Z"),
+			pull(1292, "legion/LEGION-208-4b-supervise", "legion/LEGION-208-4b-workspace-loss", offChain, "2026-09-25T00:39:18Z"),
+			pull(1284, "legion/LEGION-208-4b-predicates", "legion/LEGION-208-4b-spawnspec", stacked, "2026-09-25T00:39:16Z"),
+			pull(1100, "main", "legion/old", "7e57000000000000000000000000000000000006", "2026-09-01T00:00:00Z"),
+		})
+	})
+	reader, _ := newReader(t, fake, nil)
+	chain := []survival.Commit{{SHA: stacked}, {SHA: onMain}}
+
+	pulls, err := reader.PullRequests(testwait.Context(t), repository(legion, "main", onMain), time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC), chain)
+	if err != nil {
+		t.Fatalf("the pull request facts: %v", err)
+	}
+	if got, ok := pulls[stacked]; !ok || got.Number != 1284 || got.HeadRef != "legion/LEGION-208-4b-spawnspec" || len(pulls) != 2 || pulls[onMain].Number != 1300 {
+		t.Fatalf("the pull requests of the chain are %+v, want #1284 by its merge commit %s though its base is another branch, #1300 by %s, and not #1292, whose merge commit is on no commit of the chain", pulls, stacked, onMain)
+	}
+	if asked := fake.asked("GET /repos/cybermonklabs/legion/pulls"); len(asked) != 1 {
+		t.Fatalf("the pulls list was read %d times, want once: %v", len(asked), asked)
 	}
 }
 

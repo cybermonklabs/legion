@@ -640,11 +640,12 @@ func (g *GitHub) files(w http.ResponseWriter, r *http.Request, sha string, branc
 	g.writeJSON(w, map[string]any{"sha": sha, "files": entries[from:to]})
 }
 
-// pulls answers the closed pull requests list of the branch: every pull request the branch's
-// history landed, most recently merged first (its updated_at is its merged_at), 100 a page.
+// pulls answers the closed pull requests list of the repository: every pull request the branch's
+// history landed, most recently merged first (its updated_at is its merged_at), 100 a page. Each
+// merged into main, so a list that names another base, as GitHub's base filter does, holds none.
 func (g *GitHub) pulls(w http.ResponseWriter, r *http.Request, repo string, branch *Branch) {
 	query := r.URL.Query()
-	if query.Get("state") != "closed" || query.Get("base") != BranchName {
+	if query.Get("state") != "closed" || (query.Has("base") && query.Get("base") != BranchName) {
 		g.writeJSON(w, []any{})
 		return
 	}
