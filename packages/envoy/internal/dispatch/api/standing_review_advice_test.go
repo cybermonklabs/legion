@@ -159,11 +159,19 @@ func TestAskAdviceCutsTheReviewsReasonAt500Characters(t *testing.T) {
 // changes the spec and undoes the change, which carries her approval to version 3 naming version
 // 1, and does it again, which carries that carry to version 5. The newest carry's reason names
 // version 1, the version alice approved, and then version 3, whose text version 5 holds
-// (docs' restoreCarriedReason), and the version it names first is what the advice must carry.
+// (docs' restoreCarriedReason), and the version it names first is what the advice must carry. The
+// issue has not converted (holdIssuesUnconverted), so the spec's approval covers its stored
+// markdown and only the undo carries it: on a converted issue R14 covers it by the Spec query's
+// record, which restoreSpec, holding no requirement, leaves empty, so the record carry carries it to
+// the agent's change itself and the undo after it carries by the record again, not by the restore.
 func TestAskAdviceNamesACarriedReviewAndTheVersionItsReasonGives(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "STANDCARRY", "Carried twice", restoreSpec)
+	if tree, err := issueTreeOf(context.Background(), database.Pool, issue.Key); err != nil || tree != "" {
+		t.Fatalf("issue %s holds the tree %q (%v), want it unconverted", issue.Key, tree, err)
+	}
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
 
 	agentEdit(t, handler, issue.PrimaryArtifactID, 2, replaceOp("behind a flag.", "behind a flag and a canary."))

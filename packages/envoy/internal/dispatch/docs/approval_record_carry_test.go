@@ -144,9 +144,9 @@ func replaceWords(tree *pmdoc.Node, id, words string) error {
 	return fmt.Errorf("the block %s holds no text", id)
 }
 
-// findBlock is the node of tree whose id attribute is id, nil where none is.
+// findBlock is the node of tree whose block id (pmdoc.BlockIDAttr) is id, nil where none is.
 func findBlock(node *pmdoc.Node, id string) *pmdoc.Node {
-	if held, _ := node.Attrs["id"].(string); held == id {
+	if held, _ := node.Attrs[pmdoc.BlockIDAttr].(string); held == id {
 		return node
 	}
 	for _, child := range node.Children {

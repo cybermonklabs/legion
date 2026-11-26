@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -92,8 +93,20 @@ const recordTableSpec = ":::callout{#memo}\nWe build the urgent list.\n:::\n\n" 
 	"A third paragraph.\n\n" +
 	"::::decision{#d1}\nWe ship on Friday.\n\n:::reading{#d1-r1}\nThe agent reads it as Friday.\n:::\n::::\n"
 
-// recordTableAsk is the ask block the table's spec takes through the edits route, which writes its
-// ask row too.
+// requireAskOfBlock fails unless the document artifactID holds the ask of its block blockID, as the
+// carry reads a document's block asks (refs.AsksOfDocumentSQL).
+func requireAskOfBlock(t *testing.T, database *store.Store, artifactID, blockID string) {
+	t.Helper()
+	var held bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select exists (select 1 from asks a where `+refs.AsksOfDocumentSQL("a", "$1::uuid")+` and a.block_id = $2)`,
+		artifactID, blockID).Scan(&held); err != nil || !held {
+		t.Fatalf("read the ask of block %s of %s (%v): held %t, want the ask its settlement opened", blockID, artifactID, err, held)
+	}
+}
+
+// recordTableAsk is the ask block the table's spec takes through the edits route; the room's
+// settlement opens its ask.
 const recordTableAsk = ":::ask{#a1 urgency=\"high\" multiple=\"false\"}\nWhich transport?\n\n- REST: Matches the platform\n- gRPC: Adds streaming\n:::\n"
 
 // recordTableChecks is the table's Verification document: c1 serving serves, c2 serving r1.
@@ -133,7 +146,9 @@ func (f *recordTable) newest(t *testing.T) map[string]int {
 }
 
 // settleSpec has alice's browser make edit in the spec's fragment of the issue's room, waits until
-// the room stores it, and runs the resumption, which settles the room.
+// the room stores it, and settles the issue's documents on the test's goroutine
+// (docs.Service.SettleIssueDocuments): the table's server settles after an hour, so a resumption
+// would only arm that hour's timer.
 func (f *recordTable) settleSpec(t *testing.T, edit func(*pmdoc.Node) error) {
 	t.Helper()
 	peer := connectBrowserPeer(t, f.rig.handler, f.documents, f.spec.id)
@@ -141,9 +156,7 @@ func (f *recordTable) settleSpec(t *testing.T, edit func(*pmdoc.Node) error) {
 	peer.edit(t, edit)
 	peer.barrier(t)
 	awaitStoredUpdates(t, f.rig.database, f.spec.id, stored+1)
-	if err := f.documents.ResumeOwedSettlementsForTest(context.Background(), 0); err != nil {
-		t.Fatalf("settle the spec of CORE-1: %v", err)
-	}
+	settleIssue(t, f.documents, "CORE-1")
 	awaitSettled(t, f.rig.database, f.spec.id)
 }
 
@@ -202,7 +215,13 @@ func TestTheRecordCarryCarriesOnlyWhereTheDigestHolds(t *testing.T) {
 	f := &recordTable{rig: &digestRig{handler: handler, database: database, documents: documents, issue: issue}, documents: documents}
 	f.spec = readDecisionDocument(t, database, issue.Key, "spec")
 	f.rig.spec = f.spec
+	// The ask block's ask is opened by the room's settlement (docs' reconcileAskBlocks), which this
+	// server runs after an hour: it is settled here, so every version the table writes holds an ask
+	// block that agrees with its ask, which every carry asks first (asksAgreeWithTheirNodes). A block
+	// whose ask no settlement has opened carries nothing, and no row would carry.
 	editThroughTheArtifactRoute(t, handler, f.spec.id, []map[string]any{{"op": "insert", "after": "end", "markdown": recordTableAsk}})
+	settleIssue(t, documents, issue.Key)
+	requireAskOfBlock(t, database, f.spec.id, "a1")
 	owner := "/api/v1/issues/" + issue.Key
 	uploadDocument(t, handler, owner, "verification.md", recordTableChecks("r1"))
 	uploadDocument(t, handler, owner, "plan.md", ":::plan_task{#t1 serves=\"dispatch://CORE-1/spec#b-r1\"}\nBuild the order.\n:::\n")
@@ -351,7 +370,10 @@ func restoredAndMoved(tree *pmdoc.Node) error {
 // closes, alice's browser puts the word back and moves the paragraph before the requirement inside
 // the close margin, and the settlement on the closed issue writes that version and carries nothing.
 // The reopen follows it (docs.Service.FollowClosedIssueVersions) and carries the approval by the
-// version's stored record digest, answering the restored request in alice's name.
+// version's stored record digest, answering the restored request in alice's name. Its server
+// settles a room 20 ms after its last update, as every closed-issue test's does
+// (newClosedSettlementHandler): the resumption it runs (ResumeOwedSettlementsForTest) arms a
+// room's settle timer, which a server settling after an hour would hold past the test's deadline.
 func TestARecordCarryWaitsForTheRequestOrTheReopen(t *testing.T) {
 	t.Parallel()
 	t.Run("request", func(t *testing.T) {
@@ -404,7 +426,7 @@ func TestARecordCarryWaitsForTheRequestOrTheReopen(t *testing.T) {
 	})
 	t.Run("reopen", func(t *testing.T) {
 		ctx := context.Background()
-		handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
+		handler, database, deps := newTestServer(t, testServerOptions{browserPeers: true})
 		documents := deps.Docs.(*docs.Service)
 		createReferenceAPIProject(t, handler, "CORE")
 		issue := createDigestIssue(t, handler, database, "CORE", "A spec restored while closed", recordLaterSpec, false)
@@ -451,8 +473,12 @@ func TestARecordCarryWaitsForTheRequestOrTheReopen(t *testing.T) {
 		if read := readApproval(t, handler, spec.id); read.Approval == nil || read.Approval.Version == nil || *read.Approval.Version != closed || read.Approval.LatestVersion != closed {
 			t.Errorf("the approval of %s reads %+v after the reopen, want approved at version %d, its latest version", spec.refKey, read.Approval, closed)
 		}
-		if answered := readCarriedAsk(t, handler, request.ID); answered.Approval.Approved == nil || answered.Approval.Approved.Version != closed {
-			t.Errorf("the restored approval request %s reads %+v, want answered in alice's name at version %d", request.ID, answered.Approval, closed)
+		// The request's approval.approved is the approval that stood before it was opened; whether the
+		// carry answered it is the ask's own state and answer.
+		if answered := readBlockAsk(t, handler, request.ID); answered.State != "answered" || answered.Answer == nil || answered.Answer.User != "alice" ||
+			answered.Approval == nil || answered.Approval.Version != closed {
+			t.Errorf("the restored approval request %s is %q answered by %+v at %+v, want it answered in alice's name at version %d",
+				request.ID, answered.State, answered.Answer, answered.Approval, closed)
 		}
 	})
 }
