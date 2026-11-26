@@ -52,8 +52,7 @@ export function useViewRowTools(props: SlotProps): ViewRowTools {
   // What the filter by words holds is `?q=`, which the box writes in place, keeping the rest of
   // the address, by a replace marked with the following it was typed in (`slots/following.ts`),
   // so the stage never swaps a view for the outline while the reader types (decision 368). The
-  // mark keeps the outline an opened document goes back to, and leaves out a press of the
-  // count of what waits (`waitingPress`), which acts once.
+  // mark keeps the outline an opened document goes back to.
   const onFilterChange = (next: string) => {
     const query = new URLSearchParams(search);
     if (next === "") query.delete("q");

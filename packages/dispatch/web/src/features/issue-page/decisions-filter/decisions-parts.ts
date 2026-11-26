@@ -215,18 +215,6 @@ export function conversationPath(node: Pick<TreeNode, "reference">): string | un
 }
 
 /**
- * Every entry that waits on the reader, in the filter's order: each open question whose turn
- * is the reader's, then each decision of the review list. It is what the header's count of
- * what waits walks: each press goes to the next of them (R13, the tester's F12).
- */
-export function waitingOrder(parts: DecisionsParts): readonly string[] {
-  return [
-    ...parts.open_questions.filter((entry) => entry.node.waiting).map((entry) => entry.node.id),
-    ...parts.review.map((entry) => entry.node.id),
-  ];
-}
-
-/**
  * The filter's parts.
  *
  * `root` is the whole tree, which holds each ask and each decision with its words and each

@@ -22,6 +22,7 @@ import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
 import {
   ANSWER_PHRASES,
   CONTROL_LABELS,
+  DASHBOARD_WORDS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
   FILE_WORDS,
@@ -207,6 +208,7 @@ import {
   REFLOW_STATES,
   rowsWithoutAuthorScrollers,
   scrollersOutsideAuthorText,
+  seedWaitingWalk,
   showMoreControl,
   specAddress,
   stateName,
@@ -368,32 +370,36 @@ test("the first node starts on the first screen, with six nodes in full at 1440 
   });
 });
 
-/** The id of the first row the outline draws that waits on the reader: an open question or a
- *  decision waiting for their review, in the order the rows stand. */
-function firstWaitingRow(page: Page): Promise<string | null> {
-  return page.evaluate(
-    () =>
-      [...document.querySelectorAll<HTMLElement>('[role="tree"] [data-node-row]')]
-        .find(
-          (row) =>
-            (row.dataset.nodeType === "ask" && row.dataset.nodeState === "open") ||
-            (row.dataset.nodeType === "decision" && row.dataset.nodeState === "waiting_review")
-        )
-        ?.getAttribute("data-node-id") ?? null
-  );
-}
-
-// dispatch://INFRA-3678, under R13: the count of what waits on the reader is a control. Pressed,
-// or Enter on it, from a document of an issue holding more than one item that waits, it returns
-// to the outline, turns the Decisions filter on and puts the focus on the first item that waits
-// in the filter's order; an approval request alone puts the focus on the header's approval
-// control.
+// R5 of dispatch://INFRA-3940 (dispatch://INFRA-3678, under R13): the count of what waits on the
+// reader is a control, and its number is the length of Dashboard's list. On the issue this row
+// seeds - one question, one decision to review, an approval request on the spec, a stale approval
+// of the Verification document and two unread threads: six items - a press, or Enter on the count,
+// from an opened document closes it, pushes Dashboard's address and puts the focus on the list's
+// first item. Each press after goes on to the next item, shows the next five past the fifth and
+// comes round to the first, the list showing its first five again, so every item the count counts
+// is reached by presses alone. An approval request alone, at the bare address that draws
+// Dashboard, takes the press as a move of the focus, with no new address.
 test("the count of what waits on the reader opens the first thing that waits @phone", async ({
   browser,
 }) => {
   test.setTimeout(150_000);
-  await phase(browser, seedWholeIssue, async (page, seeded) => {
+  await phase(browser, seedWaitingWalk, async (page, seeded) => {
     const desktopProject = test.info().project.name !== "iphone";
+    const items = page.locator('[data-testid^="dashboard-item-"]');
+    const nextFive = page.getByRole("button", {
+      name: new RegExp(`^${DASHBOARD_WORDS.next_five}`),
+    });
+    const drawn = () =>
+      items.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-testid") ?? ""));
+    const focused = () =>
+      page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
+    const pressCount = async (key: "click" | "Enter") => {
+      if (key === "click") await waitingCount(page).click();
+      else {
+        await waitingCount(page).focus();
+        await page.keyboard.press("Enter");
+      }
+    };
     for (const [width, key] of (desktopProject
       ? [
           [1440, "click"],
@@ -402,89 +408,79 @@ test("the count of what waits on the reader opens the first thing that waits @ph
       : [[390, "click"]]) as readonly (readonly [number, "click" | "Enter"])[]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       const settling = watchApiRequests(page);
-      await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`);
+      await gotoIssue(page, await specAddress(seeded.key));
       await expectLoadSettled(settling);
       await expect(openedArtifact(page), "the document did not open").toBeVisible();
-      await expect(waitingCount(page)).toHaveText(/^Waiting on you \((\d+)\)$/);
-      // The count is drawn from the page's reads, which went quiet above, and the wait above saw
-      // it drawn, so one read of its words is the whole count.
-      const counted = Number(/\((\d+)\)/.exec((await waitingCount(page).textContent()) ?? "")?.[1]);
-      expect(counted, "the issue holds fewer than two items that wait").toBeGreaterThanOrEqual(2);
-      if (key === "click") await waitingCount(page).click();
-      else {
-        await waitingCount(page).focus();
-        await page.keyboard.press("Enter");
-      }
+      await expect(waitingCount(page)).toHaveText(`Waiting on you (${seeded.items})`);
+      await pressCount(key);
       await expect(openedArtifact(page), "the count left the document open").toHaveCount(0);
-      await expectActivePreset(page, PRESET_NAMES.decisions);
       await expect
-        .poll(async () => (await focusedNodeId(page)) ?? "", {
-          message: `the focus is not on the first item that waits at ${width} px`,
-        })
-        .not.toBe("");
-      expect(await focusedNodeId(page)).toBe(await firstWaitingRow(page));
+        .poll(focused, { message: `the focus is not on the first item that waits at ${width} px` })
+        .toMatch(/^dashboard-item-/);
+      await expect(page, "the count did not push Dashboard's address").toHaveURL(
+        new RegExp(`/issues/${seeded.key}/dashboard$`)
+      );
+      await expectActiveControl(page, "dashboard");
+      await expect(
+        page.getByTestId("dashboard-waiting-count"),
+        "the header's count is not the length of Dashboard's list"
+      ).toHaveText(String(seeded.items));
+      const first = (await drawn())[0];
+      expect(await focused(), `the focus is off Dashboard's first item at ${width} px`).toBe(first);
+      expect(await items.count(), "Dashboard did not draw its first five").toBe(5);
 
-      // Each press after the first goes on to the next item that waits, in the filter's order,
-      // and round to the first again (the tester's F12): every item the count holds is reached
-      // by pressing it, an open question among them, with no key a phone lacks.
-      const first = (await focusedNodeId(page)) ?? "";
+      // Each press after the first goes on to the next item in the list's order, and the one past
+      // the fifth draws the next five: every item the count holds is reached by pressing it.
       const walked = [first];
-      for (let press = 0; press < counted; press += 1) {
-        const from = walked.at(-1) ?? "";
-        if (key === "click") await waitingCount(page).click();
-        else {
-          await waitingCount(page).focus();
-          await page.keyboard.press("Enter");
-        }
-        // The item the press landed on is the one the poll saw, so the walk reads no second
-        // answer: an empty one is the focus on no row, which is no item it moved to.
+      for (let press = 1; press < seeded.items; press += 1) {
+        await pressCount(key);
         let next = "";
         await expect
           .poll(
             async () => {
-              next = (await focusedNodeId(page)) ?? "";
-              return next !== "" && next !== from;
+              next = await focused();
+              return next.startsWith("dashboard-item-") && !walked.includes(next);
             },
-            {
-              message: `press ${press + 2} of the count did not move the focus from ${from} to another item at ${width} px`,
-            }
+            { message: `press ${press + 1} of the count did not move the focus on at ${width} px` }
           )
           .toBe(true);
-        if (next === first) break;
         walked.push(next);
       }
-      expect(
-        (await focusedNodeId(page)) ?? "",
-        `the count's presses did not come round to the first item in ${counted} at ${width} px`
-      ).toBe(first);
-      expect(new Set(walked).size, "a press of the count went back to an item it had left").toBe(
-        walked.length
+      expect(await drawn(), `the presses did not walk the list's order at ${width} px`).toEqual(
+        walked
       );
-      expect(walked.length, "the count's presses reach one item only").toBeGreaterThanOrEqual(2);
-      const kinds = await Promise.all(
-        walked.map((id) => nodeRow(page, id).first().getAttribute("data-node-type"))
+      expect(await nextFive.count(), "the next five were drawn and their control stayed").toBe(0);
+      const kinds = new Set(walked.map((id) => id.replace(/^dashboard-item-/, "").split("-")[0]));
+      expect(kinds, "the presses reached no item of one of the five kinds").toEqual(
+        new Set(["approval", "decision", "question", "stale", "thread"])
       );
-      expect(kinds, `the count's presses reach no open question: ${walked.join(", ")}`).toContain(
-        "ask"
-      );
+
+      // The press after the last comes round to the first, and the list shows its first five.
+      await pressCount(key);
+      await expect
+        .poll(focused, { message: `the focus did not come round at ${width} px` })
+        .toBe(first);
+      await expect(items, "the list did not show its first five again").toHaveCount(5);
+      await expect(nextFive, "the control for the next five did not come back").toHaveCount(1);
     }
 
-    // An approval request is all that waits: the count puts the focus on the approval control.
+    // An approval request is all that waits: at the bare address, which draws Dashboard, the press
+    // moves the focus to that request's item and writes no history entry.
     const lone = await createIssue({ force: true, project: PROJECT, spec: "Plan.", title: "Lone" });
     await requestApproval(lone.primary_artifact_id ?? "", { summary: "Read it." });
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${lone.key}`);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
+    const entries = await page.evaluate(() => history.length);
     await waitingCount(page).click();
     await expect
-      .poll(() =>
-        page.evaluate(() => document.activeElement?.hasAttribute("data-approval-artifact"))
-      )
-      .toBe(true);
+      .poll(focused, { message: "the press at the bare address did not reach the request's item" })
+      .toMatch(/^dashboard-item-approval-/);
     expect(
-      await page.evaluate(() => document.activeElement?.closest("[data-issue-header]") !== null),
-      "the focus is on an approval control outside the header"
-    ).toBe(true);
+      await page.evaluate(() => history.length),
+      "a press at the bare address wrote a history entry"
+    ).toBe(entries);
+    await expect(page).toHaveURL(new RegExp(`/issues/${lone.key}$`));
   });
 });
 

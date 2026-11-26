@@ -20,7 +20,6 @@ import {
   pageQuietText,
   textMutedOnCanvas,
 } from "../../../theme/classes";
-import { waitingOnHuman } from "../../inbox/BlockedOnYou";
 import { useAgentText } from "../../refs/AgentName";
 import {
   PublishedReferenceNames,
@@ -29,7 +28,6 @@ import {
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
-import { APPROVAL_CHIP } from "../approval-chip-box";
 import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
@@ -64,7 +62,6 @@ import {
   type DecisionsEntry,
   type DecisionsPart,
   type NamedEntry,
-  waitingOrder,
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
@@ -154,7 +151,6 @@ export function DecisionsFilterBody({
   reveal,
   root,
   view,
-  waitingPress,
 }: {
   /** Each artifact of the issue by its slug, which is how a decision names the document a Keep
    *  is written against (`issue-artifacts.ts`). */
@@ -203,10 +199,6 @@ export function DecisionsFilterBody({
   root: TreeNode;
   /** The tree as the Decisions filter leaves it (`presetView`). */
   view: TreeNode;
-  /** The press of the header's count of what waits on the reader that turned this filter on
-   *  (`waiting.ts`'s `waitingPressOf`): each press puts the focus on the next thing that waits,
-   *  in the filter's order (R13, the tester's F12). */
-  waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
   const { failures, out, parts, readsHeld, retry, retrying, unreadable, writeUps } =
@@ -387,75 +379,6 @@ export function DecisionsFilterBody({
     if (request === undefined || !takeRequest(request)) return;
     if (request.id !== undefined) goTo(request.id);
   }, [goTo, request, takeRequest]);
-
-  // The header's count of what waits on the reader puts the focus on a thing that waits, in
-  // this filter's order: each open question whose turn is the reader's, then each decision of
-  // the review list (R13). Each press goes to the next of them after the one the last press
-  // went to, and round to the first again, so a reader works down what waits with the one
-  // control (the tester's F12). The reads that hold it may still be out when the press lands,
-  // so the press is taken once the list holds something that waits.
-  const pressed = useRef<number | undefined>(undefined);
-  const went = useRef<string | undefined>(undefined);
-  const waiting = useMemo(() => waitingOrder(parts), [parts]);
-  // Part N's stop at the header's approval control inside the cycle (its R5, the plan's ST-3):
-  // the documents whose open approval request waits on the reader, by the turn rule every count
-  // of the reader's work reads (`waitingOnHuman`, which Dashboard's `readersTurn` reads), over
-  // the issue's open asks and who is reading, each on the document the header's approval control
-  // names (`IssuePropertiesRow.tsx`); the order the last press read, where an item answered since
-  // is found; and whether the reads that say what waits hold their answers. Each is read as it
-  // stands at the press.
-  const approvals = useRef<readonly string[]>([]);
-  approvals.current =
-    reader === undefined
-      ? []
-      : waitingOnHuman((issue.open_asks ?? []).filter((ask) => ask.state === "open"))
-          .filter((ask) => ask.kind === "approval" && ask.waiting_on_person === reader)
-          .map(
-            (ask) =>
-              ask.artifact_id ??
-              issue.artifacts?.find((artifact) => artifact.slug === ask.approval_artifact?.slug)
-                ?.id ??
-              issue.primary_artifact_id
-          );
-  const order = useRef<readonly string[]>([]);
-  const held = useRef(readsHeld);
-  held.current = readsHeld;
-  useEffect(() => {
-    if (waitingPress === undefined || waitingPress === pressed.current) return;
-    // The press lands once those reads hold, on the first thing that waits rather than on the
-    // first to arrive (decision 413's rule).
-    if (!held.current) return;
-    if (waiting.length === 0) return;
-    pressed.current = waitingPress;
-    // An item answered since the last press has left the order: the press goes on to the next
-    // item still waiting after it in the order that press read, or past the last where none is.
-    const last = went.current;
-    if (last !== undefined && last !== APPROVAL_CHIP && !waiting.includes(last)) {
-      const after = order.current
-        .slice(order.current.indexOf(last) + 1)
-        .find((id) => waiting.includes(id));
-      went.current = after === undefined ? waiting.at(-1) : waiting[waiting.indexOf(after) - 1];
-    }
-    // Past the last thing that waits, the header's approval control of a request that waits on
-    // the reader, where the header draws it, is the cycle's next place; the press after it
-    // starts at the first thing again.
-    const chip =
-      waiting.indexOf(went.current ?? "") === waiting.length - 1
-        ? [...document.querySelectorAll<HTMLElement>(APPROVAL_CHIP)].find((found) =>
-            approvals.current.includes(found.dataset.approvalArtifact ?? "")
-          )
-        : undefined;
-    if (chip !== undefined) {
-      went.current = APPROVAL_CHIP;
-      chip.focus();
-      return;
-    }
-    const next = waiting[(waiting.indexOf(went.current ?? "") + 1) % waiting.length];
-    if (next === undefined) return;
-    went.current = next;
-    order.current = waiting;
-    goTo(next);
-  }, [goTo, waiting, waitingPress]);
 
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is

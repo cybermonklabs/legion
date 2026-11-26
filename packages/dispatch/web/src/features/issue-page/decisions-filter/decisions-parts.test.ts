@@ -35,7 +35,6 @@ import {
   type DecisionsAsk,
   type DecisionsParts,
   decisionsParts,
-  waitingOrder,
 } from "./decisions-parts";
 
 /**
@@ -374,7 +373,6 @@ test("a decision the reader asked to change leaves the review list and carries t
   expect(
     inReviewList(decision("asked", { links: [shaped(specRef("s1"))] }), isStatement, true)
   ).toBe(false);
-  expect(waitingOrder(parts)).toEqual([D("stale"), D("waits")]);
 });
 
 // R2: a declined ask reads as a question the person declined, never as an answer: the entry
@@ -708,26 +706,6 @@ test("the parts hold the nodes the filter's view left", () => {
   });
   // The tie is still read against the whole tree: the view holds no statement at all.
   expect(partsOf(children, made, [], view).review[0]?.shapes).toHaveLength(1);
-});
-
-// R13, the tester's F12: the count of what waits on the reader walks the things that wait, in
-// the filter's order: each open question whose turn is the reader's, then each decision of the
-// review list.
-test("what waits is each open question of the reader's, then each decision to review", () => {
-  const made = [decision("review", { links: [shaped(specRef("s1"))] })];
-  const both = partsOf(
-    [statement("s1"), decisionNode("review"), openAsk("q-agent", false), openAsk("q-mine")],
-    made
-  );
-  expect(waitingOrder(both)).toEqual(["q-mine", D("review")]);
-
-  const review = partsOf(
-    [statement("s1"), decisionNode("review"), openAsk("q-agent", false)],
-    made
-  );
-  expect(waitingOrder(review)).toEqual([D("review")]);
-
-  expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
 // The tree draws from the reads that have answered: before the decisions read and the asks

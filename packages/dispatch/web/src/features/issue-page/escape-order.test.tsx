@@ -680,7 +680,7 @@ test("the focus in the words box: one Escape leaves the box for the row it was o
 test("words in ?q=, the focus outside the box: one Escape clears the words by the box's own replace and shuts the box, and the view and its following stay", async () => {
   const user = userEvent.setup();
   const view = drawPage(`/issues/${KEY}/spec?q=${WORDS}`, {
-    state: { outline: `/issues/${KEY}/plan`, waitingPress: 1 },
+    state: { outline: `/issues/${KEY}/plan` },
   });
   try {
     const row = await rowOf(view, "[data-spec-body]", STATEMENT_NODE);

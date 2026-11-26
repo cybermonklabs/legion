@@ -874,16 +874,6 @@ export function holdLabelsAtTheirChips(page: Page): Promise<void> {
   });
 }
 
-/** What the count's press left in the history entry: its `waitingPress` number, or null. */
-export function waitingPressInHistory(page: Page): Promise<number | null> {
-  return page.evaluate(() => {
-    const found = /"waitingPress":(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)/.exec(
-      JSON.stringify(history.state) ?? ""
-    );
-    return found?.[1] === undefined ? null : Number(found[1]);
-  });
-}
-
 /** A title of `lines` lines at the header's width: words added until the heading, drawn whole,
  *  takes that many lines of its own line height. */
 export async function titleOfLines(page: Page, lines: number): Promise<string> {

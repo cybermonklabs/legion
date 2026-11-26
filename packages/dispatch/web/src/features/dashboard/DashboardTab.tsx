@@ -13,6 +13,7 @@ import { pageHairBorder, pageInkText, pagePaperBg } from "../../theme/classes";
 import { decisionsDocumentId } from "../decision-card/change-anchor";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { NoTooltips } from "../issue-page/NoTooltips";
+import { useWaitingWalk } from "../issue-page/waiting";
 import { PublishedReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference } from "../refs/routes";
@@ -88,6 +89,17 @@ export default function DashboardTab({ issueKey, page }: DashboardTabProps): Rea
   // item is drawn that leaves, and no count stands, as a read lands.
   const { items, loaded } = useWaitingItems(issueKey);
   const [drawn, setDrawn] = useState(WAITING_STEP);
+  // The header's count walks this list, one press after the other (dispatch://INFRA-3940 R5): it
+  // is told how many items are drawn, to draw the next five when a press goes past the fifth, and
+  // hands back the element that holds the list, whose items take the focus.
+  const walkRoot = useWaitingWalk({
+    active: page === "new",
+    drawn,
+    items,
+    loaded,
+    setDrawn,
+    step: WAITING_STEP,
+  });
   const shownThreads = items
     .slice(0, drawn)
     .flatMap((item) => (item.kind === "thread" ? [item.row] : []));
@@ -148,6 +160,7 @@ export default function DashboardTab({ issueKey, page }: DashboardTabProps): Rea
       <PublishedReferenceNames published={names.published}>
         <div
           className={`space-y-6 rounded-xl border p-4 md:p-5 ${pageHairBorder} ${pagePaperBg} ${pageInkText}`}
+          ref={walkRoot}
         >
           <PhaseTrack handoffs={handoffs ?? undefined} legion={legion} />
           <WaitingList

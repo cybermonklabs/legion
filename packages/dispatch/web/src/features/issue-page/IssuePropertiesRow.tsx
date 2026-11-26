@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
 
 import { projectsQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
@@ -30,15 +29,13 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { APPROVAL_CHIP } from "./approval-chip-box";
-import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { PullRequestLink } from "./PullRequestLink";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import type { WaitingPress } from "./waiting";
+import { useWaitingPress } from "./waiting";
 
 /**
  * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,
@@ -67,8 +64,10 @@ export function IssuePropertiesRow({
   priorityWrite: IssuePriorityWrite;
   writes: IssueHeaderWrites;
 }): ReactNode {
-  const navigate = useNavigate();
-  const { pathname } = useLocation();
+  // The count's press (dispatch://INFRA-3940 R5, the plan's ST-3): the focus goes to the next
+  // item of Dashboard's list, and Dashboard opens first where another control of the row or a
+  // document is drawn (`waiting.ts`).
+  const pressCount = useWaitingPress(issue.key);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   // A status picked while a write of the issue is in flight - the title saved by the blur that
   // the press on this control caused, or an earlier pick of the status still being saved - is
@@ -88,8 +87,8 @@ export function IssuePropertiesRow({
   const waiting = useWaitingItems(issue.key).items;
   // The document each approval request that waits on the reader is on, by artifact id: the
   // ask's own, else the one its approval names by slug, else the issue's spec. The header's
-  // approval control for each carries Approve and Request changes, and is where the count puts
-  // the focus when nothing else waits. A stale approval is no request and moves no control.
+  // approval control for each carries Approve and Request changes. A stale approval is no
+  // request and moves no control.
   const requested = waiting.flatMap((item) =>
     item.kind === "approval"
       ? [
@@ -120,38 +119,11 @@ export function IssuePropertiesRow({
     (entry) => entry.document?.id === issue.primary_artifact_id
   );
   const approval = documentArtifact?.approval;
-  const line = useRef<HTMLDivElement>(null);
-
-  // The count's press, where a question or a decision waits: it sets the Decisions filter's
-  // address and leaves the press in that history entry as its `WaitingPress` mark, one number per
-  // press. This part draws no view at that address; a later part's Decisions view reads the mark
-  // to put the focus on the next item there that waits, each press on the one after the last. An
-  // approval request alone puts the focus on the first chip or entry on this line of a document
-  // whose request waits. Where the header draws no chip or entry of the waiting document -
-  // another document of a child, or a document no step of a gated root names - the request is
-  // counted and the press does nothing in the header, rather than put the focus on another
-  // document's chip. A press made on the filter already replaces its entry, so Back leaves the
-  // filter rather than walking back through the presses. Where only threads or stale approvals
-  // wait, the press does nothing, though the count reads them, until part N moves the press onto
-  // Dashboard's list (dispatch://INFRA-3940 R5, dispatch://INFRA-5702/spec#b-r-header-count).
-  const goToWaiting = () => {
-    if (waiting.some((item) => item.kind === "question" || item.kind === "decision")) {
-      const press: WaitingPress = { waitingPress: performance.now() };
-      const path = presetPath(issue.key, "decisions");
-      navigate(path, { replace: pathname === path, state: press });
-      return;
-    }
-    const control = [...(line.current?.querySelectorAll<HTMLElement>(APPROVAL_CHIP) ?? [])].find(
-      (found) => requested.includes(found.dataset.approvalArtifact ?? "")
-    );
-    control?.focus();
-  };
 
   return (
     <div
       className={`flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b px-3.5 pt-1 pb-2.5 text-sm leading-5 min-[761px]:gap-x-3 min-[761px]:px-7 min-[761px]:pt-0.5 min-[761px]:pb-[7px] ${pageLineBorder} ${pageMutedText}`}
       data-testid="issue-state-actions"
-      ref={line}
     >
       {/* The prototype's `.pill`: the status's shape and word inside a rule of its colour. The
           rule is drawn inside the pill's box, so the select can fill that box: 24 px tall at
@@ -202,7 +174,7 @@ export function IssuePropertiesRow({
         <button
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold ${pageWaitingChip} ${focusVisibleRing}`}
           data-testid="issue-whose-turn"
-          onClick={goToWaiting}
+          onClick={pressCount}
           type="button"
           {...pageChrome}
         >

@@ -436,12 +436,11 @@ test("open with words, opening a document draws the document and keeps the box a
   }
 });
 
-// The location's state table: a press of the count of what waits on the reader acts once, so
-// the box's write leaves it out, and keeps the outline an opened document goes back to.
-test("a words write drops a waiting press and keeps the outline address", async () => {
+// The location's state table: the box's write keeps the outline an opened document goes back to.
+test("a words write keeps the outline address", async () => {
   const user = userEvent.setup();
   const view = drawPage("/issues/CORE-1/decisions", {
-    state: { outline: "/issues/CORE-1/plan", waitingPress: 1 },
+    state: { outline: "/issues/CORE-1/plan" },
   });
   try {
     const before = following();

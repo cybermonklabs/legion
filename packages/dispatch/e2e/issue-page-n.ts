@@ -17,8 +17,23 @@ import {
 import { type IssueRoute, parseIssuePath } from "../web/src/features/refs/routes";
 import { PAGE_COLORS } from "../web/src/theme/classes";
 import { oklchToSrgb8 } from "../web/src/theme/contrast";
-import { getIssue } from "./api";
+import {
+  createAsk,
+  createComment,
+  createIssue,
+  createIssueArtifact,
+  createMessage,
+  createProject,
+  editArtifact,
+  getIssue,
+  getIssueDecisions,
+  listMyReplies,
+  requestApproval,
+  reviewArtifact,
+} from "./api";
+import { mainHolds } from "./dashboard-seed";
 import { connectedDot, documentEditor } from "./editor";
+import { asPlanner, PROJECT, pause } from "./issue-layout-seed-support";
 import {
   contentsPane,
   gotoIssue,
@@ -2193,4 +2208,169 @@ export async function expectFocusLandedOnce(
     `${what}: the focus went to ${before.join(", then to ")} before it landed on ${moves.at(-1)}`
   ).toEqual([]);
   expect(moves, `${what}: the focus moved to nothing`).toHaveLength(1);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The count's presses (part N's R5, the plan's ST-3, `c-addresses` (3)).
+// ---------------------------------------------------------------------------------------------
+
+/** The reader the seed's items wait on, and the person who approved the Verification document. */
+const COUNT_READER = "alice";
+
+/** What the row of the count's presses reads: the issue whose count is six items of Dashboard's
+ *  list. */
+export interface WaitingWalkSeed {
+  /** How many items wait on the reader, which the header's count and Dashboard's list agree on. */
+  readonly items: number;
+  readonly key: string;
+}
+
+/** Whether one entry of a decisions read of a `main` where decisions are nodes waits for the
+ *  reader's review. */
+function nodeEntryWaits(entry: unknown): boolean {
+  return (
+    typeof entry === "object" &&
+    entry !== null &&
+    "waiting_review" in entry &&
+    entry.waiting_review === true
+  );
+}
+
+/** Waits until the issue's decisions read holds one that waits for the reader's review, as the
+ *  document service indexes a decision's links a moment after the write answers. */
+async function awaitWaitingDecision(key: string, decisionsAreNodes: boolean): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    const read = await getIssueDecisions(key);
+    const waits = decisionsAreNodes
+      ? "entries" in read && Array.isArray(read.entries) && read.entries.some(nodeEntryWaits)
+      : (read.decisions ?? []).some(
+          (decision) => decision.waiting_review && (decision.links ?? []).length > 0
+        );
+    if (waits) return;
+    if (Date.now() > deadline) {
+      throw new Error(`${key}'s decisions never read one waiting: ${JSON.stringify(read)}`);
+    }
+    await pause(100);
+  }
+}
+
+/** Waits until the issue read gives the document `artifactId` the approval `state`, by `by` where
+ *  one is named. */
+async function awaitApprovalState(
+  key: string,
+  artifactId: string,
+  state: string,
+  by?: string
+): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    const approval = ((await getIssue(key)).artifacts ?? []).find(
+      (artifact) => artifact.id === artifactId
+    )?.approval;
+    if (approval?.state === state && (by === undefined || approval.by?.id === by)) return;
+    if (Date.now() > deadline) {
+      throw new Error(`${key}'s document ${artifactId} reads ${JSON.stringify(approval)}`);
+    }
+    await pause(100);
+  }
+}
+
+/** Waits until the reader's unread replies list each of `threads`. */
+async function awaitUnreadThreads(key: string, threads: readonly string[]): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    const rows = (await listMyReplies({ issue: key, state: "unread" })).rows ?? [];
+    if (threads.every((thread) => rows.some((row) => row.thread_id === thread))) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `${key}'s unread threads read ${JSON.stringify(rows.map((row) => row.thread_id))}`
+      );
+    }
+    await pause(100);
+  }
+}
+
+/**
+ * The row of the count's presses seeds six items that wait on the reader, no more: an open
+ * question, a decision to review, an approval request on the spec, the reader's approval of the
+ * Verification document that a later version made stale, and two threads with a reply the reader
+ * has not read, one of comments and one of messages. Dashboard's own seed (`seedDashboard`) draws
+ * nine, and the count of that seed is not filtered or mocked to six: this one writes the six.
+ */
+export async function seedWaitingWalk(): Promise<WaitingWalkSeed> {
+  const holds = await mainHolds();
+  await createProject({ key: PROJECT, name: "The count's presses" });
+  const issue = await createIssue({
+    project: PROJECT,
+    spec: ":::requirement{#r1}\nThe header counts a decision that waits.\n:::\n",
+    title: "The count walks Dashboard's list",
+  });
+  const key = issue.key;
+  const specArtifactId = issue.primary_artifact_id ?? "";
+
+  await createAsk(key, { question: "Which order does the list take?" }, asPlanner);
+
+  const shaped = `dispatch://${key}/spec#b-r1`;
+  if (holds.decisionsAreNodes) {
+    await editArtifact(
+      specArtifactId,
+      {
+        ops: [
+          {
+            after: "end",
+            markdown: `## Decisions\n\n:::decision{#d-walk shaped="${shaped}"}\n### Count what waits by its items\n\nChosen so the count and the list agree.\n:::`,
+            op: "insert",
+          },
+        ],
+      },
+      asPlanner
+    );
+  } else {
+    await createIssueArtifact(
+      key,
+      {
+        content: `## Count what waits by its items\n\nChosen so the count and the list agree. Shapes ${shaped}.\n`,
+        name: "decisions.md",
+      },
+      asPlanner
+    );
+  }
+  await awaitWaitingDecision(key, holds.decisionsAreNodes);
+
+  await requestApproval(specArtifactId, {}, asPlanner);
+  await awaitApprovalState(key, specArtifactId, "awaiting");
+
+  const verification = await createIssueArtifact(
+    key,
+    { content: "# Verification\n\nOne check.\n", name: "verification.md" },
+    asPlanner
+  );
+  await reviewArtifact(verification.artifact.id, { state: "approved" }, { login: COUNT_READER });
+  await editArtifact(
+    verification.artifact.id,
+    { ops: [{ find: "One check.", op: "replace", with: "Two checks." }] },
+    asPlanner
+  );
+  await awaitApprovalState(key, verification.artifact.id, "stale", COUNT_READER);
+
+  const comment = await createComment(key, { body: "Does the count drop as soon as I act?" });
+  await createComment(
+    key,
+    { body: "It drops when the write lands, with no reload.", reply_to: comment.id },
+    asPlanner
+  );
+  const message = await createMessage(
+    key,
+    { body: "The tiles read the results and the coverage." },
+    asPlanner
+  );
+  await createMessage(key, { body: "And the children?", in_reply_to: message.id });
+  await createMessage(
+    key,
+    { body: "The children from the issue read.", in_reply_to: message.id },
+    asPlanner
+  );
+  await awaitUnreadThreads(key, [comment.id, message.id]);
+  return { items: 6, key };
 }

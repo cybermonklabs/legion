@@ -110,8 +110,7 @@ export function useEscapeOrder({
   const before = useRowBeforeWords();
   // Clearing the words is the box's own write (`view-row-tools.tsx`): `?q=` taken out in place,
   // by a replace marked with the following the words were typed in, which keeps the outline an
-  // opened document goes back to and leaves out a press of the count of what waits, which acts
-  // once.
+  // opened document goes back to.
   const clearWords = () => {
     const query = new URLSearchParams(search);
     query.delete("q");

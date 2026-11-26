@@ -219,7 +219,6 @@ interface BodyProps {
   readonly request?: OutlineRequest;
   readonly reveal?: string;
   readonly view?: TreeNode;
-  readonly waitingPress?: number;
 }
 
 /** A Change a person sent on a decision: a comment of the issue anchored to the decision's own
@@ -356,7 +355,6 @@ function renderBody(
     request,
     reveal,
     view,
-    waitingPress,
   }: BodyProps) => {
     const tree = grown === undefined ? root : issueTree(grown);
     const published = given ?? (grown === undefined ? rootPublished : publishedStatements(tree));
@@ -377,7 +375,6 @@ function renderBody(
         {...(reveal === undefined ? {} : { reveal })}
         root={tree}
         view={shown}
-        {...(waitingPress === undefined ? {} : { waitingPress })}
       />
     ) : null;
     const staged = stage ? <ViewStage>{list}</ViewStage> : list;
@@ -2310,50 +2307,6 @@ test("a list that holds only the foot, opened by a link inside the app with its 
     "the reads were cached, and the focus stayed on the app's main element"
   ).toBe(footControlOf(view));
   view.unmount();
-});
-
-// R13, the tester's F12: the header's count of what waits on the reader turns the filter on
-// and puts the focus on a thing that waits, in the filter's order: each open question whose
-// turn is the reader's, then each decision of the review list. Each press goes to the next
-// of them and round to the first again. A press that lands before the reads are in is taken
-// once the list holds something that waits.
-test("each press of the count of what waits goes to the next thing that waits", async () => {
-  const whole = wholeIssue();
-  const view = renderBody(whole, { waitingPress: 1 });
-  await waitFor(() => expect(focusedRow(view)).toBe("q-open"));
-  // The same press is taken once: the reader's own move is not undone by it.
-  await act(async () => rowOf(view, D("kept")).focus());
-  view.again({ waitingPress: 1 });
-  expect(focusedRow(view)).toBe(D("kept"));
-  // The next press goes to the next thing that waits, wherever the reader has gone since.
-  view.again({ waitingPress: 2 });
-  await waitFor(() => expect(focusedRow(view)).toBe(D("second")));
-  view.again({ waitingPress: 3 });
-  await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
-  // And round to the first again.
-  view.again({ waitingPress: 4 });
-  await waitFor(() => expect(focusedRow(view)).toBe("q-open"));
-  view.unmount();
-
-  // With no question waiting on the reader, the newest decision of the review list.
-  const noQuestion = renderBody(
-    { ...whole, children: whole.children.filter((child) => child.id !== "q-open") },
-    { waitingPress: 1 }
-  );
-  await waitFor(() => expect(focusedRow(noQuestion)).toBe(D("second")));
-  noQuestion.unmount();
-
-  // A press that lands before the decisions read is in is taken once it is.
-  const early = renderBody({ children: [statement("s1"), decisionNode("first")] });
-  early.again({ waitingPress: 2 });
-  expect(focusedRow(early)).toBeUndefined();
-  await act(async () =>
-    early.client.setQueryData(
-      ["decisions", KEY],
-      decisionsRead([decision("first", { links: [shaped(specRef("s1"))] })])
-    )
-  );
-  await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
 });
 
 // The tester's F6: a Change sent on a decision is a comment anchored to its words. Once it is

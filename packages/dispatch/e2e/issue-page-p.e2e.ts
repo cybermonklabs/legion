@@ -64,7 +64,6 @@ import {
   undersizedTargets,
   viewportAt,
   waitingCount,
-  waitingPressInHistory,
 } from "./issue-page-p";
 import { onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
@@ -89,9 +88,15 @@ async function waitingOnPersonOf(askId: string): Promise<string | undefined> {
   return (await getAsk(askId)).ask.waiting_on_person;
 }
 
-/** The page's own address of the view a press of the count opens. */
-function decisionsAddress(key: string): RegExp {
-  return new RegExp(`/issues/${key}/decisions$`);
+/** The address a press of the count pushes: Dashboard's own (R5 of dispatch://INFRA-3940). */
+function dashboardAddress(key: string): RegExp {
+  return new RegExp(`/issues/${key}/dashboard$`);
+}
+
+/** The test id of the element that holds the focus, which is a Dashboard item's once a press of
+ *  the count has put the focus on one (`dashboard-item-<kind>-<id>`). */
+function focusedTestId(page: Page): Promise<string> {
+  return page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
 }
 
 /** Whether `request` is a write of `key`'s own fields whose body holds `field`. */
@@ -691,11 +696,12 @@ test("the approval entries stay in the header and read the document each step ap
     ).toHaveCount(0);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
     await waitingCount(page).click();
+    await expect(page).toHaveURL(dashboardAddress(root.key));
     await expect
-      .poll(() =>
-        page.evaluate(() => document.activeElement?.getAttribute("data-approval-artifact"))
-      )
-      .toBe(verification.artifact.id);
+      .poll(() => focusedTestId(page), {
+        message: "the press did not put the focus on the item of the request that waits",
+      })
+      .toMatch(/^dashboard-item-approval-/);
     await approvalEntry(page, "criteria")
       .getByRole("button", { exact: true, name: "Approve" })
       .click();
@@ -901,12 +907,12 @@ test("the header holds its limits when the typeface does not load @phone", async
 // of the count is a tap of the touch screen, a touch claim "Phone acceptance" in
 // `packages/dispatch/AGENTS.md` tags `@phone` for, and each opens what the mouse's click opens on
 // `chromium`.
-// SLOW(>=2s): 4,370 ms on chromium and 3,416 ms on iphone (one worker, Job e2e-rows-rdf2g at
-// 43949bc0): three more issues written with their requests and documents, five loads on
-// chromium and four on iphone, and the count pressed twice and Back pressed at each width.
-test("the count of what waits is a control that opens the Decisions address @phone", async ({
-  browser,
-}) => {
+// R5, the count's press: the count is a button, and a press from another view opens Dashboard's
+// own address by a push, as a link does, with the focus on the first item of Dashboard's list. A
+// press where Dashboard is drawn moves the focus to the next item and adds no history entry.
+// SLOW(>=2s): three more issues written with their requests, documents and a decision, a load of
+// each, and the count pressed twice and Back pressed at each width.
+test("the count of what waits is a control that opens Dashboard @phone", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     const desktopProject = test.info().project.name !== "iphone";
@@ -926,34 +932,33 @@ test("the count of what waits is a control that opens the Decisions address @pho
       expect(await waitingCount(page).evaluate((count) => count.tagName)).toBe("BUTTON");
 
       await press(waitingCount(page), how);
-      await expect(page).toHaveURL(decisionsAddress(seeded.key));
-      const first = await waitingPressInHistory(page);
-      expect(first, `the press left no mark in the history entry at ${width} px`).not.toBeNull();
-      const length = await page.evaluate(() => history.length);
+      await expect(page).toHaveURL(dashboardAddress(seeded.key));
+      await expect
+        .poll(() => focusedTestId(page), {
+          message: `the press left the focus off Dashboard's first item at ${width} px`,
+        })
+        .toMatch(/^dashboard-item-/);
+      const first = await focusedTestId(page);
 
-      // A press made at that address replaces its entry, with a new mark: a number, and not the
-      // first press's.
+      // A press made at that address moves the focus to the next item and adds no entry.
       await press(waitingCount(page), how);
       await expect
         .poll(
           async () => {
-            const now = await waitingPressInHistory(page);
-            return now !== null && now !== first;
+            const now = await focusedTestId(page);
+            return now.startsWith("dashboard-item-") && now !== first;
           },
-          { message: `a second press left the first press's mark at ${width} px` }
+          { message: `a second press left the focus on the first item at ${width} px` }
         )
         .toBe(true);
-      expect(
-        await page.evaluate(() => history.length),
-        `a second press added a history entry at ${width} px`
-      ).toBe(length);
 
-      // Back leaves the address.
+      // One Back from the second item returns to Conversation: the first press pushed and the
+      // second did not. This also holds when a push replaces an available forward entry.
       await page.goBack();
       await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}/conversation$`));
     }
 
-    // An approval request is all that waits: the count puts the focus on the approval control.
+    // An approval request is all that waits: the count opens Dashboard on that request's item.
     const lone = await createIssue({
       force: true,
       project: HEADER_PROJECT,
@@ -966,20 +971,15 @@ test("the count of what waits is a control that opens the Decisions address @pho
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
     await press(waitingCount(page), pointer);
+    await expect(page).toHaveURL(dashboardAddress(lone.key));
     await expect
-      .poll(() =>
-        page.evaluate(() => document.activeElement?.hasAttribute("data-approval-artifact"))
-      )
-      .toBe(true);
-    expect(
-      await page.evaluate(() => document.activeElement?.closest("[data-issue-header]") !== null),
-      "the focus is on an approval control outside the header"
-    ).toBe(true);
+      .poll(() => focusedTestId(page), {
+        message: "the press left the focus off the item of the request that waits",
+      })
+      .toMatch(/^dashboard-item-approval-/);
 
-    // The spec approved and the Verification document's request alone waiting: the header draws
-    // the spec's chip and no chip of the Verification document, so the press puts the focus on
-    // no chip rather than on the spec's. The press's handler moves the focus as it runs, so the
-    // focus is read once the press is done.
+    // The spec approved and the Verification document's request alone waiting: the press opens
+    // Dashboard on that request's item, whatever the header draws of the two documents.
     const verifying = await createIssue({
       force: true,
       project: HEADER_PROJECT,
@@ -996,24 +996,18 @@ test("the count of what waits is a control that opens the Decisions address @pho
     await gotoIssue(page, `/issues/${verifying.key}/conversation`);
     await expectHeaderDrawn(page);
     await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
-    await expect(
-      approvalChip(page, spec),
-      "the header draws no chip of the approved spec"
-    ).toBeVisible();
     await press(waitingCount(page), pointer);
-    expect(
-      [null, verification.artifact.id],
-      "the count's press focused another document's chip"
-    ).toContain(
-      await page.evaluate(
-        () => document.activeElement?.getAttribute("data-approval-artifact") ?? null
-      )
-    );
+    await expect(page).toHaveURL(dashboardAddress(verifying.key));
+    await expect
+      .poll(() => focusedTestId(page), {
+        message: "the press left the focus off the item of the Verification document's request",
+      })
+      .toMatch(/^dashboard-item-approval-/);
 
     // A decision on the review list is all that waits: the issue's decisions document holds an
     // agent's decision that names the requirement its spec holds, which the server reads as
     // waiting for review, and no ask of the issue is open. The count counts it, and its press
-    // opens the Decisions address.
+    // opens Dashboard on that decision's item.
     const decided = await createIssue({
       force: true,
       project: HEADER_PROJECT,
@@ -1042,8 +1036,13 @@ test("the count of what waits is a control that opens the Decisions address @pho
     await press(waitingCount(page), pointer);
     await expect(
       page,
-      "the count's press with a decision waiting did not open the Decisions address"
-    ).toHaveURL(decisionsAddress(decided.key));
+      "the count's press with a decision waiting did not open Dashboard's address"
+    ).toHaveURL(dashboardAddress(decided.key));
+    await expect
+      .poll(() => focusedTestId(page), {
+        message: "the press left the focus off the item of the decision that waits",
+      })
+      .toMatch(/^dashboard-item-decision-/);
   });
 });
 
@@ -1263,7 +1262,7 @@ test("the press that ends a title edit reaches the control under it @phone", asy
         await expect(
           page,
           `the press out of a ${lines}-line title's edit at ${width} px landed on nothing`
-        ).toHaveURL(decisionsAddress(seeded.key));
+        ).toHaveURL(dashboardAddress(seeded.key));
 
         // The same press on the status, straight out of an edit of the same title, lands too,
         // and the status takes the focus.

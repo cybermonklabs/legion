@@ -14,7 +14,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -149,7 +149,7 @@ const openIssueAsk: Ask = {
   state: "open",
   waiting_on: "human",
   // The person the server resolved the question to: the reader these tests sign in as, so the
-  // header's count of what waits on the reader counts it (`waiting.ts`).
+  // header's count of what waits on the reader counts it (`dashboard/useWaitingItems.ts`).
   waiting_on_person: "alice",
   urgency: "med",
 };
@@ -414,20 +414,31 @@ test("the header mounted again past 30 s sends none of its count's reads, nor th
   }
 });
 
-/** The address the page is on, drawn where a case can read it. */
+/** The address the page is on, drawn where a case can read it, with the key of its history entry
+ *  (`data-entry`), which a press that pushes an address changes and one that writes none leaves. */
 function Address(): ReactNode {
-  return <output aria-label="address">{useLocation().pathname}</output>;
+  const { key, pathname } = useLocation();
+  return (
+    <output aria-label="address" data-entry={key}>
+      {pathname}
+    </output>
+  );
 }
 
-// dispatch://INFRA-5702/spec#b-r-header-count (R10): the count is the number of Dashboard's
-// items, so a thread the reader has not read and an approval of theirs a newer version made
-// stale are counted, though neither is a question, a decision or a request. Until part N moves
-// the count's press onto Dashboard's list (dispatch://INFRA-3940 R5), the press stays as it was:
-// it opens the Decisions address only for a question or a decision, and focuses a document's
-// chip only for a request, so here it moves neither the address nor the focus.
-test("a press of the count where only a thread and a stale approval wait moves neither the address nor the focus", async () => {
-  const user = userEvent.setup();
-  const stale = {
+/** The browser's Back, which leaves the entry the last press pushed. */
+function Back(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      back
+    </button>
+  );
+}
+
+/** The issue the count holds an unread thread and a stale approval of, and nothing else: neither is
+ *  a question, a decision or a request. */
+function stubThreadAndStaleApproval(): () => void {
+  const restore = stubHeader({
     ...issue,
     artifacts: [
       {
@@ -441,8 +452,7 @@ test("a press of the count where only a thread and a stale approval wait moves n
         },
       },
     ],
-  };
-  const restore = stubHeader(stale);
+  });
   answerRequests(
     http.get("/api/v1/me/replies", () =>
       Response.json({
@@ -474,9 +484,14 @@ test("a press of the count where only a thread and a stale approval wait moves n
       })
     )
   );
+  return restore;
+}
+
+/** The header at `path`, with a thread and a stale approval waiting, once its count reads two. */
+async function drawCountOfTwo(path: string) {
+  const restore = stubThreadAndStaleApproval();
   const queryClient = headerClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const path = "/issues/CORE-1/conversation";
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
@@ -486,16 +501,87 @@ test("a press of the count where only a thread and a stale approval wait moves n
             <Route path="/issues/:key/*" element={<HeaderAlone />} />
           </Routes>
           <Address />
+          <Back />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const count = await screen.findByTestId("issue-whose-turn");
+  await waitFor(() => expect(count.textContent).toBe("Waiting on you (2)"));
+  return { count, restore, view };
+}
+
+/** The address the page is on and the entry it is in. */
+function whereTheReaderIs(): { readonly entry: string | undefined; readonly path: string } {
+  const where = screen.getByRole("status", { name: "address" });
+  return { entry: where.dataset.entry, path: where.textContent ?? "" };
+}
+
+// dispatch://INFRA-3940 R5, the plan's ST-3: the count is Dashboard's list's length, so a thread the
+// reader has not read and an approval of theirs a newer version made stale are counted, though
+// neither is a question, a decision or a request, and a press of the count from another view
+// pushes Dashboard's explicit address, as a link does, so the browser's Back returns to the view.
+test("a press of the count from another view pushes Dashboard's address, where only a thread and a stale approval wait", async () => {
+  const user = userEvent.setup();
+  const { count, restore, view } = await drawCountOfTwo("/issues/CORE-1/conversation");
   try {
-    const count = await screen.findByTestId("issue-whose-turn");
-    await waitFor(() => expect(count.textContent).toBe("Waiting on you (2)"));
+    const before = whereTheReaderIs();
+    expect(before.path).toBe("/issues/CORE-1/conversation");
     await user.click(count);
-    expect(screen.getByRole("status", { name: "address" }).textContent).toBe(path);
-    expect(document.activeElement, "the press moved the focus off the count").toBe(count);
+    const after = whereTheReaderIs();
+    expect(after.path).toBe("/issues/CORE-1/dashboard");
+    expect(after.entry, "the press wrote no history entry").not.toBe(before.entry);
+    await user.click(screen.getByRole("button", { name: "back" }));
+    expect(whereTheReaderIs().path, "the press replaced the view's entry").toBe(
+      "/issues/CORE-1/conversation"
+    );
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("Enter on the count from another view pushes Dashboard's address as the pointer does", async () => {
+  const user = userEvent.setup();
+  const { count, restore, view } = await drawCountOfTwo("/issues/CORE-1/decisions");
+  try {
+    await act(async () => count.focus());
+    await user.keyboard("{Enter}");
+    expect(whereTheReaderIs().path).toBe("/issues/CORE-1/dashboard");
+    await user.click(screen.getByRole("button", { name: "back" }));
+    expect(whereTheReaderIs().path).toBe("/issues/CORE-1/decisions");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Where the address already draws Dashboard - its own, or the issue's bare one - the press moves
+// the focus and writes no history entry (`waiting-walk.test.tsx` reads the focus).
+for (const path of ["/issues/CORE-1", "/issues/CORE-1/dashboard"]) {
+  test(`a press of the count at ${path} writes no history entry`, async () => {
+    const user = userEvent.setup();
+    const { count, restore, view } = await drawCountOfTwo(path);
+    try {
+      const before = whereTheReaderIs();
+      await user.click(count);
+      expect(whereTheReaderIs()).toEqual(before);
+    } finally {
+      view.unmount();
+      restore();
+    }
+  });
+}
+
+test("the count draws no control where nothing waits", async () => {
+  const restore = stubHeader(issue);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1/conversation", queryClient);
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(screen.queryByTestId("issue-whose-turn")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Waiting on you/ })).toBeNull();
   } finally {
     view.unmount();
     restore();
