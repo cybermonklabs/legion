@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,7 +17,10 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/repocache/fakegcs"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 // cmdCacheToken is the bearer token the cache command's tests hand the cache, and the fetch's
@@ -275,4 +282,220 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {
 		t.Fatalf("TMPDIR holds %v (%v) once the cache stopped, want its credential gone", entries, err)
 	}
+}
+
+// cmdTestBucket is the bucket the cache command's bucket test points the cache at: the
+// placeholder bucket the double's fixtures name.
+const cmdTestBucket = "example-legion-packs"
+
+// cacheGet is GET url, presenting bearer where it is not empty, within ctx: the status, the
+// headers and the body read whole.
+func cacheGet(t *testing.T, ctx context.Context, url, bearer string) (int, http.Header, []byte) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bearer != "" {
+		request.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("GET %s: %v", request.URL.Path, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read GET %s: %v", request.URL.Path, err)
+	}
+	return response.StatusCode, response.Header, body
+}
+
+// `cache` runs the real command path with a Cloud Storage double on a loopback address that
+// STORAGE_EMULATOR_HOST names, as the real-binary harness runs it. With
+// LEGION_REPOSITORY_CACHE_BUCKET set it uploads each pack and index of its clone to that bucket and
+// answers /packs with its token: the bucket, the clone's refs, a planted branch's among them, and
+// every pack with its index, each the size and SHA-256 of the clone's own file, and each address
+// one the double serves that file's exact bytes for, with no credential. With the variable unset it
+// sends the double nothing and /packs is the mux's 404, naming no repository. Either way no line it
+// prints holds a signed address, a V4 parameter, its bearer or the planted ref's contents.
+func TestWorkspaceInitCacheUsesTheBucketWhenSet(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		bucket bool
+	}{
+		{"with the bucket set it uploads the clone's packs and serves /packs", true},
+		{"with the bucket unset it sends the double nothing and /packs is 404", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := newIssueVolume(t).withRemote(t, "main")
+			remote := v.env["WINIT_REMOTE"]
+			v.commitAddingAFile(t, remote, "refs/heads/main", "refs/heads/planted", "planted.txt", "planted\n")
+			planted := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/planted")
+			// The volume's git clones the remote by its path, which copies the remote's objects as
+			// they are, so the remote is packed first: the cache's clone then holds a pack and its
+			// index, as a clone from GitHub does.
+			v.git(t, "--git-dir="+remote, "repack", "-a", "-d", "--quiet")
+			double, err := fakegcs.New(fakegcs.Options{Root: t.TempDir(), Email: repocache.EmulatorEmail})
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener, err := testnats.ListenLoopback()
+			if err != nil {
+				t.Fatalf("listen for the double: %v", err)
+			}
+			running := double.Serve(listener)
+			t.Cleanup(func() { _ = running.Close() })
+			v.setenv(t)
+			t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
+			t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken+"\n"))
+			t.Setenv("STORAGE_EMULATOR_HOST", running.Addr())
+			if tc.bucket {
+				t.Setenv(repocache.BucketEnv, cmdTestBucket)
+			} else {
+				fixtureenv.Unset(t, repocache.BucketEnv)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var stdout, stderr lockedBuffer
+			exited := make(chan int, 1)
+			go func() {
+				exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+			}()
+
+			// Each wait, and each request within it, ends when what is left of the test binary's
+			// deadline less 30 s has passed, so a cache that never answers fails the row by name.
+			wait := testwait.Bounded(t, 1<<60, 30*time.Second)
+			bounded, boundedCancel := context.WithTimeout(context.Background(), wait)
+			defer boundedCancel()
+			address := ""
+			if !testwait.Holds(wait, 10*time.Millisecond, func() bool {
+				for _, line := range strings.Split(stdout.String(), "\n") {
+					if found, ok := strings.CutPrefix(line, "workspace-init cache: serving acme/widgets on "); ok {
+						address = found
+					}
+				}
+				return address != ""
+			}) {
+				t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
+			}
+			base := "http://" + address
+			var addresses []string
+			if tc.bucket {
+				var status int
+				var body []byte
+				if !testwait.Holds(wait, 20*time.Millisecond, func() bool {
+					status, _, body = cacheGet(t, bounded, base+"/packs", cmdCacheToken)
+					return status == http.StatusOK
+				}) {
+					t.Fatalf("/packs never answered 200: last %d %s; stdout %q, stderr %q", status, body, stdout.String(), stderr.String())
+				}
+				objects := requireBucketManifest(t, v, body, planted)
+				if got := double.Count(fakegcs.RouteUpload).Requests; got < len(objects) {
+					t.Errorf("the double received %d uploads for the %d objects /packs lists", got, len(objects))
+				}
+				for _, object := range objects {
+					addresses = append(addresses, object.URL)
+					status, _, got := cacheGet(t, bounded, object.URL, "")
+					sum := sha256.Sum256(got)
+					if status != http.StatusOK || int64(len(got)) != object.Size || hex.EncodeToString(sum[:]) != object.SHA256 {
+						t.Errorf("the signed download of %s answered %d and %d bytes, not 200 and the %d bytes of SHA-256 %s", object.Name, status, len(got), object.Size, object.SHA256)
+					}
+				}
+				if got := double.Count(fakegcs.RouteDownload); got.WithAuthorization != 0 {
+					t.Errorf("%d of %d signed downloads carried an Authorization header", got.WithAuthorization, got.Requests)
+				}
+			} else {
+				var health repocache.Health
+				if !testwait.Holds(wait, 20*time.Millisecond, func() bool {
+					_, _, body := cacheGet(t, bounded, base+"/healthz", "")
+					return json.Unmarshal(body, &health) == nil && health.Ready
+				}) {
+					t.Fatalf("the cache never became ready: %+v; stdout %q, stderr %q", health, stdout.String(), stderr.String())
+				}
+				status, header, body := cacheGet(t, bounded, base+"/packs", cmdCacheToken)
+				if status != http.StatusNotFound || header.Get(workspace.CacheRepositoryHeader) != "" {
+					t.Errorf("/packs with no bucket answered %d naming %q: %s; want the mux's 404 naming nothing", status, header.Get(workspace.CacheRepositoryHeader), body)
+				}
+				if requests := double.Requests(); len(requests) != 0 {
+					t.Errorf("a cache with no bucket sent the double %d requests: %v", len(requests), requests)
+				}
+			}
+
+			cancel()
+			if code := testwait.Receive(t, "the cache to stop with its context", exited); code != 0 {
+				t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
+			}
+			printed := stdout.String() + stderr.String()
+			for _, secret := range append([]string{"X-Goog-", cmdCacheToken, planted}, addresses...) {
+				if strings.Contains(printed, secret) {
+					t.Errorf("the cache printed %q: stdout %q, stderr %q", secret, stdout.String(), stderr.String())
+				}
+			}
+			if tc.bucket && !strings.Contains(stdout.String(), "workspace-init cache: listed ") {
+				t.Errorf("the cache did not say it listed its packs: stdout %q", stdout.String())
+			}
+		})
+	}
+}
+
+// requireBucketManifest fails the test unless body is a /packs manifest of the volume's cache
+// clone: the test bucket; refs that hold the planted branch at its commit; and every pack and
+// index of the clone, each pack with its index, each under the repository's lowercase prefix with
+// the size and SHA-256 of the clone's own file. It answers the manifest's objects.
+func requireBucketManifest(t *testing.T, v *issueVolume, body []byte, planted string) []workspace.PackObject {
+	t.Helper()
+	var manifest workspace.PackManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		t.Fatalf("/packs answered no manifest: %v", err)
+	}
+	if manifest.Bucket != cmdTestBucket {
+		t.Errorf("the manifest names bucket %q, not %s", manifest.Bucket, cmdTestBucket)
+	}
+	plantedListed := false
+	for _, ref := range manifest.Refs {
+		plantedListed = plantedListed || bytes.Contains(ref.Bytes, []byte(planted+" refs/heads/planted")) || (ref.Path == "refs/heads/planted" && string(ref.Bytes) == planted+"\n")
+	}
+	if !plantedListed {
+		t.Errorf("the manifest's refs hold no refs/heads/planted at %s", planted)
+	}
+	packs := filepath.Join(v.root, "acme", "widgets.git", "objects", "pack")
+	entries, err := os.ReadDir(packs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{}
+	for _, entry := range entries {
+		if !workspace.FeedEntry("objects/pack/"+entry.Name(), false) {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(packs, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(content)
+		want["acme/widgets/objects/pack/"+entry.Name()] = hex.EncodeToString(sum[:])
+	}
+	got := map[string]string{}
+	for _, object := range manifest.Objects {
+		local, err := os.Stat(filepath.Join(packs, strings.TrimPrefix(object.Name, "acme/widgets/objects/pack/")))
+		if err != nil || local.Size() != object.Size {
+			t.Errorf("the manifest lists %s of %d bytes, which the clone holds as %v (%v)", object.Name, object.Size, local, err)
+		}
+		got[object.Name] = object.SHA256
+	}
+	if len(want) < 2 || len(got) != len(want) {
+		t.Errorf("the manifest lists %v, not the clone's packs and indexes %v", got, want)
+	}
+	for name, sum := range want {
+		if got[name] != sum {
+			t.Errorf("the manifest lists %s with SHA-256 %q, not the clone's file's %s", name, got[name], sum)
+		}
+		if stem, pack := strings.CutSuffix(name, ".pack"); pack {
+			if _, indexed := got[stem+".idx"]; !indexed {
+				t.Errorf("the manifest lists %s without its index", name)
+			}
+		}
+	}
+	return manifest.Objects
 }

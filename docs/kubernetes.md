@@ -5971,6 +5971,18 @@ A reader holds no grant on the bucket at all, so the pods that can read a reposi
 `/tar` stays as it is.
 A fetch falls back to it whenever `/packs` is not served, its answer cannot be used, or a download or a check fails, so a bucket that is missing or broken makes a fetch as slow as it was before the bucket, and never makes it fail.
 
+With the bucket on, the cache publishes its packs after each fetch that succeeds, its first clone included, and again after each repack that succeeds; a restarted cache whose first fetch fails publishes the clone it serves as it was.
+Each pack and its index go to `<owner>/<repo>/objects/pack/pack-<id>.pack` and `.idx`, the owner and the repository lower-cased, created only where no object of that name exists: one already there is taken only where its size, CRC32C and SHA-256 are the file's, and never replaced.
+The cache keeps one listed set, the refs and every pack with its index of one snapshot of its clone, which `/packs` answers from, and switches it to the clone's newest snapshot only once every pack and index of that snapshot is in the bucket whole.
+Until then, and when an upload fails, `/packs` answers the set before, whose refs are a refresh or more older; a fetch brings what they lack from GitHub.
+A pack in the clone without its index, or an index without its pack, which a killed git can leave and git reads nothing of, is left out of the set and not uploaded, logged once by the process, while the rest of the snapshot is listed; no object of its name is deleted from the bucket while the clone holds it.
+Each publication is bounded by the shorter of `refresh_minutes` and 30 minutes, and a failure, a bucket the cache cannot open included, is logged as `publish the packs to bucket <bucket> failed; …` and tried again at the next refresh, while `/tar` and `/healthz` answer as they do with no bucket.
+An object of the repository's prefix that neither the clone nor the listed set holds is deleted, matching the generation the cache listed, no sooner than 30 minutes after the switch that first left it out, twice an address's life, so a download already under way keeps its object; a restarted cache counts those 30 minutes from its own first switch, never from an object's creation, and a delete that fails is tried again at the next refresh.
+The cache deletes nothing outside its prefix, nor a name under it that is no pack or index, and a cache the daemon retires deletes nothing in the bucket, whose retention the deployment sets.
+`/packs` answers 503 until the first set is listed, and when an address cannot be signed; each answer signs a fresh address for every object, through IAM Credentials' `signBlob` as the cache's own account, a V4 `GET` of that object alone good for 15 minutes, and an answer whose set was switched while it signed is 503 too.
+`/packs` counts in no `/healthz` `streams`, and the cache logs no address, token or ref.
+The cache's Google identity needs, on the bucket, `storage.objects.list`, `storage.objects.get`, `storage.objects.create` and `storage.objects.delete`, and, on its own account, `iam.serviceAccounts.signBlob` (`roles/iam.serviceAccountTokenCreator` granted to the account on itself).
+
 A pod runs as the account it was created with for its whole life, so turning the pair on, turning it off, and a change of `bucket` alone or of `service_account` alone each give every cache one new pod, never a new clone, once its pod serves no stream (above).
 Turn the pair on in this order:
 
