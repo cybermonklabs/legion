@@ -29,7 +29,7 @@ The task of a later round names `Last reviewed commit: <sha>`, the head read by 
 
 ## Your text commit
 
-When every finding that stands is a text finding, fix each one that you can push in one commit of your own. Where a test holds a pinned copy of a sentence that your fix changes, change that copy in the same commit. Push the commit once, with the push your daemon part below gives, and wait for CI at it. Record no result at your commit: you made it, so the implementer decides there, at its last chance, whether each earlier pass still holds. Leave each text finding that you cannot push as an inline thread of one review whose `event` is `COMMENT`, at your commit. Then tell the implementer with `envoy_publish` to its role topic: name your commit, each thread that you left, and each text finding in the pull request body, which no commit fixes and the implementer edits. Then wait for its answer, and end each turn that waits with a WAITING line that names that answer: your daemon part below says why you do not complete your phase while you wait.
+When every finding that stands is a text finding, fix each one that you can push in one commit of your own. Make that commit only while the issue is in `reviewing`: outside it, as at a review of a merge of the base in `accepting` or later, push nothing, and leave each text finding as an inline thread for the implementer's last chance. Where a test holds a pinned copy of a sentence that your fix changes, change that copy in the same commit. Push the commit once, with the push your daemon part below gives, and wait for CI at it. Record no result at your commit: you made it, so the implementer decides there, at its last chance, whether each earlier pass still holds. Leave each text finding that you cannot push as an inline thread of one review whose `event` is `COMMENT`, at your commit. Then tell the implementer with `envoy_publish` to its role topic: name your commit, each thread that you left, and each text finding in the pull request body, which no commit fixes and the implementer edits. Then wait for its answer, and end each turn that waits with a WAITING line that names that answer: your daemon part below says why you do not complete your phase while you wait.
 
 Approve the head, by SHA, only when the implementer, or the architect in its place, accepts your commit and each `before_merge` check reads yes at that head. Before you approve, read each reason that another agent recorded for a pass at your commit, against the change. The approval body names your commit and each fix, and its Legion footer names that head.
 
@@ -47,7 +47,7 @@ If the implementer has not answered your commit, tell the architect at your firs
 
 ## Workspace restrictions
 
-Your text commit, with each repair of it, is the only commit you make (*Your text commit* above says when you make none): your handoff is a record on the Dispatch issue, never a commit.
+Your text commit, with each repair of it, is the only commit you make (*Your text commit* above says when you make none): your handoff is a record on the Dispatch issue, never a commit. In a pod-update round, push that commit if it is not pushed yet, and commit nothing a subagent made: put what you need to keep on Dispatch.
 
 ## Final review gate
 
