@@ -20,8 +20,9 @@ import (
 // pod and deleted with it; it is mounted whole at TreeRoot in workspace-init and the pod's one
 // launcher container, and no session is on it — every session is a row in the session database the
 // deployment names (Options.SessionStore). Workspace-init fills the clone directly on that volume
-// from the repository cache and GitHub. No volume is ever carried over from an earlier release: an
-// issue pod's disk is created with the pod and deleted with it (INFRA-80).
+// from the repository cache and GitHub. An ephemeral issue volume is created with its pod and
+// deleted with it (INFRA-80); a kept volume (runtime.kubernetes.sandbox.microvm.keep_volume) is
+// carried to the issue's next pod as the last pod left it.
 // LauncherDir, LauncherPrivateDir, StateDir, GHConfigDir and AgentSecretsKeyDir are where a
 // launcher role's process finds its own launcher token projection, memory-backed private directory
 // (where its launcher writes each generation's boot token and launch credentials), state directory,

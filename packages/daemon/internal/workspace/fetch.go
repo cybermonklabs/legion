@@ -519,7 +519,7 @@ const cacheAsk = 30 * time.Second
 // cacheNotReady is why the repository cache is not ready to stream, or "" when its /healthz
 // answers 200 with ready set, within timeout; an answer askCache refuses is the error. The ask
 // carries no credential: the cache answers its health to anyone, and its token goes with the tar
-// alone (unpackCache).
+// alone (unpackCacheInto).
 func cacheNotReady(ctx context.Context, request CacheStream, timeout time.Duration) (string, error) {
 	bounded, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -690,8 +690,9 @@ func verifyCache(ctx context.Context, run Runner, request CacheStream, staging s
 
 // objectHash is the hash function the repository at gitDir names its objects with, as git reports
 // it (`git rev-parse --show-object-format`). Every checksum a pack and its index carry is that
-// hash's, so its size is how those files end. Today it is always sha1: unpackCache makes the
-// staging repository with `git init --bare` under no configuration, and the repository cache
+// hash's, so its size is how those files end. Today it is always sha1: the fill streams into the
+// .git of a clone it makes with `git init`, StreamCache makes a bare repository with `git init
+// --bare` under no configuration only where its caller names none, and the repository cache
 // refuses any object format but sha1 (cacheConfigKeys), so a SHA-256 cache is refused at its pack's
 // checksum. The sha256 case is for a git whose default format has changed, and reads the same file
 // layout with 32-byte hashes.
@@ -852,7 +853,7 @@ func (r *countingReader) Read(p []byte) (int, error) {
 // window and its baseline are set before the ask and every Read: taken when the scheduler first
 // ran that goroutine, after Reads had begun, they would leave those bytes out of the window and
 // could end a stream that delivered them. The goroutine returns when ctx ends, which
-// unpackCache's own cancel does as soon as the answer has been read to its end.
+// unpackCacheInto's own cancel does as soon as the answer has been read to its end.
 func (r *countingReader) watchStall(ctx context.Context, stop context.CancelFunc) {
 	window, at := r.window(CacheStreamLowSpeedTime), r.read.Load()
 	go r.judgeWindows(ctx, stop, window, at)

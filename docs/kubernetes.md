@@ -6355,16 +6355,17 @@ kept while it stands.
 The issue pods of that repository receive the bearer token in their provisioning Secret, and no
 other pod has it.
 
-The process first makes its bare clone with `git clone --bare --single-branch --no-tags`.
+The process first fills its bare clone with `git init --bare` and a `git fetch --no-tags` of GitHub's current default branch, never with `git clone`: a clone asks GitHub for every annotated tag that points into the branch it brings, even with `--no-tags`, and the cache would then stream those tag objects.
 Each refresh fetches GitHub's current default branch alone with `--no-tags`.
 Before and after each fetch, the cache checks its clone under the write lock.
 An unmarked older volume, or a clone holding a ref outside the branch `HEAD` names, is narrowed:
 one `git update-ref --stdin` removes those refs, then `git repack -a -d` runs under
 `repackTimeout` and `repackMemory`, and the cache logs
 `workspace-init cache: narrowed <dir> <bytes before> <bytes after>`.
-A fresh single-branch clone, or a marked clone that already holds only that branch, needs no
+A first fill, or a marked clone that already holds only that branch, needs no
 repack; the marker beside `.legion-last-repack` records the successful default-branch-only state.
 A cache without that marker is unready and serves no tar.
+A narrowing that repacks a clone the cache already serves makes it unready until the repack ends, and a pod waits for it as for a cache not yet narrowed: after a force-push or a rename of the default branch, or after a fetch that failed once it had written its pack, whose objects no ref reaches.
 
 It serves, on port 8418:
 
@@ -9324,7 +9325,7 @@ A deployment whose Apps are configured by `token_command` (docs/deployment.md, "
 `ReadToken` asks the command for its read-only release (`LEGION_GITHUB_READ_ONLY=1`, which the command maps onto the role's read profile) and takes what that release holds, be it narrower or wider than the read set it asks for with a key, and no wider token is asked for in its place.
 Such a command must therefore release a read-only token for every owner it serves, so the read profile names every account the write profile names: an owner it releases none for fails every launch that makes an issue pod on that owner, at the provisioning mint (`mint the provisioning token for <owner>/<repo>`), and the refresher logs `sandbox runtime: provisioning token mint failed` for that repository each minute.
 
-The Go coordinator's pods (`packages/daemon`) keep to that rule with one init container:
+The Go coordinator's pods (`packages/daemon`) provision with one init container:
 
 - **`workspace-init`** mounts the provisioning Secret read-only, an in-memory `TMPDIR`, the issue
   volume at `/legion` and the config home.
