@@ -752,9 +752,6 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	// try): counted, not slept, so a slow machine reads the durable after those tries rather than
 	// before them. A try that changes the durable writes no skip line, so a durable deleted,
 	// recreated or bound ends the wait too, and the checks below say what changed.
-	waitFor(t, 20*time.Second, func() bool { return skips() >= 1 }, func() string {
-		return fmt.Sprintf("the intake never reported skipping the %s lease: %v", consumerLease(bus.DispatchDeliveryDurable), logs())
-	})
 	waitFor(t, 20*time.Second, func() bool {
 		if skips() >= 3 {
 			return true

@@ -284,9 +284,7 @@ type ExclusiveFunc func(ctx context.Context, logger *slog.Logger, leases Leases,
 //
 // Every line it writes - a skip, a pass that ran or was cut short, a failure to take, read, record
 // or give back the lease - goes to logger. A nil logger is the default logger as it is when the
-// line is written, which is where every caller but a delivery intake's take-over sends them: the
-// intake hands its own (delivery's heldDurable.attempt), and a test that reads its lines hands one
-// of its own instead of swapping the default.
+// line is written.
 func Exclusive(ctx context.Context, logger *slog.Logger, leases Leases, name string, due time.Time, period time.Duration, pass func(context.Context)) bool {
 	conn, err := leases.Acquire(ctx)
 	if err != nil {
