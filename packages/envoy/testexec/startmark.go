@@ -30,6 +30,26 @@ func MarkStart(to string) string {
 	return `read -r up </proc/uptime; read -r stat </proc/self/stat; printf '%s\n%s\n' "$up" "$stat" >` + to
 }
 
+// MarkNow is shell that writes /proc/uptime, the time since boot now, to the file the shell word to
+// names: a moment a stand-in records of its own run, such as the moment its signal trap ran or the
+// moment just before it exits, on the clock MarkStart and SinceBoot count on.
+func MarkNow(to string) string {
+	return `read -r up </proc/uptime; printf '%s\n' "$up" >` + to
+}
+
+// ReadNowMark reads the time since boot that MarkNow wrote at path.
+func ReadNowMark(path string) (time.Duration, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	at, err := uptimeOf(strings.TrimSuffix(string(raw), "\n"))
+	if err != nil {
+		return 0, fmt.Errorf("the mark %s: %w", path, err)
+	}
+	return at, nil
+}
+
 // StartMark is what MarkStart wrote: when the kernel made the process, and when its shell reached the
 // mark, each as a time since boot.
 type StartMark struct{ Started, Reached time.Duration }

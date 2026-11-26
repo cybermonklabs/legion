@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities/capabilitiestest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -563,6 +564,14 @@ func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T)
 // time (testwait.StandInDeadline): once Chromium has started, which is after eval-python's check
 // returned, so no load can pass it before that check has answered. Chromium runs until a signal
 // ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its own.
+//
+// Main's 2 s caller deadline also bounded the checks before the browser: a check that took 2 s or
+// more before it answered left eval-python unanswered. That bound stays, as main's 2 s, but on the
+// product's own time and no stand-in's: the row's Oh My Pi (eval-python's command) writes the
+// kernel's record of its own start as its first act (testexec.MarkStart), and the span from the
+// call to that start is all CheckImage's, since eval-js runs no command. So an eval-python check
+// that spends its time before it runs Oh My Pi fails here, and a loaded machine that holds Oh My Pi's
+// own shell once it is made does not.
 func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t *testing.T) {
 	s := newStubs(t)
 	sleep, err := exec.LookPath("sleep")
@@ -571,11 +580,22 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 	}
 	ctx, started, held, bound, ran := passedOnceStarted(t, context.DeadlineExceeded)
 	s.install("chromium", "#!/bin/sh\n: >"+shellprefix.Literal(started)+"\nwhile [ ! -e "+shellprefix.Literal(held)+" ] && kill -0 "+strconv.Itoa(os.Getpid())+" 2>/dev/null; do "+shellprefix.Literal(sleep)+" 0.01; done\n")
+	const checkBound = 2 * time.Second
+	ompMark, marked := filepath.Join(t.TempDir(), "ompmark"), filepath.Join(t.TempDir(), "omp")
+	if err := testexec.WriteFile(marked, []byte("#!/bin/sh\n"+testexec.MarkStart(shellprefix.Literal(ompMark))+"\nexec "+shellprefix.Literal(s.omp)+" \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	img := s.image("LEGION_TEST_NO_PYTHON=1")
+	img.Launch = marked
 
-	states, err := CheckImage(ctx, s.image("LEGION_TEST_NO_PYTHON=1"))
+	called := testexec.SinceBoot(t)
+	states, err := CheckImage(ctx, img)
 
 	if !<-ran {
 		t.Fatalf("the browser's Chromium never started within %s, so the deadline passed at no fact of the browser's run", bound)
+	}
+	if began := testexec.StartedAfter(t, ompMark, called); began > checkBound {
+		t.Errorf("eval-python's Oh My Pi started %s after CheckImage was called, past main's %s: the checks before the browser took that long of the product's own time before they ran it", began, checkBound)
 	}
 	if want := "capability eval-python is missing: omp setup python --check reports available=false"; err == nil || err.Error() != want {
 		t.Errorf("CheckImage = %v, want the error %q alone", err, want)
@@ -615,7 +635,7 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	was := commandTimeout
 	commandTimeout = time.Second
 	t.Cleanup(func() { commandTimeout = was })
-	const lateBy = 400 * time.Millisecond
+	const lateBy, startBound = 400 * time.Millisecond, 10 * time.Second
 	s := newStubs(t)
 	sleep, err := exec.LookPath("sleep")
 	if err != nil {
@@ -625,7 +645,7 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	// ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its own.
 	s.install("chromium", "#!/bin/sh\nSLEEP="+shellprefix.Literal(sleep)+"\nOWNER="+strconv.Itoa(os.Getpid())+"\n"+
 		"trap ': >\"$LEGION_TEST_RUN/stopped\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1' TERM\n"+
-		": >\"$LEGION_TEST_RUN/started\"\n"+
+		testexec.MarkStart(`"$LEGION_TEST_RUN/startmark"`)+"\n: >\"$LEGION_TEST_RUN/started\"\n"+
 		"while [ ! -e \"$LEGION_TEST_RUN/held\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done\n")
 	watch := testwait.Bounded(t, answerBudget, time.Second)
 	until := time.Now().Add(testwait.Bounded(t, 3*answerBudget, 2*answerBudget))
@@ -653,6 +673,7 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 			cancelled <- at
 		}()
 
+		called := testexec.SinceBoot(t)
 		states, err := CheckImage(ctx, s.image("LEGION_TEST_RUN="+run))
 		ended := ctx.Err() != nil
 
@@ -663,6 +684,15 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 		stopped, statErr := os.Stat(filepath.Join(run, "stopped"))
 		if statErr != nil {
 			t.Fatal(statErr)
+		}
+		// Chromium's first start is bounded as on main, at startBound from the call, but read from
+		// the kernel's own record of when it made Chromium's process (testexec.MarkStart), not from
+		// Chromium's first line, so the shell's own start-up on a loaded machine is no part of it. A
+		// browser check that starts Chromium late, or checks before it that hold it, fail here.
+		if mark := filepath.Join(run, "startmark"); func() bool { _, err := os.Stat(mark); return err == nil }() {
+			if began := testexec.StartedAfter(t, mark, called); began > startBound {
+				t.Fatalf("run %d: the browser's Chromium started %s after CheckImage was called, past main's %s: the browser check, or a check before it, started it late", runs, began, startBound)
+			}
 		}
 		// A Chromium with no started mark had the SIGTERM before its first act, which is no late stop.
 		if started, statErr := os.Stat(filepath.Join(run, "started")); statErr == nil {
