@@ -3152,6 +3152,24 @@ async function olderRowsReleaseWrites(): Promise<string | undefined> {
   note(
     `the delivery settings name ${olderRowsDeployRepo}; the release before's intake bound its durable, and holds the settings: ${await probed()} of the ${probes} merged probe(s) of ${olderRowsProbeRepo} sent has its timeline row`
   );
+  // The probes are no older rows: a later pass of this build would read their facts, and the counts
+  // of older-rows are of #7001 to #7300 alone. Once every probe sent has its head row, the driver
+  // deletes their rows; their merged pulls are not in the merged search (searched is false).
+  if (
+    !(await awaitTrue(
+      async () =>
+        (await countOf(
+          `select count(*) from pull_request_heads where repo = '${olderRowsProbeRepo}'`
+        )) === probes,
+      30_000
+    ))
+  ) {
+    return `the release before stored a head row of fewer than the ${probes} probe(s) of ${olderRowsProbeRepo} sent`;
+  }
+  await sql(
+    `delete from delivery_pull_requests where repo = '${olderRowsProbeRepo}';
+     delete from pull_request_heads where repo = '${olderRowsProbeRepo}'`
+  );
   const publish = async (first: number, last: number, under: string) => {
     for (let number = first; number <= last; number++) {
       await publishEnvelope(olderRowsEvent(number, under));
