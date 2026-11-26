@@ -1630,10 +1630,13 @@ export class DispatchClient {
    *  `path` resolved as `readRoute` resolves it, with `body`, where given, sent as written as
    *  the request's JSON body. Like `readRoute` it goes through one `#send`, skipping `#noRoute`,
    *  and answers as `readRoute` does: Dispatch's JSON, any other 2xx's body as it came, the
-   *  refusal of a 2xx whose body holds a credential it presented, or Dispatch's refusal thrown.
-   *  It is no write of `#write`'s: it goes once, and once more only after Dispatch answers that
-   *  the token it presented is not live (Dispatch authenticated nothing, so nothing ran), with no
-   *  redirect followed and no `Idempotency-Key`, so a caller that repeats it decides that itself. */
+   *  refusal of a 2xx whose body holds a credential it presented, or Dispatch's refusal thrown,
+   *  but for a write Dispatch answered with its own 5xx, which can come after the write
+   *  committed, and one that got no answer once it went out: each is thrown as a
+   *  `DispatchWriteUnsettledError` of one attempt (`#send`). It is no write of `#write`'s: it
+   *  goes once, and once more only after Dispatch answers that the token it presented is not
+   *  live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
+   *  `Idempotency-Key`, so a caller that repeats it decides that itself. */
   async sendRoute(method: DispatchApiMethod, path: string, body?: string): Promise<RouteAnswer> {
     return this.#route(method, path, body);
   }

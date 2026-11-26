@@ -137,7 +137,12 @@ func (s *server) v2MeRows() []routeRow {
 				"OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard " +
 				"reaches, and approve settles what a person settles. Read-only credentials list read after those scopes. " +
 				"cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than " +
-				"reading Dispatch at that time. sign_in_required is true where Dispatch refuses " +
+				"reading Dispatch at that time. A Legion daemon's own broker token answers [\"legion-status\"]: with " +
+				"DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a " +
+				"Legion issue that PATCH /api/v2/issues/{key} refuses to every other credential, in both its forms, but " +
+				"for the owning architect's status write: a broker-issued token whose session the daemon's own token " +
+				"published as the architect of an issue above writes done, backlog, icebox or triage. sign_in_required " +
+				"is true where Dispatch refuses " +
 				"every write of the credential with a 403 until a person signs in on its machine, which " +
 				"is a broker-issued token of a machine nobody has signed in on, and false for every other credential, " +
 				"including a job's token, an exchange entry's token naming its account and every read-only credential.",

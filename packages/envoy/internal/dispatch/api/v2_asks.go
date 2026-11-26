@@ -691,9 +691,10 @@ func (s *server) writtenAskRowsV2(ctx context.Context, q queryer, who model.Acto
 
 // writtenAskV2 is the ask a /api/v2 write answers, read in two steps: readBack, the write's
 // askReadBack, reads its tables on q (writtenAskRowsV2): the write's transaction, before it
-// commits, or the pool for writeUnchanged's no-op. answer then completes the row, after a write
-// has committed (completeWrittenAskV2). reader is the caller's credential (requestReader), which
-// newWrittenAskV2 resolves when the route makes one, since q holds no request.
+// commits, or the pool for writeUnchanged's no-op. answer then completes the row, after the write
+// commits, or at once for writeUnchanged's no-op (completeWrittenAskV2). reader is the caller's
+// credential (requestReader), which newWrittenAskV2 resolves when the route makes one, since q
+// holds no request.
 type writtenAskV2 struct {
 	server *server
 	reader model.Actor
@@ -716,7 +717,8 @@ func (written *writtenAskV2) readBack(ctx context.Context, q queryer, id string)
 	return err
 }
 
-// answer is the ask the write answers, once the write has committed.
+// answer is the ask the write answers, after the write commits, or at once for writeUnchanged's
+// no-op.
 func (written *writtenAskV2) answer(r *http.Request) (askWriteV2, error) {
 	return written.server.completeWrittenAskV2(r.Context(), r, written.rows)
 }

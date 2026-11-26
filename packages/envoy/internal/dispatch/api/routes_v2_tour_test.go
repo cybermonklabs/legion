@@ -118,10 +118,12 @@ type tourMissing struct {
 }
 
 // tourCaller is the credential a step's request carries: a person signed in at a browser
-// (Login), a bearer token (Token: a personal token, the shared agent token), or none at all.
+// (Login), a bearer token (Token: a personal token, the shared agent token), a broker-issued token
+// (Token, with Broker, the key it is bound to, which proves it under DPoP), or none at all.
 type tourCaller struct {
-	Login string
-	Token string
+	Login  string
+	Token  string
+	Broker *brokerCaller
 }
 
 // tourPerson is login signed in at a browser, holding every scope.
@@ -449,7 +451,13 @@ func (tour *routeTour) request(t *testing.T, route apiRoute, request tourRequest
 	if request.As.Login != "" {
 		sending.Header.Set("X-Dispatch-User", request.As.Login)
 	}
-	if request.As.Token != "" {
+	switch {
+	case request.As.Token != "" && request.As.Broker != nil:
+		// A fresh proof for this method and target, as the token's holder signs each request.
+		signed := request.As.Broker.caller.Signed(t, route.Method, testServerURL+target, request.As.Token)
+		sending.Header.Set("Authorization", signed.Header.Get("Authorization"))
+		sending.Header.Set("DPoP", signed.Header.Get("DPoP"))
+	case request.As.Token != "":
 		sending.Header.Set("Authorization", "Bearer "+request.As.Token)
 	}
 	if key := cmp.Or(key, request.Key); key != "" {

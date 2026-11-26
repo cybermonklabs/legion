@@ -667,10 +667,13 @@ func (s *server) v2ThreadRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/handoffs/{id}", Auth: authAny, Versions: onlyV2,
 			Description: "One handoff by id with its body, the exact text written: {id, issue_key, phase, version, author, " +
-				"created_at, body}; a closed issue's too. 404 HANDOFF_NOT_FOUND for an id no handoff has.",
+				"created_at, body}; a closed issue's too. A caller that sent Dispatch-Trees: 1 is also given field_trees: " +
+				"the tree a reader is shown of each string the body's card draws, keyed by that string's JSON Pointer into " +
+				"the body (/summary, /proof/0), as GET /api/v1/handoffs/{id} gives it. 404 HANDOFF_NOT_FOUND for an id no " +
+				"handoff has.",
 			Handler:  s.getHandoffV2,
 			Resource: "handoffs", Kind: kindItem, Key: "{id}",
-			Shape:    routeShape{Status: http.StatusOK, Response: model.Handoff{}},
+			Shape:    routeShape{Status: http.StatusOK, Response: handoffRead{}},
 			IDs:      &idRoute{Reason: "a handoff id: one phase's record on an issue"},
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, handoffMissingRefusal},
 		},
@@ -678,10 +681,12 @@ func (s *server) v2ThreadRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/issues/{key}/handoffs", Auth: authAny, Versions: onlyV2,
 			Description: fmt.Sprintf("List an issue's handoffs, each {id, issue_key, phase, version, author, created_at}, a "+
 				"closed issue's too. phase=<phase> keeps one phase's (a lowercase slug, %s, 400 HANDOFF_INPUT otherwise). "+
-				"include=body adds each handoff's body, the exact text written. sort=-created_at (the default: newest first, "+
+				"include=body adds each handoff's body, the exact text written, and for a caller that sent Dispatch-Trees: "+
+				"1 its field_trees, as GET /api/v2/handoffs/{id} gives them. sort=-created_at (the default: newest first, "+
 				"then by phase, then the newest version), created_at, version or -version (a phase's newest version first: "+
-				"phase=<phase>&sort=-version&limit=1&include=body reads the phase's latest handoff). %s {items, total, "+
-				"limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+				"phase=<phase>&sort=-version&limit=1&include=body reads the phase's latest handoff, as GET "+
+				"/api/v1/issues/{key}/handoffs/{phase}/latest does). %s {items, total, limit, offset}. 404 "+
+				"ISSUE_NOT_FOUND for an issue that does not exist.",
 				contracts.HandoffPhasePattern, includedPageLimitText(handoffList, issueHandoffsV2Query{})),
 			Handler:  s.listIssueHandoffsV2,
 			Resource: "handoffs", Kind: kindCollection, Key: "{id}",
@@ -867,11 +872,15 @@ type issueHandoffsV2Query struct {
 }
 
 // handoffV2 is one row of GET /api/v2/issues/{key}/handoffs: the handoff, and its body with
-// include=body, which GET /api/v1's list never carried.
+// include=body, which GET /api/v1's list never carried, with the body's field trees beside it for a
+// caller that sent `Dispatch-Trees: 1`, as the read of one handoff gives them (handoffRead).
 type handoffV2 struct {
 	model.HandoffSummary
 	// Body is the handoff's body, the exact text written, with include=body.
 	Body *string `json:"body,omitempty"`
+	// FieldTrees is handoffRead's FieldTrees of Body: the tree of each string the card draws from
+	// it, keyed by that string's JSON Pointer into it, only with include=body and the header.
+	FieldTrees map[string]model.DisplayTree `json:"field_trees,omitempty"`
 }
 
 // createHandoffV2Input is POST /api/v2/issues/{key}/handoffs's body: createHandoffInput's
@@ -1621,9 +1630,11 @@ func handoffListOrder(sort querySort) string {
 
 // listIssueHandoffsV2 answers GET /api/v2/issues/{key}/handoffs: one page of an issue's handoffs,
 // one phase's with phase=, each with its body with include=body, which also answers for GET
-// /api/v1/issues/{key}/handoffs/{phase}/latest (the route map's row 106). A page with the bodies
-// holds at most includedPageMax handoffs, each body up to contracts.DispatchHandoffBodyMax, which
-// the decoder holds before the handler runs (issueHandoffsV2Query's renders tag).
+// /api/v1/issues/{key}/handoffs/{phase}/latest (the route map's row 106), and so with the body's
+// field trees for a caller that sent `Dispatch-Trees: 1`, as that read gives them (writeHandoff).
+// A page with the bodies holds at most includedPageMax handoffs, each body up to
+// contracts.DispatchHandoffBodyMax, which the decoder holds before the handler runs
+// (issueHandoffsV2Query's renders tag).
 func (s *server) listIssueHandoffsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1672,6 +1683,14 @@ func (s *server) listIssueHandoffsV2(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	if withBody && wantsDisplayTrees(r) {
+		// Every row's strings are read by the one reader, resolved once the page is shaped.
+		shapeBuilt(true, func(reader *displayTreeReader) {
+			for index := range handoffs {
+				shapeHandoffBody(reader, *handoffs[index].Body, &handoffs[index].FieldTrees)
+			}
+		})
 	}
 	WriteJSON(w, http.StatusOK, newPage(handoffs, total, query.pageQuery))
 }

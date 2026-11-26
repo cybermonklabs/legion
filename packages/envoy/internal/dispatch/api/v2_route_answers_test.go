@@ -1,7 +1,9 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
@@ -215,4 +217,89 @@ func TestAV2PriorityListCarriesEachDescriptionsTree(t *testing.T) {
 	// The store starts with no priority (newTestHandlerWithStore), so the one created is item 0.
 	requireTextTree(t, "the /api/v2 listing",
 		model.DisplayTree(treeAt(t, handler, "/api/v2/priorities", "items.0.description_tree")), written)
+}
+
+// GET /api/v2/handoffs/{id}, and GET /api/v2/issues/{key}/handoffs read as the latest handoff of a
+// phase (phase=, sort=-version, limit=1, include=body), answer under `Dispatch-Trees: 1` the
+// field_trees GET /api/v1/handoffs/{id} and GET /api/v1/issues/{key}/handoffs/{phase}/latest answer
+// (writeHandoff, handoffRead): the tree of each string the body's card draws, under its JSON
+// Pointer, so a client that moves off /api/v1 to the route that answers for it loses no member.
+// Each answer holds to the committed /api/v2 document (tourContract.hold), with the header and
+// without it, and a read without the header carries no field_trees.
+func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
+	tour := newRouteTour(t)
+	contract := newTourContract(t)
+	issue := tour.issue(t)
+	body, err := json.Marshal(map[string]any{
+		"summary": "Shipped the **parser**.", "count": 3,
+		"proof": []any{"`go test ./...` passes.", map[string]string{"command": "go test"}},
+	})
+	if err != nil {
+		t.Fatalf("encode the handoff body: %v", err)
+	}
+	created := sessionRequest(t, tour.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/handoffs/implement", map[string]any{
+		"actor": map[string]any{"kind": "session", "id": tourRecipient}, "body": string(body),
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("record the handoff: %d %s", created.Code, created.Body.String())
+	}
+	id := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, created).ID
+	alice := tourPerson("alice")
+	for _, read := range []struct {
+		name, pattern, v1, trees string
+		request                  tourRequest
+	}{
+		{
+			name: "one handoff by id", pattern: "/handoffs/{id}", v1: "/api/v1/handoffs/" + id, trees: "field_trees",
+			request: tourRequest{Path: map[string]string{"id": id}, As: alice},
+		},
+		{
+			name: "a phase's latest, with its body", pattern: "/issues/{key}/handoffs",
+			v1: "/api/v1/issues/" + issue.Key + "/handoffs/implement/latest", trees: "items.0.field_trees",
+			request: tourRequest{
+				Path:  map[string]string{"key": issue.Key},
+				Query: url.Values{"phase": {"implement"}, "sort": {"-version"}, "limit": {"1"}, "include": {"body"}}, As: alice,
+			},
+		},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			route := tour.requireMounted(t, http.MethodGet, read.pattern)
+			answered := func(trees bool) *httptest.ResponseRecorder {
+				t.Helper()
+				sending := tour.request(t, route, read.request, "")
+				if trees {
+					sending.Header.Set(displayTreesHeader, "1")
+				}
+				response := tour.serve(sending)
+				if response.Code != http.StatusOK {
+					t.Fatalf("GET %s (trees=%v) answered %d %s, want 200", route.Pattern, trees, response.Code, response.Body.String())
+				}
+				contract.hold(t, route, response)
+				return response
+			}
+			if bare := answered(false); strings.Contains(bare.Body.String(), "field_trees") {
+				t.Errorf("GET %s without the header carries field_trees: %s", route.Pattern, bare.Body.String())
+			}
+			got, held := valueAt(t, answered(true), read.trees)
+			if !held {
+				t.Fatalf("GET %s with the header carries no %s", route.Pattern, read.trees)
+			}
+			want, _ := valueAt(t, treesRequest(t, tour.handler, read.v1, true), "field_trees")
+			var gotTrees, wantTrees map[string]any
+			if err := json.Unmarshal(got, &gotTrees); err != nil {
+				t.Fatalf("decode the /api/v2 field_trees %s: %v", got, err)
+			}
+			if err := json.Unmarshal(want, &wantTrees); err != nil {
+				t.Fatalf("decode the /api/v1 field_trees %s: %v", want, err)
+			}
+			if _, summary := wantTrees["/summary"]; !summary || len(wantTrees) != 2 {
+				t.Fatalf("GET %s answers the field_trees %s, want the trees of /summary and /proof/0 alone", read.v1, want)
+			}
+			if !reflect.DeepEqual(gotTrees, wantTrees) {
+				t.Errorf("GET %s answers the field_trees\n\t%s\nwant those GET %s answers\n\t%s", route.Pattern, got, read.v1, want)
+			}
+		})
+	}
 }

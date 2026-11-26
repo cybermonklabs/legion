@@ -19,10 +19,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -47,6 +49,13 @@ var tourRefusals = map[string][]tourRefusal{
 	},
 	"GET /api/v2/agents/{session_id}/answers": {
 		{Name: "a session_id that is no session id", Change: refusalPath("session_id", "no session"), Code: apicode.InvalidSessionID},
+	},
+	"GET /api/v2/agents/{session_id}/artifacts": {
+		{Name: "the list, on a person's broker token, naming another session", Change: refusalAnotherSession, Code: apicode.ActorSessionMismatch},
+	},
+	"GET /api/v2/artifacts/{id}/versions/{number}": {
+		{Name: "the blocks of a version holding an element a newer build wrote", Change: refusalStoredVersion(tourNewerContentVersion), Code: apicode.DocNewerContent},
+		{Name: "the blocks of a version outside the schema", Change: refusalStoredVersion(tourMarkdownRefused), Code: apicode.DocSchema},
 	},
 	"GET /api/v2/known-sessions": {
 		{Name: "an id that is no session id", Change: refusalQuery("id", "no session"), Code: apicode.InvalidQuery},
@@ -315,4 +324,40 @@ func withoutDeliverySettings(t *testing.T, tour *routeTour, request tourRequest)
 		}
 	})
 	return request
+}
+
+// refusalAnotherSession is a tourRefusal's change that sends its step's request on a broker token
+// that proves a session and holds the person scope (personScopedTokenAnswer), with ?session=
+// naming another session than the one it proves, which actingPerson refuses 403
+// ACTOR_SESSION_MISMATCH where the route acts as the person. The step's request names no slug, so
+// GET /api/v2/agents/{session_id}/artifacts reads the list, which acts as the person.
+func refusalAnotherSession(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+	t.Helper()
+	caller := newBrokerCaller(t)
+	token := "a-tour-token-for-a-person-" + uuid.NewString()
+	tour.brokerTokens.Says(token, personScopedTokenAnswer(caller.jkt))
+	request.As = tourCaller{Token: token, Broker: caller}
+	request.Query = withQueryValue(request.Query, "session", "session-tour-another")
+	return request
+}
+
+// tourNewerContentVersion is the markdown of a version holding an element no manifest of this
+// build names (docs.UnknownElementForTest), as a newer build serving the same database renders one.
+const tourNewerContentVersion = "Before.\n\n:::" + docs.UnknownElementForTest + "{#newer-1}\nWritten by a newer build.\n:::\n"
+
+// refusalStoredVersion is a tourRefusal's change that stores markdown as the version its step's
+// path names, as another build could have rendered it, and reads that version with
+// include=blocks, which parses the version's own stored markdown (docs.VersionBlocks): the one read
+// of the route that meets a tree this build refuses. The test hooks that put a document's history
+// outside the schema or past this build (POST /api/v1/artifacts/{id}/_test/outside-schema and
+// /_test/newer-content) write its live tree, which this read never reads.
+func refusalStoredVersion(markdown string) func(*testing.T, *routeTour, tourRequest) tourRequest {
+	return func(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
+		t.Helper()
+		seedExec(t, tour.database, "the version's stored markdown", `
+			update artifact_versions set markdown = $3 where artifact_id = $1::uuid and number = $2::int
+		`, request.Path["id"], request.Path["number"], markdown)
+		request.Query = withQueryValue(request.Query, "include", "blocks")
+		return request
+	}
 }

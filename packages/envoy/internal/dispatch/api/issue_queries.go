@@ -97,7 +97,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 	return issueListingQuery(issueListFilters, issueListFiltersParameters, pinned, paged, readAdvances)
 }
 
-// issueListingQuery is issueSummaryQuery over filters, the where clause of `filtered`, which
+// issueListingQuery is issueSummaryQuery over filters, the where clause of `matched`, which
 // binds parameters $1 to $parameters: the pinned login and the page bind the parameters after
 // them. /api/v1 passes issueListFilters and /api/v2 issueListFiltersV2, so the two versions run
 // one statement shape and differ in their filters alone.

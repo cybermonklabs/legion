@@ -1168,6 +1168,7 @@
           "min_limit": 1
         },
         "x-refusal-codes": {
+          "ACTOR_SESSION_MISMATCH": 403,
           "AS_OF_TOKEN_NOT_SERVED": 403,
           "BROKER_TOKEN_KEY_MISMATCH": 401,
           "BROKER_TOKEN_NOT_ACTIVE": 401,
@@ -8345,7 +8346,7 @@
     },
     "/api/v2/going-actions": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: 24 of the 43 tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name (action), its own description, the arguments it takes (request), each with the bounds its spec states, min and max (a text's length in UTF-16 units, a list's count of items or a number's value, both left out where it states none), with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {\"state\": \"resolved\"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Every action is on one page unless the request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph, at their /api/v2 routes: 24 of the 43 tool specs agents operate Dispatch with, every one that writes but dispatch_review and dispatch_project_update, each carried whole - its own name (action), its own description, the arguments it takes (request), each with the bounds its spec states, min and max (a text's length in UTF-16 units, a list's count of items or a number's value, both left out where it states none), with an example call, the /api/v2 rows it writes in the order a call is matched against them (routes, each {method, pattern, body?}), and the graph relations its verbs write. A route's body is the fixed part of the body a call of it sends beside the action's arguments, such as {\"state\": \"resolved\"} on PUT /api/v2/asks/{id}/state; an argument that picks between two routes of one action (dispatch_claim's release, dispatch_follow's action, dispatch_resolve_ask's kind) is sent to neither. It leaves the two out on purpose: a review records an approval or a changes request in a person's name, dispatch_project_update turns a check of a project on or off, and the loop that proposes operations must never propose either. Every action is on one page unless the request names a limit (any of 1 or more) and an offset; {items, total, limit, offset}.",
         "operationId": "getApiV2GoingActions",
         "parameters": [
           {
@@ -8632,7 +8633,7 @@
     },
     "/api/v2/handoffs/{id}": {
       "get": {
-        "description": "One handoff by id with its body, the exact text written: {id, issue_key, phase, version, author, created_at, body}; a closed issue's too. 404 HANDOFF_NOT_FOUND for an id no handoff has.",
+        "description": "One handoff by id with its body, the exact text written: {id, issue_key, phase, version, author, created_at, body}; a closed issue's too. A caller that sent Dispatch-Trees: 1 is also given field_trees: the tree a reader is shown of each string the body's card draws, keyed by that string's JSON Pointer into the body (/summary, /proof/0), as GET /api/v1/handoffs/{id} gives it. 404 HANDOFF_NOT_FOUND for an id no handoff has.",
         "operationId": "getApiV2HandoffsById",
         "parameters": [
           {
@@ -11439,7 +11440,7 @@
     },
     "/api/v2/issues/{key}/handoffs": {
       "get": {
-        "description": "List an issue's handoffs, each {id, issue_key, phase, version, author, created_at}, a closed issue's too. phase=\u003cphase\u003e keeps one phase's (a lowercase slug, ^[a-z][a-z0-9-]{0,31}$, 400 HANDOFF_INPUT otherwise). include=body adds each handoff's body, the exact text written. sort=-created_at (the default: newest first, then by phase, then the newest version), created_at, version or -version (a phase's newest version first: phase=\u003cphase\u003e\u0026sort=-version\u0026limit=1\u0026include=body reads the phase's latest handoff). limit 1 to 200 (default 50), and 1 to 20 (default 20) with include=body, and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
+        "description": "List an issue's handoffs, each {id, issue_key, phase, version, author, created_at}, a closed issue's too. phase=\u003cphase\u003e keeps one phase's (a lowercase slug, ^[a-z][a-z0-9-]{0,31}$, 400 HANDOFF_INPUT otherwise). include=body adds each handoff's body, the exact text written, and for a caller that sent Dispatch-Trees: 1 its field_trees, as GET /api/v2/handoffs/{id} gives them. sort=-created_at (the default: newest first, then by phase, then the newest version), created_at, version or -version (a phase's newest version first: phase=\u003cphase\u003e\u0026sort=-version\u0026limit=1\u0026include=body reads the phase's latest handoff, as GET /api/v1/issues/{key}/handoffs/{phase}/latest does). limit 1 to 200 (default 50), and 1 to 20 (default 20) with include=body, and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
         "operationId": "getApiV2IssuesByKeyHandoffs",
         "parameters": [
           {
@@ -14173,7 +14174,7 @@
     },
     "/api/v2/me": {
       "get": {
-        "description": "Who the server takes the caller for, one shape for every credential: {kind, person, session, service, project, project_scope, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every other credential, a personal token holding the person scope included, since the kind names the credential and not the act. person is the lowercase email of the person the credential acts for: the person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared token and for a broker-issued token that names a service. session is the session the credential proved, null for every credential but an access token the secrets broker issued; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it, null for every other; project is the one project key the credential lets the caller write, null where it names none, a job's token whose entry names public among them. project_scope is the project scope of an access token the secrets broker issued, null for every other credential: named for a token an operator's or a job's entry mapped to its project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project, person for a person's own token and for a machine's token that names no person, and none for a read entry's token; a token narrowed to reading answers the word it narrows. scopes is the OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. Read-only credentials list read after those scopes. cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than reading Dispatch at that time. sign_in_required is true where Dispatch refuses every write of the credential with a 403 until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, including a job's token, an exchange entry's token naming its account and every read-only credential.",
+        "description": "Who the server takes the caller for, one shape for every credential: {kind, person, session, service, project, project_scope, scopes, cut, sign_in_required}. kind is user for a person at a browser and agent for every other credential, a personal token holding the person scope included, since the kind names the credential and not the act. person is the lowercase email of the person the credential acts for: the person at the browser, a personal token's owner, or a broker-issued token's person, null for the shared token and for a broker-issued token that names a service. session is the session the credential proved, null for every credential but an access token the secrets broker issued; service is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists, or a job's identity as its job entry lists it, null for every other; project is the one project key the credential lets the caller write, null where it names none, a job's token whose entry names public among them. project_scope is the project scope of an access token the secrets broker issued, null for every other credential: named for a token an operator's or a job's entry mapped to its project, and for an exchange entry's token naming its account and no project, public for a job's token that names no one project, person for a person's own token and for a machine's token that names no person, and none for a read entry's token; a token narrowed to reading answers the word it narrows. scopes is the OAuth scopes the credential holds, [] for none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. Read-only credentials list read after those scopes. cut is their past read time in UTC, or null when there is no cut; this route reports the cut rather than reading Dispatch at that time. A Legion daemon's own broker token answers [\"legion-status\"]: with DISPATCH_LEGION_STATUS_SCOPE on, legion-status or person lets a credential make the three writes of a Legion issue that PATCH /api/v2/issues/{key} refuses to every other credential, in both its forms, but for the owning architect's status write: a broker-issued token whose session the daemon's own token published as the architect of an issue above writes done, backlog, icebox or triage. sign_in_required is true where Dispatch refuses every write of the credential with a 403 until a person signs in on its machine, which is a broker-issued token of a machine nobody has signed in on, and false for every other credential, including a job's token, an exchange entry's token naming its account and every read-only credential.",
         "operationId": "getApiV2Me",
         "parameters": [
           {
@@ -31094,6 +31095,22 @@
             "format": "date-time",
             "type": "string"
           },
+          "field_trees": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "object"
+          },
           "id": {
             "type": "string"
           },
@@ -31163,6 +31180,22 @@
           "created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "field_trees": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "object"
           },
           "id": {
             "type": "string"
@@ -33572,7 +33605,7 @@
             "anyOf": [
               {
                 "additionalProperties": true,
-                "description": "what the issue waits on from a person, in the shape GET /api/v1/issues/{key}/legion answers it",
+                "description": "what the issue waits on from a person - a question of its tree still with a person (an ask), or a document version no person has reviewed (a gate) - with when the wait began and, once it was answered, when and how",
                 "properties": {
                   "answeredAt": {
                     "description": "an RFC3339 timestamp",

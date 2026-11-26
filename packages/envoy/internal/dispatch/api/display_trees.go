@@ -690,17 +690,25 @@ const handoffProofField = "proof"
 // again.
 var handoffPointerToken = strings.NewReplacer("~", "~0", "/", "~1")
 
-// shape registers each string of the body with reader, each filling its own key of FieldTrees.
-// With no reader the body is not decoded at all: only a caller that asked for the trees pays for
-// reading it.
+// shape registers each string of the body with reader, each filling its own key of FieldTrees
+// (shapeHandoffBody).
 func (h *handoffRead) shape(reader *displayTreeReader) {
-	h.FieldTrees = nil
+	shapeHandoffBody(reader, h.Body, &h.FieldTrees)
+}
+
+// shapeHandoffBody registers each string of body, a handoff's body, with reader, each filling its
+// own key of *trees, which it empties first: the field trees of a handoff read whole (handoffRead)
+// and of each row of GET /api/v2/issues/{key}/handoffs that carries its body (handoffV2). With no
+// reader the body is not decoded at all: only a caller that asked for the trees pays for reading
+// it.
+func shapeHandoffBody(reader *displayTreeReader, body string, trees *map[string]model.DisplayTree) {
+	*trees = nil
 	if reader == nil {
 		return
 	}
 	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(h.Body), &fields); err != nil || fields == nil {
-		h.registerText(reader, "", h.Body)
+	if err := json.Unmarshal([]byte(body), &fields); err != nil || fields == nil {
+		registerHandoffText(reader, trees, "", body)
 		return
 	}
 	for name, value := range fields {
@@ -709,34 +717,35 @@ func (h *handoffRead) shape(reader *displayTreeReader) {
 			var entries []json.RawMessage
 			if json.Unmarshal(value, &entries) == nil {
 				for index, entry := range entries {
-					h.registerString(reader, pointer+"/"+strconv.Itoa(index), entry)
+					registerHandoffString(reader, trees, pointer+"/"+strconv.Itoa(index), entry)
 				}
 			}
 			continue
 		}
-		h.registerString(reader, pointer, value)
+		registerHandoffString(reader, trees, pointer, value)
 	}
 }
 
-// registerString registers the text value holds under pointer, when value is a JSON string.
-func (h *handoffRead) registerString(reader *displayTreeReader, pointer string, value json.RawMessage) {
+// registerHandoffString registers the text value holds to fill *trees under pointer, when value is
+// a JSON string.
+func registerHandoffString(reader *displayTreeReader, trees *map[string]model.DisplayTree, pointer string, value json.RawMessage) {
 	if len(value) == 0 || value[0] != '"' {
 		return
 	}
 	var text string
 	if json.Unmarshal(value, &text) == nil {
-		h.registerText(reader, pointer, text)
+		registerHandoffText(reader, trees, pointer, text)
 	}
 }
 
-// registerText registers text to fill FieldTrees under pointer. A map's values have no address,
-// so the tree is handed over rather than pointed at (displayTreeReader.textInto).
-func (h *handoffRead) registerText(reader *displayTreeReader, pointer, text string) {
+// registerHandoffText registers text to fill *trees under pointer. A map's values have no
+// address, so the tree is handed over rather than pointed at (displayTreeReader.textInto).
+func registerHandoffText(reader *displayTreeReader, trees *map[string]model.DisplayTree, pointer, text string) {
 	reader.textInto(func(tree json.RawMessage) {
-		if h.FieldTrees == nil {
-			h.FieldTrees = make(map[string]model.DisplayTree)
+		if *trees == nil {
+			*trees = make(map[string]model.DisplayTree)
 		}
-		h.FieldTrees[pointer] = model.DisplayTree(tree)
+		(*trees)[pointer] = model.DisplayTree(tree)
 	}, text)
 }
 

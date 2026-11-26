@@ -285,8 +285,9 @@ var (
 	// is sent as stored.
 	openAPILegionWaitingOn = map[string]any{
 		"type": "object",
-		"description": "what the issue waits on from a person, in the shape GET " +
-			"/api/v1/issues/{key}/legion answers it",
+		"description": "what the issue waits on from a person - a question of its tree still with a " +
+			"person (an ask), or a document version no person has reviewed (a gate) - with when the wait " +
+			"began and, once it was answered, when and how",
 		"properties": map[string]any{
 			"kind": map[string]any{
 				"type":        "string",

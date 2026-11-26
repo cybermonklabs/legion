@@ -206,7 +206,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Query:       agentArtifactsV2Query{},
 			Shape:       routeShape{Status: http.StatusOK, Response: page[artifactV2]{}},
 			Authorities: []authorityRule{agentArtifactListAuthority},
-			Refusals: listRefusals(sessionIDMalformedRefusal,
+			Refusals: listRefusals(sessionIDMalformedRefusal, actingSessionMismatchRefusal,
 				apicode.Refusal{Condition: apicode.AgentArtifactListWithoutPersonScope, Code: apicode.OAuthScopeRequired}),
 		},
 		{
