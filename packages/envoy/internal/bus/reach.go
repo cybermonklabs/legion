@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 // AllowRemoteEnvVar names the variable a run sets to "1" to reach a NATS server that is not this
@@ -28,11 +30,19 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 // ErrRemoteNATS is what a connect refuses a NATS server this machine does not run with.
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
-// refuseRemoteNATS reports the first url naming another machine, unless the run opted in through
-// lookup (the connect's environment, WithEnvironment). An empty urls is nats.go's own default,
-// this machine's server, and passes. A set SOCKS5ProxyEnvVar is remote reach whatever the URLs
-// say: the proxy chooses the server a connection reaches, so a loopback URL no longer names this
-// machine's.
+// refuseRemoteNATS reports the first of urls, the list as it was configured, that names another
+// machine, unless the run opted in through lookup (the connect's environment, WithEnvironment). An
+// empty urls is nats.go's own default, this machine's server, and passes, and so does a blank
+// entry, which the connect drops (natsurl.Check). A set SOCKS5ProxyEnvVar is remote reach whatever
+// the URLs say: the proxy chooses the server a connection reaches, so a loopback URL no longer
+// names this machine's.
+//
+// The refusal names the URL by its position in urls alone (`NATS server URL 2 of 3`), never by any
+// of its text, and so does every line the bus logs about a server (serverOf, natsconn.ConnectionClass). A
+// caller splits its list on commas, so a token or password holding ",nats://" (or tls, ws or wss)
+// leaves its head a URL of its own, whose host is a piece of the credential: natsurl's tail rule
+// lets such a list through, since a later URL that carries a user name and names a NATS scheme is
+// one a person writes, and nothing that reads the head can tell it from a host.
 func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 	if allow, _ := lookup(AllowRemoteEnvVar); allow == "1" {
 		return nil
@@ -41,13 +51,26 @@ func refuseRemoteNATS(urls []string, lookup func(string) (string, bool)) error {
 		// Not the value: a proxy can be written with credentials, and this refusal is logged.
 		return fmt.Errorf("%w: %s is set, which sends every connection through a proxy that chooses the server (set %s=1 to reach it)", ErrRemoteNATS, SOCKS5ProxyEnvVar, AllowRemoteEnvVar)
 	}
-	for _, raw := range urls {
-		if LocalNATSURL(raw) {
+	for index, raw := range urls {
+		if strings.TrimSpace(raw) == "" || LocalNATSURL(raw) {
 			continue
 		}
-		return fmt.Errorf("%w: %s (set %s=1 to reach it)", ErrRemoteNATS, NATSURLWithoutUserinfo(raw), AllowRemoteEnvVar)
+		return fmt.Errorf("%w: NATS server URL %d of %d names another machine (set %s=1 to reach it)", ErrRemoteNATS, index+1, len(urls), AllowRemoteEnvVar)
 	}
 	return nil
+}
+
+// checkedNATSURLs is urls trimmed, the list Dial and newClient dial, or a refusal naming by its
+// position the first URL nats.go would read other than as written (natsurl.Check), before any
+// dial: refuseRemoteNATS reads no URL of a run that may reach remote NATS, so this reads them for
+// every run. nats.go would refuse such a URL with url.Parse's error, which quotes it whole, after
+// the connect's ten attempts, or dial a credential's head as a host name and log it.
+func checkedNATSURLs(urls []string) ([]string, error) {
+	trimmed, position, why := natsurl.Check(urls)
+	if why != "" {
+		return nil, fmt.Errorf("bus: NATS server URL %d of %d cannot be read: %s", position, len(urls), why)
+	}
+	return trimmed, nil
 }
 
 // LocalNATSURL reports whether raw names a server on this machine. It reads the URL and never

@@ -1240,7 +1240,9 @@ const publishDedupePrefix = "publish."
 // passes keep: false, which keeps nothing and answers 404 unclaimed or holder_lapsed. It is read by
 // this route's give-up alone (roleSend.noHolder) and rides no envelope, which travels on to the
 // holder and back in the answer. A role token no claim can name keeps nothing either, which the
-// keep itself refuses, for this route and the role lane alike (keepForNextHolder).
+// keep itself refuses, for this route and the role lane alike (keepForNextHolder), and neither does
+// a send that names no source session, whose copy's expiry no dead letter could report
+// (roleSend.keepTellsNobody): both are answered that 404.
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()

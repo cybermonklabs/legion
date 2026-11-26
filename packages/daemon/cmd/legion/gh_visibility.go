@@ -82,7 +82,7 @@ func answerVisibilityRead(ctx context.Context, repo ghrepo.Repository, stdout, s
 		return status
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		printGhRefusal(stderr, err)
 		return 1
 	}
 	fmt.Fprintln(stdout, visibility)

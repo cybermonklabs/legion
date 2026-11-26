@@ -674,7 +674,7 @@ func TestRoleHolderStateIsNamedByEachRoutesAnswer(t *testing.T) {
 				return httptest.NewRequest(
 					http.MethodPost,
 					"/v1/messages/publish",
-					strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+					strings.NewReader(`{"topic":"notifications.role.reviewer","source_session":"ses_role_state_sender","message":"please review"}`),
 				)
 			},
 			handler: func(d *listenerDeps) http.Handler {
@@ -1314,7 +1314,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		}
 
 		recorder := httptest.NewRecorder()
-		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.unheld","message":"please review"}`))
+		request := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.role.unheld","source_session":"ses_holder_only_sender","message":"please review"}`))
 		handler.ServeHTTP(recorder, request)
 		if recorder.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, want 202 for a kept message; body = %s", recorder.Code, recorder.Body.String())
@@ -1373,7 +1373,7 @@ func TestPublishHandler_ReportsRoleHolderOnlyWhenLive(t *testing.T) {
 		handler.ServeHTTP(publishRecorder, httptest.NewRequest(
 			http.MethodPost,
 			"/v1/messages/publish",
-			strings.NewReader(`{"topic":"notifications.role.reviewer","message":"please review"}`),
+			strings.NewReader(`{"topic":"notifications.role.reviewer","source_session":"ses_holder_only_sender","message":"please review"}`),
 		))
 		// A claim whose holder is not live is kept for, as a role nobody claims is: the copy
 		// waits on the role's kept lane for the next session that holds the role live, and the

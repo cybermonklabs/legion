@@ -175,6 +175,7 @@ readonly lapsed_role_response_file="${out_dir}/lapsed-role-response.json"
 readonly lapsed_role_lookup_response_file="${out_dir}/lapsed-role-lookup-response.json"
 readonly lapsed_role_reclaim_response_file="${out_dir}/lapsed-role-reclaim-response.json"
 readonly keep_false_role_response_file="${out_dir}/keep-false-role-response.json"
+readonly sessionless_role_response_file="${out_dir}/sessionless-role-response.json"
 readonly listener_log_file="${out_dir}/listener.log"
 readonly session_log_file="${out_dir}/session.log"
 readonly subscriber_log_file="${out_dir}/subscriber.log"
@@ -1053,13 +1054,14 @@ wait_for_unregistered() {
 
 # Window (i): nobody holds the role. The publish is answered 202 with the envelope the listener
 # kept, kept true and kept_reason unclaimed, on the role topic it was sent to — not the 404 every
-# sender needed a fallback of its own for.
+# sender needed a fallback of its own for. It names a sender session, which is where the listener
+# sends the dead letter of a kept copy no session takes within its hour.
 printf 'publishing to a role nobody holds\n'
 role="e2e-reviewer"
 unheld_status="$(curl -sS -o "$unheld_role_response_file" -w '%{http_code}' \
   -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/messages/publish" \
-  -d "{\"topic\":\"notifications.role.${role}\",\"message\":\"Role delivery.\"}")"
+  -d "{\"topic\":\"notifications.role.${role}\",\"source_session\":\"e2e-sender\",\"message\":\"Role delivery.\"}")"
 if [[ "$unheld_status" != 202 ]] || ! jq -e --arg role "$role" \
   '.kept == true and .kept_reason == "unclaimed" and .topic == ("notifications.role." + $role) and (.event_id | length) > 0' \
   "$unheld_role_response_file" >/dev/null; then
@@ -1077,6 +1079,29 @@ jq -e --arg session_id "$session_id" '.session_id == $session_id' "$role_claim_r
   exit 1
 }
 wait_for_kept_delivery 'unclaimed-role window' "$unheld_event_id"
+
+# A publish that names no sender session is not kept: a kept copy no session took within its hour
+# would expire with no notice to anyone, so the listener refuses it at once with the 404 a keep
+# false publish gets, its error saying why, and records it under its own outcome. The body is an
+# exact object, so a field that appears or goes is seen here.
+printf 'publishing to a role nobody holds, naming no sender session\n'
+sessionless_role="e2e-sessionless"
+sessionless_status="$(curl -sS -o "$sessionless_role_response_file" -w '%{http_code}' \
+  -X POST -H 'Content-Type: application/json' \
+  "${listener_url}/v1/messages/publish" \
+  -d "{\"topic\":\"notifications.role.${sessionless_role}\",\"message\":\"Sessionless role delivery.\"}")"
+if [[ "$sessionless_status" != 404 ]] || ! jq -e --arg role "$sessionless_role" \
+  '. == {error: ("no holder for role " + $role + "; nothing was kept, because the publish names no source_session: a kept copy that no session took within its hour would expire with no notice to its sender"), reason: "unclaimed", claim_revision: 0}' \
+  "$sessionless_role_response_file" >/dev/null; then
+  printf 'ERR: a publish naming no sender session to a role nobody holds answered HTTP %s, not the 404 that says nothing was kept and why.\n' \
+    "$sessionless_status" >&2
+  cat "$sessionless_role_response_file" >&2
+  exit 1
+fi
+wait_for_listener_record 'sessionless role publish' \
+  '.msg == "listener publish" and .level == "WARN" and .outcome == "role_no_source_session" and .status == 404
+   and .topic == ("notifications.role.e2e-sessionless") and .source_session == ""
+   and .payload_summary == "Sessionless role delivery."'
 
 # The control for the kept window above, on the same route and the same unheld state: a sender
 # that keeps its own queue asks for keep false and gets exactly today's refusal, and the listener
@@ -1156,7 +1181,7 @@ wait_for_unregistered
 lapsed_status="$(curl -sS -o "$lapsed_role_response_file" -w '%{http_code}' \
   -X POST -H 'Content-Type: application/json' \
   "${listener_url}/v1/messages/publish" \
-  -d "{\"topic\":\"notifications.role.${lapsed_role}\",\"message\":\"Lapsed-claim role delivery.\"}")"
+  -d "{\"topic\":\"notifications.role.${lapsed_role}\",\"source_session\":\"e2e-sender\",\"message\":\"Lapsed-claim role delivery.\"}")"
 if [[ "$lapsed_status" != 202 ]] || ! jq -e --arg session_id "$session_id" --arg role "$lapsed_role" \
   '.kept == true and .kept_reason == "holder_lapsed" and .holder == $session_id and .holder_state == "gone"
     and (.kept_until | type) == "number" and .kept_until > 0
