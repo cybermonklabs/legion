@@ -1090,11 +1090,13 @@ test("a landing owed on a row the reader cannot see parks the focus on the list'
   }
 });
 
-// INFRA-3135, round 29 (the architect's condition (c) of 2026-11-26 05:5xZ): the reader's own act
-// ends what is owed, and the focus must not be left standing on the mark of a row whose write is
-// still out - that row goes when the write lands, and the focus would fall to the page's body with
-// it. The list's own stop takes it at that moment, with no scroll, and nothing watches after it.
-test("a wheel of the reader's own takes the focus off the parked mark of a leaving row", async () => {
+// INFRA-3135, round 29 (the architect's condition (c) of 2026-11-26 05:5xZ), under the rule of
+// round 31 (the architect, 14:10Z): the focus must not be left to fall to the page's body with the
+// row of a write still out. A wheel of the reader's own moves no focus, so it leaves the focus on
+// the parked mark of a leaving row, and the landing stays owed: nothing moves and nothing scrolls
+// at the wheel, and the commit that takes the press's rows away makes the landing, on the row now
+// at their place. Before that rule the list's own stop took the focus at the wheel.
+test("a wheel of the reader's own leaves the focus on the parked mark of a leaving row, and the landing is made once the rows go", async () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
     <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
@@ -1108,18 +1110,21 @@ test("a wheel of the reader's own takes the focus off the parked mark of a leavi
       <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
     );
     expect(rowBox("CORE-13")).toHaveFocus();
+    const from = moves.focused.length;
     document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
     // Read once the act's own handlers have run.
     await act(afterTask);
-    const list = screen.getByRole("list", { name: "Rows" });
-    expect(list).toHaveFocus();
-    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
+    expect(focusedName()).toBe("Select CORE-13");
+    expect(moves.focused.slice(from).map((move) => move.target.getAttribute("aria-label"))).toEqual(
+      []
+    );
     expect(moves.scrolled).toEqual([]);
-    // Nothing watches after it: the rows going now land nothing.
     view.rerender(
       <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
     );
-    expect(list).toHaveFocus();
+    expect(focusedName()).toBe("Select CORE-14");
+    expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+    expect(moves.scrolled).toEqual([]);
   } finally {
     moves.restore();
     answered();
@@ -1134,10 +1139,11 @@ function afterTask(): Promise<void> {
   return new Promise((settle) => setTimeout(settle, 0));
 }
 
-// INFRA-3135, round 29 (the architect's red team of 2026-11-26 07:3xZ, F2): the move of rule (c)
-// is read once the reader's act has been answered. A page's keymap on the window answers `j` by
-// moving the focus to the row after the one that holds it, so a move made before it, on the
-// document's capture, would leave it no row to start from: it would go to the list's first row.
+// INFRA-3135, round 29 (the architect's red team of 2026-11-26 07:3xZ, F2): where the reader's act
+// left the focus is read once the act has been answered, and nothing moves the focus before then.
+// A page's keymap on the window answers `j` by moving the focus to the row after the one that holds
+// it, so a move made before it, on the document's capture, would leave it no row to start from: it
+// would go to the list's first row.
 test("j from the parked mark of a leaving row moves the focus to the next row, not to the list's first", async () => {
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
@@ -1171,6 +1177,143 @@ test("j from the parked mark of a leaving row moves the focus to the next row, n
     window.removeEventListener("keydown", keymap);
     answered();
     disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+/** The page's keymap of `PlacedList`: `j` moves the focus to the mark of the row after the one in
+ *  hand, and `k` to the mark of the row before it. Answers the function that takes it off. */
+function stepKeys(): () => void {
+  const keymap = (event: KeyboardEvent) => {
+    const row = document.activeElement?.closest("[data-row]");
+    const to =
+      event.key === "j"
+        ? row?.nextElementSibling
+        : event.key === "k"
+          ? row?.previousElementSibling
+          : undefined;
+    to?.querySelector<HTMLElement>("input")?.focus();
+  };
+  window.addEventListener("keydown", keymap);
+  return () => window.removeEventListener("keydown", keymap);
+}
+
+// INFRA-3135, round 31 (the tester's red row of round 29, builds Jobs infra-3135-i-h7-b6rbn and
+// infra-3135-i-h2-lh6c2, and the architect's rule of 2026-11-26 14:10Z): the hand-off parks the
+// focus on the mark of the row marked last, and the reader's `j` moves it into the other row the
+// press is taking away. A focus left in a row that is going is no place the reader can keep, so the
+// landing stays owed, and once both rows have gone it is made on the row now at their place. Read
+// as the reader's act ending what was owed, the focus fell to the page's body with that row.
+test("j from the parked mark into another leaving row leaves the landing owed, and it is made once the rows have gone, never on the body", async () => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-12" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  const keys = stepKeys();
+  const moves = watchMoves();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-12" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(focusedName()).toBe("Select CORE-12");
+    await user.keyboard("j");
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-13");
+    view.rerender(
+      <PlacedList count={0} last="CORE-12" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(focusedName()).toBe("Select CORE-14");
+    expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    keys();
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The same rule where the rows go before the read: the reader's wheel leaves the focus on the
+// parked mark, and the commit that takes the press's rows away comes before that act has been
+// answered, so the focus falls to the page's body with the mark. Nothing lands before the read,
+// and the read finds the focus on the body because the control that held it went with its row,
+// which is none of the reader's doing: the landing is still owed, and is made then, on the row now
+// at their place.
+test("a wheel whose read comes after the press's rows have gone leaves the landing owed, and it is made at the read", async () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={2} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+  );
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-12", "CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(focusedName()).toBe("Select CORE-13");
+    document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(document.body).toHaveFocus();
+    await act(afterTask);
+    expect(focusedName()).toBe("Select CORE-14");
+  } finally {
+    answered();
+    disarm();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The same rule's other side: an act of the reader's that leaves the focus on a control that
+// stays - the mark of a row the press is not taking away, or a control outside the list - or on
+// the page's body by their own doing ends what is owed, and the focus stays where they put it once
+// the press's rows have gone. A landing still owed would take it to the row now at their place.
+test.each([
+  ["k to the row before the parked mark", "Select CORE-12"],
+  ["a click on a control outside the list", "Search"],
+  ["a click on a blank part of the page", "the page's body"],
+] as const)("%s ends what is owed, and the focus stays there once the rows have gone", async (what, stays) => {
+  const user = userEvent.setup();
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(
+    <PlacedList count={1} last="CORE-13" leaving={["CORE-13"]} listed={PLACED_KEYS} />
+  );
+  const outside = render(<button aria-label="Search" type="button" />);
+  const keys = stepKeys();
+  let answered: () => void = () => undefined;
+  try {
+    pressInBar("Dismiss");
+    answered = holdHandOff();
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" leaving={["CORE-13"]} listed={PLACED_KEYS} />
+    );
+    expect(focusedName()).toBe("Select CORE-13");
+    if (what === "k to the row before the parked mark") await user.keyboard("k");
+    else if (what === "a click on a control outside the list") {
+      await user.click(screen.getByRole("button", { name: "Search" }));
+    } else await user.click(document.body);
+    await act(afterTask);
+    /** Where the focus stands: the name of what holds it, or the page's body. */
+    const standing = () =>
+      document.activeElement === document.body ? "the page's body" : focusedName();
+    expect(standing()).toBe(stays);
+    view.rerender(<PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-13")} />);
+    expect(standing()).toBe(stays);
+  } finally {
+    keys();
+    answered();
+    disarm();
+    outside.unmount();
     view.unmount();
     laidOut();
   }
@@ -1248,11 +1391,13 @@ test("Shift+Tab from the parked mark of a leaving row goes to the row before it,
   }
 });
 
-// INFRA-3135, round 29 (N2b): Space ticks a checkbox at its keyup, when the reader lets the key go,
-// a task or more after its keydown. Where the focus stands after a key is read once that key's own
-// keyup has been answered, so Space on the parked mark of a leaving row ticks that mark, and only
-// then does the list's own stop take the focus, with no scroll.
-test("Space on the parked mark of a leaving row ticks it, and only then does the list's own stop take the focus", async () => {
+// INFRA-3135, round 29 (N2b), under the rule of round 31 (the architect, 14:10Z): Space ticks a
+// checkbox at its keyup, when the reader lets the key go, a task or more after its keydown. Where
+// the focus stands after a key is read once that key's own keyup has been answered, so Space on the
+// parked mark of a leaving row ticks that mark and leaves the focus on it. The landing stays owed,
+// with nothing moved and nothing scrolled, and the commit that takes the press's rows away makes
+// it. Before that rule the list's own stop took the focus at the keyup.
+test("Space on the parked mark of a leaving row ticks it, and the landing is made once the rows go", async () => {
   const user = userEvent.setup();
   const laidOut = layRowsOut("[data-row]", 9);
   const view = render(
@@ -1271,14 +1416,22 @@ test("Space on the parked mark of a leaving row ticks it, and only then does the
     // What held the focus as the mark was ticked.
     const tickedOn: (string | null)[] = [];
     mark.addEventListener("change", () => tickedOn.push(focusedName()));
+    const from = moves.focused.length;
     await user.keyboard("[Space>]");
     await act(afterTask);
     await user.keyboard("[/Space]");
     await act(afterTask);
     expect(mark).toBeChecked();
     expect(tickedOn).toEqual(["Select CORE-13"]);
-    expect(focusedName()).toBe("Rows");
-    expect(moves.focused.at(-1)?.target.getAttribute("aria-label")).toBe("Rows");
+    expect(focusedName()).toBe("Select CORE-13");
+    expect(moves.focused.slice(from).map((move) => move.target.getAttribute("aria-label"))).toEqual(
+      []
+    );
+    expect(moves.scrolled.length).toBe(0);
+    view.rerender(
+      <PlacedList count={0} last="CORE-13" listed={without(PLACED_KEYS, "CORE-12", "CORE-13")} />
+    );
+    expect(focusedName()).toBe("Select CORE-14");
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
     expect(moves.scrolled.length).toBe(0);
   } finally {
