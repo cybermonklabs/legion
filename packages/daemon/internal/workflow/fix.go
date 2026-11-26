@@ -299,6 +299,9 @@ func (e *Engine) joinFix(ctx context.Context, tx pgx.Tx, pass *fixPass, state re
 // (refuseFixName), and every other fact of the issue goes on.
 func (e *Engine) openFix(ctx context.Context, tx pgx.Tx, pass *fixPass, check string, place int, failure record.CIFailure, row *record.CIFailure) error {
 	issue, w := pass.issue, pass.w
+	if owedMerge(pass.pr, pass.head) != nil {
+		return nil
+	}
 	latest, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil {
 		return err
