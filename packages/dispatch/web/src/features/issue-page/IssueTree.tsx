@@ -866,16 +866,18 @@ export function IssueTree({
     if (!readsSettled) return;
     // The question that waits on the reader, which the page opens on wherever the tree holds it,
     // whatever reads failed: the one it opened on, or the first in the outline's order where it
-    // has opened on none and has placed no first row. A tree drawn again zoomed to Focus
-    // branch's node opens on none (above). The outline is walked for it once a run at most, and
-    // only where it is read: on the way to the question or the first row, and where whether the
-    // opening goes to a Retry is decided (below).
+    // has opened on none and has placed no first row. A tree drawn zoomed - again on Focus
+    // branch's node, or opened at Graph's `/graph/<node id>` - opens on none, so the opening
+    // stays inside the branch rather than leaving the zoom for a question outside it (above).
+    // The outline is walked for it once a run at most, and only where it is read: on the way to
+    // the question or the first row, and where whether the opening goes to a Retry is decided
+    // (below).
     let waiting: { readonly id: string | undefined } | undefined;
     const waitingQuestion = (): string | undefined => {
       waiting ??= {
         id:
           held.question ??
-          (branchAtMount.current === undefined && held.placed === undefined
+          (branchAtMount.current === undefined && zoomAt === undefined && held.placed === undefined
             ? nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id
             : undefined),
       };
@@ -1005,7 +1007,7 @@ export function IssueTree({
       openingRow.current = undefined;
     });
     held.next = { frame, row };
-  }, [goToNode, readsSettled, retryLine, root, rootRow, rows, targetId, unfoldTo]);
+  }, [goToNode, readsSettled, retryLine, root, rootRow, rows, targetId, unfoldTo, zoomAt]);
 
   // A read can answer without the node whose row holds the focus - a comment deleted - and the
   // row then leaves the tree with the focus, which the browser drops to the page's body: the

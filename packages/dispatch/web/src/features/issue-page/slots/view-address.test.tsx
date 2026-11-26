@@ -627,7 +627,9 @@ test("a node address only Graph's read holds opens Graph at it on a cold load, a
 // R9, R15: Graph's read is the whole tree, the read most likely to answer in more than one page.
 // On a cold load of a node address Conversation's read holds none of, the body reads Graph's next
 // pages until one brings the node, as Graph's own address does, and decides only then: a plan
-// task on Graph's second page opens Graph's `?node=` at it, with the focus on its row.
+// task on Graph's second page opens Graph's `?node=` at it, with the focus on its row. A refused
+// next page of Graph on that cold load ends the reading and drops `?node=`, as a refused Graph
+// read does, since Conversation's address draws no Retry for Graph's pages.
 test("a node address only Graph's second page holds opens Graph at it on a cold load", async () => {
   // The task's id in the tree read, which the tree draws by its block's node id.
   const readId = `${KEY}/${PLAN_DOCUMENT.slug}#${PLAN_TASK}`;
@@ -789,6 +791,45 @@ test("Graph's address with an id no read holds opens with the focus where Graph'
     expect(focusedRow(), `${from} moved the first focus off the first row`).toBe("head-a");
     cleanup();
   }
+});
+
+// R10: `/graph/<node id>` opens Graph zoomed to that node, with the breadcrumb above it and only
+// that branch's rows drawn. Where the issue holds an open question outside the branch, the
+// opening stays inside the branch on its first row instead of leaving the zoom for the question.
+test("Graph's zoomed address keeps its zoom on an issue with an open question outside the branch", async () => {
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
+  answerTree([
+    ...commentNodes(TWO_THREADS),
+    treeNode(WAITING_QUESTION.id, "ask", KEY, { text: WAITING_QUESTION.question }),
+  ]);
+  const zoomed = `${presetPath(KEY, "graph")}/head-a`;
+  const view = render(
+    <MemoryRouter initialEntries={[zoomed]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={issueDetails()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  await rowTakesFocus(
+    view,
+    '[data-issue-body] [data-node-row][data-node-id="head-a"]',
+    `${zoomed}, the zoom's own row`
+  );
+  await waitInAct(50);
+  expect(
+    view.container.querySelector(`[data-crumb="${KEY}"]`),
+    `${zoomed} lost its breadcrumb`
+  ).not.toBeNull();
+  expect(
+    view.container.querySelector('[data-node-row][data-node-id="head-b"]'),
+    `${zoomed} drew a row outside the zoomed branch`
+  ).toBeNull();
+  expect(
+    view.container.querySelector(`[data-node-row][data-node-id="${WAITING_QUESTION.id}"]`),
+    `${zoomed} left the zoom for the open question outside it`
+  ).toBeNull();
+  expect(focusedRow(), `${zoomed} moved the focus off the zoomed branch`).toBe("head-a");
 });
 
 // Every entry the browser makes has the key "default". Under the Verification view a check keeps

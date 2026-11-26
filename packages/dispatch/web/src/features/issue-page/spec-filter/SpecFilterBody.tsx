@@ -185,8 +185,8 @@ export function SpecFilterBody({
   const spec = primarySpec(issue);
   const verification = roleDocument(issue, "verification");
   const coverageQuery = issueCoverageQuery(issue.key);
-  // The spec's blocks and the Verification document's are the tree read's (`useTreeRead`), so
-  // both lines read them under its key.
+  // The spec's blocks come from its view read and the Verification document's from the outline
+  // read (`useTreeRead`); `treeQuery` names the tree key both lines tell their refusal by.
   const treeQuery = issueTreeQuery(issue.key);
   const resultsQuery = issueResultsQuery(issue.key);
   const decisionsQuery = issueDecisionsQuery(issue.key, true);
@@ -1208,13 +1208,13 @@ function WholeOf({ decision }: { decision: SpecDecision }): ReactNode {
 /**
  * One statement: its bullet, its words with the chips it carries after the last of them, the
  * line naming the decision that shaped it, and its mark at the right of the row (R5, R6, R17,
- * R34). Its words are cut as an agent's are on every row of the page, at six lines where more
- * than 20 words would be hidden, with a row's own "more · N words" opening the rest in place
- * (`MoreWords`: a statement of twenty lines opened every view on a wall of text); the focused
- * statement draws them whole. The row draws its own box rather than `CutWords`, so its chips
- * stand after its last word while the words are whole, and beside "more" while they are cut, as
- * a row of the outline draws them, which `CutWords`, drawing its words and nothing after them,
- * cannot.
+ * R34). Its words are cut in the Spec view at six lines where more than 20 words would be
+ * hidden, with a row's own "more · N words" opening the rest in place (`MoreWords`: a statement
+ * of twenty lines opened the Spec view on a wall of text); the focused statement draws them
+ * whole. The outline itself draws every row's words whole without cutting (R11). The row draws
+ * its own box rather than `CutWords`, so its chips stand after its last word while the words
+ * are whole, and beside "more" while they are cut, which `CutWords`, drawing its words and
+ * nothing after them, cannot.
  */
 function Statement({
   context,
