@@ -546,10 +546,10 @@ func (made keepsFCopy) standsOn(fixDir, parent string, withFix bool) []string {
 	return problems
 }
 
-// frameOf is the frame the worker stream sends for an adoption the runtime was asked to make, as
+// keepsFFrame is the frame the worker stream sends for an adoption the runtime was asked to make, as
 // stream.Conn.AdoptWorkingCopy builds it: the identity the adoption names, the shim's bound, and
 // the adoption's members.
-func frameOf(t *testing.T, id string, call fake.Call) shimwire.AdoptWorkingCopy {
+func keepsFFrame(t *testing.T, id string, call fake.Call) shimwire.AdoptWorkingCopy {
 	t.Helper()
 	frame := shimwire.AdoptWorkingCopy{ID: id, JJUser: call.Identity.Name, JJEmail: call.Identity.Email,
 		TimeoutMs: int(keepsFAdoptTimeout.Milliseconds()), FixFrom: call.Adoption.FixFrom, MoveTo: call.Adoption.MoveTo,
@@ -658,7 +658,7 @@ func keepsFThroughARound(t *testing.T, tc keepsFCase) {
 	// yet; the fix commits fix.txt there, and at the round's ask pushes F with the commands the
 	// ask's text gives it. P is where origin then holds F.
 	before := g.pod(t, g.origin)
-	if problems := before.adoptInto(frameOf(t, "adopt-first", first)).standsOn(before.fixDir, g.head, false); len(problems) != 0 {
+	if problems := before.adoptInto(keepsFFrame(t, "adopt-first", first)).standsOn(before.fixDir, g.head, false); len(problems) != 0 {
 		t.Fatalf("the adoption before the fix's task, in the pod before the round: %s", strings.Join(problems, "; "))
 	}
 	if err := os.WriteFile(filepath.Join(before.fixDir, "fix.txt"), []byte("the fix\n"), 0o644); err != nil {
@@ -740,7 +740,7 @@ func keepsFThroughARound(t *testing.T, tc keepsFCase) {
 		if call.Adoption.FixFrom != g.head || call.Adoption.FixBranch != named || call.Adoption.MoveTo != "" {
 			t.Errorf("adoption %d names %+v, want the fix's working copy from %s on %q", i+1, call.Adoption, g.head, named)
 		}
-		frame := frameOf(t, fmt.Sprintf("adopt-%d", i+1), call)
+		frame := keepsFFrame(t, fmt.Sprintf("adopt-%d", i+1), call)
 		after := g.pod(t, g.origin)
 		parent, withFix := p, true
 		if tc.recorded {
