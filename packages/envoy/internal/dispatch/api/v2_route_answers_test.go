@@ -232,23 +232,38 @@ func TestAV2PriorityListCarriesEachDescriptionsTree(t *testing.T) {
 func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
 	tour := newRouteTour(t)
 	contract := newTourContract(t)
+	// recordHandoff records a handoff of phase on the issue key as tourRecipient, with body as its
+	// JSON text, and answers its id.
+	recordHandoff := func(t *testing.T, key, phase string, body map[string]any) string {
+		t.Helper()
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode the %s handoff body: %v", phase, err)
+		}
+		created := sessionRequest(t, tour.handler, http.MethodPost, "/api/v1/issues/"+key+"/handoffs/"+phase, map[string]any{
+			"actor": map[string]any{"kind": "session", "id": tourRecipient}, "body": string(encoded),
+		})
+		if created.Code != http.StatusCreated {
+			t.Fatalf("record the %s handoff: %d %s", phase, created.Code, created.Body.String())
+		}
+		return decodeBody[struct {
+			ID string `json:"id"`
+		}](t, created).ID
+	}
+	// fieldTrees decodes a field_trees member: each tree under its JSON Pointer.
+	fieldTrees := func(t *testing.T, raw json.RawMessage) map[string]any {
+		t.Helper()
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("decode the field_trees %s: %v", raw, err)
+		}
+		return decoded
+	}
 	issue := tour.issue(t)
-	body, err := json.Marshal(map[string]any{
+	id := recordHandoff(t, issue.Key, "implement", map[string]any{
 		"summary": "Shipped the **parser**.", "count": 3,
 		"proof": []any{"`go test ./...` passes.", map[string]string{"command": "go test"}},
 	})
-	if err != nil {
-		t.Fatalf("encode the handoff body: %v", err)
-	}
-	created := sessionRequest(t, tour.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/handoffs/implement", map[string]any{
-		"actor": map[string]any{"kind": "session", "id": tourRecipient}, "body": string(body),
-	})
-	if created.Code != http.StatusCreated {
-		t.Fatalf("record the handoff: %d %s", created.Code, created.Body.String())
-	}
-	id := decodeBody[struct {
-		ID string `json:"id"`
-	}](t, created).ID
 	alice := tourPerson("alice")
 	for _, read := range []struct {
 		name, pattern, v1, trees string
@@ -290,13 +305,7 @@ func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
 				t.Fatalf("GET %s with the header carries no %s", route.Pattern, read.trees)
 			}
 			want, _ := valueAt(t, treesRequest(t, tour.handler, read.v1, true), "field_trees")
-			var gotTrees, wantTrees map[string]any
-			if err := json.Unmarshal(got, &gotTrees); err != nil {
-				t.Fatalf("decode the /api/v2 field_trees %s: %v", got, err)
-			}
-			if err := json.Unmarshal(want, &wantTrees); err != nil {
-				t.Fatalf("decode the /api/v1 field_trees %s: %v", want, err)
-			}
+			gotTrees, wantTrees := fieldTrees(t, got), fieldTrees(t, want)
 			if _, summary := wantTrees["/summary"]; !summary || len(wantTrees) != 2 {
 				t.Fatalf("GET %s answers the field_trees %s, want the trees of /summary and /proof/0 alone", read.v1, want)
 			}
@@ -310,42 +319,19 @@ func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
 	// each row's own trees, and the phase's latest is version 2 alone, with version 2's trees.
 	t.Run("two versions of one phase and a handoff of another", func(t *testing.T) {
 		issue := tour.issue(t)
-		record := func(phase, summary string) string {
-			t.Helper()
-			body, err := json.Marshal(map[string]any{"summary": summary})
-			if err != nil {
-				t.Fatalf("encode the handoff body: %v", err)
-			}
-			created := sessionRequest(t, tour.handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/handoffs/"+phase, map[string]any{
-				"actor": map[string]any{"kind": "session", "id": tourRecipient}, "body": string(body),
-			})
-			if created.Code != http.StatusCreated {
-				t.Fatalf("record the %s handoff: %d %s", phase, created.Code, created.Body.String())
-			}
-			return decodeBody[struct {
-				ID string `json:"id"`
-			}](t, created).ID
-		}
-		first := record("implement", "Wrote the **parser**.")
-		second := record("implement", "Shipped the _parser_.")
-		review := record("review", "Read the `parser`.")
-		trees := func(raw json.RawMessage) map[string]any {
-			t.Helper()
-			var decoded map[string]any
-			if err := json.Unmarshal(raw, &decoded); err != nil {
-				t.Fatalf("decode the field_trees %s: %v", raw, err)
-			}
-			return decoded
-		}
+		first := recordHandoff(t, issue.Key, "implement", map[string]any{"summary": "Wrote the **parser**."})
+		second := recordHandoff(t, issue.Key, "implement", map[string]any{"summary": "Shipped the _parser_."})
+		review := recordHandoff(t, issue.Key, "review", map[string]any{"summary": "Read the `parser`."})
 		v1Trees := map[string]map[string]any{}
 		for _, id := range []string{first, second, review} {
 			raw, _ := valueAt(t, treesRequest(t, tour.handler, "/api/v1/handoffs/"+id, true), "field_trees")
-			v1Trees[id] = trees(raw)
+			v1Trees[id] = fieldTrees(t, raw)
 			if _, summary := v1Trees[id]["/summary"]; !summary {
 				t.Fatalf("GET /api/v1/handoffs/%s answers the field_trees %s, want the tree of /summary", id, raw)
 			}
 		}
-		if reflect.DeepEqual(v1Trees[first], v1Trees[second]) || reflect.DeepEqual(v1Trees[second], v1Trees[review]) {
+		if reflect.DeepEqual(v1Trees[first], v1Trees[second]) || reflect.DeepEqual(v1Trees[first], v1Trees[review]) ||
+			reflect.DeepEqual(v1Trees[second], v1Trees[review]) {
 			t.Fatalf("the three handoffs' /api/v1 field_trees are not each their own: %v", v1Trees)
 		}
 		route := tour.requireMounted(t, http.MethodGet, "/issues/{key}/handoffs")
@@ -373,7 +359,7 @@ func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
 				t.Fatalf("GET %s?include=body lists the handoff %s, want each of %s, %s and %s once", route.Pattern, item.ID, first, second, review)
 			}
 			listed[item.ID] = true
-			if got := trees(item.FieldTrees); !reflect.DeepEqual(got, want) {
+			if got := fieldTrees(t, item.FieldTrees); !reflect.DeepEqual(got, want) {
 				t.Errorf("GET %s?include=body answers handoff %s's field_trees %s, want those GET /api/v1/handoffs/%s answers: %v",
 					route.Pattern, item.ID, item.FieldTrees, item.ID, want)
 			}
@@ -387,7 +373,7 @@ func TestAV2HandoffReadCarriesTheFieldTreesOfItsV1Read(t *testing.T) {
 			t.Fatalf("GET %s?phase=implement&sort=-version&limit=1&include=body answers %+v, want version 2 (%s) alone", route.Pattern, latest, second)
 		}
 		raw, _ := valueAt(t, treesRequest(t, tour.handler, "/api/v1/issues/"+issue.Key+"/handoffs/implement/latest", true), "field_trees")
-		if got, want := trees(latest[0].FieldTrees), trees(raw); !reflect.DeepEqual(got, want) || !reflect.DeepEqual(want, v1Trees[second]) {
+		if got, want := fieldTrees(t, latest[0].FieldTrees), fieldTrees(t, raw); !reflect.DeepEqual(got, want) || !reflect.DeepEqual(want, v1Trees[second]) {
 			t.Errorf("the phase's latest answers the field_trees %s, want version 2's, those GET /api/v1/issues/%s/handoffs/implement/latest answers: %s",
 				latest[0].FieldTrees, issue.Key, raw)
 		}

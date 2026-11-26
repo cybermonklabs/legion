@@ -345,6 +345,64 @@ describe("the words a dispatch write that may have landed prints", () => {
     expect(text).toBe("ISSUE_CLOSED: DSP-1 is closed");
   });
 
+  /** `dispatch api --method <method> --path /api/v1/issues/DSP-1/comments`: one request through
+   *  `sendRoute`, which carries no key and is sent once. */
+  const api = (url: string, method: string) =>
+    printed(url, "dispatch_api", {
+      path: "/api/v1/issues/DSP-1/comments",
+      method,
+      ...(method === "DELETE" ? {} : { body: '{"body":"Shipped."}' }),
+    });
+  const API_ROUTE = "/api/v1/issues/DSP-1/comments";
+
+  // dispatch api's write goes through the same #send as a PUT: any method but GET that Dispatch
+  // answers with its own 5xx, or whose connection drops once it went out, may have taken effect.
+  for (const method of ["POST", "PATCH", "PUT", "DELETE"]) {
+    test(`dispatch api's ${method} Dispatch answers 500 may or may not have taken effect`, async () => {
+      const dispatch = await dispatchOn(false, () => internal);
+
+      const text = await api(dispatch.url, method);
+
+      expect(dispatch.requests).toEqual([`${method} ${API_ROUTE}`]);
+      expect(text).toBe(
+        `INTERNAL: the write failed (its only attempt), and ${DISPATCH_FAILED}${CHECK_FIRST}`
+      );
+    });
+
+    test(`dispatch api's ${method} whose connection drops may or may not have taken effect`, async () => {
+      const dispatch = await dispatchOn(false, () => "drop");
+
+      const text = await api(dispatch.url, method);
+
+      expect(dispatch.requests).toEqual([`${method} ${API_ROUTE}`]);
+      expect(text).toStartWith(
+        `${method} ${dispatch.url}${API_ROUTE} failed on its last attempt (Dispatch at ${dispatch.url} is unreachable: `
+      );
+      expect(text).toEndWith(
+        `. ${MOVED_HINT}) (its only attempt), and an attempt of the write may have reached ` +
+          `Dispatch, so it may or may not have taken effect${CHECK_FIRST}`
+      );
+    });
+  }
+
+  test("dispatch api's write Dispatch refuses prints the refusal alone", async () => {
+    const dispatch = await dispatchOn(false, () => closed);
+
+    const text = await api(dispatch.url, "POST");
+
+    expect(dispatch.requests).toEqual([`POST ${API_ROUTE}`]);
+    expect(text).toBe("ISSUE_CLOSED: DSP-1 is closed");
+  });
+
+  test("dispatch api's GET Dispatch answers 500 prints none of the words", async () => {
+    const dispatch = await dispatchOn(false, () => internal);
+
+    const text = await printed(dispatch.url, "dispatch_api", { path: API_ROUTE });
+
+    expect(dispatch.requests).toEqual([`GET ${API_ROUTE}`]);
+    expect(text).toBe("INTERNAL: the write failed");
+  });
+
   // A read that gets no answer says the server is unreachable, and nothing of a write.
   test("a read whose connection drops names the server as unreachable", async () => {
     const dispatch = await dispatchOn(true, () => "drop");

@@ -31,7 +31,7 @@ import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { UPLOAD_MATRIX_NAMES, UPLOAD_MATRIX_PATHS } from "../../test/upload-type-matrix";
-import { gatedWrite } from "../askgate-marker";
+import { gatedWrite, uploadIsDocument } from "../askgate-marker";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import { linkFor } from "../dispatch-commands/links";
@@ -11945,9 +11945,10 @@ describe("executeDispatchTool", () => {
   // text/markdown whatever its path; a name with any other extension goes up as that extension's
   // type whatever its path, so cases.txt sent from cases.md is a file of the bytes as written; only
   // a name with no extension keeps the path's type, so a Markdown path under a plain title is still
-  // a document. A trailing extension of digits alone is a version or a date, not a type:
-  // rows.jsonl.1 reads as .jsonl, and Plan v1.2 has no extension. The stub stores each upload as
-  // the server's artifactKind does, and the answer names the kind it stored.
+  // a document. A name's trailing extension of digits alone is a version or a date, not a type:
+  // rows.jsonl.1 reads as .jsonl, and Plan v1.2 has no extension. A path skips no such extension,
+  // so plan.md.1 under a name with no extension is a file. The stub stores each upload as the
+  // server's artifactKind does, and the answer names the kind it stored.
   describe("the kind an upload is stored as", () => {
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
     const sha256 = (bytes: ArrayBuffer | Uint8Array) =>
@@ -12196,6 +12197,31 @@ describe("executeDispatchTool", () => {
         if (held !== markdown) parted.push({ name, path: sent, held, declared });
       }
       expect(parted).toEqual([]);
+    });
+
+    // INFRA-4071 R15, review 6073450576: the digits rule reads the name alone. A name with no
+    // extension takes its path's type, and the path counts only when it ends in .md or .markdown
+    // (MARKDOWN_PATH, askgate-marker.ts), which plan.md.1 does not: sent under `a` or `plan`, it is
+    // a file, which AskGate does not hold as a document either.
+    test("a name with no extension sent from plan.md.1 is a file: the path skips no digits", async () => {
+      const notes = text("# Notes\n");
+      for (const name of ["a", "plan"]) {
+        for (const gated of [false, true]) {
+          const cwd = makeDirectory();
+          writeFileSync(path.join(cwd, "plan.md.1"), notes);
+          expect(uploadIsDocument({ name, path: "plan.md.1" }, cwd)).toBe(false);
+          expect(
+            gatedWrite("dispatch_artifact", { issue: "DSP-42", name, path: "plan.md.1" }, cwd)
+          ).toBe(false);
+          expect(await uploadFrom(cwd, name, "plan.md.1", notes, gated)).toEqual({
+            declared: ["application/octet-stream"],
+            sent: [sha256(notes)],
+            text:
+              `Uploaded ${name} as version 1, a file ` +
+              `(kind file; artifact slug ${name}; dispatch://DSP-42/artifact/${name})`,
+          });
+        }
+      }
     });
 
     // The names and paths are the tester's matrix (test/upload-type-matrix.ts), which AskGate's
@@ -12588,7 +12614,7 @@ describe("executeDispatchTool", () => {
         }) as unknown as typeof fetch,
       })
     ).rejects.toThrow(
-      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`
+      `${JSON.stringify(name)} is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`
     );
     expect(requests).toEqual([]);
   });
@@ -12964,8 +12990,8 @@ describe("executeDispatchTool", () => {
         " stores the file as its bytes, unchanged, under a name whose extension is not .md or" +
         " .markdown, whatever the path, and under a name with no extension when the path does not" +
         " end in .md or .markdown (a name whose extension is .md or .markdown makes the upload" +
-        " Markdown whatever its path; trailing extensions of digits alone do not count, so" +
-        " rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension)." +
+        " Markdown whatever its path; a name's trailing extensions of digits alone do not" +
+        " count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension)." +
         "\n--- the text Dispatch stores ---\n- one\n" +
         "--- end of the text Dispatch stores ---",
     ]);

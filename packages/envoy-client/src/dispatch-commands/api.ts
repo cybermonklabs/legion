@@ -14,7 +14,8 @@
 // `sendRoute`), and once more only after Dispatch answers that the token it presented is not
 // live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
 // `Idempotency-Key`. A refusal is thrown as the client throws it, Dispatch's own error among
-// them, which the command prints and exits 1 on.
+// them, which the command prints and exits 1 on, and so is a write that may have taken effect,
+// which the client throws as a `DispatchWriteUnsettledError` (`#send` says which).
 //
 // A script and a job send it too: a broker token is bound to a key, so no script can send it as a
 // bearer. Where no host is found, as in a GitHub Actions job, the CLI reads Dispatch from the

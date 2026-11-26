@@ -267,18 +267,17 @@ export class DispatchCredentialEchoError extends DispatchServiceError {
  * Everything else — a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT`, a broken body, a 2xx that is no
  * answer of Dispatch's, a page, a 3xx, a refusal before the key claim, an answer echoing another
  * key, a credential failure, a transport failure after the request went out, a silence cut, the
- * deadline or the caller's stop — ends here. A PUT or a DELETE, which goes once with no key, ends
- * so too where it failed in transport after it went out, where the call's deadline ended it in
- * flight, or where Dispatch answered it with its own 5xx (`#send`). Dispatch's own 5xx is the
- * reason itself, since Dispatch sends one when a write fails, which can be after the write
- * committed. This is deliberately no `DispatchServiceError`, which a caller reads as a refusal
- * Dispatch decided. `last` (also the `cause`) is what ended it, so a caller still reads a 5xx's
- * code and status there. `key` is the `Idempotency-Key` every attempt of the write carried, each
- * attempt that may have landed as one identity: a resend under it, as that identity, is answered
- * from what Dispatch stored, never written twice; a PUT or a DELETE carries none. The message of
- * a keyed write always says Dispatch finishes an attempt it received, and that a resend is a new
- * command's, under a new key, so the write is to be read back first; a PUT's or a DELETE's says
- * to check whether it took effect before retrying it.
+ * deadline or the caller's stop — ends here. A write of `#send`'s (a PUT, a DELETE or
+ * `sendRoute`'s write), which goes once with no key, ends here too where `#send` says it may have
+ * taken effect. Dispatch's own 5xx is the reason itself, since Dispatch sends one when a write
+ * fails, which can be after the write committed. This is deliberately no `DispatchServiceError`,
+ * which a caller reads as a refusal Dispatch decided. `last` (also the `cause`) is what ended it,
+ * so a caller still reads a 5xx's code and status there. `key` is the `Idempotency-Key` every
+ * attempt of the write carried, each attempt that may have landed as one identity: a resend under
+ * it, as that identity, is answered from what Dispatch stored, never written twice; a write of
+ * `#send`'s carries none. The message of a keyed write always says Dispatch finishes an attempt it
+ * received, and that a resend is a new command's, under a new key, so the write is to be read
+ * back first; one of `#send`'s says to check whether it took effect before retrying it.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
@@ -292,8 +291,8 @@ export class DispatchWriteUnsettledError extends Error {
   constructor(
     readonly last: Error,
     readonly attempts: number,
-    /** The `Idempotency-Key` every attempt of the write carried; undefined for a PUT or a
-     *  DELETE, which carries none. */
+    /** The `Idempotency-Key` every attempt of the write carried; undefined for a write of
+     *  `#send`'s (a PUT, a DELETE or `sendRoute`'s write), which carries none. */
     readonly key: string | undefined,
     /**
      * What the write got, as the message's first clause, where `last` is no refusal that says it:
@@ -796,7 +795,7 @@ class WriteAttemptSilent extends Error {
 
 /**
  * The first clause of the `DispatchWriteUnsettledError` of a write whose last attempt failed on
- * the network after it went out, a keyed write's (`#endWrite`) and a PUT's or a DELETE's
+ * the network after it went out, a keyed write's (`#endWrite`) and one of `#send`'s
  * (`#sendOnce`) alike: the request, and the failure's own message, which for a transport failure
  * (`DispatchUnreachableError`) names the server, the failure's class and the advice for a moved
  * URL.
@@ -1678,11 +1677,8 @@ export class DispatchClient {
    *  the request's JSON body. Like `readRoute` it goes through one `#send`, skipping `#noRoute`,
    *  and answers as `readRoute` does: Dispatch's JSON, any other 2xx's body as it came, the
    *  refusal of a 2xx whose body holds a credential it presented, or Dispatch's refusal thrown,
-   *  but for a write Dispatch answered with its own 5xx, which can come after the write
-   *  committed, and one that got no answer once it went out: each is thrown as a
-   *  `DispatchWriteUnsettledError` of one attempt (`#send`). Two writes that got no answer are
-   *  thrown as they are (`#sendOnce`): one the caller's own stop aborted in flight, and one whose
-   *  transport failure reached no server (`reachedNothing`). It is no write of `#write`'s: it
+   *  but for a write that may have taken effect, which `#send` throws as a
+   *  `DispatchWriteUnsettledError` (its comment says which). It is no write of `#write`'s: it
    *  goes once, and once more only after Dispatch answers that the token it presented is not
    *  live (Dispatch authenticated nothing, so nothing ran), with no redirect followed and no
    *  `Idempotency-Key`, so a caller that repeats it decides that itself. */
@@ -2706,13 +2702,16 @@ export class DispatchClient {
    * of each presentation (`SentRequest`). Every other write (POST or PATCH) goes through
    * `#write` instead.
    *
-   * A PUT, a DELETE or `sendRoute`'s write is a write all the same, with no key to ask again
-   * under: one Dispatch answered with its own 5xx, which it sends when a write fails and which can
-   * come after the write committed, is a `DispatchWriteUnsettledError` of one attempt, as is one
-   * that got no answer once it went out, but for the two `#sendOnce` throws as they are (the
-   * caller's own stop in flight, and a transport failure that reached no server). A gateway's
-   * 5xx stays its `DispatchGatewayError`, whose advice already says the write may or may not have
-   * reached Dispatch.
+   * A PUT, a DELETE or `sendRoute`'s write (any method but GET, a POST or a PATCH among them) is
+   * a write all the same, with no key to ask again under, so each ending after which it may have
+   * taken effect is a `DispatchWriteUnsettledError` of one attempt and no key: Dispatch's own
+   * 5xx, which it sends when a write fails and which can come after the write committed, and no
+   * answer once the request went out (`#sendOnce`), where its transport failed after it went out
+   * or the call's deadline ended it in flight. Two endings with no answer are thrown as they are:
+   * the caller's own stop in flight, and a transport failure that reached no server
+   * (`reachedNothing`). A gateway's 5xx stays its `DispatchGatewayError`, whose advice already
+   * says the write may or may not have reached Dispatch. A GET is never unsettled: each of its
+   * endings is thrown as it came.
    */
   async #send(
     method: string,
@@ -2743,10 +2742,9 @@ export class DispatchClient {
 
   /** One request of `#send`'s (a read, a PUT, a DELETE or `sendRoute`'s write), presenting the
    *  credential for it, and the headers it presented; `signal` aborts it beside the client's own
-   *  signal. A write that got no answer once it went out may have reached Dispatch: where its
-   *  transport failed after it reached a server, or the call's deadline ended it in flight, it is a
-   *  `DispatchWriteUnsettledError` of one attempt, while a transport failure that reached no server
-   *  (`reachedNothing`) and the caller's own stop are thrown as they are. */
+   *  signal. A write that got no answer is thrown as `#send` says: as a
+   *  `DispatchWriteUnsettledError` of one attempt, naming the request and how it ended, or as
+   *  the failure itself. */
   async #sendOnce(
     method: string,
     url: string,

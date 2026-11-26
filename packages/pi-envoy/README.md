@@ -527,9 +527,11 @@ A `--path` upload is sent as the type its `--name` says. A name whose extension 
 stores a document. A name with any other extension is sent as that extension's type whatever the
 path, so `--name cases.txt --path cases.md` stores a file whose bytes are the file's. Only a name
 with no extension is sent as the path's type, so `--name 'Design notes' --path notes.md` stores a
-document. A trailing extension of digits alone does not count, so `Plan v1.2` has no extension
-and `rows.jsonl.1` has `.jsonl`. The answer names the kind Dispatch stored:
-`a document (kind doc; …)`, `a file (kind file; …)` or `a picture (kind image; …)`.
+document. A name's trailing extension of digits alone does not count, so `Plan v1.2` has no
+extension and `rows.jsonl.1` has `.jsonl`. A path skips no such extension: it must itself end in
+`.md` or `.markdown`, so `--name plan --path plan.md.1` stores a file. The answer names the kind
+Dispatch stored: `a document (kind doc; …)`, `a file (kind file; …)` or
+`a picture (kind image; …)`.
 
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.

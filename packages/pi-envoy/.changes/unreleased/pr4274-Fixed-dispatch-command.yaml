@@ -4,11 +4,12 @@ custom:
 body: |-
   The bundled `dispatch` command stores a `--path` upload under a `.md` or `.markdown` name as a
   document, and under a name with any other extension as a file of its bytes, whatever the path,
-  and names the kind Dispatch stored. A trailing extension of digits alone does not count
-  (`rows.jsonl.1` is stored as a file, `Plan v1.2` takes `--content`), and AskGate reviews an upload
-  by the same reading. AskGate reviews `--name notes.md/ --path notes.md` and `--name Plan --path
-  notes.md/` as the Markdown uploads they are. Every reading of an upload's name trims it as
-  Dispatch does, so a name that ends in U+0085 is refused over the document it would replace unless
-  `--force` is given, and AskGate judges only the asks the stored version does not hold. A write of
-  it that may have reached Dispatch says so and tells the caller to check before retrying, while a
-  refusal does not.
+  and names the kind Dispatch stored. A name's trailing extension of digits alone does not count
+  (`rows.jsonl.1` is stored as a file, `Plan v1.2` takes `--content`), while a path counts only when
+  it ends in `.md` or `.markdown` itself (`--name plan --path plan.md.1` stores a file), and AskGate
+  reviews an upload by the same reading. AskGate reviews `--name notes.md/ --path notes.md` and
+  `--name Plan --path notes.md/` as the Markdown uploads they are. Every reading of an upload's
+  name trims it as Dispatch does, so a name that ends in U+0085 is refused over the document it
+  would replace unless `--force` is given, and AskGate judges only the asks the stored version does
+  not hold. A write of it that may have reached Dispatch says so and tells the caller to check
+  before retrying, while a refusal does not.

@@ -3011,7 +3011,7 @@ func fileUnderRoleNameRefusal(target artifactTarget, kind, name string, found *m
 	// release's `--name plan.md --path plan.txt` back to this refusal as text/plain.
 	document := role + ".md"
 	return errorf(apicode.ArtifactRoleName,
-		"%q names the issue's %s document (%s), which holds Markdown: upload it as text/markdown (save it as %s and send it with dispatch artifact --name %s --path %s: a path ending in .md is sent as Markdown), or give this file another name",
+		"%q names the issue's %s document (%s), which holds Markdown: upload it as text/markdown (save it as %s and send it with dispatch artifact --name %s --path %s: its name and its path both end in .md, so every dispatch release sends it as Markdown), or give this file another name",
 		name, role, slug, document, document, document)
 }
 

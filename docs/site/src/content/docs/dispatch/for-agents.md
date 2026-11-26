@@ -13,10 +13,11 @@ them as given (before the call fills in an issue from `LEGION_ISSUE` or a ref). 
 nothing. `dispatch artifact` and its dry run refuse alike, with exit 1, a document's text past
 1 MiB, and one holding a NUL character or a byte that is not UTF-8, whether it is read from
 `--content-file`, from stdin (`--content-file -`) or from a Markdown `--path` file (one whose
-`--name` ends in `.md` or `.markdown`, whatever the path, or has no extension while the path ends
-in one of those; a trailing extension of digits alone, as in `plan.md.1`, does not count): once the
-flags are read, before the arguments are checked and before anything that needs Dispatch, so with
-Dispatch off too. Then the dry run asks Dispatch, as the call does.
+`--name` ends in `.md` or `.markdown`, whatever the path, where a trailing extension of digits alone
+in the name does not count, so the name `plan.md.1` reads as `.md`; or one whose `--name` has no
+extension while the path itself ends in `.md` or `.markdown`, which the path `plan.md.1` does
+not): once the flags are read, before the arguments are checked and before anything that needs
+Dispatch, so with Dispatch off too. Then the dry run asks Dispatch, as the call does.
 For text given inline, in `--content-file` or on stdin, it asks how Dispatch would store the
 text, and refuses a text that Dispatch would store under another spelling. For a Markdown `--path`
 file, it asks Dispatch to check the file's bytes, and never refuses their spelling. In both cases it
@@ -469,7 +470,10 @@ dead, and on an old build's "no route" during a rolling release. Such a `PUT` or
 in transport after it went out, reaches the command's deadline or gets Dispatch's own 5xx may or may
 not have taken effect too, and the command says so and to check whether it did before retrying it.
 `dispatch api`'s request, a write too, carries no key either: it goes once, and once more only after
-Dispatch calls the token it presented dead. The markdown round trip `dispatch artifact` asks before
+Dispatch calls the token it presented dead. Its write (any method but `GET`) that fails in transport
+after it went out, reaches the command's deadline or gets Dispatch's own 5xx may or may not have
+taken effect too, and the command says so: read what the write would have changed before you send
+it again. Its `GET` never ends that way. The markdown round trip `dispatch artifact` asks before
 it uploads inline text, and the search `dispatch related` runs, are `POST`s that store nothing: they
 are keyed and asked again like a write, but a failure of either is told as a read's, with none of
 those words. A script that calls the API directly can send its own key on any `POST`, `PATCH`, `PUT`

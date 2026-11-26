@@ -1210,7 +1210,7 @@ describe("the dispatch CLI", () => {
       expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch artifact was not called: 1 problem",
-        `- a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`,
+        `- a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores the file as its bytes, unchanged, under a name whose extension is not .md or .markdown, whatever the path, and under a name with no extension when the path does not end in .md or .markdown (a name whose extension is .md or .markdown makes the upload Markdown whatever its path; a name's trailing extensions of digits alone do not count, so rows.jsonl.1 reads as .jsonl and Plan v1.2 as no extension); a document takes a name whose extension is .md or .markdown, or one with no extension.`,
       ]);
     }
     expect(requests).toEqual([]);

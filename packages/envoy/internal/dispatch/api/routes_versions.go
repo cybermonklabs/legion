@@ -7,12 +7,14 @@ package api
 //   - A v1Row (v1Rows, routes_table.go) is a route of /api/v1 as it stood when /api/v2 began, at
 //     its literal /api/v1 pattern. Its facts stand beside the table in the side maps, keyed by
 //     "<method> <pattern>" (writeClasses, routeScopes, idRoutes, routeShapes, keyedReplays,
-//     answerHoldsSecret, keyedUploads) and in the pattern constants (issueUploadRoute, and the
-//     routes with a body limit of their own: handoffWriteRoute, markdownRoundTripRoute,
-//     fileRoundTripRoute), and it names the route that answers it under
-//     /api/v2 in its Successor. /api/v1 alone serves it, and testdata/v1-only-routes.txt holds
-//     every one of them: those rows go when /api/v1 ends, so they keep the keys every open route
-//     pull request names rather than being re-keyed.
+//     keyedRereads, answerHoldsSecret, keyedUploads), and in the pattern constants
+//     (issueUploadRoute, handoffWriteRoute, markdownRoundTripRoute, fileRoundTripRoute). The
+//     routes with a body limit of their own (routeBody) are the three uploads of keyedUploads,
+//     issueUploadRoute among them, and the routes of the other three constants; issueUploadRoute
+//     is also the v1Row that refuses a closed owner (RefusesClosedOwner). It names the route that
+//     answers it under /api/v2 in its Successor. /api/v1 alone serves it, and
+//     testdata/v1-only-routes.txt holds every one of them: those rows go when /api/v1 ends, so
+//     they keep the keys every open route pull request names rather than being re-keyed.
 //   - A routeRow (the v2<Group>Rows functions of the v2_<group>.go files) is a route written once,
 //     with a version-free pattern, and every fact a wrapper of register or a reader of the route
 //     reads is one of its named columns. It is served at /api/v2 and, unless its Versions says
