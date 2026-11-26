@@ -202,7 +202,8 @@ func describedArgs(jj, dir string) []string {
 // PATH without jj refuses naming jj and the PATH searched (openWorkspace).
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
-	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond)
+	// CONTROL COMMIT, never for merge: the adoption's budget is a tenth of the request's.
+	opened, done, err := s.openWorkspace("adopt", env, time.Duration(request.TimeoutMs)*time.Millisecond/10)
 	if err != nil {
 		return err
 	}
