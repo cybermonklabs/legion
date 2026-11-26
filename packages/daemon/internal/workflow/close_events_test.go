@@ -29,18 +29,25 @@ func TestEachEventJudgesTheCloseAgain(t *testing.T) {
 		closedOnChecks(t, rig, waitRoot)
 	})
 
+	// The echo of the daemon's own status write of a child that stays in the workflow: no leave, so
+	// only the Dispatch event's own read wakes the root above it.
 	t.Run("a recorded Dispatch child moves", func(t *testing.T) {
 		rig := newWaitRig(t, "")
 		rig.seedRoot(phase.Merging, "retro")
-		rig.seedChild(waitChild, phase.Admitted, "todo")
+		rig.seedChild(waitChild, phase.Implementing, "in_progress")
+		if _, err := rig.pool.Exec(t.Context(), "update issues set dispatch_status = 'todo' where key = $1", waitChild); err != nil {
+			t.Fatalf("record the status Dispatch showed before the daemon's write: %v", err)
+		}
 		rig.mergeRoot()
 		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "todo"}}, passing("c-after", waitRootMerge)))
 		rig.stands(waitRoot, phase.Verifying, "testing")
 		rig.ranOut(waitRoot, "close_read")
-		rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.updated", Status: "icebox", Title: waitChild, Parent: waitRoot, Rank: "V"})
+		rig.fact(intake.DispatchIssue{Key: waitChild, ResolvedRepo: waitRepo, Seq: 2, Type: "issue.updated", Status: "in_progress", Title: waitChild, Parent: waitRoot, Rank: "V"})
+		if got := rig.issue(waitChild).Phase; got != phase.Implementing {
+			t.Fatalf("the child stands at %s after the echo, want implementing: the fixture's own premise", got)
+		}
 		readsQueued(t, rig, 1)
-		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "icebox"}}, passing("c-after", waitRootMerge)))
-		closedOnChecks(t, rig, waitRoot)
+		rig.stands(waitRoot, phase.Verifying, "testing")
 	})
 
 	t.Run("an unrecorded filed child, at the controller's tick", func(t *testing.T) {

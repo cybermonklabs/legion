@@ -516,37 +516,50 @@ func TestTheWaitIsOneDocumentReplacedAtEachChange(t *testing.T) {
 }
 
 // The last child's leave queues one read of the checks of its root, which waits in verifying for
-// that child alone, and the root closes at that read, with no controller tick (M4). A child the
-// architect released that moves to icebox in Dispatch queues one read as well.
+// that child alone, and the root closes at that read, with no controller tick (M4). The child here
+// leaves by its own close on its checks, a leave no Dispatch event of the child brings, so only
+// the leave's own read can wake the root. A child that moves to icebox in Dispatch queues one read
+// as well.
 func TestTheLastChildsLeaveQueuesARead(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		name   string
-		status string
-	}{
-		{name: "the child is done", status: "done"},
-		{name: "the child moves to icebox", status: "icebox"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rig := newWaitRig(t, "")
-			rig.seedRoot(phase.Merging, "retro")
-			rig.seedChild(waitChild, phase.Implementing, "in_progress")
-			rig.mergeRoot()
-			rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "in_progress"}}, passing("c-after", waitRootMerge)))
-			if stored := rig.stored(waitRoot); len(stored.Beneath) != 1 || len(stored.Checks) != 0 || stored.Unread != nil {
-				t.Fatalf("the root's stored wait = %+v, want its child alone", stored)
-			}
-			rig.ranOut(waitRoot, "close_read")
+	t.Run("the child closes on its checks", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		rig.seedRoot(phase.Merging, "retro")
+		rig.seedChild(waitChild, phase.Merging, "retro")
+		rig.mergeRoot()
+		rig.mergeChild()
+		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "testing"}}, passing("c-after", waitRootMerge)))
+		if stored := rig.stored(waitRoot); len(stored.Beneath) != 1 || len(stored.Checks) != 0 || stored.Unread != nil {
+			t.Fatalf("the root's stored wait = %+v, want its child alone", stored)
+		}
+		rig.ranOut(waitRoot, "close_read")
 
-			rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.updated", Status: tc.status, Title: waitChild, Parent: waitRoot, Rank: "V"})
-			if got := rig.rows(waitRoot, "close_read"); got != 1 {
-				t.Fatalf("the root's close_read rows = %d, want one", got)
-			}
-			rig.stands(waitRoot, phase.Verifying, "testing")
-			rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: tc.status}}, passing("c-after", waitRootMerge)))
-			closedOnChecks(t, rig, waitRoot)
-		})
-	}
+		rig.read(waitChild, answerOf(waitChild, nil, passing("c-child", waitChildMerge)))
+		closedOnChecks(t, rig, waitChild)
+		if got := rig.rows(waitRoot, "close_read"); got != 1 {
+			t.Fatalf("the root's close_read rows after its child's close = %d, want one", got)
+		}
+		rig.stands(waitRoot, phase.Verifying, "testing")
+		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "done"}}, passing("c-after", waitRootMerge)))
+		closedOnChecks(t, rig, waitRoot)
+	})
+
+	t.Run("the child moves to icebox", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		rig.seedRoot(phase.Merging, "retro")
+		rig.seedChild(waitChild, phase.Implementing, "in_progress")
+		rig.mergeRoot()
+		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "in_progress"}}, passing("c-after", waitRootMerge)))
+		rig.ranOut(waitRoot, "close_read")
+
+		rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.updated", Status: "icebox", Title: waitChild, Parent: waitRoot, Rank: "V"})
+		if got := rig.rows(waitRoot, "close_read"); got != 1 {
+			t.Fatalf("the root's close_read rows = %d, want one", got)
+		}
+		rig.stands(waitRoot, phase.Verifying, "testing")
+		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "icebox"}}, passing("c-after", waitRootMerge)))
+		closedOnChecks(t, rig, waitRoot)
+	})
 }
 
 // A member of a lingering tree whose merge stood it in verifying closes on its checks there: the
