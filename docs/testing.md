@@ -683,11 +683,11 @@ ran it, it took at most 625 s there over the 49 green main `test` jobs of 2026-1
 `-race` it took up to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that
 sjawhar/legion#2709 measured, on main and on pull requests, and ran go test's own ten minutes out
 on main at job 125691048644 of run 41562777668; on a busy machine it took longer still (908 s under
-`-race` on a shared devbox). With the project release's tests the whole package took up to more
-than 1,980.274 s on 2026-11-20 (1,731.355 s at the least), against main's 1,409.674 s to
-1,475.337 s that day, past the `-timeout 30m` each of the three legs gives its group, about a third
-of the package. So a command that runs the whole package, alone or in a pattern that includes it,
-passes `-timeout 40m`, the 1,980.274 s plus 21% rounded up:
+`-race` on a shared devbox). With the project release's tests the whole package took 1,731.355 s to
+more than 1,980.274 s on 2026-11-20, against main's 1,409.674 s to 1,475.337 s that day; the slower
+of those runs pass 30 minutes, the `-timeout 30m` each of the three legs gives its group, about a
+third of the package. So a command that runs the whole package, alone or in a pattern that includes
+it, passes `-timeout 40m`, the 1,980.274 s plus 21% rounded up:
 
 ```sh
 cd packages/daemon

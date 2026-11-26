@@ -1622,9 +1622,12 @@ func exchangeIssuers(value, audience string, issuers []oidc.NamedIssuer) ([]oidc
 // exchangeIssuerForm says where an entry of BROKER_EXCHANGE_ACCOUNTS, of
 // BROKER_EXCHANGE_READ_ACCOUNTS or of BROKER_EXCHANGE_JOB_ACCOUNTS names its issuers, for the
 // refusals of an entry not of its setting's form and of the issuer names an entry gives: field is
-// the field that holds them, and sessionWithIssuers the form of an entry whose fixed session holds
-// "=", which is written with the issuer field after it.
-type exchangeIssuerForm struct{ field, sessionWithIssuers string }
+// the field that holds them, sessionWithIssuers the form of an entry whose fixed session holds
+// "=", which is written with the issuer field after it, and afterEmptySession where an entry
+// writes its issuers after an empty session, for the refusal of an entry that gives no issuer
+// field and whose session is only issuer names (exchangeEntryIssuers). A read entry, whose session
+// is required, makes no such refusal, so readIssuerForm has no afterEmptySession.
+type exchangeIssuerForm struct{ field, sessionWithIssuers, afterEmptySession string }
 
 // accountIssuerForm is the exchangeIssuerForm of a BROKER_EXCHANGE_ACCOUNTS entry, readIssuerForm
 // that of a BROKER_EXCHANGE_READ_ACCOUNTS entry, and jobIssuerForm that of a
@@ -1633,6 +1636,7 @@ var (
 	accountIssuerForm = exchangeIssuerForm{
 		field:              `an entry names its issuers in a fifth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "="`,
 		sessionWithIssuers: "<service account>=<project>=<person>=<session>=<issuer name>",
+		afterEmptySession:  "a fifth field, after an empty session, <service account>=<project>=<person>==<issuer names>",
 	}
 	readIssuerForm = exchangeIssuerForm{
 		field:              `an entry names its issuers in a fourth "="-separated field, after its session, which the broker reads after the entry's last "="`,
@@ -1641,6 +1645,7 @@ var (
 	jobIssuerForm = exchangeIssuerForm{
 		field:              `an entry names its issuers in a fourth "="-separated field, after its session field (empty for none), which the broker reads after the entry's last "="`,
 		sessionWithIssuers: "<service account>=<projects>=<session>=<issuer name>",
+		afterEmptySession:  "a fourth field, after an empty session, <service account>=<projects>==<issuer names>",
 	}
 )
 
@@ -1683,6 +1688,19 @@ func exchangeAccountIssuers(setting, text string, form exchangeIssuerForm, names
 		return nil, namesRefused(fmt.Errorf("%s names the issuer %q, which BROKER_EXCHANGE_K8S_ISSUER does not name, got %q", setting, name, text))
 	}
 	return taken, nil
+}
+
+// exchangeEntryIssuers is exchangeAccountIssuers' answer for the entry text of setting, whose
+// session is session, after refusing an entry that gives no issuer field and whose session is only
+// issuer names (sessionNamesIssuers), which it would write under as a session while taking the
+// first issuer alone: the refusal names the session the entry reads and says where its issuers go,
+// form.afterEmptySession. parseExchangeAccounts and parseExchangeJobAccounts share it, so both
+// settings refuse such an entry in the same words.
+func exchangeEntryIssuers(setting, text, session string, form exchangeIssuerForm, names []string, issuers, exchangeTakes []oidc.NamedIssuer) ([]string, error) {
+	if names == nil && sessionNamesIssuers(session, issuers) {
+		return nil, fmt.Errorf(`%s gives the entry %q no issuer field, so the entry reads %q, which names issuers of BROKER_K8S_OIDC_ISSUER, as its session: write its issuers in %s, or, for a session of that text, write the issuer field after it`, setting, text, session, form.afterEmptySession)
+	}
+	return exchangeAccountIssuers(setting, text, form, names, issuers, exchangeTakes)
 }
 
 // isDefaultServiceAccount reports whether subject is a namespace's default account, the one
@@ -2412,10 +2430,7 @@ func parseExchangeAccounts(setting, value string, issuers, exchangeTakes []oidc.
 			return nil, fmt.Errorf("%s names the service account %s twice; one account writes as one identity, so name it once", setting, fields[0])
 		}
 		seen[fields[0]] = true
-		if names == nil && sessionNamesIssuers(fields[3], issuers) {
-			return nil, fmt.Errorf(`%s gives the entry %q no issuer field, so the entry reads %q, which names issuers of BROKER_K8S_OIDC_ISSUER, as its session: write its issuers in a fifth field, after an empty session, <service account>=<project>=<person>==<issuer names>, or, for a session of that text, write the issuer field after it`, setting, text, fields[3])
-		}
-		taken, err := exchangeAccountIssuers(setting, text, accountIssuerForm, names, issuers, exchangeTakes)
+		taken, err := exchangeEntryIssuers(setting, text, fields[3], accountIssuerForm, names, issuers, exchangeTakes)
 		if err != nil {
 			return nil, err
 		}
@@ -2499,10 +2514,7 @@ func parseExchangeJobAccounts(setting, value string, issuers, exchangeTakes []oi
 	}
 	var entries []exchange.AccountEntry
 	for _, entry := range parsed {
-		if entry.names == nil && sessionNamesIssuers(entry.session, issuers) {
-			return nil, fmt.Errorf(`%s gives the entry %q no issuer field, so the entry reads %q, which names issuers of BROKER_K8S_OIDC_ISSUER, as its session: write its issuers in a fourth field, after an empty session, <service account>=<projects>==<issuer names>, or, for a session of that text, write the issuer field after it`, setting, entry.text, entry.session)
-		}
-		taken, err := exchangeAccountIssuers(setting, entry.text, jobIssuerForm, entry.names, issuers, exchangeTakes)
+		taken, err := exchangeEntryIssuers(setting, entry.text, entry.session, jobIssuerForm, entry.names, issuers, exchangeTakes)
 		if err != nil {
 			return nil, err
 		}

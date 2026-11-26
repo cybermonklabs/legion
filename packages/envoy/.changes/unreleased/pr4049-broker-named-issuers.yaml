@@ -89,3 +89,12 @@ body: |-
   exchange entry. The broker refuses to start, naming `BROKER_EXCHANGE_READ_ACCOUNTS`, the entry
   and `BROKER_EXCHANGE_K8S_ISSUER`, on a read entry that names an issuer that setting does not
   name, names one twice, or names none while that setting leaves out the first issuer.
+  A `BROKER_EXCHANGE_JOB_ACCOUNTS` entry names its issuers the same way, in a fourth `=`-separated
+  field after its session field (empty for none), `<service account>=<projects>==first,second`. A
+  job entry that names none takes the first issuer of the list alone, and a token of an issuer the
+  entry does not name is `400 invalid_request`. A job's pod enrolled with a token of an issuer its
+  entry does not name is given no list. The broker reads that field after the entry's last `=`, so
+  a fixed session that holds `=` is kept by naming the issuers in `BROKER_K8S_OIDC_ISSUER` and
+  writing `=<name>` after it, as for an exchange entry. The broker refuses to start, naming
+  `BROKER_EXCHANGE_JOB_ACCOUNTS` and the entry, on what it refuses of an exchange entry's issuer
+  field.

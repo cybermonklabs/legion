@@ -377,11 +377,11 @@ the pairs the broker read ([Health and logs](#health-and-logs)). A pair names no
 session name's holder is the account alone, whichever cluster's issuer signed its pod's token: it
 reaches a pod only with a token the broker took where the token came in, from an issuer
 `BROKER_K8S_OIDC_ISSUER` names at an enrollment and from one the account's own
-`BROKER_EXCHANGE_ACCOUNTS` entry names at the exchange, so on a broker of several clusters a pod
-of the new account enrolls under the paired name with a token of any issuer
-`BROKER_K8S_OIDC_ISSUER` names, while its exchange of a token its entry does not take is refused
-and takes no name. Moving a service's pods to another cluster while they
-keep their account needs no pair: they hold the same session names there.
+`BROKER_EXCHANGE_ACCOUNTS` or `BROKER_EXCHANGE_JOB_ACCOUNTS` entry names at the exchange, so on a
+broker of several clusters a pod of the new account enrolls under the paired name with a token of
+any issuer `BROKER_K8S_OIDC_ISSUER` names, while its exchange of a token its entry does not take is
+refused and takes no name. Moving a service's pods to another cluster while they keep their account
+needs no pair: they hold the same session names there.
 
 A service's launcher, such as the Legion daemon, logs in with its own projected ServiceAccount
 token, and no person approves it. `BROKER_SERVICE_LOGINS` lists which ServiceAccounts may log in

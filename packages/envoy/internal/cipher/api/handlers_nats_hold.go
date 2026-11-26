@@ -63,8 +63,8 @@ type NATSHold struct {
 // service's verifier (natscallout.PlatformTokens.Verify) and the API's identityAccount both answer
 // it. Each of its readers reads this one struct: the auth service (natscallout, as
 // ServiceIdentity) of a service's token, the hold routes (NATSHold.OperatorToken) of the
-// operator's, and the API's identity-token callers (accountCaller and edgeListenerCaller, as
-// identityAccount answers it) of a listed caller's or an edge listener's.
+// operator's, and the API's identity-token callers (accountCaller and edgeListenerCaller) of a
+// listed caller's or an edge listener's.
 type PlatformIdentity struct {
 	// Account is the account the token names.
 	Account string

@@ -680,9 +680,10 @@ func (s *server) identityAccount(w http.ResponseWriter, r *http.Request) (Platfo
 }
 
 // liveIdentityToken is identityAccount's judgement of one token its verifier judged, whichever
-// kind it is: err is what the verifier answered. It reports whether the token is sound, or writes
-// the refusal. A Kubernetes token's oidc.ErrIssuerUnavailable is 503 OIDC_ISSUER_UNAVAILABLE; the
-// Google verifier's outage stays the 401 it was.
+// kind it is: err is what the verifier answered, and identity what the token says of its caller:
+// its Google flag picks the outage's answer, and its Issued and Expiry its lifetime. It reports
+// whether the token is sound, or writes the refusal. A Kubernetes token's oidc.ErrIssuerUnavailable
+// is 503 OIDC_ISSUER_UNAVAILABLE; the Google verifier's outage stays the 401 it was.
 func (s *server) liveIdentityToken(w http.ResponseWriter, err error, identity PlatformIdentity) bool {
 	switch {
 	case errors.Is(err, oidc.ErrExpired):

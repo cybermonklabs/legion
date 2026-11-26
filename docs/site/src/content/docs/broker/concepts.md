@@ -847,11 +847,12 @@ names that project** and whose person may still see it:
   session does.
 - A **job's pod** or a **job's machine**, whose account a job entry lists
   (`BROKER_EXCHANGE_JOB_ACCOUNTS`, `BROKER_VM_EXCHANGE_JOB_ACCOUNTS`), names that entry's list and
-  no person. A credential of no person sees no private project, so it is denied every private
-  project's secret `project-not-named`, a project of its own list included, with no question to
-  Dispatch about a person. Where its list names a private project, it gets a `project-channels`
-  secret only behind the airlock and on no channel (below); a list of public projects alone leaves
-  that secret unlimited.
+  no person, a job's pod only while its entry names the issuer whose token enrolled the pod, as for
+  a pod of `BROKER_EXCHANGE_ACCOUNTS`. A credential of no person sees no private project, so it is
+  denied every private project's secret `project-not-named`, a project of its own list included,
+  with no question to Dispatch about a person. Where its list names a private project, it gets a
+  `project-channels` secret only behind the airlock and on no channel (below); a list of public
+  projects alone leaves that secret unlimited.
 
 Every other credential is denied the secret `project-not-named`: a session naming another project
 or none, a person on the project's access list whose session does not name it, and a pod whose
