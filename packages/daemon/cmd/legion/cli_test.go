@@ -74,6 +74,7 @@ var legionCommands = [][]string{
 	{"replay"}, {"replay", "collect"}, {"replay", "collect-git"}, {"replay", "collect-merges"}, {"replay", "collect-queue"}, {"replay", "neutralize"},
 	{"replay", "run"},
 	{"replay", "scorecard"}, {"replay", "signals"}, {"replay", "models"}, {"replay", "validate"}, {"replay", "forecast"}, {"replay", "compare"},
+	{"replay", "limits"},
 	{"replay", "rules"},
 	{"probe-boot"},
 	{"controller"}, {"controller", "start"},

@@ -67,6 +67,22 @@ body: |-
     Dispatch or to GitHub. The page "Replaying a recorded window" of the docs says how to collect a
     window and how to run each command, and gives each measure, each rule and each assumption.
 
+    `legion replay limits` plans the limit test that names each signal's limit. From window one's
+    record it lists each signal's 50th, 75th, 90th, 95th and 99th percentile and off, and leaves out
+    with its reason any percentile that `signals.CheckLimit` refuses. A signal that a load model
+    gives has steps only where its model passed R11's daily test and its test across the two records
+    in both outputs of `legion replay models --against --json`, and the provider's limits also rest
+    on `--token-limit`. It plans the runs of its three steps at the recorded cap and at `--ceiling`
+    as the entries of an indexed Job, reads their directories back, and names, for each signal and
+    ceiling, the limit with the most issues finished at which no other measure of the owner's three
+    costs or of the wait of urgent work is worse than under today's rule on any branch that passes
+    R5, or that none holds, and whether that limit is an extrapolation past the range of work in
+    flight that the windows record. Beside each limit it says what it rests on. `run.json` gains
+    `signalSummaries`, `signals` and `suppliedRefused`: how each limited signal read over the window,
+    its limit with the value it read at it, and the minutes by day that the tokens model refused
+    under `--token-limit` where the record holds no limit. A directory of runs written before them
+    is refused, and `compare` gives each run's signals at their limits.
+
     `legion state` prints a `slots:` line under its admission line. It says what each holder of a
     slot does now (`working`, `stopped`, `person`, `issue` or `idle`, each with the oldest time in
     it), how many started issues wait for a slot, in two readings, and how many holders rank below

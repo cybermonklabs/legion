@@ -41,7 +41,8 @@ func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, 
 		if !replayedAt.IsZero() {
 			line.FirstSlot["ACME-1"] = replayedAt
 		}
-		must(writeJSON(filepath.Join(run, runFile), runRecord{Rule: rule, Branch: at.Branch, Seed: 1, Slowdown: 1}))
+		must(writeJSON(filepath.Join(run, runFile), runRecord{Rule: rule, Branch: at.Branch, Seed: 1, Slowdown: 1,
+			SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{}}))
 		must(writeJSON(filepath.Join(run, scorecardFile), Scorecard{From: from, To: to, UrgentWaits: map[string]UrgentWait{}}))
 		must(writeJSON(filepath.Join(run, lineScorecardFile), line))
 	}

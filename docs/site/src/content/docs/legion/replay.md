@@ -868,6 +868,17 @@ Under `signals` or `signals-backoff` it counts the deadlines that the run set, m
 
 - `signalValues` is, at each moment that `--probe` gives, the value of each signal of `limits` once every act at or before that moment has run, and `null` for a signal with no record there.
 
+- `signalSummaries` is, for each signal of `limits` that the run limited, how the signal read over the window's span, each minute read at its start once every act before it has run: its mean over the minutes where the window records it, its 95th percentile by the nearest rank, its largest value, how many minutes it was recorded in (`recorded`) of the span's (`minutes`), and the share of the span's minutes in which it held admission, at or above its limit (`heldShare`).
+  A signal whose load model gives no limit is not limited, so it has none.
+
+- `signals` is, for each signal in `signalSummaries`, its limit and the value that it read at it, the mean of its summary.
+  `compare` gives them under "Signal values at their limits".
+  It is absent for a run that limited no signal.
+
+- `suppliedRefused` is, by UTC day, the minutes of the window's span in which the tokens model gave a refusal by the project's own limit under the token limit that `--token-limit` gave, in minutes whose provider record holds no limit of the project's own.
+  The record cannot confirm them.
+  It is `{}` where the run gave none.
+
 `run.json` names the code that made the run, and the time at which the run started:
 
 - `buildCommit` is the commit of the `legion` binary that made the run.
@@ -1178,6 +1189,9 @@ The document gives:
 
 - each run's admissions of an issue that holds its slot with no recorded work, and the slot-hours that those issues hold
 
+- for each run that limited a signal, the limit of each signal and the value that it read at it, under "Signal values at their limits"
+  A comparison whose runs limit no signal gives none.
+
 - for each window and seed, the pairs of rules compared, the stretches that the two runs of a pair both drew, and how many of them drew another value, which must be none, with each pair, branch and stretch at which one did
 
 - the name of the issues file, and what it gives
@@ -1277,6 +1291,93 @@ To split the work, run each part with `--only-window <name>` and `--only-rule <n
 Then write the document and the issues file from the parts' directories with `--from-runs <dir>... --out <file>`, which runs nothing, and to which `--token-limit` does not apply.
 `--token-limit <tokens a minute>` gives every run the project's token limit, as in `validate`.
 `validate`, `forecast` and `compare` print on standard error, as each run ends, its facts, passes, seconds and peak memory, so that you can size a job.
+
+### `legion replay limits`
+
+```sh
+legion replay limits \
+  --window-one windows/acme-2026-10-05 --window-two windows/acme-2026-09-20 \
+  --models runs/models-one.json --models-reverse runs/models-other.json \
+  --baseline runs --runs limits --token-limit 6000000 --ceiling 171 \
+  --plan limits-plan.json
+```
+
+`limits` is the limit test of R11.
+It plans the replays that name each signal's limit and, given the directories of their runs, names each limit by R11's rule and prints its table.
+It runs no replay.
+Each entry of its plan is one `legion replay run`, one index of an indexed Job, and the runs go to `--runs`, which `limits` reads back.
+
+The list of limits of each signal is its 50th, 75th, 90th, 95th and 99th percentile over `--window-one`'s record, read at each minute where the window records the signal, and off.
+`--window-one` is the window whose record the lists come from, and whose main branch ranks the limits by the issues they finish.
+The idle share is read at d of an hour.
+Every limit passes through the shared validator of the signals' ranges (`signals.CheckLimit`), the same that `legion replay run --limit` applies.
+A percentile outside the signal's range is left out of the list with the validator's reason, and is never clamped into it.
+A percentile that repeats a lower percentile's limit is left out as its repeat.
+`off` is the reference row and is never named.
+
+A signal that a load model gives has steps only where its model passed R11's tests.
+`--models` is the output of `legion replay models --against --json` for `--window-one` against the other record, and `--models-reverse` the output for the other record against `--window-one`.
+The model of a signal must fail the daily test on neither record, pass it on at least one, and pass the test across the two records in both outputs.
+A window that records no token limit of the project's own has no daily test for the tokens model, so the tokens model gives a limit for the provider's headroom and refusals only under `--token-limit`, the project's token limit, which every run of the plan takes (`legion replay run --token-limit`, [assumption 49](#assumption-49-the-projects-token-limit-is-the-one-that-the-replays-caller-gives-in-each-minute-whose-record-holds-none)).
+The provider's headroom and its refusals each have a limit and a sweep of their own, since each has its own range, and the table groups them under the provider.
+The idle share and the approvals come from the replay itself, have no model and always have steps.
+A signal whose model failed has no step, and the output says why.
+
+The steps are these.
+
+- **Step A** runs each signal alone, with the others off, at each limit of its list, and runs off, on the main branch of both windows at f 1.
+  The main branch draws nothing, so each run has the seed 1 alone.
+
+- **Step B** takes, for each signal, the limit with the most issues finished on window one's main branch among those that no other measure is worse at than under today's rule on step A's branches.
+  A tie goes to the loosest limit.
+  It runs that limit and the next tighter one on every branch of both windows that passes R5, with the seeds of the baseline's runs.
+  Where the first is worse on a branch, the next tighter limit is run on every branch, until one holds or the list ends, and the result then names no limit.
+  The idle share's named limit is also run at d of 10 minutes and of 4 hours, and the output gives each beside the hour's.
+
+- **Step C** runs `signals` and `signals-backoff` with every signal at its named limit on every branch of both windows.
+
+Each step runs at two ceilings, the recorded cap and `--ceiling`, the most issues in flight that any replayed span records.
+Under the recorded cap alone, a rule that can only admit fewer would make the loosest limit the best.
+
+A limit holds where no measure other than the issues finished, of the owner's three costs and the wait of urgent work, is worse than under today's rule, `main`, in R7's sense, on any branch that passes R5.
+The comparison is the one `compare` makes: the paired difference of each measure over the seeds, held to the replay's own error on the measure.
+A verdict of `better`, `tie`, `none` or `not paired` is not worse.
+The issues finished rank the limits and are never a reason to reject one, and the table gives their verdict beside each limit.
+The branches that pass R5 are those that the validation of each window under its own rule says give a comparison.
+`--baseline` names the directories of runs of `validate` and `compare` that hold both windows' records and their runs of `main` and of each window's own rule.
+
+The output gives, for each signal and ceiling, a row for off and for each limit, with the issues finished, the three costs and the signal's own reading on window one's main branch, the mean over the seeds.
+The signal's reading is its mean over the minutes where the window records it, its 95th percentile, its largest value and the share of the window's minutes in which it held admission, from `run.json`'s `signalSummaries`.
+The row also gives the most issues in flight that any run of the limit held, and whether the limit holds, or the first measure it is worse on.
+Below the table is the limit named for the signal, with the issues it finished on window one's main branch and what off finished, or that no limit holds.
+Step C is a table of the two rules at each ceiling with how many branches they stood better, worse, as a trade and level on.
+
+The output names the range of work in flight that the windows record, from the lowest day's average of issues in flight in the models' days to the larger of the two windows' scorecard maxima, the most at any instant.
+A limit holds only inside that range.
+A named limit whose runs hold more issues in flight than the range's top is an extrapolation, and the output says so beside it.
+
+The output also says what each limit rests on.
+For a signal that a model gives, it lists each tested day of the daily test with the recorded and the modelled value and the record it is in, and the ratio of the test across the two records.
+For the provider's signals it also gives the token limit, the span of each window's provider record, and the refused minutes by day that the model gives under the token limit in minutes whose record holds no limit of the project's own, which the record cannot confirm (`run.json`'s `suppliedRefused`).
+
+`limits` reads what the runs hold, so it is run again after each step.
+Step B waits for the runs of step A, and step C for the runs of step B, and the output says which step it waits for.
+`--plan` writes the entries still to run, as a JSON list, to the file named.
+Each entry gives its step, signal, window, rule, branch, slowdown, seed, limits, d, cap, token limit, the directory under `--runs` that its run goes to (`out`), and the arguments of `legion replay run` that make it, but for `--pg-dsn`, which the Job adds.
+A run whose directory holds its three files is not planned again, and a run that ran with other limits, d, cap or token limit than its entry names is refused.
+
+| Flag | What it gives |
+| --- | --- |
+| `--window-one <dir>` | The window whose record the lists of limits are read from (required). |
+| `--window-two <dir>` | The other window of the sweep (required). |
+| `--models <file>` | `legion replay models --against --json` of window one against the other record (required). |
+| `--models-reverse <file>` | The same of the other record against window one (required). |
+| `--baseline <dir>` | A directory of runs of `validate` or `compare`; repeat for more (required). |
+| `--ceiling <n>` | The second ceiling, a cap above zero, beside the recorded cap (required). |
+| `--runs <dir>` | The directory that the sweep's runs are under. |
+| `--plan <file>` | Write the entries still to run to this file. |
+| `--token-limit <n>` | The project's token limit in uncached input tokens a minute, which every run takes. |
+| `--json` | Print the result as JSON. |
 
 ## The measures
 

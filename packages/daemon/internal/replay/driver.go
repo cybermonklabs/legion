@@ -960,6 +960,7 @@ func (d *driver) run() error {
 		it := heap.Pop(&d.queue).(*item)
 		// Every act at or before each probe before this item has run: the probe reads the replay
 		// as they left it.
+		d.sampleSignals(it.at, false)
 		d.readProbes(it.at, false)
 		if !it.at.Before(end) {
 			break
@@ -1023,6 +1024,7 @@ func (d *driver) run() error {
 	for i := range d.script.events {
 		unplaced(d.script.events[i].awaiting)
 	}
+	d.sampleSignals(time.Time{}, true)
 	d.readProbes(time.Time{}, true)
 	return d.settle()
 }
