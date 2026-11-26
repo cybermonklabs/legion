@@ -351,6 +351,8 @@ every fill's pair does
 (.github/ci-notes/ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used). Both run on
 the default GOCACHE, ~/.cache/go-build, which the build step uses and the restore and the save
 name.
+The `end` step also [deletes the module zips](ci-caches.md#why-the-fills-delete-the-module-zips),
+which the binaries job does not read.
 
 The record of what a family filled once per Go version had to compile again is
 .github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family.

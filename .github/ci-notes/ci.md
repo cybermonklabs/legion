@@ -1306,6 +1306,7 @@ go-envoy, go-envoy-test, go-dispatch-browser and go-envoy-darwin-vet refill on e
 main: each fill builds on the newest matching entry and saves under the reader's key followed
 by the commit (`-${{ github.sha }}`). Each fill
 [keeps in the build cache only what its own build used](ci-caches.md#why-each-fill-keeps-only-what-its-own-build-used)
+and [deletes from the module cache every module zip, which no build reads](ci-caches.md#why-the-fills-delete-the-module-zips),
 before it saves the entry. The
 [refill-superseded job](ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family)
 keeps only the new entry for the same family, runner, Go version and ref. These six families
