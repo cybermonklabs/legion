@@ -689,12 +689,13 @@ func countedFor(t *testing.T, registry *metrics.Registry, counts func(line strin
 }
 
 // stormRequests is how many connections each storm below sends one replica at once. The storms set
-// the bounds to a handful, sixteen waiting beside one or two slots, so almost every request goes
-// past the waiting bound, which is the regime a storm of more than about 1,100 requests is for the
-// deployed bounds (64 slots, 1,024 waiting), and refusalCost puts what those refusals cost one
-// after another past the hub's timeout. The count is kept that small because the clients and the
-// hub run in the test's own process: at 400, under -race on a loaded machine, they fell behind
-// themselves, and clients failed their connects with the service's fix in place.
+// the bounds to a handful, two slots and two waiting, or one slot and sixteen waiting for the flood
+// of requests holding no credential, so almost every request goes past the waiting bound, which is
+// the regime a storm of more than about 1,100 requests is for the deployed bounds (64 slots, 1,024
+// waiting), and refusalCost puts what those refusals cost one after another past the hub's timeout.
+// The count is kept that small because the clients and the hub run in the test's own process: at
+// 400, under -race on a loaded machine, they fell behind themselves, and clients failed their
+// connects with the service's fix in place.
 const stormRequests = 120
 
 // stormRead is what a storm's clients heard, the service's record of it and the hub's count of the
@@ -757,13 +758,20 @@ func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.
 // them. Past the waiting bound a request is refused off the goroutine nats.go delivers every
 // request on (deliver); refused on it, as each once was, every refusal held back the delivery of
 // every request behind it, and the last of a storm were delivered after the hub had refused their
-// clients, given a fresh budget, and answered to no one. The bounds here are two slots and sixteen
-// waiting, so the storm is the regime a storm past the deployed bounds is, and each refusal's work
-// is scaled up (withRefusalWork).
+// clients, given a fresh budget, and answered to no one. Each refusal's work is scaled up
+// (withRefusalWork).
+//
+// The bounds are two slots and two waiting, so an admitted request waits for one decision at most
+// before its own, and its answer leaves the hub's timer what a loaded test process takes to deliver
+// the storm's requests. With sixteen waiting the last admissions waited eight decisions, and under
+// -race beside eight busy loops on two CPUs the service answered them 1.0-1.4 s after they reached
+// it, which they did 0.3-0.45 s after the hub sent them: 1.70 s of the hub's 2 s, so a little more
+// load decided the row. A replica's first delivery held 1.2 s makes the hub give up on such
+// admissions with sixteen waiting, and on none with two.
 func TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout(t *testing.T) {
 	withRefusalWork(t, refusalCost)
 	withDecisionSlots(t, 2)
-	withWaitingBound(t, 16)
+	withWaitingBound(t, 2)
 	keys := testnats.NewCalloutKeys(t)
 	server, url := startDebugCalloutServer(t, keys)
 	sessions := sessionsNamed(t, "ses_storm", stormRequests)
@@ -784,7 +792,7 @@ func TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout(t *testing.T) {
 func TestTheHubCountsAStormAnsweredPastItsTimeout(t *testing.T) {
 	withRefusalWork(t, testnats.CalloutAuthTimeout*time.Second+500*time.Millisecond)
 	withDecisionSlots(t, 2)
-	withWaitingBound(t, 16)
+	withWaitingBound(t, 2)
 	keys := testnats.NewCalloutKeys(t)
 	server, url := startDebugCalloutServer(t, keys)
 	sessions := sessionsNamed(t, "ses_late_storm", stormRequests)
