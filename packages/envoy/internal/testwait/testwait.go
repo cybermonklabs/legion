@@ -100,6 +100,14 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 // timeout) leaves the same.
 const Margin = 30 * time.Second
 
+// PastTheRun is a span longer than any run of a test binary: longer than the longest -timeout a
+// command of this repository gives one (the API race step's 70 minutes,
+// .github/workflows/ci-job-envoy-go-race-api.yaml). A test sets a product's window, interval or
+// timeout to it where the row needs that span never to end during the run (a hold that must stay
+// live, a ping on a healthy connection, a publish bound the row does not race), so a loaded machine
+// cannot end it before the binary's deadline ends the test.
+const PastTheRun = 24 * time.Hour
+
 // Until waits until read reports true, asking every Poll, and returns what it read then. Its one
 // bound is the test binary's deadline less margin, and its failure prints the last value read.
 func Until[T any](t *testing.T, what string, read func() (T, bool)) T {

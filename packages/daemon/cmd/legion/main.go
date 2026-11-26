@@ -285,8 +285,11 @@ func pluginsLine(cfg config.Config) string {
 // `resources:` line names those pods as Burstable (capabilities.Deployment.BurstableLine);
 // a file that sets no lower request prints none, its pods all Guaranteed. Then, when the image
 // probe's attempt budget is derived above slow_command_timeout_seconds (daemon.ProbeBudget), one
-// plain line names the derived bound and why; then one names the repository cache each repository
-// a live record names gets, as the file settles it;
+// plain line names the derived bound and why; then, when the file names
+// runtime.kubernetes.pod.controller_service_account, one names the ServiceAccount the controller's
+// pod runs as beside the one every other pod runs as (controllerAccountLine), and a file that names
+// none prints no such line, its controller running as every other pod does; then one names the
+// repository cache each repository a live record names gets, as the file settles it;
 // then a last plain line names the plugin pair this daemon would install for a stale-plugin
 // relaunch — the file's or the binary's — or, with neither, the gap, and, when worker_backends
 // runs any role on Claude Code, one sentence more saying that such a role's plugin is the image's
@@ -342,6 +345,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 		if line, derived := daemon.ProbeBudgetLine(cfg); derived {
 			fmt.Fprintln(stdout, line)
 		}
+		if pod := cfg.Runtime.Kubernetes.Pod; pod.ControllerServiceAccount != "" {
+			fmt.Fprintln(stdout, controllerAccountLine(pod))
+		}
 		cache := cfg.Runtime.Kubernetes.RepositoryCache
 		fmt.Fprintf(stdout, "repository cache: a %s volume for each repository a live record names, fetched from GitHub every %d minutes, kept %d hours after no live record names it; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
 			cache.Volume, cache.RefreshMinutes, cache.RetainHours, reservedUnder(cache.Resources.CPURequest, cache.Resources.CPU),
@@ -372,6 +378,21 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// controllerAccountLine is `legion config check`'s line for runtime.kubernetes.pod.controller_service_account,
+// printed only when the file names one (which only `controller: daemon` may): the ServiceAccount the
+// controller's pod runs as, and the one every other pod runs as, the namespace's default when
+// service_account is unset. The two are named together because each is an identity of its own: a
+// secrets broker that grants the legion-daemon service's secrets by account grants them to the
+// controller only when it names the controller's account for that service too.
+func controllerAccountLine(pod config.PodConfig) string {
+	others := pod.ServiceAccount + " (runtime.kubernetes.pod.service_account)"
+	if pod.ServiceAccount == "" {
+		others = "the namespace's default (runtime.kubernetes.pod.service_account is unset)"
+	}
+	return "controller service account: the controller's pod runs as " + pod.ControllerServiceAccount +
+		" (runtime.kubernetes.pod.controller_service_account); every other pod runs as " + others
 }
 
 // defaultStepsLine is `legion config check`'s line for one project's `default_steps`: the steps
@@ -640,6 +661,11 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// The P0 issues, which hold their slots outside the cap, and the bound they hold them under
+	// (the P0 start's contract entry); a state served below that entry carries neither, and says nothing of them.
+	if line := p0AdmissionLine(state.Admission); line != "" {
+		fmt.Fprintln(stdout, line)
+	}
 	// The project's pause: a paused line while it stands, a last-pause line while the project runs
 	// after one has ended, and neither before any pause, as the state carries one key at most.
 	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {

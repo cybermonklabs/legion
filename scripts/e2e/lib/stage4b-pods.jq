@@ -56,7 +56,7 @@ def quantity:
 # greater than its limit (the node-disk bound between pods of unrelated trees, which QoS does not
 # read), and all four values are the issue pod's one reservation (issuePod.resources,
 # internal/runtime/sandbox/podkind.go); the pod is Guaranteed; and it carries no affinity, since a
-# Legion pod asks nothing of its placement beyond the pool.
+# Legion pod asks nothing of its placement beyond the operator's scheduling.
 def reservation_problems($expected):
   .spec as $s | $expected.issue as $e
   | def same($a; $b): ($a | quantity) == ($b | quantity);
@@ -78,4 +78,4 @@ def reservation_problems($expected):
         then "container \($c.name) reserves \(carried($req; $lim)), not the run's \(expected_of($e)) for the issue pod"
         else empty end),
     (if .status.qosClass != "Guaranteed" then "qosClass \(.status.qosClass // "unset"), want Guaranteed" else empty end),
-    (if $s.affinity != null then "affinity \($s.affinity | tojson): a Legion pod asks nothing of its placement beyond the pool" else empty end);
+    (if $s.affinity != null then "affinity \($s.affinity | tojson): a Legion pod asks nothing of its placement beyond the operator's scheduling" else empty end);
