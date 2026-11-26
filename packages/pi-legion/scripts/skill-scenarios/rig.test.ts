@@ -2928,11 +2928,11 @@ describe("heads_fixture", () => {
       .stdout.toString()
       .trim();
 
-  // Catches: one branch where the case needs two heads, a head that is no commit of the remote, a
-  // commit that is not one above main or that changes code (the reviewer then runs its
-  // thermonuclear pair), a fixture that ignores the run's index and start, a workspace left on
-  // main, and a world that names another pull request than #702.
-  test("two branches of the issue, each one docs-only commit above main, and the world of #702", () => {
+  // Catches: one branch where the case needs two heads, a base revision that is not main's, a head
+  // that is no commit of the remote, a commit that is not one above main or that changes code (the
+  // reviewer then runs its thermonuclear pair), a fixture that ignores the run's index and start, a
+  // workspace left on main, and a world that names another pull request than #702.
+  test("two branches of the issue carry main's base revision and are each docs-only one commit above it", () => {
     const { code, stderr, run } = build("heads_fixture");
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     const remote = path.join(run, "remote.git");
@@ -2940,10 +2940,11 @@ describe("heads_fixture", () => {
       string,
       string
     >;
-    expect(Object.keys(heads).toSorted()).toEqual(["702", "703"]);
+    expect(Object.keys(heads).toSorted()).toEqual(["702", "703", "base"]);
     expect(heads["702"]).not.toBe(heads["703"]);
     const main = git(remote, "rev-parse", "main");
-    for (const [pr, head] of Object.entries(heads)) {
+    expect(heads.base).toBe(main);
+    for (const [pr, head] of Object.entries(heads).filter(([key]) => key !== "base")) {
       expect(head).toMatch(/^[0-9a-f]{40}$/);
       expect(git(remote, "rev-parse", `legion/LWEVAL-9-${pr}`)).toBe(head);
       expect(git(remote, "rev-parse", `${head}^`)).toBe(main);

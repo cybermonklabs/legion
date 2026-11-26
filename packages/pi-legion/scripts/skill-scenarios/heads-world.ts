@@ -283,6 +283,8 @@ export async function headsEvents(file: string, headsFile: string, world: string
   const heads = z
     .record(z.string(), z.string().regex(/^[0-9a-f]{40}$/))
     .parse(JSON.parse(readFileSync(headsFile, "utf8")));
+  const base = heads.base;
+  if (base === undefined) throw new Error(`${headsFile} names no base revision`);
   const ciRunning = world.startsWith("ci-pass-and-fail-");
   const ciCheck = ciCheckWorld(world);
   const tester = testerWorld(world);
@@ -298,7 +300,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
   };
   const title = `${fixture.title} (${fixture.issue})`;
   await seedGithub({
-    commits: prs.map(headOf),
+    commits: [base, ...prs.map(headOf)],
     pulls: Object.fromEntries(
       prs.map((pr) => [
         pr,
@@ -311,6 +313,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
           head_ref: `legion/${fixture.issue}-${pr}`,
           head_repo: HEADS_REPO,
           base_ref: HEADS_BASE,
+          base_sha: base,
         },
       ])
     ),
@@ -415,6 +418,7 @@ export async function headsEvents(file: string, headsFile: string, world: string
     const payload = {
       action: "opened",
       base_ref: HEADS_BASE,
+      base_sha: base,
       body: `Dispatch: ${fixture.issue}`,
       head_ref: `legion/${fixture.issue}-${pr}`,
       head_repo: HEADS_REPO,

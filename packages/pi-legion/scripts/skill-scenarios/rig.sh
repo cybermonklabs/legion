@@ -2206,12 +2206,14 @@ run_tester_proof() {
 # branches of the issue, legion/<key>-702 and legion/<key>-703, each one docs-only commit on the base,
 # so the reviewer runs no thermonuclear pair. #702 adds docs/usage.md, which the issue's check k1
 # reads; #703 points the README at that page and adds none. Both are pushed, and the workspace is
-# on legion/<key>-702. It writes $R/heads.json, each branch's head by its pull request's number,
-# which seed.ts heads-events reads, and $R/world.json, the world the scorer reads, in
-# worker_fixture's shape, with pr 702 and #702's head.
+# on legion/<key>-702. It writes $R/heads.json, the base revision and each branch's head by pull
+# request number, which seed.ts heads-events reads, and $R/world.json, the world the scorer reads,
+# in worker_fixture's shape, with pr 702 and #702's head.
 heads_fixture() {
-  local pr head heads='{}'
+  local pr head base heads='{}'
   fixture_repo "$1" "$2"
+  base=$(g rev-parse "$worker_base")
+  heads=$(jq -cn --arg base "$base" '{base:$base}')
   g checkout -qb "legion/$worker_key-702" "$worker_base"
   mkdir -p "$R/src/docs"
   # shellcheck disable=SC2016 # Markdown, written as it stands

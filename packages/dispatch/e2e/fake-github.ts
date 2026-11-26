@@ -27,6 +27,8 @@ interface FakePull {
    *  describes a pull request that attributes nobody. */
   readonly head_repo?: string;
   readonly base_ref?: string;
+  /** The commit the base branch stood at in GitHub's pull-request answer. */
+  readonly base_sha?: string;
   readonly updated_at?: string;
 }
 
@@ -122,7 +124,7 @@ function heldCommits(repo: FakeRepo): Set<string> {
   return new Set([
     commitFor(repo),
     ...Object.keys(repo.commit_pulls ?? {}),
-    ...Object.values(repo.pulls ?? {}).map((pull) => pull.head_sha),
+    ...Object.values(repo.pulls ?? {}).flatMap((pull) => [pull.head_sha, pull.base_sha ?? ""]),
     ...Object.values(repo.branch_commits ?? {}).flat(),
     ...Object.keys(repo.check_runs ?? {}),
     ...Object.keys(repo.workflow_runs ?? {}),
@@ -268,6 +270,7 @@ const server = Bun.serve({
         return Response.json({ message: "fixture has no pull request" }, { status: 500 });
       }
       return Response.json({
+        base: { ref: seeded.base_ref ?? "main", sha: seeded.base_sha },
         head: {
           repo: { full_name: seeded.head_repo ?? `${pull[1]}/${pull[2]}` },
           sha: seeded.head_sha,
@@ -332,7 +335,7 @@ const server = Bun.serve({
           if (seeded === undefined) return [];
           return [
             {
-              base: { ref: seeded.base_ref ?? "main" },
+              base: { ref: seeded.base_ref ?? "main", sha: seeded.base_sha },
               body: seeded.body ?? "",
               head: {
                 ref: seeded.head_ref ?? `branch-${number}`,
@@ -351,9 +354,8 @@ const server = Bun.serve({
       );
     }
 
-    // `compare/{base}...{head}`, of which Dispatch decodes only `status`: a branch that holds
-    // the commit is `behind` it (`identical` when it is the branch's last commit), and one that
-    // does not is `diverged`.
+    // `compare/{base}...{head}` answers the comparison of a seeded pull request with the base
+    // revision it records, or the branch-membership status a commit-on-branch read needs.
     const compare = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/compare\/(.+)$/);
     if (request.method === "GET" && compare !== null) {
       const repo = repos.get(`${compare[1]}/${compare[2]}`);
@@ -361,10 +363,25 @@ const server = Bun.serve({
       if (repo === undefined || base === undefined || head === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
       }
+      const pull = Object.values(repo.pulls ?? {}).find(
+        (seeded) => seeded.base_sha === base && seeded.head_sha === head
+      );
       const commits = repo.branch_commits?.[base] ?? [];
       const held = commits.indexOf(head);
+      const baseCommit = pull?.base_sha ?? commits.at(-1) ?? base;
       return Response.json({
-        status: held === -1 ? "diverged" : held === commits.length - 1 ? "identical" : "behind",
+        base_commit: { sha: baseCommit },
+        commits: pull === undefined ? [] : [{ sha: head }],
+        merge_base_commit: { sha: baseCommit },
+        status:
+          pull === undefined
+            ? held === -1
+              ? "diverged"
+              : held === commits.length - 1
+                ? "identical"
+                : "behind"
+            : "ahead",
+        total_commits: pull === undefined ? 0 : 1,
       });
     }
 

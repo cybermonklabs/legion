@@ -28,8 +28,9 @@ restoreEnvironment([
 const dirOf = temporaryDirectories("heads-world");
 let heads: typeof headsModule;
 
-/** What a run's NATS was asked: the subjects published, in order. */
+/** What a run's NATS was asked: the subjects and encoded envelopes, in order. */
 const published: string[] = [];
+const publishedPayloads: string[] = [];
 beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   process.env.FAKE_GITHUB_PORT = "18778";
@@ -37,7 +38,10 @@ beforeAll(async () => {
   delete process.env.PLAYWRIGHT_BASE_URL;
   mock.module("nats", () => ({
     connect: async () => ({
-      publish: (subject: string) => published.push(subject),
+      publish: (subject: string, payload: string) => {
+        published.push(subject);
+        publishedPayloads.push(payload);
+      },
       flush: async () => {},
       close: async () => {},
     }),
@@ -79,11 +83,15 @@ function stubFetch(): Call[] {
 /** Runs heads-issue and heads-events of a world against the stubs, and answers each call. */
 async function world(role: string | undefined, scenarioName = "ci-pass-and-fail") {
   published.length = 0;
+  publishedPayloads.length = 0;
   const calls = stubFetch();
   const dir = dirOf(`${scenarioName}-${role ?? "one"}`);
   const file = path.join(dir, "fixture.json");
   const headsFile = path.join(dir, "heads.json");
-  writeFileSync(headsFile, JSON.stringify({ "702": "a".repeat(40), "703": "b".repeat(40) }));
+  writeFileSync(
+    headsFile,
+    JSON.stringify({ base: "0".repeat(40), "702": "a".repeat(40), "703": "b".repeat(40) })
+  );
   const scenario = heads.headsWorld(scenarioName, role);
   if (scenario === undefined) throw new Error(`no world of ${scenarioName} ${role}`);
   await heads.headsIssue(file, scenario);
@@ -127,6 +135,28 @@ test("ci-pass-and-fail: k1 is go-checks' check, whose run at #702's head is in p
     tester: [`implement by ${by("rig-implementer")}`],
     architect: [`test by ${by("rig-tester")}`, `review by ${by("rig-reviewer")}`],
   });
+});
+
+// Catches: the fake GitHub and the opened envelopes disagree about the base revision, leaving
+// Dispatch's former-head read incomplete and refusing the tester's record at its state fence.
+test("reviewer-own-head seeds one base revision through the fake GitHub and the opened envelopes", async () => {
+  const { calls } = await world("sibling-fails", "reviewer-own-head");
+  const seed = calls
+    .filter((call) => call.path === "/__fixture/repos")
+    .map((call) => call.body["example/widgets"])
+    .at(-1);
+  const base = "0".repeat(40);
+  expect(seed).toMatchObject({
+    pulls: {
+      "702": { base_sha: base },
+      "703": { base_sha: base },
+    },
+  });
+  const envelopes = publishedPayloads.map((encoded) => JSON.parse(encoded) as { payload: string });
+  expect(envelopes.map((envelope) => JSON.parse(envelope.payload))).toEqual([
+    expect.objectContaining({ base_sha: base }),
+    expect.objectContaining({ base_sha: base }),
+  ]);
 });
 
 // Catches: a heads world whose seeded `test` record still holds a field the tester's prompt no
