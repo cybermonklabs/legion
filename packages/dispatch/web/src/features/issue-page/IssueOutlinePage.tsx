@@ -26,7 +26,7 @@ import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
 import { ViewRowSlot } from "./slots/view-row";
 import { SelectionComment } from "./text-comments/SelectionComment";
-import { TextMargin } from "./text-comments/TextMargin";
+import { ChildrenAboveRow, TextMargin } from "./text-comments/TextMargin";
 
 /** The new issue page's root, drawn at an issue's address for a reader who chose it. Everything
  *  it draws, a refused address included, is inside the element that carries `data-issue-page`,
@@ -106,9 +106,14 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // comments on text at the right of that column (`text-comments/TextMargin.tsx`), 280 px wide
   // and 320 px from 1280 px, which the stage and the foot give up while the header and the view
   // row above keep their width; then Details' slot, whose fill the shell draws in its drawer
-  // (R14). At 1440 px, beside the rail of 56 px, the page is 1384 px wide: in a view with no pane
-  // the stage has 1328 px inside its insets, beside the 260 px pane 1068 px, and beside the pane
-  // and the column of comments on text 748 px.
+  // (R14). From 1024 px the issue's children stand above the row of that column and the column
+  // of comments on text, beside the Contents pane at the width it leaves and inside the same
+  // insets (`ChildrenAboveRow`), so the column of comments on text never narrows them and stands
+  // under them (R2); below 1024 px, where no such column stands, the stage draws them under the
+  // issue's three sentences (`StageSlot`'s `childrenAbove`). At 1440 px, beside the rail of
+  // 56 px, the page is 1384 px wide: in a view with no pane the stage has 1328 px inside its
+  // insets, beside the 260 px pane 1068 px, and beside the pane and the column of comments on
+  // text 748 px, while the children's section keeps its 1000 px.
   // The column carries `data-document-scroll`, so the foot's end room for the floats goes here
   // (`FOOT_LAYERS` in `hooks/useFootInset.ts` says why).
   const props: SlotProps = { issue: issue.data, route };
@@ -118,15 +123,20 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
       <ViewRowSlot {...props} />
       <div className="flex min-w-0 items-start">
         <IssueContentsPane {...props} />
-        <div
-          className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
-          data-testid="issue-column"
-          {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
-        >
-          <StageSlot {...props} />
-          <FootSlot {...props} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <ChildrenAboveRow {...props} />
+          <div className="flex min-w-0 items-start">
+            <div
+              className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
+              data-testid="issue-column"
+              {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
+            >
+              <StageSlot {...props} childrenAbove />
+              <FootSlot {...props} />
+            </div>
+            <TextMargin {...props} />
+          </div>
         </div>
-        <TextMargin {...props} />
       </div>
       <DetailsSlot {...props} />
       {/* The control that comments on words selected in the stage (R5), which opens the composer

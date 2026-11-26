@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
 import { api } from "../../../api/client";
+import type { IssueChild } from "../../../api/types";
 import { KEY, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { treeOf } from "../slots/stage-fixtures";
@@ -30,6 +31,7 @@ import {
   type SeededReads,
   STATEMENT,
   scrollingPage,
+  seededIssue,
   seededNodes,
   type TextThreadSeed,
   widthAt,
@@ -698,6 +700,90 @@ test("the header and the view row keep their width when the column is drawn", as
       ).toBe(false);
     }
     expect(classes(), "the column changed the width of what stands above it").toEqual(before);
+  } finally {
+    view.finish();
+    client.clear();
+  }
+});
+
+/** A child of the issue, which the issue's read lists, so the page draws the children's section
+ *  (`children-section.tsx`). */
+const CHILD: IssueChild = {
+  active_at: "2026-11-05T12:00:00Z",
+  external_links: null,
+  key: "CORE-2",
+  status: "todo",
+  subtree_done: 0,
+  subtree_total: 1,
+  title: "The child CORE-2",
+};
+
+// R2: from 1024 px the issue's children stand above the row that holds the main column and the
+// column of comments on text, in the column beside the Contents pane that holds that row, so the
+// column of comments on text narrows the stage and never the section and stands under it. Below
+// 1024 px, where no column stands, the stage draws the section under the issue's three sentences
+// and above its first row, as it always has. happy-dom lays nothing out, so the case reads where
+// the section stands in the page's tree; the browser suite measures it (c-margin (6a)).
+test("the children's section stands above the row of the main column and the column from 1024 px, and in the stage under the three sentences below it", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT] });
+  (api.getIssue as Mock<typeof api.getIssue>).mockResolvedValue({
+    ...seededIssue(),
+    children: [CHILD],
+  });
+  const client = newClient();
+  const view = drawPage(client, "conversation");
+  const section = () => view.container.querySelector<HTMLElement>("[data-children-section]");
+  try {
+    const column = await columnDrawn(view, "no column is drawn for the seeded thread");
+    await waitFor(() => expect(section(), "the page draws no children's section").not.toBeNull());
+    const wide = section() as HTMLElement;
+    const row = column.parentElement as HTMLElement;
+    expect(
+      mainColumn(view).contains(wide),
+      "at 1440 px the children's section stands inside the main column the column narrows"
+    ).toBe(false);
+    expect(
+      row.contains(wide),
+      "at 1440 px the children's section stands in the row of the main column and the column"
+    ).toBe(false);
+    expect(
+      wide.parentElement?.parentElement,
+      "at 1440 px the children's section stands outside the column beside the Contents pane that holds the row"
+    ).toBe(row.parentElement);
+    expect(
+      wide.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "at 1440 px the row of the main column and the column does not follow the children's section"
+    ).not.toBe(0);
+
+    await view.window.set(1000);
+    await waitFor(() =>
+      expect(
+        view.queryByRole("region", { hidden: true, name: COLUMN }),
+        "the column stays below 1024 px"
+      ).toBeNull()
+    );
+    const main = mainColumn(view);
+    await waitFor(() =>
+      expect(main.contains(section()), "below 1024 px the stage draws no children's section").toBe(
+        true
+      )
+    );
+    const narrow = section() as HTMLElement;
+    const sentences = await waitFor(() => {
+      const found = main.querySelector<HTMLElement>('[data-testid="issue-three-things"]');
+      expect(found, "below 1024 px the stage draws no three sentences").not.toBeNull();
+      return found as HTMLElement;
+    });
+    expect(
+      sentences.compareDocumentPosition(narrow) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "below 1024 px the children's section does not stand under the three sentences"
+    ).not.toBe(0);
+    const firstRow = main.querySelector<HTMLElement>("[data-node-id]");
+    expect(firstRow, "below 1024 px the stage draws no row").not.toBeNull();
+    expect(
+      narrow.compareDocumentPosition(firstRow as HTMLElement) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "below 1024 px the stage's first row does not stand under the children's section"
+    ).not.toBe(0);
   } finally {
     view.finish();
     client.clear();

@@ -1166,6 +1166,49 @@ async function readDetails(
   ).toBeFocused();
 }
 
+/** (6a)'s reading in Conversation at 1440 × 900: the children's section's width, in whole
+ *  pixels, and its foot and the region's top, in the window's pixels; NaN for what the page draws
+ *  none of. */
+interface ChildrenReading {
+  readonly bottom: number;
+  readonly regionTop: number;
+  readonly width: number;
+}
+
+/** The children's section and the region as they stand now (`ChildrenReading`). */
+function childrenAndRegion(page: Page): Promise<ChildrenReading> {
+  return page.evaluate((name) => {
+    const section = document.querySelector("[data-children-section]")?.getBoundingClientRect();
+    const column = [...document.querySelectorAll('[role="region"]')]
+      .find((element) => element.getAttribute("aria-label") === name)
+      ?.getBoundingClientRect();
+    return {
+      bottom: section?.bottom ?? Number.NaN,
+      regionTop: column?.top ?? Number.NaN,
+      width: Math.round(section?.width ?? Number.NaN),
+    };
+  }, MARGIN_WORDS.region);
+}
+
+/** (6a) on the seed with threads, in Conversation at 1440 × 900: the children's section and the
+ *  region's top, once both are drawn. `expectChildrenAsWide` holds them to what `seedNoThreads`
+ *  draws, the width first, so a section drawn inside the narrowed column fails on its width. */
+async function readChildren(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: MarginSeed
+): Promise<ChildrenReading> {
+  await page.setViewportSize(DESKTOP);
+  await loadView(page, traffic, seeded.key, "conversation");
+  await expect(
+    page.locator("[data-children-section]"),
+    "at 1440 × 900 in Conversation the children's section is drawn"
+  ).toBeVisible();
+  await expect(region(page), "at 1440 × 900 in Conversation the region is drawn").toBeVisible();
+  // Both stand drawn above, after the load settled, so one reading is where each of them stands.
+  return childrenAndRegion(page);
+}
+
 /** The three forms of Plan's chart: the phone step's cards, the narrow grid and the wide form. */
 type PlanForm = "cards" | "narrow" | "wide";
 
@@ -1592,10 +1635,39 @@ function columnRoom(page: Page): Promise<{ readonly column: number; readonly roo
   });
 }
 
-/** (7) and (8) on `seedNoThreads`: no column in any view, the main column as wide as the window
- *  less the rail and the pane, and Plan's chart in the form it draws at this part's base. */
-async function readNoThreads(page: Page, seeded: NoThreadsSeed): Promise<void> {
+/** (6a) on `seedNoThreads`, in Conversation at 1440 × 900: the children's section is as wide as
+ *  the seed with threads drew it (`readChildren`), and there the region's top stood at or below
+ *  the section's foot. The width is held first: a section drawn inside the column that the
+ *  region narrows is narrower on that seed, and its foot lower than the region's top. */
+async function expectChildrenAsWide(
+  page: Page,
+  traffic: ApiRequests,
+  seeded: NoThreadsSeed,
+  withThreads: ChildrenReading | undefined
+): Promise<void> {
+  await page.setViewportSize(DESKTOP);
+  await loadView(page, traffic, seeded.key, "conversation");
+  await expect
+    .poll(async () => (await childrenAndRegion(page)).width, {
+      message: "the children's section is as wide as with no thread",
+    })
+    .toBe(withThreads?.width);
+  expect(
+    withThreads?.regionTop,
+    "at 1440 × 900 in Conversation with the seed's threads the region's top is at or below the children's section's bottom"
+  ).toBeGreaterThanOrEqual(withThreads?.bottom ?? Number.NaN);
+}
+
+/** (6a), (7) and (8) on `seedNoThreads`: the children's section as wide as with the threads
+ *  (`withThreads`), no column in any view, the main column as wide as the window less the rail
+ *  and the pane, and Plan's chart in the form it draws at this part's base. */
+async function readNoThreads(
+  page: Page,
+  seeded: NoThreadsSeed,
+  withThreads: ChildrenReading | undefined
+): Promise<void> {
   const traffic = watchApiRequests(page);
+  await expectChildrenAsWide(page, traffic, seeded, withThreads);
   for (const view of VIEWS) {
     await loadView(page, traffic, seeded.key, view);
     await expect(
@@ -1662,9 +1734,10 @@ async function readNoThreads(page: Page, seeded: NoThreadsSeed): Promise<void> {
 // c-margin.
 // SLOW(>=2s): the whole seeded issue read in six views at 1440 px with every outline branch
 // opened, Conversation again with the focus moved to a row, Details opened twice and resized,
-// Plan's chart resized through two searches of its steps and the Verification view through one,
-// each view resized through nine widths, then the issue with no thread read again in six views
-// and at six widths of Plan; on `iphone`, six views at 390 px.
+// Conversation loaded again for the children's section, Plan's chart resized through two searches
+// of its steps and the Verification view through one, each view resized through nine widths,
+// then the issue with no thread read again in Conversation and in six views and at six widths of
+// Plan; on `iphone`, six views at 390 px.
 test("a comment on text stands beside its node in every view @phone", async ({ browser }) => {
   test.setTimeout(900_000);
   const phone = test.info().project.name === "iphone";
@@ -1721,6 +1794,9 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     "(8) the Spec view: its decisions above the statements at 1280 px, beside them at 1440 px, its wide form at 1920 px, its form at the base on seedNoThreads, and the narrowest column of its two columns, 672 px",
     "PART_J"
   );
+  // (6a) as the seed with threads draws it, which the phase on `seedNoThreads` holds to the
+  // children's section that seed draws.
+  const withThreads: { children?: ChildrenReading } = {};
   await phase(browser, seedMarginIssue, async (page, seeded) => {
     const [documentThreads, nodeThreads] = await Promise.all([
       threadSpots(seeded),
@@ -1741,6 +1817,7 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     });
     if (stacking) await readFocusedStack(page, traffic, seeded, spots);
     await readDetails(page, traffic, seeded, spots);
+    withThreads.children = await readChildren(page, traffic, seeded);
     await readPlanSteps(page, traffic, seeded);
     await readVerificationSteps(page, traffic, seeded);
     if (specSteps) await readSpecSteps(page, traffic, seeded);
@@ -1764,7 +1841,9 @@ test("a comment on text stands beside its node in every view @phone", async ({ b
     }
   });
   if (phone) return;
-  await phase(browser, seedNoThreads, readNoThreads);
+  await phase(browser, seedNoThreads, (page, seeded) =>
+    readNoThreads(page, seeded, withThreads.children)
+  );
 });
 
 // ---------------------------------------------------------------------------------------------
