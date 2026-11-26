@@ -268,10 +268,10 @@ func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	}
 }
 
-// A5. One children-first notice per parent per run: every fact, tick and boot runs the admission
-// pass again, and a child filed later during one wait is no second telling, while a run the tree
-// has not had yet — the one a re-admission opens, and the one a hand-over gives a sub-parent in a
-// tree of its own — is.
+// A5. One children-first notice per parent per run: every pass (the pass rule, Admission.Apply)
+// and boot runs the admission pass again, and a child filed later during one wait is no second
+// telling, while a run the tree has not had yet — the one a re-admission opens, and the one a
+// hand-over gives a sub-parent in a tree of its own — is.
 func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)
