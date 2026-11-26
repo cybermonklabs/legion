@@ -502,15 +502,14 @@ type IssueReleaser interface {
 // configuration now renders for the issue. A Sandbox made at or after since holds a new volume,
 // which holds nothing of a pod before it. The next launch deletes a Sandbox that carries the reset
 // mark or that has another disk shape, with its volume. The daemon asks it of an update round's
-// pod, with the time the round opened: before a replacement, which it makes over a kept volume
-// whatever the read before it found (internal/daemon's roundKeeps), and once the pod is replaced or
-// went before its round was over, to tell the issue whether the work its roles did not push is
-// still on the volume. It asks it with the present time of the release of a pod no claim owns,
-// where the release's decision turns on it (workflow.IdleDecision.TurnsOnKeptVolume), since that
-// release keeps such a volume, reads nothing and is held by no failed read; and in the rename
-// pass's live-pod rules, at each boot and each pod end, to keep the issue on the name its workspace
-// on the volume is under. Every runtime that runs a pod per issue implements it, since the daemon's
-// test of such a runtime (issuePods) needs it; one whose pods keep no volume answers false.
+// pod, with the time the round opened, once the pod is replaced or went before its round was over,
+// to tell the issue whether the work its roles did not push is still on the volume. It asks it
+// with the present time of the release of a pod no claim owns, where the release's decision turns
+// on it (workflow.IdleDecision.TurnsOnKeptVolume), since that release keeps such a volume, reads
+// nothing and is held by no failed read; and in the rename pass's live-pod rules, at each boot
+// and each pod end, to keep the issue on the name its workspace on the volume is under. Every
+// runtime that runs a pod per issue implements it, since the daemon's test of such a runtime
+// (issuePods) needs it; one whose pods keep no volume answers false.
 type IssueVolumeReader interface {
 	IssueKeepsVolume(issue string, since time.Time) bool
 }
