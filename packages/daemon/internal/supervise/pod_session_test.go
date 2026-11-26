@@ -129,6 +129,10 @@ func (c clientRegistrar) KeepPodSession(ctx context.Context, s PodSession) (func
 	})
 }
 
+func (c clientRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return c.client.ReleasePodSessions(ctx, names)
+}
+
 // TestANewIncarnationsFirstWriteFollowsTheOldOnesLastWrite: a role relaunched in its pod (a new
 // generation, so a new incarnation, with a new key) registers its session again with the new
 // hello's thumbprint. The old incarnation's renewal may be in flight when the old process is let
@@ -246,6 +250,8 @@ func (r *keyRecorder) KeepPodSession(_ context.Context, s PodSession) (func(), e
 	return func() {}, nil
 }
 
+func (*keyRecorder) ReleasePodSessions(context.Context, []string) error { return nil }
+
 func (r *keyRecorder) registered() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -260,7 +266,7 @@ func (r *keyRecorder) generations() []uint64 {
 
 // TestEachProcessRegistersAtItsLaunchGeneration: every registration carries the launch generation
 // of the process it registers — the claim's generation, which each launch raises and stores before
-// it starts the process (launchNow), and which the locator records (SandboxLocator.Generation) — so
+// it starts the process (launchTries), and which the locator records (SandboxLocator.Generation) — so
 // the broker can order two processes' writes of one (pod, session) row. A relaunch in the same pod
 // registers at a higher generation than the process it replaced, and a daemon restart, which
 // registers the running process again at its shim's first hello, sends that process's own

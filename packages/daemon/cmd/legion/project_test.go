@@ -93,7 +93,7 @@ func newPauseCommandDaemon(t *testing.T) *pauseCommandDaemon {
 		t.Fatalf("build the pause service: %v", err)
 	}
 	server := httptest.NewServer(api.NewServer("127.0.0.1", 0, api.Options{
-		State: pauseState{store: st, now: clock.now}, StateTransactions: st,
+		State: pauseState{store: st, now: clock.now}, StateTransactions: st.Pool(),
 		Project: "legion", DispatchProject: "LEGION", OperatorToken: pauseOperatorToken, Pause: svc, Log: quiet,
 	}).Handler)
 	t.Cleanup(server.Close)
@@ -153,6 +153,7 @@ func stateLines(out, prefix string) []string {
 // ended it while it runs; and `legion config check` names each setting under which a daemon cannot
 // hold a pause.
 func TestPauseCommands(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	t.Run("pause, state, resume, state", func(t *testing.T) {
 		d := newPauseCommandDaemon(t)
 		// A live role of the project, whose stop the pause asks and waits on.

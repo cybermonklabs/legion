@@ -668,7 +668,7 @@ func (r *readRecorder) take() []recordedRead {
 func runningSweep(sweeper *redeliver.Sweeper) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	sweeper.RunUnderLease(ctx, time.Hour, func(ctx context.Context, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
+	sweeper.RunUnderLease(ctx, time.Hour, func(ctx context.Context, _ *slog.Logger, _ duty.Leases, _ string, _ time.Time, _ time.Duration, pass func(context.Context)) bool {
 		pass(ctx)
 		cancel()
 		return true
@@ -1967,7 +1967,8 @@ func TestABackfillWhoseRecordWriteIsRefusedLeavesTheIndexUnmarked(t *testing.T) 
 // conflictingRecord is the sweep's state bucket whose first record write loses its
 // compare-and-set, as one whose record another writer moved between the read and the write does:
 // NATS answers a write over a revision that is no longer the last with a wrong last sequence
-// error. Every write after that first one is the bucket's own.
+// error, which nats.go v1.55.0 wraps in nats.ErrKeyRevisionMismatch. Every write after that first
+// one is the bucket's own.
 type conflictingRecord struct {
 	natsgo.KeyValue
 	lost atomic.Bool
@@ -1975,7 +1976,8 @@ type conflictingRecord struct {
 
 func (c *conflictingRecord) Update(key string, value []byte, last uint64) (uint64, error) {
 	if strings.HasPrefix(key, "guid.") && c.lost.CompareAndSwap(false, true) {
-		return 0, errors.New("nats: wrong last sequence: 1")
+		moved := &natsgo.APIError{Code: 400, ErrorCode: natsgo.JSErrCodeStreamWrongLastSequence, Description: "wrong last sequence: 1"}
+		return 0, fmt.Errorf("%w: %w", moved, natsgo.ErrKeyRevisionMismatch)
 	}
 	return c.KeyValue.Update(key, value, last)
 }

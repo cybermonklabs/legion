@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -85,11 +86,12 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 		}
 		return nil
 	case failed == nil:
-		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State,
-			"mergeable", string(pull.mergeability()), "mergeState", string(pull.mergeState()))...)
-		if err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("merge-queue-mergeability:%s:%d:%d", row.Issue, row.ID, attempt)); err != nil {
+		applied, err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("merge-queue-mergeability:%s:%d:%d", row.Issue, row.ID, attempt))
+		if err != nil {
 			return fmt.Errorf("apply the mergeability of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 		}
+		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State,
+			"mergeable", string(applied.Mergeable), "mergeState", string(applied.MergeState))...)
 	case attempt < mergeStateLadderReads:
 		delay := r.readAgainAfter(failed)
 		r.log.Warn("outbox merge-queue read: the read of GitHub failed; it reads again",
@@ -197,7 +199,7 @@ type heldMessage struct {
 // (notify.ErrPublishDenied).
 func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMessage) error {
 	held := r.supervisedClaim(m.token)
-	if held.State == supervise.StateFailed || held.State == supervise.StateRetired {
+	if supervise.FailedOrRetired(held.State) {
 		r.log.Info(m.claimEnded, append(m.attributes, "state", held.State)...)
 		return nil
 	}
@@ -248,7 +250,7 @@ func (r *outbox) mergingAt(ctx context.Context, key string, number int, head str
 	var issue *record.Issue
 	var pr *record.PullRequest
 	var left string
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		issue, pr, left, err = workflow.MergingAt(ctx, r.records, tx, key, number, head)
 		return err

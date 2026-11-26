@@ -16,10 +16,10 @@ import {
   CONTROL_LABELS,
   PROGRESS_NOUNS,
 } from "../web/src/features/issue-page/page-words";
-import { addPriorityControlName } from "../web/src/features/priorities/IssuePriorityLine";
+import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { createPriority, getIssue, patchIssue, putRepoProject } from "./api";
+import { createPriority, getIssue, patchIssue, putProjectDefaultRepository } from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -214,7 +214,8 @@ async function drawnFonts(
 }
 
 /** What `drawnFonts` reads of a text of Details' own chrome (`data-page-chrome`) that holds a
- *  symbol outside ASCII, a control's mark such as a priority's Remove, or `null` for any other:
+ *  symbol outside ASCII, a control's mark such as a section's toggle (the priorities' picker
+ *  trigger draws a plain ASCII "+", which is no such symbol), or `null` for any other:
  *  one without such a symbol in its own text, or one inside a reader's own text
  *  (`data-author-text`), which is the author's and drawn in whatever face holds it. It names the
  *  row it stands in and the control's name, where it has one. */
@@ -500,6 +501,10 @@ test("every property with a value is visible in Details at every width @phone", 
   test.setTimeout(240_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one, parent, three } = seeded.keys;
+    // The project's default repository is the one suggestion the repository's box offers, so
+    // the box below is measured with a list that holds an option. ONE names it as its own, and
+    // this row reads no other issue's repository.
+    await putProjectDefaultRepository(PROJECT, REPOSITORY);
     const desktopProject = test.info().project.name !== "iphone";
     // ONE as Dispatch reads it, which the readings below take who opened it from.
     const oneRead = await getIssue(one);
@@ -575,7 +580,8 @@ test("every property with a value is visible in Details at every width @phone", 
         )
         .toEqual([]);
       // So is every symbol in the text of Details' own chrome, whichever control draws it: a
-      // priority's Remove, a section's toggle, a control's mark. A reader's own text is left out.
+      // section's toggle, a control's mark. The priorities' picker trigger draws a plain ASCII
+      // "+", which is no such symbol. A reader's own text is left out.
       const chromeSymbols = await drawnFonts(page, ["[data-page-chrome]"], describeChromeSymbol);
       expect(
         chromeSymbols.filter(drawnOutsideThePagesTypeface).map(glyphReading),
@@ -728,9 +734,9 @@ test("every property with a value is visible in Details at every width @phone", 
       ).toHaveValue(REPOSITORY);
       // The open box is the row's value: as wide as the row's value column, the second of the
       // row's two columns (`details-leaves.tsx`'s `Row`), and wide enough to show the repository
-      // whole. The box fills its list of suggestions from a read it starts when it takes the
-      // focus, and Chromium draws the list's arrow inside the box once the list holds an option,
-      // so both are measured once the list holds the repository, as the reader sees the box.
+      // whole. The box suggests the project's default repository, set at this row's start, and
+      // Chromium draws the list's arrow inside the box once the list holds an option, so both are
+      // measured once the list holds the repository, as the reader sees the box.
       // Both are soft, so that a width the box fails at does not stop the widths after it.
       await expect(
         detailsRow(page, PROPERTY_LABELS.repository).locator(
@@ -1031,7 +1037,7 @@ test("a label of the most characters Dispatch takes is whole in Details at every
 });
 
 /** A repository whose name runs to 45 characters, which GitHub allows (a name of up to 100), with
- *  no space to break it at. A name of 32 characters, which a project of this deployment maps,
+ *  no space to break it at. A name of 32 characters, which a repository of this deployment has,
  *  already runs 14 px past the row at 1440 px. */
 const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
 
@@ -1044,7 +1050,6 @@ test("a repository of a long name is whole in Details at every width @phone", as
   test.setTimeout(180_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { two } = seeded.keys;
-    await putRepoProject(LONG_REPOSITORY, { default: false, project: PROJECT });
     await patchIssue(two, { repo: LONG_REPOSITORY });
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
@@ -1251,10 +1256,17 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     const advancesRow = detailsRow(page, PROPERTY_LABELS.advances);
     await expect(advancesRow).toContainText(PRIORITY_TITLE);
     await expect(advancesRow).toContainText(CONTROL_LABELS.advances_inherited);
+    // TWO's picker offers no row for the priority it inherits from ONE, once it has read the
+    // priorities: that relation is ONE's to take off.
+    await advancesRow.getByRole("button", { name: priorityTriggerName(two, false) }).click();
+    await expect(priorityPicker(page)).toBeVisible();
+    await expect(priorityPicker(page)).not.toContainText(ANSWER_LINES.loading_priorities);
     await expect(
-      advancesRow.getByRole("button", { name: /^Remove / }),
+      priorityPicker(page).getByRole("option", { name: PRIORITY_TITLE }),
       "TWO can remove the priority it inherits from ONE"
     ).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(priorityPicker(page)).toHaveCount(0);
     // An editor open on TWO is not carried to the issue a link moves the page to.
     const routeRow = detailsRow(page, PROPERTY_LABELS.route);
     const routeBox = routeRow.getByLabel(PROPERTY_LABELS.route, { exact: true });
@@ -1332,19 +1344,15 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     ).toBeGreaterThanOrEqual(600);
     await expect(detailsRow(page, PROPERTY_LABELS.blocked_by)).toContainText(seeded.titles.three);
 
-    // (12) THREE's priority, added and removed.
+    // (12) THREE's priority, added and removed through the priorities' picker.
     await reopen(three);
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
-    await marginSlot(page)
-      .getByRole("button", { name: addPriorityControlName(three) })
-      .click();
-    await marginSlot(page)
-      .getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance })
-      .selectOption(seeded.priorityId);
-    await marginSlot(page)
-      .getByRole("button", { exact: true, name: CONTROL_LABELS.add })
-      .last()
-      .click();
+    await togglePriority(
+      page,
+      marginSlot(page).getByRole("button", { name: priorityTriggerName(three, true) }),
+      PRIORITY_TITLE,
+      true
+    );
     await expect.poll(async () => (await getIssue(three)).advances?.length ?? 0).toBe(1);
     await reopen(three);
     const added = detailsRow(page, PROPERTY_LABELS.advances).getByRole("link");
@@ -1352,9 +1360,14 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     await added.click();
     await expect(page).toHaveURL(`/priorities/${seeded.priorityId}`);
     await reopen(three);
-    await detailsRow(page, PROPERTY_LABELS.advances)
-      .getByRole("button", { name: /^Remove / })
-      .click();
+    await togglePriority(
+      page,
+      detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
+        name: priorityTriggerName(three, false),
+      }),
+      PRIORITY_TITLE,
+      false
+    );
     await expect.poll(async () => (await getIssue(three)).advances?.length ?? 0).toBe(0);
     await reopen(three);
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
@@ -1447,6 +1460,42 @@ test("each control in Details saves and reads back", async ({ browser }) => {
  *  id, and Details draws one of them at a time. */
 function priorityLine(page: Page): Locator {
   return marginSlot(page).getByTestId("issue-advances");
+}
+
+/** The list of the line's priorities' picker while it is open: portalled to the page's body, out
+ *  of the line, and found there by its name, which no other control of the page carries. */
+function priorityPicker(page: Page): Locator {
+  return page.getByRole("listbox", { name: "Priorities options" });
+}
+
+/**
+ * Ticks the priority `title` in the priorities' picker whose trigger is `trigger`, or unticks it,
+ * by the keyboard, and leaves it so where `ticks` says: Enter on the trigger opens the picker with
+ * the focus in its search box, the title typed there leaves that priority's row alone in the list,
+ * Enter toggles it, and Escape closes the picker, which gives the focus back to the trigger and
+ * sends the line's one write (`IssuePriorityLine`).
+ */
+async function togglePriority(
+  page: Page,
+  trigger: Locator,
+  title: string,
+  ticks: boolean
+): Promise<void> {
+  await trigger.focus();
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }),
+    "the trigger's Enter opened no picker"
+  ).toBeFocused();
+  await page.keyboard.type(title);
+  const option = priorityPicker(page).getByRole("option", { name: title });
+  await expect(priorityPicker(page).getByRole("option")).toHaveCount(1);
+  await expect(option).toHaveAttribute("aria-selected", String(!ticks));
+  await page.keyboard.press("Enter");
+  await expect(option).toHaveAttribute("aria-selected", String(ticks));
+  await page.keyboard.press("Escape");
+  await expect(priorityPicker(page), "Escape left the picker open").toHaveCount(0);
 }
 
 /** A priority the rows below create for themselves, beside the seed's own: the second one an
@@ -1559,14 +1608,14 @@ async function expectFocusKept(
 
 /** The rule each priority's row holds after an Enter on `pressed` between the write landing and
  *  the new read being drawn: the press was refused, so `pressed` says it takes no press
- *  (`aria-disabled`) and the add control's form did not open. A control that took that Enter and
- *  opened its form would keep the focus in the line and send no write, so the focus and the
- *  writes alone cannot tell it from one that refused the press. */
+ *  (`aria-disabled`) and the priorities' picker did not open. A trigger that took that Enter and
+ *  opened its picker would send no write, so the writes alone cannot tell it from one that
+ *  refused the press. */
 async function expectPressRefused(page: Page, pressed: Locator, moment: string): Promise<void> {
   await nextFrames(page);
   await expect(
-    priorityLine(page).getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance }),
-    `${moment}: the press opened the add control's form`
+    priorityPicker(page),
+    `${moment}: the press opened the priorities' picker`
   ).toHaveCount(0);
   await expect(pressed, `${moment}: the control pressed takes a press`).toHaveAttribute(
     "aria-disabled",
@@ -1582,7 +1631,7 @@ async function expectPressRefused(page: Page, pressed: Locator, moment: string):
 // how many writes went out. The priority's rows act on ONE's Advances row, which stays drawn
 // through the write, so what they read is the shared line's alone.
 test.describe("the shared controls of Details keep the focus while their write lands", () => {
-  test("Details' priority Remove keeps the focus in the priority's line while the removal lands, and sends one write", async ({
+  test("Details' priority picker keeps the focus in the priority's line while a removal lands, and sends one write", async ({
     browser,
   }) => {
     test.setTimeout(120_000);
@@ -1596,12 +1645,10 @@ test.describe("the shared controls of Details keep the focus while their write l
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
       await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
-      const remove = advances.getByRole("button", { name: /^Remove / });
-      await expect(remove).toHaveCount(1);
+      await expect(advances.getByRole("link", { name: PRIORITY_TITLE })).toHaveCount(1);
+      const trigger = advances.getByRole("button", { name: priorityTriggerName(one, false) });
       const issue = await holdIssue(page, one, true);
-      await remove.focus();
-      await expect(remove).toBeFocused();
-      await page.keyboard.press("Enter");
+      await togglePriority(page, trigger, PRIORITY_TITLE, false);
       await issue.writeOut;
       await nextFrames(page);
       await page.keyboard.press("Enter");
@@ -1622,39 +1669,26 @@ test.describe("the shared controls of Details keep the focus while their write l
         "after a second Enter between the removal landing and the new read"
       );
       await issue.releaseReads();
-      await expect(advances.getByRole("button", { name: /^Remove / })).toHaveCount(0);
+      await expect(advances.getByRole("link", { name: PRIORITY_TITLE })).toHaveCount(0);
       await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
       await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
     });
   });
 
-  test("Details' Add a priority keeps the focus in the priority's line while the added priority lands, and sends one write", async ({
+  test("Details' priority picker keeps the focus in the priority's line while an added priority lands, and sends one write", async ({
     browser,
   }) => {
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { one } = seeded.keys;
-      const second = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
       await gotoIssue(page, `/issues/${one}`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
-      const addPriority = advances.getByRole("button", { name: addPriorityControlName(one) });
-      await addPriority.focus();
-      await expect(addPriority).toBeFocused();
-      await page.keyboard.press("Enter");
-      const picker = advances.getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance });
-      await expect(picker).toBeFocused();
-      await expect(picker.locator("option", { hasText: SECOND_PRIORITY_TITLE })).toHaveCount(1);
-      // The one priority ONE does not advance yet, the first after the picker's empty choice.
-      await page.keyboard.press("ArrowDown");
-      await expect(picker).toHaveValue(second.id);
+      const trigger = advances.getByRole("button", { name: priorityTriggerName(one, false) });
       const issue = await holdIssue(page, one, true);
-      await page.keyboard.press("Tab");
-      const add = picker
-        .locator("xpath=ancestor::form[1]")
-        .getByRole("button", { exact: true, name: CONTROL_LABELS.add });
-      await expect(add).toBeFocused();
-      await page.keyboard.press("Enter");
+      // The one priority ONE does not advance yet.
+      await togglePriority(page, trigger, SECOND_PRIORITY_TITLE, true);
       await issue.writeOut;
       await nextFrames(page);
       await page.keyboard.press("Enter");
@@ -1668,8 +1702,8 @@ test.describe("the shared controls of Details keep the focus while their write l
       await issue.landed;
       await readHeld(page, issue);
       await expect(
-        addPriority,
-        "the add control lost the focus as Add's write landed"
+        trigger,
+        "the picker's trigger lost the focus as its write landed"
       ).toBeFocused();
       await page.keyboard.press("Enter");
       await expectFocusKept(
@@ -1680,15 +1714,15 @@ test.describe("the shared controls of Details keep the focus while their write l
       );
       await expectPressRefused(
         page,
-        addPriority,
+        trigger,
         "after a second Enter between the added priority landing and the new read"
       );
       await issue.releaseReads();
       await expect(advances.getByRole("link")).toHaveCount(2);
       await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
       await expect(
-        addPriority,
-        "once the new read is drawn, the focus is not on the add control"
+        trigger,
+        "once the new read is drawn, the focus is not on the picker's trigger"
       ).toBeFocused();
     });
   });
@@ -1778,11 +1812,11 @@ test.describe("the shared controls of Details keep the focus while their write l
 // Details draws the priority's line in one of two places: beside Add while the issue advances
 // none, and in the Advances row once it advances one. The first priority added and the last one
 // removed move the line from one place to the other, and a focus the line still holds when it
-// leaves moves with it, to the other place's add control, rather than fall to the page's body
-// with the line it left. Each of these two rows presses Enter again on the control it pressed
-// while the issue's read after the write is held, which the control refuses, and reads, once the
-// new read is drawn, that the focus is on the add control of the line's new place, and the
-// writes sent.
+// leaves moves with it, to the picker trigger of the other place - "Edit priorities" in the
+// Advances row, the add control beside Add - rather than fall to the page's body with the line it
+// left. Each of these two rows presses Enter again on the trigger it pressed while the issue's
+// read after the write is held, which the trigger refuses, and reads, once the new read is drawn,
+// that the focus is on the trigger of the line's new place, and the writes sent.
 test("Details' Add a priority on an issue that advances none keeps the focus in Details' priority place once the line moves into the Advances row, and sends one write", async ({
   browser,
 }) => {
@@ -1792,29 +1826,13 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     await gotoIssue(page, `/issues/${three}`);
     await openDetails(page);
     const addPriority = priorityLine(page).getByRole("button", {
-      name: addPriorityControlName(three),
+      name: priorityTriggerName(three, true),
     });
-    await addPriority.focus();
-    await expect(addPriority).toBeFocused();
-    await page.keyboard.press("Enter");
-    const picker = priorityLine(page).getByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
-    await expect(picker).toBeFocused();
-    await expect(picker.locator("option", { hasText: PRIORITY_TITLE })).toHaveCount(1);
-    // The first priority after the picker's empty choice, by its arrow key.
-    await page.keyboard.press("ArrowDown");
-    await expect(picker).toHaveValue(seeded.priorityId);
     const issue = await holdIssue(page, three, false);
-    await page.keyboard.press("Tab");
-    const add = picker
-      .locator("xpath=ancestor::form[1]")
-      .getByRole("button", { exact: true, name: CONTROL_LABELS.add });
-    await expect(add).toBeFocused();
-    await page.keyboard.press("Enter");
+    await togglePriority(page, addPriority, PRIORITY_TITLE, true);
     await issue.landed;
     await readHeld(page, issue);
-    await expect(addPriority, "the add control lost the focus as Add's write landed").toBeFocused();
+    await expect(addPriority, "the add control lost the focus as its write landed").toBeFocused();
     await page.keyboard.press("Enter");
     await expectPressRefused(
       page,
@@ -1832,14 +1850,14 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
     );
     await expect(
       detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
-        name: addPriorityControlName(three),
+        name: priorityTriggerName(three, false),
       }),
-      "once the new read moved the line into the Advances row, the focus is not on its add control"
+      "once the new read moved the line into the Advances row, the focus is not on its picker trigger"
     ).toBeFocused();
   });
 });
 
-test("Details' priority Remove of an issue's last priority keeps the focus in Details' priority place once the line moves back beside Add, and sends one write", async ({
+test("Details' priority picker's removal of an issue's last priority keeps the focus in Details' priority place once the line moves back beside Add, and sends one write", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -1847,28 +1865,26 @@ test("Details' priority Remove of an issue's last priority keeps the focus in De
     const { one } = seeded.keys;
     await gotoIssue(page, `/issues/${one}`);
     await openDetails(page);
-    const remove = detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
-      name: /^Remove /,
+    const trigger = detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
+      name: priorityTriggerName(one, false),
     });
-    await expect(remove).toHaveCount(1);
+    await expect(trigger).toHaveCount(1);
     const issue = await holdIssue(page, one, false);
-    await remove.focus();
-    await expect(remove).toBeFocused();
-    await page.keyboard.press("Enter");
+    await togglePriority(page, trigger, PRIORITY_TITLE, false);
     await issue.landed;
     await readHeld(page, issue);
-    await expect(remove, "Remove lost the focus as its write landed").toBeFocused();
+    await expect(trigger, "the picker's trigger lost the focus as its write landed").toBeFocused();
     await page.keyboard.press("Enter");
     await expectPressRefused(
       page,
-      remove,
+      trigger,
       "after a second Enter between the removal landing and the new read"
     );
     await issue.releaseReads();
     // ONE advances nothing now, so its line is the control beside Add.
     await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
     const addPriority = priorityLine(page).getByRole("button", {
-      name: addPriorityControlName(one),
+      name: priorityTriggerName(one, true),
     });
     await expect(addPriority).toBeVisible();
     await expectFocusKept(

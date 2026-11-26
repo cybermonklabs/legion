@@ -35,7 +35,7 @@ func newClaimsCommand(stdout, stderr io.Writer) *cobra.Command {
 		claimsCommand("suspend", "suspend a claim, once the turn its agent is in ends", claimsSuspend, stdout, stderr),
 		claimsCommand("resume", "resume a suspended claim", claimRequest("resume"), stdout, stderr),
 		claimsCommand("stop", "stop a claim's agent", claimRequest("stop"), stdout, stderr),
-		claimsCommand("retry", "retry a failed claim, or every failed claim", claimsRetry, stdout, stderr),
+		claimsCommand("retry", "retry a failed claim, or every failed claim; a claim with no process whose launch waits its paced turn launches now", claimsRetry, stdout, stderr),
 		claimsCommand("compact", "compact a claim's Oh My Pi session and send it the task it owes again", claimsCompact, stdout, stderr),
 		claimsCommand("forget-session", "clear a stopped claim's recorded session", claimsForgetSession, stdout, stderr),
 		claimsCommand("release-names", "free the names of a claim's other sessions once the secrets broker carries nothing of them", claimsReleaseNames, stdout, stderr),
@@ -203,7 +203,7 @@ func issuesOrNone(name string, issues []string) string {
 // (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
 // recorded), the update round the claim is in with the head its worker reported when it
 // answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), the
-// tool call its agent is in (openCallWord), and last the sentence its latest launch try was
+// call its record holds open (openCallWord), and last the sentence its latest launch try was
 // refused with because the shared public leak check could not be installed in its pod, quoted so
 // the line stays one line per claim (`-` for a claim no leak check refused). This listing is
 // where the controller's cause is read, since its claim is on no claim view of the state. A
@@ -216,18 +216,21 @@ func writeClaimLine(w io.Writer, c api.OperatorClaim) {
 		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)), quotedOrNone(c.LeakCheckCause))
 }
 
-// openCallWord is the tool call a claim's agent is in, as the line prints it: the tool, the call
-// id the stream's start and end frames pair by, and when the daemon received the start. It is
-// empty for a claim in no open call — one whose last call ended, and one whose agent has not
-// stepped at all — which the line prints as `-`.
+// openCallWord is the call a claim's record holds open, whatever the claim's state, as the line
+// prints it: the tool, the call id the stream's start and end frames pair by, and when the daemon
+// received the start. Only a working claim's agent is in that call: a retired or suspended claim
+// keeps the step it was last in on its record. It is empty for a claim whose record holds no open
+// call — one whose last call ended, and one whose agent has not stepped at all — which the line
+// prints as `-`.
 //
 // A call the host backgrounded is an ended call here, and its command may still be running: Oh
 // My Pi backgrounds a plain foreground shell command that has not returned in about a minute, or
 // at once when a steering message reaches the turn, ending the call with no error and handing
 // the job to the agent, which is a `tool_execution_end` on
 // the stream like any other (measured 2026-11-08 in the plugin's own live proof,
-// legion-stall-watchdog-omp.test.ts). So this column says what the agent is parked in, which is
-// what a stalled turn is read from, and never what is running on the worker's machine.
+// legion-stall-watchdog-omp.test.ts). So for a working claim this column says what the agent is
+// parked in, which is what a stalled turn is read from, and never what is running on the worker's
+// machine.
 //
 // A call still open is the one shape a stalled turn leaves behind (api.StepView), and this is
 // where an operator reads a controller's: internal/projection puts the controller's claim on no
@@ -372,6 +375,10 @@ func claimsForgetSession(c *claimsCall) action {
 // nothing of them (api's releaseNames): what a claim refused a new session at the most names one
 // claim may hold needs, often right after a forget-session. A refusal names each enrollment the
 // broker still carries and when it ends; nothing is freed then, and the operator runs it again.
+// Where the daemon registers pod sessions (exchange_audience), the broker releases the session
+// names among them first, and a broker that does not answer that release (503) or refuses it (502)
+// frees nothing either. Each refusal is printed as every one is, the daemon's status and sentence
+// (operatorCall.request), and the command fails.
 func claimsReleaseNames(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	return func(ctx context.Context, _ []string) int {
@@ -401,16 +408,17 @@ func printReleasedNames(w io.Writer, answer []byte) error {
 	return err
 }
 
-// claimsCompact compacts --claim's Oh My Pi session and has the daemon send the claim whatever
-// task it owes again: what a claim whose provider keeps refusing its session reaches for before a
-// fresh session, since the session, its workspace and everything the worker knows of its issue
-// stay where they are (api's compact).
+// claimsCompact compacts --claim's Oh My Pi session with a handoff and has the daemon send the
+// claim whatever task it owes again: what a claim whose provider keeps refusing its session
+// reaches for before a fresh session, since the session, its workspace and everything the worker
+// knows of its issue stay where they are (api's compact).
 //
-// The request carries no deadline of its own, as no `legion claims` request does: a compaction
+// The request carries no deadline of its own, as no `legion claims` request does: the handoff
 // is a model call over the whole transcript, and the daemon bounds it at ten minutes
 // (runtime.CompactTimeout). The daemon's answer is printed whether or not the session was
-// compacted — a session too small to compact, or one already compacted, is reported with Oh My
-// Pi's own words for it, and whatever task the claim owed has gone again in either case.
+// shortened — a handoff Oh My Pi refused is reported with Oh My Pi's own words for it, and one
+// that made no document with the daemon's — and whatever task the claim owed has gone again in
+// either case.
 func claimsCompact(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (required)")
 	return func(ctx context.Context, _ []string) int {
@@ -441,23 +449,26 @@ func printCompaction(w io.Writer, answer []byte) error {
 }
 
 // claimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
-// order the daemon lists them: an architect is relaunched on its session with fresh budgets, a
-// phase worker is relaunched by the start of its issue's phase — the phase it is held from, or the
-// one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
-// naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim
-// prints it, each refusal is reported naming its claim, and the command fails once any was
-// refused, having asked for every one. A claim an operator stopped is retired rather than failed,
-// so --failed passes over it: name it with --claim.
+// order the daemon lists them: an architect's agent is launched again with fresh budgets, a phase
+// worker's is launched again by the start of its issue's phase — the phase it is held from, or
+// the one it stands in, which is where an operator's stop leaves it — and the daemon refuses the
+// rest, naming why (api's retryClaim). Under --failed each retried claim prints its line as
+// --claim prints it, each refusal is reported naming its claim, and the command fails once any
+// was refused, having asked for every one. A claim an operator stopped is retired rather than
+// failed, so --failed passes over it: name it with --claim.
 //
-// --fresh-session starts the claim in a new session rather than resuming the recorded one, which
-// is what a claim whose provider refused its session needs: resuming it would be refused again.
-// The daemon starts one of its own accord for a claim the provider refused out of its budget,
-// whoever retried it, so the flag is for every other reason an operator has to leave a session
-// behind — an agent wedged in a way no budget counts among them.
+// --fresh-session starts the claim's agent in a new session rather than resuming the recorded
+// one. Every other retry resumes the recorded session with fresh budgets, whatever its run of
+// refused turns (supervise's freshSession): a new session is the operator's or the controller's
+// choice, for an agent wedged in a way no budget counts, or a session its provider keeps refusing
+// when a new one would not be. The one exception is a claim held for OpenAI's cyber-policy
+// refusal, whose agent every retry starts in a new session, with the flag or without it and under
+// --failed as under --claim, since its recorded session would send the refused content to OpenAI
+// again.
 func claimsRetry(c *claimsCall) action {
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
 	failed := c.flags.Bool("failed", false, "retry every claim the daemon holds failed")
-	fresh := c.flags.Bool("fresh-session", false, "start the claim in a new session rather than resuming the recorded one")
+	fresh := c.flags.Bool("fresh-session", false, "start the claim's agent in a new session rather than resuming the recorded one")
 	return func(ctx context.Context, _ []string) int { return c.retry(ctx, *token, *failed, *fresh) }
 }
 
@@ -586,7 +597,7 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 		}
 		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
 			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, *c.wait)
+				"runtime refused the stop, which is tried again every probe interval\n", c.name(), token, seen.State, c.waited)
 			return nil, false
 		}
 		select {

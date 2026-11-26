@@ -417,10 +417,49 @@ func TestAHandoffStartsTheNextPhaseAndLeavesNoHourBetweenThem(t *testing.T) {
 	}
 }
 
-// TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone: "A seventh bar, 'no role', holds the phases no
-// role works: `awaiting_person` and `held`", and the spec's "Phase boundaries before
-// observations" holds it to those two. Every other hour of the work time is on a role's bar.
-func TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone(t *testing.T) {
+// The fallback timeline follows the order of the steps the issue's plan names, not the default
+// steps' order. Under `implementer reviewer tester` the implement handoff starts reviewing, the
+// review handoff starts testing, the tester's first event is no step back, and the test handoff,
+// the last step's, starts the retro. A plan made after an event does not reach back to it: the
+// event reads the plan of the run it fell in, or the first run's where it fell before every plan.
+// The control is the same event log with no plan, read in the default steps' order.
+func TestTheFallbackTimelineFollowsTheStepsOfTheIssuesPlan(t *testing.T) {
+	events := func() *Issue {
+		return newIssue("INFRA-1").
+			worked("implementer", hour(0)).
+			handedOff("implement", hour(2)).
+			worked("reviewer", hour(3)).
+			handedOff("review", hour(5)).
+			worked("tester", hour(6)).
+			handedOff("test", hour(8)).
+			closedAt(hour(10))
+	}
+	for _, tc := range []struct {
+		name  string
+		issue *Issue
+		want  []string
+	}{
+		{"implementer reviewer tester", events().ran(hour(0), "implementer", "reviewer", "tester"),
+			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
+		{"the plan of the first run, made after the first event", events().ran(hour(1), "implementer", "reviewer", "tester"),
+			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
+		{"control: no plan, the default steps", events(),
+			[]string{"implementing 0-2", "testing 2-3", "reviewing 3-5", "accepting 5-8", "reviewing 8-10"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := timelineOf(fixture(hour(-24), hour(24), tc.issue), tc.issue); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the fallback timeline is %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheNoRoleBarHoldsAwaitingPersonAndHeld: "A seventh bar, 'no role', holds the phases no role
+// works: `awaiting_person` and `held`", and the spec's "Phase boundaries before observations"
+// holds it to the phases no role works, of which dispatch://INFRA-3320 adds a third
+// (TestTheNoRoleBarHoldsAParentsWaitOnItsChildren). Every other hour of the work time is on a
+// role's bar.
+func TestTheNoRoleBarHoldsAwaitingPersonAndHeld(t *testing.T) {
 	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
 		observeString(legion.FieldPhase, hour(1), "awaiting_person").
@@ -439,6 +478,30 @@ func TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone(t *testing.T) {
 	}
 	if hours := barOf(t, report, "implementer").Hours; hours != 4 {
 		t.Fatalf("the implementer bar = %g hours, want the four hours of implementing", hours)
+	}
+}
+
+// TestTheNoRoleBarHoldsAParentsWaitOnItsChildren: `awaiting_children`, the phase a parent waits
+// in while a Dispatch child of it is open (dispatch://INFRA-3320, R11), is a phase no role works,
+// so its hours are on the "no role" bar, and the seven bars of a parent that waited add up to its
+// work time. The parent below implements for an hour, waits on its children for two, and comes
+// back to the testing start it held for three.
+func TestTheNoRoleBarHoldsAParentsWaitOnItsChildren(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(1), "awaiting_children").
+		observeString(legion.FieldPhase, hour(3), "testing").
+		observeString(legion.FieldPhase, hour(6), "done")
+	partitionsItsWorkTime(t, issue)
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if hours := barOf(t, report, barNoRole).Hours; hours != 2 {
+		t.Fatalf("the no-role bar = %g hours, want the two hours the parent waited on its children", hours)
+	}
+	if hours := barOf(t, report, "implementer").Hours; hours != 1 {
+		t.Fatalf("the implementer bar = %g hours, want the one hour of implementing", hours)
+	}
+	if hours := barOf(t, report, "tester").Hours; hours != 3 {
+		t.Fatalf("the tester bar = %g hours, want the three hours of testing after the wait", hours)
 	}
 }
 

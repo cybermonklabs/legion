@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 )
 
@@ -62,7 +63,11 @@ agents:available) echo LEGION_OMP_AGENTS=available >&2; exit 0 ;;
 agents:missing) echo LEGION_OMP_AGENTS=missing >&2; exit 0 ;;
 agents:silent) exit 0 ;;
 agents:available-then-die) echo LEGION_OMP_AGENTS=available >&2; echo "database is locked" >&2; exit 1 ;;
-agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; exec sleep 30 ;;
+# A pass that takes its time, as Oh My Pi does on a loaded machine: longer than a budget of a
+# second or two, and far inside the rig's.
+agents:available-slowly) sleep 2; echo LEGION_OMP_AGENTS=available >&2; exit 0 ;;
+# Answers, then hangs past the rig's answerBudget, so the budget cuts it only after the answer.
+agents:missing-then-hang) echo LEGION_OMP_AGENTS=missing >&2; exec sleep 120 ;;
 load:yes) printf "$legion$with_envoy" >&2; exit 0 ;;
 load:no) echo LEGION_PLUGIN_LOADED=no >&2; exit 0 ;;
 load:elsewhere) printf "LEGION_PLUGIN_LOADED=yes\nLEGION_PLUGIN_LOADED_FROM=file://$dir/elsewhere/pi-legion/dist/legion.js\nLEGION_PLUGIN_ENVOY_INTERFACE=1\n$with_envoy" >&2; exit 0 ;;
@@ -83,7 +88,7 @@ esac
 echo "fake omp: no step $step for $kind" >&2; exit 65
 `
 	path := filepath.Join(dir, "omp")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+	if err := execfile.Write(path, []byte(script), 0o755); err != nil {
 		t.Fatalf("write the fake omp: %v", err)
 	}
 	return imageOmp{dir: dir, path: path}
@@ -145,8 +150,8 @@ func imageEnv(home string) map[string]string {
 }
 
 // imageGateUnder is the image probe's gate over the image's HOME, loading the image's plugin roots
-// as a pod does, run through f, with budgets that cost the suite little: attempts bounds the retry
-// (0 for none).
+// as a pod does, run through f, with a retry that costs the suite little: attempts bounds it (0
+// for none). Its attempt budget is answerBudget, so an attempt that answers races no clock.
 func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (pluginGate, *bytes.Buffer) {
 	t.Helper()
 	var logged bytes.Buffer
@@ -157,11 +162,35 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 		envoyPluginRoot: envoyRootOf(home),
 		workDir:         t.TempDir(),
 		invocation:      f.path,
-		timeout:         1500 * time.Millisecond,
+		timeout:         answerBudget,
 		retry:           bootprobe.Retry{Initial: 10 * time.Millisecond, Max: 40 * time.Millisecond, Attempts: attempts},
 		contract:        3,
 		log:             slog.New(slog.NewTextHandler(&logged, nil)),
 	}, &logged
+}
+
+// The two attempt budgets of the gate rigs, the boot gate's (gateUnder) and the image probe's
+// (imageGateUnder). answerBudget is one no attempt of a fake that answers comes near, however
+// loaded the machine: a pass that ran past a budget of a second or two was cut off and asked
+// again, and the probe ran once more than its case said. The slowest answering attempt measured
+// was about 8 s, at a load average of 1,200 on 288 CPUs. An attempt that answers and then hangs
+// keeps it, and its hang outlasts it, so the budget cuts it only after the answer: each such case
+// takes the budget's length. hangBudget is the budget of a case whose cut attempts answer nothing
+// (hangsUnder), short so that each attempt it cuts off costs the suite little; such a case runs no
+// attempt that must answer in time, so no probe that answers runs before the one that hangs, and
+// its attempts are counted from the gate (its refusal and its transient lines), since an attempt
+// cut off before the fake wrote its count leaves none.
+const (
+	answerBudget = 20 * time.Second
+	hangBudget   = 500 * time.Millisecond
+)
+
+// hangsUnder gives gate hangBudget, bounded to attempts, where plan holds a step that hangs before
+// it answers anything, and leaves it as it is otherwise.
+func hangsUnder(gate *pluginGate, plan []string, attempts int) {
+	if slices.Contains(plan, "hang") {
+		gate.timeout, gate.retry.Attempts = hangBudget, attempts
+	}
 }
 
 // A pod loads the Envoy and Legion plugins as its two explicit extension roots, in that order,
@@ -169,6 +198,7 @@ func imageGateUnder(t *testing.T, f imageOmp, legion string, attempts int) (plug
 // or pin change that broke only that lane would otherwise pass the probe whose job is to refuse
 // such an image, and every pod would start without the Legion tool.
 func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	root, envoyRoot := legionRootOf(home), envoyRootOf(home)
@@ -220,6 +250,7 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 // Without the references of the role prompts a pod is handed, the image probe would resolve the
 // plugin's names alone, so it is refused before any probe runs.
 func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 
@@ -239,6 +270,7 @@ func TestTheImageProbeRequiresTheRolePromptsReferences(t *testing.T) {
 // A relative plugin root is the one the caller's working directory names: the probe hands Oh My Pi
 // each directory, absolute, and holds what it loaded to those directories' manifests.
 func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
+	// Not parallel: it changes the whole process's working directory.
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	t.Chdir(home)
@@ -263,6 +295,7 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 // published twice — the profile linking it beside the explicit root, which a pod with discovery on
 // loads once by each path — is refused naming every copy and the root.
 func TestTheImageProbesRefusalsNameThePluginRootAPodLoads(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name, legion string
 		load         []string
@@ -316,6 +349,7 @@ func TestTheImageProbesRefusalsNameThePluginRootAPodLoads(t *testing.T) {
 // the contract, the session-storage setting — each as a pod runs Oh My Pi, under the image's own
 // environment, and leaves no probe file behind.
 func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	home := imageHome(t, contractCurrent)
 	env := imageEnv(home)
@@ -359,6 +393,7 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 // The image's plugin is held to the contract the caller names — the daemon's, passed to the probe
 // Sandbox's pod — and refused naming both numbers before the plugin load is probed.
 func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
+	t.Parallel()
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	gate, _ := imageGateUnder(t, f, contractPrevious, 0)
 	gate.contract = 2
@@ -380,9 +415,11 @@ func TestTheImageProbeHoldsThePluginToTheContractItIsGiven(t *testing.T) {
 
 // The pi.agents probe: a pass needs the capability marker and a clean exit; an answer — the
 // `missing` marker, a clean exit without a marker, a launch that fails before Oh My Pi — is
-// refused at once; Oh My Pi dying after it answered, or a probe the budget cut off before it
-// answered, is waited out.
+// refused at once; Oh My Pi dying after it answered is waited out, as is a probe the budget cut
+// off before it answered (TestTheImageProbeGivesUpAfterItsAttempts). A pass slower than a second
+// or two passes on the first attempt that answers, as it does on a loaded machine.
 func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		plan     []string
 		attempts int
@@ -393,8 +430,7 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		{[]string{"silent"}, 1, []string{"does not expose pi.agents"}},
 		{[]string{"denied"}, 1, []string{"does not expose pi.agents", "secrets: ANTHROPIC_API_KEY was denied"}},
 		{[]string{"missing-then-hang"}, 1, []string{"does not expose pi.agents", "LEGION_OMP_AGENTS=missing"}},
-		{[]string{"available-then-die", "available-then-die", "available"}, 3, nil},
-		{[]string{"hang", "hang", "available"}, 3, nil},
+		{[]string{"available-then-die", "available-then-die", "available-slowly", "available"}, 3, nil},
 	} {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, testCase.plan, []string{"yes"}, []string{"refuses"})
@@ -423,10 +459,12 @@ func TestTheAgentsProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 	}
 }
 
-// The session-storage probe: a build that carries the setting refuses the probe's nonsense value,
+// The session-storage probe, run on its own (verifySessionStorage), so no other probe's attempt
+// runs under a case's budget: a build that carries the setting refuses the probe's nonsense value,
 // naming the variable; a clean start is a build that predates the setting, refused; any other
 // failure is the launch dying before the setting's resolver ran, waited out.
 func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		plan     []string
 		attempts int
@@ -435,24 +473,28 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 		{[]string{"refuses"}, 1, nil},
 		{[]string{"accepts"}, 1, []string{"started with OMP_SESSION_STORAGE=legion-launch-probe (exit 0)", "predates the session.storage setting"}},
 		{[]string{"dies", "dies", "refuses"}, 3, nil},
-		{[]string{"hang", "hang", "refuses"}, 3, nil},
+		{[]string{"hang"}, 3, []string{"never completed within its retry budget (3 attempts)", "timed out after"}},
 	} {
 		t.Run(strings.Join(testCase.plan, ","), func(t *testing.T) {
 			f := newImageOmp(t, []string{"available"}, []string{"yes"}, testCase.plan)
-			gate, _ := imageGateUnder(t, f, contractCurrent, 0)
+			gate, logged := imageGateUnder(t, f, contractCurrent, 0)
+			hangsUnder(&gate, testCase.plan, testCase.attempts)
 
-			err := gate.verifyImage(context.Background())
+			err := gate.verifySessionStorage(context.Background())
 
 			if testCase.refusal == nil && err != nil {
-				t.Fatalf("verifyImage = %v, want a pass", err)
+				t.Fatalf("verifySessionStorage = %v, want a pass", err)
 			}
 			for _, want := range testCase.refusal {
 				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("verifyImage = %v, want a refusal saying %q", err, want)
+					t.Errorf("verifySessionStorage = %v, want a refusal saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, "session"); n != testCase.attempts {
+			if n := f.attempts(t, "session"); n > testCase.attempts || (n < testCase.attempts && !slices.Contains(testCase.plan, "hang")) {
 				t.Errorf("the session-storage probe ran %d times, want %d", n, testCase.attempts)
+			}
+			if got, want := strings.Count(logged.String(), "failed transiently"), testCase.attempts-1; got != want {
+				t.Errorf("logged %d transient failures, want %d:\n%s", got, want, logged.String())
 			}
 		})
 	}
@@ -461,13 +503,14 @@ func TestTheSessionStorageProbeClassifiesWhatOhMyPiSaid(t *testing.T) {
 // The image probe's retry is bounded: an image build has no supervisor, so a probe that never
 // answers ends the build naming the budget and what the last attempt said.
 func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name                  string
 		agents, session, want []string
 		kind                  string
 	}{
 		{"pi.agents cut off every time", []string{"hang"}, []string{"refuses"},
-			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 1.5s"}, "agents"},
+			[]string{"the OMP pi.agents probe never completed within its retry budget (3 attempts)", "timed out after 500ms"}, "agents"},
 		{"Oh My Pi dying before the resolver every time", []string{"available"}, []string{"dies"},
 			[]string{"the OMP session storage setting probe never completed within its retry budget (3 attempts)", "exited 1 without naming OMP_SESSION_STORAGE", "database is locked"}, "session"},
 		// A signal's death has no status: read as one, it was `exited -1 without naming …`.
@@ -476,7 +519,8 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			f := newImageOmp(t, testCase.agents, []string{"yes"}, testCase.session)
-			gate, _ := imageGateUnder(t, f, contractCurrent, 3)
+			gate, logged := imageGateUnder(t, f, contractCurrent, 3)
+			hangsUnder(&gate, testCase.agents, 3)
 
 			err := gate.verifyImage(context.Background())
 
@@ -485,8 +529,11 @@ func TestTheImageProbeGivesUpAfterItsAttempts(t *testing.T) {
 					t.Errorf("verifyImage = %v, want an error saying %q", err, want)
 				}
 			}
-			if n := f.attempts(t, testCase.kind); n != 3 {
+			if n := f.attempts(t, testCase.kind); n > 3 || (n < 3 && !slices.Contains(testCase.agents, "hang")) {
 				t.Errorf("the %s probe ran %d times, want the bound, 3", testCase.kind, n)
+			}
+			if got := strings.Count(logged.String(), "failed transiently"); got != 2 {
+				t.Errorf("logged %d transient failures, want 2 before the bound:\n%s", got, logged.String())
 			}
 		})
 	}

@@ -138,7 +138,7 @@ func groupApproverRows(t *testing.T) approverRows {
 func ownerApproverRows(t *testing.T, owner string) approverRows {
 	t.Helper()
 	m, enr, key := newJudgeFixture(t)
-	retag(t, m, policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1"))
+	retag(t, m, policytest.Judged(policytest.Secret("DEEL_API_KEY", owner, policy.TierHuman, "deel-v1"), 900, ""))
 	rows := approverRows{m: m, dispatch: projectaccesstest.NewServer(t, nil, approverKinds())}
 	pending := newSecretRequest(t, m, "box-pending")
 	rows.pending = *pending.RecordID
@@ -165,7 +165,7 @@ func anyoneApproverRows(t *testing.T) approverRows {
 	ask := func(runtimeID string) Request {
 		t.Helper()
 		pod, key := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, runtimeID+"-"+t.Name())
-		req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "needs the shared key", "SHARED_KEY"), "", nil)
+		req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "needs the shared key", "SHARED_KEY"), "")
 		if err != nil {
 			t.Fatalf("Create(SHARED_KEY) on %s: %v", runtimeID, err)
 		}
@@ -301,7 +301,7 @@ func TestARestrictedMemberKeepsWhatIsTheirOwn(t *testing.T) {
 			m.Projects = nil
 			retag(t, m, policytest.Secret("SHARED_TOKEN", policy.OwnerShared, policy.TierAgent, "shared-token-v1"))
 			session, key := newEnrollment(t, m.Store, "session", "own-box-"+t.Name(), new(who.person), nil)
-			own, err := m.Create(t.Context(), session, signRequest(t, m, key, "needs it", "SHARED_TOKEN"), "", nil)
+			own, err := m.Create(t.Context(), session, signRequest(t, m, key, "needs it", "SHARED_TOKEN"), "")
 			if err != nil || own.GrantID == nil {
 				t.Fatalf("Create(SHARED_TOKEN) on %s's session = %+v, %v; want it granted at once", who.person, own, err)
 			}
@@ -360,7 +360,7 @@ func TestAnApproverWhoseMemberKindCannotBeReadIsNoApprover(t *testing.T) {
 	m := rows.m
 	ctx := context.Background()
 	session, key := newEnrollment(t, m.Store, "session", "own-box-"+t.Name(), new(secondMember), nil)
-	own, err := m.Create(ctx, session, signRequest(t, m, key, "team work", "TEAM_TOKEN"), "", nil)
+	own, err := m.Create(ctx, session, signRequest(t, m, key, "team work", "TEAM_TOKEN"), "")
 	if err != nil || own.GrantID == nil {
 		t.Fatalf("Create(TEAM_TOKEN) on %s's session = %+v, %v; want it granted at once", secondMember, own, err)
 	}
@@ -655,7 +655,7 @@ func TestARestrictedMembersGrantListHoldsOnlyTheirOwnSessionsGrants(t *testing.T
 	for _, p := range []personPod{guestPod, alicesPod} {
 		approved := func(enrollmentID string, key *ecdsa.PrivateKey, box string) string {
 			t.Helper()
-			req, err := m.Create(ctx, enrollmentID, signRequest(t, m, key, "needs it on "+box, "DEEL_API_KEY"), "", nil)
+			req, err := m.Create(ctx, enrollmentID, signRequest(t, m, key, "needs it on "+box, "DEEL_API_KEY"), "")
 			if err != nil {
 				t.Fatalf("Create(DEEL_API_KEY) on %s's %s: %v", p.person, box, err)
 			}

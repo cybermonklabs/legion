@@ -6,9 +6,12 @@ import type {
   EditPreconditionCurrent,
   EditPreconditionMismatch,
   IssueDetails,
+  ParentStatusConflictIssue,
+  StatusChangeEntry,
   TargetCandidate,
   WriteAdvice,
 } from "./dispatch-api.generated";
+import type { DisplayTree } from "./dispatch-api-core";
 import type { DispatchEvent } from "./dispatch-api-events";
 
 /**
@@ -41,11 +44,14 @@ interface CreateArtifactOptions {
   /** The token of the version this upload is replacing, which `dispatch doc-read` prints. An
    *  upload over a document the owner already holds names it, and Dispatch checks it under the
    *  write's own lock. One that names none is taken for now without a check, since older
-   *  `dispatch` commands cannot name one; a later release refuses it `400 PRECONDITION_REQUIRED`
-   *  (INFRA-4980). A token behind the live document is refused
+   *  `dispatch` commands cannot name one; a later release refuses it `400 PRECONDITION_REQUIRED`.
+   *  A token behind the live document is refused
    *  `409 PRECONDITION_FAILED`, whose `current` carries the live token and `current.version` the
-   *  live version number. A first upload under a name replaces no version, and a file is no
-   *  document, so neither names one. An upload that names a token where the document has none
+   *  live version number. An upload over a file or a picture names its standing version's token
+   *  the same way, which `dispatch doc-read` prints in the same line and the artifact's
+   *  `versions[].token` states, and is refused the same way for a token of a version since
+   *  replaced; one naming none is taken unchecked. A first upload under a name replaces no
+   *  version, so it names none. An upload that names a token where the document has none
    *  for it to name — a first upload under a name its owner holds nothing under, and the repair
    *  of a document whose live tree is outside the Proof schema — is refused
    *  `409 PRECONDITION_FAILED` carrying `code` and `error` alone: there is no live token to put
@@ -98,7 +104,12 @@ export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
  * document of an agent's conversation). At most one of `issue_key` and `document` names its
  * owner: the issue that owns it, or the reference of the project document it is written on.
  * `first_line` is the head of what tells two candidates apart, absent for a direct message a
- * caller may not read.
+ * caller may not read. `first_line_tree` is that line's display tree, sent only to a caller that
+ * sends `Dispatch-Trees: 1` and absent wherever `first_line` is; a document's first line is its
+ * file's name, drawn as the characters it is, and never has one. `edited_at` is the time a
+ * comment's or a message's author last edited it, and `deleted_at` with `deleted_by` the mark of
+ * one its author deleted, whose `first_line` the cleared body leaves absent; each is absent on a
+ * post that stands unedited, on every other kind, and from a Dispatch older than the fields.
  */
 export interface IDCandidate {
   readonly kind: "ask" | "comment" | "message" | "artifact" | "block";
@@ -107,6 +118,10 @@ export interface IDCandidate {
   readonly issue_key?: string;
   readonly document?: string;
   readonly first_line?: string;
+  readonly first_line_tree?: DisplayTree;
+  readonly edited_at?: string;
+  readonly deleted_at?: string;
+  readonly deleted_by?: Actor;
 }
 
 export interface DispatchServiceErrorShape {
@@ -115,6 +130,16 @@ export interface DispatchServiceErrorShape {
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
+  /** Where to look next, which Dispatch adds to one refusal only: its answer to a path no route
+   *  serves (`404 NOT_FOUND`, "no route for …", the router's `staticHandler`), which says that
+   *  `GET /api/v1` lists every route. */
+  readonly hint?: string;
+  /** On a `409 PARENT_STATUS_CONFLICT`: each issue whose status the write would leave out of line
+   *  with its parent's or its children's, with its status and whether it is the parent or a child. */
+  readonly issues?: ParentStatusConflictIssue[] | null;
+  /** On every refusal of `POST /api/v1/issues/{key}/status-change`: the entry of each step that
+   *  wrote before the refusal, in the order the steps ran, and `[]` when none did. */
+  readonly changed?: StatusChangeEntry[] | null;
 }
 
 /** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for

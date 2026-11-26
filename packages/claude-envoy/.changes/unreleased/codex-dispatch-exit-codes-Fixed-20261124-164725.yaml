@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    The Codex `dispatch` tool's description no longer reads exit 1 as a refusal by Dispatch alone.
+    The command exits 1 when Dispatch or AskGate refused the call, Dispatch failed, the command
+    could not reach Dispatch, its trade for a token at the secrets broker failed, or Dispatch kept
+    no answer for a call that writes nothing. It exits 2 on a usage error or on a session or a
+    configuration that it cannot use.
+time: 2026-11-24T16:47:25Z
+custom:
+    Issue: codex-dispatch-exit-codes

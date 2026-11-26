@@ -1,17 +1,26 @@
 // Package wakepace paces the wakes a Legion daemon causes — the role processes it launches, and
 // the tasks and notices it queues to wake a live session in place of a launch — so that a restart
 // or a wave of plugin deliveries does not push an Anthropic organization over its per-minute
-// uncached-input cap. A caller reserves a moment for every wake it is about to cause and holds
-// that wake until the moment it is given.
+// uncached-input cap. A caller takes a place for every wake it is about to cause (Pacer.Join) and
+// holds that wake until the pacer lets the place out.
 //
-// The limiter holds no clock. Every caller passes its own now and arms its own timer or writes its
-// own next_at from the moment Reserve returns, which is what lets internal/supervise keep its own
-// Clock, the outbox keep its next_at column and the workflow engine keep its timer, and what lets
-// a test decide the whole behaviour with no clock at all. golang.org/x/time/rate takes a caller's
-// instant too (ReserveN, AllowN), but it has no place for the jitter — a spread added outside a
-// limiter does not push its next reservation out, so the spacing between one paced wake and the
-// next would not hold — and its float token arithmetic would not reproduce the exact instants this
-// package's tests assert, which is why the daemon paces its wakes here instead.
+// Neither the limiter nor the pacer holds a clock. The limiter is handed a now with each
+// reservation, and the pacer is built over its caller's now and its caller's timer, which is what
+// lets the daemon pace on the clock its machines already keep, and what lets a test decide the
+// whole behaviour with no wall clock at all. golang.org/x/time/rate takes a caller's instant too
+// (ReserveN, AllowN), but it has no place for the jitter — a spread added outside a limiter does
+// not push its next reservation out, so the spacing between one paced wake and the next would not
+// hold — and its float token arithmetic would not reproduce the exact instants this package's
+// tests assert, which is why the daemon paces its wakes here instead.
+//
+// A Pacer puts two queues in front of one Limiter, so that a wake that must not wait behind a
+// restart's backlog — one for a role with an Envoy message waiting, which Envoy keeps for a role
+// only an hour, or the relaunch of a role whose own process died — goes ahead of the rest. The one
+// token bucket keeps the rate: the queues decide only which wake takes each turn it gives, never
+// how many turns a minute there are. A share of one turn in four keeps the other queue moving, so a
+// wave of message wakes slows the rest rather than starving it. A waiting wake holds a place in its
+// queue, not a moment: a moment handed out would live on in its holder's timer or row, and moving
+// a wake ahead of it would cost a write for every wake it passed.
 package wakepace
 
 import (
@@ -56,6 +65,10 @@ func New(rate, burst int, jitter func(interval time.Duration) time.Duration) *Li
 	return l
 }
 
+// Interval is what one wake costs at this limiter's rate, time.Minute / rate: the least spacing
+// between two releases at a burst of one, before jitter. Zero is the pacing off.
+func (l *Limiter) Interval() time.Duration { return l.interval }
+
 // Reserve returns the moment this wake may run, given the caller's own now: now itself while the
 // rate is unspent — a fresh limiter, a burst still open, or a queue that has been idle long enough
 // for the bucket to refill — and otherwise one interval plus a part of one after the release
@@ -64,15 +77,11 @@ func New(rate, burst int, jitter func(interval time.Duration) time.Duration) *Li
 // The wake is charged on the reserve, not on the release, so a caller that reserves a wake and
 // then drops it has still spent a wake's worth of the rate.
 //
-// now is stripped of its monotonic reading (Round(0)) before anything reads it, so that the one
-// limiter is fed one kind of clock whoever reserves: the workflow engine's now is Clock().UTC()
-// (workflow.Engine.now), which has none, while a machine's is time.Now() (supervise's
-// reserveWake), which has one, and a theoretical arrival time set from one and compared against
-// the other would mix the two. Stripping here rather than giving the engine a monotonic now is
-// what keeps every caller free to pass its own clock, which is this package's whole shape: a
-// moment this limiter returns is a wall-clock moment, the kind a caller writes into next_at or
-// hands to a timer, and a wall-clock step moves the waits of every lane together rather than one
-// lane's alone.
+// now is stripped of its monotonic reading (Round(0)) before anything reads it, so that the
+// limiter is fed one kind of clock whoever reserves and a theoretical arrival time set from one
+// reading is never compared against another kind. A moment this limiter returns is so a
+// wall-clock moment, the kind a caller hands to a timer or writes into a row, and a wall-clock
+// step moves every wait together.
 func (l *Limiter) Reserve(now time.Time) time.Time {
 	now = now.Round(0)
 	if l.interval == 0 {

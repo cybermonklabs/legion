@@ -2,14 +2,16 @@
 // Postgres it runs against, so that no CI lane, no pod's test server and no test holds a number of
 // its own.
 //
-// Three places read it. .github/scripts/pg-connection-ceiling.sh raises a CI lane's server to
-// ServerConnections plus that server's superuser reserve, through
-// internal/dispatch/store/cmd/connections. packages/daemon/docker/legion-testpg starts a pod's test
-// server at that size, as a literal that testlimits_test.go holds to ServerConnections. And every
-// start of a Dispatch process in cmd/dispatch's tests is checked against MaxProcessesAtOnce and
-// against the server it meets (cmd/dispatch/connection_ceiling_test.go), so a test binary that
-// runs one process too many fails there by name rather than as a 53300 refusal inside a room, a
-// lease or a socket.
+// Three places read it. .github/scripts/pg-connection-ceiling.sh checks that a CI lane's server
+// allows ServerConnections plus that server's superuser reserve, through
+// internal/dispatch/store/cmd/connections, and fails saying to raise max_connections in
+// .github/scripts/postgres-service-settings.sh and every Postgres service's command: line with
+// it. packages/daemon/docker/legion-testpg starts a pod's test server at that size, as a literal
+// that testlimits_test.go holds to ServerConnections. And every start of a Dispatch process in
+// cmd/dispatch's tests takes one of MaxProcessesAtOnce slots first and is checked against the
+// server it meets (cmd/dispatch/process_slots_test.go and connection_ceiling_test.go), so a server
+// sized below the suite fails there by name rather than as a 53300 refusal inside a room, a lease
+// or a socket.
 package testlimits
 
 import "github.com/sjawhar/envoy/internal/dispatch/store"
@@ -17,16 +19,14 @@ import "github.com/sjawhar/envoy/internal/dispatch/store"
 // MaxProcessesAtOnce is the most Dispatch server processes one test binary runs at once against
 // one Postgres. The count is the binary's, not one test's: one `go test` binary is what one lane's
 // server serves, and parallel root tests in it share that server. A process counts from its start
-// until it exits, which is what it holds connections for. cmd/dispatch/connection_ceiling_test.go
-// refuses the start of one more process than this and names this constant.
+// until it exits, which is what it holds connections for. Every start takes one of this many slots
+// first (dispatchSlots, cmd/dispatch/process_slots_test.go, says how), and a test that asks for
+// more at once is refused by name.
 //
-// It is the limit the guard enforces, measured with that same count over the cmd/dispatch test
-// binaries whose rows ran: the twobuild binary reaches 4, in TestTwoBuildsAnswerEachOthersCLI, and
-// the binaries with no tag and with multiprocess reach 3. The memory binary's measured 1 is a floor,
-// not its peak: in a gVisor pod each of its rows fails at /proc/<pid>/clear_refs after its first
-// start, and its code bounds it at two, a writer and a reader (cmd/dispatch/memory_test.go,
-// TestTheHeaviestStoredDocumentsStayWithinTheMemoryBound). A binary that comes to run more is
-// refused by name, and this number is raised to what it runs.
+// The peak of each binary of cmd/dispatch: 4 with no tag and with the memory tag, whose parallel
+// tests share the slots; 3 with multiprocess (TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables);
+// 2 with twobuild and with basebuild. A test that comes to need more is refused by name, and this
+// number is raised to what it runs.
 const MaxProcessesAtOnce = 4
 
 // RequiredConnections is what MaxProcessesAtOnce Dispatch processes may open together.

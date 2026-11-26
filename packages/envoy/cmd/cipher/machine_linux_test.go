@@ -52,10 +52,9 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 		t.Fatalf("log %s in: %v", host, err)
 	}
 	id := rig.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
 	for !b.HasCredential() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s's login never issued: %+v", host, b.LoginStatus())
+		if waitsGaveUp(t) {
+			t.Fatalf("%s's login never issued, %s before the test binary's deadline: %+v", host, waitMargin, b.LoginStatus())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -70,6 +69,7 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 // case (the broker reads any case), warns that it ends this machine's access, and the broker
 // refuses the next command, which says to log the machine in again.
 func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling ((*Broker).EnrollSessionKey, (*Broker).enroll, (*Broker).enrollAs, (*Broker).enrolAuthority, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read ((*Broker).EnrollSessionKey, (*Broker).enroll, (*Broker).enrollAs, (*Broker).enrolAuthority, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -142,6 +142,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // the secret, which now names a reason because the revoke withheld the name and so put it to a
 // person, waits for approval.
 func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -161,7 +162,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeID := "grant-box-" + t.Name()
-	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint}, 10*time.Second)
+	enrolled, err := helper.Call(sock, helper.Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: thumbprint}, untilGiveUp(t))
 	if err != nil || !enrolled.OK {
 		t.Fatalf("enroll-session-key: %+v %v", enrolled, err)
 	}
@@ -191,7 +192,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if stdout, stderr, exit := grant("revoke", grantID); exit != 0 || stdout != "revoked "+grantID+" at "+brokerSource(cipheraddr.New(rig.URL)).String()+"\n" || stderr != "" {
 		t.Fatalf("grant revoke: exit %d, stdout %q, stderr %q", exit, stdout, stderr)
 	}
-	if _, err := newClient(cipheraddr.New(rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, nil, releaseCall{}); err == nil {
+	if _, err := newClient(cipheraddr.New(rig.URL)).GrantValues(context.Background(), &fileSigner{key: boxKey, enrollmentID: enrolled.EnrollmentID}, grantID, releaseCall{}); err == nil {
 		t.Fatal("the box read the revoked grant's values")
 	}
 	if stdout, _, _ := grant("list"); strings.Contains(stdout, grantID) {
@@ -210,6 +211,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // `grant list` run from inside one say so and exit 1. `grant revoke` is no longer here: a session
 // ends a grant it was given from inside the session (TestGrantRevokeInsideASessionEndsItsOwnGrant).
 func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
 	sock := realHelper(t)
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}} {
@@ -224,6 +226,7 @@ func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
 // TestMachineAndGrantCommandsOnAMachineNotLoggedIn: from the operator's own shell on a machine
 // whose helper holds no machine login, every machine and grant command says to log it in.
 func TestMachineAndGrantCommandsOnAMachineNotLoggedIn(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, "http://127.0.0.1:1", "ada@example.com")
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}, {"grant", "revoke", uuid.NewString()}} {
@@ -249,6 +252,7 @@ type grantSessionResult struct {
 // and appends one JSON grantSessionResult line per command to the results file, so the parent can
 // read each command's outcome without racing the test binary's own stdout.
 func TestGrantSessionHelper(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("AGENT_SECRETS_GRANT_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}
@@ -298,7 +302,7 @@ func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, "register", "--exec", "--wait", "5", "--", self, "-test.run", "^TestGrantSessionHelper$")
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(), hostIsolation(t)...),
 		"AGENT_SECRETS_GRANT_HELPER=1",
 		"AGENT_SECRETS_GRANT_BINARY="+binary,
 		"AGENT_SECRETS_GRANT_RESULTS="+results,
@@ -341,7 +345,6 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 		s.t.Fatalf("sending %v to the session: %v", args, err)
 	}
 	s.seen++
-	deadline := time.Now().Add(30 * time.Second)
 	for {
 		data, _ := os.ReadFile(s.resultsPath)
 		if len(data) > 0 {
@@ -354,8 +357,8 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 				return res
 			}
 		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("the session never reported a result for %v", args)
+		if waitsGaveUp(s.t) {
+			s.t.Fatalf("the session never reported a result for %v, %s before the test binary's deadline", args, waitMargin)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -378,6 +381,7 @@ func (s *grantSession) requestAutoSecret() string {
 // grant it was given, with `grant revoke`, from inside the session — where before it answered
 // IN_SESSION and the grant lived to its expiry.
 func TestGrantRevokeInsideASessionEndsItsOwnGrant(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -414,6 +418,7 @@ func TestGrantRevokeInsideASessionEndsItsOwnGrant(t *testing.T) {
 // printed a failure here. TestGrantRevokeTriesNoOtherRouteAfterNotYours holds the case where the
 // helper would sign the operator's route.
 func TestGrantRevokeInsideASessionRefusesAnotherEnrollmentsGrant(t *testing.T) {
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)

@@ -110,10 +110,16 @@ type envoyEnvelope struct {
 }
 
 // decodeMessage decodes the Envoy envelope first, then the subject's source-specific payload.
-// project is the daemon's Dispatch project: another project's issue event is a nil Fact.
-// repositories are its configured repositories: a GitHub event whose payload names another
-// repository is a nil Fact, whatever subject carried it.
+// project is the daemon's Dispatch project: another project's issue event is a nil Fact, decided
+// from the issue key its subject names before the envelope is read, so a message of another
+// project's that does not decode is no give-up of this daemon's, and no record of it (every daemon
+// hears every project's issue events). A name in neither form goes on to the decode, which refuses
+// it (errIssueNameInNeitherForm). repositories are its configured repositories: a GitHub event
+// whose payload names another repository is a nil Fact, whatever subject carried it.
 func decodeMessage(subject, project string, repositories []ghrepo.Repository, data []byte) (decodedMessage, error) {
+	if key, legacy, ok := subjectforms.IssueEventKey(subject); ok && !projectIssueKey(key, project) {
+		return decodedMessage{LegacyName: legacy}, nil
+	}
 	var envelope envoyEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
 		return decodedMessage{}, fmt.Errorf("decode Envoy envelope: %w", err)
@@ -272,7 +278,11 @@ func (e dispatchEvent) mark() record.EventMark {
 // daemonActor says whether the daemon made the event: its actor is the session the daemon writes
 // every Dispatch status and message of the event's issue under (dispatch.DaemonSession). It is the
 // one statement of that rule, which the decoder (DispatchIssue.DaemonActor) and the set-back's
-// check (StatusChange.DaemonActor) both read.
+// check (StatusChange.DaemonActor) both read. Each reads only issues of the daemon's own project:
+// the decoder skips another project's events (decodeDispatchIssueEvent), and the outbox sets back
+// only its own project's issues. So the session of the event's issue is the session of the
+// daemon's own project, the one its writes name with dispatch_token_broker off and the one its
+// broker token proves with it on (dispatch.WritesAs).
 func (e dispatchEvent) daemonActor() bool {
 	return e.Actor.Kind == "session" && e.Actor.ID == dispatch.DaemonSession(e.IssueKey)
 }
@@ -296,7 +306,7 @@ func decodeDispatchFact(subject, project, payload string) (Fact, []string, bool,
 // rather than making the event poison: an event the workflow acts on is never lost to a field it
 // does not act on.
 func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, error) {
-	if keyProject, _, _ := strings.Cut(key, "-"); keyProject != project || !claim.IsIssueKey(key) {
+	if !projectIssueKey(key, project) {
 		return nil, nil, nil
 	}
 	var event dispatchEvent
@@ -317,6 +327,13 @@ func decodeDispatchIssueEvent(key, project, payload string) (Fact, []string, err
 	return fact, unread, nil
 }
 
+// projectIssueKey says whether key is an issue key of project, which the daemon decodes events
+// of; any other key is another daemon's.
+func projectIssueKey(key, project string) bool {
+	keyProject, _, _ := strings.Cut(key, "-")
+	return keyProject == project && claim.IsIssueKey(key)
+}
+
 // DecodeDispatchEvent decodes one event of issue key of project as Dispatch's issue event log
 // serves it (dispatch.Client.EventsAfter), which is the shape its durable stream carries: the
 // boot catch-up applies what the stream did not deliver through the live decoder, so each event
@@ -326,17 +343,28 @@ func DecodeDispatchEvent(project, key string, event []byte) (Fact, []string, err
 	return decodeDispatchIssueEvent(key, project, string(event))
 }
 
+// isIssueEvent says whether a Dispatch event of type typ is an issue event: one that carries the
+// issue as the event leaves it. decodeDispatchEvent reads a DispatchIssue from each such event,
+// and walkIssueEvents gives each such event of an issue's event log, so the two read one list.
+func isIssueEvent(typ string) bool {
+	switch typ {
+	case "issue.created", "issue.updated", "issue.closed":
+		return true
+	}
+	return false
+}
+
 // decodeDispatchEvent decodes a checked Dispatch event of the daemon's project by its type, adding
 // to unread each field it took as unknown.
 func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
-	switch event.Type {
-	case "issue.created", "issue.updated", "issue.closed":
+	if isIssueEvent(event.Type) {
 		var issue struct {
 			Key          string          `json:"key"`
 			Status       string          `json:"status"`
 			Title        string          `json:"title"`
 			Parent       *string         `json:"parent"`
 			Rank         string          `json:"rank"`
+			Priority     json.RawMessage `json:"priority"`
 			Labels       []string        `json:"labels"`
 			ResolvedRepo json.RawMessage `json:"resolved_repo"`
 			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
@@ -378,8 +406,11 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 		}
 		claimedBy, claimKnown := issueEventClaim(issue.Claim, unread)
 		return DispatchIssue{Key: event.IssueKey, Seq: event.Seq, Type: event.Type, Status: issue.Status, Title: issue.Title, Parent: parent, Rank: issue.Rank,
-			HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels, ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
+			Priority: issueEventPriority(issue.Priority, unread), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
+			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
 			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+	}
+	switch event.Type {
 	case "artifact.approved", "artifact.changes_requested":
 		var artifact struct {
 			ArtifactID string `json:"artifact_id"`
@@ -577,6 +608,24 @@ func issueEventClaim(raw json.RawMessage, unread *[]string) (string, bool) {
 	return claimed.Actor.Kind + ":" + claimed.Actor.ID, true
 }
 
+// issueEventPriority reads an issue event's own priority, Dispatch's 0 for P0 to 3 for P3 or null,
+// as the record keeps it (record.DecodePriority); an absent field is none. A value Dispatch never
+// writes, a level outside 0 to 3 or no integer at all, is none and named in unread rather than
+// making the event poison: the event can carry a status the workflow acts on.
+func issueEventPriority(raw json.RawMessage, unread *[]string) record.Priority {
+	if raw == nil {
+		return record.NoPriority
+	}
+	priority, read, err := record.DecodePriority(raw)
+	switch {
+	case err != nil:
+		*unread = append(*unread, fmt.Sprintf("priority %s is not a priority: %v", raw, err))
+	case !read:
+		*unread = append(*unread, fmt.Sprintf("priority %s is no level Dispatch writes", raw))
+	}
+	return priority
+}
+
 // askPayload is what the daemon reads of an ask.* event's payload, which is the ask itself
 // (Dispatch's model.AskEventPayload and AskEditEventPayload): its id, its kind, the author of an
 // opening, settlement's restored mark, an approval request's document with the version it now
@@ -746,6 +795,13 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return nil, nil
 		}
 		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
+	case "review_requested", "review_request_removed":
+		// A review request opened or withdrawn moves what a `blocked` head's round waits on, and
+		// the read it asks for counts the requests; one with no head names none to read for.
+		if sha == "" {
+			return nil, nil
+		}
+		return PullRequestReviewRequests{Repo: repo, Number: number, HeadSHA: sha}, nil
 	default:
 		return nil, nil
 	}

@@ -292,7 +292,7 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 
 	wantClaims := sweepRouteOtherClaims + sweepRouteClaimsHeld*len(cases)
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	waitFor(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false
@@ -415,6 +415,7 @@ func TestBothDeregistrationRoutesAnswerInsideTheRouteBudgetOverARoleBucketOfFive
 // through the registry's own role bucket handle before the counting one is installed, so no
 // fixture write is counted as the request's.
 func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotAReadPerClaim(t *testing.T) {
+	t.Parallel()
 	const (
 		sessionID    = "ses_sweep_route_degraded"
 		topic        = "notifications.team.sweep-route-degraded"
@@ -441,7 +442,7 @@ func TestADeregistrationOnARoleClaimViewThatCannotBeServedCostsOneScanAndNotARea
 
 	wantClaims := sweepRouteDegradedOtherClaims + sweepRouteClaimsHeld
 	viewStarted := time.Now()
-	waitFor(t, time.Minute, "the role claim view to name every claim in the bucket", func() bool {
+	waitFor(t, "the role claim view to name every claim in the bucket", func() bool {
 		held, err := registry.RolesBySession()
 		if err != nil {
 			return false

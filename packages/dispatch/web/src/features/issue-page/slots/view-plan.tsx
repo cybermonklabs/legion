@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../../api/issue-cache";
@@ -10,12 +10,14 @@ import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
+import { blocksKey, useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useIssueTree } from "../useIssueTree";
+import { useTellsAddressDrawn } from "./refused-reads";
+import type { ViewSlotProps } from "./stage";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -26,11 +28,22 @@ import { useIssueTree } from "../useIssueTree";
  * the outline's: the address's node is the view's only where it is a task, and the view is
  * handed the whole plan beside what the words filter left of it, for the order.
  */
-export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
+export function ViewPlanSlot({
+  issue,
+  onAddressDrawn,
+  route,
+}: SlotProps & Partial<Pick<ViewSlotProps, "onAddressDrawn">>): ReactNode {
   const { hash, search } = useLocation();
   const spec = primarySpec(issue);
   const address = issueAddress(route, search, hash, spec?.slug);
-  const { root } = useIssueTree(issue);
+  // The tree, the line of each read it is built from that stands refused, and whether every one
+  // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its bars and steps draw waits on those names.
+  const { failed: refusedLines, names, published, readsSettled, root } = useOutlineReads(issue);
   // The view waits on the reads of the two documents it draws from, and on no other: the plan's
   // blocks, which are its tasks, and the spec's, which are the statements a task serves. It is
   // these two reads and not `useIssueTree`'s `blocksHeld`, which counts the Verification and
@@ -114,6 +127,19 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
+  // Whether the view draws a row of the node the address names, which the stage is told by the
+  // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
+  // plan's blocks and the spec's (`watched`). It draws a row for a task alone - a step of the
+  // chart or of the steps, or the row of the cycle that holds it - and none for a statement, a
+  // comment or any other node, so where the view may tell, it says it draws the node where the
+  // address names a task it keeps (`reveal`). It says so before the browser paints, so where the
+  // reads were held as the view was drawn, as on Back to its address, no chart is painted in the
+  // outline's place. Drawn outside the stage, the slot is handed no call and tells no one.
+  const own = watched.flatMap(({ id }) => (id === undefined ? [] : [blocksKey(id)]));
+  const tells = useTellsAddressDrawn(refusedLines, readsSettled, own, onAddressDrawn);
+  useLayoutEffect(() => {
+    if (tells) onAddressDrawn?.(view.root.children.some(({ id }) => named.has(id)));
+  }, [named, onAddressDrawn, tells, view.root]);
   const plan = whole.root.children;
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   const request = useOutlineRequest();
@@ -137,8 +163,10 @@ export function ViewPlanSlot({ issue, route }: SlotProps): ReactNode {
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
+          namesLine={names}
           onEditing={onEditing}
           plan={plan}
+          published={published}
           reads={reads}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}

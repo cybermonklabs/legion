@@ -19,14 +19,22 @@ import (
 
 // The helpers every test of a role's namespaces shares: roleInitEnv carries role-init's flags to
 // the test binary re-entered as role-init (TestRoleInitHelper), roleProbeEnv names the
-// directory requireRoleNamespaces' probe mounts over (TestRoleNamespaceProbeHelper), and
+// directory requireRoleNamespaces' probe mounts over (TestRoleNamespaceProbeHelper),
 // roleDrainBoundEnv, where a row sets it, the bound of role-init's wait over the role's
-// namespace in place of roleNamespaceDrain (roleDrainBound).
+// namespace in place of roleNamespaceDrain (roleDrainBound), and roleInitOwnTemporariesEnv,
+// which useRoleLayout sets, has role-init cover the directories it carries mounts under with
+// memory filesystems of its own before it runs (coverRoleInitTemporaries).
 const (
-	roleInitEnv       = "LEGION_ROLE_INIT_TEST_INIT"
-	roleProbeEnv      = "LEGION_ROLE_INIT_TEST_PROBE"
-	roleDrainBoundEnv = "LEGION_ROLE_INIT_TEST_DRAIN_BOUND"
+	roleInitEnv               = "LEGION_ROLE_INIT_TEST_INIT"
+	roleProbeEnv              = "LEGION_ROLE_INIT_TEST_PROBE"
+	roleDrainBoundEnv         = "LEGION_ROLE_INIT_TEST_DRAIN_BOUND"
+	roleInitOwnTemporariesEnv = "LEGION_ROLE_INIT_TEST_OWN_TEMPORARIES"
 )
+
+// coverRoleInitTemporaries is what role-init does first where roleInitOwnTemporariesEnv is set:
+// ownTemporaries, under Linux (roleinit_temporaries_linux_test.go), the one system a role-init
+// runs on.
+var coverRoleInitTemporaries func(RoleCover) error
 
 // requireRoleNamespaces skips a test that cannot create the namespaces a role generation runs
 // in, or cannot mount inside them. Unprivileged user namespaces are refused on a host whose
@@ -46,7 +54,7 @@ func requireRoleNamespaces(t *testing.T) {
 	attr, err := roleNamespaceAttr()
 	var output []byte
 	if err == nil {
-		probe := exec.Command(self, "-test.run=^TestRoleNamespaceProbeHelper$")
+		probe := exec.Command(self, reentry(t, "TestRoleNamespaceProbeHelper")...)
 		probe.Env = append(os.Environ(), roleProbeEnv+"="+t.TempDir())
 		probe.SysProcAttr = attr
 		output, err = probe.CombinedOutput()
@@ -105,6 +113,10 @@ func namespaceScratch(t *testing.T, socket string) string {
 // binary re-entered as TestRoleInitHelper, since the binary is not `legion`, and the home, the home
 // mounts and the fixed root are the test's own directories, since a machine running the tests has
 // neither the image's /home/legion nor its /var/run/legion mount points, and could not create them.
+// The launcher under test runs in the test process, so its role-init's mount namespace is a copy
+// of the machine's: role-init covers the temporary directories it carries mounts under with its
+// own first (roleInitOwnTemporariesEnv), so a mount another process makes under the machine's
+// /tmp never reaches a role of the test.
 func useRoleLayout(t *testing.T, home, homeMounts, fixed string) {
 	t.Helper()
 	self, err := os.Executable()
@@ -112,27 +124,31 @@ func useRoleLayout(t *testing.T, home, homeMounts, fixed string) {
 		t.Fatal(err)
 	}
 	previousHome, previousMounts, previousFixed, previousLaunch := roleHome, roleHomeMounts, roleFixedRoot, roleInitLaunch
-	roleHome, roleHomeMounts, roleFixedRoot, roleInitLaunch = home, homeMounts, fixed, roleInitHelperLaunch(self)
+	roleHome, roleHomeMounts, roleFixedRoot = home, homeMounts, fixed
+	roleInitLaunch = roleInitHelperLaunch(t, self, roleInitOwnTemporariesEnv+"=1")
 	t.Cleanup(func() {
 		roleHome, roleHomeMounts, roleFixedRoot, roleInitLaunch = previousHome, previousMounts, previousFixed, previousLaunch
 	})
 }
 
 // roleInitHelperLaunch is roleInitLaunch for a test binary: it re-enters self as role-init, with
-// the flags the launcher would pass on the command line carried in roleInitEnv.
+// the flags the launcher would pass on the command line carried in roleInitEnv, and extra in its
+// environment besides. Each role-init it starts is a child of t, which ends before t's own
+// deadline (reentry).
 //
 // A binary built with -race sleeps atexit_sleep_ms (1 s by default) before it exits, so a role-init
 // re-entered from a race build would end its namespace a second after its shim, which `legion
 // launcher role-init` never does, and every stop a test times would carry that second. The helper
 // turns the sleep off, keeping whatever else GORACE asks for.
-func roleInitHelperLaunch(self string) func(RoleInitConfig) ([]string, []string, error) {
+func roleInitHelperLaunch(t *testing.T, self string, extra ...string) func(RoleInitConfig) ([]string, []string, error) {
 	return func(cfg RoleInitConfig) ([]string, []string, error) {
 		body, err := json.Marshal(cfg)
 		if err != nil {
 			return nil, nil, err
 		}
 		gorace := strings.TrimSpace(os.Getenv("GORACE") + " atexit_sleep_ms=0")
-		return []string{self, "-test.run=^TestRoleInitHelper$"}, []string{roleInitEnv + "=" + string(body), "GORACE=" + gorace}, nil
+		env := append([]string{roleInitEnv + "=" + string(body), "GORACE=" + gorace}, extra...)
+		return append([]string{self}, reentry(t, "TestRoleInitHelper")...), env, nil
 	}
 }
 
@@ -140,6 +156,7 @@ func roleInitHelperLaunch(self string) func(RoleInitConfig) ([]string, []string,
 // the stage clones it into a role's new namespaces, and it reads the flags it would have been
 // given on the command line from its environment.
 func TestRoleInitHelper(t *testing.T) {
+	// Not parallel: a helper child, run in a process of its own; here it returns at once.
 	encoded := os.Getenv(roleInitEnv)
 	if encoded == "" {
 		return
@@ -160,9 +177,15 @@ func TestRoleInitHelper(t *testing.T) {
 	}
 	stop, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	if os.Getenv(roleInitOwnTemporariesEnv) != "" && coverRoleInitTemporaries != nil {
+		if err := coverRoleInitTemporaries(cfg.RoleCover); err != nil {
+			fmt.Fprintln(os.Stderr, "role-init: the test's own temporary directories:", err)
+			os.Exit(RoleInitSetupFailedExit)
+		}
+	}
 	if err := RoleInit(stop, cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "role-init:", err)
 		os.Exit(RoleInitSetupFailedExit)
 	}
-	os.Exit(0)
+	exitHelper(t)
 }

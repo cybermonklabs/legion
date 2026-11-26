@@ -38,6 +38,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -50,8 +51,8 @@ import (
 // would be an open relay for anyone who can reach the pod.
 func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 	r := newRig(t, Options{})
-	ended := requests.PlaceholderPrefix + "endedendedendedendedendedended01"
-	noNames := requests.PlaceholderPrefix + "nonamesnonamesnonamesnonames0001"
+	ended := placeholder.Prefix + "endedendedendedendedendedended01"
+	noNames := placeholder.Prefix + "nonamesnonamesnonamesnonames0001"
 	r.grants.refusals[ended] = requests.ErrGrantNotLive
 	r.grants.refusals[noNames] = requests.ErrAirlockNoNames
 
@@ -59,7 +60,7 @@ func TestACredentialThatOpensNothingIsRefusedAndTunnelsNothing(t *testing.T) {
 		{"no credential at all", "", "carries none"},
 		{"a credential that is not Basic", "Proxy-Authorization: Bearer " + workerPlaceholder + "\r\n", "not Basic"},
 		{"a Bas" + "ic credential that is not base64", "Proxy-Authorization: Bas" + "ic not-base-64-at-all\r\n", "not base64"},
-		{"a password no grant holds", basic(requests.PlaceholderPrefix + "unknownunknownunknownunknown001"), requests.ErrGrantNotLive.Error()},
+		{"a password no grant holds", basic(placeholder.Prefix + "unknownunknownunknownunknown001"), requests.ErrGrantNotLive.Error()},
 		{"an empty password", basic(""), requests.ErrGrantNotLive.Error()},
 		{"a grant that has ended", basic(ended), requests.ErrGrantNotLive.Error()},
 		{"a grant holding no name this session may have", basic(noNames), requests.ErrAirlockNoNames.Error()},
@@ -394,6 +395,7 @@ func TestTheProxyRefusesTheAddressesItMustNeverDial(t *testing.T) {
 		{"169.254.169.254", "a link-local IPv4 address"},
 		{"fe80::1", "a link-local IPv6 address"},
 		{"100.64.1.2", "a cluster IPv4 address"},
+		{"0.1.2.3", "an IPv4 address of 0.0.0.0/8"},
 		{"224.0.0.1", "a link-local IPv4 address"},
 		{"239.1.2.3", "not a global unicast IPv4 address"},
 		{"::", "not a global unicast IPv6 address"},
@@ -597,6 +599,55 @@ func TestAClusterRangeAddressIsRefusedOnEveryPathTheProxyDials(t *testing.T) {
 		for _, addr := range r.dialedAddresses() {
 			if strings.HasPrefix(addr, clusterIP.String()+":") {
 				t.Fatalf("the proxy dialled the ClusterIP at %s", addr)
+			}
+		}
+	})
+
+	t.Run("a bound host other than the private destination is refused when its name resolves to a ClusterIP at the dial", func(t *testing.T) {
+		// The row above with a destination set for another host, whose name resolves to the same
+		// ClusterIP: the destination takes its own host's requests and no other host's, so this
+		// request goes out on the proxy's own transport and is refused at its dial as before.
+		withDestination := options
+		withDestination.PrivateUpstreams = []PrivateUpstream{privateDestination()}
+		r := newRig(t, withDestination)
+		r.addresses[privateName] = []netip.Addr{clusterIP}
+		r.answers[boundHost] = [][]netip.Addr{{netip.MustParseAddr("93.184.216.34")}, {clusterIP}}
+		r.dialTo[net.JoinHostPort(clusterIP.String(), "443")] = r.service.Addr()
+		r.dialTo[net.JoinHostPort(clusterIP.String(), privatePort)] = r.service.Addr()
+		answer, body := r.get(r.client(workerPlaceholder), "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
+		for _, addr := range r.dialedAddresses() {
+			if strings.HasPrefix(addr, clusterIP.String()+":") {
+				t.Errorf("the proxy dialled the ClusterIP at %s", addr)
+			}
+		}
+		if answer.StatusCode == http.StatusOK || !strings.Contains(body, clusterRangeRule) {
+			t.Errorf("the request answered %d %q; want it refused naming %q", answer.StatusCode, body, clusterRangeRule)
+		}
+		if seen := r.requests(); len(seen) != 0 {
+			t.Errorf("the service at the ClusterIP was sent %d requests; want none", len(seen))
+		}
+	})
+
+	t.Run("the private destination's bound host is sent its allowed request at a ClusterIP", func(t *testing.T) {
+		// BROKER_PROXY_PRIVATE_UPSTREAM's one exception to the ranges: the destination resolves
+		// to a ClusterIP inside them, and the allowed write to its bound host reaches the service
+		// there, while a CONNECT to that ClusterIP, or to the destination's name, is refused: by a
+		// secret grant, which may tunnel to a host its names do not bind, naming the ranges, and by
+		// the minted grant, which reaches its bound host alone, by that rule.
+		r, standIn := newPrivateRig(t, clusterIP, options.ClusterRanges)
+		answer, body, err := r.writeMinted()
+		if err != nil || answer.StatusCode != http.StatusCreated || len(standIn.writes()) != 1 {
+			t.Fatalf("the allowed write answered %v %v and the service received %+v; want 201 and one write", answer, err, standIn.writes())
+		}
+		if dialed := r.dialedAddresses(); len(dialed) != 1 || dialed[0] != net.JoinHostPort(clusterIP.String(), privatePort) {
+			t.Fatalf("the proxy dialled %v; want the ClusterIP %s:%s alone (%s)", dialed, clusterIP, privatePort, body)
+		}
+		for _, target := range []string{net.JoinHostPort(clusterIP.String(), privatePort), net.JoinHostPort(privateName, privatePort)} {
+			if _, refusal := connectRefused(t, r, target, workerPlaceholder); !strings.Contains(refusal, clusterRangeRule) {
+				t.Errorf("the refusal of a secret grant's CONNECT %s reads %q; want it to name %q", target, refusal, clusterRangeRule)
+			}
+			if code, refusal := connectRefused(t, r, target, mintedPlaceholder); code != codeMintedHostOnly {
+				t.Errorf("the minted grant's CONNECT %s was refused %s (%q); want %s", target, code, refusal, codeMintedHostOnly)
 			}
 		}
 	})
@@ -880,14 +931,10 @@ func TestOneRequestIsHandledForOneNameOfTheGrant(t *testing.T) {
 		betaName         = "BETA_TOKEN"
 		alphaValue       = "the-real-alpha"
 		betaValue        = "the-real-beta"
-		alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-		betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-	}}
-	r := newRig(t, Options{Rules: rules})
+	r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -986,6 +1033,43 @@ func TestAGrantTheReleaseChecksRefuseIsRefused(t *testing.T) {
 			answer, body := r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
 			if answer.StatusCode != row.want || !strings.Contains(body, row.says) {
 				t.Fatalf("the call answered %d %q; want %d naming %q", answer.StatusCode, body, row.want, row.says)
+			}
+			if seen := r.requests(); len(seen) != 0 {
+				t.Fatalf("the service was sent %d requests; want none", len(seen))
+			}
+		})
+	}
+}
+
+// TestAProfilesRefusalOfTheGrantIsARefusalAtTheProxy: the two refusals a profile makes of a
+// grant's release — a target the live profile does not hold (requests.ErrTargetRefused), and a
+// scope its minter refuses (secrets.ErrMintNarrowingRefused: a cut that leaves no permission, a
+// repository GitHub refuses) — are the broker's answer about that grant, which no retry clears.
+// So the proxy answers each 403 in the broker's own words, under the code the API port answers
+// the same refusal of a release with, and never the 503 of a read that did not happen, which
+// tells a command to make the call again.
+func TestAProfilesRefusalOfTheGrantIsARefusalAtTheProxy(t *testing.T) {
+	for _, row := range []struct {
+		name       string
+		err        error
+		code, says string
+	}{
+		{"a target outside the live profile", fmt.Errorf("%w: PROOFS_READ: the target ada/site is outside the profile, which names the account ada and the repositories ada/lean", requests.ErrTargetRefused), "TARGET_REFUSED", "ada/site"},
+		{"a scope the minter refuses", fmt.Errorf("%w: github app 42: GitHub answered HTTP 422 to the profile's token for ada: likely a repository it names (missing) that the installation does not reach", secrets.ErrMintNarrowingRefused), "PROFILE_MINT_REFUSED", "(missing)"},
+		// A stored secret under a dpop block: the API port answers its release MINTED_ONLY, and
+		// so does this port, under the same code.
+		{"a stored secret under a dpop block", fmt.Errorf("release %s behind the airlock: %w", workerName, requests.ErrMintedOnly), "MINTED_ONLY", "never a stored secret's release"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, Options{})
+			r.grants.valuesErr = row.err
+			client := r.client(workerPlaceholder)
+			answer, body := r.get(client, "https://"+boundHost+"/v1/things", "Authorization", "Bearer "+workerPlaceholder)
+			if answer.StatusCode != http.StatusForbidden || !strings.Contains(body, row.says) {
+				t.Fatalf("the call answered %d %q; want 403 naming %q", answer.StatusCode, body, row.says)
+			}
+			if records := r.logs.refusals(); len(records) != 1 || records[0].fields["code"] != row.code {
+				t.Fatalf("the refusal recorded %v; want one record coded %s", records, row.code)
 			}
 			if seen := r.requests(); len(seen) != 0 {
 				t.Fatalf("the service was sent %d requests; want none", len(seen))
@@ -1167,6 +1251,85 @@ func TestAMintedValueIsMintedAgainBeforeItExpires(t *testing.T) {
 	}
 }
 
+// TestAnEndedStoredGrantsValuesAreDropped: a grant released from a stored secret ends at the end
+// its connection carries, as a minted capability's does, and nothing extends it, so the read that
+// adds a new grant's entry drops the entry of a stored grant whose end the pod's clock has reached,
+// keeps every live grant's entry, the older ones' too, and a grant's with no end at all, and reads
+// nothing to do it (TestAnEndedMintedGrantsValuesAreDropped is the minted half, with the same
+// script).
+func TestAnEndedStoredGrantsValuesAreDropped(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)}
+	r := newRig(t, Options{Now: clock.read})
+	// Four stored grants: the first ends a quarter of an hour in, the next two an hour after it,
+	// and the last has no end (its connection carries no Expires: it lasts until its session ends).
+	type storedGrant struct {
+		id, placeholder string
+		ends            time.Time
+	}
+	grants := []storedGrant{
+		{"grant-00000011", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789cd", clock.read().Add(15 * time.Minute)},
+		{"grant-00000012", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ef", clock.read().Add(time.Hour)},
+		{"grant-00000013", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789gh", clock.read().Add(time.Hour)},
+		{"grant-00000014", placeholder.Prefix + "QqRrSsTtUuVvWwXxYyZz0123456789ij", time.Time{}},
+	}
+	for _, g := range grants {
+		connection := testConnection()
+		connection.GrantID, connection.Expires = g.id, nil
+		if !g.ends.IsZero() {
+			connection.Expires = &g.ends
+		}
+		connection.Names = map[string]requests.AirlockGrantName{workerName: {Slots: map[string]string{requests.SlotValue: g.placeholder}}}
+		r.grants.setConnection(g.placeholder, connection)
+		r.grants.setValues(g.id, storedValues(workerName, workerValue))
+	}
+	call := func(g storedGrant) {
+		t.Helper()
+		answer, body := r.get(r.client(g.placeholder), "https://"+boundHost+"/v1/call", "Authorization", "Bearer "+g.placeholder)
+		if answer.StatusCode != http.StatusOK {
+			t.Fatalf("the call of grant %s = %d %s, want 200", g.id, answer.StatusCode, body)
+		}
+	}
+	holds := func(g storedGrant) bool {
+		r.proxy.valuesMu.Lock()
+		defer r.proxy.valuesMu.Unlock()
+		_, held := r.proxy.values[g.id]
+		return held
+	}
+	first, second, third, endless := grants[0], grants[1], grants[2], grants[3]
+
+	call(endless)
+	call(first)
+	if !holds(first) || !holds(endless) {
+		t.Fatalf("held: first %v, endless %v after their calls; the row cannot see a drop", holds(first), holds(endless))
+	}
+	// Before the first grant's end, a new grant's read leaves the first grant's values held.
+	clock.set(first.ends.Add(-time.Minute))
+	call(second)
+	if !holds(first) || !holds(second) {
+		t.Fatalf("held: first %v, second %v; want both, since neither grant has ended", holds(first), holds(second))
+	}
+	// At its end the broker answers the first grant's placeholder as no live grant, and the next
+	// new grant's read drops the first grant's values and keeps the live ones, the older second
+	// grant's among them.
+	clock.set(first.ends)
+	r.grants.refuseConnection(first.placeholder, requests.ErrGrantNotLive)
+	call(third)
+	if holds(first) {
+		t.Errorf("the pod still holds the values of stored grant %s, which ended at %s, with the clock at %s", first.id, first.ends, clock.read())
+	}
+	if !holds(second) || !holds(third) {
+		t.Errorf("held: second %v, third %v; want both, since neither grant has ended", holds(second), holds(third))
+	}
+	if !holds(endless) {
+		t.Errorf("the pod holds no values of grant %s, which has no end and so keeps its entry until the pod rolls", endless.id)
+	}
+	for _, g := range []storedGrant{first, endless} {
+		if reads := r.grants.valueReads(g.id); reads != 1 {
+			t.Errorf("the values of grant %s were read %d times; want once, for its call", g.id, reads)
+		}
+	}
+}
+
 // TestDropNameDropsOneNameAndKeepsTheGrantsOthers: a reread says one secret has a new version,
 // and says nothing about the rest of a grant, so the drop is of that name alone - and the next
 // request reads the grant's values again, which is what puts the new version in front of it.
@@ -1174,14 +1337,10 @@ func TestDropNameDropsOneNameAndKeepsTheGrantsOthers(t *testing.T) {
 	const (
 		alphaName        = "ALPHA_TOKEN"
 		betaName         = "BETA_TOKEN"
-		alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-		betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+		alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+		betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-		{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-		{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-	}}
-	r := newRig(t, Options{Rules: rules})
+	r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 	r.grants.connections[alphaPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -1285,7 +1444,7 @@ func TestAPolicyChangeTheReloadTookReachesTheValuesThisPodHolds(t *testing.T) {
 // has proved the switch is what the behaviour hangs on. Dropping the name and then holding what
 // is left would read the grant again and find the new value, which is the defect this row pins.
 func TestKeepValuesHoldsAValueAcrossAReread(t *testing.T) {
-	const placeholder = requests.PlaceholderPrefix + "keepkeepkeepkeepkeepkeepkeepke01"
+	const placeholder = placeholder.Prefix + "keepkeepkeepkeepkeepkeepkeepke01"
 	r := newRig(t, Options{KeepValues: true})
 	r.grants.connections[placeholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
@@ -1323,18 +1482,20 @@ func TestAGitHubAppInstallationsTokenIsSwappedForItsOwnSlotsPlaceholder(t *testi
 		appName    = "GITHUB_APP_KEY"
 		acmeSlot   = requests.SlotGitHubPrefix + "acme"
 		zedSlot    = requests.SlotGitHubPrefix + "zed"
-		acmeHolder = requests.PlaceholderPrefix + "acmeacmeacmeacmeacmeacmeacmeac01"
-		zedHolder  = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed01"
+		acmeHolder = placeholder.Prefix + "acmeacmeacmeacmeacmeacmeacmeac01"
+		zedHolder  = placeholder.Prefix + "zedzedzedzedzedzedzedzedzedzed01"
 		acmeToken  = "ghs_the-real-acme-installation-token"
 		zedToken   = "ghs_the-real-zed-installation-token"
 	)
-	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{{
-		Name:    appName,
-		Hosts:   []string{boundHost},
-		Headers: []string{"authorization"},
-		Allow:   []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}},
-	}}}
-	r := newRig(t, Options{Rules: rules})
+	// A github-app name is minted and swapped in (way mint), here on GET under /v1/ alone.
+	rules := proxyrules.Rules{
+		Kinds: []proxyrules.Kind{{
+			Name: "github", Hosts: []string{boundHost}, Headers: []string{"authorization"}, Ways: []string{proxyrules.WayMint},
+			Allow: []proxyrules.Allow{{Method: http.MethodGet, PathPrefix: "/v1/"}},
+		}},
+		Names: []proxyrules.Binding{{Name: appName, Kind: "github", Way: proxyrules.WayMint}},
+	}
+	r := newRuledRig(t, rules, Options{})
 	r.grants.connections[acmeHolder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
@@ -1504,13 +1665,9 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 			betaName         = "BETA_TOKEN"
 			alphaValue       = "the-real-alpha"
 			betaValue        = "the-real-beta"
-			alphaPlaceholder = requests.PlaceholderPrefix + "alphaalphaalphaalphaalphaalpha01"
-			betaPlaceholder  = requests.PlaceholderPrefix + "betabetabetabetabetabetabetabe01"
+			alphaPlaceholder = placeholder.Prefix + "alphaalphaalphaalphaalphaalpha01"
+			betaPlaceholder  = placeholder.Prefix + "betabetabetabetabetabetabetabe01"
 		)
-		rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{
-			{Name: alphaName, Hosts: []string{boundHost}, Headers: []string{"authorization"}},
-			{Name: betaName, Hosts: []string{boundHost}, Headers: []string{"x-beta"}},
-		}}
 		both := requests.AirlockConnection{
 			GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 			Names: map[string]requests.AirlockGrantName{
@@ -1518,7 +1675,7 @@ func TestTheGrantIsReadAgainForEveryRequestOfABoundConnection(t *testing.T) {
 				betaName:  {Slots: map[string]string{requests.SlotValue: betaPlaceholder}},
 			},
 		}
-		r := newRig(t, Options{Rules: rules})
+		r := newRuledRig(t, twoNameRules(alphaName, betaName), Options{})
 		r.grants.setConnection(alphaPlaceholder, both)
 		r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
 			alphaName: {Slots: map[string]string{requests.SlotValue: alphaValue}},

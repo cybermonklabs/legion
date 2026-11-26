@@ -3,12 +3,14 @@ package bus
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // proxiedLookup is a connect's environment that names the proxy at address.
@@ -57,20 +59,17 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 	}
 
 	started := time.Now()
+	// The bound under test, not a wait: the dial must end at this one-second deadline, which the
+	// row tells from the bus's five-second connect timeout (above).
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	conn, err := connectWithContext(ctx, "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
+	conn, err := connectWithContext(ctx, slog.Default(), "deadline-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
 	if err == nil {
 		conn.Close()
 		t.Fatal("a connect through a proxy that never answers succeeded")
 	}
-	select {
-	case at := <-closed:
-		if held := at.Sub(started); held > 2500*time.Millisecond {
-			t.Fatalf("the proxied dial held the proxy's connection %s, past the connect's one-second deadline", held)
-		}
-	case <-time.After(4 * time.Second):
-		t.Fatalf("the proxied dial still held the proxy's connection %s after the connect's one-second deadline", time.Since(started))
+	if held := testwait.Receive(t, "the proxied dial to let the proxy's connection go", closed).Sub(started); held > 2500*time.Millisecond {
+		t.Fatalf("the proxied dial held the proxy's connection %s, past the connect's one-second deadline", held)
 	}
 }
 
@@ -80,6 +79,7 @@ func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 // under -race (the envoy-go-race job), a record that is not synchronized fails here. Each connect
 // makes the bus's ten attempts a second apart, so this takes about ten seconds.
 func TestConnectsSharingADialerRecordItsLastError(t *testing.T) {
+	t.Parallel()
 	dialer, err := socks5Proxy(proxiedLookup("127.0.0.1:1"))
 	if err != nil {
 		t.Fatalf("read the proxy setting: %v", err)
@@ -91,7 +91,7 @@ func TestConnectsSharingADialerRecordItsLastError(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			time.Sleep(time.Duration(i) * 500 * time.Millisecond)
-			conn, err := connectWithContext(context.Background(), "shared-dialer-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
+			conn, err := connectWithContext(context.Background(), slog.Default(), "shared-dialer-test", []string{"nats://nats.example.test:4222"}, nil, dialer, nil, nil, nil, nil, nil)
 			if conn != nil {
 				conn.Close()
 			}

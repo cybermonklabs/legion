@@ -4,7 +4,7 @@
 // minting Dispatch access tokens. It keeps the device codes, the access and refresh token
 // sessions, DPoP proof replay records and nonces, the provider's HMAC secret, which identity
 // holds a session name, and the exchange's replay records, in the tables migrations 0016 and
-// 0018 create.
+// 0018 create, and the tokens a trade narrowed to reading in the table migration 0042 creates.
 //
 // A stored request is the JSON of its oauth2.Request fields plus its client's id; reading it back
 // re-hydrates the client with GetClient and the session into the kind the caller hands it, an
@@ -70,8 +70,9 @@ var sweepBatch = 1000
 var sweepMaxBatches = 10
 
 // sweepStatements are Sweep's statements for state deleted row by row, $1 the batch. Each
-// selects its batch by primary key through 0016's, 0018's or 0021's *_expires index on the
-// predicate it sweeps by, oldest first, so a table of mostly live rows is never read whole.
+// selects its batch by primary key through 0016's, 0018's, 0021's or 0042's *_expires index, or
+// 0046's approve_grants_expires, on the predicate it sweeps by, oldest first, so a table of mostly
+// live rows is never read whole.
 var sweepStatements = []struct{ what, sql string }{
 	{"device codes", `delete from oauth_device_codes where signature in (select signature from oauth_device_codes
 		where expires_at < now() - interval '1 hour' order by expires_at limit $1)`},
@@ -81,11 +82,18 @@ var sweepStatements = []struct{ what, sql string }{
 		where expires_at <= now() order by expires_at limit $1)`},
 	{"access tokens", `delete from oauth_access_tokens where signature in (select signature from oauth_access_tokens
 		where expires_at <= now() order by expires_at limit $1)`},
+	{"narrowed access tokens", `delete from oauth_narrowed_access_tokens where signature in (select signature from oauth_narrowed_access_tokens
+		where expires_at <= now() order by expires_at limit $1)`},
 	{"session bindings", `delete from oauth_session_bindings where session in (select session from oauth_session_bindings
 		where expires_at <= now() order by expires_at limit $1)`},
 	{"exchanged JWT ids", `delete from oauth_exchange_jtis where jti in (select jti from oauth_exchange_jtis
 		where expires_at <= now() order by expires_at limit $1)`},
 	{"pod session registrations", `delete from oauth_pod_sessions where (pod_uid, session) in (select pod_uid, session from oauth_pod_sessions
+		where expires_at <= now() order by expires_at limit $1)`},
+	// Every review trades an approve grant of its own (ApproveGrants), which no read serves once it
+	// has ended, so an ended one goes. The proxy's own copy of its values goes at its pod's next
+	// read of a new grant, by the one rule proxy.Server's valuesFor states.
+	{"approve grants", `delete from approve_grants where id in (select id from approve_grants
 		where expires_at <= now() order by expires_at limit $1)`},
 }
 
@@ -111,9 +119,9 @@ type sweepCursor struct {
 
 // Sweep deletes spent OAuth state: device codes an hour past their expiry (so a helper still
 // polling one is answered expired_token, not invalid_grant as for an unknown code), DPoP proofs
-// and nonces past theirs, access tokens past theirs, lapsed session bindings, the two replay
-// stores' remembered JWT ids past theirs, pod-session registrations past theirs, and every
-// refresh token of a family (rows sharing
+// and nonces past theirs, access tokens past theirs, narrowed ones included, lapsed session
+// bindings, the two replay stores' remembered JWT ids past theirs, pod-session registrations past
+// theirs, and every refresh token of a family (rows sharing
 // request_id) none of whose rows is still redeemable (active, unexpired, and in its
 // rotation's grace or never rotated). A family with a redeemable row keeps all its rows, so
 // replaying one of its rotated tokens still finds it and revokes the family. Each kind is
@@ -218,7 +226,9 @@ func New(db *pgxpool.Pool) *Store {
 	return &Store{pool: db}
 }
 
-type querier interface {
+// Querier is a transaction or the pool: what the store's statements run on (Store.db), and what
+// the key rule's checks take (KeyHoldsReadToken).
+type Querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -247,7 +257,7 @@ func TxFrom(ctx context.Context) (pgx.Tx, bool) {
 	return state.tx, ok
 }
 
-func (s *Store) db(ctx context.Context) querier {
+func (s *Store) db(ctx context.Context) Querier {
 	if state, ok := ctx.Value(txKey{}).(txState); ok {
 		return state.tx
 	}
@@ -598,8 +608,91 @@ func sessionJSON(request oauth2.Requester) ([]byte, *oauth2.DefaultSession, any,
 	return raw, session, credential, nil
 }
 
-// CreateAccessTokenSession stores an access token's session.
+// CreateAccessTokenSession stores an access token's session: a token a trade narrowed to reading
+// (NarrowedRequest) in oauth_narrowed_access_tokens, which no broker build before migration 0042
+// reads, and every other one in oauth_access_tokens.
+//
+// A read token, which is any token granted oauthwire.ScopeRead (a narrowed one, and a read
+// entry's token whose trade asked for no scope), is never stored bound to a key a live launcher
+// credential is bound to. Such a key signs launcher proofs, which enrol sessions and revoke a
+// person's machines and grants, and a read token is meant for a holder that only reads. The check
+// and the insert run in one transaction under the key's advisory lock (lockKey). The two writers
+// of a launcher credential's key take the same lock before they read the read tokens bound to it
+// (KeyHoldsReadToken, called by enroll), so a read token and a credential stored at once cannot
+// both pass. The refusal is invalid_request and names the cure (launcherKeyRefusal).
+//
+// A narrowed token never outlives the token it was traded from, nor the launcher credential it
+// names, which a read trade never extends. Its expiry is clamped on the session itself, before the
+// row is written, to the earliest of the access lifetime, its subject's expiry
+// (ExchangeSession.SubjectExpiresAt) and the expiry of the credential it names (clampNarrowed), so
+// it is never live after that credential lapsed, whatever renews the credential later. The
+// library's issue step stores the token and only then reads the session's expiry to write the
+// answer's expires_in (authelia.com/provider/oauth2 v0.3.3, rfc8693.AccessTokenTypeHandler.issue,
+// which hands this store a copy of the request that shares its session), so the row, the session
+// and the answer agree. Its row also names the key it is bound to and, for a machine login's
+// trade, that login's access token (ExchangeSession.SubjectSignature), which
+// GetAccessTokenSession reads its end from.
 func (s *Store) CreateAccessTokenSession(ctx context.Context, signature string, request oauth2.Requester) error {
+	if !request.GetGrantedScopes().Has(oauthwire.ScopeRead) {
+		return s.insertAccessToken(ctx, signature, request)
+	}
+	ctx, err := s.BeginTX(ctx)
+	if err != nil {
+		return fmt.Errorf("store read token: %w", err)
+	}
+	defer s.Rollback(ctx)
+	session, err := sessionOf(request)
+	if err != nil {
+		return err
+	}
+	thumbprint := session.GetDPoPJWKThumbprint()
+	if thumbprint == "" {
+		return errors.New("oauthstore: a read token's session is bound to no key")
+	}
+	held, err := keyHoldsLauncherCredential(ctx, s.db(ctx), thumbprint)
+	if err != nil {
+		return fmt.Errorf("store read token: %w", err)
+	}
+	narrowed := NarrowedRequest(request)
+	if held {
+		return launcherKeyRefusal(narrowed)
+	}
+	if narrowed {
+		err = s.insertNarrowedToken(ctx, signature, request, session)
+	} else {
+		err = s.insertAccessToken(ctx, signature, request)
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.Commit(ctx); err != nil {
+		return fmt.Errorf("store read token: %w", err)
+	}
+	return nil
+}
+
+// NarrowedRequest reports whether request is a trade narrowed to reading: one that asked for
+// oauthwire.ScopeRead, which the exchange answers with one of the three narrowed project scopes
+// (oauth.Provider.decide). A read entry's trade that asked for no scope is granted read too, and
+// is no narrowed trade: its token is the one it has always been, stored where it always was. The
+// exchange decides by the same test which word it writes, so the word and the table agree.
+func NarrowedRequest(request oauth2.Requester) bool {
+	return request.GetRequestedScopes().Has(oauthwire.ScopeRead)
+}
+
+// launcherKeyRefusal is the refusal of a read token whose key a live launcher credential is bound
+// to. A narrowed trade binds its token to a holder key instead, which a read trade proves in the
+// DPoP-Holder header. A read entry's trade that asked for no scope may send no holder proof, so
+// it asks for read with one or trades with a key that holds no launcher credential.
+func launcherKeyRefusal(narrowed bool) error {
+	if narrowed {
+		return oauth2.ErrInvalidRequest.WithHint("The key this read token would be bound to signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key. Send a DPoP-Holder proof by a key made for the token's holder, and the token is bound to that key.")
+	}
+	return oauth2.ErrInvalidRequest.WithHint("The key this proof was signed with signs launcher proofs: a live launcher credential is bound to it, and no read token is bound to such a key. Ask for the scope read with a DPoP-Holder proof by a key made for the token's holder, or trade with a key that holds no launcher credential.")
+}
+
+// insertAccessToken writes request's session into oauth_access_tokens.
+func (s *Store) insertAccessToken(ctx context.Context, signature string, request oauth2.Requester) error {
 	raw, session, credential, err := sessionJSON(request)
 	if err != nil {
 		return err
@@ -612,23 +705,111 @@ func (s *Store) CreateAccessTokenSession(ctx context.Context, signature string, 
 	return nil
 }
 
-// GetAccessTokenSession reads an access token's session: oauth2.ErrNotFound for none, and the
-// request with oauth2.ErrInactiveToken once it has been revoked.
-func (s *Store) GetAccessTokenSession(ctx context.Context, signature string, session oauth2.Session) (oauth2.Requester, error) {
-	return s.getToken(ctx, `select request, active from oauth_access_tokens where signature = $1`, signature, session)
+// insertNarrowedToken writes a narrowed token's session into oauth_narrowed_access_tokens, with
+// its expiry clamped (clampNarrowed), the key it is bound to, and the machine login's access
+// token it was traded from, where it was.
+func (s *Store) insertNarrowedToken(ctx context.Context, signature string, request oauth2.Requester, session *oauth2.DefaultSession) error {
+	credential, err := credentialOf(request, session)
+	if err != nil {
+		return err
+	}
+	exchanged, _ := request.GetSession().(*ExchangeSession)
+	var subject any
+	if exchanged != nil && exchanged.SubjectSignature != "" {
+		subject = exchanged.SubjectSignature
+	}
+	if err := s.clampNarrowed(ctx, exchanged, session, credential); err != nil {
+		return err
+	}
+	raw, _, _, err := sessionJSON(request)
+	if err != nil {
+		return err
+	}
+	var named any
+	if credential != "" {
+		named = credential
+	}
+	_, err = s.db(ctx).Exec(ctx, `insert into oauth_narrowed_access_tokens
+		(signature, request_id, credential_id, request, expires_at, subject_signature, jwk_thumbprint)
+		values ($1, $2, $3, $4, $5, $6, $7)`,
+		signature, request.GetID(), named, raw, expiry(session, oauth2.AccessToken), subject, session.GetDPoPJWKThumbprint())
+	if err != nil {
+		return fmt.Errorf("store narrowed access token: %w", err)
+	}
+	return nil
 }
 
-// DeleteAccessTokenSession removes an access token's session; an unknown signature is no error.
+// clampNarrowed brings session's access-token expiry, the access lifetime from now as the library
+// set it, down to the subject's expiry (exchanged's SubjectExpiresAt, where the request holds an
+// ExchangeSession) and to the expiry of the launcher credential the token names (credential, ""
+// for none) where either is earlier. A read trade extends no credential, so a credential that
+// lapses before the token would otherwise lapse with the token still stored live, and an ordinary
+// trade that renews the credential later would bring the token back; clamped, the token has ended
+// by then.
+func (s *Store) clampNarrowed(ctx context.Context, exchanged *ExchangeSession, session *oauth2.DefaultSession, credential string) error {
+	bounds := []time.Time{}
+	if exchanged != nil && !exchanged.SubjectExpiresAt.IsZero() {
+		bounds = append(bounds, exchanged.SubjectExpiresAt)
+	}
+	if credential != "" {
+		var expires time.Time
+		if err := s.db(ctx).QueryRow(ctx, `select expires_at from launcher_credentials where id = $1`, credential).Scan(&expires); err != nil {
+			return fmt.Errorf("read the expiry of the credential a narrowed token names: %w", err)
+		}
+		bounds = append(bounds, expires)
+	}
+	for _, bound := range bounds {
+		if expires := session.GetExpiresAt(oauth2.AccessToken); expires.IsZero() || bound.Before(expires) {
+			session.SetExpiresAt(oauth2.AccessToken, bound)
+		}
+	}
+	return nil
+}
+
+// NarrowedLive is whether n, a row of oauth_narrowed_access_tokens, is live: its own row is
+// active and unexpired; the launcher credential it names, where it names one, is neither revoked
+// nor expired (the test LockCredential makes); and the machine login's access token it was traded
+// from, where it was, is still stored, active and unexpired. A sign-in revoke and a credential
+// revoke both end the credential, a revoke of the login's token deactivates that token, and a
+// retire deletes it, on every broker build, so each of them ends the narrowed token too.
+//
+// It is the one text of that rule. Introspection reads it (GetAccessTokenSession), and so does the
+// count of the tokens a sign-in revoke ends (store.RevokePersonSignInTx), so a change to it changes
+// both alike.
+const NarrowedLive = `n.active and n.expires_at > now()
+	and (n.credential_id is null or exists (select 1 from launcher_credentials c
+		where c.id = n.credential_id and c.revoked_at is null and c.expires_at > now()))
+	and (n.subject_signature is null or exists (select 1 from oauth_access_tokens subject
+		where subject.signature = n.subject_signature and subject.active and subject.expires_at > now()))`
+
+// GetAccessTokenSession reads an access token's session from either table: oauth2.ErrNotFound for
+// none, and the request with oauth2.ErrInactiveToken once it is no longer live. A token of
+// oauth_access_tokens is live while its row is active. A narrowed token is live while
+// NarrowedLive holds, which is decided again at every read, an introspection's among them, rather
+// than written onto the narrowed row when its credential or its subject ends: a revoke, a retire
+// or a sweep made by a broker build before migration 0042, which never touches this table, ends
+// it too, and the broker rolls one replica at a time.
+func (s *Store) GetAccessTokenSession(ctx context.Context, signature string, session oauth2.Session) (oauth2.Requester, error) {
+	return s.getToken(ctx, `select request, active from oauth_access_tokens where signature = $1
+		union all
+		select n.request, `+NarrowedLive+` from oauth_narrowed_access_tokens n where n.signature = $1`, signature, session)
+}
+
+// DeleteAccessTokenSession removes an access token's session from either table, in one statement;
+// an unknown signature is no error.
 func (s *Store) DeleteAccessTokenSession(ctx context.Context, signature string) error {
-	if _, err := s.db(ctx).Exec(ctx, `delete from oauth_access_tokens where signature = $1`, signature); err != nil {
+	if _, err := s.db(ctx).Exec(ctx, `with plain as (delete from oauth_access_tokens where signature = $1)
+		delete from oauth_narrowed_access_tokens where signature = $1`, signature); err != nil {
 		return fmt.Errorf("delete access token: %w", err)
 	}
 	return nil
 }
 
-// RevokeAccessToken deactivates every access token issued for the request.
+// RevokeAccessToken deactivates every access token issued for the request, in either table, in one
+// statement.
 func (s *Store) RevokeAccessToken(ctx context.Context, requestID string) error {
-	if _, err := s.db(ctx).Exec(ctx, `update oauth_access_tokens set active = false where request_id = $1 and active`, requestID); err != nil {
+	if _, err := s.db(ctx).Exec(ctx, `with plain as (update oauth_access_tokens set active = false where request_id = $1 and active)
+		update oauth_narrowed_access_tokens set active = false where request_id = $1 and active`, requestID); err != nil {
 		return fmt.Errorf("revoke access tokens: %w", err)
 	}
 	return nil
@@ -784,6 +965,97 @@ func LockCredential(ctx context.Context, credentialID string) error {
 		return fmt.Errorf("lock the launcher credential: %w", err)
 	}
 	return nil
+}
+
+// ErrNoCredentialHeld is a subject that holds no unrevoked launcher credential at all:
+// LockHeldCredential found none to name.
+var ErrNoCredentialHeld = errors.New("oauthstore: the subject holds no launcher credential")
+
+// LockHeldCredential finds the one unrevoked launcher credential subject holds, bound to no pod,
+// and holds it with LockCredential in the transaction ctx carries, answering its id. It answers
+// ErrNoCredentialHeld when subject holds none and ErrCredentialEnded when the one it holds has
+// expired, or was revoked after it was found.
+//
+// It is how a person's read trade names the credential the sign-in already holds, keyed by
+// exchange.PersonSubject, without minting, moving or extending it. A sign-in's credential is the
+// one unrevoked row of its subject that names no pod (IssueTokenLoginTx's conflict target for a
+// login bound to no pod), so the lookup finds at most one row.
+func LockHeldCredential(ctx context.Context, subject string) (string, error) {
+	state, err := txOf(ctx)
+	if err != nil {
+		return "", err
+	}
+	var id string
+	err = state.tx.QueryRow(ctx, `select id::text from launcher_credentials
+		where subject = $1 and pod_uid is null and revoked_at is null`, subject).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNoCredentialHeld
+	}
+	if err != nil {
+		return "", fmt.Errorf("find the subject's launcher credential: %w", err)
+	}
+	if err := LockCredential(ctx, id); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// lockKey takes the transaction-scoped advisory lock on a key's thumbprint, held until the
+// transaction db runs in ends. Both sides of the rule that no key is both a read token's and a
+// launcher credential's take it before they read the other side: CreateAccessTokenSession for a
+// read token, and the two writers of a launcher credential's key (KeyHoldsReadToken). So of two
+// transactions binding one key, the second waits for the first to end, and then its check reads
+// what the first committed in a statement of its own, which under read committed, the broker's
+// isolation, sees that commit. A hash shared by two thumbprints only makes their writers wait for
+// each other.
+func lockKey(ctx context.Context, db Querier, thumbprint string) error {
+	if _, err := db.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('launcher-key ' || $1, 0))`, thumbprint); err != nil {
+		return fmt.Errorf("lock the key %s: %w", thumbprint, err)
+	}
+	return nil
+}
+
+// keyHoldsLauncherCredential takes the key's lock (lockKey) and reports whether a live launcher
+// credential, one neither revoked nor expired, is bound to thumbprint.
+func keyHoldsLauncherCredential(ctx context.Context, db Querier, thumbprint string) (bool, error) {
+	if err := lockKey(ctx, db, thumbprint); err != nil {
+		return false, err
+	}
+	var held bool
+	if err := db.QueryRow(ctx, `select exists (select 1 from launcher_credentials
+		where key_thumbprint = $1 and revoked_at is null and expires_at > now())`, thumbprint).Scan(&held); err != nil {
+		return false, fmt.Errorf("read the launcher credentials of key %s: %w", thumbprint, err)
+	}
+	return held, nil
+}
+
+// KeyHoldsReadToken takes the key's lock (lockKey) in the transaction db runs in and reports
+// whether a read token is bound to thumbprint: an active, unexpired narrowed token, read through
+// its key's index, or an active, unexpired read entry's token, whose project scope is none, read
+// through the partial expression index migration 0042 adds to oauth_access_tokens. A read entry's
+// token an older broker minted is covered too, since its row has the same shape. A narrowed row
+// counts while it is active and unexpired even if what it was traded from has ended
+// (NarrowedLive): that refuses a credential on its key a little longer than it must, until the
+// row expires, and keeps this check off launcher_credentials, which the writer calling it is
+// about to write.
+//
+// enroll calls it in the two statements that write launcher_credentials.key_thumbprint, its
+// launcher credential's insert and its token login's upsert, before either writes, so no launcher
+// credential is minted or moved onto a key a live read token is bound to, whichever path reaches
+// them.
+func KeyHoldsReadToken(ctx context.Context, db Querier, thumbprint string) (bool, error) {
+	if err := lockKey(ctx, db, thumbprint); err != nil {
+		return false, err
+	}
+	var held bool
+	if err := db.QueryRow(ctx, `select exists (select 1 from oauth_narrowed_access_tokens n
+			where n.jwk_thumbprint = $1 and n.active and n.expires_at > now())
+		or exists (select 1 from oauth_access_tokens
+			where (request #>> '{session,jwk_thumbprint}') = $1 and active
+				and (request #>> '{session,extra,project_scope}') = 'none' and expires_at > now())`, thumbprint).Scan(&held); err != nil {
+		return false, fmt.Errorf("read the read tokens of key %s: %w", thumbprint, err)
+	}
+	return held, nil
 }
 
 // EndCredential deactivates, in tx, every access and refresh token whose session names the

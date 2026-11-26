@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { correction } from "../../__tests__/correction-feed";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { onFakeClock, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -20,6 +21,7 @@ import {
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { markCorrectedPost } from "../../api/corrected-post";
 import type {
   Agent,
   ArtifactText,
@@ -37,8 +39,15 @@ import type {
 import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue = {
   route_status: null,
@@ -240,9 +249,9 @@ function stubIssuePage(
 }
 
 /**
- * The reads the issue page's own panels make: the header's repository and component lines, the
- * Spec tab's requirements, the Artifacts tab's lists, the issue's references, and each
- * document's own record, text, blocks and versions, with the decisions and read marks
+ * The reads the issue page's own panels make: the header's component line, the Spec tab's
+ * requirements, the Artifacts tab's lists, the issue's references, and each document's own
+ * record, text, blocks and versions, with the decisions and read marks
  * `decisionsAndReadMarkHandlers` answers. Each is answered with the API's empty shape, so a
  * panel renders its loaded-empty state rather than its error state. A test that asserts one of
  * these spies the `api` method that fetches it (`spyOn(api, "getArtifactText")`) and never
@@ -250,7 +259,6 @@ function stubIssuePage(
  */
 function answerIssuePageReads(): void {
   answerRequests(
-    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
     http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([])),
     http.get("/api/v1/issues/:key/coverage", ({ params }) =>
       Response.json({
@@ -742,6 +750,56 @@ test("IssuePage creates a label from the multi-select and saves the final draft 
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { labels: ["bug", "urgent"] }, keyedAttempt)
     );
     expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    listIssues.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage shows the labels the server stored after a save, so s and ſ show as one", async () => {
+  // Dispatch keeps two labels as one where Go's `strings.EqualFold` matches them, and it matches
+  // "ſ" (U+017F) with "s". The editor compares labels with `toLowerCase`, which keeps them apart,
+  // so it sends both. The page must then show the labels in Dispatch's answer, not its own draft.
+  const user = userEvent.setup();
+  const labeledIssue = { ...issue, labels: ["s"] };
+  const restore = stubIssuePage(labeledIssue);
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
+    { ...labeledIssue, open_asks: 0 },
+  ]);
+  // The test holds the answer until the save shows as in flight. Before the answer lands, the
+  // closed editor shows the issue's old labels. A check made then passes with any answer.
+  const save = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const view = renderIssuePage();
+
+  try {
+    const trigger = await screen.findByRole("button", { name: "Edit labels" });
+    await user.click(trigger);
+    const input = await screen.findByRole("combobox", { name: "Search or create label" });
+    await user.click(input);
+    await user.paste("\u017f");
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("option", { name: "\u017f" })).toHaveAttribute("aria-selected", "true");
+    await user.click(trigger);
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { labels: ["s", "\u017f"] }, keyedAttempt)
+    );
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(trigger).toHaveTextContent("Saving labels…"));
+    await act(async () => {
+      save.resolve({ ...labeledIssue, labels: ["s"] });
+      await save.promise;
+    });
+    // The save ends only after its answer is in the issue's cache.
+    await waitFor(() => expect(trigger).not.toHaveTextContent("Saving labels…"));
+
+    const row = screen.getByTestId("issue-labels");
+    expect(within(row).getByText("s")).toBeDefined();
+    expect(within(row).queryByText("\u017f")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     patchIssue.mockRestore();
@@ -1825,6 +1883,57 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
   }
 });
 
+// A document renamed to a slug-shaped name keeps the slug its first name gave it, and a reference
+// written with its current name links to the page at that name: the page finds the document as
+// the link did (`artifactAtAddress`), rather than answering that the issue holds no such artifact.
+test("IssuePage opens a document at its current name when its slug kept an earlier one", async () => {
+  const documentArtifact = {
+    created_at: "2026-09-09T01:00:00Z",
+    created_by: { id: "alice", kind: "user" as const },
+    id: "artifact-notes",
+    issue_key: "CORE-1",
+    project: "CORE",
+    kind: "doc" as const,
+    name: "launch-notes",
+    primary: false,
+    ref_key: "CORE-1/notes-md",
+    session_id: null,
+    slug: "notes-md",
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" as const }],
+        created_at: "2026-09-09T01:00:00Z",
+        mime: "text/markdown",
+        named: false,
+        number: 1,
+        sha256: "notes-sha",
+        size: 10,
+        summary: null,
+      },
+    ],
+  };
+  const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, documentArtifact] });
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({ ...documentArtifact });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Notes",
+    version: 1,
+    token: "sha256:notes",
+  });
+  const view = renderIssuePage("/issues/CORE-1/artifacts/launch-notes");
+
+  try {
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    expect(screen.getByRole("heading", { name: "launch-notes" })).not.toBeNull();
+    expect(screen.queryByText("No artifact launch-notes on CORE-1.")).toBeNull();
+    await waitFor(() => expect(getArtifactText).toHaveBeenCalledWith("artifact-notes"));
+  } finally {
+    view.unmount();
+    getArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage hides the Artifacts panel after switching to Spec", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -2099,6 +2208,31 @@ test("IssuePage keeps state actions available while approval awaits", async () =
   }
 });
 
+// The priorities an issue advances are chips with the picker's "+" after them, in the state row
+// directly after the P0-P3 tag at the test DOM's desktop width: that row wraps, where the details
+// row under it scrolls sideways. On a phone they open the details row instead
+// (`e2e/priorities.e2e.ts` reads both).
+test("IssuePage draws the priorities' chips in the state row after the P0-P3 tag, not in the details row", async () => {
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const line = within(stateActions).getByTestId("issue-advances");
+    expect(within(line).getByRole("button", { name: "Edit priorities" })).not.toBeNull();
+    expect(line.previousElementSibling?.querySelector("select")?.getAttribute("aria-label")).toBe(
+      "Priority of CORE-1"
+    );
+    expect(
+      within(screen.getByTestId("issue-metadata-rail")).queryByTestId("issue-advances")
+    ).toBeNull();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 test("IssuePage draws a gated root issue's steps where the header's one chip sat", async () => {
   const restore = stubIssuePage({
     ...issue,
@@ -2115,6 +2249,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
@@ -2147,6 +2282,37 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
   }
 });
 
+test("IssuePage draws the steps of a root whose parent is in another project", async () => {
+  // CORE-1 under OTHR-6 is a root of CORE: a parent of another project passes nothing on, so the
+  // issue stands in CORE's gate and the header reads the projects to draw it.
+  const restore = stubIssuePage({ ...issue, parent: "OTHR-6" });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria", "spec"],
+    open_asks: 0,
+    key: "CORE",
+    name: "Core",
+    proven_sessions: false,
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria", "spec"]);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage keeps the primary document's chip when no gated step reviews it", async () => {
   const restore = stubIssuePage({
     ...issue,
@@ -2165,6 +2331,7 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
     open_asks: 0,
     key: "CORE",
     name: "Core",
+    proven_sessions: false,
   };
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
   const view = renderIssuePage("/issues/CORE-1/conversation");
@@ -2610,6 +2777,141 @@ test("IssuePage lists a match the reader cannot open by its kind alone, with no 
     if (unreadable === undefined) throw new Error("the unreadable match is not listed");
     expect(unreadable.textContent?.trim()).toBe("Message");
     expect(unreadable.querySelector("a")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A match that is a post prints the post's first line, so it carries the post's marks: a deleted
+// comment has no first line left and its link reads as the deleted line, not its bare id; an
+// edited one carries ` · edited` where it stands; one that stands unedited carries neither.
+test("IssuePage lists a deleted match as deleted and marks an edited one", async () => {
+  const restore = stubIssuePage(issue);
+  const thirdId = "4c9f3e12-9999-4aaa-8bbb-cccccccccccc";
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        // The deleted match was edited first, so ` · edited` can be drawn, and only the list's
+        // own reading of the delete keeps it off.
+        {
+          deleted_at: "2026-09-09T03:00:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          edited_at: "2026-09-09T01:00:00Z",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          edited_at: "2026-09-09T02:00:00Z",
+          first_line: "The edited note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+        {
+          first_line: "The standing note",
+          id: thirdId,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${thirdId}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 3 items; write more of the id`,
+    })
+  );
+  const view = renderIssuePage(`/issues/CORE-1/comments/${SHORT_ID}`);
+
+  try {
+    await screen.findByText("Several items match that link");
+    const match = (href: string) => {
+      const link = view.container.querySelector(`a[href="${href}"]`);
+      const row = link?.closest("li");
+      if (link === null || row === null || row === undefined) throw new Error(`${href} unlisted`);
+      return { link, row };
+    };
+    const deleted = await waitFor(() => match(`/issues/CORE-1/comments/${WHOLE_ID}`));
+    await waitFor(() => expect(deleted.link.textContent).toContain("Deleted by alice"));
+    expect(deleted.link.textContent).not.toContain(WHOLE_ID);
+    expect(deleted.row.textContent).not.toContain("edited");
+    const edited = match(`/issues/CORE-1/comments/${OTHER_ID}`);
+    expect(edited.row.textContent).toContain("CORE-1 · edited");
+    expect(edited.link.textContent).toBe("The edited note");
+    const standing = match(`/issues/CORE-1/comments/${thirdId}`);
+    expect(standing.row.textContent).not.toContain("edited");
+    expect(standing.row.querySelector("[data-post-deleted]")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// Census row 7.13 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-21 03:47Z: the
+// list of an id's matches is drawn from Dispatch's refusal, which the page holds as the read's
+// error, not its answer. A match deleted after the list was drawn, and another edited, are
+// corrected there as every other copy of a post is (`markCorrectedPost`): the deleted one draws
+// the deleted line and none of its first line, the edited one its mark, with no read of the
+// prefix since, and the list stays drawn.
+test("IssuePage marks a match deleted, and another edited, once their corrections reach the list it drew before them", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          first_line: "The first note",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          first_line: "The other note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 2 items; write more of the id`,
+    })
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = renderIssuePage(
+    `/issues/CORE-1/comments/${SHORT_ID}`,
+    undefined,
+    undefined,
+    queryClient
+  );
+  const row = (id: string) =>
+    view.container.querySelector(`a[href="/issues/CORE-1/comments/${id}"]`)?.closest("li");
+
+  try {
+    await screen.findByRole("link", { name: "The first note" });
+    const reads = getReferences.mock.calls.length;
+    act(() => {
+      markCorrectedPost(queryClient, correction("comment", WHOLE_ID, false));
+      markCorrectedPost(queryClient, correction("comment", OTHER_ID, true));
+    });
+    await waitFor(() => expect(row(WHOLE_ID)?.textContent).toContain("Deleted by alice"));
+    expect({
+      deletedWords: view.container.textContent?.includes("The first note"),
+      edited: row(OTHER_ID)?.textContent,
+      list: screen.queryByText("Several items match that link") !== null,
+      reads: getReferences.mock.calls.length,
+    }).toEqual({
+      deletedWords: false,
+      edited: "CommentCORE-1 · editedThe other note",
+      list: true,
+      reads,
+    });
   } finally {
     view.unmount();
     getReferences.mockRestore();

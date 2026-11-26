@@ -14,12 +14,24 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>"
+const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--reap-orphans] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>"
+
+// workerShimGrace is how long the shim gives a SIGTERMed agent before it kills it:
+// shim.DefaultGrace, half the daemon's default worker_stop_timeout_seconds. It is a variable so
+// that this package's tests can give it their own deadline (programbound): a stand-in agent a
+// loaded machine makes slow to act on its SIGTERM is not killed at 5 s.
+var workerShimGrace = shim.DefaultGrace
+
+func init() {
+	programbound.Register(&workerShimGrace)
+}
 
 // newWorkerShimCommand is `legion worker-shim`, the command a runtime puts in front of every phase
 // worker's OMP: it dials the daemon's worker stream, and bridges OMP to it once acked. Its lines
@@ -31,8 +43,9 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 // it unset, and nothing else — Legion writes no settings overlay of its own, so PI_CONFIG_FILES
 // rides through as the runtime composed it and nothing of a repository's settings is held off),
 // with the scratch
-// directories the runtime told this role to write under made (podsafety.EnsureScratch) and Oh My
-// Pi's profile directory made under the role's XDG_STATE_HOME (podsafety.EnsureStateHome). With
+// directories the runtime told this role to write under made (podsafety.EnsureScratch), Oh My
+// Pi's profile directory made under the role's XDG_STATE_HOME (podsafety.EnsureStateHome) and the
+// image's gh extensions linked where gh reads them (podsafety.EnsureGhExtensions). With
 // --warm-codegraph, which the Sandbox runtime passes for a role in an issue pod — never for a
 // tmux pane, whose workspace the daemon warms itself (internal/daemon/outbox.go), nor for the
 // controller, which has no workspace — the shim builds the CodeGraph index of the workspace
@@ -74,9 +87,10 @@ func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 	podSafety := flags.Bool("pod-safety", false, "start OMP on a pod's baseline (internal/podsafety)")
 	flags.DurationVar(&given.stopGrace, "stop-grace", 0, "how long the runtime gives this shim to exit after its stop signal before killing it (a pod's terminationGracePeriodSeconds, which the launcher passes); the wait for an in-flight CodeGraph warm-up stays inside it and is never under 3s, so the daemon refuses a worker_stop_timeout_seconds under 9 for pods; unset is the daemon's default worker_stop_timeout_seconds")
 	flags.BoolVar(&given.warmCodegraph, "warm-codegraph", false, "once Oh My Pi has started, build the CodeGraph index of the workspace LEGION_WORKSPACE names, in the background (a role's shim in an issue pod; never a tmux pane's or the controller's)")
+	flags.BoolVar(&given.reapOrphans, shimwire.ReapOrphansFlag, false, "become the child subreaper of everything this shim starts and reap their orphans (Linux; the controller pod's launcher passes it when no role-init is above the shim, internal/shim's Config.ReapOrphans)")
 	flags.StringVar(&given.keyDir, "agent-secrets-key-dir", "", "the pod's tmpfs directory for its agent-secrets key and enrollment id")
 	flags.StringVar(&given.tokenFile, "pod-token-file", "", "the projected service-account token for the secrets broker's audience")
-	flags.StringVar(&given.agentSecretsBin, "agent-secrets-bin", "", "the agent-secrets binary that generates the key and renews the lease")
+	flags.StringVar(&given.agentSecretsBin, shimwire.AgentSecretsBinFlag, "", "the agent-secrets binary that generates the key and renews the lease")
 	cmd.RunE = runs(func(ctx context.Context, args []string) int {
 		return runWorkerShim(ctx, cmd, given, *podSafety, args, stdout, stderr)
 	})
@@ -132,14 +146,19 @@ func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlag
 // role told a temporary directory nothing created cannot run — and Oh My Pi's profile directory
 // under the XDG_STATE_HOME the runtime names for this role, the one directory of the set that is
 // this role's alone, without which Oh My Pi would not read the variable and its browser broker's
-// lock would be the name every role of the pod takes. A directory that cannot be made is a
-// refusal to start, naming it, as a providers key that cannot be read is.
+// lock would be the name every role of the pod takes; then the image's gh extensions linked into
+// gh's extension directory under the data home, where gh reads them and nothing else puts them
+// (podsafety.EnsureGhExtensions). A directory or link that cannot be made is a refusal to start,
+// naming it, as a providers key that cannot be read is.
 func podSafeEnvironment(environ []string) ([]string, error) {
 	environ = podsafety.Apply(environ)
 	if err := podsafety.EnsureScratch(environ); err != nil {
 		return nil, err
 	}
 	if err := podsafety.EnsureStateHome(environ); err != nil {
+		return nil, err
+	}
+	if err := podsafety.EnsureGhExtensions(environ, podsafety.GhExtensionsDir); err != nil {
 		return nil, err
 	}
 	return environ, nil
@@ -149,7 +168,7 @@ func podSafeEnvironment(environ []string) ([]string, error) {
 // runWorkerShim applies to the environment once the configuration holds.
 type workerShimFlags struct {
 	connect, bootTokenFile, providerEnvDir, keyDir, tokenFile, agentSecretsBin string
-	warmCodegraph                                                              bool
+	warmCodegraph, reapOrphans                                                 bool
 	stopGrace                                                                  time.Duration
 }
 
@@ -203,8 +222,9 @@ func workerShimConfig(set map[string]bool, given workerShimFlags, argv []string)
 		Env:          os.Environ(),
 		ProviderEnv:  providerEnv,
 		AgentSecrets: agentSecrets,
-		Grace:        shim.DefaultGrace,
+		Grace:        programbound.Of(&workerShimGrace),
 		StopGrace:    given.stopGrace,
+		ReapOrphans:  given.reapOrphans,
 	}
 	if given.warmCodegraph {
 		cfg.WarmCodegraph = workspace.WarmCodegraphIndex

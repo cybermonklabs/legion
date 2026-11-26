@@ -38,7 +38,10 @@
 # of `envoyImage`, the Dispatch server's (dispatch/main.go, pinListenerImage), and, when the
 # deployment declares the VM hub, envoy/Pulumi.prod.yaml `listenerImage`, which only that hub's
 # listener reads. A dispatch stack that sets no `listenerImage` is UNKNOWN: its deployment requires
-# that key, and the listener runs no other image. Whether the deployment declares the VM hub,
+# that key, and the listener runs no other image. The Dispatch server's own `envoyImage` is judged
+# too, under the key dispatch-server and never in the listener's place: the server publishes to the
+# hub as well, and legacy-subjects-gate.sh's fact (a3) maps each user of the hub that may publish a
+# notification subject to one of these keys. Whether the deployment declares the VM hub,
 # gcp:NatsHub, is decided from its program, never from the pin, since the hub's removal deletes the
 # pin with it (vm_hub, lib/daemon-release-gate-read-vm-hub.sh): at the head of the deployment
 # repository's default branch, fetched as one archive and held to the commit's tree, a Go file that
@@ -79,8 +82,8 @@
 #     legion/testdata/<key in lower case>-legion.yaml: the deployment's TestCommittedStackConfig
 #     holds that file byte for byte to what its legion program renders (renderLegionYAML), and the
 #     project files themselves carry no legion.yaml key. That program renders no plugins key today
-#     (renderLegionYAML, legion/main.go:2743-2892 when this was written) and refuses a project field
-#     it does not know (parseProjects' DisallowUnknownFields, legion/main.go:4771-4774), so the
+#     (renderLegionYAML, in the deployment repository's legion/main.go) and refuses a project field
+#     it does not know (the DisallowUnknownFields of parseProjects, in the same file), so the
 #     linked pair decides; reading the rendering keeps the gate right if the program starts to set
 #     the key. A rendering it cannot read or that sets no runtime.kubernetes, a legion that links no
 #     pair where the rendering sets none, and a second line that names no pi-envoy version are
@@ -793,8 +796,10 @@ if [ "$mode" = listeners ]; then
   # dispatch's listener runs listenerImage and nothing else: the deployment's dispatch/main.go requires
   # that key (loadSettings) and pinListenerImage sets the listener's container from it, leaving
   # envoyImage to the Dispatch server. A stack that sets none runs no listener this gate can read,
-  # so it is UNKNOWN rather than a reading of the server's image.
+  # so it is UNKNOWN rather than a reading of the server's image. The server's envoyImage is judged
+  # under a key of its own, dispatch-server.
   listener dispatch dispatch listenerImage
+  listener dispatch-server dispatch envoyImage
 else
   load_entries
   if [ "$entries_state" = failed ]; then

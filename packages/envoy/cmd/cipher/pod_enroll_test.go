@@ -11,7 +11,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -28,45 +27,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 )
 
-const (
-	testPodAccount = "system:serviceaccount:legion:k8s-session"
-	testPodUID     = "11111111-2222-3333-4444-555555555555"
-	testPodService = "k8s-session"
-)
-
-// fakePodToken is a JWT shaped like the projected ServiceAccount token a kubelet mounts for the
-// agent-secrets audience. It is not signed by anything: the client reads its claims and never
-// verifies them, and every broker in this file is a fake.
-func fakePodToken(t *testing.T, subject, podUID string) string {
-	t.Helper()
-	claims := map[string]any{
-		"iss": "https://kubernetes.example/cluster",
-		"aud": []string{"agent-secrets"},
-		"sub": subject,
-		"exp": time.Now().Add(time.Hour).Unix(),
-	}
-	if podUID != "" {
-		claims["kubernetes.io"] = map[string]any{"pod": map[string]any{"uid": podUID}}
-	}
-	payload, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enc := base64.RawURLEncoding
-	return enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`)) + "." + enc.EncodeToString(payload) + ".c2ln"
-}
-
-// writePodToken writes token to a file in its own directory and answers the path, as the kubelet's
-// projection mounts one.
-func writePodToken(t *testing.T, token string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "token")
-	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 // TestEnrolAPodFromItsProjectedToken: the whole of a pod's enrollment. It logs in with the token
 // its projected file holds, enrols kind pod under the pod UID that token's own claims name,
 // carrying the token again and a launcher proof, writes key.pem and enrollment into --out, prints
@@ -74,6 +34,7 @@ func writePodToken(t *testing.T, token string) string {
 // directory it reuses key.pem, so the enrollment the broker holds live for that key is the one it
 // gets back, and it renews that lease.
 func TestEnrolAPodFromItsProjectedToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:42).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	broker, calls := servePodBroker(t, "enrollment-of-the-pod")
@@ -229,6 +190,7 @@ func TestEnrolAPodFromItsProjectedToken(t *testing.T) {
 // missing or which two flags cannot be given together. With neither mode the refusal names both,
 // so a pod that forgot --pod is told the mode exists.
 func TestPodUsageRefusals(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:216).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
 	broker, calls := servePodBroker(t, "never-reached")
 	for _, tc := range []struct {
@@ -274,6 +236,7 @@ func TestPodUsageRefusals(t *testing.T) {
 // exits 1 naming the file by its flag, --pod-token-file, and not by its path, and asks the broker
 // nothing — a blank file is never sent as a token.
 func TestAPodTokenFileThatCannotBeReadIsNamed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:245).
 	missing := filepath.Join(t.TempDir(), "absent")
 	blank := writePodToken(t, "")
 	for name, path := range map[string]string{"a missing file": missing, "an empty file": blank} {
@@ -300,6 +263,7 @@ func TestAPodTokenFileThatCannotBeReadIsNamed(t *testing.T) {
 // refusal says so before anything is asked of the broker, rather than arriving as a 403 the
 // operator has to decode.
 func TestAPodTokenBoundToNoPodIsNamed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:269).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, ""))
 	broker, calls := servePodBroker(t, "never-reached")
 	t.Setenv("AGENT_SECRETS_URL", broker.URL)
@@ -320,6 +284,7 @@ func TestAPodTokenBoundToNoPodIsNamed(t *testing.T) {
 // TestNotAJWTInThePodTokenFileIsNamed: a file holding something that is not a JWT at all is named
 // as such, not sent to the broker to be refused there.
 func TestNotAJWTInThePodTokenFileIsNamed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:290).
 	tokenFile := writePodToken(t, "not-a-jwt")
 	broker, calls := servePodBroker(t, "never-reached")
 	t.Setenv("AGENT_SECRETS_URL", broker.URL)
@@ -340,6 +305,7 @@ func TestNotAJWTInThePodTokenFileIsNamed(t *testing.T) {
 // token itself. POD_SELF_ENROLL_ONLY is what a login bound to another pod, or to none, is
 // answered.
 func TestARefusedPodLoginExitsAndNamesTheIdentity(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:320).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -371,6 +337,7 @@ func TestARefusedPodLoginExitsAndNamesTheIdentity(t *testing.T) {
 // status, and none of what the answerer wrote - the words, which repeat that credential, or the
 // code - since whoever answers at that address can fill any of them with it.
 func TestARefusedPodLoginBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:353).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	var words string
@@ -407,6 +374,7 @@ func TestARefusedPodLoginBesideAnAddressThatIsNotCleanPrintsItsStatusAlone(t *te
 // into enrollment.error beside the key, and a later `agent-secrets` call says what the broker
 // said. A re-run that succeeds takes that file away again.
 func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:404); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	token := fakePodToken(t, testPodAccount, testPodUID)
 	tokenFile := writePodToken(t, token)
 	out := t.TempDir()
@@ -458,7 +426,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	}
 
 	// What a later call now says: the broker's refusal, not a missing file.
-	if _, _, err := buildSigner(); err == nil ||
+	if _, _, err := buildSigner(io.Discard); err == nil ||
 		!strings.Contains(err.Error(), enrollmentErrorFile) || !strings.Contains(err.Error(), "POD_SELF_ENROLL_ONLY") {
 		t.Fatalf("a later call after a refused enrolment = %v; want it to name %s and what the broker said", err, enrollmentErrorFile)
 	}
@@ -472,7 +440,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, enrollmentErrorFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("%s after a run that succeeded: %v; want it gone", enrollmentErrorFile, err)
 	}
-	if _, _, err := buildSigner(); err != nil {
+	if _, _, err := buildSigner(io.Discard); err != nil {
 		t.Fatalf("a later call after the run that succeeded: %v", err)
 	}
 }
@@ -484,6 +452,7 @@ func TestARefusedEnrolmentLeavesTheRefusalBesideTheKey(t *testing.T) {
 // on one directory must leave one key, one enrollment id, and must not have made four logins
 // race: each run either made the enrollment or got that same one back.
 func TestTwoRunsOnOneDirectoryTakeTurns(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_enroll_test.go:459).
 	tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
 	broker, calls := servePodBroker(t, "enrollment-of-the-pod")
 	out := filepath.Join(t.TempDir(), "keys")

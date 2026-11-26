@@ -12,7 +12,7 @@ import (
 
 // StepPlace is one place of a task where a step runs: the task, the kind of step (step, retro or
 // merge) and its place in the task, from 1 for a step and 0 for a retro or a merge, which no plan
-// names (workflow's stepOf).
+// names (workflow's stepOfWalk).
 type StepPlace struct {
 	Task  string
 	Kind  string
@@ -99,6 +99,38 @@ func (s *Postgres) StepStarts(ctx context.Context, tx pgx.Tx, issue string, plac
 		return StepStart{}, fmt.Errorf("read the starts of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	return start, nil
+}
+
+// StepEntry is one run of a step of an issue: the place it runs at and the count of starts of that
+// place that began it (StepStart.Starts). The zero StepEntry is no run the record counts.
+type StepEntry struct {
+	Place  StepPlace
+	Starts int64
+}
+
+// OpenStep is the run of a step of issue that has no end yet whose start wrote the latest moment,
+// a run whose start wrote none coming after every one that wrote one. A start of the step the
+// issue stands in is such a start: it first ends each run of the issue that is over (workflow's
+// startStep), then writes the moment now. An issue can have several runs open at once, since the
+// fact's settle ends each run when its own end rule holds (workflow's settleRuns): a run whose
+// place no step of its walk holds stays open beside the issue's current run until a settle of the
+// issue ends it (workflow's endOffWalk). A run the daemon's boot opened for a step that started
+// under an earlier release (OpenUncountedStep) is open as any other, and is answered with the
+// count its row holds: 0 where the place had no row. It is the zero StepEntry where no run is
+// open. An architect's request about the step an issue stands in names the run its route read
+// here, and the fact refuses it where another run stands under the fact lock (sign_off,
+// request_backward_move).
+func (s *Postgres) OpenStep(ctx context.Context, tx pgx.Tx, issue string) (StepEntry, error) {
+	var entry StepEntry
+	err := tx.QueryRow(ctx, `select task, kind, place, starts from step_starts where issue = $1 and run = 'open'
+		order by started_at desc nulls last, task, kind, place limit 1`, issue).Scan(&entry.Place.Task, &entry.Place.Kind, &entry.Place.Place, &entry.Starts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return StepEntry{}, nil
+	}
+	if err != nil {
+		return StepEntry{}, fmt.Errorf("read the open step of %s: %w", issue, err)
+	}
+	return entry, nil
 }
 
 // EndStepStart is the end of the step running at place on issue, in the transaction that writes

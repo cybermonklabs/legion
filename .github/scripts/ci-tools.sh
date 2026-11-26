@@ -54,13 +54,13 @@
 # the three proofs are theirs, and neither writes this rule a second time.
 #
 # Every exit names the source that served the bytes — `github-release`, `ghcr-mirror`, `npm`,
-# `pypi` or `pulumi-releases` — except the one curl answers with exit 23, which names none,
-# because no source is what failed. ci_tools_extract's unwritable destination is that same
-# fault of this run and not that exit, and its callers do name a source, as the rule above
+# `pypi`, `pulumi-releases` or `helm-releases` — except the one curl answers with exit 23, which
+# names none, because no source is what failed. ci_tools_extract's unwritable destination is that
+# same fault of this run and not that exit, and its callers do name a source, as the rule above
 # says. A failure leaves no file at the destination, so a call site that checks the exit
 # status never runs a half-written or unverified file, and one that does not check it finds
 # nothing to run.
-# Those five words are the whole vocabulary of a source, and a row writes one of them on each of
+# Those six words are the whole vocabulary of a source, and a row writes one of them on each of
 # its two sides, in `primary_source` and in `second_source`, so a line, a refusal and the
 # manifest say one word for one source. A call site takes the word from the row with
 # ci_tools_source_name below and writes none of its own: a row that moved to another source
@@ -76,11 +76,12 @@
 #                           It is most rows' primary, and it is a second source as well: Pulumi
 #                           publishes the CLI tarball as a release asset and serves those same
 #                           bytes from get.pulumi.com.
-#   pypi, pulumi-releases   the same two URL fields, through the CI_TOOLS_URL_BASE seam. Two
-#                           words for the one fetch ci_tools__fetch_url makes, because the word
-#                           is the service a line and a refusal name and PyPI is not
-#                           get.pulumi.com: PyPI serves uv's wheel, get.pulumi.com serves the
-#                           docker provider plugin's tarball and the CLI's.
+#   pypi, pulumi-releases,  the same two URL fields, through the CI_TOOLS_URL_BASE seam. Three
+#   helm-releases           words for the one fetch ci_tools__fetch_url makes, because the word
+#                           is the service a line and a refusal name, and PyPI, get.pulumi.com
+#                           and get.helm.sh are three services: PyPI serves uv's wheel,
+#                           get.pulumi.com serves the docker provider plugin's tarball and the
+#                           CLI's, and get.helm.sh serves helm's.
 #   ghcr-mirror             the row's blob in the package `registry:` names.
 #   npm                     the row's `npm_package` and `npm_member`.
 #
@@ -231,15 +232,17 @@
 #                          this file by any path finds the manifest without naming it.
 #   CI_TOOLS_GITHUB_BASE   default https://github.com. The URL a `github-release` side of a row
 #                          writes — its `primary`, its `second_url` — and a row's `mirror_from`
-#                          begin with that string, and this file replaces exactly that prefix.
+#                          where that is a release asset begin with that string, and this file
+#                          replaces exactly that prefix. A `mirror_from` at another host, which
+#                          the helm row's is, does not begin with it and is fetched as written.
 #   CI_TOOLS_GHCR_BASE     default https://ghcr.io, read by ci_tools__ghcr alone, so every
 #                          address of the package is built the one way.
 #   CI_TOOLS_NPM_BASE      default https://registry.npmjs.org.
-#   CI_TOOLS_URL_BASE      default empty, which fetches the URL a `pypi` or `pulumi-releases`
-#                          side of a row writes exactly as the row wrote it. Set, it replaces
-#                          that URL's scheme and host and keeps its path, so a row written at
-#                          files.pythonhosted.org whose path is /packages/u/uv.whl is fetched
-#                          under CI_TOOLS_URL_BASE=http://127.0.0.1:9/url at
+#   CI_TOOLS_URL_BASE      default empty, which fetches the URL a `pypi`, `pulumi-releases` or
+#                          `helm-releases` side of a row writes exactly as the row wrote it.
+#                          Set, it replaces that URL's scheme and host and keeps its path, so a
+#                          row written at files.pythonhosted.org whose path is /packages/u/uv.whl
+#                          is fetched under CI_TOOLS_URL_BASE=http://127.0.0.1:9/url at
 #                          http://127.0.0.1:9/url/packages/u/uv.whl. The host is named here
 #                          without a path after it because rule 3 of
 #                          .github/scripts/check-ci-tools.sh reads every file under .github/
@@ -389,12 +392,12 @@ ci_tools_field() {
 # file would name and then refuse to fetch cannot exist. Adding a source is an edit in each of
 # the places ci_tools__source_fetch below names, which that one comment lists.
 #
-# Neither side is a constant. Most rows' primary is a GitHub release asset and the pulumi CLI's
-# is get.pulumi.com, and a third party fetches the primary bytes of jj (mise) and of Bun
-# (oven-sh/setup-bun), which is why those rows carry an empty `primary` and a `primary_source`
-# all the same: the word is what their action says about bytes it did not fetch here. The row is
-# read either way, so a call site that names no row of the manifest is refused here rather than
-# answered with a word about a tool this file knows nothing of.
+# Neither side is a constant. Most rows' primary is a GitHub release asset, the pulumi CLI's
+# is get.pulumi.com and helm's is get.helm.sh, and a third party fetches the primary bytes of jj
+# (mise) and of Bun (oven-sh/setup-bun), which is why those rows carry an empty `primary` and a
+# `primary_source` all the same: the word is what their action says about bytes it did not fetch
+# here. The row is read either way, so a call site that names no row of the manifest is refused
+# here rather than answered with a word about a tool this file knows nothing of.
 ci_tools_source_name() {
   if [ "$#" -ne 2 ]; then
     ci_tools__error "ci_tools_source_name takes a row and primary or second, and this call gave $#"
@@ -1175,9 +1178,9 @@ ci_tools__fetch_release() {
   ci_tools__fetch_address "$1" "$2" "$3" "$4" ci_tools_github_url
 }
 
-# ci_tools__fetch_url <row> <side> <max_time> <file>: the `pypi` and `pulumi-releases` words on
-# either side, which is the whole address the row writes, read through the CI_TOOLS_URL_BASE
-# seam.
+# ci_tools__fetch_url <row> <side> <max_time> <file>: the `pypi`, `pulumi-releases` and
+# `helm-releases` words on either side, which is the whole address the row writes, read through
+# the CI_TOOLS_URL_BASE seam.
 ci_tools__fetch_url() {
   ci_tools__fetch_address "$1" "$2" "$3" "$4" ci_tools__seamed_url
 }
@@ -1202,7 +1205,7 @@ ci_tools__fetch_url() {
 #      .github/scripts/check-ci-tools.sh, which decide which words a row may write on each
 #      side and which fields each word then makes that row carry, so a row whose word this
 #      file would never be asked about is refused by the gate.
-#   3. `route_of` in .github/scripts/ci-tools-proof.sh, which says which route of that rig's
+#   3. `.github/scripts/ci-tools-proof.sh#route_of`, which says which route of that rig's
 #      origin a word is served on.
 #   4. The GITHUB_WORDS and URL_WORDS sets of that rig's origin program, which is a program of
 #      its own started with the manifest and no word of that shell, and which decide which of
@@ -1211,15 +1214,15 @@ ci_tools__source_fetch() {
   local row=$1 side=$2 word=$3 __variable=$4
   case "$side/$word" in
     */github-release) printf -v "$__variable" '%s' ci_tools__fetch_release ;;
-    */pypi | */pulumi-releases) printf -v "$__variable" '%s' ci_tools__fetch_url ;;
+    */pypi | */pulumi-releases | */helm-releases) printf -v "$__variable" '%s' ci_tools__fetch_url ;;
     second/ghcr-mirror) printf -v "$__variable" '%s' ci_tools__fetch_ghcr ;;
     second/npm) printf -v "$__variable" '%s' ci_tools__fetch_npm ;;
     primary/*)
-      ci_tools__error "$row: the manifest's primary_source is '$word', and this file reads github-release, pypi and pulumi-releases as a primary"
+      ci_tools__error "$row: the manifest's primary_source is '$word', and this file reads github-release, pypi, pulumi-releases and helm-releases as a primary"
       return 1
       ;;
     *)
-      ci_tools__error "$row: the manifest's second_source is '$word', and this file reads github-release, ghcr-mirror, npm, pypi and pulumi-releases"
+      ci_tools__error "$row: the manifest's second_source is '$word', and this file reads github-release, ghcr-mirror, npm, pypi, pulumi-releases and helm-releases"
       return 1
       ;;
   esac

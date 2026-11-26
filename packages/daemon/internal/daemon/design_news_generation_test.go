@@ -108,6 +108,7 @@ func (r *newsPathRig) wantUntold(when, issue string) {
 // would have written the child's row first, and the baseline, which leaves a row already there as
 // it stands, would have written nothing.
 func TestACreditConfirmedBeforeAChildsReentryNeitherCountsNorFoldsAfterIt(t *testing.T) {
+	t.Parallel()
 	r, reviewer, _, token := generationRig(t)
 	r.approve(5)
 	r.queueNewsTask(pathChild)
@@ -139,6 +140,7 @@ func TestACreditConfirmedBeforeAChildsReentryNeitherCountsNorFoldsAfterIt(t *tes
 // result says it ran. Neither write gives the child's next run anything: its first phase, started
 // once version 6 is approved, takes version 6 as its baseline.
 func TestAPromptSentBeforeAChildsReentryConfirmsNothingForItsNextRun(t *testing.T) {
+	t.Parallel()
 	r, reviewer, _, token := generationRig(t)
 	r.approve(5)
 	r.queueNewsTask(pathChild)
@@ -186,6 +188,7 @@ func (r *newsPathRig) storedOpening(issue string) (bool, int) {
 // the next run's own task tells it. Matched by its number alone, the old copy would have told an
 // opening nobody of the next run was told.
 func TestAnOpeningTheLastRunCarriedClearsNoOpeningOfTheNextRunUnderTheSameNumber(t *testing.T) {
+	t.Parallel()
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing},
 		pathMember{key: pathChild, parent: pathRoot, at: phase.Testing})
 	r.told(pathRoot, record.AudienceHolder, 4)
@@ -231,6 +234,7 @@ func TestAnOpeningTheLastRunCarriedClearsNoOpeningOfTheNextRunUnderTheSameNumber
 // stands and after the old turn's result. Counted by the child's own generation alone, the old
 // credit would have reached from version 4 and told that run version 5.
 func TestAMembersCreditCountsNothingOnceItsTreesRootIsSetBackToTodo(t *testing.T) {
+	t.Parallel()
 	r, reviewer, _, token := generationRig(t)
 	r.approve(5)
 	r.queueNewsTask(pathChild)
@@ -276,6 +280,7 @@ func TestAMembersCreditCountsNothingOnceItsTreesRootIsSetBackToTodo(t *testing.T
 // at the read all the same, since nothing else stands between a copy and the row of an issue
 // another tree took.
 func TestACreditOfTheTreeAnIssueLeftCountsNothingInTheTreeThatTakesIt(t *testing.T) {
+	t.Parallel()
 	const closedRoot, member = "LEGION-900", "LEGION-901"
 	r := newNewsPathRig(t, 4, pathMember{key: pathRoot, at: phase.Implementing})
 	r.told(pathRoot, record.AudienceHolder, 4)

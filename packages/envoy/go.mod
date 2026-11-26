@@ -4,6 +4,8 @@ go 1.27.3
 
 require (
 	authelia.com/provider/oauth2 v0.3.3
+	cloud.google.com/go/auth v0.24.1
+	cloud.google.com/go/auth/oauth2adapt v0.3.0
 	cloud.google.com/go/iam v1.12.0
 	cloud.google.com/go/secretmanager v1.22.0
 	github.com/anthropics/anthropic-sdk-go v1.84.0
@@ -27,6 +29,7 @@ require (
 	github.com/go-logr/stdr v1.2.2
 	github.com/google/pprof v0.0.0-20261026192309-dbd0ed30aa88
 	github.com/google/uuid v1.6.0
+	github.com/googleapis/enterprise-certificate-proxy v0.3.24
 	github.com/googleapis/gax-go/v2 v2.26.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/grafana/ai-sdk v0.1.0-alpha.5
@@ -40,6 +43,7 @@ require (
 	github.com/nats-io/nats-server/v2 v2.15.1
 	github.com/nats-io/nats.go v1.55.0
 	github.com/nats-io/nkeys v0.4.16
+	github.com/nats-io/nuid v1.0.1
 	github.com/openai/openai-go/v3 v3.96.0
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
 	github.com/reearth/ygo v1.49.5
@@ -52,6 +56,7 @@ require (
 	github.com/wasilibs/go-pgquery v0.0.0-20261027025405-3048dd293555
 	github.com/yuin/goldmark v1.8.6
 	go.opentelemetry.io/otel v1.47.0
+	golang.org/x/exp v0.0.0-20261113113407-e3970619a1a4
 	golang.org/x/net v0.61.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.24.0
@@ -66,8 +71,6 @@ require (
 )
 
 require (
-	cloud.google.com/go/auth v0.24.1 // indirect
-	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
@@ -102,7 +105,6 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/s2a-go v0.1.11 // indirect
-	github.com/googleapis/enterprise-certificate-proxy v0.3.24 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
 	github.com/hashicorp/go-retryablehttp v0.7.8 // indirect
@@ -122,7 +124,6 @@ require (
 	github.com/moby/sys/userns v0.1.0 // indirect
 	github.com/moby/term v0.5.2 // indirect
 	github.com/morikuni/aec v1.0.0 // indirect
-	github.com/nats-io/nuid v1.0.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pb33f/go-yaml v0.1.1 // indirect

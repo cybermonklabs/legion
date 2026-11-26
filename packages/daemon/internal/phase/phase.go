@@ -18,37 +18,50 @@ const (
 	// AwaitingPerson is a root admitted tree that waits only on a person: its architect asked a
 	// question and handed it to the person. It keeps the admission slot it took when the daemon
 	// started it, and its architect stays live in its own session, reading and answering the
-	// person's comments; the person's answer puts the root in the waiting line as well, among the
-	// issues whose work came back, oldest first, and the pass that reads it delivers the
+	// person's comments; the person's answer puts the root in the waiting line as well, within its
+	// priority, among the issues whose work came back, oldest first, and the pass that reads it delivers the
 	// architect its task, taking no further slot.
 	AwaitingPerson Phase = "awaiting_person"
-	Planning       Phase = "planning"
-	Implementing   Phase = "implementing"
-	Testing        Phase = "testing"
-	Reviewing      Phase = "reviewing"
-	Accepting      Phase = "accepting"
-	Retro          Phase = "retro"
-	Merging        Phase = "merging"
-	Done           Phase = "done"
-	Held           Phase = "held"
+	// AwaitingChildren is a parent that held a phase start because a Dispatch child of it is still
+	// open: it keeps none of the cap's slots while it waits (record.PhaseKeepsSlot leaves it out),
+	// shows in_progress in Dispatch (workflow's phaseStatus), and no worker of it is woken for its
+	// work. When no open child is left it comes back as the step its return takes (record's
+	// ReturnStep): the start it held, or for a held testing, reviewing or accepting the first step
+	// of its walk after the implementer's. It stands outside Order, so no move into or out of it is
+	// a move back, and outside RoleFor, since no role works it.
+	AwaitingChildren Phase = "awaiting_children"
+	Planning         Phase = "planning"
+	Implementing     Phase = "implementing"
+	Testing          Phase = "testing"
+	Reviewing        Phase = "reviewing"
+	Accepting        Phase = "accepting"
+	Retro            Phase = "retro"
+	Merging          Phase = "merging"
+	Done             Phase = "done"
+	Held             Phase = "held"
 )
 
 // All is every phase, in the transition table's order.
 var All = []Phase{
-	Admitted, AwaitingPerson, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
+	Admitted, AwaitingPerson, AwaitingChildren, Planning, Implementing, Testing, Reviewing, Accepting, Retro, Merging,
 	Done, Held,
 }
 
-// Order is the line an issue walks forward, and the only phases a move back is read against. It
-// differs from All: All is every phase the daemon writes, admitted, awaiting_person, done and
-// held among them, while Order holds the seven working phases alone, in the order the workflow
-// advances them. A phase outside Order has no place in that line, so no move into it and no move
+// Order is the line an issue of the default steps walks forward, and the phases a move back is
+// read against for an issue with no plan rows; a task's own line reads its own moves back
+// (workflow's Walk.MovesBack). It differs from All: All is every phase the daemon writes, admitted,
+// awaiting_person, done and held among them, while Order holds the seven working phases alone, in
+// the order of the default steps. A phase outside Order has no place in that line, so no move into it and no move
 // out of it is a move back: an issue put on held, or closed as done, went nowhere backward, and
 // MovesBack answers false for it.
 //
-// Both internal/config and internal/workflow read this set: the loader refuses a hook written for
-// a move pair the daemon never counts, and the engine counts the rounds. It lives here, not in
-// internal/workflow, because internal/config cannot import internal/workflow. Measured with
+// Both internal/config and internal/workflow read this set. The loader takes a hook's move as a
+// pair of two different workflow phases (MovePairs, all 42 ordered pairs of the seven) that some
+// task's line makes as a move back (plan.MovesBackPairs, 28 of them), since it reads the file with
+// no plan, and refuses the other 14, which would never fire. The engine counts the pair of each
+// move back the task's own line reads (Walk.MovesBack), and a pass. It
+// lives here, not in internal/workflow, because internal/config cannot import internal/workflow.
+// Measured with
 // `go list`: every test file of package workflow is `package workflow`, and 42 of its 57 test
 // files import internal/config (`go list -f '{{.TestImports}}' ./internal/workflow/` names
 // internal/config), so an edge from internal/config to internal/workflow would close a cycle in
@@ -64,44 +77,64 @@ func MovesBack(from, to Phase) bool {
 	return toIndex >= 0 && toIndex < slices.Index(Order, from)
 }
 
-// BackwardPairs is every move back the daemon counts, each written "<from>-<to>". It is the whole
-// vocabulary the two readers named on Order share: the engine counts a round for a pair in this
-// list, and the config loader refuses a hook naming a pair that is not in it. The answer is a
-// fresh slice, so a caller that sorts or trims it leaves the next caller's answer whole.
+// BackwardPairs is every move back of today's line, Order, each written "<from>-<to>": each
+// phase of Order paired with every phase before it, 21 pairs. They are the first part of
+// MovePairs, in this order, and the backward rows of a line in today's order (workflow's
+// backwardRows). The answer is a fresh slice, so a caller that sorts or trims it leaves the next
+// caller's answer whole.
 func BackwardPairs() []string {
 	return slices.Clone(backwardPairs)
 }
 
-// ParsePair reads one "<from>-<to>" pair and answers ok only for a pair BackwardPairs holds. The
-// check is against that set, not against MovesBack alone, because the set is the smaller of the
-// two: MovesBack answers for the whole triangle over Order, where a row and a count know only the
-// pairs the workflow carries. Phase words hold "_" and never "-", so the one "-" of a pair in the
+// MovePairs is every move the daemon counts, each written "<from>-<to>": each pair of two
+// different phases of Order, BackwardPairs first, in their order, then the 21 forward pairs, each
+// phase of Order paired with every phase after it. A task in another order than today's moves
+// back by its own order (workflow's Walk.MovesBack), so the move back of one task, testing to
+// reviewing, is a forward pair of Order. It is the whole vocabulary the readers named on Order
+// share: the engine counts a move back under its pair, the config loader refuses a hook naming a
+// pair outside it, and the outbox refuses a hook prompt of a move outside it (record.HookPrompt).
+// The answer is a fresh slice.
+func MovePairs() []string {
+	return slices.Clone(movePairs)
+}
+
+// IsMovePair says whether from-to is a pair MovePairs holds: two different phases of Order.
+func IsMovePair(from, to Phase) bool {
+	return movePairSet[Pair(from, to)]
+}
+
+// ParsePair reads one "<from>-<to>" pair and answers ok only for a pair MovePairs holds: two
+// different phases of Order. Phase words hold "_" and never "-", so the one "-" of a pair in the
 // set splits it.
 func ParsePair(text string) (from, to Phase, ok bool) {
-	if !backwardPairSet[text] {
+	if !movePairSet[text] {
 		return "", "", false
 	}
 	fromText, toText, _ := strings.Cut(text, "-")
 	return Phase(fromText), Phase(toText), true
 }
 
-// Pair spells one move back: "<from>-<to>". It is the one spelling the counts of
-// record.PhaseRow.BackwardMoves stand under, the words BackwardPairs answers, and the word a
-// hook's `moves` names a move by (config's readHookMoves). The three are one vocabulary, so the
-// spelling is written here and nowhere else.
+// Pair spells one move: "<from>-<to>". It is the one spelling the counts of
+// record.PhaseRow.BackwardMoves stand under, the words MovePairs answers, and the word a hook's
+// `moves` names a move by (config's readHookMoves). The three are one vocabulary, so the spelling
+// is written here and nowhere else.
 func Pair(from, to Phase) string {
 	return string(from) + "-" + string(to)
 }
 
-// backwardPairs is built once, in the order the workflow's backward rows are generated: each
-// phase of Order paired with every phase before it, 21 pairs. There is no pair beyond them,
-// since the merger merges the head it read and the daemon closes the issue from the merged pull
-// request: no phase of this workflow waits for a merge somebody else makes
+// backwardPairs is built once, in the order the backward rows of today's line are generated: each
+// phase of Order paired with every phase before it, 21 pairs. There is no pair beyond the pairs
+// of Order, since the merger merges the head it read and the daemon closes the issue from the
+// merged pull request: no phase of this workflow waits for a merge somebody else makes
 // (dispatch://INFRA-714).
 var backwardPairs = buildBackwardPairs()
 
-// backwardPairSet is backwardPairs keyed for the lookup ParsePair makes.
-var backwardPairSet = buildBackwardPairSet()
+// movePairs is built once: backwardPairs, then each phase of Order paired with every phase after
+// it, 42 pairs.
+var movePairs = buildMovePairs()
+
+// movePairSet is movePairs keyed for the lookups ParsePair and IsMovePair make.
+var movePairSet = buildMovePairSet()
 
 func buildBackwardPairs() []string {
 	pairs := make([]string, 0, len(Order)*(len(Order)-1)/2)
@@ -113,9 +146,20 @@ func buildBackwardPairs() []string {
 	return pairs
 }
 
-func buildBackwardPairSet() map[string]bool {
-	set := make(map[string]bool, len(backwardPairs))
-	for _, text := range backwardPairs {
+func buildMovePairs() []string {
+	pairs := make([]string, 0, len(Order)*(len(Order)-1))
+	pairs = append(pairs, backwardPairs...)
+	for fromIndex, from := range Order {
+		for _, to := range Order[fromIndex+1:] {
+			pairs = append(pairs, Pair(from, to))
+		}
+	}
+	return pairs
+}
+
+func buildMovePairSet() map[string]bool {
+	set := make(map[string]bool, len(movePairs))
+	for _, text := range movePairs {
 		set[text] = true
 	}
 	return set
@@ -147,15 +191,15 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, done, held — has none. Admitted and accepting are the architect's, and neither
-// phase starts a worker. On a root both are its own architect's. On a child both are the
-// architect that owns it: its own while that claim holds its role, else the one above. At
-// admitted that is the one above, since the child's own architect has not started yet or a leave
-// suspended or retired it, unless a person set the child back to todo while it ran or was held:
-// that re-entry starts and stops nothing, so a child's own architect that held its role still
-// holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's worker
-// skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
-// workflow's booted and Stranded).
+// awaiting_person, awaiting_children, done, held — has none. Admitted and accepting are the
+// architect's, and neither phase starts a worker. On a root both are its own architect's. On a
+// child both are the architect that owns it: its own while that claim holds its role, else the one
+// above. At admitted that is the one above, since the child's own architect has not started yet or
+// a leave suspended or retired it, unless a person set the child back to todo while it ran or was
+// held: that re-entry starts and stops nothing, so a child's own architect that held its role
+// still holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's
+// worker skips the architect, so it skips both phases (workflow's start, admit's
+// startMidPhaseMembers, workflow's booted and Stranded).
 //
 // It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
 // which starts the roles: the state projection names the role each issue's entry numbers are of

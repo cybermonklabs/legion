@@ -241,8 +241,8 @@ func (r *edgeRig) tick(t *testing.T) {
 	before := r.reader.passes.Load()
 	select {
 	case r.ticks <- time.Now():
-	case <-time.After(10 * time.Second):
-		t.Fatal("the repository refresh loop took no tick within 10 s")
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatal("the repository refresh loop took no tick in time")
 	}
 	testwait.Eventually(t, "the repository refresh pass to finish", func() bool { return r.reader.passes.Load() > before })
 }
@@ -499,5 +499,32 @@ func requireUnknownSession(t *testing.T, recorder *httptest.ResponseRecorder, as
 	_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
 	if recorder.Code != http.StatusNotFound || refusal.LastSeen != 0 || refusal.State != session.Gone || !strings.Contains(refusal.Error, "does not know when it last registered") {
 		t.Errorf("%s: status %d (%s), want the 404 of a session no listener has heard of", asked, recorder.Code, strings.TrimSpace(recorder.Body.String()))
+	}
+}
+
+// edgeLogLines is each line of output, a listener's JSON log (logging.NewWithWriter), at level
+// whose message begins with prefix, decoded. A line that is no JSON is passed over.
+func edgeLogLines(output, level, prefix string) []map[string]any {
+	var lines []map[string]any
+	for line := range strings.SplitSeq(output, "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) != nil {
+			continue
+		}
+		if message, _ := record["msg"].(string); record["level"] == level && strings.HasPrefix(message, prefix) {
+			lines = append(lines, record)
+		}
+	}
+	return lines
+}
+
+// requireLoggedTime fails the test unless the attribute key of line, a decoded log line
+// (edgeLogLines), is the time want.
+func requireLoggedTime(t *testing.T, line map[string]any, key string, want time.Time) {
+	t.Helper()
+	text, _ := line[key].(string)
+	got, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || !got.Equal(want) {
+		t.Errorf("the line %q has %s %q, want %s", line["msg"], key, text, want.Format(time.RFC3339Nano))
 	}
 }

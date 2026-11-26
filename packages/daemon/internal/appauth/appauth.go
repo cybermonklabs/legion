@@ -181,15 +181,14 @@ type Tokens interface {
 	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
 	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
 	// directories hold that owner's own lease at the role's permissions instead (Token,
-	// GitHubCredential, INFRA-2543). An App on token_command gets what its command's read-only
-	// release holds instead, which the command decides: the secrets broker's holds the broker's
-	// own set, contents, metadata, pull requests, Actions, checks and statuses read (its
-	// readOnlyPermissions), which differs from readPermissions, so such a lease reads no issue or
-	// attestation. With a key of its own the mint asks for what the installation is granted of
-	// readPermissions and leaves the rest out (exchangeGranted), so an installation whose account
-	// has not granted the App issues, Actions, checks, commit statuses or attestations gets a
-	// token without the ones it is not granted rather than nothing. An owner with no name is
-	// refused before anything is minted, as Token's is.
+	// GitHubCredential). An App on token_command gets what its command's release of
+	// the read profile holds instead, which the deployment's profiles file decides and the
+	// broker cuts to what the installation holds; the read profile docs/deployment.md gives names
+	// readPermissions. With a key of its own the mint asks for what the installation is granted
+	// of readPermissions and leaves the rest out (exchangeGranted), so an installation whose
+	// account has not granted the App issues, Actions, checks, commit statuses or attestations
+	// gets a token without the ones it is not granted rather than nothing. An owner with no name
+	// is refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
 
@@ -231,6 +230,11 @@ type Manager struct {
 	// token mode has no entry: its read is the token_command's run, which runTokenCommand shares.
 	pendingInstallations map[AppRole]*pendingInstallations
 	commands             map[scope]*commandRun
+	// loginReleases holds, per App role in token mode, the installation AppLogin took from the
+	// command's release of every installation and has not yet read the App's login under
+	// (loginRelease): a later AppLogin of the role reads under it while it is fresh, so a login
+	// read that failed after its release runs the command no second time for it.
+	loginReleases map[AppRole]releasedInstallation
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
 
@@ -286,10 +290,13 @@ type pendingInstallations struct {
 // as a Source, which the build holds it to wherever it is handed over. Forgetter is taken by
 // type assertion instead (internal/daemon's openWorkflow and leakCheckSource), so a Forget
 // renamed without its interface would fail the daemon's boot, or leave the leak check serving
-// a token GitHub refused, rather than fail the build.
+// a token GitHub refused, rather than fail the build. KnownIdentities is taken by type
+// assertion too (internal/daemon's workflowRuntime.knownIdentity), and a source that answers
+// none, such as a test's fake, is one whose every identity is read through a mint.
 var (
-	_ Source    = (*Manager)(nil)
-	_ Forgetter = (*Manager)(nil)
+	_ Source          = (*Manager)(nil)
+	_ Forgetter       = (*Manager)(nil)
+	_ KnownIdentities = (*Manager)(nil)
 )
 
 // New makes an App token manager. Config.Load resolves command and secret key sources before
@@ -335,6 +342,7 @@ func New(apps config.GitHubApps, options Options) *Manager {
 		pendingIdentities:    map[string]*pendingIdentity{},
 		pendingInstallations: map[AppRole]*pendingInstallations{},
 		commands:             map[scope]*commandRun{},
+		loginReleases:        map[AppRole]releasedInstallation{},
 		keys:                 map[string]*rsa.PrivateKey{},
 		refusals:             map[scope]refusedNarrowingAt{},
 		saidShortfalls:       map[saidShortfall]bool{},
@@ -355,13 +363,11 @@ func (m *Manager) Token(ctx context.Context, role AppRole, owner string) (Lease,
 // ReadToken is Token for a token narrowed to readPermissions, cached under a scope of its own,
 // so an owner's write and read tokens never stand in for each other. Each permission of the set
 // is asked for at read where the installation is granted it, and one it is granted none of is
-// left out (exchangeGranted). In token mode it is the command's read-only release
-// (TokenCommandReadOnly) instead, which the command decides; the secrets broker's holds the
-// broker's own set, contents, metadata, pull requests, Actions, checks and statuses, which
-// differs from readPermissions, so its holder reads no issue or attestation through it. A write
-// request of the same owner is a run of its own either way: it asks for no read-only
-// release, so the two never stand in for each other. An owner with no name is refused, and
-// nothing is minted.
+// left out (exchangeGranted). In token mode it is the command's release of the role's read
+// profile (TokenCommandReadOnly) instead, which the deployment's profiles file decides; the read
+// profile docs/deployment.md gives names this same set. A write request of the same owner is a
+// run of its own either way: it asks for no read-only release, so the two never stand in for
+// each other. An owner with no name is refused, and nothing is minted.
 func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {
 	return m.lease(ctx, mintRequest{role: role, owner: owner, read: true, permissions: readPermissions})
 }
@@ -386,6 +392,28 @@ func (m *Manager) Forget(role AppRole, owner string) {
 	maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
 		return key.role == role && key.owner == forgotten
 	})
+}
+
+// KnownIdentities answers the bot identity of an App that a token source already holds, with no
+// mint and no call to GitHub.
+type KnownIdentities interface {
+	KnownIdentity(role AppRole) (GitIdentity, bool)
+}
+
+// KnownIdentity is the bot identity of the App role's App that a lease of that App already
+// fetched (identity, which caches it by App id for the Manager's life), and false when none has:
+// before the App's first mint, or for an App role that no App is configured for. It reads that
+// cache alone, under mu, and asks GitHub nothing, so a caller that needs the identity and no
+// token — a launch's table of every role's identity, for the other App's roles — costs no mint.
+func (m *Manager) KnownIdentity(role AppRole) (GitIdentity, bool) {
+	app, err := m.app(role)
+	if err != nil {
+		return GitIdentity{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	identity, known := m.identities[app.AppID]
+	return identity, known
 }
 
 // forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
@@ -717,10 +745,10 @@ type Source interface {
 // next bundle, and one that installed it must mint at that same bundle, with no cached set
 // between the account's change and the role's reach. Under the App's JWT it asks GitHub every
 // time. In token mode the one answer that outlives a call is a finished run of the command no
-// caller took, which runTokenCommand keeps for finishedRunKeep for a caller that comes back
-// (below), so a call within that time may be answered with that run's release. What it read
-// replaces the installation ids the Manager holds for the role, so a mint that follows reaches
-// the installation the read names and an owner no longer listed is looked for again rather than
+// caller took, which runTokenCommand keeps for finishedRunKeep for a caller that comes back, so a
+// call within that time may be answered with that run's release. What it read replaces the
+// installation ids the Manager holds for the role, so a mint that follows reaches the
+// installation the read names and an owner no longer listed is looked for again rather than
 // minted on a stale id.
 //
 // Reads of one App that overlap in time share one read, as concurrent reads of an App's
@@ -741,40 +769,27 @@ type Source interface {
 // GitHub. A caller whose own context ends before the read does gets the context's error alone:
 // GitHub has not answered yet, and no person is waited on.
 //
-// In token mode the call reads under the caller's own context (readInstalledOwners), and every
-// rule of the command's run is runTokenCommand's alone. The run belongs to no caller either: it
-// runs on the Manager's own context, bounded by tokenCommandLimit, so a caller that leaves ends
-// neither the run nor the wait of a caller that joined it. A caller waits for the run at most
-// installationReadLimit, as long as it waited for the shared read before reads in token mode
-// went to runTokenCommand directly. A caller whose context ends, or whose wait reaches that
-// bound, before the run ends is answered ErrCommandPending in a TransientError, which wraps the
-// context's error too, while the command goes on; the boot's key proof reads that answer as
-// pending and spends no attempt on it (internal/daemon's appAttempt), so a grant that waits on a
-// person's approval holds the boot without ending it. A run that finishes with no caller waiting
-// is kept for finishedRunKeep, and the first caller of the scope to come takes it and forgets it
-// (runTokenCommand, forgetRun): the key proof's next attempt gets the release of the run its
-// earlier attempt started, and a grant a person approved is not asked for again.
+// In token mode each call waits for the command's run under its own context for at most
+// installationReadLimit, and runTokenCommand's doc holds every rule of that run.
 //
-// AppLogin in token mode reads the same scope (anyInstallation, mintRequest{role: role}), so a
-// login read joins a run in flight that this call started, or takes a finished run kept for
-// finishedRunKeep and forgets it, and the next call of the role does not get that release but
-// joins another run in flight or runs the command again; a call here does the same to a run a
-// login read started. At the boot the logins read runs before the key proof (internal/daemon's
-// openWorkflow) and passes only once it has taken a run's release for each role, so the key
-// proof never takes a release the logins read was answered with: its first read of each role
-// joins a run in flight or runs the command again.
+// AppLogin in token mode reads the same scope, so a login read and a call here share one run and
+// what is kept of it; anyInstallation says what that means for the boot's key proof.
 func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
-	if app, err := m.app(role); err == nil && app.TokenCommand != "" {
+	app, err := m.app(role)
+	if err != nil {
+		return nil, err
+	}
+	if app.TokenCommand != "" {
 		bounded, cancel := context.WithTimeout(ctx, installationReadLimit)
 		defer cancel()
-		return m.readInstalledOwners(bounded, role)
+		return m.readInstalledOwners(bounded, role, app)
 	}
 	m.mu.Lock()
 	read, joined := m.pendingInstallations[role]
 	if !joined {
 		read = &pendingInstallations{done: make(chan struct{})}
 		m.pendingInstallations[role] = read
-		go m.readSharedInstallations(context.WithoutCancel(ctx), role, read)
+		go m.readSharedInstallations(context.WithoutCancel(ctx), role, app, read)
 	}
 	m.mu.Unlock()
 	select {
@@ -793,13 +808,13 @@ func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, 
 // for the command's run, which goes on past it (runTokenCommand).
 const installationReadLimit = time.Minute
 
-// readSharedInstallations makes the read the callers of InstalledOwners share under the App's
-// JWT and hands its answer to every one of them through read. detached carries the values of the
-// context that started it and none of its cancellation.
-func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, read *pendingInstallations) {
+// readSharedInstallations makes the read the callers of InstalledOwners share under app's JWT and
+// hands its answer to every one of them through read. detached carries the values of the context
+// that started it and none of its cancellation.
+func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, app config.GitHubApp, read *pendingInstallations) {
 	bounded, cancel := context.WithTimeout(detached, installationReadLimit)
 	defer cancel()
-	owners, err := m.readInstalledOwners(bounded, role)
+	owners, err := m.readInstalledOwners(bounded, role, app)
 	m.mu.Lock()
 	read.owners, read.err = owners, err
 	delete(m.pendingInstallations, role)
@@ -807,15 +822,12 @@ func (m *Manager) readSharedInstallations(detached context.Context, role AppRole
 	m.mu.Unlock()
 }
 
-// readInstalledOwners is the read itself: under the App's JWT made once for every caller whose
-// call overlaps it (readSharedInstallations), and in token mode made by each caller under its
-// own context, runTokenCommand sharing the command's run among them (InstalledOwners).
-func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
-	app, err := m.app(role)
-	if err != nil {
-		return nil, err
-	}
+// readInstalledOwners is the read itself of app, role's App: under its JWT made once for every
+// caller whose call overlaps it (readSharedInstallations), and in token mode made by each caller
+// under its own context, runTokenCommand sharing the command's run among them (InstalledOwners).
+func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole, app config.GitHubApp) ([]string, error) {
 	var found map[string]string
+	var err error
 	if app.TokenCommand != "" {
 		released, err := m.runTokenCommand(ctx, app, mintRequest{role: role})
 		if err != nil {

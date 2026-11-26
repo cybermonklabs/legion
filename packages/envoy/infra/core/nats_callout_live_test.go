@@ -4,6 +4,7 @@ package core_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -138,7 +139,7 @@ func (r *calloutRig) serve(t *testing.T, uri string, answerDelay time.Duration) 
 	conn := connectWhenUp(t, uri, r.serviceSeed)
 	_, err := conn.Subscribe("$SYS.REQ.USER.AUTH", func(m *natsgo.Msg) {
 		time.Sleep(answerDelay)
-		r.answer(t, m)
+		r.answer(m, t.Errorf)
 	})
 	require.NoError(t, err)
 	require.NoError(t, conn.Flush())
@@ -147,17 +148,22 @@ func (r *calloutRig) serve(t *testing.T, uri string, answerDelay time.Duration) 
 // answer is the auth service's answer to one request: the request is sealed to the callout's xkey
 // and the answer to the server's, both signed as the server requires. A client presenting
 // sessionToken is admitted into $G, the user JWT's audience, which config mode reads as the
-// account to place it in, with a grant on deliverS1 alone; every other client is refused.
-func (r *calloutRig) answer(t *testing.T, m *natsgo.Msg) {
-	r.requests.Add(1)
+// account to place it in, with a grant on deliverS1 alone; every other client is refused. Only
+// once the answer is sent does it count the request in r.requests. Each failure goes to report,
+// and no count follows it. So a test that has waited for the count (requireRequests) has also
+// seen the handler's last report, and the handler cannot report after that test has ended, which
+// panics the test binary ("Log in goroutine after … has completed"): the server can finish a
+// client's connection before the handler returns, and nats.go's Close does not wait for a running
+// handler.
+func (r *calloutRig) answer(m *natsgo.Msg, report func(format string, args ...any)) {
 	request, err := r.curve.Open(m.Data, m.Header.Get("Nats-Server-Xkey"))
 	if err != nil {
-		t.Errorf("open the sealed authorization request: %v", err)
+		report("open the sealed authorization request: %v", err)
 		return
 	}
 	claims, err := jwt.DecodeAuthorizationRequestClaims(string(request))
 	if err != nil {
-		t.Errorf("decode the authorization request: %v", err)
+		report("decode the authorization request: %v", err)
 		return
 	}
 	response := jwt.NewAuthorizationResponseClaims(claims.UserNkey)
@@ -168,7 +174,7 @@ func (r *calloutRig) answer(t *testing.T, m *natsgo.Msg) {
 		user.Pub.Allow.Add("_INBOX.>")
 		user.Sub.Allow.Add("_INBOX.>", deliverS1)
 		if response.Jwt, err = user.Encode(r.issuer); err != nil {
-			t.Errorf("sign the user JWT: %v", err)
+			report("sign the user JWT: %v", err)
 			return
 		}
 	} else {
@@ -176,22 +182,67 @@ func (r *calloutRig) answer(t *testing.T, m *natsgo.Msg) {
 	}
 	token, err := response.Encode(r.issuer)
 	if err != nil {
-		t.Errorf("sign the authorization response: %v", err)
+		report("sign the authorization response: %v", err)
 		return
 	}
 	sealed, err := r.curve.Seal([]byte(token), claims.Server.XKey)
 	if err != nil {
-		t.Errorf("seal the authorization response: %v", err)
+		report("seal the authorization response: %v", err)
 		return
 	}
 	if err := m.Respond(sealed); err != nil {
-		t.Errorf("answer the authorization request: %v", err)
+		report("answer the authorization request: %v", err)
+		return
 	}
+	r.requests.Add(1)
 }
 
+// awaitAnswers waits up to 10 s for the auth service to have answered want requests in all, and
+// returns the count it read last. answer counts a request only after its answer is sent, and the
+// server can finish the client's connection before that, so one read could come too early; a
+// count already at want returns at once.
+func (r *calloutRig) awaitAnswers(want int64) int64 {
+	for deadline := time.Now().Add(10 * time.Second); r.requests.Load() < want && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	return r.requests.Load()
+}
+
+// requireRequests requires that the auth service has answered want requests in all
+// (awaitAnswers).
 func (r *calloutRig) requireRequests(t *testing.T, want int64, why string) {
 	t.Helper()
-	require.Equal(t, want, r.requests.Load(), why)
+	require.Equal(t, want, r.awaitAnswers(want), why)
+}
+
+// TestTheRigCountsARequestOnlyAfterItsAnswer: calloutRig.answer, the handler of the rig's auth
+// service (serve) and of the hung-replica tests' replicas (hangAReplica), counts a request only
+// after its answer is sent, so its last report comes before a test that waits for the count can
+// read it. Each row gives it a well-formed sealed request whose answer cannot be sent
+// (unboundAuthorizationRequest), from a client it admits and from one it refuses: the handler
+// reports that failure, and counts nothing.
+//
+// Control: count the request before m.Respond; each row fails with "the rig counted a request it
+// did not answer".
+func TestTheRigCountsARequestOnlyAfterItsAnswer(t *testing.T) {
+	for name, token := range map[string]string{"an admitted client": sessionToken, "a refused client": "example-wrong-token"} {
+		t.Run(name, func(t *testing.T) {
+			rig := newCalloutRig(t, false)
+			curveKey, err := rig.curve.PublicKey()
+			require.NoError(t, err)
+			issuerKey, err := rig.issuer.PublicKey()
+			require.NoError(t, err)
+
+			var reports []string
+			rig.answer(unboundAuthorizationRequest(t, issuerKey, curveKey, token), func(format string, args ...any) {
+				reports = append(reports, fmt.Sprintf(format, args...))
+			})
+
+			require.Equal(t, []string{"answer the authorization request: " + natsgo.ErrMsgNotBound.Error()}, reports,
+				"the rig opened, decoded, signed and sealed the request, and reported only the answer it could not send")
+			require.Zero(t, rig.requests.Load(), "the rig counted a request it did not answer")
+		})
+	}
 }
 
 // The rendered callout block on the hub's image: the hub keeps its global account, so turning the

@@ -46,9 +46,10 @@ const (
 	// a raise rolls them as well, which costs a restart and keeps one rule.
 	clusteredHubMaxFileStoreAnnotation = "envoy-infra.sjawhar.dev/max-file-store"
 	// clusteredHubAuthCalloutAnnotation, on the hub's pod template, holds the SHA-256 of auth.conf's
-	// callout lines, the auth_callout block and the ping lines (core.Authorization.CalloutLines),
-	// and is absent without authCallout. A change of either, a user added to or removed from
-	// auth_users among them, rolls the pods as a session-user change does; a change of a grant
+	// callout lines, the auth_callout block, the ping lines and, beside privateProjects, the server
+	// tag (core.Authorization.CalloutLines), and is absent without authCallout. A change of any of
+	// them, a user added to or removed from auth_users or privateProjects set or removed among
+	// them, rolls the pods as a session-user change does; a change of a grant
 	// alone leaves the lines as they were. CalloutLines' doc comment says why a change rolls the
 	// pods rather than reloads, and why the routes' ping pin (clusteredHubCluster) arrives with that
 	// roll; clusteredhub_callout_live_test.go measures the refused reload.
@@ -98,8 +99,8 @@ func refuseClusteredHubSecret(value pulumi.StringInput, name, input string) pulu
 }
 
 // newClusteredHubKubernetes registers the hub's Kubernetes children, each the component's child
-// on the Kubernetes provider it builds from kubeconfig: the priority class read, the nats chart,
-// the hub pods' NetworkPolicy and their PodMonitoring, with tailnet the tailnet hosts
+// on the Kubernetes provider it builds from kubeconfig: the priority class read, the hub pods'
+// NetworkPolicy, the nats chart and the pods' PodMonitoring, with tailnet the tailnet hosts
 // (newClusteredHubTailnetHosts), and with a session listener that listener
 // (newClusteredHubListener).
 func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name string, args *ClusteredNatsHubArgs, s clusteredHubSettings) error {
@@ -131,6 +132,23 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 		classRead = []pulumi.Resource{class}
 		chartOpts = append(chartOpts, pulumi.DependsOn(classRead))
 	}
+	// With privateProjects the chart also waits on the hub pods' NetworkPolicy: it is registered,
+	// and so renders and applies its ConfigMap and StatefulSet, only once the policy's own update
+	// has completed, and not at all when that update fails. Setting privateProjects closes the
+	// monitoring port, 8222, to every namespace (monitorBesidePrivateProjects refuses
+	// monitorNamespaces beside it) and adds the server tag to auth.conf, which a pod takes from the
+	// ConfigMap by its reloader or at its restart. So no server takes the tag before the policy
+	// that closes 8222 is applied. Without privateProjects nothing orders the two, as before (R9):
+	// the hub's docs (The auth service) turn privateProjects off only after every project is
+	// public, and give monitorNamespaces back only in a later apply.
+	hubPods := clusteredHubSelector(s.name)
+	policy, err := networkPolicy(ctx, s.name, s.namespace, hubPods, clusteredHubIngress(s), child...)
+	if err != nil {
+		return err
+	}
+	if s.privateProjects {
+		chartOpts = append(chartOpts, pulumi.DependsOn([]pulumi.Resource{policy}))
+	}
 	if _, err := helmv4.NewChart(ctx, s.name, &helmv4.ChartArgs{
 		Chart:          pulumi.String(clusteredHubChart),
 		Version:        pulumi.String(clusteredHubChartVersion),
@@ -142,10 +160,15 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 		return err
 	}
 
-	hubPods := clusteredHubSelector(s.name)
-	if err := networkPolicy(ctx, s.name, s.namespace, hubPods, clusteredHubIngress(s), child...); err != nil {
-		return err
-	}
+	// The scrape drops every consumer series. The exporter runs the chart's -jsz=all, which serves a
+	// series of each JetStream consumer labelled with its consumer_name and consumer_desc
+	// (prometheus-nats-exporter 0.20.2, collector/jsz.go:111-115, :430-431), and Managed Prometheus
+	// would keep each one for every holder of monitoring.timeSeries.list in its project.
+	// -jsz=streams would serve none of them, but it reads /jsz?streams=true, which carries no stream
+	// configuration (:432-433; nats-server v2.15.1 server/monitor.go:3187), so the exporter would
+	// serve no nats_stream_limit_bytes or nats_stream_limit_messages either (:540-543), the divisor
+	// of a stream's byte-limit alert. clusteredhub_exporter_live_test.go applies the rule to what the
+	// exporter serves.
 	_, err = apiextensions.NewCustomResource(ctx, s.name, &apiextensions.CustomResourceArgs{
 		ApiVersion: pulumi.String("monitoring.googleapis.com/v1"), Kind: pulumi.String("PodMonitoring"),
 		Metadata: objectMeta(s.name, s.namespace),
@@ -153,6 +176,11 @@ func newClusteredHubKubernetes(ctx *pulumi.Context, comp *ClusteredNatsHub, name
 			"selector": pulumi.Map{"matchLabels": pulumi.ToStringMap(hubPods)},
 			"endpoints": pulumi.Array{pulumi.Map{
 				"port": pulumi.String(clusteredHubExporterPortName), "interval": pulumi.String("30s"),
+				"metricRelabeling": pulumi.Array{pulumi.Map{
+					"action":       pulumi.String("drop"),
+					"sourceLabels": pulumi.StringArray{pulumi.String("__name__")},
+					"regex":        pulumi.String("nats_consumer_.+"),
+				}},
 			}},
 		}},
 	}, child...)

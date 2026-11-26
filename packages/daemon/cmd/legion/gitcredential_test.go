@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,9 +16,12 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // gitCredentialBundle writes a gh bundle of a role whose issue is acme's: one directory per
@@ -67,6 +72,7 @@ func runGitCredentialHere(t *testing.T, stdin string, args ...string) (code int,
 // answers for). Every other row makes no read, and none reaches GitHub: the read's curl is a fake
 // GitHub that counts its runs. store and erase write nothing and exit 0.
 func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, defaultDir := gitCredentialBundle(t)
 	if err := os.MkdirAll(filepath.Join(root, "empty"), 0o700); err != nil {
 		t.Fatal(err)
@@ -255,6 +261,7 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 // Each operation the usage line names answers --help, exit 0, with its own usage, and reads no
 // request: git-credential reads its own arguments (passThrough), so a help request is its own.
 func TestGitCredentialOperationsAnswerHelp(t *testing.T) {
+	// Not parallel: it sets the package variable gitCredentialStdin (runGitCredentialHere).
 	for _, op := range []string{"get", "store", "erase"} {
 		code, stdout, stderr := runGitCredentialHere(t, "protocol=https\nhost=github.com\n\n", op, "--help")
 		if code != 0 || stdout != "" || !usageOf(stderr, "git-credential", op) {
@@ -313,6 +320,7 @@ func renamedCredentialBundle(t *testing.T, served []ghrepo.Repository, renames g
 // configured the same bundle gives sjawhar its own token, as today, and that is what the same
 // request answers.
 func TestGitCredentialAnswersARenamedRepositoryWithTheOwnerItMovedTo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variable gitCredentialStdin (runGitCredentialHere).
 	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
 	moved := []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")}
 	for _, tc := range []struct {
@@ -471,7 +479,7 @@ func newFakeGitHub(t *testing.T, token, then string) fakeGitHub {
 		script += `if [ "$(cat ` + shellWord(github.stdin) + `)" != ` + shellWord("Authorization: Bearer "+token) + " ]; then\n" +
 			printsAnswer(forkReadFixture(t, "bad-credentials.http"), 0) + "fi\n"
 	}
-	if err := os.WriteFile(github.program, []byte(script+then), 0o700); err != nil {
+	if err := execfile.Write(github.program, []byte(script+then), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return github
@@ -512,7 +520,7 @@ func runGhGitCredentialHere(t *testing.T, stdin string) (code int, stdout, stder
 	t.Helper()
 	ran := filepath.Join(t.TempDir(), "ran")
 	gh := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(gh, []byte("#!/bin/sh\necho ran >> "+shellWord(ran)+"\nexit 1\n"), 0o700); err != nil {
+	if err := execfile.Write(gh, []byte("#!/bin/sh\necho ran >> "+shellWord(ran)+"\nexit 1\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("LEGION_GH_PATH", gh)
@@ -561,6 +569,7 @@ func answersNothingForTheFork(t *testing.T, code int, stdout, stderr, root, slug
 // git-credential get`, which gh's own git asks, answers the same through the same function. Each
 // answer comes from one read.
 func TestGitCredentialAnswersAForksParentToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGhGitCredentialHere) and leakguardCurl (useForkRead).
 	root, acme := gitCredentialBundle(t)
 	// The bundle appauth.GitHubCredential builds with the configured rename sjawhar/legion ->
 	// cybermonklabs/legion and the App installed on both owners of it (pairRoutedBundle):
@@ -630,6 +639,7 @@ func TestGitCredentialAnswersAForksParentToken(t *testing.T) {
 // source owner's directory. fork-of-a-fork.http is such a fork: its parent is
 // outside-org/sample-project, itself a fork, and its source acme/sample-project.
 func TestGitCredentialAnswersAForksSourceTokenWhenItsParentIsNotServed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, acme := gitCredentialBundle(t)
 	github := newFakeGitHub(t, "ghs_acme_write", printsAnswer(forkReadFixture(t, "fork-of-a-fork.http"), 0))
 	useForkRead(t, github.program, forkReadBound)
@@ -648,6 +658,7 @@ func TestGitCredentialAnswersAForksSourceTokenWhenItsParentIsNotServed(t *testin
 // made from, and so the nearer of the two. GH_CONFIG_DIR is a third owner's directory, so the
 // token the read carries is neither answer.
 func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, sjawhar := forkBundle(t, "sjawhar", "sjawhar", "outside-org", "acme")
 	github := newFakeGitHub(t, forkToken("sjawhar"), printsAnswer(forkReadFixture(t, "fork-of-a-fork.http"), 0))
 	useForkRead(t, github.program, forkReadBound)
@@ -669,8 +680,12 @@ func TestGitCredentialPrefersTheParentWhenBothOwnersAreServed(t *testing.T) {
 // reach it. The fake GitHub answers 401 to any other header, so the answer, acme's token from
 // either directory, proves which token went. curl's last argument is the repository git named at
 // https://api.github.com, and the value after its --max-time is seconds of one decimal inside the
-// read's bound of 10 s; leakguard's own tests read the guard's other curl options (Guard.CurlGet).
+// read's bound (programbound.Of of forkReadBound: the product's 10 s, and in this binary what is
+// left of its deadline when the read starts, read here before the read so it is no less than the
+// read's), and no less than that bound less the time the call took, curlMargin and the tenth the
+// guard rounds down to; leakguard's own tests read the guard's other curl options (Guard.CurlGet).
 func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, acme := gitCredentialBundle(t)
 	forkOfAcme := forkReadFixture(t, "fork-of-a-served-repository.http")
 	for _, tc := range []struct{ name, configDir, token string }{
@@ -684,7 +699,10 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 			github := newFakeGitHub(t, tc.token, printsAnswer(forkOfAcme, 0))
 			useForkRead(t, github.program, forkReadBound)
 			forkReadPane(t, root, tc.configDir)
+			readAt := time.Now()
+			bound := programbound.Of(&forkReadBound)
 			code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project.git"), "get")
+			took := time.Since(readAt)
 			if want := "username=x-access-token\npassword=ghs_acme_write\n"; code != 0 || stdout != want {
 				t.Fatalf("legion git-credential get for outside-author/sample-project = exit %d, stdout %q, stderr %q; want exit 0 and %q", code, stdout, stderr, want)
 			}
@@ -707,8 +725,8 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 				}
 			}
 			// What the fork read hands the guard's curl read (leakguard's Guard.CurlGet): the
-			// repository git named, and a --max-time inside the read's bound. The guard's own
-			// tests read its other options.
+			// repository git named, and a --max-time inside the read's bound, bound. The guard's
+			// own tests read its other options.
 			const wantURL = "https://api.github.com/repos/outside-author/sample-project"
 			if len(read.argv) == 0 || read.argv[len(read.argv)-1] != wantURL {
 				t.Errorf("curl ran with %q, want %s as its last argument", read.argv, wantURL)
@@ -718,12 +736,18 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 				maxTime = read.argv[at+1]
 			}
 			seconds, err := strconv.ParseFloat(maxTime, 64)
-			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds <= 0 || seconds > 10 {
-				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, more than 0 and at most 10", read.argv, maxTime)
+			least := bound - took - forkCurlMargin - 100*time.Millisecond
+			if _, decimals, _ := strings.Cut(maxTime, "."); err != nil || len(decimals) != 1 || seconds < least.Seconds() || seconds > bound.Seconds() {
+				t.Errorf("curl ran with %q, whose --max-time is %q; want seconds of one decimal, at least %s (the read's bound less the call's %s, curlMargin and a tenth) and at most the read's bound of %s",
+					read.argv, maxTime, least.Round(100*time.Millisecond), took.Round(time.Millisecond), bound.Round(100*time.Millisecond))
 			}
 		})
 	}
 }
+
+// forkCurlMargin is leakguard's curlMargin: the time the guard keeps back from a curl read's
+// --max-time, so curl stops itself before the read's deadline kills it.
+const forkCurlMargin = 500 * time.Millisecond
 
 // R2: a repository of an owner the bundle holds no directory for that GitHub answers, but that
 // is no fork of a repository the bundle serves, gets nothing, exit 1, after one read: a
@@ -733,6 +757,7 @@ func TestGitCredentialReadsTheForkWithGHConfigDirsToken(t *testing.T) {
 // answer for another repository than the one asked, named with both names, since no token for
 // the repository asked can be read from it.
 func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, acme := gitCredentialBundle(t)
 	neither, sjawhar := forkBundle(t, "sjawhar", "sjawhar", "example-org")
 	// fork-of-a-served-repository.http with its own full_name, the first full_name of the file,
@@ -788,6 +813,7 @@ func TestGitCredentialAnswersNothingForAnOutsideRepositoryThatIsNoServedFork(t *
 // break, which would put a header of its own on curl's request, the helper names which and the
 // fake GitHub never runs. No stderr holds a token.
 func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, acme := gitCredentialBundle(t)
 	// root's one configured rename, sjawhar/legion -> cybermonklabs/legion, moves a repository of
 	// sjawhar, an owner root holds a directory for, to cybermonklabs, which it holds none for. Only
@@ -940,6 +966,7 @@ func TestGitCredentialAnswersNothingWhenTheForkReadFails(t *testing.T) {
 // holds sjawhar's directory, which GH_CONFIG_DIR names and whose token the read carries, and
 // acme's, the parent's owner's, with an empty hosts.yml. No stderr holds a token.
 func TestGitCredentialNamesTheForksRouteWhenItsParentHoldsNoToken(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, sjawhar := forkBundle(t, "sjawhar", "sjawhar")
 	acme := ghconfig.Dir(root, "acme")
 	if err := os.MkdirAll(acme, 0o700); err != nil {
@@ -971,44 +998,118 @@ func TestGitCredentialNamesTheForksRouteWhenItsParentHoldsNoToken(t *testing.T) 
 	}
 }
 
-// R2: a fork read that GitHub never answers is stopped at the read's bound, here shortened to
-// 2 s: the helper answers nothing, exit 1, within the bound and 3 s more, naming the bound, and
-// nothing the curl started still runs. The fake GitHub starts a sleep of its own, detached from
-// its output so nothing holds the read's pipes, records that sleep's PID, and then waits far past
-// the bound. curl runs in a process group of its own (leakguard's Guard.run), and the read's end
-// stops that whole group; a stop that killed curl alone would leave the sleep running,
-// reparented and waited for by nobody.
+// R2: a fork read that GitHub never answers is stopped, and with it what the curl started: curl
+// runs in a process group of its own (leakguard's Guard.run), and the read's end stops that whole
+// group. A stop that killed curl alone would leave what curl started running, reparented and
+// waited for by nobody.
+//
+// The row reads that in two reads, as TestAHelpReadThatTimesOutStopsWhatGhStarted does, so that
+// no verdict of it is a race with the clock. In the first, the read's bound is 2 s and the fake
+// GitHub never answers: the helper answers nothing, exit 1, naming the bound. In the second, the
+// fake GitHub starts a sleep of its own, detached from its output so nothing holds the read's
+// pipes, records that sleep's PID and never answers, and the helper's context ends once the sleep
+// is recorded: the helper answers nothing, naming the cancel, and the sleep is gone too. Guard.run
+// gives curl the one stop procgroup makes whichever end of the read's context comes, its bound's or
+// this one. In one read under the bound of 2 s, a loaded machine could let the bound stop curl
+// before curl had recorded its sleep. Each wait, the helper's answer included, has the test
+// binary's deadline as its only bound, and each stand-in sleeps about a day, so a stop that never
+// comes fails the row by name and no sleep ends by itself before it.
 func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (startGitCredentialGet) and leakguardCurl (useForkRead).
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this test reads from it whether the fake GitHub's sleep is still running", err)
 	}
-	root, acme := gitCredentialBundle(t)
-	pidFile := filepath.Join(t.TempDir(), "sleep")
-	const sleepSeconds = "289"
-	github := newFakeGitHub(t, "ghs_acme_write",
-		"sleep "+sleepSeconds+" </dev/null >/dev/null 2>&1 &\necho $! > "+shellWord(pidFile)+"\nexec sleep 290\n")
-	useForkRead(t, github.program, 2*time.Second)
-	forkReadPane(t, root, acme)
-	killRecordedHelper(t, pidFile, sleepSeconds)
-	start := time.Now()
-	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project"), "get")
-	if took := time.Since(start); took > 5*time.Second {
-		t.Errorf("legion git-credential get took %s, want at most the bound of 2 s and 3 s more", took)
-	}
-	answersNothingForTheFork(t, code, stdout, stderr, root, "outside-author/sample-project", "bound of 2 s")
-	data, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("the fake GitHub recorded no sleep: %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatalf("the fake GitHub recorded the sleep's PID %q: %v", data, err)
-	}
-	for deadline := time.Now().Add(3 * time.Second); helperRunning(pid, sleepSeconds); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the fake GitHub's sleep, PID %d, still runs 3 s after the helper answered; want the read's end to stop curl's whole process group", pid)
+	t.Run("a read GitHub never answers is stopped at its bound", func(t *testing.T) {
+		root, acme := gitCredentialBundle(t)
+		curlPid := filepath.Join(t.TempDir(), "curl.pid")
+		const curlSeconds = "86388"
+		github := newFakeGitHub(t, "ghs_acme_write", holdsStandIn(curlPid, curlSeconds))
+		useForkRead(t, github.program, 2*time.Second)
+		forkReadPane(t, root, acme)
+		killRecordedHelper(t, curlPid, curlSeconds)
+		answered, _ := startGitCredentialGet(t, forkRequest("outside-author/sample-project"))
+		got := testwait.Receive(t, "legion git-credential get to answer once the fork read's bound of 2 s passed", answered)
+		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project")
+		// The guard gives curl what is left of the read's 2 s when curl starts, and names it in
+		// whole seconds (leakguard's Guard.run), so a loaded machine that starts curl late names
+		// less; one that leaves curl too little refuses the read before curl starts (curlTime).
+		if said := forkReadStopped.FindStringSubmatch(got.stderr); said != nil {
+			ran, _ := strconv.Atoi(said[1])
+			bound, _ := strconv.Atoi(said[2])
+			if bound <= 0 || bound > 2 || ran < bound {
+				t.Errorf("the helper printed %q: curl ran %d s under a bound of %d s, want a bound more than 0 and no more than the read's 2 s, and a run no shorter than it", got.stderr, ran, bound)
+			}
+		} else if strings.Contains(got.stderr, forkReadNoTime) {
+			t.Logf("the read's 2 s left curl too little before it started: %q", got.stderr)
+		} else {
+			t.Errorf("the helper printed %q, want curl stopped by its bound, or the read refused for too little time left", got.stderr)
 		}
-	}
+	})
+	t.Run("the stop reaches the sleep curl started", func(t *testing.T) {
+		root, acme := gitCredentialBundle(t)
+		dir := t.TempDir()
+		curlPid, sleepPid := filepath.Join(dir, "curl.pid"), filepath.Join(dir, "sleep.pid")
+		const curlSeconds, sleepSeconds = "86390", "86389"
+		github := newFakeGitHub(t, "ghs_acme_write",
+			"sleep "+sleepSeconds+" </dev/null >/dev/null 2>&1 &\necho $! > "+shellWord(sleepPid)+"\n"+holdsStandIn(curlPid, curlSeconds))
+		useForkRead(t, github.program, forkReadBound)
+		forkReadPane(t, root, acme)
+		killRecordedHelper(t, sleepPid, sleepSeconds)
+		killRecordedHelper(t, curlPid, curlSeconds)
+		answered, stop := startGitCredentialGet(t, forkRequest("outside-author/sample-project"))
+		var pid int
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll, "the fake GitHub to record the sleep it starts", func() bool {
+			var running bool
+			pid, running = recordedHelper(sleepPid, sleepSeconds)
+			return running
+		})
+		stop()
+		got := testwait.Receive(t, "legion git-credential get to answer once its context ended", answered)
+		answersNothingForTheFork(t, got.code, got.stdout, got.stderr, root, "outside-author/sample-project", "stopped by a cancel")
+		testwait.WithinPolling(t, testwait.Bounded(t, 1<<60, testBoundMargin), testwait.Poll,
+			fmt.Sprintf("the fake GitHub's sleep, PID %d, to end once the helper answered: want the read's end to stop curl's whole process group", pid),
+			func() bool { return !helperRunning(pid, sleepSeconds) })
+	})
+}
+
+// forkReadStopped is how the helper says a fork read its bound stopped: the whole seconds curl ran,
+// and the bound the guard gave it (leakguard's stoppedError).
+var forkReadStopped = regexp.MustCompile(`curl ran (\d+) s and was stopped by its bound of (\d+) s`)
+
+// forkReadNoTime is how the helper says a fork read whose bound left curl too little time before
+// curl started (leakguard's curlTime).
+const forkReadNoTime = "too little of the caller's bound is left for the read through curl"
+
+// gitCredentialAnswer is what one `legion git-credential get` answered: its exit status and what
+// it printed.
+type gitCredentialAnswer struct {
+	code           int
+	stdout, stderr string
+}
+
+// startGitCredentialGet starts `legion git-credential get` in process, as runGitCredentialHere
+// runs it, with stdin as git's request and under a context of its own, and answers the channel its
+// answer comes on and that context's cancel. The end of t cancels the context and waits for the
+// call before the cleanups registered earlier run, so a call the row gave up on is stopped, and
+// never reads the helper's stdin or the fork read's curl and bound while a cleanup puts them back.
+func startGitCredentialGet(t *testing.T, stdin string) (<-chan gitCredentialAnswer, context.CancelFunc) {
+	t.Helper()
+	previous := gitCredentialStdin
+	gitCredentialStdin = strings.NewReader(stdin)
+	t.Cleanup(func() { gitCredentialStdin = previous })
+	ctx, cancel := context.WithCancel(context.Background())
+	answered, ended := make(chan gitCredentialAnswer, 1), make(chan struct{})
+	go func() {
+		defer close(ended)
+		var out, errb bytes.Buffer
+		code := run(ctx, []string{"legion", "git-credential", "get"}, &out, &errb)
+		answered <- gitCredentialAnswer{code: code, stdout: out.String(), stderr: errb.String()}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-ended
+	})
+	return answered, cancel
 }
 
 // R2: a request for a repository of an owner the bundle holds a directory for is answered as it
@@ -1022,6 +1123,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 // fake GitHub answers any read with a fork of acme's repository, so a read would hand out acme's
 // token.
 func TestGitCredentialMakesNoReadForAServedOwner(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (forkReadPane); it sets the package variables forkReadBound (useForkRead), gitCredentialStdin (runGitCredentialHere) and leakguardCurl (useForkRead).
 	root, _ := gitCredentialBundle(t)
 	// A bundle whose configured rename moved sjawhar/legion to cybermonklabs, which the bundle
 	// holds no directory for.

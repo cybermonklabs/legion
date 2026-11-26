@@ -35,6 +35,7 @@ import (
 // record the earlier event's route changed before its next batch, and the row's copy reaches s1
 // first - which is what shows this test can see a copy pass the earlier event.
 func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
+	t.Parallel()
 	const (
 		route = `update issues set route = 'session:s1' where key = 'T-1'`
 		claim = `update issues set claimed_by = '{"kind": "session", "id": "s1"}', claimed_at = now() where key = 'T-1'`
@@ -56,6 +57,7 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 		{name: "control: the route moved by direct SQL, with no event, after a batch read the comment", write: route, afterComment: true, passes: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 			ctx := context.Background()
 			database := storetest.Open(t)
@@ -196,8 +198,10 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 // waits on those keys, and once the earlier event is published it waits on nothing in any row -
 // which shows the rule can answer no event here.
 func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
+	t.Parallel()
 	for _, tc := range recordsAfterARouteMove {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 			ctx := context.Background()
 			moved := recordAfterARouteMove(t, tc.record)
@@ -228,8 +232,10 @@ func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
 // (model.MentionCopyHolderSQL and model.MentionCopyRolesSQL read unpublished events alone); this
 // holds the record to the rule it states.
 func TestARecordWithoutTheHoldWritesNoOwedColumnsOfAnEventItPublishes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range recordsAfterARouteMove {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			moved := recordAfterARouteMove(t, tc.record)
 			var neither, both bool
 			if err := moved.database.Pool.QueryRow(context.Background(), `
@@ -336,7 +342,7 @@ func recordAfterARouteMove(t *testing.T, record string) routeMoveRecord {
 	}
 	switch record {
 	case "lost":
-		if holds, err := recordBatch(ctx, deps, outcomes, uuid.New()); err != nil || holds {
+		if holds, err := recordBatch(ctx, deps, outcomes, uuid.New(), graphWrite{}); err != nil || holds {
 			t.Fatalf("record without the hold: holds %v, %v; want the hold another's", holds, err)
 		}
 	case "previous":
@@ -350,7 +356,7 @@ func recordAfterARouteMove(t *testing.T, record string) routeMoveRecord {
 			t.Fatalf("record issue.updated as the previous release does: %v", err)
 		}
 	case "held":
-		if holds, err := recordBatch(ctx, deps, outcomes, holder.instance); err != nil || !holds {
+		if holds, err := recordBatch(ctx, deps, outcomes, holder.instance, graphWrite{}); err != nil || !holds {
 			t.Fatalf("record with the hold: holds %v, %v; want the hold this process's", holds, err)
 		}
 	}

@@ -31,6 +31,7 @@ create trigger artifact_versions_block_index_owed after insert on artifact_versi
 // here, so every added column and every created index is judged on size; the forms whose answer
 // needs the catalog are tested against a database.
 func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct{ sql, want string }{
 		"0122, a function and a trigger":  {migration0122, "create function and create trigger"},
 		"a trigger alone":                 {"create trigger t_owed after insert on things for each row execute function owe();", "create trigger"},
@@ -145,7 +146,7 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"select set_config('search_path', 'other', false); select 1 from pg_event_trigger;": {true, `names "pg_event_trigger"` + resolvesToCatalog},
 		"select set_config('search_path', 'other', false); do $$ begin end $$;":             {true, "runs a DO block" + cannotSee},
 	} {
-		if got, err := tableSizeExemption(context.Background(), nil, nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff != want.laterExemptionsOff {
+		if got, err := tableSizeExemption(context.Background(), nil, nil, sql); err != nil || got.exemption != "" || got.laterReadsOff != want.laterReadsOff || got.laterExemptionsOff.String() != want.laterExemptionsOff {
 			t.Errorf("%q: tableSizeExemption = %+v, %v; want laterReadsOff %v and laterExemptionsOff %q", sql, got, err, want.laterReadsOff, want.laterExemptionsOff)
 		}
 	}
@@ -176,6 +177,7 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 // 1..10 outside a PL/pgSQL for loop is, moves nothing: where the literals of a text are is the
 // lexer's and does not depend on the parser reaching them.
 func TestRedactedQueryKeepsTheShapeAndDropsEveryValue(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		// setting is the holder's standard_conforming_strings the row answers for: "on", the
 		// default; "off"; or "on and off" for a text both settings read the same way.

@@ -39,6 +39,7 @@ import (
 // The assertion under it never runs there, and would fail too: the statement that wrote that
 // window cleared windows_owed_at in the same breath, so the arm was owed nothing.
 func TestACommentLeavesItsWindowsToTheBlockIndexTick(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "CWIN", "Window the comment", "A spec")
@@ -111,6 +112,7 @@ func TestACommentLeavesItsWindowsToTheBlockIndexTick(t *testing.T) {
 //	            select embeddings_enqueue_window($1, $2 || '#' || w.suffix, w.text, w.covers)
 //	            from jsonb_to_recordset($3::jsonb) as w (suffix text, text text, covers text[])
 func TestACommentWriteWritesNoWindowUnderTheIssueRow(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	sent := &sentStatements{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, sent, nil)}

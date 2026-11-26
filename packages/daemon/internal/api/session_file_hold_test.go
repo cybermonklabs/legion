@@ -40,7 +40,7 @@ func TestAnOhMyPiSessionFileIsHeldToItsClaim(t *testing.T) {
 		before, calls := h.stored(taker), broker.calls()
 		recorder := h.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 			BootToken: takerBoot, SessionID: "ses_fresh", OmpSessionFile: holderFile,
-			AgentID: "agent-ses_fresh", PluginContract: DaemonAPIVersion,
+			AgentID: "agent-ses_fresh", PluginContract: DaemonAPIVersion(),
 		}, nil)
 		if recorder.Code != http.StatusConflict {
 			t.Errorf("%s registering a fresh id with %s's session file %s = %d, want 409; body %s", taker, holder, holderFile, recorder.Code, recorder.Body)

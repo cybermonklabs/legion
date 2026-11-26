@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/legionagents"
 )
@@ -86,6 +87,7 @@ func countRoleHolders(t *testing.T, database *store.Store) int {
 // The daemon publishes the issue's whole set each time. A session that a later set does not name
 // holds no role of the issue, and the empty set leaves no session with a role.
 func TestTheDaemonPublishesTheRoleHoldersOfAnIssue(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -108,6 +110,7 @@ func TestTheDaemonPublishesTheRoleHoldersOfAnIssue(t *testing.T) {
 // Two sessions that change roles in one publication meet neither key of the table: the
 // publication deletes each pair that it does not name before it inserts the new pairs.
 func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -120,15 +123,17 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 // The daemon publishes again at each boot and at each start and end of a claim. A pair that did
 // not change keeps the time that Dispatch first recorded it.
 func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{})
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
 	first := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(first.Holders) != 1 || first.Holders[0].RecordedAt.IsZero() {
 		t.Fatalf("the first publish answered %#v, want tester ses-a with its time", first)
 	}
-	// Each write is its own transaction, so a write that sets now() again sets a later time.
-	time.Sleep(5 * time.Millisecond)
+	// Each write is its own transaction, so a write that sets now() again sets a later time once the
+	// database's clock reads past the first one's: the wait ends on that clock.
+	awaitDatabaseClockPast(t, database, first.Holders[0].RecordedAt)
 	again := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(again.Holders) != 1 || !again.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {
 		t.Fatalf("the second publish answered %#v, want the time %s of the first", again, first.Holders[0].RecordedAt)
@@ -138,9 +143,11 @@ func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
 	}
 }
 
-// Only the daemon's own session for the issue's project writes the set. A role session, the daemon
-// of another project and a person are each refused, and no row is written.
-func TestOnlyTheDaemonOfTheIssuesProjectNamesTheRoleHolders(t *testing.T) {
+// Under a credential that proves no session, only the daemon's own session for the issue's project
+// writes the set. A role session, the daemon of another project and a person are each refused, and
+// no row is written.
+func TestUnderACredentialThatProvesNoSessionOnlyTheIssuesDaemonNamesTheRoleHolders(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	holders := []issueRoleHolder{{Role: "tester", Session: "ses-a"}}
@@ -169,9 +176,202 @@ func TestOnlyTheDaemonOfTheIssuesProjectNamesTheRoleHolders(t *testing.T) {
 	}
 }
 
+// storedRoleHolder is one row of issue_role_holders, with the mark that says whether the daemon's
+// own token wrote it, which no answer of the route carries.
+type storedRoleHolder struct {
+	Role         string
+	Session      string
+	RecordedAt   time.Time
+	DaemonProven bool
+}
+
+// readStoredRoleHolders reads each row of issueKey from issue_role_holders, in role order.
+func readStoredRoleHolders(t *testing.T, database *store.Store, issueKey string) []storedRoleHolder {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select role, session, recorded_at, daemon_proven from issue_role_holders where issue_key = $1 order by role
+	`, issueKey)
+	if err != nil {
+		t.Fatalf("read the stored role holders of %s: %v", issueKey, err)
+	}
+	stored, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (storedRoleHolder, error) {
+		var holder storedRoleHolder
+		err := row.Scan(&holder.Role, &holder.Session, &holder.RecordedAt, &holder.DaemonProven)
+		return holder, err
+	})
+	if err != nil {
+		t.Fatalf("read the stored role holders of %s: %v", issueKey, err)
+	}
+	return stored
+}
+
+// sameStoredRoleHolders says whether two reads of the table are the same rows: the same pairs,
+// times and marks.
+func sameStoredRoleHolders(a, b []storedRoleHolder) bool {
+	return slices.EqualFunc(a, b, func(x, y storedRoleHolder) bool {
+		return x.Role == y.Role && x.Session == y.Session && x.RecordedAt.Equal(y.RecordedAt) && x.DaemonProven == y.DaemonProven
+	})
+}
+
+// requireStoredRoleHolders fails unless stored is the set want, each pair with daemon_proven
+// equal to marked.
+func requireStoredRoleHolders(t *testing.T, stored []storedRoleHolder, want []issueRoleHolder, marked bool) {
+	t.Helper()
+	matches := len(stored) == len(want)
+	for _, pair := range want {
+		index := slices.IndexFunc(stored, func(holder storedRoleHolder) bool { return holder.Role == pair.Role })
+		matches = matches && index >= 0 && stored[index].Session == pair.Session && stored[index].DaemonProven == marked
+	}
+	if !matches {
+		t.Errorf("the stored set is %+v, want %v with daemon_proven %t on each pair", stored, want, marked)
+	}
+}
+
+// TestOnlyTheDaemonsSessionPublishesRoleHolders: with DISPATCH_LEGION_STATUS_SCOPE on, only a
+// daemon's own broker token, which holds legion-status, publishes the role holders of an issue,
+// and each pair it stores is marked. That is the token of the issue's own daemon, which proves
+// session legion-daemon:<PROJECT>, and the token of another project's daemon, which proves its own
+// daemon session and names its project (TestAnotherProjectsDaemonPublishesRoleHoldersUnderTheLegionStatusScope).
+// Every other credential of R26's inventory (newLegionStatusRigOn) is refused 403
+// ROLE_HOLDER_FORBIDDEN, the shared token whose actor names the daemon's session included, or by
+// the check in front of the handler with its own code. The stored set, its times and its marks
+// stay as they were. With the setting off, the shared token whose actor names the daemon's
+// session publishes as before, and its pairs are unmarked. The daemon's own token then publishes
+// the same set, which keeps every pair and its time and marks every pair. The shared token's next
+// publication of that set unmarks every pair again: the mark is the last publication's. A row
+// that an older build inserts, which names no mark, reads unmarked.
+func TestOnlyTheDaemonsSessionPublishesRoleHolders(t *testing.T) {
+	set := []issueRoleHolder{{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-b"}}
+	publication := func(holders []issueRoleHolder) map[string]any { return map[string]any{"holders": holders} }
+
+	t.Run("with the setting on", func(t *testing.T) {
+		rig := newLegionStatusRig(t, true)
+		issue := rig.issue(t, nil, "", "")
+		path := "/api/v1/issues/" + issue + "/role-holders"
+		rig.publishRoles(t, issue, set...)
+		before := readStoredRoleHolders(t, rig.database, issue)
+		requireStoredRoleHolders(t, before, set, true)
+		for _, credential := range rig.credentials {
+			if credential.name == legionDaemonToken {
+				continue
+			}
+			t.Run(credential.name, func(t *testing.T) {
+				response := credential.send(t, http.MethodPut, path, publication([]issueRoleHolder{{Role: "tester", Session: "ses-c"}}))
+				if credential.verdict == legionRefusedFirst {
+					requireRefused(t, response, http.StatusForbidden, credential.code)
+				} else {
+					requireRefused(t, response, http.StatusForbidden, "ROLE_HOLDER_FORBIDDEN")
+					if _, message := refusalOf(t, response); !strings.Contains(message, legionDaemonSessionOf(issue)) || !strings.Contains(message, "legion-status") {
+						t.Errorf("the refusal's message %q names not both the daemon's session %s and the legion-status scope",
+							message, legionDaemonSessionOf(issue))
+					}
+				}
+				if after := readStoredRoleHolders(t, rig.database, issue); !sameStoredRoleHolders(after, before) {
+					t.Errorf("the stored set after the refused publication is %+v, want it as it was: %+v", after, before)
+				}
+			})
+		}
+	})
+
+	t.Run("with the setting off", func(t *testing.T) {
+		rig := newLegionStatusRig(t, false)
+		issue := rig.issue(t, nil, "", "")
+		path := "/api/v1/issues/" + issue + "/role-holders"
+		shared := rig.credential(t, legionSharedToken)
+		sharedPublication := map[string]any{"holders": set, "actor": daemonSessionOf(brokerTestProject)}
+		publish := func(t *testing.T, credential legionCredential, body map[string]any) []storedRoleHolder {
+			t.Helper()
+			if taken := credential.send(t, http.MethodPut, path, body); taken.Code != http.StatusOK {
+				t.Fatalf("%s publishes %v: status=%d body=%s", credential.name, set, taken.Code, taken.Body.String())
+			}
+			return readStoredRoleHolders(t, rig.database, issue)
+		}
+
+		first := publish(t, shared, sharedPublication)
+		requireStoredRoleHolders(t, first, set, false)
+		if len(first) == 0 {
+			t.Fatalf("the shared token's publication of %v stored no pair", set)
+		}
+		// A pair written again would take its transaction's time, so wait until the database's clock
+		// has passed the first publication's: a kept pair then shows by its unchanged time.
+		awaitDatabaseClockPast(t, rig.database, first[0].RecordedAt)
+		rig.publishRoles(t, issue, set...)
+		marked := readStoredRoleHolders(t, rig.database, issue)
+		requireStoredRoleHolders(t, marked, set, true)
+		for index := range marked {
+			if index < len(first) && !marked[index].RecordedAt.Equal(first[index].RecordedAt) {
+				t.Errorf("the daemon's publication of the same set moved the time of %s to %s, want %s: it keeps the pair",
+					marked[index].Role, marked[index].RecordedAt, first[index].RecordedAt)
+			}
+		}
+		requireStoredRoleHolders(t, publish(t, shared, sharedPublication), set, false)
+
+		t.Run("a row an older build inserts", func(t *testing.T) {
+			older := rig.issue(t, nil, "", "")
+			if _, err := rig.database.Pool.Exec(context.Background(), `
+				insert into issue_role_holders (issue_key, role, session) values ($1, 'architect', 'ses-old')
+			`, older); err != nil {
+				t.Fatalf("insert a pair as an older build does: %v", err)
+			}
+			requireStoredRoleHolders(t, readStoredRoleHolders(t, rig.database, older), []issueRoleHolder{{Role: "architect", Session: "ses-old"}}, false)
+		})
+	})
+}
+
+// TestAnotherProjectsDaemonPublishesRoleHoldersUnderTheLegionStatusScope: with
+// DISPATCH_LEGION_STATUS_SCOPE on, the daemon of project brokerTestProject publishes the role
+// holders of another project's issue with its own broker token, which names its project, proves
+// legion-daemon:<its project> and holds legion-status. Each pair it stores is marked as a daemon's.
+// A token that holds legion-status and proves a session that is no daemon's, and a token that
+// proves the daemon's session and holds no legion-status, are each refused 403
+// ROLE_HOLDER_FORBIDDEN, and the stored set stays as it was.
+func TestAnotherProjectsDaemonPublishesRoleHoldersUnderTheLegionStatusScope(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerTokenRigOn(t, testServerOptions{legionStatusScope: true})
+	caller := newBrokerCaller(t)
+	for _, project := range []string{brokerTestProject, "OTH"} {
+		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+		}
+	}
+	issue := createdIssue(t, "file another project's issue", rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "OTH", "title": "Another project's issue", "force": true,
+	})).Key
+	path := "/api/v1/issues/" + issue + "/role-holders"
+	const daemonToken, roleToken, unscopedDaemonToken = "a-daemon-token", "a-role-token-holding-legion-status", "a-daemon-token-holding-no-legion-status"
+	rig.broker.Says(daemonToken, liveDaemonToken(caller.jkt))
+	role := liveNamedToken(caller.jkt)
+	role.Scope = ciphertoken.ScopeLegionStatus
+	rig.broker.Says(roleToken, role)
+	unscoped := liveDaemonToken(caller.jkt)
+	unscoped.Scope = "dispatch.write"
+	rig.broker.Says(unscopedDaemonToken, unscoped)
+
+	set := []issueRoleHolder{{Role: "tester", Session: "ses-a"}, {Role: "implementer", Session: "ses-b"}}
+	published := rig.serve(caller.presenting(t, http.MethodPut, path, daemonToken, map[string]any{"holders": set}))
+	requireTaken(t, "the publication of another project's daemon", published, http.StatusOK)
+	stored := readStoredRoleHolders(t, rig.database, issue)
+	requireStoredRoleHolders(t, stored, set, true)
+
+	for _, token := range []string{roleToken, unscopedDaemonToken} {
+		t.Run(token, func(t *testing.T) {
+			response := rig.serve(caller.presenting(t, http.MethodPut, path, token, map[string]any{
+				"holders": []issueRoleHolder{{Role: "tester", Session: "ses-c"}},
+			}))
+			if code, _ := refusalOf(t, response); response.Code != http.StatusForbidden || code != "ROLE_HOLDER_FORBIDDEN" {
+				t.Fatalf("status=%d body=%s, want 403 ROLE_HOLDER_FORBIDDEN", response.Code, response.Body.String())
+			}
+			if after := readStoredRoleHolders(t, rig.database, issue); !sameStoredRoleHolders(after, stored) {
+				t.Errorf("the refused publication left %+v, want %+v", after, stored)
+			}
+		})
+	}
+}
+
 // A body that is not the whole set of an issue is refused before the database sees it, and an
 // issue that Dispatch does not know is refused with the code the daemon ends a publication on.
 func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
@@ -206,6 +406,7 @@ func TestARoleHoldersPublicationRefusesWhatIsNoSet(t *testing.T) {
 
 // The tester's production check comes after the close, so a closed issue takes its role holders.
 func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	setIssueStatus(t, handler, issue, "done")
@@ -214,9 +415,11 @@ func TestAClosedIssueTakesItsRoleHolders(t *testing.T) {
 	requireHeldRole(t, database, issue, "ses-a", "tester")
 }
 
-// The set reads back in the order the workflow reaches the roles, whatever order the publication
-// named them in. The PUT answers in that order too.
+// The set reads back in the order of legionagents.Roles, the order of the default steps (each
+// task names its own), whatever order the publication named them in. The PUT answers in that
+// order too.
 func TestTheRoleHoldersOfAnIssueReadInWorkflowOrder(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	if none := readRoleHolders(t, handler, issue); none.Issue != issue || none.Holders == nil || len(none.Holders) != 0 {
@@ -269,6 +472,7 @@ func sortedPairs(holders []issueRoleHolderRecord) []issueRoleHolder {
 // that finished last leaves its set stored. Twenty rounds of each shape, because one round can pass
 // by the order the two happen to run in.
 func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	for _, shape := range []struct {
@@ -323,6 +527,7 @@ func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 // with 400, and so is one so long that the table's unique index could not hold it: no body gives a
 // 500, which the daemon would retry with no end. The stored set stays as it was.
 func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 	before := []issueRoleHolder{{Role: "tester", Session: "ses-t"}}
@@ -368,6 +573,7 @@ func TestASessionThatIsNoSessionIDIsRefused(t *testing.T) {
 // The contract names the roles in the enum of each shape, which a tag must spell. The route refuses
 // every role that legionagents.Roles does not name, so the two lists must be the same.
 func TestTheRoleHolderShapesNameTheLegionRoles(t *testing.T) {
+	t.Parallel()
 	want := strings.Join(legionagents.Roles, ",")
 	for _, shape := range []any{issueRoleHolder{}, issueRoleHolderRecord{}} {
 		field, ok := reflect.TypeOf(shape).FieldByName("Role")
@@ -386,6 +592,7 @@ func TestTheRoleHolderShapesNameTheLegionRoles(t *testing.T) {
 // generated, walking from the PUT's own request body to the schema of one pair, so the schema
 // read is the one the route takes and not a name that only looks like it.
 func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
+	t.Parallel()
 	var document map[string]any
 	if err := json.Unmarshal(committedOpenAPI(t), &document); err != nil {
 		t.Fatalf("read the committed document: %v", err)
@@ -429,6 +636,7 @@ func TestTheContractRequiresTheRoleAndTheSessionOfEachHolder(t *testing.T) {
 // meet the check, a 500. This reads the check the migrated database holds and compares its roles,
 // in order, with Roles.
 func TestTheRoleHoldersTableChecksTheLegionRoles(t *testing.T) {
+	t.Parallel()
 	_, database, _ := newTestServer(t, testServerOptions{})
 	rows, err := database.Pool.Query(context.Background(), `
 		select pg_get_constraintdef(c.oid)

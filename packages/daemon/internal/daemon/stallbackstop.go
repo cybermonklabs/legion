@@ -362,7 +362,7 @@ func stallStopClause(words stallEndWords, stop supervise.StallBackstopStop) stri
 // ends it (supervise's endHeld, stopPrevious). stallProcessNotStopped is the end that asked
 // for no stop at all, where that room and that disk are what nothing of the daemon's has given
 // back, and where the claim goes on recording the process until the queued launch comes due
-// (supervise's reserveWake, parkWake).
+// (supervise's reserveWake, waitOnMachine).
 const (
 	stallProcessStopped    = "Its stalled process was stopped."
 	stallProcessNotStopped = "The daemon made no stop of its stalled process, and the claim records that process still, so nothing the daemon has done has taken away what that process holds."
@@ -370,10 +370,10 @@ const (
 )
 
 // stallFill fills the two values a clause of the notice names where it names them: the claim's
-// role, and the moment the launch a park queued is due to run
-// (supervise.StallBackstopStop.WakeDue). They are written into the clauses as words rather than
-// handed to a format string so that each row of stallBackstopEnds reads as the sentence the
-// owner gets, and so that a clause naming neither needs nothing of its caller.
+// role, and the moment the wake pacing estimated, when the stop was built, that it lets out the
+// launch a park queued (supervise.StallBackstopStop.WakeDue). They are written into the clauses
+// as words rather than handed to a format string so that each row of stallBackstopEnds reads as
+// the sentence the owner gets, and so that a clause naming neither needs nothing of its caller.
 func stallFill(c supervise.Claim, stop supervise.StallBackstopStop) *strings.Replacer {
 	return strings.NewReplacer(stallRoleWord, string(c.Role), stallDueWord, stallInstant(stop.WakeDue))
 }
@@ -436,7 +436,7 @@ const stallNothingCharged = "nothing was charged to the claim."
 // The stall itself charges nothing, which is the whole reason this recovery is not the death
 // path (supervise's backstopStalledTurn). The replacement made for it is another matter: a
 // start the runtime refuses inside that replacement is a launch failure like any other
-// (supervise's launchNow), and the loop tries again, so a single transient refusal reaches its
+// (supervise's launchTries), and the loop tries again, so a single transient refusal reaches its
 // owner as a relaunch that worked with one failure charged, and a refusal followed by a write
 // the store would not take as a relaunch still pending with the same. Those are the common
 // shapes, not the rare one: the end that failed the claim is every try of it refused, and it
@@ -463,16 +463,17 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 //
 // Each row is held to one rule: it states what the daemon has already done, and names what the
 // claim waits on for anything it has not. Only the relaunched row ends in something running,
-// because only there has a process been started (supervise's launchNow records the locator the
-// runtime answered with). Where the daemon has queued work — the parked launch, the retry of a
-// launch the store refused — the row says what is queued and what can end the claim before that
-// work runs, since nothing writes this owner a second notice when it does: a suspension already
-// waiting ends the wake's turn in a stop (supervise's wakeNow, endHeld), a lifecycle recheck
-// refuses the launch and leaves the process as it stands (runWake, relaunchRefused), a tree's
-// close drops the queued launch with the process (letGo), and a retry of a launch can run the
-// claim's budget out and fail it (launchNow, fail). Where nothing is queued — suspended, failed
-// — the row says so and names what can bring the claim back or end it, rather than promising a
-// resume or a retry that may never come.
+// because only there has a process been started (supervise's launchTries records the locator the
+// runtime answered with). Where the daemon has queued work — the parked launch, the launch waiting
+// at its issue pod's start gate, the retry of a launch the store refused — the row says what is
+// queued and what can end the claim before that work runs, since nothing writes this owner a
+// second notice when it does: a suspension already waiting ends the wake's turn in a stop
+// (supervise's wakeNow, endHeld), a suspension or a close takes a launch out of the pod's gate
+// (supervise's endPodPark), a lifecycle recheck refuses the launch and leaves the process as it
+// stands (runWake, relaunchRefused), a tree's close drops the queued launch with the process
+// (letGo), and a retry of a launch can run the claim's budget out and fail it (launchTries, fail).
+// Where nothing is queued — suspended, failed — the row says so and names what can bring the
+// claim back or end it, rather than promising a resume or a retry that may never come.
 //
 // No row names the stalled process or the stalled turn — not to say the
 // process was stopped, however plainly its end let that process go, and not that the turn was
@@ -486,7 +487,7 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 //
 // No row says what the claim was charged either, for the same reason: a start the runtime
 // refuses inside the replacement is charged like any other launch failure (supervise's
-// launchNow), and the end can still be the relaunch that worked, so a row claiming the stall
+// launchTries), and the end can still be the relaunch that worked, so a row claiming the stall
 // charged nothing would be a sentence the claim's own budgets contradict. That clause is the
 // third the daemon derives, from what the machine says this replacement charged
 // (stallChargeClause), and the charge is the third subject that property holds the rows off:
@@ -499,12 +500,18 @@ var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 		process: stallProcessLetGo},
 	supervise.EndRelaunchParked: {
 		did: "and queued the replacement launch",
-		end: "the launch that replaces it is queued in the daemon's wake pacing and is due at " + stallDueWord +
-			": what the park settled is that launch queued and the claim waiting on it until then. What comes due at " + stallDueWord +
-			" may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
+		end: "the launch that replaces it is queued in the daemon's wake pacing, which estimated, when the daemon read it for this notice, that it lets the launch out at " + stallDueWord +
+			": a change to the pacing's queues or to its pace can move that moment earlier or later, for example a wake ahead of it in its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it moves it later. " +
+			"What the park settled is that launch queued and the claim waiting on it until the pacing lets it out. What the pacing lets out then may be nothing at all, or not the launch the park queued — a suspension waiting for this claim, " +
 			"the lifecycle recheck every launch makes refusing this one, the tree's close dropping the queued launch, a take-back the store refuses when that launch comes due, a launch whose own write or start the daemon cannot make, " +
 			"and an operator's task that runs this launch before it is due are among the things that can change it",
 		process: stallProcessKept},
+	supervise.EndRelaunchWaitsForPod: {
+		did: "and queued the replacement launch at its issue's start gate",
+		end: "the launch that replaces it waits at its issue's start gate behind the roles of the issue that start or load their sessions before it, one load at a time, " +
+			"and the replacement starts when the gate grants it its start. A suspension of this claim, a close that retires it, " +
+			"or the daemon's own shutdown, which the daemon's next start takes up, can come before that start, and a start refused until the claim's launch budget runs out leaves it failed with nothing started for it",
+		process: stallProcessLetGo},
 	supervise.EndRelaunchPending: {
 		did: "and did not get a replacement started in its place",
 		end: "the launch that replaces it has not started: either its write was refused, which the daemon tries again at its probe interval, or the daemon's own shutdown cut the launch short, which the daemon's next start takes up; " +

@@ -1,5 +1,7 @@
 package intake_test
 
+//ci:builds packages/envoy ./cmd/listener ./cmd/dispatch seedRedeliveredIssue testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (`packages/daemon/internal/testbuild/testbuild.go#buildEnvoy`)
+
 import (
 	"bytes"
 	"context"
@@ -89,6 +91,7 @@ func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Reso
 // admits envoy rows in processed_events and holds its GitHub rows to exactly the redelivered
 // delivery (redeliveredGitHubEvents).
 func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	binaries := builtEnvoyBinaries(t)
 
@@ -157,7 +160,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 	// runs it against the database its server already migrated. This test gives it a database of
 	// its own and brings it to Dispatch's schema first, through a subcommand that migrates and then
 	// finds nothing to do on an empty database.
-	dispatchDSN := testdb.Database(t, "legion_intake_redelivered_dispatch")
+	dispatchDSN := testdb.PlainDatabase(t, "legion_intake_redelivered_dispatch")
 	home := t.TempDir()
 	migrate := exec.Command(binaries.dispatch, "backfill-block-ids")
 	migrate.Dir = home
@@ -401,13 +404,20 @@ func startListener(t *testing.T, binary, natsURL string) *listenerProcess {
 	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Signal(os.Interrupt)
-		select {
-		case <-exited:
-		case <-time.After(10 * time.Second):
+		// A listener that never stops fails the wait, and is killed on the way out so it outlives
+		// no test; one that stopped is past killing, and Kill only says so.
+		defer func() {
 			_ = cmd.Process.Kill()
 			<-exited
-			t.Errorf("the listener did not stop after SIGINT:\n%s", output.String())
-		}
+		}()
+		testwait.Until(t, "the listener to stop after SIGINT", func() (string, bool) {
+			select {
+			case <-exited:
+				return "", true
+			default:
+				return output.String(), false
+			}
+		})
 	})
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/healthz"

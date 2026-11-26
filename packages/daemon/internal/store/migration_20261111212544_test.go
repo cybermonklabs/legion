@@ -25,6 +25,7 @@ const failureCauseVersion = 20261111212544
 // The migration is read back under it: the five sentences this release's predecessors wrote become
 // the four words that can be proved of them.
 func TestAFailedClaimCarriesItsCause(t *testing.T) {
+	t.Parallel()
 	t.Run("the cause, the moment and the pending cause round-trip", func(t *testing.T) {
 		ctx := context.Background()
 		store := migratedStore(t)

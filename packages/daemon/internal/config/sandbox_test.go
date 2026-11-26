@@ -57,7 +57,7 @@ func TestTheSandboxBlockRefusesEachShapeNamingItsKey(t *testing.T) {
 	// audienceRefusal is the refusal of a broker audience that is the Workload Identity pool.
 	audienceRefusal := func(member string) string {
 		return "runtime.kubernetes.agent_secrets." + member + " must differ from runtime.kubernetes.sandbox.microvm.metadata.workload_pool (both " + testWorkloadPool + ")" +
-			" while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone"
+			" while an issue pod runs in a microVM: the cluster projects one volume per audience, so the two tokens would be one"
 	}
 	for _, tc := range []struct {
 		name, block, key, want string

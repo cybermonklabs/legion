@@ -32,7 +32,7 @@ Extends docs/solutions/testing/an-embedded-postgres-from-the-zonky-jar-runs-the-
   each other's resets. Start a second server on other ports for a parallel run.
 - The daemon's real-process rigs (`check_wake_test.go`'s boot of `run`) and the
   `intake`/`workflow` consume tests then run in the pod.
-- Nine `internal/daemon` tests still fail in a gVisor pod because of the environment. Skip them
+- Seven `internal/daemon` tests still fail in a gVisor pod because of the environment. Skip them
   by name and say so in the handoff:
   - Docker (`testnats.StartNkeyAuthorized*` or testcontainers): `TestDaemonPermissionsOnRealServers`,
     `TestChooseNATSConnectionNamesTheUserTheDaemonConnectsAs`, `TestNoLaunchCarriesTheDaemonSeed`,
@@ -40,8 +40,10 @@ Extends docs/solutions/testing/an-embedded-postgres-from-the-zonky-jar-runs-the-
     `TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved`,
     `TestAMergedRootsCloseWaitsForTheRestOfItsTreeLive`
   - git's credential-helper list: `TestTmuxBootRewritesEveryOlderClonesCredentialHelper`
-  - no `SigIgn` in `/proc`: `TestATerminalAttemptIgnoresSIGTSTP`,
-    `TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault`
+- `TestATerminalAttemptIgnoresSIGTSTP` and `TestATerminalAttemptLeavesLaterChildrenSIGTTOUsDefault`
+  pass there: gVisor's `/proc/<pid>/status` has no `SigIgn` line, so each reads the signal by
+  behaviour, and its subtest that reads the mask skips, naming the missing line
+  (`testkernel.RequireSignalMasks`).
 - A faster Postgres than the zonky jar is the `pgserver` wheel (Postgres 16.2), which needs
   Python 3.12:
   `UV_CACHE_DIR=$TMPDIR/uvcache UV_PYTHON_INSTALL_DIR=$TMPDIR/uvpy uv venv -p 3.12 $TMPDIR/pgvenv`,
@@ -54,6 +56,6 @@ Extends docs/solutions/testing/an-embedded-postgres-from-the-zonky-jar-runs-the-
 
 - `packages/daemon/internal/testnats/nats.go` (`external()`, from #2203), `README.md`'s
   Development paragraph.
-- INFRA-388's implementer ran `go test -p 1 ./internal/daemon -skip '<the nine above>'` (ok,
-  516 s), `./internal/intake` and `./internal/workflow` (ok, unfiltered) in the pod, against NATS
-  2.10.22 and pgserver Postgres 16.2.
+- INFRA-388's implementer ran `go test -p 1 ./internal/daemon -skip '<the seven above and the two
+  SIGTSTP and SIGTTOU rows>'` (ok, 516 s), `./internal/intake` and `./internal/workflow` (ok,
+  unfiltered) in the pod, against NATS 2.10.22 and pgserver Postgres 16.2.

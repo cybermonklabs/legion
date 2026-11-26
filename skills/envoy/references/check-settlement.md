@@ -32,6 +32,7 @@ Compare the check-run ids of the names both attempt sets share; a name only the 
 
 ## Reconcile with GitHub's rollup
 
+- The reference reads no rollup.
 - GitHub's read is complete: its failing check runs and failing statuses replace the stored ones wholesale.
 - Compare its attempt set in the same way. A newer set merges into the fence and takes the identity, with no listener generation; the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; ignore an older set, a mixed set, and an empty set when the fence already holds ids.
 - After a terminal (green or red) read, accept a live settlement at the same set only if its effective outcome agrees with GitHub's verdict: the check-run failures it reports, plus the stored ones it leaves out, plus each failed status you keep once its `statuses` merge in. One that disagrees is stale, whatever its generation, until the set advances.
@@ -40,6 +41,6 @@ Compare the check-run ids of the names both attempt sets share; a name only the 
 ## Known gaps
 
 - A run whose conclusion changes in place, on the same run id: GitHub's view stands until the next successful, non-skipped read at that set.
-- A check whose highest run is deleted on GitHub: the fence keeps that id, and only GitHub's read retires its failure.
+- A check whose highest run is deleted on GitHub: the fence keeps that id, and only a newer run of that name, or GitHub's read, retires its failure.
 - A legacy in-progress check whose completion is never seen holds the head unsettled: rerun that check.
 - A consumer that orders head changes by the pull request's `updated_at` (one-second resolution) accepts a stale read of the previous head made in the same second as its replacement, until its next accurate read.

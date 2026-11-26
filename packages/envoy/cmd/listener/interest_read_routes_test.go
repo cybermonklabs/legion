@@ -61,12 +61,8 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
-	// Before the Puts, not after them: a Put that lands after the watch fixed its initial
-	// snapshot and before the read that turns its marks on is unmarked, and the sweep that
-	// completes that read drops it, so the listing below would be short of a session the test
-	// wrote. Waiting here is also what the listing needs to answer at all, since it answers the
-	// refilling 503 until the session copy has completed a read of its bucket, which is no
-	// answer about the reads this test freezes.
+	// Before the Puts: the listing answers the refilling 503 until the session copy has completed a
+	// read of its bucket, which is no answer about the reads this test freezes.
 	waitForSessions(t, sessions)
 	for _, id := range []string{missed, cached} {
 		if err := sessions.Put(id, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + id, Title: id}); err != nil {

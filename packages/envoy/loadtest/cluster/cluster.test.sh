@@ -2,7 +2,8 @@
 # packages/envoy/loadtest/cluster/cluster.test.sh
 #
 # Proves cluster.sh's behaviour without a cluster and without a network (but for (h)'s fresh render,
-# below, whose go fetches helm): fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
+# below, whose go fetches helm where no helm of the pinned version is on PATH): fakes `kubectl`,
+# `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
 # `hostname` and `sleep` on PATH. The fake kubectl records
 # every call and answers from files the test writes (the run's pods, the lock ConfigMap, cpu.max,
 # the errors an apply fails with), and runs the stored-order check's runner script on the fake
@@ -88,7 +89,9 @@
 # sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
 # the unchanged archive on a PATH with no curl and no jq, with no call that bash's search of that
 # PATH could not find, equal to the committed file (else it says it skipped that). That render
-# runs helm through `go run`, so it needs go's module proxy, or offline
+# runs the helm on PATH where it answers the version render-nats.sh's HELM pins, as CI's
+# .github/actions/install-helm installs it, and needs no network; otherwise it runs helm through
+# `go run`, so it needs go's module proxy, or offline
 # GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it
 # fails rather than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's
 # residual notes are replay-residual.md's lines, then the seed
@@ -233,13 +236,14 @@ pass() { printf 'PASS: %s\n' "$*"; }
 
 # The suite's one wait, scripts/e2e/lib/proof-wait.sh's wait_for, which ends at once where its fact
 # can no longer come, naming the fact, through fail (above), and keeps its last poll in work; and
-# its guard, proof_guard_from_env, which is the CI step's own limit: envoy-go-checks' step that runs
-# this suite exports LEGION_PROOF_DEADLINE_MS, its start plus its timeout-minutes less 30 s, and
-# each wait gives up at that moment, naming its fact, before GitHub ends the step. Run anywhere
-# else, with no such deadline set, the suite has no wall-time guard: each wait ends on its fact,
-# and whoever runs the suite owns its hang guard. Case (gg) holds both. The stop_watchdog guards of
-# cases (dd) and (ee), around calls of cluster.sh's own bounded waits, end at that same deadline,
-# and there are none without it.
+# its guard, proof_guard_from_env, which is the CI step's own limit: envoy-go-checks queues this
+# suite in .github/scripts/harness-pool.sh with --minutes and hands it the pool's
+# HARNESS_POOL_DEADLINE_MS as LEGION_PROOF_DEADLINE_MS, the suite's start plus that bound less
+# 30 s, and each wait gives up at that moment, naming its fact, before the pool ends the suite.
+# Run anywhere else, with no such deadline set, the suite has no wall-time guard: each wait ends
+# on its fact, and whoever runs the suite owns its hang guard. Case (gg) holds both. The
+# stop_watchdog guards of cases (dd) and (ee), around calls of cluster.sh's own bounded waits, end
+# at that same deadline, and there are none without it.
 work=$tmp
 note() { printf '%s\n' "$*"; }
 # shellcheck source=scripts/e2e/lib/proof-wait.sh
@@ -2800,8 +2804,10 @@ pass "two starts of one runner job name get directories of their own, a start ne
 pass "render-nats.sh refuses its vendored chart with one byte changed, naming it and both sums, before it runs go or writes a render"
 
 # The render runs on the real PATH with curl and jq taken off it: with --pin-from it reads no
-# registry, so it needs neither, and it fetches nothing but helm, which go fetches itself through
-# its module proxy. Each directory of the real PATH that holds curl or jq gives way, in its place,
+# registry, so it needs neither, and the one thing it may fetch is helm. Where the helm on PATH
+# answers the version render-nats.sh's HELM pins, as CI's .github/actions/install-helm installs
+# it, it fetches nothing; otherwise go fetches the helm module itself, through its module proxy.
+# Each directory of the real PATH that holds curl or jq gives way, in its place,
 # to one that links each of its other entries, and every other directory stays as it is, so a
 # wrapper that runs the next command of its name on PATH still finds it. The render's bash, and
 # each bash it starts, runs a command_not_found_handle that logs each command its PATH search
