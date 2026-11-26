@@ -38,7 +38,9 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/natsconn"
 	"github.com/sjawhar/envoy/natscred"
+	"github.com/sjawhar/envoy/natsurl"
 )
 
 const (
@@ -87,13 +89,23 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return usage("--wait must be positive")
 	}
 
+	// The rules Dial and Connect run, before any credential is read or dial made: nats.go's own
+	// refusal of a URL it cannot read quotes the URL whole, a credential in it included, and this
+	// one names the URL by its position in --servers, empty entries counted, which Check drops as
+	// nats.go does.
+	listed := strings.Split(*servers, ",")
+	urls, position, why := natsurl.Check(listed)
+	if why != "" {
+		fmt.Fprintf(stderr, "natsprobe: --servers: NATS server URL %d of %d cannot be read: %s\n", position, len(listed), why)
+		return exitUsage
+	}
 	option, name, err := credential(getenv, *tokenFile, *googleAudience, *none)
 	if err != nil {
 		fmt.Fprintf(stderr, "natsprobe: %v\n", err)
 		return exitFailed
 	}
 	refusals := make(chan error, 8)
-	nc, err := nats.Connect(*servers, option, nats.Name("natsprobe"), nats.Timeout(connectTimeout), nats.NoReconnect(),
+	nc, err := nats.Connect(strings.Join(urls, ","), option, nats.Name("natsprobe"), nats.Timeout(connectTimeout), nats.NoReconnect(),
 		nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
 			select {
 			case refusals <- err:
@@ -115,7 +127,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			fmt.Fprintf(stderr, "natsprobe: %v; name the credential it does take: --no-credential, --service-token-file or --service-google-audience\n", err)
 			return exitFailed
 		}
-		fmt.Fprintf(stderr, "natsprobe: connect: %v\n", err)
+		// The failure by its class and the count of the servers tried, never nats.Connect's text:
+		// a dial's error names the server by the host and port its URL spells, and where a comma
+		// in a credential split --servers, that host or port is a piece of the credential, which
+		// natsurl.Check lets through when the part after the comma names a NATS scheme.
+		fmt.Fprintf(stderr, "natsprobe: connect: %s (tried the %d servers --servers names)\n", natsconn.ConnectionClass(err), len(urls))
 		return exitFailed
 	}
 	defer nc.Close()
@@ -132,7 +148,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		err = nc.Flush()
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "natsprobe: %v\n", err)
+		fmt.Fprintf(stderr, "natsprobe: %s\n", natsconn.ConnectionClass(err))
 		return exitFailed
 	}
 	select {
@@ -153,9 +169,9 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 		return func(*nats.Options) error { return nil }, "no credential", nil
 	}
 	if tokenFile != "" || googleAudience != "" {
-		reader := natscred.ServiceFile(tokenFile)
+		reader := natscred.ServiceFile(tokenFile, "--service-token-file")
 		if googleAudience != "" {
-			reader = natscred.ServiceGoogle(googleAudience)
+			reader = natscred.ServiceGoogle(googleAudience, "--service-google-audience")
 		}
 		token, err := reader.Read()
 		if err != nil {
