@@ -154,9 +154,8 @@ func ghStoppedByItsBound(ctx context.Context, err error, printed string) *transp
 	if !own {
 		return nil
 	}
-	if httpStatus, _ := responseHeaders(printed); httpStatus != 0 {
-		return nil
-	}
+	// CONTROL COMMIT, never for merge: the status line gh heard is not read, so a gh that
+	// heard GitHub and then hung is a transport failure.
 	message := stopped.Error()
 	if line := strings.TrimSpace(printed); line != "" {
 		message += ": " + line
