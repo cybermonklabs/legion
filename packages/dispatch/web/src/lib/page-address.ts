@@ -100,17 +100,25 @@ export function useAddressUpdate(): AddressUpdate {
   );
 }
 
+/** How `useAddressNavigate` writes an address: `replace`, true unless the caller pushes, and the
+ *  history entry's `state`, which a page that keeps something of its own in the entry passes on
+ *  (the Inbox's open row, `features/inbox/pane-selection.ts`). */
+export interface AddressNavigateOptions {
+  readonly replace?: boolean;
+  readonly state?: unknown;
+}
+
 /**
  * Leaving this address for another whole one a route builder made - the version picker's
  * `?v=`, the Inbox's rebuilt query string. A page hands over a path rather than calling the
  * router itself, so `replace` stays this module's decision: `replace` is the default here, as
  * it is for every other write, and a caller that means to leave a history entry behind says so.
  */
-export function useAddressNavigate(): (path: string, options?: { replace?: boolean }) => void {
+export function useAddressNavigate(): (path: string, options?: AddressNavigateOptions) => void {
   const navigate = useNavigate();
   return useCallback(
-    (path: string, options?: { replace?: boolean }) => {
-      navigate(path, { replace: options?.replace ?? true });
+    (path: string, options?: AddressNavigateOptions) => {
+      navigate(path, { replace: options?.replace ?? true, state: options?.state });
     },
     [navigate]
   );

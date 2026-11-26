@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { listTrigger, pickFromList } from "./filters";
+import { handTo } from "./hand-on";
 import { inboxList, inboxPane, selectedRow, selectRow } from "./inbox-pane";
 import {
   ADDED_WORD,
@@ -47,6 +48,7 @@ import {
 } from "./pick-writes";
 import { navigateInApp } from "./sends";
 import { expect, type Page, test } from "./test";
+import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 /**
@@ -382,12 +384,13 @@ test("Enter opens the selected decision block's note field and puts the focus in
   }
 });
 
-// The row of dispatch://INFRA-299 on the Inbox: below the reading pane's width each row is a
-// card carrying its own priority picker, and while a pick there is live - held by Playwright's
-// route control at least `PICK_HOLD_MS` (`holdIssuePatches`) - the row shows it over every answer
-// of the Inbox's read, which a rename of the issue starts (`api/event-refresh.ts`: an Inbox row
-// shows its issue's title). The row records every value its picker shows, at every animation
-// frame (`watchShown`), from the pick until the save ends.
+// The row of dispatch://INFRA-299 on the Inbox: below the reading pane's width the row a reader
+// opens is read in place of the list, its head carrying the question's priority picker, and while
+// a pick there is live - held by Playwright's route control at least `PICK_HOLD_MS`
+// (`holdIssuePatches`) - the head shows it over every answer of the Inbox's read, which a rename
+// of the issue starts (`api/event-refresh.ts`: an Inbox row shows its issue's title). The row
+// records every value its picker shows, at every animation frame (`watchShown`), from the pick
+// until the save ends.
 // SLOW(>=2s): a save held three seconds while the Inbox reads the issue's rows again.
 test("picker keeps a pick on screen: the priority on an Inbox row, over a read that answers while its save is out", async ({
   browser,
@@ -395,7 +398,7 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Priority under a held save" });
   await patchIssue(issue.key, { priority: 3 });
-  await createAsk(
+  const ask = await createAsk(
     issue.key,
     { options: [{ label: "Yes" }, { label: "No" }], question: "Ship it behind a flag?" },
     session
@@ -409,6 +412,7 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, inboxRead);
     await page.goto(INBOX);
+    await selectRow(page, ask.id);
     const picker = listTrigger(page, `Priority of ${issue.key}`);
     await expect(picker).toHaveAccessibleName(`Priority of ${issue.key} P3`);
 
@@ -420,7 +424,8 @@ test("picker keeps a pick on screen: the priority on an Inbox row, over a read t
     // issue's rows again, and the answer, carrying P3, lands while the pick's save is held.
     const renamedAt = Date.now();
     await patchIssue(issue.key, { title: renamed });
-    await expect(page.getByText(renamed).first()).toBeVisible();
+    // The head of the open row shows the new title; the list under it is hidden.
+    await expect(inboxPane(page).getByText(renamed).first()).toBeVisible();
     held.release();
     await savesEnded(page, held);
 
@@ -602,6 +607,84 @@ test("Open page opens the document of the question, at its section, for each kin
     await page.locator("body").focus();
     await page.keyboard.press("o");
     await expect(page).toHaveURL(`${thread.path}${thread.fragment}`);
+  } finally {
+    await alice.close();
+  }
+});
+
+// Below 1280 px the Inbox lists short rows and reads the row a reader opens in place of the list
+// (INFRA-5200), in the column's own pane: what the column offers beside the list, the view offers
+// at a phone's width. This row presses the controls of the old narrow card no other phone row does.
+// SLOW(>=2s): six questions seeded, then a decision block answered, an approval stepped through
+// and approved, another's changes requested and a question handed on, each read back from the
+// server.
+test("on a phone the reading view answers a decision block, steps and approves an approval, requests changes on another and hands a question on @phone @phone-only", async ({
+  browser,
+}) => {
+  const seed = await seedInbox();
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const pane = inboxPane(page);
+    const head = pane.locator("header").first();
+    await page.goto(INBOX);
+    await expect(inboxList(page).locator("[data-inbox-row]")).toHaveCount(6);
+    await expect(pane).toHaveCount(0);
+    await assertPageFits(page);
+
+    // A decision block opens as its document; Skip to the answer brings the block into the view,
+    // and two taps answer it.
+    await selectRow(page, seed.decisionAskId);
+    const block = pane.locator(`[data-dispatch-ask-block="${DECISION_BLOCK}"]`);
+    await expect(block).toContainText(DECISION_QUESTION);
+    await pane.getByRole("button", { name: "Skip to the answer" }).click();
+    await expect(block).toBeInViewport();
+    const card = block.locator("article[data-testid^=ask-]");
+    await card.getByRole("radio", { exact: true, name: "Ledger first" }).click();
+    await card.getByRole("button", { exact: true, name: "Answer" }).click();
+    await expect
+      .poll(async () => (await getInbox()).some((row) => row.id === seed.decisionAskId))
+      .toBe(false);
+
+    // The view reads the next row, the request to approve version 4: Next change steps to its
+    // first changed block, and Approve approves the version it shows.
+    await expect(page.locator(`[data-inbox-reading-row="${seed.approvalAskId}"]`)).toBeVisible();
+    await expect(pane.getByRole("region", { name: "Document version 4" })).toBeVisible();
+    await expect(pane.locator(".dispatch-change-block")).toHaveCount(CHANGED_BLOCKS);
+    await head.getByRole("button", { exact: true, name: "Next change" }).click();
+    await expect(pane.locator(".dispatch-change-block").first()).toBeInViewport();
+    await assertPageFits(page);
+    await head.getByRole("button", { exact: true, name: "Approve" }).click();
+    await expect
+      .poll(async () => (await getArtifact(seed.approvalArtifactId, { login: "alice" })).approval)
+      .toMatchObject({ state: "approved", version: 4 });
+
+    // Request changes on the first request asks for a reason, and sends it.
+    await selectRow(page, seed.firstApprovalAskId);
+    await head.getByRole("button", { exact: true, name: "Request changes" }).click();
+    const reason = page.getByRole("dialog", { name: "Request changes" });
+    await reason.getByLabel("Reason").fill("Name the rollback path.");
+    await reason.getByRole("button", { exact: true, name: "Request changes" }).click();
+    await expect(reason).toHaveCount(0);
+    await expect
+      .poll(
+        async () =>
+          (await getArtifact(seed.firstApprovalArtifactId, { login: "alice" })).approval?.state
+      )
+      .toBe("changes_requested");
+
+    // A question's card in the view hands it on, as the card in its row did.
+    await selectRow(page, seed.plainAskId);
+    await handTo(
+      pane
+        .locator(`[data-ask-hand-on="${seed.plainAskId}"]`)
+        .getByRole("button", { name: "Hand this question to" }),
+      "bob"
+    );
+    await expect
+      .poll(async () => (await getAsk(seed.plainAskId, { login: "alice" })).ask.waiting_on_person)
+      .toBe("bob");
+    await assertPageFits(page);
   } finally {
     await alice.close();
   }

@@ -208,6 +208,10 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 		{name: "a child whose parent is in another tree", issue: "LEGION-5", owner: "LEGION-1"},
 		{name: "the close of a child whose parent is not recorded", issue: "LEGION-4", kind: "child-closed", owner: "LEGION-1"},
 		{name: "the close of a child whose parent is in another tree", issue: "LEGION-5", kind: "child-status", owner: "LEGION-1"},
+		// A resting-root notice is keyed by the ancestor (dispatch://INFRA-3320, R8), so an
+		// ancestor that is a member of a tree is told through its sub-architect where one runs.
+		{name: "an ancestor's resting-root notice under its running sub-architect", issue: "LEGION-2", kind: "resting-root", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
+		{name: "an ancestor's resting-root notice with no sub-architect", issue: "LEGION-2", kind: "resting-root", owner: "LEGION-1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			states := map[claim.Token]supervise.ClaimState{
@@ -489,26 +493,41 @@ func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 // its child's next phase start), whose ready queues a catch-up of its own, and a lingering tree's
 // architect is suspended until re-admission, which starts it with the tree's record rather than
 // the notices of its close. Such a row finishes without delivery, with one log line naming the
-// notice kind and the issue.
+// notice kind and the issue. A resting-root notice (dispatch://INFRA-3320, R8) is keyed by the
+// ancestor whose approval a root rests on, here LEGION-1, the root of its own tree: with that
+// tree's architect claim absent, retired or failed, it finishes the same way, and the ancestor's
+// next catch-up names the root instead (workflow's TestRestingRootsHoldTheAncestorSignOff).
 func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 	t.Parallel()
+	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}
+	restingRoot := record.Notice{Kind: "resting-root", Role: claim.RoleArchitect, Version: 3, Ref: "dispatch://LEGION-1/spec",
+		Reason: "An ancestor's approval opened the spec step of LEGION-208. A person approved version 3 of the primary document of LEGION-1. " +
+			"LEGION-208 rests on this approval. The checks of LEGION-208 serve these requirements of LEGION-1: dispatch://LEGION-1/spec#b-p2@v3."}
 	for _, tc := range []struct {
-		name    string
+		name string
+		// state is the state of LEGION-1's architect claim, "" for no claim at all.
 		state   supervise.ClaimState
 		lingers bool
+		issue   string
+		notice  record.Notice
 	}{
-		{name: "the architect's claim retired", state: supervise.StateRetired},
-		{name: "the architect's claim failed", state: supervise.StateFailed},
+		{name: "the architect's claim retired", state: supervise.StateRetired, issue: "LEGION-2", notice: childClosed},
+		{name: "the architect's claim failed", state: supervise.StateFailed, issue: "LEGION-2", notice: childClosed},
 		// The linger's suspend of the architect is an outbox row of its own, which may not have run.
-		{name: "the tree lingers before its architect's suspend ran", state: supervise.StateWorking, lingers: true},
+		{name: "the tree lingers before its architect's suspend ran", state: supervise.StateWorking, lingers: true, issue: "LEGION-2", notice: childClosed},
+		{name: "an ancestor's resting-root notice with no architect claim", issue: "LEGION-1", notice: restingRoot},
+		{name: "an ancestor's resting-root notice, its architect's claim retired", state: supervise.StateRetired, issue: "LEGION-1", notice: restingRoot},
+		{name: "an ancestor's resting-root notice, its architect's claim failed", state: supervise.StateFailed, issue: "LEGION-1", notice: restingRoot},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			noticeTree(t, pool, records, tc.lingers)
 			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaim(t, sup, "LEGION-1", tc.state)
-			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}, time.Now()))
+			if tc.state != "" {
+				architectClaim(t, sup, "LEGION-1", tc.state)
+			}
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, tc.issue, tc.notice, time.Now()))
 			var logged bytes.Buffer
 			publisher := &holderPublisher{}
 			publisher.setAbsent(architectTopic(t, "LEGION-1"))
@@ -520,9 +539,12 @@ func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 			}
 			_, delivered := publisher.snapshot()
 			lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
-			if len(delivered) != 0 || outboxRows(t, pool) != 0 || len(lines) != 1 || !strings.Contains(lines[0], "kind=child-closed") || !strings.Contains(lines[0], "issue=LEGION-2") {
-				t.Fatalf("delivered %+v, %d rows left, log %q; want no delivery, the row finished, one line naming child-closed and LEGION-2", delivered, outboxRows(t, pool), logged.String())
+			kind, issue := "kind="+string(tc.notice.Kind), "issue="+tc.issue
+			if len(delivered) != 0 || outboxRows(t, pool) != 0 || len(lines) != 1 || !strings.Contains(lines[0], kind) || !strings.Contains(lines[0], issue) {
+				t.Fatalf("delivered %+v, %d rows left, log %q; want no delivery, the row finished, one line naming %s and %s", delivered, outboxRows(t, pool),
+					logged.String(), tc.notice.Kind, tc.issue)
 			}
+			t.Logf("finished undelivered: %s", lines[0])
 		})
 	}
 }
@@ -846,7 +868,7 @@ func TestACatchUpDroppedUnderItsLeaseIsNotPublished(t *testing.T) {
 		t.Fatalf("lease the first catch-up: %v", err)
 	}
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
-		if err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
+		if _, err := records.DropCatchUps(ctx, tx, "LEGION-1", clock); err != nil {
 			return err
 		}
 		return records.Enqueue(ctx, tx, mustOutboxRow(t, "LEGION-1", catchUp(2), clock))

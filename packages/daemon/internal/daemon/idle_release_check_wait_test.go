@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -221,12 +222,12 @@ func TestATeardownWaitsForTheReleasesWorkspaceCheck(t *testing.T) {
 		}
 	})
 
-	t.Run("control: an unowned pod with no check row still tears down", func(t *testing.T) {
+	t.Run("control: an unowned pod's teardown follows its launcher's check", func(t *testing.T) {
 		rig := newIdleRig(t)
 		rig.stoppedImplementer(t, false)
 
-		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); len(got) != 1 || got[0] != "issue_release" {
-			t.Fatalf("queued rows = %v, want the teardown alone: an unowned release reads no workspace", got)
+		if got := rig.queuedBy(t, func() { rig.w.releaseUnownedPods(ctx) }); !slices.Equal(got, []string{"issue_bundle", "issue_release"}) {
+			t.Fatalf("queued rows = %v, want the launcher's workspace check and the teardown: an unowned release reads the disk it deletes (R6)", got)
 		}
 		runOnce(t, rig)
 

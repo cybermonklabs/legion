@@ -18,7 +18,7 @@ import {
   openAssigneeFilter,
   pickAssignee,
 } from "./inbox-filter";
-import { hasReadingPane, inboxPane, paneScroller, selectedRow } from "./inbox-pane";
+import { inboxPane, paneScroller, selectedRow } from "./inbox-pane";
 import {
   askIdOf,
   goToRow,
@@ -32,6 +32,7 @@ import {
   session,
 } from "./keyboard-inbox";
 import { expectOpenOn } from "./menus";
+import { hasReadingPane } from "./reading-pane";
 import { stubbed } from "./stub/stub-test";
 
 /** The three asks the marks are made on. */
@@ -275,11 +276,10 @@ test.describe("inbox selection", () => {
     ]);
     expect(new Set(checkboxes).size).toBe(checkboxes.length);
 
-    // Snooze is named from the same place, so the two controls of a row agree. Without the
-    // reading column every row carries its own Snooze, so the names tell the twins apart by
-    // their position exactly as the checkboxes do. With the column one Snooze is on the page
-    // - the head's, for the row the column is showing - so it names that question without
-    // the position, which is only there to tell two controls on one page apart.
+    // Snooze is named from the same place, so the two controls of a row agree. One Snooze is on
+    // the page - the head's, for the row the pane is showing, beside the list or in place of it
+    // - so it names that question without the position, which is only there to tell two
+    // controls on one page apart.
     const pickers: string[] = [];
     await expect(rows).toHaveCount(scene.rows);
     // The count above waited for every row of the scene, so the loop walks each of them.
@@ -296,19 +296,9 @@ test.describe("inbox selection", () => {
         )
       );
     }
-    if (hasReadingPane(page)) {
-      expect(pickers).toEqual(
-        checkboxes.map((name) =>
-          name.replace(/^Select /, "Snooze ").replace(/, ask \d+ of \d+/, "")
-        )
-      );
-    } else {
-      expect(pickers).toContain("Snooze CORE-2: Ship it?");
-      expect(new Set(pickers).size).toBe(pickers.length);
-      expect(pickers.map((name) => name.replace(/^Snooze /, "")).sort()).toEqual(
-        checkboxes.map((name) => name.replace(/^Select /, "")).sort()
-      );
-    }
+    expect(pickers).toEqual(
+      checkboxes.map((name) => name.replace(/^Select /, "Snooze ").replace(/, ask \d+ of \d+/, ""))
+    );
   });
 
   // The bar speaks for the rows this list holds. A mark made with the filter cleared must not
@@ -498,8 +488,8 @@ paneTest(
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(`${error.name}: ${error.message}`));
 
-    // One pixel below the pane's width the Inbox is the list of cards it has always been: no
-    // pane, no scroller, and nothing for `l` to step into.
+    // One pixel below the pane's width, with no row open, the Inbox draws no pane: no scroller,
+    // and nothing for `l` to step into.
     await page.setViewportSize({ height: 900, width: 1279 });
     await page.goto("/?assignee=everyone");
     const rows = page.locator("[data-inbox-row]");

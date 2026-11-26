@@ -121,10 +121,12 @@ test("a key from a pane row returns to the row", async () => {
   }
 });
 
+// Below 1280 px the page draws short rows; the cards are the list's that selects nothing, as the
+// Peek drawer mounts it (`pane={false}`).
 test("a key from a card returns to the card", async () => {
   const user = userEvent.setup();
   const reads = readsOf(ROWS);
-  const view = renderInApp(<Inbox />);
+  const view = renderInApp(<Inbox pane={false} />);
   try {
     await screen.findByTestId("ask-ask-a");
     const card = shortRow("ask-a");
@@ -185,7 +187,7 @@ test("a key in the drawer returns to the row and leaves the drawer open", async 
 test("a key with items selected opens the bar's list and returns to where it was", async () => {
   const user = userEvent.setup();
   const reads = readsOf(ROWS);
-  const view = renderInApp(<Inbox />);
+  const view = renderInApp(<Inbox pane={false} />);
   const bar = /^Snooze selected asks options$/;
   try {
     await screen.findByTestId("ask-ask-c");
@@ -217,7 +219,7 @@ test("a pick gives the focus back to the card a key opened the list from with no
     await landing.promise;
     return { snoozed_until: until };
   });
-  const view = renderInApp(<Inbox />);
+  const view = renderInApp(<Inbox pane={false} />);
   try {
     await screen.findByTestId("ask-ask-b");
     const card = shortRow("ask-b");
@@ -261,7 +263,7 @@ test("a snooze that lands hands the focus to the next row", async () => {
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
     return { snoozed_until: until };
   });
-  const view = renderInApp(<Inbox />);
+  const view = renderInApp(<Inbox pane={false} />);
   try {
     await screen.findByTestId("ask-ask-b");
     const row = shortRow("ask-b");
@@ -371,7 +373,7 @@ test("a row's Snooze lets go at the bar's snooze write deadline and saves again"
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
-          <Inbox />
+          <Inbox pane={false} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>

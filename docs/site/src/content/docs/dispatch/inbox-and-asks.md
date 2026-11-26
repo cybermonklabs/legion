@@ -63,9 +63,28 @@ into, which is shown closed with your text to copy; a question whose answer you 
 server has not decided yet; and a thread you have just read, which is drawn as read where it
 stands rather than disappearing under you.
 
-Below 1280 px, and in the [Inbox drawer](#opening-the-inbox-as-a-drawer) at any width, there is
-no second column. Each row holds its own card: a question with its controls, a thread with its
-messages, **Open**, **Mark read** and **Dismiss**.
+## Below 1280 px
+
+In a window narrower than 1280 px, and on a phone, the Inbox page lists the same short rows, and
+opens nothing by itself. Click a row, or focus it and press `Enter`, and what the right column
+would show takes the place of the list, full width: the same head with **Priority**, **Assign to
+me**, **Snooze** and the copy button, then the question's card, the document or the thread.
+
+**← Inbox**, above it, goes back to the list, at the row you opened, and so do the browser's
+**Back** and `Escape`; a screen reader names it "Back to the Inbox list". The checkbox beside
+**← Inbox** ticks that row, as the row's own checkbox does. Answering, snoozing or dismissing the
+row opens the next one, as the right column does; after the last one you are back at the list. A
+row that leaves your Inbox while you read it - the agent withdraws it, or it is answered
+elsewhere - takes you back to the list at its place, which says "This item left your Inbox."
+until your next key or click, or until the window is 1280 px wide.
+
+The row you opened is in the address, so a link or a reload opens it again. The first row the
+right column picks by itself at 1280 px is not one you opened: when the window narrows, the list
+shows.
+
+The [Inbox drawer](#opening-the-inbox-as-a-drawer), at any width, has no right column either: each
+of its rows holds its own card, a question with its controls, a thread with its messages,
+**Open**, **Mark read** and **Dismiss**.
 
 ## How the list is ordered and grouped
 
@@ -101,9 +120,9 @@ are kept for your browser instead.
 - **Waiting on agents** holds the asks where an agent owes the next reply. Your own **Ask back**
   puts an ask here, and so does an agent's progress note.
 
-The split follows whose turn it is, not who wrote last. Where a row holds its own card, the row
-shows a chip such as `Planner replied` when an agent wrote last and the turn is still yours.
-Each card also says `Waiting on you` or `Waiting on <agent>` on its status line.
+The split follows whose turn it is, not who wrote last. In the drawer, where a row holds its own
+card, the row shows a chip such as `Planner replied` when an agent wrote last and the turn is
+still yours. Each card also says `Waiting on you` or `Waiting on <agent>` on its status line.
 
 ### Filter
 
@@ -296,16 +315,17 @@ thread you dismissed brings it back to the Inbox, unread, on its own; a reply yo
 The **Type** filter has a value for each kind, so **Reply** narrows the list to those threads
 alone, which is also what the address `/replies` opens.
 
-Where there is no second column each thread row is a card, with **Open**, which goes to the
-thread's own page, **Mark read** and **Dismiss**.
+In the drawer each thread row is a card, with **Open**, which goes to the thread's own page,
+**Mark read** and **Dismiss**.
 
 ## Answering an ask
 
-An ask card holds the question and the answer. The Inbox draws it in the right column for a
-question anchored on a quote and a question on no document, in the document itself for a
-decision block, and in the ask's own row where there is no second column.
+An ask card holds the question and the answer. The Inbox page draws it in the right column, or
+below 1280 px in place of the list, for a question anchored on a quote and a question on no
+document, and in the document itself for a decision block. The drawer draws it in the ask's own
+row.
 
-![An ask card in the Inbox: the question, its two options and Other, a note field, and Answer.](/legion/media/dispatch/ask-card.png)
+![An ask card in the Inbox drawer: the question, its two options and Other, a note field, and Answer.](/legion/media/dispatch/ask-card.png)
 
 1. Read the question. The line under it names who asked, when, and the ask's `dispatch://`
    reference, which you can copy.
@@ -452,10 +472,11 @@ Inbox page itself, since the page already shows everything the drawer would.
 
 ## On a phone
 
-The Inbox works the same on a phone: the same bar, the same bands, and each row a card with its
-own controls — a question with its options, **Assign to me** and **Snooze**, a thread with its
-messages, **Open** and **Mark read**.
+The Inbox works the same on a phone as below 1280 px: the same bar, the same bands, one short row
+for each question and thread. Tap a row to open it full width, with its own controls — a
+question with its options, **Assign to me** and **Snooze**, a thread with its messages and
+**Dismiss** — and **← Inbox** to go back.
 
-![The Inbox on a phone](/legion/media/dispatch/inbox-phone.png)
+![The Inbox on a phone in dark mode: one question open full width, under the Inbox control that goes back to the list.](/legion/media/dispatch/inbox-phone.png)
 
 The [keyboard shortcuts](/legion/dispatch/keyboard/#inbox) page lists the Inbox's keys.

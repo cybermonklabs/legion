@@ -265,7 +265,8 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
 
   if (testInfo.project.name === "iphone") {
     await page.goto("/");
-    await expect(page.getByTestId(/ask-/).first()).toContainText("Can this ship?");
+    // A phone's Inbox lists short rows; the question reads on its row's first line.
+    await expect(page.locator("[data-inbox-row]").first()).toContainText("Can this ship?");
     await page.screenshot({ path: testInfo.outputPath("iphone-inbox.png"), fullPage: true });
 
     const openNavigation = page.getByRole("button", { name: "Open navigation" });

@@ -264,10 +264,16 @@ test("the divider resizes the two columns, the width survives a reload, and the 
   const pane = inboxPane(page);
   await expect(pane).toBeVisible();
 
+  // The list's column is its grid track: the list's box reaches 20 px past it into the page's
+  // inset (its negative left margin), room for a row checkbox's press square.
   const widths = async (): Promise<{ list: number; pane: number }> => {
-    const [listBox, paneBox] = await Promise.all([list.boundingBox(), pane.boundingBox()]);
+    const [listBox, paneBox, reach] = await Promise.all([
+      list.boundingBox(),
+      pane.boundingBox(),
+      list.evaluate((element) => Number.parseFloat(getComputedStyle(element).marginLeft)),
+    ]);
     if (listBox === null || paneBox === null) throw new Error("the Inbox drew one column");
-    return { list: listBox.width, pane: paneBox.width };
+    return { list: listBox.width + reach, pane: paneBox.width };
   };
   const opened = await widths();
   expect(opened.pane / (opened.pane + opened.list)).toBeCloseTo(0.6, 2);

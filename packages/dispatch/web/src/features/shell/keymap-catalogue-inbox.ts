@@ -71,6 +71,16 @@ export const INBOX_ACTIONS = {
     inEditable: true,
     surface: "inbox",
   },
+  // Below 1280 px, from a row's reading view back to the list, at that row. Not a palette row,
+  // as `back` is not.
+  "leave-reading": {
+    label: "Back to the list",
+    keys: [],
+    fixedKeys: ["Escape"],
+    palette: false,
+    inEditable: true,
+    surface: "inbox",
+  },
   answer: {
     label: "Answer the ask in hand",
     keys: [],

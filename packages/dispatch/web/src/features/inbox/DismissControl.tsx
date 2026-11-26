@@ -37,11 +37,18 @@ export const RowDismissContext = createContext<RowDismiss | undefined>(undefined
  * **Move to Inbox** that puts it back. An Ask or an Approval row draws none: a question leaves the
  * Inbox by being answered or snoozed.
  *
+ * It is one control in one group, **Actions**, the host's: the short row's Actions group beside
+ * Copy reference, the reading column's head, the drawer card's. It never moves on its own: at a
+ * narrow width it moves only as its host's Actions group moves, whole.
+ *
  * On the short row it shows while the pointer is on the row or something in it holds the focus,
- * and always on the row the reading column is showing (`shown`); the column's own head and the
- * card draw it beside their other controls, where there is room for it. It is held while its
- * write is out within its deadline (`heldPress`), and says what it is doing until that write is
- * decided.
+ * always on the row the reading column is showing (`shown`), and always on a device a reader
+ * taps - one with no hover, or with any coarse pointer - at every width: there no hover reveals
+ * it, so a hidden Dismiss would be a control a reader taps without seeing it - below 1280 px in a
+ * row they meant to open, and beside the column, on a tablet held wide, in a row they meant to
+ * select. The column's own head and the card draw it beside their other controls, where there is
+ * room for it. It is held while its write is out within its deadline (`heldPress`), and says
+ * what it is doing until that write is decided.
  */
 export function DismissControl({
   shortcutKeys,
@@ -75,7 +82,9 @@ export function DismissControl({
           aria-keyshortcuts={keyshortcutsOf(shortcutKeys)}
           aria-label={`${label}: ${line ?? ""}`}
           className={`min-h-11 shrink-0 text-sm font-medium md:min-h-8 ${linkText} ${linkHoverText} ${
-            shown ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+            shown
+              ? ""
+              : "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100 [@media(any-pointer:coarse)]:opacity-100"
           }`}
           data-inbox-dismiss={named.id}
           {...heldPress(dismiss.held.has(named.id), () => dismiss.dismiss(named))}

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -78,7 +79,7 @@ func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	if err := client.Publish(roleEnvelope(grantedRole)); err != nil {
 		t.Fatalf("granted publish after a denial returned %v", err)
 	}
-	if _, err := received.NextMsg(5 * time.Second); err != nil {
+	if _, err := received.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("granted publish was not delivered: %v", err)
 	}
 }
@@ -153,13 +154,9 @@ func TestStartRequestStoredToReportsAForwardNATSDenies(t *testing.T) {
 func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 	client, _ := grantedClient(t)
 	started := time.Now()
-	select {
-	case err := <-client.WindowUntil(nil).Request(deniedRole, roleEnvelope(deniedRole), bus.RequestOptions{MsgID: bus.ForwardMsgID("denied", deniedRole), Timeout: 2 * time.Second}):
-		if !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrNotAcknowledged) {
-			t.Fatalf("denied Request answered %v, want ErrPublishDenied", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the denied Request was never answered")
+	answered := client.WindowUntil(nil).Request(deniedRole, roleEnvelope(deniedRole), bus.RequestOptions{MsgID: bus.ForwardMsgID("denied", deniedRole), Timeout: 2 * time.Second})
+	if err := testwait.Receive(t, "the denied Request to be answered", answered); !errors.Is(err, bus.ErrPublishDenied) || errors.Is(err, bus.ErrNotAcknowledged) {
+		t.Fatalf("denied Request answered %v, want ErrPublishDenied", err)
 	}
 	if elapsed := time.Since(started); elapsed >= 2*time.Second {
 		t.Fatalf("denied Request waited %s, the whole timeout", elapsed)
@@ -171,6 +168,8 @@ func TestAWindowRequestReportsAForwardNATSDenies(t *testing.T) {
 // and logs the denial (cmd/listener), and a probe that waited would spend the send's budget.
 func TestARequestCoreNATSDeniesAnswersTheDenialAtOnce(t *testing.T) {
 	client, _ := grantedClient(t)
+	// The bound under test, not a wait: a denial answers at once, and a probe that waits for an
+	// answer instead runs out these 2 s, which the row reads below.
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -250,13 +249,8 @@ func TestCoreSubOKIsFalseWhileTheServerRefusesTheResentSubscription(t *testing.T
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the publish: %v", err)
 	}
-	select {
-	case got := <-received:
-		if got != topic {
-			t.Fatalf("the subscription received %s, want %s", got, topic)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the subscription the server granted again received nothing")
+	if got := testwait.Receive(t, "the subscription the server granted again to receive the publish", received); got != topic {
+		t.Fatalf("the subscription received %s, want %s", got, topic)
 	}
 	if !client.CoreSubOK() {
 		t.Fatal("CoreSubOK is false after the server accepted the subscription and delivered to it")
@@ -365,11 +359,7 @@ func TestResendRefusedCoreWaitsForTheMessagesTheRevokedSubscriptionHolds(t *test
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the publishes: %v", err)
 	}
-	select {
-	case <-entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the handler was handed no message")
-	}
+	testwait.Receive(t, "the handler to be handed a message", entered)
 	// The server queued both deliveries before the PONG this flush waits for, so the second one
 	// is in the subscription's pending messages once it returns.
 	if err := client.Conn.Flush(); err != nil {
@@ -409,13 +399,8 @@ func TestResendRefusedCoreWaitsForTheMessagesTheRevokedSubscriptionHolds(t *test
 		t.Fatalf("the client sent the subscription %d times, want 1", n)
 	}
 	for range 2 {
-		select {
-		case got := <-handled:
-			if got != topic {
-				t.Fatalf("the handler was handed %s, want %s", got, topic)
-			}
-		case <-time.After(5 * time.Second):
-			t.Fatal("the handler was not handed both messages delivered before the revocation")
+		if got := testwait.Receive(t, "the handler to be handed both messages delivered before the revocation", handled); got != topic {
+			t.Fatalf("the handler was handed %s, want %s", got, topic)
 		}
 	}
 }
@@ -498,11 +483,7 @@ func TestResendRefusedCoreSendsNothingForTheRefusalOfTheSessionBeforeAReconnect(
 
 	from := len(server.Log())
 	server.Restart(t, granted)
-	select {
-	case <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the restart's disconnect never reached the hook")
-	}
+	testwait.Receive(t, "the restart's disconnect to reach the hook", held)
 	waitFor(t, "the client to reconnect while its reconnect callback waits", func() bool {
 		return client.Conn.Status() == natsgo.CONNECTED && client.Conn.Stats().Reconnects == 1
 	})

@@ -12,7 +12,8 @@ import {
   requestApproval,
   withOpenedAsk,
 } from "./api";
-import { askControls, hasReadingPane, paneScroller, selectRow } from "./inbox-pane";
+import { askControls, paneScroller, selectRow } from "./inbox-pane";
+import { hasReadingPane } from "./reading-pane";
 
 export const session = {
   actor: { kind: "session" as const, id: "e2e-keyboard-inbox" },
@@ -66,8 +67,8 @@ export async function goToRow(page: Page, index: number): Promise<void> {
 
 /** The Snooze the reader reaches for one question - the trigger of its Snooze list, the shared
  *  single pick (`MultiSelect`), whose press opens the list of snooze times (`listOf` in
- *  `filters.ts`): the row's own, or - with the reading column on, where the row carries none - the
- *  column head's, the column being given that row first. */
+ *  `filters.ts`): the head's, of the pane its row opens - beside the list from 1280 px, in place
+ *  of it below - since a short row carries none. */
 export async function rowSnooze(page: Page, askId: string): Promise<Locator> {
   return (await askControls(page, askId)).locator("[data-inbox-snooze]");
 }

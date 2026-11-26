@@ -106,39 +106,40 @@ and it comes before the page's own `y`. In a document you edit, `y` types the le
 ## Inbox
 
 From 1280 px the Inbox page is two columns, and these keys act on the **selected** row: the one
-the right column is showing. Below that width, and in the Inbox drawer, they act on the
-**focused** row.
+the right column is showing. Below that width they act on the **focused** row, and on the row you
+opened while it stands in place of the list. In the Inbox drawer they act on the **focused** row.
 
 | Keys | Action |
 | --- | --- |
 | `j` / `k` | Next / previous row |
 | `↓` / `↑` | Next / previous row, while the focus is in the list (below 1280 px, while a row is focused) |
-| `Space` / `Shift+Space` | Scroll the right column down / up by most of its height, while the focus is in the list or on nothing. On a focused button, link, checkbox or menu control, `Space` presses that control. |
-| `g g` / `Shift+G` | Scroll the right column to its top / end, while the focus is in the list or on nothing |
-| `l` | Move the focus into the reading pane, which the arrow keys, Page Up, Page Down, Space, Home and End then scroll (nothing below 1280 px, in the drawer, or with no row selected) |
-| `Enter` | Put the cursor in the answer box of the selected ask, from its row, with the focus on nothing, from the right column after `l`, or from an option of its card. A decision block opens its note field first. |
-| `1` – `9`, `0` | Pick that option of the selected ask. `0` is the tenth option. The digit after the last option picks **Other**. |
-| `a` | Approve the version that the selected approval request shows |
-| `Shift+R` | Request changes on the selected approval request: open the box for your reason, with the cursor in it |
-| `r` | Put the cursor in the reply box of the selected thread |
-| `b` or `h` | Open the snooze menu of the selected ask, or the selection bar's snooze menu while asks are ticked |
-| `p` | Open the priority menu of the selected ask's issue |
+| `Space` / `Shift+Space` | Scroll the right column down / up by most of its height, while the focus is in the list or on nothing; below 1280 px, the row you opened. On a focused button, link, checkbox or menu control, `Space` presses that control. |
+| `g g` / `Shift+G` | Scroll the right column to its top / end, while the focus is in the list or on nothing; below 1280 px, the row you opened |
+| `l` | Move the focus into the reading pane, which the arrow keys, Page Up, Page Down, Space, Home and End then scroll (nothing in the drawer, or below 1280 px with no row open) |
+| `Enter` | Put the cursor in the answer box of the selected ask, from its row, with the focus on nothing, from the right column after `l`, or from an option of its card. A decision block opens its note field first. Below 1280 px, on a focused row, open it in place of the list with the cursor in its answer box. |
+| `1` – `9`, `0` | Pick that option of the selected ask. `0` is the tenth option. The digit after the last option picks **Other**. Below 1280 px, on a focused row, open it and pick there. |
+| `a` | Approve the version that the selected approval request shows; below 1280 px, on a focused row, open it and approve there |
+| `Shift+R` | Request changes on the selected approval request: open the box for your reason, with the cursor in it; below 1280 px, on a focused row, open it at that box |
+| `r` | Put the cursor in the reply box of the selected thread; below 1280 px, on a focused row, open it with the cursor in its reply box |
+| `b` or `h` | Open the snooze menu of the selected ask, or the selection bar's snooze menu while asks are ticked; below 1280 px, on a focused row, open it at its snooze menu |
+| `p` | Open the priority menu of the selected ask's issue; below 1280 px, on a focused row, open it at its priority menu |
 | `e` | Dismiss the selected thread (**Move to Inbox** in the Dismissed view) |
 | `x` | Tick or untick the selected row |
-| `o` | Open the row's issue, document or thread |
+| `o` | Open the row's issue, document or thread on its own page; below 1280 px a focused thread row's `o` goes to the thread's page too, where a tap on its title opens the row in place |
 | `Shift+O` | Open the row's issue, document or thread in a new tab |
 | `Shift+F` | Open the filter panel |
 | `Shift+V` | Open the display menu |
-| `y` | Copy the selected row's reference |
-| `f` | Move the focus to the **Search asks** box above the list |
-| `Escape` | From the search box: to the selected row, or to the first row when none is selected. From the right column: back to the row you pressed `l` on, else the row it is showing. From a row: off it. With no row focused: drop every tick. |
+| `y` | Copy the selected row's reference; below 1280 px, on a focused ask row, open it and copy from its head |
+| `f` | Move the focus to the **Search asks** box above the list (not while a row is open below 1280 px) |
+| `Escape` | From the search box: to the selected row, or to the first row when none is selected. From the right column: back to the row you pressed `l` on, else the row it is showing. From a row: off it. Below 1280 px, from an open row - its **Snooze** and priority included - back to the list (from inside its question, first out of the question; in a text field, Escape is the field's). From the bulk snooze menu: back to the list. With no row focused: drop every tick. |
 
-`Space`, `Shift+Space`, `g g` and `Shift+G` scroll only the right column. The focus and the
-selection stay where they are. They do nothing below 1280 px and in the drawer.
+`Space`, `Shift+Space`, `g g` and `Shift+G` scroll only the right column, or below 1280 px the row
+you opened. The focus and the selection stay where they are. They do nothing in the drawer, or
+below 1280 px with no row open.
 
-In the right column, `a` and `Shift+R` do nothing until the approval request's document has
-loaded, and nothing while the focus is in an ask's card there. In the Request changes box,
-`Ctrl+Enter` sends the request, and `Escape` closes the box and sends nothing.
+In the right column and in an open row, `a` and `Shift+R` do nothing until the approval request's
+document has loaded, and nothing while the focus is in an ask's card there. In the Request changes
+box, `Ctrl+Enter` sends the request, and `Escape` closes the box and sends nothing.
 
 `Enter`, the digits, `b`, `h` and `p` are an ask's keys: a thread row has no options, no answer
 box, no snooze and no priority, so they do nothing on one. While asks are ticked, `b` and `h` open
@@ -151,7 +152,10 @@ selected. If no row is left, the focus goes to the list's empty message, and the
 work. If every row left is in the folded **Later** band, the focus goes to the list itself, and the
 keys work there too. For ticked rows, the row after the last of them is selected. A dismiss moves
 on at once. A snooze, an approval, a request for changes and an answer move on when Dispatch has
-saved them.
+saved them. Below 1280 px, in a row you opened, the row after it opens in its place, and its
+scroller takes the focus, so `Space` scrolls it, `Enter` reaches its answer box and `Escape` goes
+back to the list at that row. If no row is left, the list comes back and its empty message takes
+the focus.
 
 Each control at the head of the right column shows its first key, such as `p` on the priority and
 `b` on **Snooze**.

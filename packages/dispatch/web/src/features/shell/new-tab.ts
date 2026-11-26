@@ -1,7 +1,8 @@
 /**
  * The one way a key opens an item in a new tab (R20): the address of the item's own link, opened
  * with `noopener`, so the new page has no handle on this one. Each Shift+O sits beside its `o`
- * and opens what `o` would open, in a new tab rather than this one.
+ * and opens what `o` would open, in a new tab rather than this one. And the way `o` follows a
+ * link in this tab where the page takes a plain click on it for itself (`followLink`).
  */
 
 /** Opens `href` in a new tab of the browser. */
@@ -21,4 +22,13 @@ export function linkHref(element: Element | null): string | null {
 export function openLinkInNewTab(element: Element | null): void {
   const href = linkHref(element);
   if (href !== null) openInNewTab(href);
+}
+
+/** Follows the link `element` is (`linkHref`) in this tab, as a plain click would where the page
+ *  has not taken that click for itself, and does nothing where it links to none: `o` on a thread
+ *  row below 1280 px, whose title opens the row in place on a plain click, a script's included
+ *  (`ThreadTitle`'s `onOpen`). */
+export function followLink(element: Element | null): void {
+  const href = linkHref(element);
+  if (href !== null) window.location.assign(href);
 }

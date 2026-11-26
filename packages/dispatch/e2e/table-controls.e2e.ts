@@ -91,7 +91,6 @@ import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filte
 import {
   askCard,
   askControls,
-  hasReadingPane,
   inboxList,
   inboxPane,
   inboxRow,
@@ -116,6 +115,7 @@ import { modKey } from "./keyboard-palette";
 import { seedLegionDaemon } from "./legion-seed";
 import { expectOpenOn } from "./menus";
 import { sql } from "./psql";
+import { hasReadingPane } from "./reading-pane";
 import { sessionIds } from "./session-ids";
 import { expandedState, settledState } from "./settled";
 import {

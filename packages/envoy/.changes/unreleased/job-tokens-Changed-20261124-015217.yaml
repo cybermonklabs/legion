@@ -10,8 +10,10 @@ body: |-
   job's token. A job's token holds no OAuth scope, so a route that needs `person` or `approve`
   refuses it with `403 OAUTH_SCOPE_REQUIRED` before Dispatch's project check runs. A `named` job
   token writes its one project, and that check judges its write to another project as it judges
-  a person's `named` token's for the same project: `403 PROJECT_SCOPE` until dispatch://INFRA-4799
-  changes that answer for both. A `public` one writes wherever a token that names no project may
+  a person's `named` token's for the same project: it writes another project's objects as a token
+  that names no project does, but an object of a private project that the token does not name
+  gets the answer of an object that does not exist, and a write that belongs to the deployment is
+  `403 PROJECT_SCOPE_DEPLOYMENT`. A `public` one writes wherever a token that names no project may
   write. Every other broker token that names a service and no person is
   still refused every write with `403 SIGN_IN_REQUIRED`: that is a machine's token under the project
   scope `person`, from a machine nobody signed in on. Dispatch, the Envoy listener and the NATS auth

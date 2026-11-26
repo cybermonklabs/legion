@@ -32,10 +32,11 @@ const (
 // (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
 // Dispatch reads it from the broker's answer (brokerTokenActor).
 //
-// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
-// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
-// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check,
+// a new token's default scopes and the approve-only token's scopes (brokerTokenActor) all read
+// Scopes, and none of them may hold this scope: it is the daemon's broker token's alone. A
+// person-scoped broker token holds ScopePerson alone (brokerPersonScopes), and the approve-only
+// token both of Scopes, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
@@ -115,6 +116,14 @@ type Credential struct {
 	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
 	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
+	// ApproveOnly is a broker-issued token that holds only the scope approve
+	// (ciphertoken.ScopeApprove) beside the project scope person: the token the secrets broker
+	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
+	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
+	// it on the routes its approve list names (approveScopeRoutes) alone, answering it 403
+	// APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything else the route
+	// does. False for every other credential.
+	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
@@ -162,9 +171,12 @@ func BrowserActor(login string) Actor {
 // the verified Kubernetes subject of the projected service-account token a
 // session authenticated with ("system:serviceaccount:<namespace>:<name>"), set
 // by the server from the token and never from a request body. Project is the
-// one project key a broker-issued access token lets its session write, set by
-// the server from that token and never from a request body; it is nil for
-// every other credential and for a token whose scope names no single project.
+// one project key a broker-issued access token names, set by the server from
+// that token and never from a request body. It is nil for every other
+// credential and for a token whose scope names no single project. A token that
+// names a project writes every project's objects that a credential naming none
+// may write, a private project it does not name excepted. A target that
+// resolves to no project or to nothing is refused it (api/project_scope.go).
 type Actor struct {
 	Kind    string       `json:"kind"`
 	ID      string       `json:"id"`
@@ -464,7 +476,8 @@ type Project struct {
 	// ProvenSessions is the project's setting that a session's credential must prove the
 	// session: when it is on, an architect's write of an issue's spec or Verification document
 	// passes only on a credential that proves the architect's session, and a role-holder
-	// publication only on one that proves legion-daemon:<project>
+	// publication only on one that proves legion-daemon:<project>, or legion-daemon:<P> of
+	// another project's daemon on a broker token that names P
 	// (PUT and DELETE /api/v1/projects/{key}/proven-sessions). Off by default, and always
 	// present, so a reader never has to tell an absent setting from one that is off.
 	ProvenSessions bool      `json:"proven_sessions"`
@@ -1818,8 +1831,11 @@ type CheckResultRetracted struct {
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
 // of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
 // CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since. CommitStands, CheckWordsMoved
-// and Retracted are read when the results are read and are absent from the record's own answer.
+// a read can tell a result whose check has been reworded since: one whose check's digest and
+// version both moved, since a block respelled by another renderer version takes a new digest
+// and keeps its changed version (refs.BlockIndexing.KeepRespelled). CommitStands,
+// CheckWordsMoved and Retracted are read when the results are read and are absent from the
+// record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -1860,9 +1876,10 @@ type CheckResult struct {
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
-	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
-	// result at the compared commit under an older wording is both, and one word for both
-	// would hide which.
+	// CheckSHA256 and CheckVersion beside the check's SHA256 and Version decide: the words moved
+	// where both differ (api's comparisonReader.answer says why). They are two facts and two
+	// fields: a result at the compared commit under an older wording is both, and one word for
+	// both would hide which.
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
@@ -2486,9 +2503,10 @@ type AskEditEventPayload struct {
 	// that an earlier version already moved since it was opened or last handed back
 	// (requested_version below the version it named), which changes only the version the request
 	// names, and a settlement's move that keeps the request waiting on the human because the new
-	// version, which a settlement wrote, holds byte for byte the text of the version the request
-	// names (docs.MoveApprovalAsk), which changes only the number that text is stored under; a
-	// version a route writes moves the request to its agent whatever text it holds. Like a human's
+	// version, which a settlement wrote, holds the text of the version the request names - byte
+	// for byte, or, for a version another renderer version stored or none stamped, as this build
+	// renders it (docs.MoveApprovalAsk) - which changes only the number that text is stored under;
+	// a version a route writes moves the request to its agent whatever text it holds. Like a human's
 	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
 	// follower (the outbox's follower routes), while the event log and the event feed carry it as
 	// they carry every event. The first move after an opening or a hand-back is not quiet, even

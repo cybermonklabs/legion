@@ -9,13 +9,13 @@ import {
 import { flushSync } from "react-dom";
 
 import { focusLost, openerOf } from "../../components/focus-place";
-import { MENU_TRIGGER_SELECTOR } from "../../components/key-targets";
+import { MENU_TRIGGER_SELECTOR, takesText } from "../../components/key-targets";
 import { openReplyBox, REPLY_BOX } from "../conversation/turn-keys";
 import { PRIORITY_TRIGGER_SELECTOR } from "../issue/PriorityControl";
 import { ITEM_COPY_REF_SELECTOR } from "../refs/CopyRefButton";
 import { type KeymapScope, useKeymap, useKeymapScope } from "../shell/keymap";
 import type { KeymapActionId } from "../shell/keymap-catalogue";
-import { openLinkInNewTab } from "../shell/new-tab";
+import { followLink, openLinkInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import type { AskApprovalAction } from "./AskOptionRow";
 import { outsideAskCard } from "./ask-card";
@@ -23,19 +23,27 @@ import { type InboxActionId, inboxActionSelector } from "./inbox-action-mark";
 import { ROW_SELECTOR, rowIn, rowsIn } from "./inbox-row";
 import { type InboxListRow, rowId } from "./list-row";
 import { optionIndex } from "./option-digits";
-import { PANE_READER_MOVE } from "./pane-placement";
+import { PANE_READER_MOVE, PANE_SCROLLER_SELECTOR } from "./pane-placement";
 import type { PaneSelection, PlacedRow } from "./pane-selection";
+import {
+  NOTE_DISCLOSURE_SELECTOR,
+  type ReadingViewTarget,
+  useReadingViewLanding,
+} from "./ReadingView";
 import { BULK_PICKER_SELECTOR, ROW_SNOOZE_SELECTOR } from "./SnoozeControl";
 import { dismissRow, type InboxDismissRow } from "./useInboxDismiss";
 
-/** The reading column's own scroller: `l` hands it focus and Escape takes it back to the list. */
-const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
-
-/** The "Add a note or answer in your own words" disclosure an `AskCard` folds its answer box
- *  behind in its compact variant - the card a decision block hosts, which is what the reading
- *  column shows for a question written as one - while it is still shut. The card carries the
- *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
-const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
+/**
+ * How the Inbox reads its rows, chosen once by the Inbox for every binding and its layout:
+ *
+ * - `cards`: the drawer, each row its own card, nothing selected;
+ * - `list`: the page below 1280 px with no row open - the keys act on the focused row, and those
+ *   that act inside a row's reading view open it first, landing where the key acts
+ *   (`openFocused`);
+ * - `reading`: the page below 1280 px, a row's reading view in the list's place;
+ * - `columns`: the page from 1280 px, the reading column beside the list.
+ */
+export type InboxMode = "cards" | "columns" | "list" | "reading";
 
 /** An option of an ask card, Other included: the inputs the digits pick (`AskOptionRow.tsx`). */
 const OPTION_SELECTOR = "[data-ask-option]";
@@ -102,13 +110,15 @@ export interface InboxKeyboard {
   readonly dismiss: (named: readonly InboxDismissRow[]) => void;
   /** The list's root, where the rows are looked up. */
   readonly listRef: RefObject<HTMLElement | null>;
+  /** How the Inbox reads its rows (`InboxMode`): beside the column and in the reading view the
+   *  keys act on the row shown, else on the row holding the focus. */
+  readonly mode: InboxMode;
   /** Marks or unmarks a row, by its own `rowId`. */
   readonly onMark: (id: string) => void;
+  /** Opens the row `id`, the selection's own pick (`PaneSelection.open`), as the Inbox makes it. */
+  readonly onOpen: (id: string) => void;
   /** The reading column's selection (`usePaneSelection`). */
   readonly paneSelection: PaneSelection;
-  /** Whether the reading column is on: the selection is then what the keys act on, else the row
-   *  holding the focus. */
-  readonly paneShown: boolean;
   /** The rows the reader can see, as the list last rendered them: while it holds one, a commit
    *  that draws no column is one the selection's settling draws the next column after. */
   readonly presented: RefObject<readonly PlacedRow[]>;
@@ -137,6 +147,10 @@ export interface InboxColumnHold {
   /** The bar's Snooze trigger's `onTriggerFocus`: the row the focus came to it from, which
    *  Escape from the trigger goes back to (`back-from-bulk`). */
   readonly notePickerOrigin: (from: Element | null) => void;
+  /** The reader's pick of a row by a click or a key: beside the list it selects the row, and
+   *  below that width it opens the row's reading view and takes the reader to `target` in it
+   *  (`useReadingViewLanding`). */
+  readonly openRow: (id: string, target?: ReadingViewTarget) => void;
 }
 
 /**
@@ -153,18 +167,29 @@ export function useInboxKeymap({
   clearSelection,
   dismiss,
   listRef,
+  mode,
   onMark,
+  onOpen,
   paneSelection,
-  paneShown,
   presented,
   rowsById,
   scope,
   searchRef,
   selectedAsks,
 }: InboxKeyboard): InboxColumnHold {
-  /** The reading column, where `h`, `o`, `y`, Enter and `1`-`9` act while it is on. Written by
-   *  `holdPane` below rather than handed to the wrapper, so the column's unmount is seen. */
+  /** The reading column, or the reading view below 1280 px, where `h`, `o`, `y`, Enter and the
+   *  digits act while it shows. Written by `holdPane` below rather than handed to the wrapper, so
+   *  the column's unmount is seen. */
   const paneRef = useRef<HTMLDivElement | null>(null);
+  /** Whether the keys act on the row the column or the reading view shows rather than on the
+   *  focused row. */
+  const keysOnShownRow = mode === "columns" || mode === "reading";
+  const openRow = useReadingViewLanding({
+    columns: mode === "columns",
+    open: onOpen,
+    openId: paneSelection.id,
+    viewRef: paneRef,
+  });
   const rows = () => rowsIn(listRef.current);
   const step = (delta: 1 | -1) => roveFocus(rows(), rowAround(document.activeElement), delta);
   const focusInPane = () => paneRef.current?.contains(document.activeElement) === true;
@@ -325,21 +350,24 @@ export function useInboxKeymap({
    *  second spelling of the way back for the two of them to disagree over. */
   const paneWayBack = (): HTMLElement | null =>
     rowIn(listRef.current, paneReturn.current) ?? paneSelection.selectedRow();
-  /** One step of the reader's, in whichever mode the Inbox is in: the selection the column
-   *  follows, or the focus roving the rows. Chosen once, so no binding below asks again. */
-  const stepInMode = paneShown ? paneSelection.step : step;
+  /** One step of the reader's, in whichever mode the Inbox is in: the selection the column or
+   *  the reading view follows, or the focus roving the rows. Chosen once, so no binding below
+   *  asks again. */
+  const stepInMode = keysOnShownRow ? paneSelection.step : step;
   /** That step, taken from wherever the reader is standing. From inside the column the focus
    *  comes back to the selected row first: `j` fires in there, a `tabindex=0` section being no
    *  editable target, and a step from an approval to a question the column draws as a card
    *  swaps `ApprovalBody` for `CardBody`, which unmounts the focused scroller and drops the
    *  focus to `document.body` - where neither of Escape's branches holds and the key would do
-   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. From
-   *  anywhere else the column's noted focus is forgotten: a control the column's own code took
-   *  away under the focus, with no render of the Inbox's to read that loss, leaves the note on
-   *  it, and the step's commit would hand the focus to the next question's stop (below
-   *  `paneScroller`), which no loss of this key took. */
+   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. A
+   *  reading view below 1280 px has no row in sight to come back to, and its Escape goes to the
+   *  list rather than to a row, so the step alone is taken. From anywhere else the column's
+   *  noted focus is forgotten: a control the column's own code took away under the focus, with
+   *  no render of the Inbox's to read that loss, leaves the note on it, and the step's commit
+   *  would hand the focus to the next question's stop (below `paneScroller`), which no loss of
+   *  this key took. */
   const move = (delta: 1 | -1) => {
-    if (paneShown && focusInPane()) {
+    if (mode === "columns" && focusInPane()) {
       paneSelection.selectedRow()?.focus();
     } else {
       paneFocus.current = null;
@@ -349,11 +377,29 @@ export function useInboxKeymap({
   /** When the arrows move: in the reading column the arrows are the column's - a document
    *  scrolls, an option list moves - so they move the selection only while the focus is in the
    *  list beside it. */
-  const arrowsMove = paneShown ? focusInList : () => focusedRow() !== null;
-  /** The row the keys act on: the one the column is showing, or the one in hand (`rowInHand`). */
+  const arrowsMove = keysOnShownRow ? focusInList : () => focusedRow() !== null;
+  /** The row the keys act on: the one the column or the reading view is showing, or the one in
+   *  hand (`rowInHand`). */
   const handRow = (): InboxListRow | undefined => {
-    const id = paneShown ? paneSelection.id : rowInHand()?.dataset.inboxRow;
+    const id = keysOnShownRow ? paneSelection.id : rowInHand()?.dataset.inboxRow;
     return id === undefined ? undefined : rowsById.get(id);
+  };
+  /** Below 1280 px with no row open, the pick of the focused row, landing on `target` in its
+   *  reading view: what the keys that act inside a row's view do there. */
+  const openFocused = (target?: ReadingViewTarget) => {
+    const id = focusedRow()?.dataset.inboxRow;
+    if (id !== undefined) openRow(id, target);
+  };
+  /** The ask of the focused short row below 1280 px with no row open, or undefined on a thread
+   *  row and with no row focused: the item a key opens in its view to act on there. */
+  const focusedAsk = () => {
+    const row = mode === "list" && focusedRow() !== null ? handRow() : undefined;
+    return row?.kind === "ask" ? row.ask : undefined;
+  };
+  /** Whether that ask is a question with options for the digits to pick in its view. */
+  const focusedAskHasOptions = (): boolean => {
+    const ask = focusedAsk();
+    return ask !== undefined && ask.kind !== "approval" && (ask.options?.length ?? 0) > 0;
   };
   /** The row `x` marks, by its own `rowId`: asks and threads alike, since the bulk bar now offers
    *  each kind its own press. */
@@ -367,17 +413,17 @@ export function useInboxKeymap({
     const row = handRow();
     return row === undefined ? undefined : dismissRow(row);
   };
-  /** Where the Inbox's keys act: the reading column while it is on - its head's Snooze, owner
-   *  link and Copy ref, and the answer form of whatever it is showing - else the row in hand
-   *  (`rowInHand`). Null where there is neither, which is an Inbox with nothing selected (a wide
-   *  but empty list, or the commit a snooze of the selected row leaves behind) and a list
+  /** Where the Inbox's keys act: the reading column or view while one shows - its head's Snooze,
+   *  owner link and Copy ref, and the answer form of whatever it is showing - else the row in
+   *  hand (`rowInHand`). Null where there is neither, which is an Inbox with nothing selected (a
+   *  wide but empty list, or the commit a snooze of the selected row leaves behind) and a list
    *  nothing in is focused. */
-  const hand = () => (paneShown ? paneRef.current : rowInHand());
+  const hand = () => (keysOnShownRow ? paneRef.current : rowInHand());
   /** The control `selector` names in whichever of the two that is, or null for none: every
    *  `when` below tests this against `null`, so the accessor never answers `undefined`. */
   const inHand = (selector: string) => hand()?.querySelector<HTMLElement>(selector) ?? null;
-  /** The column's scroller, the focus stop `l` moves the reader into, or null where no column
-   *  is rendered. */
+  /** The scroller of the column or the reading view, the focus stop `l` moves the reader into,
+   *  or null where neither is rendered. */
   const paneScroller = () =>
     paneRef.current?.querySelector<HTMLElement>(PANE_SCROLLER_SELECTOR) ?? null;
   // The column's own hand-off, for the focus its question took with it. A press in the head that
@@ -393,8 +439,10 @@ export function useInboxKeymap({
   // column lost while it still shows the same question - an editor a press opened in place - is
   // none of this hand-off's, and nor is one that has gone somewhere by then. `focusLost`, not the
   // body alone, so an engine that names a removed element focused until its focus fixup is read
-  // the same way. The reader's own snooze, dismiss or answer that lands hands the focus on to the
-  // next item's row after this (R8, `pane-selection.ts`), on the passive lane, so that row has it
+  // the same way. Below 1280 px the reading view is that column: an act on the row it reads
+  // that takes the row away opens the next one in the view, and the focus goes to the view's
+  // scroller. The reader's own snooze, dismiss or answer that lands hands the focus on to the
+  // next item after this (R8, `pane-selection.ts`), on the passive lane, so that item has it
   // last.
   useLayoutEffect(() => {
     const noted = paneFocus.current;
@@ -403,7 +451,7 @@ export function useInboxKeymap({
     const lost = focusLost();
     // The commit that takes the question off the list draws no column; while the list holds a
     // row to hand the selection to, the commit the selection's settling makes draws it.
-    if (stop === null && lost && paneShown && presented.current.length > 0) return;
+    if (stop === null && lost && keysOnShownRow && presented.current.length > 0) return;
     paneFocus.current = null;
     if (stop !== null && lost && paneSelection.id !== noted.question) {
       stop.focus({ preventScroll: true });
@@ -416,15 +464,16 @@ export function useInboxKeymap({
    *  block's, which is another question than the one the reader selected. Null where the
    *  selected row has no card drawn for it: an approval, whose column is the document's
    *  version and whose answer is the head's own Approve, a document whose block has not
-   *  mounted its card yet, and every thread row, which asks nothing. Below the column's width
-   *  the keys act on the row holding the focus, itself or on one of its card's options (R18):
-   *  a click on an option leaves the focus on its input, and the card it is in is the one in
-   *  hand. With nothing selected beside the column no case of its own is needed: no column is
-   *  drawn then (`paneRow` shows none), so `holdPane` has set `paneRef` to null as its wrapper
-   *  went, and the selector names `[data-ask-card=""]`, which no card carries, since each
-   *  carries its ask's id. */
+   *  mounted its card yet, and every thread row, which asks nothing. In the drawer the keys act
+   *  on the row holding the focus, itself or on one of its card's options (R18): a click on an
+   *  option leaves the focus on its input, and the card it is in is the one in hand. With
+   *  nothing selected beside the column no case of its own is needed: no column is drawn then
+   *  (`paneRow` shows none), so `holdPane` has set `paneRef` to null as its wrapper went, and the
+   *  selector names `[data-ask-card=""]`, which no card carries, since each carries its ask's
+   *  id. Below the column's width with no row open a short row holds no card, so there is no
+   *  card in hand. */
   const answerHand = () =>
-    paneShown
+    keysOnShownRow
       ? (paneRef.current?.querySelector<HTMLElement>(
           `[data-ask-card="${CSS.escape(paneSelection.id ?? "")}"]`
         ) ?? null)
@@ -445,7 +494,7 @@ export function useInboxKeymap({
     const active = document.activeElement;
     if (focusedRow() !== null || active === document.body) return true;
     if (active === null) return false;
-    if (paneShown && active === paneScroller()) return true;
+    if (keysOnShownRow && active === paneScroller()) return true;
     return active.matches(OPTION_SELECTOR) && answerHand()?.contains(active) === true;
   };
   /** Where `r` takes the reader (R18): the reply box of the thread in hand, or the "Write a
@@ -465,10 +514,11 @@ export function useInboxKeymap({
     );
   };
   /** Where the document's own keys act from (R3): beside the column, with the focus on a row,
-   *  elsewhere in the list or on nothing at all. Inside the column the browser's own scrolling
-   *  keys are the reader's, on whatever there holds the focus, which `l` hands them. */
+   *  elsewhere in the list or on nothing at all, and in the reading view below 1280 px with the
+   *  focus on nothing. Inside the column or the view the browser's own scrolling keys are the
+   *  reader's, on whatever there holds the focus, which `l` hands them. */
   const scrollsFromList = () =>
-    paneShown &&
+    keysOnShownRow &&
     paneScroller() !== null &&
     (focusInList() || document.activeElement === document.body);
   /** Space and Shift+Space: from the same places, but not on a control the press works itself. */
@@ -493,19 +543,20 @@ export function useInboxKeymap({
     pickerOrigin.current = rowAround(from)?.dataset.inboxRow ?? null;
   };
   /** The approval request's Approve, or its Request changes, that `a` and Shift+R press (R7).
-   *  Beside the column it is the chip's own button in the column's head, which the head draws
-   *  from its first draw and holds until the document's read returns (`ReadingPaneHead`), and
-   *  which counts only while it takes a press; else - below the column's width, in the drawer,
-   *  and in the card the column falls back to where it cannot read the document - it is the
+   *  Beside the column and in the reading view it is the chip's own button in the head, which
+   *  the head draws from its first draw and holds until the document's read returns
+   *  (`ReadingPaneHead`), and which counts only while it takes a press; else - in the drawer, and
+   *  in the card the column falls back to where it cannot read the document - it is the
    *  request's own option of the card in hand (`data-ask-approval`, `AskCard`). Null on any
-   *  other item and before the read returns, which the `?` help shows as not available. Inside
-   *  an ask card in the column the reader is answering that card, the rule Snooze holds to, so
-   *  the keys stand down there. */
+   *  other item, on a short row below 1280 px with no row open, which draws neither, and before
+   *  the read returns, which the `?` help shows as not available. Inside an ask card in the
+   *  column the reader is answering that card, the rule Snooze holds to, so the keys stand down
+   *  there. */
   const approvalControl = (action: AskApprovalAction): HTMLElement | null => {
-    if (paneShown && !outsideAskCard()) return null;
+    if (keysOnShownRow && !outsideAskCard()) return null;
     const enabled = ':not([aria-disabled="true"])';
     return (
-      (paneShown
+      (keysOnShownRow
         ? inHand(`[data-inbox-pane-head] [data-approval-action="${action}"]${enabled}`)
         : null) ?? inAnswerHand(`[data-ask-approval="${action}"]${enabled}`)
     );
@@ -533,20 +584,21 @@ export function useInboxKeymap({
    *  Ask back with nothing typed - is no action to offer. */
   const pressable = (control: HTMLElement | null | undefined) =>
     control?.matches(":disabled") === false ? control : null;
-  /** The item the command bar's actions act on: the column while it is on, else the row around
-   *  the focus - the row itself, or a control of its card, where a press inside the card leaves
-   *  the focus (an option after a click, Ask back instead as it shows). The palette gives the
-   *  focus back before a chosen action runs, so its `when` and its `run` read the same row. */
-  const commandHand = () => (paneShown ? paneRef.current : rowAround(document.activeElement));
+  /** The item the command bar's actions act on: the column or the reading view while one shows,
+   *  else the row around the focus - the row itself, or a control of its card, where a press
+   *  inside the card leaves the focus (an option after a click, Ask back instead as it shows).
+   *  The palette gives the focus back before a chosen action runs, so its `when` and its `run`
+   *  read the same row. */
+  const commandHand = () => (keysOnShownRow ? paneRef.current : rowAround(document.activeElement));
   /** A control of the item in hand: its row, or the column with its head. */
   const itemControl = (selector: string) =>
     pressable(commandHand()?.querySelector<HTMLElement>(selector));
   /** A control of the item's own card (`answerHand`), never one of another card the column's
    *  document draws; where no open card of the item is drawn - a thread, an approval's document,
-   *  an answered question's record - one anywhere in the item in hand. Below the column's width
-   *  the card is the row around the focus. */
+   *  an answered question's record - one anywhere in the item in hand. In the drawer the card is
+   *  the row around the focus. */
   const cardControl = (selector: string) => {
-    if (!paneShown) return pressable(commandHand()?.querySelector<HTMLElement>(selector));
+    if (!keysOnShownRow) return pressable(commandHand()?.querySelector<HTMLElement>(selector));
     return pressable(answerHand() === null ? inHand(selector) : inAnswerHand(selector));
   };
   /** A control of the column's head alone. */
@@ -563,8 +615,8 @@ export function useInboxKeymap({
   /** The command bar's own actions for the item in hand and the bar of selected rows (R11), with
    *  no default key (a person can give one, R14): each presses the control the page draws for it,
    *  found by its mark. A chosen row runs once the palette has closed and given the focus back
-   *  (`SearchPalette`), so the item in hand is the one the bar opened over - in card mode the row
-   *  around the control the focus is back on (`commandHand`). */
+   *  (`SearchPalette`), so the item in hand is the one the bar opened over - in the drawer and
+   *  the short-row list the row around the control the focus is back on (`commandHand`). */
   const commandBarActions: readonly (readonly [KeymapActionId, () => HTMLElement | null])[] = [
     markedAction("inbox.assign-to-me", itemControl),
     markedAction("inbox.unsnooze", itemControl),
@@ -635,57 +687,112 @@ export function useInboxKeymap({
     {
       action: "inbox.answer",
       run: () => {
+        // Below 1280 px with no row open the focused short row holds no answer box: Enter opens
+        // its reading view, the keyboard's way to the pick a click makes, with the caret in the
+        // question's answer box or in the note box its decision block folds it behind (R18). A
+        // row that asks for no answer - an approval, a thread - opens at the view's scroller.
+        if (mode === "list") {
+          const ask = focusedAsk();
+          openFocused(
+            ask !== undefined && ask.kind !== "approval" ? { kind: "answer" } : undefined
+          );
+          return;
+        }
         // A decision block's compact card folds its answer box behind "Add a note or answer in
         // your own words"; Enter presses that disclosure, and the card lands the focus in the
         // box its own render reveals (`AskCard.tsx`) - the box does not exist in this tick, so
-        // nothing here could focus it. Only the column draws that compact card: from a row, and
-        // from a disclosure already open, the key goes straight to the box.
+        // nothing here could focus it. Only the column and the reading view draw that compact
+        // card: from a row, and from a disclosure already open, the key goes straight to the
+        // box.
         const box = inAnswerHand("[data-ask-answer]");
-        if (box === null && paneShown) {
+        if (box === null && keysOnShownRow) {
           inAnswerHand(NOTE_DISCLOSURE_SELECTOR)?.click();
           return;
         }
         box?.focus();
       },
       // Enter carries the reader from where they stand at the item into its answer box: the
-      // row, the page body, the column after `l`, an option of its card (`atItem`). Everywhere
-      // else the key belongs to the control that holds the focus - the card's own `Ask back
-      // instead`, a row's owner link, a band's fold, the bulk-snooze bar, a filter control.
+      // row, the page body, the column or the reading view's scroller, an option of its card
+      // (`atItem`). Everywhere else the key belongs to the control that holds the focus - the
+      // card's own `Ask back instead`, a row's owner link, a band's fold, the bulk-snooze bar, a
+      // filter control, the reading view's Inbox control. Below 1280 px with no row open, the
+      // focused row itself.
       when: () =>
-        atItem() &&
-        (inAnswerHand("[data-ask-answer]") !== null ||
-          (paneShown && inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)),
+        mode === "list"
+          ? focusedRow() !== null
+          : atItem() &&
+            (inAnswerHand("[data-ask-answer]") !== null ||
+              (keysOnShownRow && inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)),
     },
     {
       // `0` is the tenth option, and Other is the digit after the last real option: the card
-      // marks it last among its options (`AskCard`).
+      // marks it last among its options (`AskCard`). Below 1280 px with no row open the focused
+      // question's view opens, and the option is picked there.
       action: "inbox.option",
       run: (event) => {
-        const options = answerHand()?.querySelectorAll<HTMLElement>(OPTION_SELECTOR);
-        options?.[optionIndex(event.key)]?.click();
+        const index = optionIndex(event.key);
+        if (mode === "list") {
+          if (focusedAskHasOptions()) openFocused({ index, kind: "option" });
+          return;
+        }
+        answerHand()?.querySelectorAll<HTMLElement>(OPTION_SELECTOR)[index]?.click();
       },
-      when: () => inAnswerHand(OPTION_SELECTOR) !== null,
+      when: () =>
+        mode === "list" ? focusedAskHasOptions() : inAnswerHand(OPTION_SELECTOR) !== null,
     },
     {
-      // The approval request in hand, approved with one press (R7): the column head's Approve,
-      // or the card's Approve option, picked and sent.
+      // The approval request in hand, approved with one press (R7): the head's Approve, or the
+      // card's Approve option, picked and sent. Below 1280 px with no row open the focused
+      // request's view opens, and its head's Approve is pressed once the document's read has
+      // enabled it.
       action: "inbox.approve",
-      run: () => pressApproval("approve"),
-      when: () => approvalControl("approve") !== null,
+      run: () => {
+        if (mode === "list") {
+          openFocused({ kind: "approve" });
+          return;
+        }
+        pressApproval("approve");
+      },
+      when: () =>
+        mode === "list" ? focusedAsk()?.kind === "approval" : approvalControl("approve") !== null,
     },
     {
       // The head's Request changes opens its box with the focus in the reason, where Ctrl or
       // Cmd+Enter sends and Escape closes it sending nothing (`ApprovalChip`); the card's option
       // puts the focus in its reason field, where Escape lets go of the pick (`AskCard`) and
-      // `back` below puts the focus back on the row.
+      // `back` below puts the focus back on the row. Below 1280 px with no row open the focused
+      // request's view opens at that box.
       action: "inbox.request-changes",
-      run: () => pressApproval("request-changes"),
-      when: () => approvalControl("request-changes") !== null,
+      run: () => {
+        if (mode === "list") {
+          openFocused({ kind: "request-changes" });
+          return;
+        }
+        pressApproval("request-changes");
+      },
+      when: () =>
+        mode === "list"
+          ? focusedAsk()?.kind === "approval"
+          : approvalControl("request-changes") !== null,
     },
     {
-      // The thread in hand's reply box (R18), from where Enter would start.
+      // The thread in hand's reply box (R18), from where Enter would start. Below 1280 px with
+      // no row open the focused thread row's view opens, with the caret in its reply box; an
+      // Agent row's box is drawn only while its session is live, so its view opens at the
+      // scroller, where any pick lands.
       action: "inbox.reply",
       run: () => {
+        if (mode === "list") {
+          const row = handRow();
+          if (row?.kind === "thread") {
+            openFocused(
+              row.thread.kind === "agent"
+                ? undefined
+                : { kind: "reply", threadId: row.thread.thread_id }
+            );
+          }
+          return;
+        }
         const target = replyTarget();
         if (target === null || target.matches(REPLY_BOX)) {
           target?.focus();
@@ -693,11 +800,24 @@ export function useInboxKeymap({
         }
         openReplyBox(target);
       },
-      when: () => atItem() && replyTarget() !== null,
+      when: () =>
+        mode === "list"
+          ? focusedRow() !== null && handRow()?.kind === "thread"
+          : atItem() && replyTarget() !== null,
     },
     {
       action: "inbox.open",
-      run: () => inHand("[data-inbox-owner]")?.click(),
+      run: () => {
+        const owner = inHand("[data-inbox-owner]");
+        // Below 1280 px with no row open, a thread row's title opens the row in place on a plain
+        // click (`ThreadTitle`'s `onOpen`), and a script's click is one. `o` is the way to the
+        // thread's own page, as it is beside the column, so it follows the link itself.
+        if (mode === "list" && handRow()?.kind === "thread") {
+          followLink(owner);
+          return;
+        }
+        owner?.click();
+      },
       when: () => inHand("[data-inbox-owner]") !== null,
     },
     {
@@ -710,10 +830,18 @@ export function useInboxKeymap({
     {
       // The item's own reference, never one of a comment or reply its thread draws, each of
       // which has its own control. An Agent row has no reference of its own - its thread is a
-      // message to a session - so it draws no copy control and this stands down on it.
+      // message to a session - so it draws no copy control and this stands down on it. Below
+      // 1280 px with no row open a question's short row draws none either: its view opens, and
+      // its head's copies it.
       action: "inbox.copy-ref",
-      run: () => inHand(ITEM_COPY_REF_SELECTOR)?.click(),
-      when: () => inHand(ITEM_COPY_REF_SELECTOR) !== null,
+      run: () => {
+        if (mode === "list" && inHand(ITEM_COPY_REF_SELECTOR) === null) {
+          openFocused({ kind: "copy-ref" });
+          return;
+        }
+        inHand(ITEM_COPY_REF_SELECTOR)?.click();
+      },
+      when: () => inHand(ITEM_COPY_REF_SELECTOR) !== null || focusedAsk() !== undefined,
     },
     {
       action: "inbox.back",
@@ -724,7 +852,7 @@ export function useInboxKeymap({
         // is showing, and returns, as it always has, to that row. `paneWayBack` is both of
         // those, and the `when` below asks it the same question, so the key never fires on a way
         // back the run then cannot find.
-        if (paneShown && focusInPane()) {
+        if (mode === "columns" && focusInPane()) {
           paneWayBack()?.focus();
           return;
         }
@@ -741,9 +869,37 @@ export function useInboxKeymap({
       // the selected row having none; every other way into the column records no row, and there
       // the selected row is the way out. With only the selected row tested, Escape in a column
       // held open over a hidden row would match no binding and do nothing.
+      //
+      // Below 1280 px a row's reading view hides the list, so there is no row to come back to:
+      // `leave-reading` below is that width's Escape, and this one stands down there.
       when: () =>
-        rowAround(document.activeElement) !== null ||
-        (paneShown && focusInPane() && paneWayBack() !== null),
+        mode !== "reading" &&
+        (rowAround(document.activeElement) !== null ||
+          (mode === "columns" && focusInPane() && paneWayBack() !== null)),
+    },
+    {
+      // Below 1280 px the reading view stands in the list's place, so one level out of it is
+      // the list, at the row the reader left (`pane-selection.ts`). In the answer box, a text
+      // input or the document's editor Escape is that field's own, and leaving the whole view
+      // from there would be a bigger move than the reader pressed for; a menu's trigger in the
+      // view's head - Snooze, priority - takes no typed text, so Escape there is the way back to
+      // the row. Inside the question's card - an option, a button - one level out is the view
+      // itself, its scroller, where the next Escape is the list: the options the reader picked
+      // are the card's own state, and closing the view would drop them. Registered ahead of
+      // `clear-selection`, so the marks the bulk bar holds outlast it.
+      action: "inbox.leave-reading",
+      run: () => {
+        if (outsideAskCard()) {
+          paneSelection.close();
+          return;
+        }
+        paneScroller()?.focus();
+      },
+      when: () =>
+        mode === "reading" &&
+        !(document.activeElement !== null && takesText(document.activeElement)) &&
+        document.activeElement?.matches(BULK_PICKER_SELECTOR) !== true &&
+        (outsideAskCard() || paneScroller() !== null),
     },
     {
       // The column is the other half of the page, and `l` is the step into it: the scroller
@@ -767,10 +923,11 @@ export function useInboxKeymap({
         }
         paneScroller()?.focus();
       },
-      // One test for all three cases the key does nothing in: below 1280 px and in the drawer
-      // `paneShown` is false (`pane && wideEnoughForPane`), and with no row selected no column
-      // is rendered at all, so `paneRef.current` is null and there is no scroller under it.
-      when: () => paneShown && paneScroller() !== null,
+      // One test for all three cases the key does nothing in: in the drawer, and below 1280 px
+      // with no row open, the keys act on no row shown (`mode` is `cards` or `list`), and with
+      // no row selected no column is rendered at all, so `paneRef.current` is null and there is
+      // no scroller under it.
+      when: () => keysOnShownRow && paneScroller() !== null,
     },
     {
       action: "inbox.select",
@@ -791,7 +948,7 @@ export function useInboxKeymap({
       },
       // Not from inside an ask the reader is answering, the rule `h` holds to: the card's own
       // controls are not the list's, and a typed `e` belongs to whatever holds the focus.
-      when: () => dismissableRow() !== undefined && (!paneShown || outsideAskCard()),
+      when: () => dismissableRow() !== undefined && (!keysOnShownRow || outsideAskCard()),
     },
     {
       // One action for both: with rows marked it is the whole selection, otherwise the row in
@@ -802,8 +959,14 @@ export function useInboxKeymap({
       action: "inbox.snooze",
       run: () => {
         if (selectedAsks.length === 0) {
-          // The selected short row carries no Snooze of its own: the reading column's head does,
-          // for the row it is showing.
+          // Below 1280 px with no row open the focused question's view opens, at its head's
+          // Snooze menu (R4).
+          if (mode === "list") {
+            openFocused({ kind: "snooze" });
+            return;
+          }
+          // The selected short row carries no Snooze of its own: the head of the reading column
+          // or view does, for the row it is showing.
           inHand(ROW_SNOOZE_SELECTOR)?.click();
           return;
         }
@@ -821,22 +984,25 @@ export function useInboxKeymap({
       // column's own.
       when: () =>
         (selectedAsks.length > 0 && outsideAskCard()) ||
-        (inHand(ROW_SNOOZE_SELECTOR) !== null && (!paneShown || outsideAskCard())),
+        focusedAsk() !== undefined ||
+        (inHand(ROW_SNOOZE_SELECTOR) !== null && (!keysOnShownRow || outsideAskCard())),
     },
     {
       action: "inbox.back-from-bulk",
       run: () => {
-        // The row `h` was pressed on, else the first row, passing over every row the bar's own
-        // Snooze write is over while that write is pending (`bulkSnoozing`, which the bar empties
-        // once the write settles, a refusal or a stop included). The list keeps such a row in its
-        // band only until the write lands, and its move into a folded Later then is no press's
-        // doing (`causedByReader`), so a focus put on it would fall to the body. With no drawn
-        // row left that the bar's write is not taking away, the bar itself is the level out: it
-        // holds the count and the way to clear it.
-        (
-          [rowIn(listRef.current, pickerOrigin.current), ...rows()].find(
-            (row) => row !== null && !bulkSnoozing.has(row.dataset.inboxRow ?? "")
-          ) ?? bulkBarRef.current
+        // In the reading view its scroller, where the bar's actions came from. Else the row `h`
+        // was pressed on, else the first row, passing over every row the bar's own Snooze write
+        // is over while that write is pending (`bulkSnoozing`, which the bar empties once the
+        // write settles, a refusal or a stop included). The list keeps such a row in its band
+        // only until the write lands, and its move into a folded Later then is no press's doing
+        // (`causedByReader`), so a focus put on it would fall to the body. With no drawn row left
+        // that the bar's write is not taking away, the bar itself is the level out: it holds the
+        // count and the way to clear it.
+        (mode === "reading"
+          ? (paneScroller() ?? bulkBarRef.current)
+          : ([rowIn(listRef.current, pickerOrigin.current), ...rows()].find(
+              (row) => row !== null && !bulkSnoozing.has(row.dataset.inboxRow ?? "")
+            ) ?? bulkBarRef.current)
         )?.focus();
       },
       when: () => document.activeElement?.matches(BULK_PICKER_SELECTOR) === true,
@@ -845,10 +1011,19 @@ export function useInboxKeymap({
       // The priority of the issue the item in hand is about. A question or an approval request
       // of an issue draws the control, and a document's ask and a thread draw none, so on those
       // the key opens nothing and the `?` help shows it not available. Not from inside an ask
-      // the reader is answering, the rule Snooze holds to.
+      // the reader is answering, the rule Snooze holds to. Below 1280 px with no row open the
+      // focused question's view opens, at its head's priority menu (R4).
       action: "inbox.priority",
-      run: () => inHand(PRIORITY_TRIGGER_SELECTOR)?.click(),
-      when: () => inHand(PRIORITY_TRIGGER_SELECTOR) !== null && (!paneShown || outsideAskCard()),
+      run: () => {
+        if (mode === "list") {
+          openFocused({ kind: "priority" });
+          return;
+        }
+        inHand(PRIORITY_TRIGGER_SELECTOR)?.click();
+      },
+      when: () =>
+        (focusedAsk()?.issue_key ?? null) !== null ||
+        (inHand(PRIORITY_TRIGGER_SELECTOR) !== null && (!keysOnShownRow || outsideAskCard())),
     },
     {
       // Escape is one level out, and the selection is the outermost thing a row press made:
@@ -865,10 +1040,11 @@ export function useInboxKeymap({
       when: () => bulkBarShown && !barOpen,
     },
     {
-      // The box is one key away from anywhere on the page.
+      // The box is one key away from anywhere on the page. A reading view below 1280 px hides
+      // the box with the list.
       action: "inbox.search",
       run: () => searchRef.current?.focus(),
-      when: () => searchRef.current !== null,
+      when: () => searchRef.current !== null && mode !== "reading",
     },
     {
       // Escape is one level out, and out of the box is the list: the row the column is showing
@@ -892,6 +1068,7 @@ export function useInboxKeymap({
     forgetPaneReturn,
     holdPane,
     notePickerOrigin,
+    openRow,
     paneScroller,
   };
 }

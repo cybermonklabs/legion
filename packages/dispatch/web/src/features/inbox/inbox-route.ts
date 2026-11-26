@@ -196,12 +196,20 @@ export function buildInboxPath(route: InboxRoute = {}): string {
  * through the path `buildInboxPath` builds rather than through the parameters alone, because
  * the Inbox's query string is rebuilt whole from the route on every change - a parameter
  * outside `InboxRoute` would be dropped by the next selection - and because the Inbox the
- * address points at is `/`, whichever of the page's addresses the reader arrived on.
+ * address points at is `/`, whichever of the page's addresses the reader arrived on. The write
+ * replaces the history entry, and carries `state` into it where the caller keeps something of
+ * its own there (the open row's, `pane-selection.ts`).
  */
-export function useInboxRoute(): readonly [InboxRoute, (next: InboxRoute) => void] {
+export function useInboxRoute(): readonly [
+  InboxRoute,
+  (next: InboxRoute, state?: unknown) => void,
+] {
   const params = useAddressParams();
   const go = useAddressNavigate();
   const route = useMemo(() => inboxRouteOf(params), [params]);
-  const setRoute = useCallback((next: InboxRoute) => go(buildInboxPath(next)), [go]);
+  const setRoute = useCallback(
+    (next: InboxRoute, state?: unknown) => go(buildInboxPath(next), { state }),
+    [go]
+  );
   return [route, setRoute] as const;
 }

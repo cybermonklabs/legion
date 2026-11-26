@@ -1,14 +1,13 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, the Enter, Space and `r` presses whose survival only fireEvent reports, and a held `e`'s repeats after its first press handed the reader on, which user-event sends only in one burst with that press.
+// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, the motion hold's bare pointermove, a blur naming no target, the Enter, Space and `r` presses whose survival only fireEvent reports, and a held `e`'s repeats after its first press handed the reader on, which user-event sends only in one burst with that press.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
-import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import {
-  type Commits,
   drawnPick,
   type HeldNotifications,
   holdNotifications,
@@ -54,12 +53,9 @@ import type {
   MyReplyRow,
 } from "../../api/types";
 import { QUIET_MS } from "../doc/refocus-when-settled";
-import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
-import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
-import { READING_PANE_QUERY } from "../shell/useDialog";
 import { replyRow } from "../threads/replies-fixture";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { SnoozeWrites } from "./ask-snooze-fixture";
@@ -73,6 +69,20 @@ import {
   widenToReadingPane,
   withWaitingOnPerson,
 } from "./inbox-fixture";
+import {
+  address,
+  headings,
+  holdThreadsRead,
+  inboxIssue,
+  mockIssueReads,
+  movableReadingPaneWidth,
+  narrowIssueOf,
+  RouteProbe,
+  renderInbox,
+  rowIds,
+  selectedIds,
+  soon,
+} from "./inbox-page-fixture";
 import type { InboxRoute } from "./inbox-route";
 import { ROW_IN_HAND_CLASS } from "./option-digits";
 import { SnoozeControl } from "./SnoozeControl";
@@ -128,55 +138,6 @@ function artifactAsk(projectDefault: string | null = FIXTURE_PROJECT_DEFAULT): I
   return withWaitingOnPerson(row, projectDefault);
 }
 
-function inboxIssue(
-  id: string,
-  key: string,
-  question: string,
-  overrides: Partial<InboxRow> = {}
-): InboxRow {
-  return issueAsk({
-    id,
-    issue: { assignee: "alice", key, title: `${key} title` },
-    issue_key: key,
-    question,
-    ...overrides,
-  });
-}
-
-/** The narrow `Issue` a PATCH answers with, for an inbox row's issue. */
-function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
-  return {
-    advances: [],
-    advances_revision: 0,
-    assignee,
-    claim: null,
-    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-    closed_at: null,
-    created_at: row.created_at,
-    created_by: { id: "alice", kind: "user" },
-    external_links: [],
-    key: row.issue_key ?? "",
-    labels: [],
-    last_seq: 2,
-    number: 3,
-    parent: null,
-    blocked_by: [],
-    plan_artifact_id: "artifact-plan",
-    decisions_artifact_id: "",
-    primary_artifact_id: "artifact-3",
-    priority: null,
-    project: "CORE",
-    rank: "U",
-    route: null,
-    repo: null,
-    resolved_repo: null,
-    status: "todo",
-    title: row.issue?.title ?? "",
-    updated_at: row.created_at,
-    verification_artifact_id: "artifact-verification",
-  };
-}
-
 test("a cold Inbox hydrates every ask thread from its one list response", async () => {
   const rows = Array.from({ length: 20 }, (_, index) => {
     const row = issueAsk({
@@ -224,7 +185,7 @@ test("a cold Inbox hydrates every ask thread from its one list response", async 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -291,7 +252,7 @@ test("an unchanged old Inbox cache does not refetch every thread on remount", as
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -415,7 +376,7 @@ test("Inbox keeps rows waiting on agents below Waiting on you without duplicatin
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -470,7 +431,7 @@ test("Inbox keeps an agent's latest reply on its Waiting-on-you row", async () =
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -512,7 +473,7 @@ test("Inbox partitions by waiting_on: an agent's progress note keeps its ask und
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -569,7 +530,7 @@ test("Inbox preserves server priority order within Waiting on you", async () => 
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on&sort=priority"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -625,7 +586,7 @@ test("j enters a band at its first row instead of its heading", async () => {
   const rows = [above, first, second];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-first");
@@ -654,7 +615,7 @@ test("k enters a band at its last row instead of its heading", async () => {
   const rows = [first, second, below];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-first");
@@ -1220,7 +1181,7 @@ test("a row being typed into stays under Waiting on you when an agent's note fli
   const view = render(
     <MemoryRouter initialEntries={["/?group=waiting-on"]}>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1349,7 +1310,7 @@ test("the reader's own Ask back keeps the row under Waiting on you, unscrolled, 
     return reply;
   });
   const geometry = stackRows();
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
 
   try {
     const card = await screen.findByTestId("ask-ask-b");
@@ -1442,7 +1403,7 @@ test("an ask answered elsewhere stays in place with its recorded answer while th
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1525,7 +1486,7 @@ test("an ask answered elsewhere while the reader's focus is in its form hands th
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <main>
-          <Inbox />
+          <Inbox pane={false} />
         </main>
       </QueryClientProvider>
     </MemoryRouter>
@@ -1611,7 +1572,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <main>
-            <Inbox />
+            <Inbox pane={false} />
           </main>
         </KeymapProvider>
       </QueryClientProvider>
@@ -1690,7 +1651,7 @@ test("the reader's own answer leaves the Inbox at once, even though their focus 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -1739,7 +1700,7 @@ test("a priority pick that takes the row under the reader's hand out of the prio
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const commits = recordCommits<null>(() => drawnPriority('[data-inbox-row="ask-p1"]'));
-  const { queryClient, unmount } = renderInbox("/?priority=P1", { commits });
+  const { queryClient, unmount } = renderInbox("/?priority=P1", { commits, pane: false });
   let notifications: HeldNotifications | undefined;
   try {
     await screen.findByText("Ship it at P1?");
@@ -1791,7 +1752,7 @@ test("a priority pick that moves the row under the reader's hand out of a band i
   const getAsk = mockAskReads([alone, other]);
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { queryClient, unmount } = renderInbox("/");
+  const { queryClient, unmount } = renderInbox("/", { pane: false });
   try {
     await screen.findByText("Ship it at P2?");
     const row = rowOf("ask-p2");
@@ -1896,7 +1857,7 @@ test("a server edit that takes the row under the reader's hand out of the typed 
   const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
   const getAsk = mockAskReads([askA, askB]);
-  const { queryClient, unmount } = renderInbox("/?q=ship");
+  const { queryClient, unmount } = renderInbox("/?q=ship", { pane: false });
   try {
     const card = await screen.findByTestId("ask-ask-a");
     const draft = within(card).getByLabelText("Your answer");
@@ -1935,7 +1896,7 @@ test("a priority pick on a row held after a server edit took it out of the typed
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const commits = recordCommits<null>(() => drawnPriority('[data-inbox-row="ask-p1"]'));
-  const { queryClient, unmount } = renderInbox("/?q=ship", { commits });
+  const { queryClient, unmount } = renderInbox("/?q=ship", { commits, pane: false });
   let notifications: HeldNotifications | undefined;
   try {
     await screen.findByTestId("ask-ask-p1");
@@ -1988,7 +1949,7 @@ test("a row held after a server edit took it out of the typed search goes once t
   const askB = inboxIssue("ask-b", "CORE-2", "Ship the docs?");
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([askA, askB]);
   const getAsk = mockAskReads([askA, askB]);
-  const { queryClient, unmount } = renderInbox("/?q=ship");
+  const { queryClient, unmount } = renderInbox("/?q=ship", { pane: false });
   try {
     await screen.findByTestId("ask-ask-a");
     // user-event's hover sends a fixed mouse sequence; the row's hold reads this pointerover alone.
@@ -2038,7 +1999,7 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <Inbox />
+        <Inbox pane={false} />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -2095,7 +2056,7 @@ test("an ask card offers backlinks only when the batched count says it has some"
   const rows = [cited, uncited];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     const citedCard = await screen.findByTestId("ask-ask-cited");
@@ -2120,7 +2081,7 @@ test("an unavailable backlink list stays quiet beside an ask card", async () => 
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([row]);
   const getAsk = mockAskReads([row]);
   mocks.getReferences.mockRejectedValue(new Error("offline"));
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     const card = await screen.findByTestId("ask-ask-backlink");
@@ -2134,63 +2095,6 @@ test("an unavailable backlink list stays quiet beside an ask card", async () => 
     getInbox.mockRestore();
   }
 });
-
-/** The address the Inbox is on, and a way back through the history it has written. */
-function RouteProbe() {
-  const location = useLocation();
-  const navigate = useNavigate();
-  return (
-    <>
-      <output data-testid="location">{`${location.pathname}${location.search}`}</output>
-      <button onClick={() => navigate(-1)} type="button">
-        History back
-      </button>
-    </>
-  );
-}
-
-/** `route` is the whole history when it is a list, the last entry being where the reader is:
- *  whether a filter change replaces its entry or pushes one is only visible from a history that
- *  has something underneath it. `runtime` is for the tests whose reading column opens a
- *  document: that column mounts `ProofDocument`, which wants the document runtime and the
- *  margin the app shell gives it, and every other test's column shows a card and needs
- *  neither. `commits` records each commit of the Inbox; it has no one value a host passes, so
- *  each commit's `host` is null. */
-function renderInbox(
-  route: string | readonly string[] = "/",
-  { commits, runtime }: { commits?: Commits<null>; runtime?: DocumentRuntimeValue } = {}
-) {
-  const entries = typeof route === "string" ? [route] : [...route];
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const inbox = (
-    <KeymapProvider>
-      <RouteProbe />
-      {commits === undefined ? (
-        <Inbox />
-      ) : (
-        <commits.Recorded host={null}>
-          <Inbox />
-        </commits.Recorded>
-      )}
-    </KeymapProvider>
-  );
-  const view = render(
-    <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
-      <QueryClientProvider client={queryClient}>
-        {runtime === undefined ? (
-          inbox
-        ) : (
-          <DocumentRuntime.Provider value={runtime}>
-            <MarginProvider>{inbox}</MarginProvider>
-          </DocumentRuntime.Provider>
-        )}
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { queryClient, unmount: view.unmount };
-}
 
 /** Who the filter's popover lists: `GET /users`, read on its first open. */
 function mockPeople() {
@@ -2229,22 +2133,6 @@ async function toggleAssignee(user: UserEvent, option: RegExp) {
   await user.click(await within(listbox).findByRole("option", { name: option }));
 }
 
-/** The list's band headings, in order. The reading column's own heading - the title of the item
- *  it shows - is none of them. */
-function headings(): string[] {
-  return screen
-    .getAllByRole("heading", { level: 2 })
-    .filter((heading) => heading.closest('[data-testid="inbox-pane"]') === null)
-    .map((heading) => heading.textContent ?? "");
-}
-
-/** The rows' ask ids in DOM order: the order the reader sees. */
-function rowIds(): string[] {
-  return [...document.querySelectorAll("[data-inbox-row]")].map(
-    (row) => row.getAttribute("data-inbox-row") ?? ""
-  );
-}
-
 /** Every scroll the page asks for from now on, by each way it has to scroll: the engine's own
  *  nearest-edge scroll (`scrollIntoView`), and the `scrollBy` of a box or of the window, which a
  *  least-scroll landing makes (`scrollToNearest`). Each spy passes the call on. `asked` names the
@@ -2265,7 +2153,6 @@ function watchScrolls(): { asked: () => string[]; clear: () => void; restore: ()
     },
   };
 }
-
 const ROW_HEIGHT = 200;
 
 /** A fixed geometry happy-dom lacks: rows stacked in DOM order, ROW_HEIGHT each, so a row that
@@ -2824,7 +2711,7 @@ test("Assign to me PATCHes the viewer's lowercase login and keeps its row until 
   const getAsk = mockAskReads(rows);
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { unmount } = renderInbox("/?assignee=unassigned");
+  const { unmount } = renderInbox("/?assignee=unassigned", { pane: false });
   try {
     await screen.findByText("Orphan question?");
     await user.click(screen.getByRole("button", { name: "Assign CORE-3 to me" }));
@@ -2884,7 +2771,7 @@ test("a refused Assign to me keeps its row under the Unassigned filter, with the
     attempts += 1;
     return attempts === 1 ? firstSave.promise : narrowIssueOf(orphan, "alice");
   });
-  const { unmount } = renderInbox("/?assignee=unassigned");
+  const { unmount } = renderInbox("/?assignee=unassigned", { pane: false });
   try {
     await screen.findByText("Orphan question?");
     await user.click(screen.getByRole("button", { name: "Assign CORE-3 to me" }));
@@ -2966,7 +2853,7 @@ test("Assign to me stays held until it goes with its row, in the commit that dra
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
   const commits = recordCommits<null>(() => drawnAssign("ask-orphan", "CORE-3"));
-  const { unmount } = renderInbox("/?assignee=unassigned", { commits });
+  const { unmount } = renderInbox("/?assignee=unassigned", { commits, pane: false });
   try {
     await screen.findByText("Orphan question?");
     const button = screen.getByRole("button", { name: "Assign CORE-3 to me" });
@@ -3026,7 +2913,7 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
     attempts += 1;
     return attempts === 1 ? firstHandOn.promise : handedBack;
   });
-  const { unmount } = renderInbox("/");
+  const { unmount } = renderInbox("/", { pane: false });
   try {
     await screen.findByText("Hand this on?");
     await handOnTo(user, rowOf("ask-mine"), "bob");
@@ -3082,7 +2969,7 @@ test("a press on a card's Asked of badge closes the open Filter panel, and anoth
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
   const people = mockPeople();
-  const { unmount } = renderInbox("/");
+  const { unmount } = renderInbox("/", { pane: false });
   const badge = (askId: string) =>
     within(rowOf(askId)).getByRole("button", { name: pickNamed("Hand this question to") });
   const handOnLists = () =>
@@ -3140,7 +3027,7 @@ test("a sibling ask of the same issue leaving the list does not drop an in-fligh
   const getAsk = mockAskReads(rows);
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { queryClient, unmount } = renderInbox("/?assignee=everyone");
+  const { queryClient, unmount } = renderInbox("/?assignee=everyone", { pane: false });
   try {
     await screen.findByText("Question A?");
     const rowA = () => screen.getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
@@ -3295,11 +3182,6 @@ test("the needs-you control takes the fields and the search off, so the list hol
   }
 });
 
-/** An hour from now, as the server stores it: inside any snooze window the reader can pick. */
-function soon(hours = 3): string {
-  return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString();
-}
-
 test("Snooze folds a row into Later until the reader un-snoozes it", async () => {
   const user = userEvent.setup();
   const askA = issueAsk({ id: "ask-a" });
@@ -3321,7 +3203,7 @@ test("Snooze folds a row into Later until the reader un-snoozes it", async () =>
     served = served.map((row) => (row.id === id ? { ...row, snoozed_until: null } : row));
   });
   const getAsk = mockAskReads([askA, askB]);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     expect(headings()).toEqual(["Waiting on you (2)"]);
@@ -3373,7 +3255,7 @@ test("an agent's reply on a snoozed row leaves it in Later and off Waiting on yo
   });
   const getInbox = spyOn(api, "getInbox").mockResolvedValue([snoozed]);
   const getAsk = mockAskReads([snoozed]);
-  const { queryClient, unmount } = renderInbox();
+  const { queryClient, unmount } = renderInbox("/", { pane: false });
   try {
     await waitFor(() => expect(headings()).toEqual(["Later (1)"]));
     expect(rowIds()).toEqual([]);
@@ -3452,7 +3334,7 @@ test("a snooze still saving says Snoozing…, not Un-snoozing…, in the band it
       })
   );
   const getAsk = mockAskReads([row]);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
   try {
     await screen.findByText("Which format?");
     const snooze = screen.getByLabelText("Snooze CORE-1: Which format?");
@@ -3496,7 +3378,7 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
     new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
   );
   const getAsk = mockAskReads([row]);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     const snooze = screen.getByLabelText("Snooze CORE-1: Which format?");
@@ -3526,7 +3408,7 @@ test("a snooze the reader stopped says what Retry does, not a message's words", 
     new NetworkError("/api/v1/me/asks/ask-b/snooze", new TypeError("Failed to fetch"))
   );
   const getAsk = mockAskReads([row]);
-  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     jest.useFakeTimers();
@@ -3691,7 +3573,7 @@ test("a Snooze pick holds its menu's trigger through the commit after its answer
         <KeymapProvider>
           <main>
             <commits.Recorded host={null}>
-              <Inbox />
+              <Inbox pane={false} />
             </commits.Recorded>
           </main>
         </KeymapProvider>
@@ -3800,7 +3682,7 @@ test("a Snooze pick keeps its row in its band, held, through the commit after it
         <KeymapProvider>
           <main>
             <commits.Recorded host={null}>
-              <Inbox />
+              <Inbox pane={false} />
             </commits.Recorded>
           </main>
         </KeymapProvider>
@@ -3874,7 +3756,7 @@ test("an Un-snooze press keeps its button held in Later through the commit after
         <KeymapProvider>
           <main>
             <commits.Recorded host={null}>
-              <Inbox />
+              <Inbox pane={false} />
             </commits.Recorded>
           </main>
         </KeymapProvider>
@@ -3930,7 +3812,7 @@ test("the bar's Snooze keeps its rows in their band until its write lands", asyn
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which owner?");
     await user.click(within(rowOf("ask-a")).getByRole("checkbox", { name: /^Select / }));
@@ -3972,7 +3854,7 @@ test("the bar's Snooze lets go at its write deadline and snoozes again", async (
     new NetworkError("/api/v1/me/asks/ask-a/snooze", new TypeError("Failed to fetch"))
   );
   const getAsk = mockAskReads(rows);
-  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     await userEvent
@@ -4031,7 +3913,7 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
   // window's top: happy-dom lays nothing out, and the hand-off reads what the reader can see.
   const laidOut = layRowsOut("[data-inbox-row]", 9);
   const moves = watchMoves();
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Question 20?");
     // The rows in the order the list draws them, and the three this case reads.
@@ -4086,7 +3968,7 @@ test("a bulk Snooze by x and b focuses no row with a scroll, and the row after t
   // 100 px a row, with the tenth row at the window's top.
   const laidOut = layRowsOut("[data-inbox-row]", 9);
   const moves = watchMoves();
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Question 20?");
     const [first, last, next] = rowIds().slice(11, 14) as [string, string, string];
@@ -4789,7 +4671,7 @@ test("an answer that lands and takes its row away from above the focused row let
   // One row above the window: the answered row stands 100 px down it, the focused row 300 px.
   const laidOut = layRowsDown(LAID_ROW_PX);
   const moves = watchMoves();
-  const { unmount } = renderInbox("/?group=none");
+  const { unmount } = renderInbox("/?group=none", { pane: false });
   try {
     await waitFor(() => expect(rowIds()).toEqual(rows.map((row) => row.id)));
     const card = screen.getByTestId("ask-ask-c");
@@ -4865,7 +4747,7 @@ test("a reply that lands and lets its row go from above the focused row lets the
   // One row above the window, the Reply row; the focused row stands 100 px down it.
   const laidOut = layRowsDown(LAID_ROW_PX);
   const moves = watchMoves();
-  const { queryClient, unmount } = renderInbox("/?group=none");
+  const { queryClient, unmount } = renderInbox("/?group=none", { pane: false });
   try {
     await waitFor(() => expect(rowIds()).toEqual(["reply:ask-done", "ask-a", "ask-b", "ask-c"]));
     const row = shortRow("reply:ask-done");
@@ -5070,7 +4952,7 @@ test("the bar's Snooze holds each marked row's own Snooze, saying it is snoozing
   const commits = recordCommits<null>(() =>
     marked.map(([askId, label]) => drawnSnooze(askId, label)).join(", ")
   );
-  const { unmount } = renderInbox("/?group=waiting-on", { commits });
+  const { unmount } = renderInbox("/?group=waiting-on", { commits, pane: false });
   try {
     await screen.findByText("Which owner?");
     for (const [askId] of marked) {
@@ -5133,7 +5015,7 @@ test("a press on the Snooze of a row the bar's Snooze is saving writes nothing, 
     ["ask-a", "CORE-1: Which approach?"],
     ["ask-b", "CORE-2: Which format?"],
   ] as const;
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which approach?");
     await user.click(screen.getByRole("button", { name: /^Later \(1\)/ }));
@@ -5193,7 +5075,7 @@ test("a refused bar Snooze leaves its refused row where it was, with its own Sno
   });
   const getAsk = mockAskReads(rows);
   const label = "CORE-2: Which format?";
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which owner?");
     for (const askId of ["ask-a", "ask-b"]) {
@@ -5247,7 +5129,7 @@ test("Escape from the bulk picker while its snooze is out passes over the rows i
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   const mark = (askId: string) => within(rowOf(askId)).getByRole("checkbox", { name: /^Select / });
   try {
     await screen.findByText("Which format?");
@@ -5312,7 +5194,7 @@ test("Escape from the bar's Snooze list while its write is out goes to the row h
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   const mark = (askId: string) => within(rowOf(askId)).getByRole("checkbox", { name: /^Select / });
   /** Opens the bar's Snooze list with `h` from where the focus stands, picks a moment, and checks
    *  the pick gave the focus back there. */
@@ -5401,7 +5283,7 @@ test("Escape onto a row whose own snooze is saving hands the focus to the row af
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <main>
-            <Inbox />
+            <Inbox pane={false} />
           </main>
         </KeymapProvider>
       </QueryClientProvider>
@@ -5464,7 +5346,7 @@ test("a snooze whose write never answers keeps its row where it was, and the sto
     return silent.promise;
   });
   const getAsk = mockAskReads(rows);
-  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     jest.useFakeTimers();
@@ -5511,7 +5393,7 @@ test("a refused snooze keeps its row where it was while it is out, and leaves it
   const refusal = Promise.withResolvers<never>();
   const snoozeAsk = answerAskSnoozes().mockImplementation(() => refusal.promise);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     await pickIn(
@@ -5562,7 +5444,7 @@ test("a refused snooze holds nothing, so a read in which another device snoozed 
     new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
   );
   const getAsk = mockAskReads([askA, askB]);
-  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     await pickIn(
@@ -5604,7 +5486,7 @@ test("a refused snooze holds nothing, so a read that turns the row to an agent d
     new ApiError(400, { code: "SNOOZE_INPUT", error: "snoozed_until must be in the future" })
   );
   const getAsk = mockAskReads([askA, askB]);
-  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which format?");
     await pickIn(
@@ -5739,7 +5621,7 @@ test("the bar's Snooze list opens with a text box, a typed word narrows the pres
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which owner?");
     for (const askId of ["ask-a", "ask-b"]) {
@@ -5792,7 +5674,7 @@ test("the bar's Snooze, held while its write is out, keeps the focus and sends n
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox("/?group=waiting-on");
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which owner?");
     for (const askId of ["ask-a", "ask-b"]) {
@@ -5837,67 +5719,19 @@ test("the bar's Snooze, held while its write is out, keeps the focus and sends n
 
 // ----------------------------------------------------------------------------------------
 // The reading column (INFRA-575). Every test above this line runs at happy-dom's own 1024 px,
-// where the Inbox is the list of cards it has always been - the Inbox below 1280 px, which the
-// spec keeps unchanged - so the tests below say where they stand by widening the window first.
+// and those that drive a card in its row draw the list of cards, the one screen that draws cards,
+// since the page reads one row at a time at every width. Two ways:
+//
+// - `renderInbox`'s `pane: false` mounts the list as the Peek drawer does (its own filter,
+//   `onFilterChange` and the dialog's key scope): every row that writes a filter or presses a key
+//   goes this way.
+// - Ten rows render `<Inbox pane={false} />` in a router of their own. They only read a starting
+//   filter from the address: they write no filter and press no key, so the drawer's props would
+//   change nothing they check.
+//
+// The tests below widen the window to the column; the reading view below its width is
+// `Inbox.reading-view.test.tsx`'s.
 // ----------------------------------------------------------------------------------------
-
-/** A width the test can move while the Inbox is mounted, which `widenToReadingPane` cannot:
- *  happy-dom answers `matchMedia` from its own window, but it delivers no `change` to a list
- *  made before `setViewport`, so a column already standing never hears the viewport narrow.
- *  This is the stub `__tests__/responsive-shell.test.tsx` installs - one object per query,
- *  answering `matches` for the query it was asked - with the one addition a move needs: it keeps
- *  the listeners `useMediaQuery` registers, so `setWidth` delivers the `change` a browser sends.
- */
-function movableReadingPaneWidth(width: number): {
-  restore: () => void;
-  setWidth: (next: number) => void;
-} {
-  const originalMatchMedia = window.matchMedia;
-  const changeListeners = new Set<(event: Event) => void>();
-  let now = width;
-  window.matchMedia = ((query: string) =>
-    ({
-      addEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
-        if (type === "change" && typeof listener === "function") changeListeners.add(listener);
-      },
-      addListener: () => {},
-      dispatchEvent: () => true,
-      get matches() {
-        return query === READING_PANE_QUERY && now >= 1280;
-      },
-      media: query,
-      onchange: null,
-      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject | null) => {
-        if (type === "change" && typeof listener === "function") changeListeners.delete(listener);
-      },
-      removeListener: () => {},
-    }) as MediaQueryList) as typeof window.matchMedia;
-  return {
-    restore: () => {
-      window.matchMedia = originalMatchMedia;
-    },
-    setWidth: (next: number) => {
-      now = next;
-      for (const listener of changeListeners) listener(new Event("change"));
-    },
-  };
-}
-
-/** The ask ids of the rows marked selected: exactly one, or the test has found a second. */
-function selectedIds(): string[] {
-  return [...document.querySelectorAll('[data-inbox-selected="true"]')].map(
-    (row) => row.getAttribute("data-inbox-row") ?? ""
-  );
-}
-
-function address(): string {
-  return screen.getByTestId("location").textContent ?? "";
-}
-
-/** The pane reads one field of the question's issue: whether it is closed. */
-function mockIssueReads() {
-  return spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails);
-}
 
 test("from 1280 px the Inbox is two columns: short rows in the list, the question in the pane", async () => {
   const narrow = widenToReadingPane();
@@ -5935,25 +5769,6 @@ test("from 1280 px the Inbox is two columns: short rows in the list, the questio
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
-  }
-});
-
-test("below 1280 px the Inbox is today's Inbox: the card in the row, no pane and no ?item=", async () => {
-  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
-  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
-  const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
-
-  try {
-    const card = await screen.findByTestId("ask-ask-a");
-    expect(card.closest("[data-inbox-row]")).toBe(shortRow("ask-a"));
-    expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
-    expect(selectedIds()).toEqual([]);
-    expect(address()).toBe("/");
-  } finally {
-    unmount();
-    getAsk.mockRestore();
-    getInbox.mockRestore();
   }
 });
 
@@ -6023,6 +5838,104 @@ test("?item= selects the row it names, and one the list does not hold falls back
   } finally {
     gone.unmount();
     narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("?item= naming a thread row whose read lands after the asks' selects that row, not the first", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const threads = holdThreadsRead();
+  const { unmount } = renderInbox("/?item=reply:c1");
+
+  try {
+    // The asks' read has landed; the threads' read, where the named row is, is still out, so
+    // the column takes no row of its own and the address keeps the reader's.
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    expect(selectedIds()).toEqual([]);
+    expect(address()).toBe("/?item=reply:c1");
+
+    await threads.land([replyRow("c1")]);
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]));
+    expect(address()).toBe("/?item=reply:c1");
+  } finally {
+    unmount();
+    narrow();
+    threads.restore();
+    listComments.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("?item= naming a thread row whose read lands while a pointer moves over the list keeps that row until the pointer settles, and then selects it", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const threads = holdThreadsRead();
+  const { unmount } = renderInbox("/?item=reply:c1");
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    // A pointer travels over the list as the threads' read lands: the list keeps its rows as they
+    // are until the pointer settles (`useMotionHold`), so the named row is not drawn yet, and the
+    // column does not take the first row in its place.
+    // user-event has no bare pointermove: hover sends a fixed mouse sequence, not the one move
+    // this hold arms on.
+    fireEvent.pointerMove(shortRow("ask-a"));
+    await threads.land([replyRow("c1")]);
+    expect(rowIds()).toEqual(["ask-a"]);
+    expect(selectedIds()).toEqual([]);
+    expect(address()).toBe("/?item=reply:c1");
+
+    // Settled, the list draws the thread row, and the address the reader opened selects it.
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:c1"]), { timeout: 2000 });
+    expect(address()).toBe("/?item=reply:c1");
+  } finally {
+    unmount();
+    narrow();
+    threads.restore();
+    listComments.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("a thread read that answers no rows at all (`rows: null`) still lets the column take its first row", async () => {
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  // The server answers an Inbox with no thread in it with `rows: null` (the schema allows it):
+  // the read has landed, and there is nothing for the pointer hold to hand on.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T02:00:00Z",
+    limit: 0,
+    offset: 0,
+    rows: null,
+    total: 0,
+  });
+  const { unmount } = renderInbox("/");
+
+  try {
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    expect(address()).toBe("/?item=ask-a");
+  } finally {
+    unmount();
+    narrow();
+    listMyReplies.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
@@ -6998,7 +6911,7 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
     return { ...narrowIssueOf(first, "alice"), priority };
   });
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     await screen.findByText("Which approach?");
@@ -7055,12 +6968,12 @@ test("p opens the priority menu of an ask of an issue, keeps the focus on its ro
 // or priority does: `b` or `h` on a card's focused Snooze opens its Snooze menu on its first
 // choice, `p` there the card's priority menu on its value, and `b` on its focused priority the
 // Snooze menu, each with nothing typed in its box; Escape gives the focus back to the control.
-test("in card mode a key typed on a row's focused Snooze or priority opens the menu it names, on its first choice or its value with nothing typed", async () => {
+test("in the drawer a key typed on a card's focused Snooze or priority opens the menu it names, on its first choice or its value with nothing typed", async () => {
   const user = userEvent.setup();
   const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 2 })];
   const getInbox = spyOn(api, "getInbox").mockImplementation(async () => rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     await screen.findByText("Which approach?");
@@ -7940,7 +7853,7 @@ test("a question the server withdraws drops the record: Escape lands on the one 
   }
 });
 
-test("the column going when the Inbox narrows drops the record, where nothing else can", async () => {
+test("the column going when the Inbox narrows drops the record, where nothing else can, and the row it showed is read in place of the list", async () => {
   const user = userEvent.setup();
   const width = movableReadingPaneWidth(1440);
   const rows = [
@@ -7965,13 +7878,16 @@ test("the column going when the Inbox narrows drops the record, where nothing el
     await user.keyboard("l");
     expect(scroller()).toHaveFocus();
 
-    // Below the column's width the Inbox is the list of cards it has always been. The selection
-    // stands - the address still names it - so no question changed and the layout effect drops
-    // nothing; the scroller goes with the column, taking the focus to the body with no blur and
-    // no `focusin` behind it, so neither focus drop reads anything either. The wrapper's own
-    // unmount is the only report there is, which makes this `holdPane`'s row alone.
+    // Below the column's width the row the column showed is read in place of the list. The
+    // selection stands - the address still names it - so no question changed and the layout
+    // effect drops nothing; the scroller goes with the column, taking the focus to the body with
+    // no blur and no `focusin` behind it, so neither focus drop reads anything either. The
+    // column wrapper's own unmount is the only report there is, which makes this `holdPane`'s
+    // row alone.
     act(() => width.setWidth(1279));
-    await waitFor(() => expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument());
+    const view = await screen.findByTestId("inbox-reading-view");
+    expect(within(view).getByTestId("ask-ask-b")).toBeTruthy();
+    expect(screen.getByTestId("inbox-list").closest("[hidden]")).not.toBeNull();
     expect(address()).toBe("/?item=ask-b");
     expect(document.body).toHaveFocus();
 
@@ -8377,7 +8293,7 @@ test("the digit after a question's last option picks Other and puts the caret in
 
 // R17 and R18 below the column's width: the card in hand is the row holding the focus, itself or
 // on one of its options, and only that row shows its digits.
-test("below the column's width a card's digits show for its row in hand, and the keys act on the card around a focused option", async () => {
+test("in the drawer a card's digits show for its row in hand, and the keys act on the card around a focused option", async () => {
   const user = userEvent.setup();
   const rows = [
     inboxIssue("ask-a", "CORE-1", "Which approach?", {
@@ -8389,7 +8305,7 @@ test("below the column's width a card's digits show for its row in hand, and the
   ];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     const first = await screen.findByTestId("ask-ask-a");
@@ -8497,7 +8413,7 @@ test("r puts the caret in the reply box of the thread in hand, and does nothing 
 // the caret in that box from its row below the column's width as beside it (the row above). So
 // the card's Reply is the box's own submit, reached from where `r` leaves the reader, as a
 // thread's Send is: the action "Reply in the thread of the item in hand".
-test("below the column's width r puts the caret in the reply box under an answered question's record", async () => {
+test("below the column's width r on an answered question's thread row opens its reading view with the caret in the reply box under the question's record", async () => {
   const user = userEvent.setup();
   const answered = issueAsk({
     answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
@@ -8525,18 +8441,16 @@ test("below the column's width r puts the caret in the reply box under an answer
     total: 1,
   });
   const { unmount } = renderInbox();
-
   try {
     const row = await waitFor(() => shortRow("reply:ask-done"));
-    const box = await waitFor(() => {
-      const found = row.querySelector<HTMLElement>("[data-inbox-thread-body] [data-reply-box]");
-      if (found === null) throw new Error("the answered question's card drew no reply box");
-      return found;
-    });
-    expect(within(row).getByRole("button", { name: "Reply" })).toBeTruthy();
     act(() => row.focus());
     await user.keyboard("r");
-    expect(box).toHaveFocus();
+    // The short row draws no box: `r` opens the row's reading view at its reply box.
+    const view = await screen.findByTestId("inbox-reading-view");
+    await waitFor(() =>
+      expect(view.querySelector("[data-inbox-thread-body] [data-reply-box]")).toHaveFocus()
+    );
+    expect(within(view).getByRole("button", { name: "Reply" })).toBeTruthy();
   } finally {
     unmount();
     listMyReplies.mockRestore();
@@ -8589,7 +8503,7 @@ test("Shift+F opens the Filter panel and Shift+V the View menu on their first co
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
-  const { unmount } = renderInbox("/");
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-a");
@@ -8633,7 +8547,7 @@ test("with rows selected, the first Escape closes the View menu opened by a pres
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
   const getIssue = mockIssueReads();
-  const { unmount } = renderInbox("/");
+  const { unmount } = renderInbox("/", { pane: false });
   const mark = (askId: string) =>
     within(rowOf(askId)).getByRole<HTMLInputElement>("checkbox", { name: /^Select / });
   /** Whether the menu and both marks stand as `open` and `marked` say, after `when`. */
@@ -9227,7 +9141,7 @@ test("a refused hand-on from a Reply-thread card leaves the reader's own list as
   });
   const handOn = Promise.withResolvers<InboxRow>();
   const handAskTo = spyOn(api, "handAskTo").mockImplementation(() => handOn.promise);
-  const { unmount } = renderInbox("/");
+  const { unmount } = renderInbox("/", { pane: false });
   try {
     const row = await waitFor(() => {
       const found = document.querySelector<HTMLElement>('[data-inbox-row="reply:ask-theirs"]');
@@ -10483,7 +10397,7 @@ test("with the Later band open, a snooze of the selected row selects and focuses
   }
 });
 
-test("below the column's width a snooze gives the next row the focus, and an answer does once the server records it", async () => {
+test("in the drawer a snooze gives the next row the focus, and an answer does once the server records it", async () => {
   const user = userEvent.setup();
   const first = inboxIssue("ask-a", "CORE-1", "Which approach?", {
     options: [{ label: "Ship" }, { label: "Hold" }],
@@ -10506,7 +10420,7 @@ test("below the column's width a snooze gives the next row the focus, and an ans
     return answeredWith(first, "Ship");
   });
   const getAsk = mockAskReads(rows);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-b");
@@ -10574,7 +10488,7 @@ test("the row a hand-off gives the focus to is scrolled into view once it holds 
   );
   // Every row a thousand pixels and more down the page, out of the reader's sight.
   const laidOut = layRowsOut("[data-inbox-row]", -10);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-b");
@@ -10616,7 +10530,7 @@ test("a snooze whose row the search hides before it lands leaves no hand-off to 
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads([...rows, arriving]);
-  const { queryClient, unmount } = renderInbox();
+  const { queryClient, unmount } = renderInbox("/", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-a");
@@ -11469,7 +11383,7 @@ test("an empty list with no message to say yet takes the focus itself", async ()
     return answeredWith(only, "Ship");
   });
   const getAsk = mockAskReads([only]);
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     await screen.findByTestId("ask-ask-a");
@@ -11495,7 +11409,7 @@ test("an empty list with no message to say yet takes the focus itself", async ()
 // takes the focus, as it does where it has no message to say (above), beside the column and below
 // its width alike, and the Inbox's keys work from there.
 for (const { name, wide } of [
-  { name: "below the column's width", wide: false },
+  { name: "in the drawer", wide: false },
   { name: "beside the column", wide: true },
 ]) {
   test(`${name} a snooze of the only row shown, with the Later band folded, gives the list itself the focus, where the Inbox's keys still work`, async () => {
@@ -11512,7 +11426,7 @@ for (const { name, wide } of [
     );
     const getAsk = mockAskReads([only]);
     const getIssue = mockIssueReads();
-    const { unmount } = renderInbox();
+    const { unmount } = renderInbox("/", { pane: wide });
 
     try {
       await screen.findByTestId(wide ? "inbox-pane" : "ask-ask-a");
@@ -11673,6 +11587,90 @@ test("a and Shift+R press the column head's Approve and Request changes, and do 
   }
 });
 
+/** The reads a short row's reading view draws an approval request of `SPEC_DOCUMENT` from, at
+ *  version 4 with its request open, and the review it sends, held out. */
+function approvalViewReads(rows: readonly InboxRow[]) {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const reads = mockDocumentColumnReads([...rows]);
+  reads.getArtifact.mockResolvedValue(SPEC_AWAITING);
+  const getArtifactVersion = spyOn(api, "getArtifactVersion").mockResolvedValue({
+    authors: [],
+    created_at: "2026-09-10T00:00:00Z",
+    markdown: "# Spec\n",
+    named: false,
+    number: 4,
+    summary: null,
+  });
+  const review = spyOn(api, "createArtifactVersionReview").mockImplementation(
+    () => new Promise(() => {})
+  );
+  return {
+    restore: () => {
+      reads.restore();
+      getArtifactVersion.mockRestore();
+      review.mockRestore();
+    },
+    review,
+    runtime: fake.runtime,
+  };
+}
+
+// R7 below 1280 px: a short row draws no Approve, so `a` and Shift+R open the request's reading
+// view and act there, as the digits, `y`, `b`, `h`, `p` and `r` do on a short row.
+test("below 1280 px a on a focused approval request's short row opens its reading view and approves the version it shows; on a question it opens nothing", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    approvalRow("ask-approval", "CORE-1"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const reads = approvalViewReads(rows);
+  const { unmount } = renderInbox("/", { runtime: reads.runtime });
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-approval", "ask-b"]));
+    act(() => shortRow("ask-b").focus());
+    await user.keyboard("a");
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+
+    act(() => shortRow("ask-approval").focus());
+    await user.keyboard("a");
+    await screen.findByTestId("inbox-reading-view");
+    await waitFor(() => expect(reads.review).toHaveBeenCalledTimes(1));
+    expect(reads.review).toHaveBeenCalledWith("artifact-1", 4, { state: "approved" }, keyedAttempt);
+    expect(screen.queryByRole("dialog", { name: "Request changes" })).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    reads.restore();
+  }
+});
+
+test("below 1280 px Shift+R on a focused approval request's short row opens its reading view with the Request changes box, the focus in its reason", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    approvalRow("ask-approval", "CORE-1"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const reads = approvalViewReads(rows);
+  const { unmount } = renderInbox("/", { runtime: reads.runtime });
+
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["ask-approval", "ask-b"]));
+    act(() => shortRow("ask-b").focus());
+    await user.keyboard("{Shift>}R{/Shift}");
+    expect(screen.queryByTestId("inbox-reading-view")).not.toBeInTheDocument();
+
+    act(() => shortRow("ask-approval").focus());
+    await user.keyboard("{Shift>}R{/Shift}");
+    await screen.findByTestId("inbox-reading-view");
+    const dialog = await screen.findByRole("dialog", { name: "Request changes" });
+    await waitFor(() => expect(within(dialog).getByLabelText("Reason")).toHaveFocus());
+    expect(reads.review).not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    reads.restore();
+  }
+});
+
 test("on a card a picks Approve and sends it, and Shift+R picks Request changes, whose reason Escape lets go of back to the row", async () => {
   const user = userEvent.setup();
   const rows = [
@@ -11683,7 +11681,7 @@ test("on a card a picks Approve and sends it, and Shift+R picks Request changes,
   const getAsk = mockAskReads(rows);
   // The answer stays out, so the card stays for the steps after it.
   const answerAsk = spyOn(api, "answerAsk").mockImplementation(() => new Promise(() => {}));
-  const { unmount } = renderInbox();
+  const { unmount } = renderInbox("/", { pane: false });
 
   try {
     const card = await screen.findByTestId("ask-ask-approval");
@@ -11733,11 +11731,17 @@ test("the command bar offers the card's own actions for the row in hand, and run
   ];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
 
   try {
-    const card = await screen.findByTestId("ask-ask-a");
-    const row = shortRow("ask-a");
+    // Below 1280 px the question's card is drawn in the reading view of the row the reader
+    // opened, and the command bar acts on the row that view shows.
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    await user.click(shortRow("ask-a").querySelector("time") as HTMLElement);
+    const view = await screen.findByTestId("inbox-reading-view");
+    const card = await within(view).findByTestId("ask-ask-a");
+    const row = screen.getByTestId("inbox-pane-scroller");
     act(() => row.focus());
     let offeredRows = barRows();
     for (const label of ["Decline", "Hand on", "Show the asker's handles"]) {
@@ -11775,10 +11779,11 @@ test("the command bar offers the card's own actions for the row in hand, and run
     unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
+    getIssue.mockRestore();
   }
 });
 
-test("below the column the command bar offers the card's own actions while the focus is on a control of the card, and runs them on that card", async () => {
+test("in the reading view below 1280 px the command bar offers the card's own actions while the focus is on a control of the card, and runs them on that card", async () => {
   const user = userEvent.setup();
   const rows = [
     inboxIssue("ask-a", "CORE-1", "Which approach?", {
@@ -11788,10 +11793,14 @@ test("below the column the command bar offers the card's own actions while the f
   ];
   const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
   const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
   const { unmount } = renderInbox();
 
   try {
-    const card = await screen.findByTestId("ask-ask-a");
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-b"]));
+    await user.click(shortRow("ask-a").querySelector("time") as HTMLElement);
+    const view = await screen.findByTestId("inbox-reading-view");
+    const card = await within(view).findByTestId("ask-ask-a");
     // A press inside a card leaves the focus on the control pressed, not on its row.
     act(() => within(card).getByRole("button", { name: "Decline to answer" }).focus());
     const offeredRows = barRows();
@@ -11807,6 +11816,7 @@ test("below the column the command bar offers the card's own actions while the f
     unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
+    getIssue.mockRestore();
   }
 });
 

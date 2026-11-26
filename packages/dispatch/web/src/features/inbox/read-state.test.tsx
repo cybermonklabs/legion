@@ -134,12 +134,14 @@ function seeded(
   return client;
 }
 
-function renderInbox(client: QueryClient): void {
+/** `pane: false` is the drawer's list of cards, where a thread is read in its own row: the page
+ *  reads one row at a time at every width. */
+function renderInbox(client: QueryClient, { pane = true }: { pane?: boolean } = {}): void {
   render(
     <MemoryRouter initialEntries={["/"]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
-          <Inbox />
+          <Inbox pane={pane} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
@@ -174,7 +176,7 @@ test("a card read by the dwell rule stays in the list, drawn as read", async () 
   mockCommentReads();
   const row = commentRow("comment-1", "The retry budget");
   const client = seeded([row]);
-  renderInbox(client);
+  renderInbox(client, { pane: false });
   try {
     await screen.findByTestId("inbox-thread-comment");
     await waitFor(() => expect(document.querySelector('[aria-label="Unread"]')).not.toBeNull());
@@ -426,7 +428,8 @@ test("the line one card's Mark read leaves goes as another card's mark lands", a
       },
     })
   );
-  renderInbox(client);
+  // Two cards' Mark read: the cards are the list's that selects nothing, the Peek drawer's.
+  renderInbox(client, { pane: false });
   const why = "Could not load your inbox. Dispatch did not answer within 30 seconds.";
   try {
     await waitFor(() => expect(screen.getAllByTestId("inbox-thread-comment")).toHaveLength(2));

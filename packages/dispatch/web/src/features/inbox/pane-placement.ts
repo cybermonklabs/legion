@@ -23,6 +23,11 @@ import { mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
 /** What a reader does to move on from where the column put them. */
 const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
 
+/** The reading column's own scroller, beside the list and in the reading view below 1280 px:
+ *  `l` hands it focus, Escape takes it back to the list, and the column's placement and its own
+ *  keys move it (`PaneDocument`, `useInboxKeymap.ts`, `ReadingView`). */
+export const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
+
 /** The event a scroll of the column by the Inbox's own keys dispatches on the column before it
  *  scrolls: the reader moving it from the list, where no event of the column's own fires. */
 export const PANE_READER_MOVE = "dispatch:pane-reader-move";

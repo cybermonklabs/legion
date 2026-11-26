@@ -1,7 +1,8 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies, markThreadRead } from "./api";
-import { hasReadingPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
+import { inboxRow, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
+import { hasReadingPane } from "./reading-pane";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
 

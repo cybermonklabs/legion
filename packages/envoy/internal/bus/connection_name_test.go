@@ -2,12 +2,14 @@ package bus
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // serverConnectionNames is every connection name the server's own census of its connections
@@ -62,18 +64,11 @@ func TestTheConnectionNameTheServerSeesEndsWithTheBuild(t *testing.T) {
 	t.Cleanup(dialled.Close)
 
 	want := []string{"envoy-listener-test " + build, "envoy " + build, "dial-test " + build}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 50*time.Millisecond, "the server to list every connection under its name and build", func() (string, bool) {
 		names := serverConnectionNames(t, srv)
 		missing := slices.DeleteFunc(slices.Clone(want), func(name string) bool { return slices.Contains(names, name) })
-		if len(missing) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server lists the connections %q, and none named %q", names, missing)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Sprintf("the server lists the connections %q, and none named %q", names, missing), len(missing) == 0
+	})
 }
 
 // TestARequiredModeListenersNameEndsWithTheSuffixAndNamesItsBuild: a client whose name ends with
@@ -95,17 +90,10 @@ func TestARequiredModeListenersNameEndsWithTheSuffixAndNamesItsBuild(t *testing.
 	t.Cleanup(client.Close)
 
 	want := "envoy-listener-test " + build + PrivacyRequiredSuffix
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 50*time.Millisecond, "the server to list the connection under its name, build and suffix", func() (string, bool) {
 		names := serverConnectionNames(t, srv)
-		if slices.Contains(names, want) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the server lists the connections %q, and none named %q", names, want)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return fmt.Sprintf("the server lists the connections %q, and none named %q", names, want), slices.Contains(names, want)
+	})
 }
 
 // TestAConnectionOfABuildThatHoldsNoCommitNamesNoBuild holds a binary with no build to name (a test
