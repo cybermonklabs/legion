@@ -5,9 +5,7 @@ body: |-
   comment's author or the root message's author, a root the Legion daemon wrote reading as its
   session `legion-daemon:<PROJECT>`), which an `agent` row leaves out, and `CheckBlock.serves`,
   the references a check block's `serves` attribute names, as the block writes them and in its
-  order, left out where the block names none. `PLAIN_ISSUE_TABS` gains `dashboard`, the issue
-  page's Dashboard tab, so `dispatch://<KEY>/dashboard` and the page's `/issues/<KEY>/dashboard`
-  read as the issue, and `DISPATCH_TEXT_REFERENCES` holds a row for that tab.
+  order, left out where the block names none.
 time: 2026-11-25T20:43:11Z
 custom:
     Issue: INFRA-5702

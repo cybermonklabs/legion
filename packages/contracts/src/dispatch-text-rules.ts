@@ -97,7 +97,6 @@ export const PLAIN_ISSUE_TABS = [
   "children",
   "artifacts",
   "collaborators",
-  "dashboard",
 ] as const;
 
 /**
