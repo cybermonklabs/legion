@@ -1149,9 +1149,10 @@ func TestProbeImageReplacesOnlyItsOwnProjectsLeftover(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			// No pod: the fakes' watches ignore label selectors, so a pod of another project's
-			// Sandbox would reach the runtime's store, which a real API server never sends it.
-			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)})
-			g.setHold(true)
+			// Sandbox would reach the runtime's store, which a real API server never sends it. So
+			// the controller stand-in is held from its first pass (withHeld): a hold set once the
+			// rig is made let a pass make that pod first.
+			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)}, withHeld())
 
 			err := g.probe(probeOptions(t))
 

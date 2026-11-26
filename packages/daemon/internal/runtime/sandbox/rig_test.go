@@ -595,6 +595,14 @@ func withWaitsToTheDeadline() rigOption {
 // withoutController runs no controller stand-in: the objects stay as the test wrote them.
 func withoutController() rigOption { return func(g *rig, _ *Options) { g.noController = true } }
 
+// withHeld starts the controller stand-in with its hold on (setHold), so it makes no pod from its
+// first pass: for a test that seeds a Running Sandbox it means to have no pod. A hold set after
+// newRig returns comes too late for such a Sandbox, since control's first pass can run before it
+// and make the pod. TestProbeImageReplacesOnlyItsOwnProjectsLeftover's foreign probe Sandbox got
+// one that way, the pod reached the runtime's store (the fakes' watches ignore label selectors)
+// without its Sandbox, and the probe waited 10 s for it to go instead of refusing the Sandbox.
+func withHeld() rigOption { return func(g *rig, _ *Options) { g.hold.Store(true) } }
+
 // withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
 // launcher holds it installed when installed is set, as one of a pod whose launcher already took
 // the check does after a reconnect.
