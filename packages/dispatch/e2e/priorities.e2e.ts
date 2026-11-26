@@ -4565,3 +4565,57 @@ test("below 1280 px opening a one-line priority title, and a three-line one at 3
   await expect(button, step("the three-line title is drawn")).toHaveText(threeLines);
   await openAndCompare("at 390x664, a three-line title", 3);
 });
+
+// The tester's red row of round 21 (InPlaceField.tsx:192-194: "every word of a long title stays in
+// view as it is written, and nothing under it moves as it opens and closes"; the architect's ruling
+// of 2026-11-26T03:09Z). A priority's title box left open while the window is resized must keep
+// every line in view and leave the header the height its heading has when it closes. At c3b536cc
+// InPlaceField.tsx:354-360's layout effect reads no width change, so narrowing 1024 px to 390 px
+// leaves 84 px of a long title scrolled out of the box and closing moves the header by 84 px;
+// narrowing 1440 px to 1024 px moves it by 14 px. Measured in Chromium and Firefox.
+// SLOW(>=2s): a priority's page opened twice, with the window resized while its title box is open.
+// @firefox: the textarea's scrollHeight after a window resize in each engine.
+test("a priority's title box left open while the window is resized holds every line and leaves the header the height its heading has @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title box resized while open: ${text}`;
+  const longTitle =
+    "Ship the daemon rollout to every machine of the fleet before the freeze so no old build stays in production and the smoke checks pass clean";
+  const priority = await createPriority({ owner: "alice", title: longTitle });
+  const header = page.getByTestId("priority-header");
+  const box = header.getByRole("textbox", { name: "Title" });
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await page.goto(`/priorities/${priority.id}`);
+  await header.getByRole("heading", { level: 1 }).getByRole("button").click();
+  await expect(box, step("a click on the heading opens the box at 1024 px")).toBeFocused();
+  await page.setViewportSize(PHONE);
+  await nextFrames(page);
+  const hidden = await box.evaluate((node) => node.scrollHeight - node.clientHeight);
+  expect(
+    hidden,
+    step("at 390 px no line of the title is scrolled out of the box")
+  ).toBeLessThanOrEqual(1);
+  const openHeight = (await header.boundingBox())?.height ?? 0;
+  await page.keyboard.press("Escape");
+  await nextFrames(page);
+  const closedHeight = (await header.boundingBox())?.height ?? 0;
+  expect(
+    Math.abs(openHeight - closedHeight),
+    step("at 390 px the header keeps its height as the box closes, within 1 px")
+  ).toBeLessThanOrEqual(1);
+  await page.setViewportSize(WIDE);
+  await header.getByRole("heading", { level: 1 }).getByRole("button").click();
+  await expect(box, step("the box opens again at 1440 px")).toBeFocused();
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await nextFrames(page);
+  const tall = (await header.boundingBox())?.height ?? 0;
+  await page.keyboard.press("Escape");
+  await nextFrames(page);
+  const heading = (await header.boundingBox())?.height ?? 0;
+  expect(
+    Math.abs(tall - heading),
+    step(
+      "at 1024 px, after the window narrowed from 1440 px, the header keeps its height as the box closes, within 1 px"
+    )
+  ).toBeLessThanOrEqual(1);
+});

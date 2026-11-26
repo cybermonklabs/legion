@@ -517,6 +517,8 @@ const parallelProjects = [
   // priority's title reached by the keyboard.
   // The phone-width `textarea` font-size rule against the heading's `text-[22px]`: `priorities`'
   // row of opening a priority's title at 390 px.
+  // A textarea's `scrollHeight` after a window resize: `priorities`' row of a priority's title box
+  // left open while the window is resized.
   // When the engine delivers a key the page sends as a page is first drawn, against the layout
   // effects of the first commit that draws the shell, in which `KeymapProvider` attaches the
   // keymap's window listener: `keyboard-palette`'s row that a Ctrl+K (Cmd+K on a Mac) sent as the Inbox heading
