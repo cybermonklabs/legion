@@ -96,6 +96,7 @@ func documentSocketOutcome(t *testing.T, serverURL, room, login string) (outcome
 // closes bob's socket with the code on which the provider reconnects, and bob's reconnect is
 // refused as carol's upgrade was. alice's socket stays open.
 func TestTheDocumentSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
+	t.Parallel()
 	const bob, carol = "bob@outside.example", "carol@example.com"
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
@@ -159,6 +160,7 @@ func TestTheDocumentSocketClosesWhenItsPersonLosesTheProject(t *testing.T) {
 // his socket is recorded and walks it (recheckAccess), each on a cold room and on a warm one, which
 // alice holds open.
 func TestAPersonWhoLosesTheRoomDuringTheirOwnAdmissionIsRefusedAsAReaderWhoCannotReadIt(t *testing.T) {
+	t.Parallel()
 	const bob, carol = "bob@outside.example", "carol@example.com"
 	owner := model.Actor{Kind: "user", ID: "alice"}
 	for _, recheck := range []struct {
@@ -236,6 +238,7 @@ func (w *recordingHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // would send the person the room's document - and is answered as a hidden room is. A socket whose
 // admission stands is upgraded, with nothing written in its place.
 func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
+	t.Parallel()
 	hidden := httptest.NewRecorder()
 	refuseHiddenRoom(hidden)
 	for _, revoked := range []bool{false, true} {
@@ -269,6 +272,7 @@ func TestASocketRevokedBeforeItsUpgradeIsNeverUpgraded(t *testing.T) {
 // and his socket's record, has it revoked with the cause on which the provider reconnects, and
 // refused before ygo joins him to the room (revocableSocketWriter answers it as a hidden room).
 func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T) {
+	t.Parallel()
 	const bob = "bob@outside.example"
 	owner := model.Actor{Kind: "user", ID: "alice"}
 	for _, row := range []struct {
@@ -330,6 +334,9 @@ func TestASocketAdmittedAcrossAnAccessCheckIsReadAgainForItsPerson(t *testing.T)
 // service must be collected within the leak report's budget (leakWaitBudget), as TestMain
 // requires of every service a test builds.
 func TestASocketBurstAtTheCapsWhileAccessIsRecheckedLeavesNoServiceAlive(t *testing.T) {
+	// Not parallel: requireServiceCollected forces collections of the whole process (runtime.GC)
+	// until the service is gone, and the collector is the process's, which the package's parallel
+	// tests run on.
 	var built weak.Pointer[Service]
 	t.Run("the burst", func(t *testing.T) { socketBurstDuringAccessRechecks(t, &built) })
 	requireServiceCollected(t, built)

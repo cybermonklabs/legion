@@ -85,6 +85,7 @@ func awaitAccessPasses(t *testing.T, service *Service, passes uint64, open map[s
 // Control: the heartbeat's loop runs no re-check; the losing socket stays open and the row fails
 // at its wait.
 func TestADocumentSocketClosesWithinAHeartbeatOfItsPersonLosingTheRoomBySQLAlone(t *testing.T) {
+	t.Parallel()
 	const bob, carol = "bob@outside.example", "carol@example.com"
 	for _, row := range []struct {
 		name string
@@ -160,6 +161,7 @@ func TestADocumentSocketClosesWithinAHeartbeatOfItsPersonLosingTheRoomBySQLAlone
 // re-checks begun shows have run, and each is still served: the room answers its next ask for the
 // document.
 func TestDocumentSocketsOutliveTheAccessHeartbeatWithNoPrivateProjectAndNoChange(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))

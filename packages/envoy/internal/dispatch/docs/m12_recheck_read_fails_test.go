@@ -180,6 +180,8 @@ func (s m12Sockets) requireOutcome(t *testing.T, closed, kept []string) {
 // the test's own database; and the database refuses bob's read alone. A failure while the
 // re-check's context stands is logged at WARN once for each person whose sockets it closes.
 func TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain(t *testing.T) {
+	// Not parallel: each row replaces the process's default logger (captureWarnings,
+	// logtest.SetDefault) to count the WARN lines the re-check writes.
 	for _, row := range []struct {
 		name string
 		// fail breaks the re-check's read and answers the context the re-check runs on, and what
@@ -261,6 +263,8 @@ func TestAnAccessRecheckWhoseReadFailsClosesTheSocketsItCouldNotReadAgain(t *tes
 // deployment where no project is private, as before the re-check closed anything, and with DOC
 // private and bob on its list.
 func TestAnAccessRecheckWhoseReadAnswersKeepsEverySocketWhosePersonStillReadsTheRoom(t *testing.T) {
+	// Not parallel: each row replaces the process's default logger (captureWarnings,
+	// logtest.SetDefault) to read that the re-check writes nothing.
 	for _, row := range []struct {
 		name    string
 		private bool

@@ -69,6 +69,8 @@ const typingCostRosterRead = `select coalesce((select expires_at > now() from ro
 // every process runs it. It is a measurement, not a check: it runs only with
 // DISPATCH_BENCH_DOCSOCKET=1, against the database storetest opens.
 func TestDocumentRoomTypingCost(t *testing.T) {
+	// Not parallel: it measures the database's statements a second and the cursor frames' delivery
+	// latency by the wall clock, which the package's parallel tests would share the machine with.
 	if os.Getenv("DISPATCH_BENCH_DOCSOCKET") != "1" {
 		t.Skip("set DISPATCH_BENCH_DOCSOCKET=1 to measure a typing room's cost")
 	}
