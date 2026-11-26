@@ -424,10 +424,10 @@ type Notice struct {
 	// StoppedBy is the claim of the architect whose stop_task stopped the task a task-stopped
 	// notice reports (workflow's taskStopped), carried by no other kind (validateOutboxPayload),
 	// and absent from the task-stopped notice of a task that no architect stopped (workflow's
-	// stopUnreturned). The architect that made the call is answered by its own call, so the
-	// daemon's notice executor publishes the notice only when the architect the issue's notices
-	// reach is another claim (the daemon's deliverNotice). Published keeps it, so a re-held copy
-	// is judged the same way.
+	// stopUnreturned and stopLostRole). The architect that made the call is answered by its own
+	// call, so the daemon's notice executor publishes the notice only when the architect the
+	// issue's notices reach is another claim (the daemon's deliverNotice). Published keeps it, so a
+	// re-held copy is judged the same way.
 	StoppedBy claim.Token `json:"stoppedBy,omitempty"`
 	// Resends counts the times the notice was queued again after the listener could not forward
 	// it to its architect's session (the daemon's rehold), which stops at a cap.
@@ -3007,9 +3007,11 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // `task-stopped` is a task stopped where it stands, its issue held: by its owner's stop_task
 // (workflow's taskStopped), whose notice names the architect that made the call (StoppedBy) and
 // reaches the issue's architect only when that is another claim (the daemon's deliverNotice);
-// or by a failed step that no step before it of the type implementation can take the work back
-// from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
-// architect, in its reason.
+// by a failed step that no step before it of the type implementation can take the work back
+// from (workflow's stopUnreturned); or by a step whose role the deployment no longer defines,
+// which the task was to start or move into, or still had to run when the daemon started
+// (workflow's stopLostRole), whose notice names that role. The task's owner reads which task, and
+// which step or which architect, in its reason.
 //
 // `retro-held` is a parent whose task's last step is not the owner's acceptance, held before its retro because it
 // passed its last step while issues beneath it are still in the workflow (workflow's
