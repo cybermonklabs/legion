@@ -9,14 +9,14 @@ import { replaceQueryData } from "../../api/query-client";
 import type {
   Agent,
   Artifact,
-  Comment,
+  CommentWithTrees,
   MessageDelivery,
   MessageDeliveryMode,
   MessageWithTrees,
   UserState,
 } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
-import { useFootInset } from "../../hooks/useFootInset";
+import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -53,12 +53,13 @@ import {
   useAgentText,
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { EditedMark, PostBody } from "../refs/PostBody";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import { PHONE_VIEWPORT_QUERY, useDialog, useMediaQuery } from "../shell/useDialog";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -187,6 +188,7 @@ function replyTargetFor(
   return {
     actor: message.author,
     excerpt: message.body,
+    excerptTree: message.body_tree,
     id: message.id,
     parentKind: "message",
     to: buildIssuePath({ id: message.id, key: issueKey, kind: "message" }),
@@ -239,15 +241,13 @@ function ConversationReply({
       at={reply.created_at}
       author={reply.author}
       body={
-        <>
-          <PostBody
-            deleted={postDeletion(reply)}
-            markdown={reply.body}
-            source={textSourceOf("message", reply.id)}
-            tree={reply.body_tree}
-          />
-          <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
-        </>
+        <PostBody
+          deleted={postDeletion(reply)}
+          markdown={reply.body}
+          source={textSourceOf("message", reply.id, issueKey)}
+          surface="conversation-reply"
+          tree={reply.body_tree}
+        />
       }
       current={reply.id === currentReplyId}
       deleted={postDeletion(reply)}
@@ -277,6 +277,7 @@ function ConversationReply({
         edited: parent?.edited_at,
         excerpt: parent?.body ?? "",
         excerptTree: parent?.body_tree,
+        source: textSourceOf("message", parent?.id, issueKey),
         to:
           reply.in_reply_to === null
             ? undefined
@@ -387,10 +388,10 @@ function MessageTurn({
           <PostBody
             deleted={postDeletion(item.root)}
             markdown={item.root.body}
-            source={textSourceOf("message", item.root.id)}
+            source={textSourceOf("message", item.root.id, issueKey)}
+            surface="conversation-message"
             tree={item.root.body_tree}
           />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </div>
         <TurnActions>
           <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
@@ -415,12 +416,18 @@ function MessageTurn({
   );
 }
 
-/** How a handoff shows JSON: an array or object field, or a body that is not a JSON object. */
+/** How a handoff shows JSON: an array or object field. */
 const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
 
 /** A handoff's body, fetched when the reader expands its card: each top-level field a labelled
  *  row, the `proof` list one row per entry. A version never changes once written, so the read
- *  is kept for the page's life. A body that is not a JSON object is shown as the text it is. */
+ *  is kept for the page's life. The words a session wrote - a field's string, a proof entry, or
+ *  a body that is not a JSON object - are drawn by the renderer from the reading the server
+ *  sends for each (`field_trees`, keyed by the text's JSON Pointer into the body, `""` for the
+ *  whole of it), so a reference in them reads as its target's name and the page parses none of
+ *  them. A tree is looked up among the answer's own keys alone, so no key reads a member every
+ *  object inherits. A field of JSON is the session's data and is shown as the JSON it is (the
+ *  reading list's `conversation-handoff-data`). */
 function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
   const handoff = useQuery({
     queryKey: ["handoff", handoffId],
@@ -445,23 +452,40 @@ function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): Re
       </p>
     );
   }
+  const trees = handoff.data.field_trees;
   if (fields === undefined) {
     return (
-      <pre className={handoffPre} data-handoff-raw id={id}>
-        {handoff.data.body}
-      </pre>
+      <div className="mt-2 text-sm" data-handoff-raw id={id}>
+        <MarkdownBody
+          markdown={handoff.data.body}
+          surface="conversation-handoff-body"
+          tree={trees !== undefined && Object.hasOwn(trees, "") ? trees[""] : undefined}
+        />
+      </div>
     );
   }
   return (
     <dl className={`mt-2 flex flex-col gap-2 text-sm ${textPrimaryOnSurface}`} id={id}>
-      {fields.map(({ field, json, label, text }) => (
+      {fields.map(({ field, label, path, shape, text }) => (
         <div data-handoff-field={field} key={`${field}/${label}`}>
           <dt className={`font-medium ${textMutedOnSurface}`}>{label}</dt>
           <dd className="min-w-0">
-            {json ? (
+            {shape === "prose" ? (
+              <MarkdownBody
+                markdown={text}
+                surface="conversation-handoff-body"
+                tree={trees !== undefined && Object.hasOwn(trees, path) ? trees[path] : undefined}
+              />
+            ) : shape === "json" ? (
+              // The session's data, as the JSON it is: the reading list's
+              // `conversation-handoff-data`.
               <pre className={handoffPre}>{text}</pre>
             ) : (
-              <span className="break-words whitespace-pre-wrap">{text}</span>
+              <span className="break-words whitespace-pre-wrap">
+                {/* A number, a boolean or null, as its JSON text: the reading list's
+                    `conversation-handoff-data`. */}
+                {text}
+              </span>
             )}
           </dd>
         </div>
@@ -529,7 +553,7 @@ function HandoffTurn({
 /** What the composer quotes when the reader replies to `comment`: its author, and the
  *  mentions the reply starts with, each named as the mention picker names it (`sessionText`). */
 function commentReplyTarget(
-  comment: Comment,
+  comment: CommentWithTrees,
   text: Pick<AgentText, "sessionText">,
   issueKey: string
 ): ReplyTarget {
@@ -551,6 +575,7 @@ function commentReplyTarget(
   return {
     actor: author,
     excerpt: comment.body,
+    excerptTree: comment.body_tree,
     id: comment.id,
     mentions,
     parentKind: "comment",
@@ -923,10 +948,10 @@ function TargetedMessageTurn({
           <PostBody
             deleted={postDeletion(item.root)}
             markdown={item.root.body}
-            source={textSourceOf("message", item.root.id)}
+            source={textSourceOf("message", item.root.id, issueKey)}
+            surface="conversation-targeted-message"
             tree={item.root.body_tree}
           />
-          <Unfurl body={item.root.body} source={textSourceOf("message", item.root.id)} />
         </>
       }
       canAside={capabilities?.includes("aside") !== false}
@@ -1358,6 +1383,7 @@ export function ConversationTab({
           that sticks. The thread composer's Cancel reply puts its draft here (`intake`). */}
       <div className="contents" hidden={phoneThread !== undefined}>
         <MentionComposer
+          box="conversation-composer"
           closed={isClosed}
           docked
           intake={phone.dockedIntake}
@@ -1590,7 +1616,7 @@ export function ConversationTab({
                 }
                 agents={agents}
                 issueArtifacts={issueArtifacts}
-                composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                composerClassName={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 current={phoneThread.id === focus?.id}
                 currentReplyId={phoneThread.id === focus?.id ? focus?.replyId : undefined}
                 viewerLogin={viewer.data?.login ?? ""}
@@ -1622,8 +1648,9 @@ export function ConversationTab({
           {phone.replyTo === null ? null : (
             <div hidden={!phoneReplyTargetsThread}>
               <MentionComposer
+                box="phone-thread-composer"
                 closed={isClosed}
-                frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${card} ${borderDefault}`}
+                frame={`fixed inset-x-0 bottom-0 z-20 border-t px-4 pt-4 pb-2 ${FOOT_COMPOSER_FRAME_BOUND} ${card} ${borderDefault}`}
                 intake={phone.threadIntake}
                 listed={listed}
                 mutationKey={phone.composerKey}

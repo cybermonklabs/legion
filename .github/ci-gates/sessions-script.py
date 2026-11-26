@@ -8,4 +8,4 @@
 GATE = gate("sessions_script", SESSIONS_JOB, reads=reads(
     ("scripts/sessions/**", f"{at(SESSIONS_JOB, SESSIONS_STEP)}: the suite, and message-wait.ts, which "
                             "`scripts/sessions/__tests__/message-wait.test.ts#SCRIPT` names and spawns"),
-) + setup_bun(SESSIONS_JOB))
+) + crash_safety_reads(SESSIONS_JOB) + setup_bun(SESSIONS_JOB))

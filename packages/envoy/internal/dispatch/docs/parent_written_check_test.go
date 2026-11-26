@@ -102,8 +102,11 @@ func parentWrittenVersion(t *testing.T, database *store.Store, artifactID, markd
 // (indexRenderedVersion), and what it stated appended under that event, with the head rows of its
 // nodes and the stamp of the version's links, all on the pass's write queue (queueWrites,
 // runQueue). It does not commit. It answers the step that appended what the pass stated, the batch
-// a publisher's retry sends again. run names the pass in a failure.
-func parentWrittenPass(t *testing.T, service *Service, tx pgx.Tx, artifactID, run string) WriteStep {
+// a publisher's retry sends again, and the blocks the pass indexed: a block whose markdown names no
+// id - a heading, a paragraph - takes the id the render mints for it (pmdoc.EnsureBlockIDs), and
+// only a typed block's markdown names its id, so a second render of the same version mints those
+// blocks other ids, and what the pass placed is read off these. run names the pass in a failure.
+func parentWrittenPass(t *testing.T, service *Service, tx pgx.Tx, artifactID, run string) (WriteStep, []model.ArtifactBlock) {
 	t.Helper()
 	ctx := context.Background()
 	queued, ledger := queueWrites(ctx, tx)
@@ -145,7 +148,7 @@ func parentWrittenPass(t *testing.T, service *Service, tx pgx.Tx, artifactID, ru
 	if err := ledger.runQueue(ctx, nil); err != nil {
 		t.Fatalf("%s over version %d of %s failed: %v", run, version, artifactID, err)
 	}
-	return cause
+	return cause, blocks
 }
 
 // parentWrittenUpdates is how many document_blocks rows tx's transaction has updated so far
@@ -193,12 +196,13 @@ func parentWrittenProjection(t *testing.T, q Queryer, artifactID string) map[str
 	return projection
 }
 
-// parentWrittenWanted is the projection the document's newest version gives each block it places
-// (refs.PlaceBlocks): a node of the block kind at the block's address, under the block holding it,
-// or under none at the top level. It is read through q.
-func parentWrittenWanted(t *testing.T, q Queryer, artifactID string) map[string]parentWrittenRow {
+// parentWrittenWanted is the projection blocks, the blocks a pass indexed of the document's newest
+// version (parentWrittenPass), give each block they place (refs.PlaceBlocks): a node of the block
+// kind at the block's address, under the block holding it, or under none at the top level. The
+// document's ref_key is read through q.
+func parentWrittenWanted(t *testing.T, q Queryer, artifactID string, blocks []model.ArtifactBlock) map[string]parentWrittenRow {
 	t.Helper()
-	refKey, blocks := parentWrittenNewest(t, q, artifactID)
+	refKey := parentWrittenRefKey(t, q, artifactID)
 	nodes, placed, parents := refs.PlaceBlocks(refKey, blocks)
 	wanted := make(map[string]parentWrittenRow, len(placed))
 	for index, block := range placed {
@@ -211,21 +215,14 @@ func parentWrittenWanted(t *testing.T, q Queryer, artifactID string) map[string]
 	return wanted
 }
 
-// parentWrittenNewest is the document's ref_key and the blocks of its newest version, as the pass
-// takes them from a render (renderedVersion), read through q.
-func parentWrittenNewest(t *testing.T, q Queryer, artifactID string) (string, []model.ArtifactBlock) {
+// parentWrittenRefKey is the document's ref_key, read through q.
+func parentWrittenRefKey(t *testing.T, q Queryer, artifactID string) string {
 	t.Helper()
-	var refKey, stored string
-	if err := q.QueryRow(context.Background(), `
-		select a.ref_key, v.markdown from artifacts a
-		join artifact_versions v on v.artifact_id = a.id
-		where a.id = $1 and v.markdown is not null
-		order by v.number desc limit 1
-	`, artifactID).Scan(&refKey, &stored); err != nil {
-		t.Fatalf("read the newest version of %s: %v", artifactID, err)
+	var refKey string
+	if err := q.QueryRow(context.Background(), `select ref_key from artifacts where id = $1`, artifactID).Scan(&refKey); err != nil {
+		t.Fatalf("read the ref_key of %s: %v", artifactID, err)
 	}
-	_, blocks := renderedVersion(t, stored)
-	return refKey, blocks
+	return refKey
 }
 
 // parentWrittenWholeRows is every column of every document_blocks row of the document, by block id,
@@ -312,9 +309,9 @@ func TestAFreshPassWritesEachParentInItsInsert(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	before := parentWrittenUpdates(t, tx)
-	parentWrittenPass(t, service, tx, document, "the fresh pass")
+	_, blocks := parentWrittenPass(t, service, tx, document, "the fresh pass")
 	updated := parentWrittenUpdates(t, tx) - before
-	held, wanted := parentWrittenProjection(t, tx, document), parentWrittenWanted(t, tx, document)
+	held, wanted := parentWrittenProjection(t, tx, document), parentWrittenWanted(t, tx, document, blocks)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the fresh pass: %v", err)
 	}
@@ -396,7 +393,7 @@ func TestTheBlockIndexPassRunTwiceWritesNoDuplicate(t *testing.T) {
 		t.Fatalf("begin the first run of the pass: %v", err)
 	}
 	defer first.Rollback(ctx)
-	cause := parentWrittenPass(t, service, first, document, "the first run of the pass")
+	cause, _ := parentWrittenPass(t, service, first, document, "the first run of the pass")
 	appended := parentWrittenTuples(t, first, before)
 	if len(appended) == 0 {
 		t.Fatalf("the first run of the pass appended no tuple, so neither a second run nor a retry of its batch proves anything")
@@ -449,19 +446,20 @@ func TestTheBlockIndexPassRunTwiceWritesNoDuplicate(t *testing.T) {
 }
 
 // parentWrittenAsBefore runs, in tx, over what the pass left, the two statements the waste
-// removals took out of the pass, which the pass before them ran: the projection of every placed
-// block's parent and node columns after the insert of its row, which held no parent
-// (queueBlockParents as it stood before the parent went into the insert), and the append of every
-// tuple of what the pass stated with its conflict arm (graphstore's append before the arm came off
-// for a tuple of a node the pass's own insert made; once the pass has run, no node is new, so every
-// tuple of a second append carries the arm). The pass before the removals ran exactly the pass's
-// statements and these two, so the rows and the tuples they leave are what that pass leaves on the
-// same input: a parent or a node column the insert wrote otherwise, a row the narrowed projection
-// passed over, or a tuple an append without its arm left out, reads as a difference.
-func parentWrittenAsBefore(t *testing.T, tx pgx.Tx, artifactID string, cause WriteStep, what string) {
+// removals took out of the pass, which the pass before them ran: the projection of every block the
+// pass placed of blocks, the blocks it indexed (parentWrittenPass), of its parent and node columns
+// after the insert of its row, which held no parent (queueBlockParents as it stood before the
+// parent went into the insert), and the append of every tuple of what the pass stated with its
+// conflict arm (graphstore's append before the arm came off for a tuple of a node the pass's own
+// insert made; once the pass has run, no node is new, so every tuple of a second append carries
+// the arm). The pass before the removals ran exactly the pass's statements and these two, so the
+// rows and the tuples they leave are what that pass leaves on the same input: a parent or a node
+// column the insert wrote otherwise, a row the narrowed projection passed over, or a tuple an
+// append without its arm left out, reads as a difference.
+func parentWrittenAsBefore(t *testing.T, tx pgx.Tx, artifactID string, cause WriteStep, blocks []model.ArtifactBlock, what string) {
 	t.Helper()
 	ctx := context.Background()
-	refKey, blocks := parentWrittenNewest(t, tx, artifactID)
+	refKey := parentWrittenRefKey(t, tx, artifactID)
 	nodes, placed, parents := refs.PlaceBlocks(refKey, blocks)
 	ids, held := make([]string, len(placed)), make([]*string, len(placed))
 	for index, block := range placed {
@@ -536,7 +534,7 @@ func TestTheWasteRemovalsLeaveTheSameRows(t *testing.T) {
 				t.Fatalf("begin %s: %v", pass.what, err)
 			}
 			defer tx.Rollback(ctx)
-			cause := parentWrittenPass(t, service, tx, document, pass.what)
+			cause, blocks := parentWrittenPass(t, service, tx, document, pass.what)
 			rows, tuples := parentWrittenRowDump(t, tx, document), parentWrittenTuples(t, tx, before)
 			if len(rows) < 4 || len(tuples) == 0 {
 				t.Fatalf("%s left %d rows and appended %d tuples, want a row for each block of a document of nested blocks and the tuples that state them",
@@ -545,7 +543,7 @@ func TestTheWasteRemovalsLeaveTheSameRows(t *testing.T) {
 			if _, err := tx.Exec(ctx, `savepoint the_pass_before`); err != nil {
 				t.Fatalf("open the savepoint of the pass before the waste removals: %v", err)
 			}
-			parentWrittenAsBefore(t, tx, document, cause, pass.what)
+			parentWrittenAsBefore(t, tx, document, cause, blocks, pass.what)
 			rowsBefore, tuplesBefore := parentWrittenRowDump(t, tx, document), parentWrittenTuples(t, tx, before)
 			if _, err := tx.Exec(ctx, `rollback to savepoint the_pass_before`); err != nil {
 				t.Fatalf("roll back the savepoint of the pass before the waste removals: %v", err)

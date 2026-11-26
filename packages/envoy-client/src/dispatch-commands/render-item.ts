@@ -4,7 +4,6 @@ import type {
   AskWithTrees,
   BlockPath,
   Comment,
-  CommentRead,
   GraphEdge,
   GraphReferences,
   MessageRead,
@@ -15,7 +14,12 @@ import type {
 import { actorActText, encodeBlockId, POST_HISTORY_PAGE_LIMIT } from "@legion/contracts";
 import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
-import type { DispatchClient } from "../dispatch-http";
+import type {
+  CommentNodeAnchor,
+  CommentReadWithNodeAnchor,
+  DispatchClient,
+  WithNodeAnchor,
+} from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
@@ -253,7 +257,7 @@ export function postHistorySummary(
 }
 
 export function commentSummary(
-  { comment, replies }: CommentRead,
+  { comment, replies }: CommentReadWithNodeAnchor,
   graph: readonly string[]
 ): string {
   const root = [
@@ -283,7 +287,10 @@ export function commentSummary(
  *  (`Reply to:`), the comment it answers where that is another (`Answers:`), as the reply chain of
  *  `commentSummary` prints it, the ask it replies to (`Ask:`), and its body as every read prints a
  *  post (`postBodyLines`): the deleted mark alone for a deleted comment. */
-export function commentsSummary(issueKey: string, comments: readonly Comment[]): string {
+export function commentsSummary(
+  issueKey: string,
+  comments: readonly WithNodeAnchor<Comment>[]
+): string {
   return [
     `Comments: ${issueKey}`,
     ...(comments.length === 0
@@ -330,12 +337,22 @@ function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
 }
 
 /** An anchored record's quote, then where its block stands: the position, or why the read could
- *  not place it. A record without an anchor prints neither. */
+ *  not place it. A record without an anchor prints neither. Where the read answered the node the
+ *  anchor names (`node_anchor`), the quote's line names that node and its state too: a comment on
+ *  a lens, a finding, a risk, a constraint or a result has no document anchor to print, and a
+ *  node whose state is `gone` was deleted since the comment was written. */
 function anchorLines(
-  record: Pick<Comment, "anchor" | "anchor_block" | "anchor_block_error">
+  record: Pick<Comment, "anchor" | "anchor_block" | "anchor_block_error"> & {
+    readonly node_anchor?: CommentNodeAnchor;
+  }
 ): string[] {
+  const node = record.node_anchor;
   return [
-    ...(record.anchor?.quote === undefined ? [] : [`> ${record.anchor.quote}`]),
+    ...(node !== undefined
+      ? [`> ${node.quote} · on ${nodeAddress(node.node)} (${node.node.state})`]
+      : record.anchor?.quote === undefined
+        ? []
+        : [`> ${record.anchor.quote}`]),
     ...(record.anchor_block === undefined
       ? []
       : [`Position: ${positionText(record.anchor_block)}`]),
@@ -343,6 +360,13 @@ function anchorLines(
       ? []
       : [`Position: unavailable (${record.anchor_block_error})`]),
   ];
+}
+
+/** A node as the anchor input `node` and `/api/v1/issues/{key}/nodes/{id}` take it: a block by
+ *  its own node id, which names its owner before its `#` (`lens/<uuid>#<block id>`,
+ *  `CORE-1/spec#<block id>`), and every other node as `<kind>/<id>` (`lens/<uuid>`). */
+function nodeAddress(node: CommentNodeAnchor["node"]): string {
+  return node.kind === "block" ? node.id : `${node.kind}/${node.id}`;
 }
 
 /** Where an anchor's block stands. Every node from the top-level block down reads `type[index]`;

@@ -6,7 +6,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The relations between issues, each a tuple out of the issue's node (dispatch://INFRA-1253 R9,
+// The relations between issues, each a tuple out of the issue's node (R9 of the issue-tree spec,
 // R10). child_of names the issue's parent, which issues.parent_key projects; needs an issue it
 // waits on, which an issue_links row projects, and is the kind a plan node's wait is stated
 // under too, since waiting is one relation; duplicate_of the issue of its project it repeats;

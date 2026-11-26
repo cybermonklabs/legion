@@ -89,15 +89,22 @@ export function askOrdinals(rows: readonly NamedAsk[]): ReadonlyMap<string, AskO
  * Every ask has a question: the server refuses a blank one on both paths it can be created by
  * (`api/asks.go`'s `INVALID_ASK`, `docs/ask_blocks.go` for a document block), so the name always
  * has something after its colon.
+ *
+ * `question` is the question as a name can carry it: its plain-text projection, which
+ * `useControlName` reads, so a reference in it is its target's name and never its address.
  */
-export function controlName(ask: NamedAsk, ordinal: AskOrdinal | undefined): string {
+export function controlName(
+  ask: NamedAsk,
+  ordinal: AskOrdinal | undefined,
+  question: string
+): string {
   const where = askOwner(ask).label;
   const which =
     ordinal === undefined ? where : `${where}, ask ${ordinal.index} of ${ordinal.total}`;
-  const question = ask.question.replace(/\s+/g, " ").trim();
+  const words = question.replace(/\s+/g, " ").trim();
   const short =
-    question.length > CONTROL_NAME_QUESTION_CHARS
-      ? `${question.slice(0, CONTROL_NAME_QUESTION_CHARS).trimEnd()}…`
-      : question;
+    words.length > CONTROL_NAME_QUESTION_CHARS
+      ? `${words.slice(0, CONTROL_NAME_QUESTION_CHARS).trimEnd()}…`
+      : words;
   return `${which}: ${short}`;
 }

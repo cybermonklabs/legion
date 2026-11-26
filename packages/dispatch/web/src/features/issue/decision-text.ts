@@ -13,6 +13,7 @@ export function wordsOf(node: DisplayTree): string {
   let apart = false;
   const read = (current: DisplayTree): void => {
     if (typeof current.text === "string") {
+      // A tree's words joined to match a quote against, drawn nowhere.
       words += apart && words !== "" ? ` ${current.text}` : current.text;
       apart = false;
       return;

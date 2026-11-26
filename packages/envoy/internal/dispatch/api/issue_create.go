@@ -350,8 +350,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The check of who writes the spec of an issue Legion runs, on the new row as the create
-		// leaves it: its labels, and its parent's chain, whose architects pass. It runs before the
-		// project's owner lock and the spec's document call, and before the create's first write.
+		// leaves it: its labels, and its parent's chain, whose architects pass. A parent of another
+		// project ends that chain at the new row, so the check judges the new issue as a root of
+		// its own project, which it does not judge. It runs before the project's owner lock and the
+		// spec's document call, and before the create's first write.
 		if err := refuseSpecWriter(r.Context(), tx, writer, specWrite{
 			act: specWriteCreate, under: parentKey, labels: labels, project: input.Project,
 		}); err != nil {
@@ -437,6 +439,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// null parent_key the insert below writes. The spec's node is a query node where the issue
 	// is born converted.
 	ledger.RegisterPendingIssue(key)
+	specQuery := ""
+	if bornConverted {
+		specQuery = graphstore.QuerySpec
+	}
 	ledger.RegisterPendingArtifact(artifactID, refs.DocumentAddress{
 		RefKey:        key + "/spec",
 		IssueKey:      key,
@@ -444,7 +450,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		PendingParent: parentKey,
 		Project:       input.Project,
 		Band:          refs.DocumentBand(&key, "doc", true, nil, "spec"),
-	}, bornConverted)
+	}, specQuery)
 	var room convertedIssueRoom
 	if bornConverted {
 		if room, err = s.planConvertedIssueRoom(documentCtx, tx, ledger, key, input.Project, parentKey, artifactID, actor); err != nil {
@@ -513,6 +519,14 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	specBlocks = graphstore.Joined(specBlocks, specVersionNode)
+	// An issue born converted writes its decisions query's version 1 once its spec is read back:
+	// the rendering of the decisions the spec holds (queueDecisionsFirstVersion).
+	if bornConverted {
+		if err := s.queueDecisionsFirstVersion(documentCtx, tx, ledger, &room, key, input.Project, actor, spec); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	var parentRef *string
 	if parentKey != "" {
 		parentRef = &parentKey
@@ -969,7 +983,7 @@ func isUniqueViolation(err error) bool {
 
 // fleetServesIssueRoom reports whether every live server process (processes.Live, read through
 // tx) lists the issue room in its capabilities: the test an issue is born converted by (decision 7
-// of dispatch://INFRA-1253's plan). With no live process it holds, as every fleet test of this
+// of the issue-tree plan). With no live process it holds, as every fleet test of this
 // server reads an empty fleet, so a process that has not registered yet - a test's, a tool's -
 // serves no older room.
 func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
@@ -987,8 +1001,8 @@ func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
 
 // issueDecisionsName is the name an issue's decisions query node is created under, from which its
 // slug is taken (nextArtifactSlug). It is no decisions document's: decisions_documents(), which
-// INFRA-1150's decisions step selects by, takes a role of `decisions` or the slug `decisions-md`,
-// and this row carries no role and never that slug.
+// the decisions-tree spec's decisions step selects by, takes a role of `decisions` or the slug
+// `decisions-md`, and this row carries no role and never that slug.
 const issueDecisionsName = "decisions"
 
 // convertedIssueRoom is what an issue born converted holds beside its spec's row (T12b of
@@ -1012,14 +1026,13 @@ type convertedIssueRoom struct {
 // (Ledger.RegisterPendingRoom), so the spec's seed writes the spec's fragment of the room; and it
 // announces the spec's move into that room (docs.AnnounceDocumentRooms), a notification Postgres
 // delivers at the commit, which assigns the transaction no id and so is sent here. Then it
-// does the two documents' work, queued on the ledger and run at the commit, after their rows: the
-// tree's own fragment seeded empty, so an edit of the tree finds a document inside the Proof
-// schema; and each one's version 1, empty, with its version node, as every empty document is
-// created with, so a settlement of the room always finds the tree's latest version and no reader
-// of the issue's documents meets one with no version; and the decisions query's version indexed,
-// in the create's transaction (docs.API.IndexDocumentReferences indexes an empty version as the
-// empty document), so no block-index reconciliation picks it up. ctx is the context the caller
-// joined to tx (docs.Service.Join), and the caller holds the project's owner lock.
+// does the tree's work, queued on the ledger and run at the commit, after its row: its own
+// fragment seeded empty, so an edit of the tree finds a document inside the Proof schema; and its
+// version 1, empty, with its version node, as every empty document is created with, so a
+// settlement of the room always finds the tree's latest version. The decisions query's version 1
+// is written once the spec is seeded (queueDecisionsFirstVersion), since it stores the rendering
+// of the decisions the spec holds. ctx is the context the caller joined to tx
+// (docs.Service.Join), and the caller holds the project's owner lock.
 func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key, project, parent, specID string, actor model.Actor) (convertedIssueRoom, error) {
 	var room convertedIssueRoom
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, gen_random_uuid()::text`).Scan(&room.tree, &room.decisions); err != nil {
@@ -1041,8 +1054,8 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 			Band: refs.DocumentBand(&key, kind, false, nil, slug),
 		}
 	}
-	ledger.RegisterPendingArtifact(room.tree, pending(room.tree, room.treeSlug, "tree"), false)
-	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisions, room.decisionsSlug, "doc"), true)
+	ledger.RegisterPendingArtifact(room.tree, pending(room.tree, room.treeSlug, "tree"), "")
+	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisions, room.decisionsSlug, "doc"), graphstore.QueryDecisions)
 	ledger.RegisterPendingRoom(specID, room.tree)
 	if err := docs.AnnounceDocumentRooms(ctx, tx, room.tree, specID); err != nil {
 		return convertedIssueRoom{}, err
@@ -1064,23 +1077,43 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 	if err != nil {
 		return convertedIssueRoom{}, err
 	}
-	decisionsVersion, err := ledger.QueueVersion(ctx, room.decisions, "", authors, nil)
+	room.held = treeVersionNode
+	return room, nil
+}
+
+// queueDecisionsFirstVersion queues version 1 of the decisions query node of an issue born
+// converted, in the create's read phase, once its spec is seeded and read back (spec): the
+// rendering of the decisions query's answer at the create (R15), which the spec's decisions and
+// their readings are, each a node the spec's pass writes in the create's batch (docs.DecisionsOfSpec),
+// with its version node, a query version holding the query's definition version; and that version
+// indexed in the create's transaction (docs.API.IndexDocumentReferences), handed no text, so it
+// indexes no block, no member and no reference of the version: each node the rendering prints is a
+// node of the issue, indexed as one, and the tree holds no member of the decisions query node. The
+// pass states the version, so its version_renders row goes in the create's batch with its cut, and
+// its record's digest is filled after the COMMIT (docs' fillOwedDigests). What it states joins
+// room's held facts, which the issue's event causes.
+func (s *server) queueDecisionsFirstVersion(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, room *convertedIssueRoom, key, project string, actor model.Actor, spec *pmdoc.Node) error {
+	rendered, err := docs.DecisionsOfSpec(spec)
 	if err != nil {
-		return convertedIssueRoom{}, fmt.Errorf("write the decisions query's first version: %w", err)
+		return fmt.Errorf("render the decisions query's first version: %w", err)
+	}
+	decisionsVersion, err := ledger.QueueVersion(ctx, room.decisions, rendered, []model.Actor{actor}, nil)
+	if err != nil {
+		return fmt.Errorf("write the decisions query's first version: %w", err)
 	}
 	decisionsVersionNode, err := docs.WriteVersionNode(ctx, tx, graphstore.VersionOwner{
 		RefKey: graphstore.ArtifactRefKey(key, project, "", room.decisionsSlug), Project: project,
 		Query: true, DefinitionVersion: graphstore.QueryDefinitionVersion,
 	}, decisionsVersion.Number, actor, decisionsVersion.CreatedAt)
 	if err != nil {
-		return convertedIssueRoom{}, err
+		return err
 	}
 	_, indexed, err := s.deps.Docs.IndexDocumentReferences(ctx, room.decisions, decisionsVersion.Number, "")
 	if err != nil {
-		return convertedIssueRoom{}, fmt.Errorf("index the decisions query's first version: %w", err)
+		return fmt.Errorf("index the decisions query's first version: %w", err)
 	}
-	room.held = graphstore.Joined(treeVersionNode, decisionsVersionNode, indexed)
-	return room, nil
+	room.held = graphstore.Joined(room.held, decisionsVersionNode, indexed)
+	return nil
 }
 
 // createConvertedIssueRoom queues, at the head of ledger's write phase (docs.Ledger.QueueFirst),

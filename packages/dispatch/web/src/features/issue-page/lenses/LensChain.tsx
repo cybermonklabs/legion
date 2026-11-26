@@ -1,14 +1,17 @@
 import type { LensChain as ChainRead, NodeLenses } from "@legion/contracts";
 import { type UseQueryResult, useQuery } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ApiError } from "../../../api/client";
 import { pageFailedText, pageQuietText } from "../../../theme/classes";
+import { usePlainHeadline } from "../../refs/plain-text";
 import type { TreeNode } from "../issue-tree";
 import { authorText, pageChrome } from "../page-structure";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPE_NAMES } from "../page-words";
+import { titleReading } from "../tree-drafts";
 import { filled, type LensChip, type LensFacts, lensChipWords } from "./lens-drafts";
-import { lensChainQuery } from "./lens-reads";
+import { lensChainQuery, lensPlaceOf } from "./lens-reads";
 import { NodeLink } from "./NodeLink";
 
 /**
@@ -22,8 +25,9 @@ import { NodeLink } from "./NodeLink";
  * Of the answer's chains it draws the one that holds this lens, in the answer's order. The
  * others are the chains of the lenses invoked on this lens, which are its rows. Each entry names
  * its lens by its kind's words as the `lens_kind` node holds them, and by the whole words of the
- * row it stands under where the tree drew that row. A chain the read cut short ends with
- * `LENS_WORDS.more_lenses` and the chip of the lens it stopped at.
+ * row it stands under where the tree drew that row, read through the plain-text projection
+ * (`EntryWords`). A chain the read cut short ends with `LENS_WORDS.more_lenses` and the chip of
+ * the lens it stopped at.
  *
  * The control is out of the tab order, as every other control inside a row is, unless `tabStops`
  * holds: `f` steps to it (`useTreeKeymap.ts`'s `rowStops`).
@@ -162,11 +166,7 @@ function ChainEntries({
                   {NODE_TYPE_NAMES.lens}
                 </span>
               )}
-              {filled(onWords) ? (
-                <span className="min-w-0 break-words" data-lens-chain-line="" {...authorText}>
-                  {onWords}
-                </span>
-              ) : null}
+              {filled(onWords) ? <EntryWords words={onWords} /> : null}
             </li>
           );
         })}
@@ -180,6 +180,31 @@ function ChainEntries({
         </p>
       )}
     </>
+  );
+}
+
+/**
+ * The whole words of the row a lens stands under, which its chain entry names it by, drawn
+ * through the framework's plain-text projection (`usePlainHeadline`, the reading list's
+ * `lens-chain-line`): each reference in them reads as its target's name, by the name the page
+ * published for it and else by a read of its own, and never as a raw address (R22). The words are
+ * read as one text run (`titleReading`), since the step read them to their plain words already
+ * (`wholeWords`), and a role in them by the issue the page is on. Nothing until the projection
+ * has answered.
+ */
+function EntryWords({ words }: { words: string }): ReactNode {
+  const { pathname, search } = useLocation();
+  const issue = lensPlaceOf(pathname, search)?.issueKey;
+  const reading = useMemo(() => titleReading(words), [words]);
+  const { reads, text } = usePlainHeadline(reading, undefined, {
+    issue,
+    surface: "lens-chain-line",
+  });
+  return (
+    <span className="min-w-0 break-words" data-lens-chain-line="" {...authorText}>
+      {reads}
+      {text?.text}
+    </span>
   );
 }
 

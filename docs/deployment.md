@@ -178,8 +178,8 @@ See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rota
 ## What a pane's `gh`, `git` and `jj` are
 
 A tmux pane's `PATH` is the daemon's own with the state directory's `bin/` put first: its `legion`
-launcher, its `gh`, a script that runs `legion gh`, and its `git`, a script that runs `legion git`
-(below). The `jj` a pane runs is the first `jj` on the daemon's `PATH`. The daemon resolves at boot a
+launcher, its `gh`, a script that runs `legion gh`, its `git`, a script that runs `legion git`, and
+its `jj`, a script that runs `legion jj` (below). The daemon resolves at boot a
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
@@ -229,7 +229,7 @@ that marker (`agent-task`, `api`, `browse`, `cache`, `discussion`, `issue`, `lab
 `release`, `repo`, `ruleset`, `run` and `workflow`, as gh's `pkg/cmd/root/root.go` builds them;
 `repo set-default` only with `--view` or `--unset`), because gh itself acts on `origin` there. A
 command naming no owner, in a directory whose remotes name none, runs at the issue owner's. A
-command whose last `--help` is true, and `gh --version` alone, only print. It fails closed: a
+command whose last `--help` is true, and `gh --version` and `gh -h`, each alone, only print. It fails closed: a
 command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
@@ -385,6 +385,8 @@ For a `git commit`, `legion git` adds two trailers: `Omp-Session`, with the sess
 `dispatch` command acts as, and `Legion-Role`, with the pane's `LEGION_ROLE`. It adds each line
 only when its value is valid, and only when git alone would accept the commit's message and the
 two lines change nothing else.
+It adds none when the commit's caller asks git for an isolated configuration, as hermetic tests
+do: `GIT_CONFIG_NOSYSTEM` set to a value git reads as true, or `GIT_CONFIG_GLOBAL=/dev/null`.
 It then runs the next `git` on `PATH` after `bin/`, a host's own git wrapper included, and it runs
 every other command through that `git` unchanged.
 Where a host's git wrapper runs `bin/git` again, as a wrapper that searches `PATH` for the next
@@ -416,6 +418,242 @@ and that file names a `legion` that has no `git` command, so every `git` command
 So before you start the older daemon, remove `<state_dir>/bin/git`. Before you run an older
 `legion controller start`, remove the `bin/git` of its state directory too.
 
+The `jj` in `bin/` runs `legion jj --after <state_dir>/bin` (`packages/daemon/cmd/legion/jj.go`).
+The daemon writes it at boot, unless the first `jj` on the daemon's own `PATH` is the worker
+image's wrapper, `/opt/legion/bin/jj`, which expands each command as jj does and hands each one
+that it expands into a `jj git push` to `legion jj` itself. In that case the daemon writes no
+`jj` and removes one that an earlier boot wrote.
+`legion jj` runs the next `jj` on `PATH` after `bin/`, a host's own jj wrapper included.
+It reads a command as jj 0.45 and 0.46 do (`packages/daemon/cmd/legion/jj_expand.go`): an
+alias's words in place of its command word, an alias of an alias the same way, and
+`ui.default-command` in front of a command that names no command, or that an alias of options
+alone leaves with none, each read from the configuration of the working directory, as jj reads
+them.
+A command word is a command's first word that is no option and no option's value.
+These commands make no read of the aliases: one whose command word is a built-in jj command,
+`jj git push` among them; `-h`, `--help`, `-V`, `--version` or a cluster of short flags that
+starts with `-h` or `-V`, with no command word; any command while `COMPLETE` is set for shell
+completion; any command of a process with no table, such as the controller; and a command that
+comes back into `bin/jj` with the words `legion jj` ran it with (below).
+Any other command, a bare `jj` included, first costs one `jj config list` process (below).
+A push that the step runs on costs one read of the push's configuration as well, unless the read
+of the aliases expanded it and it names no `-R` (below).
+Every command that jj does not run as a `jj git push` runs through that `jj` with the role's own
+words, byte for byte.
+Where `legion jj` cannot expand a command, it prints one line,
+`legion jj: could not expand <what>: <why>; the command runs as written`, and the command runs
+with the role's own words and no step: an alias that is no list of strings, a table-form alias
+with `enabled = false`, a cycle of aliases, a `ui.default-command` that is neither a string nor a
+list of strings, a command word that is no bare name where the configuration names an alias by a
+quoted name, and a read that fails or prints what is no name and JSON value.
+That read, the read of a push's configuration (below), and each read of the worker image's
+wrapper, print what jj prints on standard error but the warnings that jj prints on every command,
+such as `Cannot define an alias that overrides the built-in command`, and jj's note of a key that
+a read names and no configuration sets (`No matching config key for`), which only a read prints.
+A read of the aliases or of `ui.default-command` that fails leaves out jj's error too, and the
+line after it says that the read failed.
+So a warning that jj prints once, such as `Your repo appears to have been copied`, prints once
+where the read is the command that takes it, and a warning that jj prints on every command prints
+as often as jj alone prints it for the command that runs after the read.
+In a pod, jj itself prints each warning of its aliases, such as
+`Cannot define an alias that overrides the built-in command`, twice for each command, and three
+times for one with a `-R`: the wrapper puts its `--config` on every line it runs, and jj expands a
+line, loading its aliases and printing their warnings, once, again for a `--config`, and a third
+time for a `-R` (its `warn_if_args_mismatch`).
+jj's other warnings of every command come from no such expansion: a deprecated setting's prints
+once for each command, and that of a `trunk()` that does not resolve once for each load of the
+workspace, in a pod as in a pane.
+The expansion has four limits.
+An alias that a `[[--scope]]` defines for `jj config` alone is expanded as the worker image's
+wrapper expands it, so its push runs with the step where jj alone refuses it.
+A table-form alias with `enabled = false` runs as written, in a pod as in a pane: jj 0.45.1-sami
+pushes it with no step, and jj 0.46.0, which the worker image pins as 0.46.0-sami, refuses it with
+exit 2 and pushes nothing.
+jj 0.38 refuses every table-form alias, that one included; the pane expands one without
+`enabled = false`, so its push runs with the step there.
+jj 0.38 refuses an alias of options alone used twice, which the pane expands, so the step runs and
+jj 0.38 then refuses the expanded line for its option given twice or, for an option it takes
+twice, pushes it; and it refuses an alias of options alone that leaves no command word, which the
+pane and the worker image's wrapper expand with `ui.default-command` in front, so where that is a
+push, it runs with the step.
+Before a `jj git push`, and before a command that jj expands into one, `legion jj` runs the push
+step on the push as jj expands it.
+In a pane, the step's first command reads the configuration of the repository that the push
+loads, `jj --ignore-working-copy --color=never config list -T '""'` with the push's own `-R`
+arguments and the `--config` and `--config-file` arguments that jj keeps for the push: it takes
+no snapshot, adds no operation, and prints what jj prints once there, such as
+`Your repo appears to have been copied`.
+The step's other reads print nothing of what jj prints on standard error, so without that read
+the first of them would take such a warning from the role.
+In a pod, the worker image's wrapper's read of `git.executable-path`, with the same arguments, is
+that command.
+A push that the read of the aliases expanded makes no such read unless it names `-R`: the read of
+the aliases loaded the same repository.
+A read of the push's configuration that fails stops the push with jj's error and exit status, as
+jj alone fails on the same configuration.
+The step decides from reads with `--ignore-working-copy`.
+Where the push takes a snapshot of its own, the step first compares what git did in the
+workspace with what jj last imported, with reads that import nothing: git's `HEAD`
+(`git rev-parse HEAD`) with the first parent of `@` (`jj log -r 'first_parent(@)'`), to which jj
+sets git's `HEAD` after each of its commands, and git's local branches
+(`git for-each-ref refs/heads`) with jj's `@git` bookmarks (`jj bookmark list --all-remotes`).
+It compares no other ref of git's, such as a tag or a remote-tracking branch.
+An unborn `HEAD` where the first parent of `@` is the root commit counts as equal, and a
+conflicted `@git` bookmark as a difference.
+A workspace whose root (`jj workspace root`) holds no `.git`, such as an issue workspace under jj
+0.38, which colocates none, has no git working tree and compares nothing.
+Each git read runs the first `git` on `PATH`, the worker image's wrapper in a pod and `bin/git` in
+a pane, with `-C` and the workspace's root; one that fails, but for an unborn `HEAD`, counts as a
+difference, since the snapshot that follows is the one the push takes anyway.
+Where git moved neither `HEAD` nor a local branch and the step's first run finds nothing of the
+push to change, no commit and no word, or where the push itself carries `--ignore-working-copy`,
+every jj command of the step runs with `--ignore-working-copy`, so it takes no snapshot, and where
+it found nothing to change it adds no operation; a role's own `--ignore-working-copy` goes to the
+real push alone, and the step then compares nothing.
+Otherwise the step takes the one snapshot of the working copy that the push would take itself,
+with the push's own `-R` and `--quiet` arguments and the `--config` and `--config-file` arguments
+that jj keeps for the push, and passes on what that snapshot prints but the warnings that jj
+prints on every command, which the push prints itself.
+It takes that snapshot before its first read where git moved `HEAD` or a local branch, so that
+read sees what git did, and otherwise before it changes a commit or a word of the push, after
+which it reads what the push sends again and acts on no commit id it read before the snapshot.
+Each of its other commands runs with `--ignore-working-copy`, and so does the real push, which
+then takes no second snapshot: every id the step reads after its snapshot, `@` and each
+descendant of `@` included, stays valid through the push, a warning that a snapshot prints, such
+as jj's `Refused to snapshot some files`, is printed once, and a write that another process makes
+after the step's snapshot stays in the working copy for the next jj command.
+Those ids stay valid unless another jj command, such as a `jj st` in the same workspace, rewrites
+those commits between the step's read and the real push.
+The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
+role of the issue as one JSON object (`docs/kubernetes.md`, contract entry `20261125161436`).
+The step reads what the push sends from a dry run of the same push, and reads the author and the
+first `Legion-Role` trailer of each of those commits.
+jj keeps each of `--config` and `--config-file` only from the deepest of the three places of the
+command line that holds one, in front of `git push`, between its two words and after them, so
+every command of the step carries only those.
+The dry run's own `--config ui.quiet=false` goes at the end of the place that holds the push's
+kept `--config`, or, where the push has none, right in front of the dry run's own flags, which go
+in front of a `--`; so jj keeps both and reads it after each `--config-file` there or in front of
+it; only a `--config-file` at a deeper place that sets `ui.quiet = true` silences the dry run,
+which the step then cannot read.
+Where a commit's author is not the identity that the table gives the trailer's role, the step
+runs `jj metaedit` for each such role, under that role's identity, which sets the author.
+It prints one line for each commit it rewrote,
+`legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
+own arguments, but for a revision argument whose meaning the rewrite changed, and with
+`--ignore-working-copy` in front of them where the step took its snapshot.
+Before it rewrites anything, the step has jj resolve each argument of `--change`, `--named` and
+`--revisions` to the whole set of commits it names, and reads which of its mutable commits that no
+remote bookmark holds are hidden and which is the working-copy commit; a hidden commit whose change
+has one visible commit stands for that commit, and for `@` where that commit is the working-copy
+commit.
+The set the push must send is that set with each commit the step rewrote or rebased, and each
+hidden one that stands for another, replaced by the commit that stands for it.
+Where the step rewrote nothing, every argument reaches the push as written, but for one that names
+a hidden commit standing for another, which gets that set as below.
+Where it rewrote something, every argument is held to its set, whether or not its own commits
+moved: one reaches the push as written only where jj, resolving it again after the rewrite,
+resolves it to that set, such as `@`, a bookmark or a change id of a rewritten commit.
+Any other argument can name other commits once the step has rewritten some, as a change offset
+`<change>/<n>`, `latest(...)`, `mine()` or `author(...)` can, even through another argument's
+rewrite, so the push gets the set as ids joined by ` | `, `@` for the working-copy commit, while
+that word is under 100,000 bytes.
+Where it would not be, the push gets the primary form, `(<the argument as written>) [~ (<the old
+ids>)] [~ (<the ids it now names and must not>)] [| <the new ids>] [| <the ids it must send and no
+longer names>]`, with each empty part left out, where that word is under 100,000 bytes and jj,
+resolving it once more, finds that it names the set.
+Else a `--change` or `--revisions` argument becomes as many words of that same option as keep each
+under 100,000 bytes, each with a part of the ids, since `jj git push` pushes the union of a
+repeated option; `--named` names one commit.
+Each argument that gets the ids, in one word or several, gets one `legion jj:` line that says so;
+an argument that named no commit before the step gets `none()`, and its line says that.
+No word the step writes passes 100,000 bytes, but for a role's own argument that is that long
+already, so none passes Linux's 131,072-byte limit on one argument.
+Only where the push would then pass Linux's 2,097,152-byte limit on a command's arguments and
+environment together, with each revision argument counted at the larger of its own word and the
+ids of its whole set, does the step decide, before any rewrite other than the fill of an empty
+author that a dry run refused, and, where no such fill ran, before its snapshot, to set no other
+author:
+it prints one `legion jj: could not set the author:` line that names the argument, the count and
+the limit, and the push runs as written, but where that fill ran, after which each revision
+argument is held to its set as above and the push carries `--ignore-working-copy`.
+The step's own `jj metaedit` runs in as many parts as keep each command under that limit, each
+naming its commits by the ids the step followed them to after the part before it.
+Each of the step's reads of a list of commit or change ids runs once for each part of the list
+under 100,000 bytes, so a push of thousands of commits still runs.
+It changes no commit that a remote bookmark holds and no immutable commit.
+It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
+the table.
+jj rebases such a commit when it sits above a commit that the step rewrote, which gives it a new
+commit id and the step's identity as committer, and it keeps its author.
+A commit with an empty author whose trailer names a role of the table gets that role's author
+too, and `jj git push` still refuses one with no such trailer.
+The step adds no refusal of its own.
+A jj command of the step that fails stops the push with jj's error and exit status, but for a dry
+run that it cannot read (below), a read of a revision argument that jj refuses, and a rewrite
+that jj refuses because its commit exists already, where that commit stands for one the push
+names (below).
+An argument whose set jj refuses to read goes to the push as written; one whose set the step has
+read and that jj then refuses to read again goes as its ids, with its one printed line.
+Where it cannot read the dry run, it prints one line, and the push runs as written, but where a
+metaedit of the step ran first, such as the fill of an empty author, after which each revision
+argument is held to its set as above, and with `--ignore-working-copy` where the step took its
+snapshot.
+A commit that the push reaches only through git's `HEAD` or a local branch that git moved in a
+colocated workspace, which no jj command has imported yet, such as one that a `git commit`, a
+`git commit --amend` or a `git rebase` made, is no exception: the step takes its snapshot before
+its first read, which imports git's `HEAD` and refs in jj's own order and keeps the working copy
+current, and the step reads that commit and sets its author by the rules above, as for any other.
+A commit that only another ref of git's names, such as a tag, is outside that comparison: the step
+takes no snapshot for it, and the commit keeps the author that jj alone leaves it.
+`jj git import` is not that step: with `--ignore-working-copy` it imports no commit that git made
+on jj's detached `HEAD`, and after a `git rebase` of the branch under `@` it rewrites `@` and
+leaves the working copy that every role shares stale.
+jj prints a commit id short, as its first 12 hex digits, and the step never has jj resolve such an
+id over the whole repository, hidden commits included: it matches the id against the commits of
+the repository's bookmarks and tags and of the push's revision arguments, or, for jj's refusal of
+a commit with no author, against the mutable commits that no remote holds.
+Two commits of that set whose ids start the same, another issue's under tmux included, make a dry
+run that the step cannot read.
+A commit's timestamps are whole seconds, so a rewrite in the same second as an earlier rewrite of
+the same commit asks jj for a commit that exists already, which jj refuses.
+In a retry of a refused push that names a hidden commit of a divergent change, which the first
+push's rewrite replaced, the step takes the commit that the rewrite made, and the push sends it.
+In any other case, such as a retry after a `jj undo` or a `jj op restore` in the same second, the
+push stops with jj's error and exit status before the real push runs, and sends nothing.
+A process with no table runs no step, such as a controller or a pane of an earlier release.
+Where a host's jj wrapper runs `bin/jj` again, `legion jj` follows the loop rule of `legion git`
+above to choose the `jj` it runs, and a command that comes back with the words `legion jj` ran it
+with runs at once, with no second read of the aliases, no second line and no second step.
+A push that a jj command starts, such as `jj util exec -- jj git push`, is a push of its own and
+runs the step.
+Every `jj` command of a pane starts one `legion` process first.
+Measured in a gVisor pod, `jj --version` through `bin/jj` took 408 to 755 ms, and the real `jj`
+took 95 to 161 ms.
+Any command but those that make no read of the aliases (above), a bare `jj` included, also starts
+one `jj --ignore-working-copy --color=never config list --include-defaults` through the next
+`jj`, in the working directory and with none of the command's own options, which reads every
+alias and `ui.default-command`, takes no snapshot and reads no commit.
+Measured on a scratch clone of cybermonklabs/legion in an issue's pod, 15 runs each, that read
+took 40 to 88 ms (median 56 ms) under jj 0.45.1-sami and 70 to 187 ms (median 115 ms) under jj
+0.38.0; whole jj commands in that clone took 2.2 to 4.9 s with or without `bin/jj`, so the read is
+inside their spread.
+A push that the step runs on also starts the read of its configuration before the step (above),
+`jj --ignore-working-copy --color=never config list -T '""'` with the push's `-R`, `--config` and
+`--config-file` arguments, unless the read of the aliases expanded it and it names no `-R`; that
+read takes no snapshot and reads no commit.
+Measured on 2026-11-23 on a shallow scratch clone of cybermonklabs/legion in an issue's pod, 15
+runs each, that read alone took 38 to 70 ms (median 47 ms) under jj 0.45.1-sami and 78 to 129 ms
+(median 96 ms) under jj 0.38.0.
+`legion controller start` writes the same `jj` into the `bin/` of its own state directory, by the
+same rule, for the operator's controller.
+
+A release older than the first one that writes `bin/jj` leaves `<state_dir>/bin/jj` in place,
+and that file runs a `legion jj` command that the older `legion` does not have, so every `jj`
+command in a pane fails until the operator deletes it.
+So before you start the older daemon, remove `<state_dir>/bin/jj`. Before you run an older
+`legion controller start`, remove the `bin/jj` of its state directory too.
+
 No leak guard runs in a pane's `git` or `jj`.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
 `/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
@@ -423,8 +661,10 @@ a shared box has no such boundary: the daemon, its panes and the operator are on
 wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
 pinned for it one the pane can override.
 A copy of them here would read as a guard and hold nothing.
-What a pane does run the guard in is `legion gh`, the same binary with the same rules compiled
-in, which resolves the shared public leak check from the pane's own `PUBLIC_LEAK_CHECK`.
+What a pane does run the guard in is `legion gh`, the same binary, which resolves the shared
+public leak check from the pane's own `PUBLIC_LEAK_CHECK` and runs the deployment's private-name
+rule file that the pane's launch hands it, or no private-name rule where the deployment names none
+([What a pane's Dispatch credential is](#what-a-panes-dispatch-credential-is)).
 A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
 daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
 operator's home, and the check's installer puts its files on no `PATH` a pane has.
@@ -462,8 +702,10 @@ a check, a `public-leak-check.sh` on `PATH` that is a dangling link or has no ex
 public writes, pushes included, are then refused under either setting, and the daemon logs a line
 per launch.
 With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
-a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
-repository's own private-name rules alone.
+a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and the
+deployment's private-name rules alone, where the deployment names a rule file; where it names
+none either, the call is cleared with nothing read
+([The deployment's private-name rules](kubernetes.md#the-deployments-private-name-rules)).
 
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's
@@ -514,6 +756,18 @@ The Envoy listener bearer reaches a pane the same way. It is a launch secret, `E
 every launch secret to a 0600 file of its own under `<state_dir>/secrets` and tells the pane the
 matching `<NAME>_FILE` pointer, here `ENVOY_TOKEN_FILE` (`secretFiles`, `WriteSecretFiles` and
 `panePairs`, `packages/daemon/internal/runtime/tmux/spawn.go`).
+
+The deployment's private-name rule file is a launch secret too, `LEGION_PRIVATE_NAME_RULES`, which
+the pane's `legion gh` reads through `LEGION_PRIVATE_NAME_RULES_FILE`. The daemon reads the file
+once at boot, from `private_name_rules_file` in `legion.yaml` or else
+`LEGION_PRIVATE_NAME_RULES_FILE` in its own environment, and hands its bytes to every launch. A
+pane keeps the copy its launch was handed, so a changed file reaches a pane after the daemon
+restarts and that pane launches again. Where neither setting names a file, no launch carries the
+secret, and a pane's `legion gh` runs no private-name rule and prints nothing of it; the daemon
+logs once, at boot, that the deployment names no rule file.
+`legion controller start` passes the operator's own environment to its controller, so an operator
+who wants that controller's guard to run the rules exports `LEGION_PRIVATE_NAME_RULES_FILE` there.
+`docs/kubernetes.md`, "The deployment's private-name rules", has the rest.
 
 When `dispatch_token_file` holds one of the deployment's shared agent tokens
 (`DISPATCH_AGENT_TOKEN`), Dispatch matches the bearer against them (`MatchesSharedAgentToken`,
@@ -666,8 +920,10 @@ provider_keys:
   (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
   resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
   session it resumes), the git
-  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
-  gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
+  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the identities of the issue's roles that
+  every workflow launch sets for the push step (`LEGION_ROLE_IDENTITIES`), the pointers to the
+  secrets every launch gets as a file of its own (`ENVOY_TOKEN_FILE`,
+  `LEGION_PRIVATE_NAME_RULES_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
   `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
@@ -767,8 +1023,8 @@ provider_keys:
   `instructions` appends nothing.
   The launch follows the record, not the mode:
   a tree the daemon drew into the memory group keeps its overlays and its instructions while the
-  block still names them, whatever the mode is now, so `mode: off` stops new draws and takes
-  memory from no tree already running with it.
+  block still names them, whatever the mode is now, so `mode: off` gives every new tree no arm and
+  takes memory from no tree already running with it.
   Taking the files away is removing them from the block.
   The loader refuses a `mode` that is no word of the three, and a mode other than `off` that names
   no `config_files`.
@@ -786,8 +1042,13 @@ provider_keys:
   (`experiments: {plan-length: {mode: random, unit: issue, variants: [{name: long, config_files: [/etc/legion-experiments/plan-length.yml]}, {name: control}]}}`).
   An experiment's name is 1 to 32 characters of `a-z`, `0-9` and `-`, and the project names it
   once.
-  `mode` is `off`, the default, which draws for no unit, `on`, which gives every new unit the arm
-  `on_variant` names, or `random`, which draws among the arms by their weights.
+  `mode` is `off`, `on` or `random`, and `off` is the default.
+  `off` gives every new unit no arm, and the daemon records that unit at the empty arm, with the
+  mode `off` and the instant.
+  The record keeps that arm as `""`, and `legion state --json` shows `""` too.
+  The plain `legion state` line prints it as `none`.
+  `on` gives every new unit the arm `on_variant` names, and `random` draws among the arms by their
+  weights.
   `unit` is `tree`, the default, which draws once for a whole tree and gives every issue of it the
   same arm, or `issue`, which draws for each issue on its own.
   `roles` lists the issue roles whose launches load the experiment's arms, each once, and every
@@ -869,10 +1130,11 @@ provider_keys:
   other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds
   nothing, or is readable by its group or others refuses the boot, naming the variable and the
   file. Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
-  Under tmux the boot also refuses a key named for a variable every pane carries, a key whose
-  `_FILE` pointer every pane carries, and, with the reason `pane_env` gives, a key named for a
-  variable that places the session a resume reads, one the runtime tells a Claude Code pane or a
-  resumed Oh My Pi pane after the operator's variables, or a launch secret's pointer.
+  Under tmux the loader, and so `legion config check`, refuses with the reason `pane_env` gives a
+  key named for a variable that places the session a resume reads, one the runtime tells a Claude
+  Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's pointer,
+  or `LEGION_ROLE_IDENTITIES`; the boot refuses those again, and also a key named for a variable
+  every pane carries and a key whose `_FILE` pointer every pane carries.
   The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
   `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of

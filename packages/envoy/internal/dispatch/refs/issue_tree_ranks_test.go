@@ -17,7 +17,7 @@ import (
 )
 
 // The tests of this file hold the block index to the rank, the text and the placement it states of
-// every block (R1 and R15 of dispatch://INFRA-1253, D1, D9 and D15 of its plan). Each writes its
+// every block (R1 and R15 of the issue-tree spec, D1, D9 and D15 of its plan). Each writes its
 // versions as a version write does and indexes them through IndexBlocks, as block_parent_test.go
 // does, and reads the values back through the store's own current read (graphstore.CurrentValue).
 // The attribute names are spelled out rather than read off the writer, so a writer that renamed
@@ -403,7 +403,7 @@ func TestEveryBlocksTextValueIsItsDocumentBlockTextsRow(t *testing.T) {
 	document.requireTextsProjected(t, "the pass that gave mid its text", second)
 }
 
-// A state dispatch://INFRA-1950 sets stands through every pass of the block index that moves the
+// A state the node-visibility spec sets stands through every pass of the block index that moves the
 // block's text or its place, and the pass states the block's values all the same: a settled
 // requirement whose words change and that moves after its sibling stays settled and takes its new
 // text and its new rank; an overtaken one stays overtaken; and a requirement the version drops is
@@ -431,7 +431,7 @@ func TestAReindexKeepsTheStateANodeWasGiven(t *testing.T) {
 		t.Helper()
 		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 			return graphstore.Write(ctx, tx, []graphstore.Node{{
-				Kind: BlockNodeKind, ID: document.address(requirement), Supertag: BlockSupertag,
+				Kind: BlockNodeKind, ID: document.address(requirement), Supertag: requirementType,
 				Visibility: graphstore.VisibilityProject, State: state,
 				MadeAt: time.Now(), MadeBy: writer, SourceEvent: graphstore.NoEvent,
 			}}, nil)

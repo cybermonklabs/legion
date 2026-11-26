@@ -3,7 +3,7 @@
 package api
 
 // This branch's check c-tree-read-bound: the head read of the tree route answers the skeleton of an
-// issue within the three bounds of R8.
+// issue within the three bounds of R8, and pages it within the bounds of nodes and bytes.
 //
 // TestTheTreeReadAnswersTheSkeletonWithinItsBounds boots the build of BASELINE_SHA, the release
 // this branch lands after, seeds four issues through its own routes in the sizes of production and
@@ -11,18 +11,22 @@ package api
 // same database and reads the same issues through the tree route. It carries the basebuild tag,
 // as cmd/dispatch's store_census_test.go does, because it builds the server of an earlier commit
 // out of the repository (git archive), and no CI job builds the tag. It takes about an hour and is
-// run on its own, by name, as
+// run, with the check's replay (TestTheTwoCutsAnswerAsTheUncutWalk, which carries no tag), by name,
+// as
 //
-//	BASELINE_SHA=<the commit the pull request body's BASELINE_SHA= line names> go test -tags basebuild ./internal/dispatch/api/ -run '^TestTheTreeReadAnswersTheSkeletonWithinItsBounds$' -timeout 170m -count=1 -v
+//	BASELINE_SHA=<the commit the pull request body's BASELINE_SHA= line names> go test -tags basebuild ./internal/dispatch/api/ -run '^(TestTheTreeReadAnswersTheSkeletonWithinItsBounds|TestTheTwoCutsAnswerAsTheUncutWalk)$' -timeout 170m -count=1 -v
 //
 // from packages/envoy, with DISPATCH_TEST_DATABASE_URL naming a Postgres server it may create a
 // database on, which loads pg_stat_statements (shared_preload_libraries=pg_stat_statements,
-// pg_stat_statements.track=all): two of the bounds hold on the database time read there.
+// pg_stat_statements.track=all): the database time it prints is read there, and the check's median
+// stage (packages/dispatch/e2e/acceptance/tree-read-db-medians.sh) judges it over three Jobs.
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -56,13 +60,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The bounds of R8: a p90 of at most skeletonBoundMS for the read with no view on the first three
-// issues and for the two views, and, on each of the first three issues, at most skeletonDatabaseRatio
-// times the database time the old page spends on the same content with its three tabs.
-const (
-	skeletonBoundMS       = 200.0
-	skeletonDatabaseRatio = 2.0
-)
+// skeletonBoundMS is R8's bound on the p90 of the first page of each read of the tree route, on
+// every issue and for every filter. The bound on database time, at most twice the old page's
+// median, is the median stage's (packages/dispatch/e2e/acceptance/tree-read-db-medians.sh), over
+// the three Jobs' lines, and no one run judges it.
+const skeletonBoundMS = 200.0
 
 // The sampling: skeletonWarmUps readings that are not counted, then skeletonReadings readings of
 // each read, as the reader with display trees, on each side.
@@ -99,8 +101,9 @@ const skeletonBackfillDone = `msg="dispatch: boot backfill done"`
 // skeletonShape is one issue of the corpus, in the sizes of production's census (R8): the typed
 // blocks of each role document, each holding a paragraph that the blocks read lists as a block of
 // its own, the comments and asks, and the blocks of each other document, which are paragraphs.
+// label is the stable name each line of its readings prints it by.
 type skeletonShape struct {
-	name                            string
+	name, label                     string
 	requirements, checks, planTasks int
 	comments, asks                  int
 	others                          []int
@@ -109,10 +112,40 @@ type skeletonShape struct {
 // skeletonShapes are the four issues: the one whose skeleton of 3,006 parts is the largest but one,
 // the one of the most comments, the one of the most blocks, and the one of the largest spec.
 var skeletonShapes = []skeletonShape{
-	{name: "the largest plan", requirements: 31, checks: 53, planTasks: 1_393, comments: 47, asks: 5},
-	{name: "the most comments", requirements: 3, comments: 9_252},
-	{name: "the most blocks", planTasks: 730, comments: 113, asks: 5, others: skeletonOtherDocuments()},
-	{name: "the largest spec", requirements: 1_393},
+	{name: "the largest plan", label: "largest-plan", requirements: 31, checks: 53, planTasks: 1_393, comments: 47, asks: 5},
+	{name: "the most comments", label: "most-comments", requirements: 3, comments: 9_252},
+	{name: "the most blocks", label: "most-blocks", planTasks: 730, comments: 113, asks: 5, others: skeletonOtherDocuments()},
+	{name: "the largest spec", label: "largest-spec", requirements: 1_393},
+}
+
+// The view content each issue holds beside its census shape, so that each view reads something on
+// both sides: c-tree-read-bound seeds "a readable role document and matching content on the old
+// side where a fixture would not exercise a view", and "decisions and answered asks so the
+// Decisions measurements are not empty". Where the census gives a role document no typed block,
+// the issue's holds skeletonViewBlocks of them; each spec holds skeletonDecisions decision blocks
+// where the release before declares that type (skeletonBaseDecides); each issue the census gives
+// no ask holds skeletonViewAsks; and a person answers skeletonAnswered of each issue's asks.
+const (
+	skeletonViewBlocks = 3
+	skeletonDecisions  = 2
+	skeletonViewAsks   = 2
+	skeletonAnswered   = 2
+)
+
+// skeletonHeld is count, or skeletonViewBlocks where the census gives none.
+func skeletonHeld(count int) int {
+	if count == 0 {
+		return skeletonViewBlocks
+	}
+	return count
+}
+
+// heldAsks is how many asks the issue holds: its census's, or skeletonViewAsks where it gives none.
+func (shape skeletonShape) heldAsks() int {
+	if shape.asks == 0 {
+		return skeletonViewAsks
+	}
+	return shape.asks
 }
 
 // skeletonOtherDocuments is the 65 other documents of the issue of the most blocks: 45,008 blocks
@@ -130,13 +163,14 @@ func skeletonOtherDocuments() []int {
 	return documents
 }
 
-// skeletonIssue is one issue of the corpus as seeded: its key, and its role documents' ids, empty
-// where it holds none.
+// skeletonIssue is one issue of the corpus as seeded: its key, its role documents' ids, the ids of
+// its other documents, and how many decision blocks its spec holds.
 type skeletonIssue struct {
 	skeletonShape
 	key                      string
 	spec, verification, plan string
 	documents                []string
+	decisions                int
 }
 
 // ───── the two servers and the run's database ─────────────────────────────
@@ -547,10 +581,35 @@ func skeletonInParallel(t *testing.T, what string, count int, job func(index int
 	}
 }
 
+// skeletonBaseDecides reports whether the release before, the build of commit, declares the typed
+// block `decision` (its pmdoc/schema/blocks.json, read out of that commit's own tree): a release
+// that declares none takes no decision block, and its old page reads a person's answered asks as
+// its only decisions.
+func skeletonBaseDecides(t *testing.T, commit string) bool {
+	t.Helper()
+	var schema struct {
+		Types []struct {
+			Name string `json:"name"`
+		} `json:"types"`
+	}
+	raw := gitOutput(t, ".", "show", commit+":packages/envoy/internal/dispatch/pmdoc/schema/blocks.json")
+	if err := json.Unmarshal([]byte(raw), &schema); err != nil {
+		t.Fatalf("read the block schema of %s: %v", commit, err)
+	}
+	for _, declared := range schema.Types {
+		if declared.Name == refs.DecisionSupertag {
+			return true
+		}
+	}
+	return false
+}
+
 // seedSkeleton writes the four issues through s, as the writer, a person: each issue with its
-// spec, then its Verification document and its plan where it holds them, its other documents, its
-// asks and its comments, each a person's, so each comment is a conversation node (R2).
-func seedSkeleton(t *testing.T, s *readCostServer) []*skeletonIssue {
+// spec, its Verification document, its plan, its other documents, its asks, of which the writer
+// answers skeletonAnswered, and its comments, each a person's, so each comment is a conversation
+// node (R2). Each role document holds the census's typed blocks, or skeletonViewBlocks where the
+// census gives none, and the spec skeletonDecisions decision blocks where decides is true.
+func seedSkeleton(t *testing.T, s *readCostServer, decides bool) []*skeletonIssue {
 	t.Helper()
 	started := time.Now()
 	for _, person := range []string{readCostReader, readCostWriter} {
@@ -558,30 +617,41 @@ func seedSkeleton(t *testing.T, s *readCostServer) []*skeletonIssue {
 	}
 	s.expect(t, "create the project "+skeletonProject, http.MethodPost, "/api/v1/projects", readCostWriter,
 		map[string]string{"key": skeletonProject, "name": "The skeleton's corpus"}, http.StatusCreated)
+	none := func(string) string { return "" }
 	var issues []*skeletonIssue
 	for _, shape := range skeletonShapes {
 		issue := &skeletonIssue{skeletonShape: shape}
-		spec := skeletonTyped("requirement", "r", shape.requirements, func(string) string { return "" })
+		spec := skeletonTyped("requirement", "r", skeletonHeld(shape.requirements), none)
+		if decides {
+			issue.decisions = skeletonDecisions
+			spec += skeletonTyped(refs.DecisionSupertag, "d", skeletonDecisions, none)
+		}
 		issue.key = createReadCostIssue(t, s, skeletonProject, "The issue of "+shape.name, spec, readCostWriter)
 		serves := func(string) string {
-			return ` serves="` + refs.BlockRef("dispatch://"+issue.key+"/spec", "r1") + `"`
+			return ` serves="` + refs.BlockRef("dispatch://"+issue.key+"/spec", "r1") + `" surface="cli" run="go test ./..."`
 		}
-		if shape.checks > 0 {
-			issue.verification = uploadReadCostDocument(t, s, issue.key, "verification.md",
-				skeletonTyped(graphstore.BlockTypeCheck, "k", shape.checks, func(id string) string {
-					return serves(id) + ` surface="cli" run="go test ./..."`
-				}), readCostWriter)
-		}
-		if shape.planTasks > 0 {
-			issue.plan = uploadReadCostDocument(t, s, issue.key, "plan.md", skeletonTyped("plan_task", "p", shape.planTasks, func(string) string { return "" }), readCostWriter)
-		}
+		issue.verification = uploadReadCostDocument(t, s, issue.key, "verification.md",
+			skeletonTyped(graphstore.BlockTypeCheck, "k", skeletonHeld(shape.checks), serves), readCostWriter)
+		issue.plan = uploadReadCostDocument(t, s, issue.key, "plan.md", skeletonTyped("plan_task", "p", skeletonHeld(shape.planTasks), none), readCostWriter)
 		for index, blocks := range shape.others {
 			name := fmt.Sprintf("notes-%02d.md", index+1)
 			issue.documents = append(issue.documents, uploadReadCostDocument(t, s, issue.key, name, skeletonProse(name, blocks), readCostWriter))
 		}
-		for index := range shape.asks {
-			s.expect(t, fmt.Sprintf("ask %d on %s", index+1, issue.key), http.MethodPost, "/api/v1/issues/"+issue.key+"/asks", readCostWriter,
-				map[string]any{"question": fmt.Sprintf("Question %d: which way do we take?", index+1)}, http.StatusCreated)
+		for index := range shape.heldAsks() {
+			asked := s.expect(t, fmt.Sprintf("ask %d on %s", index+1, issue.key), http.MethodPost, "/api/v1/issues/"+issue.key+"/asks", readCostWriter,
+				map[string]any{"question": fmt.Sprintf("Question %d: which way do we take?", index+1), "options": []map[string]string{{"label": "Yes"}, {"label": "No"}}},
+				http.StatusCreated)
+			if index >= skeletonAnswered {
+				continue
+			}
+			var ask struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(asked.body, &ask); err != nil || ask.ID == "" {
+				t.Fatalf("read ask %d of %s back: %v: %s", index+1, issue.key, err, asked)
+			}
+			s.expect(t, fmt.Sprintf("answer ask %d of %s", index+1, issue.key), http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", readCostWriter,
+				map[string]any{"selected": []string{"Yes"}, "text": fmt.Sprintf("Yes, answer %d: we take that way.", index+1)}, http.StatusOK)
 		}
 		skeletonInParallel(t, "write the comments of "+issue.key, shape.comments, func(index int) error {
 			_, err := s.write(http.MethodPost, "/api/v1/issues/"+issue.key+"/comments", readCostWriter,
@@ -589,8 +659,9 @@ func seedSkeleton(t *testing.T, s *readCostServer) []*skeletonIssue {
 			return err
 		})
 		issues = append(issues, issue)
-		t.Logf("c-tree-read-bound: seeded %s, the issue of %s: %d requirements, %d checks, %d plan tasks, %d comments, %d asks, %d other documents",
-			issue.key, shape.name, shape.requirements, shape.checks, shape.planTasks, shape.comments, shape.asks, len(shape.others))
+		t.Logf("c-tree-read-bound: seeded %s, the issue of %s (%s): %d requirements, %d decisions, %d checks, %d plan tasks, %d comments, %d asks of which %d answered, %d other documents",
+			issue.key, shape.name, shape.label, skeletonHeld(shape.requirements), issue.decisions, skeletonHeld(shape.checks), skeletonHeld(shape.planTasks),
+			shape.comments, shape.heldAsks(), skeletonAnswered, len(shape.others))
 	}
 	for _, issue := range issues {
 		var read struct {
@@ -941,13 +1012,13 @@ func measureSkeletonRead(t *testing.T, statements *skeletonStatements, s *readCo
 	return reading
 }
 
-// skeletonOldReads is the old issue page's reads of issue (R8): the nine of its first load, and the
-// reads of its three tabs - the Verification tab's results read and, for the Verification document
-// and the plan where the issue holds each, the document's read, its text, its blocks and its
-// comments. The Decisions tab draws from the decisions read the first load makes.
-func skeletonOldReads(issue *skeletonIssue) (first, tabs map[string]string) {
+// skeletonOldReads is the old issue page's reads of issue (R8), by name: the nine of its first
+// load, and the reads of its three tabs - the Verification tab's results read and, for the
+// Verification document and the plan, each document's read, its text, its blocks and its comments.
+// The Decisions tab draws from the decisions read the first load makes.
+func skeletonOldReads(issue *skeletonIssue) map[string]string {
 	spec := url.QueryEscape("dispatch://" + issue.key + "/spec")
-	first = map[string]string{
+	reads := map[string]string{
 		"comments":       "/api/v1/issues/" + issue.key + "/comments",
 		"asks":           "/api/v1/issues/" + issue.key + "/asks?state=all",
 		"spec":           "/api/v1/artifacts/" + issue.spec,
@@ -957,73 +1028,228 @@ func skeletonOldReads(issue *skeletonIssue) (first, tabs map[string]string) {
 		"coverage":       "/api/v1/issues/" + issue.key + "/coverage",
 		"spec part_of":   "/api/v1/references?kind=part_of&to=" + spec,
 		"spec questions": "/api/v1/references/questions?kind=artifact&id=" + issue.spec,
+		"results":        "/api/v1/issues/" + issue.key + "/results",
 	}
-	tabs = map[string]string{"results": "/api/v1/issues/" + issue.key + "/results"}
 	for name, document := range map[string]string{"verification": issue.verification, "plan": issue.plan} {
-		if document == "" {
-			continue
-		}
-		tabs[name] = "/api/v1/artifacts/" + document
-		tabs[name+" text"] = "/api/v1/artifacts/" + document + "/text"
-		tabs[name+" blocks"] = "/api/v1/artifacts/" + document + "/blocks"
-		tabs[name+" comments"] = "/api/v1/issues/" + issue.key + "/comments?artifact=" + document
+		reads[name] = "/api/v1/artifacts/" + document
+		reads[name+" text"] = "/api/v1/artifacts/" + document + "/text"
+		reads[name+" blocks"] = "/api/v1/artifacts/" + document + "/blocks"
+		reads[name+" comments"] = "/api/v1/issues/" + issue.key + "/comments?artifact=" + document
 	}
-	return first, tabs
+	return reads
 }
 
-// skeletonOldSums is the old page's database time per reading on one issue: its first load alone,
-// and its first load with its three tabs.
-type skeletonOldSums struct{ first, withTabs float64 }
+// skeletonFilter is one read of the tree route c-tree-read-bound reads on each issue: the stable
+// name its lines print, its query, and the old page's reads (skeletonOldReads) it is held to, nil
+// for all of them, the old page's first load and its three tabs together.
+type skeletonFilter struct {
+	name, query string
+	old         []string
+}
 
-// measureSkeletonOld reads the old page's reads of each of the first three issues on s, the build
-// of BASELINE_SHA, and answers the two sums of each.
-func measureSkeletonOld(t *testing.T, statements *skeletonStatements, s *readCostServer, issues []*skeletonIssue) map[string]skeletonOldSums {
+// skeletonFilters are the reads of the tree route each issue is read with (R8, R30): the read with
+// no view and the read with the conversation's kinds, each held to the old page's first load and its
+// three tabs together; the spec view to the spec's artifact, text and blocks reads; the Verification
+// view to that document's artifact, text, blocks and comments reads and the issue's results read;
+// the plan view to the plan's four reads; and the decisions view to the issue's Decisions read, which
+// it replaces once the root removes that route.
+var skeletonFilters = []skeletonFilter{
+	{name: "no-view"},
+	{name: "kind", query: kindFilterQuery(kindFilterConversation...)},
+	{name: "spec", query: "?view=" + graphstore.QuerySpec, old: []string{"spec", "spec text", "spec blocks"}},
+	{name: "verification", query: "?view=" + graphstore.QueryVerification,
+		old: []string{"verification", "verification text", "verification blocks", "verification comments", "results"}},
+	{name: "plan", query: "?view=" + graphstore.QueryPlan, old: []string{"plan", "plan text", "plan blocks", "plan comments"}},
+	{name: "decisions", query: "?view=" + graphstore.QueryDecisions, old: []string{"decisions"}},
+}
+
+// oldMS is the old page's database time per reading of the reads filter is held to, the sum of
+// each read's own (old, by name): every read of the page where filter names none.
+func (filter skeletonFilter) oldMS(old map[string]float64) float64 {
+	names := filter.old
+	if names == nil {
+		names = slices.Sorted(maps.Keys(old))
+	}
+	sum := 0.0
+	for _, name := range names {
+		sum += old[name]
+	}
+	return sum
+}
+
+// measureSkeletonOld reads each of the old page's reads of each issue on s, the build of
+// BASELINE_SHA, each line naming the issue, the read and its request, and answers each read's
+// database time per reading, by issue and by name.
+func measureSkeletonOld(t *testing.T, statements *skeletonStatements, s *readCostServer, issues []*skeletonIssue) map[string]map[string]float64 {
 	t.Helper()
-	sums := map[string]skeletonOldSums{}
-	for _, issue := range issues[:3] {
-		first, tabs := skeletonOldReads(issue)
-		var sum skeletonOldSums
-		for _, name := range slices.Sorted(maps.Keys(first)) {
-			reading := measureSkeletonRead(t, statements, s, issue.key+" old page, "+name, first[name])
-			sum.first += reading.database.ms
+	old := map[string]map[string]float64{}
+	for _, issue := range issues {
+		reads := skeletonOldReads(issue)
+		old[issue.key] = map[string]float64{}
+		for _, name := range slices.Sorted(maps.Keys(reads)) {
+			what := fmt.Sprintf("%s (%s) old page, %s, GET %s", issue.key, issue.label, name, reads[name])
+			old[issue.key][name] = measureSkeletonRead(t, statements, s, what, reads[name]).database.ms
 		}
-		sum.withTabs = sum.first
-		for _, name := range slices.Sorted(maps.Keys(tabs)) {
-			reading := measureSkeletonRead(t, statements, s, issue.key+" old page's tabs, "+name, tabs[name])
-			sum.withTabs += reading.database.ms
-		}
-		t.Logf("c-tree-read-bound: %s, the old page spends %.2f ms of database time per load on its first load, and %.2f ms with its three tabs",
-			issue.key, sum.first, sum.withTabs)
-		sums[issue.key] = sum
 	}
-	return sums
+	return old
 }
 
-// ───── the shape this head reads ───────────────────────────────────────────
+// ───── the pages this head answers ─────────────────────────────────────────
 
-// skeletonTreeRead is what the shape check reads of one tree read.
-type skeletonTreeRead struct {
-	Nodes []struct {
-		Kind     string     `json:"kind"`
-		ID       string     `json:"id"`
-		Supertag string     `json:"supertag"`
-		MadeAt   *time.Time `json:"made_at"`
-	} `json:"nodes"`
-	DocumentNodes  []model.IssueTreeDocumentNode `json:"document_nodes"`
-	Cursor         *string                       `json:"cursor"`
-	CommentsBefore json.RawMessage               `json:"comments_before"`
+// skeletonFetch answers a GET of path as the reader, with display trees: its status and its body.
+type skeletonFetch func(path string) (int, []byte, error)
+
+// skeletonServerFetch is a GET on the booted build s as the reader.
+func skeletonServerFetch(s *readCostServer) skeletonFetch {
+	return func(path string) (int, []byte, error) {
+		answer, err := s.send(http.MethodGet, path, readCostReader, nil)
+		return answer.status, answer.body, err
+	}
 }
 
-// count is how many nodes of the read hold supertag, or, where supertag is "", are of kind.
-func (read skeletonTreeRead) count(kind, supertag string) int {
+// skeletonHandlerFetch is a GET on a test server's handler as login, with display trees.
+func skeletonHandlerFetch(handler http.Handler, login string) skeletonFetch {
+	return func(path string) (int, []byte, error) {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("X-Dispatch-User", login)
+		request.Header.Set(displayTreesHeader, "1")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response.Code, response.Body.Bytes(), nil
+	}
+}
+
+// skeletonPage is one page of a tree read: its answer, how many bytes of JSON it took, and the
+// cursor its request named, "" for the first page.
+type skeletonPage struct {
+	model.IssueTreeRead
+	bytes  int
+	cursor string
+}
+
+// skeletonPageLimit is the most pages one read is followed through.
+const skeletonPageLimit = 1_000
+
+// walkSkeletonPages reads path, a GET of the tree route, and each page after it that the cursor of
+// the page before names, under the same filter and the same cut, until a page answers no cursor,
+// and holds the pages to R8, recording each failure with label (the issue and the filter), the
+// cursor and the bytes of the page, and going on: each page holds at most limit nodes and at most
+// issueTreePageBytes bytes of uncompressed JSON, tuples and context included; a page with a cursor
+// answers remaining, positive and equal to the nodes every page after it holds, and the last page
+// none; each page answers the first page's comments_before, which no cursor moves; each page past
+// the first starts at the node its cursor names; no node stands on two pages; and no node but a
+// context node stands before its parent, where the read holds that parent.
+func walkSkeletonPages(t *testing.T, label string, fetch skeletonFetch, path string, limit int) []skeletonPage {
+	t.Helper()
+	var pages []skeletonPage
+	request, cursor := path, ""
+	for len(pages) < skeletonPageLimit {
+		status, body, err := fetch(request)
+		if err != nil {
+			t.Errorf("%s, cursor %q: GET %s: %v", label, cursor, request, err)
+			return pages
+		}
+		if status != http.StatusOK {
+			t.Errorf("%s, cursor %q: GET %s answered %d: %.2000s", label, cursor, request, status, body)
+			return pages
+		}
+		page := skeletonPage{bytes: len(bytes.TrimSuffix(body, []byte("\n"))), cursor: cursor}
+		if err := json.Unmarshal(body, &page.IssueTreeRead); err != nil {
+			t.Errorf("%s, cursor %q: decode GET %s: %v", label, cursor, request, err)
+			return pages
+		}
+		if len(page.Nodes) > limit || page.bytes > issueTreePageBytes {
+			t.Errorf("%s, cursor %q: the page holds %d nodes in %d bytes, want at most %d nodes and %d bytes", label, cursor, len(page.Nodes), page.bytes, limit, issueTreePageBytes)
+		}
+		switch {
+		case page.Cursor != nil && page.Remaining == nil:
+			t.Errorf("%s, cursor %q, %d bytes: cursor present, remaining absent", label, cursor, page.bytes)
+		case page.Cursor != nil && *page.Remaining <= 0:
+			t.Errorf("%s, cursor %q, %d bytes: remaining %d beside a cursor", label, cursor, page.bytes, *page.Remaining)
+		case page.Cursor == nil && page.Remaining != nil:
+			t.Errorf("%s, cursor %q, %d bytes: remaining %d on a page with no cursor", label, cursor, page.bytes, *page.Remaining)
+		}
+		if len(pages) > 0 && !bytes.Equal(page.CommentsBefore, pages[0].CommentsBefore) {
+			t.Errorf("%s, cursor %q, %d bytes: the page answers comments_before %s, the first page %s", label, cursor, page.bytes, page.CommentsBefore, pages[0].CommentsBefore)
+		}
+		if cursor != "" {
+			named, _ := base64.RawURLEncoding.DecodeString(cursor)
+			if len(page.Nodes) == 0 || page.Nodes[0].Kind+":"+page.Nodes[0].ID != string(named) {
+				t.Errorf("%s, cursor %q, %d bytes: the page does not start at %q, the node its cursor names", label, cursor, page.bytes, named)
+			}
+		}
+		pages = append(pages, page)
+		if page.Cursor == nil {
+			break
+		}
+		cursor = *page.Cursor
+		separator := "?"
+		if strings.Contains(path, "?") {
+			separator = "&"
+		}
+		request = path + separator + "cursor=" + url.QueryEscape(cursor)
+	}
+	if len(pages) == 0 {
+		return pages
+	}
+	if pages[len(pages)-1].Cursor != nil {
+		t.Errorf("%s still answers a cursor after %d pages", label, skeletonPageLimit)
+	}
+	after := 0
+	for index := len(pages) - 1; index >= 0; index-- {
+		if page := pages[index]; page.Remaining != nil && *page.Remaining != after {
+			t.Errorf("%s, cursor %q, %d bytes: remaining %d, and the pages after it hold %d nodes", label, page.cursor, page.bytes, *page.Remaining, after)
+		}
+		after += len(pages[index].Nodes)
+	}
+	at := map[string]int{}
+	position := 0
+	for _, page := range pages {
+		for _, node := range page.Nodes {
+			address := node.Kind + ":" + node.ID
+			if _, held := at[address]; held {
+				t.Errorf("%s, cursor %q, %d bytes: the read answers %s a second time", label, page.cursor, page.bytes, address)
+			} else {
+				at[address] = position
+			}
+			position++
+		}
+	}
+	position = 0
+	for _, page := range pages {
+		for _, node := range page.Nodes {
+			if node.Parent != nil && node.Role != treeRoleContext {
+				if parent, held := at[node.Parent.Kind+":"+node.Parent.ID]; held && parent > position {
+					t.Errorf("%s, cursor %q, %d bytes: the read answers %s:%s before its parent %s:%s", label, page.cursor, page.bytes, node.Kind, node.ID, node.Parent.Kind, node.Parent.ID)
+				}
+			}
+			position++
+		}
+	}
+	return pages
+}
+
+// skeletonNodes is every node pages answer, in their order.
+func skeletonNodes(pages []skeletonPage) []model.IssueTreeNode {
+	var nodes []model.IssueTreeNode
+	for _, page := range pages {
+		nodes = append(nodes, page.Nodes...)
+	}
+	return nodes
+}
+
+// skeletonCount is how many of nodes hold supertag, or, where supertag is "", are of kind.
+func skeletonCount(nodes []model.IssueTreeNode, kind, supertag string) int {
 	count := 0
-	for _, node := range read.Nodes {
+	for _, node := range nodes {
 		if supertag != "" && node.Supertag == supertag || supertag == "" && node.Kind == kind {
 			count++
 		}
 	}
 	return count
 }
+
+// ───── the shape this head reads ───────────────────────────────────────────
 
 // holdSkeletonCount records, and prints, a count of a read that differs from what the corpus wrote,
 // and goes on.
@@ -1034,35 +1260,48 @@ func holdSkeletonCount(t *testing.T, key, what string, read, want int) {
 	}
 }
 
-// requireSkeletonShape holds each corpus to its shape through this head's read with no view and
-// its two views, before anything is measured: the typed blocks of the role documents, the comments
-// of the comment page and the asks, comments_before, cursor null, no block of another document,
-// and document_nodes with each document's count as the blocks read lists it.
-func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIssue) {
+// requireSkeletonShape holds each corpus to its shape through this head's reads of its tree, each
+// read's pages followed through its cursor (walks, by issue and filter), before anything is
+// measured. The read with no view answers the typed blocks of the role documents, the comments of
+// the comment page, the asks and a comments_before naming the oldest comment of the page where
+// older ones remain; on the issue of the most blocks, no block of its other documents, in that read
+// or in the read with the conversation's kinds, and document_nodes listing each document of kind doc
+// the issue read lists with the count of blocks the blocks read lists for it. Each view answers its
+// own kinds: the spec view the requirements, the Verification view the checks, the plan view the
+// plan tasks, and the decisions view the decisions and the asks.
+func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIssue, walks map[string]map[string][]skeletonPage) {
 	t.Helper()
 	for index, issue := range issues {
-		if index == 3 {
-			var view skeletonTreeRead
-			s.read(t, "read the spec view of "+issue.key, "/api/v1/issues/"+issue.key+"/tree?view=spec", &view)
-			holdSkeletonCount(t, issue.key, "requirement in its spec view", view.count("", "requirement"), issue.requirements)
+		pages := walks[issue.key]
+		whole := skeletonNodes(pages["no-view"])
+		holdSkeletonCount(t, issue.key, "requirement", skeletonCount(whole, "", "requirement"), skeletonHeld(issue.requirements))
+		holdSkeletonCount(t, issue.key, graphstore.BlockTypeCheck, skeletonCount(whole, "", graphstore.BlockTypeCheck), skeletonHeld(issue.checks))
+		holdSkeletonCount(t, issue.key, "plan_task", skeletonCount(whole, "", "plan_task"), skeletonHeld(issue.planTasks))
+		holdSkeletonCount(t, issue.key, refs.DecisionSupertag, skeletonCount(whole, "", refs.DecisionSupertag), issue.decisions)
+		holdSkeletonCount(t, issue.key, "comments", skeletonCount(whole, graphstore.KindComment, ""), min(issue.comments, skeletonCommentPage))
+		holdSkeletonCount(t, issue.key, "asks", skeletonCount(whole, graphstore.KindAsk, ""), issue.heldAsks())
+		for _, view := range []struct {
+			filter, what, kind, supertag string
+			want                         int
+		}{
+			{"spec", "requirement in its spec view", "", "requirement", skeletonHeld(issue.requirements)},
+			{"verification", "check in its Verification view", "", graphstore.BlockTypeCheck, skeletonHeld(issue.checks)},
+			{"plan", "plan_task in its plan view", "", "plan_task", skeletonHeld(issue.planTasks)},
+			{"decisions", "decision in its decisions view", "", refs.DecisionSupertag, issue.decisions},
+			{"decisions", "asks in its decisions view", graphstore.KindAsk, "", issue.heldAsks()},
+		} {
+			holdSkeletonCount(t, issue.key, view.what, skeletonCount(skeletonNodes(pages[view.filter]), view.kind, view.supertag), view.want)
+		}
+		if len(pages["no-view"]) == 0 {
 			continue
 		}
-		var read skeletonTreeRead
-		s.read(t, "read the skeleton of "+issue.key, "/api/v1/issues/"+issue.key+"/tree", &read)
-		holdSkeletonCount(t, issue.key, "requirement", read.count("", "requirement"), issue.requirements)
-		holdSkeletonCount(t, issue.key, graphstore.BlockTypeCheck, read.count("", graphstore.BlockTypeCheck), issue.checks)
-		holdSkeletonCount(t, issue.key, "plan_task", read.count("", "plan_task"), issue.planTasks)
-		holdSkeletonCount(t, issue.key, "comments", read.count(graphstore.KindComment, ""), min(issue.comments, skeletonCommentPage))
-		holdSkeletonCount(t, issue.key, "asks", read.count(graphstore.KindAsk, ""), issue.asks)
-		if read.Cursor != nil {
-			t.Errorf("%s answers cursor %q, want null: its skeleton fits one page", issue.key, *read.Cursor)
-		}
+		first := pages["no-view"][0]
 		var position *string
-		if err := json.Unmarshal(read.CommentsBefore, &position); err != nil {
-			t.Errorf("%s answers comments_before %q, want a position or null: %v", issue.key, read.CommentsBefore, err)
+		if err := json.Unmarshal(first.CommentsBefore, &position); err != nil {
+			t.Errorf("%s answers comments_before %q, want a position or null: %v", issue.key, first.CommentsBefore, err)
 		}
 		oldest := ""
-		for _, node := range read.Nodes {
+		for _, node := range whole {
 			if node.Kind != graphstore.KindComment || node.MadeAt == nil {
 				continue
 			}
@@ -1076,11 +1315,6 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 			t.Errorf("%s answers comments_before %q, want null: it holds %d comments", issue.key, *position, issue.comments)
 		case issue.comments > skeletonCommentPage && (position == nil || *position != oldest):
 			t.Errorf("%s answers comments_before %v, want %q, the oldest comment of its page", issue.key, position, oldest)
-		}
-		if index == 0 {
-			var view skeletonTreeRead
-			s.read(t, "read the plan view of "+issue.key, "/api/v1/issues/"+issue.key+"/tree?view=plan", &view)
-			holdSkeletonCount(t, issue.key, "plan_task in its plan view", view.count("", "plan_task"), issue.planTasks)
 		}
 		if index != 2 {
 			continue
@@ -1098,9 +1332,9 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 				documents = append(documents, artifact.ID)
 			}
 		}
-		listed := make([]string, 0, len(read.DocumentNodes))
+		listed := make([]string, 0, len(first.DocumentNodes))
 		largest := 0
-		for _, document := range read.DocumentNodes {
+		for _, document := range first.DocumentNodes {
 			listed = append(listed, document.ArtifactID)
 			var blocks []json.RawMessage
 			s.read(t, "read the blocks of "+document.Slug, "/api/v1/artifacts/"+document.ArtifactID+"/blocks", &blocks)
@@ -1118,40 +1352,224 @@ func requireSkeletonShape(t *testing.T, s *readCostServer, issues []*skeletonIss
 				RefKey string `json:"ref_key"`
 			}
 			s.read(t, "read the document "+document, "/api/v1/artifacts/"+document, &artifact)
-			for _, node := range read.Nodes {
-				if strings.HasPrefix(node.ID, artifact.RefKey+"#") {
-					t.Errorf("%s answers the block %s of its other document %s", issue.key, node.ID, artifact.RefKey)
-					break
+			for _, filter := range []string{"no-view", "kind"} {
+				for _, node := range skeletonNodes(pages[filter]) {
+					if strings.HasPrefix(node.ID, artifact.RefKey+"#") {
+						t.Errorf("%s answers, filter %s, the block %s of its other document %s", issue.key, filter, node.ID, artifact.RefKey)
+						break
+					}
 				}
 			}
 		}
 	}
 }
 
+// ───── the comments on the largest spec, and the plan of 12,050 tasks ───────
+
+// skeletonSpecComments is how many comments c-tree-read-bound writes on the spec's blocks of the
+// issue of the largest spec, as many as the issue of the most comments holds.
+const skeletonSpecComments = 9_252
+
+// requireCommentedSpec writes, through this head's route, skeletonSpecComments comments on the
+// spec's blocks of issue, each a person's, anchored in the paragraph of one requirement by its
+// block (AnchorInput's block_id), and reads the spec view once the block index and the window arm
+// owe nothing: its p90 is at most skeletonBoundMS, and across its node pages it answers the 200
+// newest of those comments, with a comments_before naming the oldest of them.
+func requireCommentedSpec(t *testing.T, statements *skeletonStatements, s *readCostServer, conn *pgx.Conn, issue *skeletonIssue) {
+	t.Helper()
+	started := time.Now()
+	skeletonInParallel(t, "comment on the spec's blocks of "+issue.key, skeletonSpecComments, func(index int) error {
+		block := fmt.Sprintf("r%d", index%issue.requirements+1)
+		_, err := s.write(http.MethodPost, "/api/v1/issues/"+issue.key+"/comments", readCostWriter, map[string]any{
+			"body":   fmt.Sprintf("Comment %d on %s: a note on its words.", index+1, block),
+			"anchor": map[string]any{"artifact": issue.spec, "block_id": block, "quote": fmt.Sprintf("The requirement %s holds one paragraph.", block)},
+		}, http.StatusCreated)
+		return err
+	})
+	t.Logf("c-tree-read-bound: %d comments on the spec's blocks of %s took %s", skeletonSpecComments, issue.key, time.Since(started).Round(time.Second))
+	side := "comments on the spec of " + issue.key
+	waitSkeletonOwed(t, conn, side, nil)
+	statements.waitWindowsOwed(t, side)
+	skeletonAnalyze(t, conn, side)
+	path := "/api/v1/issues/" + issue.key + "/tree?view=" + graphstore.QuerySpec
+	label := fmt.Sprintf("%s (%s), the spec view beside %d comments on its blocks", issue.key, issue.label, skeletonSpecComments)
+	if p90 := msOf(measureSkeletonRead(t, statements, s, label, path).p90); p90 > skeletonBoundMS {
+		t.Errorf("%s has p90 %.1f ms, above %.0f", label, p90, skeletonBoundMS)
+	}
+	pages := walkSkeletonPages(t, label, skeletonServerFetch(s), path, issueTreePageSize)
+	type listedComment struct {
+		ID        string    `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	var listed []listedComment
+	s.read(t, "list the comments of "+issue.key, "/api/v1/issues/"+issue.key+"/comments", &listed)
+	slices.SortFunc(listed, func(left, right listedComment) int {
+		return cmp.Or(right.CreatedAt.Compare(left.CreatedAt), strings.Compare(right.ID, left.ID))
+	})
+	if len(listed) < skeletonCommentPage {
+		t.Errorf("%s lists %d comments, not the %d written on its spec's blocks", issue.key, len(listed), skeletonSpecComments)
+		return
+	}
+	newest := map[string]bool{}
+	for _, comment := range listed[:skeletonCommentPage] {
+		newest[comment.ID] = true
+	}
+	held := 0
+	for _, node := range skeletonNodes(pages) {
+		if node.Kind != graphstore.KindComment {
+			continue
+		}
+		held++
+		if !newest[node.ID] {
+			t.Errorf("%s answers the comment %s, which is none of the %d newest on the spec's blocks", label, node.ID, skeletonCommentPage)
+		}
+	}
+	holdSkeletonCount(t, issue.key, "comments in its spec view beside the comments on its blocks", held, skeletonCommentPage)
+	oldest := listed[skeletonCommentPage-1]
+	want := strconv.Quote((refs.CommentPosition{MadeAt: oldest.CreatedAt, ID: oldest.ID}).String())
+	if len(pages) > 0 && string(pages[0].CommentsBefore) != want {
+		t.Errorf("%s answers comments_before %s, want %s, the oldest of the %d newest comments", label, pages[0].CommentsBefore, want, skeletonCommentPage)
+	}
+}
+
+// skeletonPagedTasks is how many plan tasks the plan of the issue of the most blocks holds for the
+// paging case of c-tree-read-bound.
+const skeletonPagedTasks = 12_050
+
+// requirePagedPlan writes, through this head's upload, a plan of skeletonPagedTasks tasks over the
+// plan of issue, the issue of the most blocks, and follows the plan-task filter's cursor to null once
+// the block index and the window arm owe nothing: each page stays below both bounds, the first ends
+// at the bound of bytes before the node limit, and every task stands exactly once, in walk order.
+func requirePagedPlan(t *testing.T, statements *skeletonStatements, s *readCostServer, conn *pgx.Conn, issue *skeletonIssue) {
+	t.Helper()
+	var text struct {
+		Token string `json:"token"`
+	}
+	s.read(t, "read the plan of "+issue.key, "/api/v1/artifacts/"+issue.plan+"/text", &text)
+	s.expect(t, fmt.Sprintf("upload a plan of %d tasks to %s", skeletonPagedTasks, issue.key), http.MethodPost, "/api/v1/issues/"+issue.key+"/artifacts", readCostWriter,
+		map[string]any{
+			"name": "plan.md", "content": skeletonTyped("plan_task", "p", skeletonPagedTasks, func(string) string { return "" }),
+			"precondition": map[string]string{"document": text.Token},
+		}, http.StatusCreated)
+	side := "the plan of " + issue.key
+	waitSkeletonOwed(t, conn, side, nil)
+	statements.waitWindowsOwed(t, side)
+	label := fmt.Sprintf("%s (%s), filter kind=plan_task over %d plan tasks", issue.key, issue.label, skeletonPagedTasks)
+	pages := walkSkeletonPages(t, label, skeletonServerFetch(s), "/api/v1/issues/"+issue.key+"/tree"+kindFilterQuery("plan_task"), issueTreePageSize)
+	if len(pages) < 2 || len(pages[0].Nodes) >= issueTreePageSize {
+		nodes, size := 0, 0
+		if len(pages) > 0 {
+			nodes, size = len(pages[0].Nodes), pages[0].bytes
+		}
+		t.Errorf("%s answers %d pages, the first of %d nodes in %d bytes, want it ended at %d bytes before %d nodes", label, len(pages), nodes, size, issueTreePageBytes, issueTreePageSize)
+	}
+	var tasks []string
+	for _, node := range skeletonNodes(pages) {
+		if node.Supertag == "plan_task" {
+			tasks = append(tasks, node.BlockID)
+		}
+	}
+	holdSkeletonCount(t, issue.key, "plan_task over the pages of its plan-task filter", len(tasks), skeletonPagedTasks)
+	for index, task := range tasks[:min(len(tasks), skeletonPagedTasks)] {
+		if want := fmt.Sprintf("p%d", index+1); task != want {
+			t.Errorf("%s answers the plan task %s at %d, want %s: every task once, in walk order", label, task, index, want)
+			break
+		}
+	}
+}
+
+// ───── a smaller node limit ────────────────────────────────────────────────
+
+// skeletonSmallPage is the node limit of the test server c-tree-read-bound's two cases of a smaller
+// node limit read on.
+const skeletonSmallPage = 2
+
+// requireSmallPages is c-tree-read-bound's two cases of a smaller node limit, on a test server that
+// newTestServer starts with a node limit of skeletonSmallPage (testServerOptions.issueTreePageSize),
+// and not on the booted builds. Alice writes an author-only pre-mortem lens on r1 of an issue of four
+// requirements. Each read of skeletonFilters, as alice, is followed
+// through its cursor and held to R8 (walkSkeletonPages), and the read with no view ends a page at the
+// node limit, far below the bound of bytes. Bob's read with no view, followed through its cursor,
+// answers on each page with a cursor remaining the nodes he may see after it, alice's lens never
+// among them, and alice's read of the same issue counts her lens.
+func requireSmallPages(t *testing.T) {
+	t.Helper()
+	handler, database, _ := newTestServer(t, testServerOptions{issueTreePageSize: skeletonSmallPage})
+	createReferenceAPIProject(t, handler, "SMALL")
+	var spec strings.Builder
+	for index := range 4 {
+		spec.WriteString(requirementMarkdown(fmt.Sprintf("r%d", index+1), fmt.Sprintf("The small board names its row %d.", index+1)) + "\n")
+	}
+	issue := createDigestIssue(t, handler, database, "SMALL", "A small issue read two nodes a page", spec.String(), false)
+	rig := reasoningRig{t: t, handler: handler, database: database, issue: issue.Key}
+	lens := rig.invoke(refs.BlockRef("dispatch://"+issue.Key+"/spec", "r1"), graphstore.LensKindPreMortem, "alice",
+		map[string]any{"visibility": graphstore.VisibilityAuthor})
+	path := "/api/v1/issues/" + issue.Key + "/tree"
+	label := func(filter, login string) string {
+		return fmt.Sprintf("%s at a node limit of %d, filter %s, as %s", issue.Key, skeletonSmallPage, filter, login)
+	}
+	read := map[string][]skeletonPage{}
+	for _, filter := range skeletonFilters {
+		pages := walkSkeletonPages(t, label(filter.name, "alice"), skeletonHandlerFetch(handler, "alice"), path+filter.query, skeletonSmallPage)
+		if filter.query == "" {
+			read["alice"] = pages
+		}
+	}
+	read["bob"] = walkSkeletonPages(t, label("no-view", "bob"), skeletonHandlerFetch(handler, "bob"), path, skeletonSmallPage)
+	nodeEnded := false
+	for _, page := range read["alice"] {
+		if page.Cursor != nil && len(page.Nodes) == skeletonSmallPage && page.bytes < issueTreePageBytes {
+			nodeEnded = true
+		}
+	}
+	if !nodeEnded {
+		t.Errorf("%s answers no page ended at the node limit with a cursor: %d pages", label("no-view", "alice"), len(read["alice"]))
+	}
+	holds := func(pages []skeletonPage) bool {
+		return slices.ContainsFunc(skeletonNodes(pages), func(node model.IssueTreeNode) bool {
+			return node.Kind == graphstore.KindLens && node.ID == lens.ID
+		})
+	}
+	if holds(read["bob"]) {
+		t.Errorf("%s answers alice's author-only lens %s", label("no-view", "bob"), lens.ID)
+	}
+	if !holds(read["alice"]) {
+		t.Errorf("%s answers no lens %s of hers", label("no-view", "alice"), lens.ID)
+	}
+	if alice, bob := len(skeletonNodes(read["alice"])), len(skeletonNodes(read["bob"])); alice <= bob {
+		t.Errorf("alice's read of %s holds %d nodes and bob's %d, want alice's to count her lens too", issue.Key, alice, bob)
+	}
+}
+
 // ───── the test ────────────────────────────────────────────────────────────
 
-// TestTheTreeReadAnswersTheSkeletonWithinItsBounds is c-tree-read-bound. It boots the build of
-// BASELINE_SHA over a database of its own, seeds the four issues of skeletonShapes through that
-// build's routes, waits until no document owes its block index and the block index's window arm
-// owes no document and no item its windows, and reads on each of the first three issues the old
-// page's nine reads of its first load and the reads of its three tabs. Then it stops that build,
-// boots this checkout's over the same database, waits until the boot's backfill is done, each
-// issue holds its mark, no document owes its block index and the window arm owes nothing, holds
-// each corpus to its shape, and reads the read with no view on the first three issues, the spec
-// view of the fourth and the plan view of the first. Each read is read skeletonReadings times
-// after skeletonWarmUps warm-ups, after an analyze, and its line prints its p50, p90 and p99, its
-// bytes, its database time and statements per reading, the idle interval after it, and the window
-// arm's backlog before it and after that interval. It fails, printing each line, where a read with
-// no view or a view has a p90 above skeletonBoundMS, where the read with no view spends more than
-// skeletonDatabaseRatio times the old page's database time with its three tabs, and where a
-// statement of a loader the read with no view sends runs more than once per reading of it or is
-// not in pg_stat_statements.
+// TestTheTreeReadAnswersTheSkeletonWithinItsBounds is c-tree-read-bound. It first reads its two
+// cases of a smaller node limit on a test server of its own (requireSmallPages). Then it boots the
+// build of BASELINE_SHA over a database of its own, seeds the four issues of skeletonShapes, with
+// the view content each holds, through that build's routes, waits until no document owes its block
+// index and the block index's window arm owes no document and no item its windows, and reads on
+// each issue each of the old page's reads. Then it stops that build, boots this checkout's over the
+// same database, waits until the boot's backfill is done, each issue holds its mark, no document
+// owes its block index and the window arm owes nothing, follows each read of skeletonFilters on each
+// issue through its cursor (walkSkeletonPages), holds each corpus to its shape, and reads each read
+// of skeletonFilters on each issue. Each read is read skeletonReadings times after skeletonWarmUps
+// warm-ups, after an analyze, and its line prints its p50, p90 and p99, its bytes, its database
+// time and statements per reading, the idle interval after it, and the window arm's backlog before
+// it and after that interval. Last, on this head, it writes the comments on the largest spec's
+// blocks (requireCommentedSpec) and the plan of 12,050 tasks (requirePagedPlan).
+//
+// It prints, for each issue and each read of skeletonFilters, `c-tree-read-bound: database time per
+// reading: fixture=<label> read=<filter> old=<ms> new=<ms>`, which the median stage judges over three
+// Jobs (tree-read-db-medians.sh). It fails where a read's p90 is above skeletonBoundMS, and where a
+// statement of a loader the read with no view sends runs more than once per reading of it or is not
+// in pg_stat_statements, and it records each count, page and bound it reads otherwise and goes on.
 func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 	began := time.Now()
 	t.Cleanup(func() {
 		t.Logf("c-tree-read-bound: TestTheTreeReadAnswersTheSkeletonWithinItsBounds took %s of wall time", time.Since(began).Round(time.Second))
 	})
 	baseCommit := skeletonBaseCommit(t)
+	requireSmallPages(t)
 	databaseURL := skeletonDatabase(t)
 	headCommit := gitOutput(t, ".", "rev-parse", "HEAD")
 	if headCommit == baseCommit {
@@ -1166,8 +1584,9 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 		Name: "envoy-dispatch-head", Dir: module, Target: "./cmd/dispatch",
 		Flags: []string{"-ldflags", "-X main.buildCommit=" + headCommit},
 	})
-	t.Logf("c-tree-read-bound: the old side runs on the build of %s, the commit %s names; this head's side on the build of this "+
-		"checkout's working copy, stamped with its HEAD %s", baseCommit, testbaseline.Variable, headCommit)
+	decides := skeletonBaseDecides(t, baseCommit)
+	t.Logf("c-tree-read-bound: the old side runs on the build of %s, the commit %s names, which declares the typed block decision: %t; this head's side "+
+		"on the build of this checkout's working copy, stamped with its HEAD %s", baseCommit, testbaseline.Variable, decides, headCommit)
 	client := readCostClient()
 	listener := skeletonListener(t)
 	conn := skeletonConnect(t, databaseURL)
@@ -1175,7 +1594,7 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 
 	// ───── first: the corpus and the old page, on the release before ─────
 	base := startSkeletonServer(t, client, "the release before ("+baseCommit+")", baseBinary, baseCommit, databaseURL, listener)
-	issues := seedSkeleton(t, base)
+	issues := seedSkeleton(t, base, decides)
 	waitSkeletonOwed(t, conn, "release before's corpus", nil)
 	statements.waitWindowsOwed(t, "release before")
 	skeletonAnalyze(t, conn, "old side")
@@ -1201,56 +1620,51 @@ func TestTheTreeReadAnswersTheSkeletonWithinItsBounds(t *testing.T) {
 	statements.head = true
 	statements.waitWindowsOwed(t, "head")
 	skeletonAnalyze(t, conn, "new side")
-	requireSkeletonShape(t, head, issues)
+	fetch := skeletonServerFetch(head)
+	walks := map[string]map[string][]skeletonPage{}
+	for _, issue := range issues {
+		walks[issue.key] = map[string][]skeletonPage{}
+		for _, filter := range skeletonFilters {
+			label := fmt.Sprintf("%s (%s), filter %s", issue.key, issue.label, filter.name)
+			walks[issue.key][filter.name] = walkSkeletonPages(t, label, fetch, "/api/v1/issues/"+issue.key+"/tree"+filter.query, issueTreePageSize)
+		}
+	}
+	requireSkeletonShape(t, head, issues, walks)
 	loaders := skeletonLoaders(t, issues[0].key)
 
-	// ───── third: this head's reads, and the bounds ─────
+	// ───── third: this head's reads, the two cases written on this head, and the bounds ─────
 	type headRead struct {
 		issue   *skeletonIssue
-		view    string
+		filter  skeletonFilter
 		reading skeletonReading
 	}
 	var reads []headRead
-	for _, issue := range issues[:3] {
-		reads = append(reads, headRead{issue: issue})
-	}
-	reads = append(reads, headRead{issue: issues[3], view: graphstore.QuerySpec}, headRead{issue: issues[0], view: graphstore.QueryPlan})
-	for index := range reads {
-		read := &reads[index]
-		path, what := "/api/v1/issues/"+read.issue.key+"/tree", "the no-view tree read of "+read.issue.key
-		if read.view != "" {
-			path += "?view=" + read.view
-			what = "the " + read.view + " view of " + read.issue.key
+	for _, issue := range issues {
+		for _, filter := range skeletonFilters {
+			what := fmt.Sprintf("%s (%s), the tree read, filter %s", issue.key, issue.label, filter.name)
+			reads = append(reads, headRead{issue: issue, filter: filter,
+				reading: measureSkeletonRead(t, statements, head, what, "/api/v1/issues/"+issue.key+"/tree"+filter.query)})
 		}
-		read.reading = measureSkeletonRead(t, statements, head, what, path)
 	}
+	requireCommentedSpec(t, statements, head, conn, issues[3])
+	requirePagedPlan(t, statements, head, conn, issues[2])
 	stopSkeletonServer(t, head)
 
 	for _, read := range reads {
-		p90 := msOf(read.reading.p90)
-		if read.view != "" {
-			if p90 > skeletonBoundMS {
-				t.Errorf("the %s view of %s has p90 %.1f ms, above %.0f", read.view, read.issue.key, p90, skeletonBoundMS)
-			}
+		key, label, filter := read.issue.key, read.issue.label, read.filter.name
+		t.Logf("c-tree-read-bound: database time per reading: fixture=%s read=%s old=%.3f new=%.3f", label, filter,
+			read.filter.oldMS(old[key]), read.reading.database.ms)
+		if p90 := msOf(read.reading.p90); p90 > skeletonBoundMS {
+			t.Errorf("%s (%s), filter %s, has p90 %.1f ms, above %.0f", key, label, filter, p90, skeletonBoundMS)
+		}
+		if read.filter.query != "" {
 			continue
 		}
-		if p90 > skeletonBoundMS {
-			t.Errorf("the no-view tree read of %s has p90 %.1f ms, above %.0f", read.issue.key, p90, skeletonBoundMS)
-		}
-		sums := old[read.issue.key]
-		spent := read.reading.database.ms
-		t.Logf("c-tree-read-bound: %s, the no-view tree read spends %.2f ms of database time per read, against the old page's %.2f ms with its "+
-			"three tabs (%.2f ms for its first load alone): %.2f times", read.issue.key, spent, sums.withTabs, sums.first, spent/sums.withTabs)
-		if spent > skeletonDatabaseRatio*sums.withTabs {
-			t.Errorf("the no-view tree read of %s spends %.2f ms of database time per read, above twice the old page's %.2f ms with its three tabs (%.2f ms for its first load alone)",
-				read.issue.key, spent, sums.withTabs, sums.first)
-		}
 		for _, loader := range slices.Sorted(maps.Keys(loaders)) {
-			text := loaders[loader]
-			calls := read.reading.database.byText[text]
-			t.Logf("c-tree-read-bound: %s, the no-view tree read runs the statement of %s %.2f times per read", read.issue.key, loader, calls)
+			calls := read.reading.database.byText[loaders[loader]]
+			t.Logf("c-tree-read-bound: %s, the no-view tree read runs the statement of %s %.2f times per read", key, loader, calls)
 			if calls > 1 {
-				t.Errorf("the no-view tree read of %s runs the statement of %s %.2f times per read", read.issue.key, loader, calls)
+				t.Errorf("the no-view tree read of %s runs the statement of %s %.2f times per read", key, loader, calls)
 			}
 		}
 	}

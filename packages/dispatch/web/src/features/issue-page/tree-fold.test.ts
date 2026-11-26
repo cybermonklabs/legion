@@ -58,7 +58,7 @@ function rowOf(rows: readonly DrawnRow[], id: string): Extract<DrawnRow, { kind:
   return found;
 }
 
-/** An issue as the frontier's fold read it: an open question deep in a chain of documents, a
+/** An issue with an open question deep in a chain of documents, a
  *  requirement whose one check passed, a check that failed, an answered question with the
  *  decision that settled it, and a replaced decision over the question it settled. */
 function issue(): TreeNode {

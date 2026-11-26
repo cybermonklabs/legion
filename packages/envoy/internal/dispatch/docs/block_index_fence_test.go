@@ -164,14 +164,15 @@ func writeVersionThroughTheRealPath(t *testing.T, service *Service, artifactID, 
 // writeVersion is the version write a request runs, in tx: NamedVersion in a transaction joined
 // to the document service, after ApplyOps of ops where there are any, as api's editArtifact runs
 // an edit that names its version (createNamedVersion runs NamedVersion alone); the version's own
-// event after it; and what the block index stated appended under that event, as api's
-// commitArtifactVersionEvent does; then the commit. The routes take the owner's lock before those
-// calls (requireOpenOwner, requireOpenOwnerStatus); writeVersion takes none, so the owner's lock
-// its transaction holds is the one the document service's calls take themselves: ApplyOps'
-// joinLiveWrite, or with no ops joinRead under NamedVersion's capture, and NamedVersion's own. The
-// event is appended at once (documentEvent), where the route queues it for its write phase. It
-// answers the version and that event, and an error rather than failing the test, so a write run
-// off the test's goroutine can write a version too.
+// event after it; and what the block index stated appended under that event, with the head rows
+// of the nodes it names, as api's commitArtifactVersionEvent queues both; then the commit. The
+// routes take the owner's lock before those calls (requireOpenOwner, requireOpenOwnerStatus);
+// writeVersion takes none, so the owner's lock its transaction holds is the one the document
+// service's calls take themselves: ApplyOps' joinLiveWrite, or with no ops joinRead under
+// NamedVersion's capture, and NamedVersion's own. The event is appended at once (documentEvent),
+// where the route queues it for its write phase. It answers the version and that event, and an
+// error rather than failing the test, so a write run off the test's goroutine can write a version
+// too.
 func writeVersion(ctx context.Context, service *Service, tx pgx.Tx, artifactID string, ops []model.EditOp, summary string) (VersionResult, int64, error) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	joined, ledger := service.Join(ctx, tx)
@@ -199,7 +200,11 @@ func writeVersion(ctx context.Context, service *Service, tx pgx.Tx, artifactID s
 	if err != nil {
 		return VersionResult{}, 0, err
 	}
-	if err := causeInWritePhase(joined, tx, result.Blocks, event); err != nil {
+	if err := write(joined, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, result.Blocks, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(result.Blocks))
+		return nil
+	}); err != nil {
 		return VersionResult{}, 0, fmt.Errorf("append what the version's block index stated: %w", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -398,7 +403,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	// The stale pass runs on to its commit, and the fence refuses it.
 	const staleVersion = 1
 	before := highestTuple(t, database)
-	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, document, refs.OneVersion(document, staleVersion, time.Now()), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, document, refs.OneVersion(document, staleVersion, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the stale pass: %v", err)
 	}
@@ -437,7 +442,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 		t.Fatalf("begin the control pass: %v", err)
 	}
 	defer controlTx.Rollback(ctx)
-	_, won, write, _, err = refs.IndexBlocks(ctx, controlTx, document, refs.OneVersion(document, third, time.Now()), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err = refs.IndexBlocks(ctx, controlTx, document, refs.OneVersion(document, third, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the control pass: %v", err)
 	}
@@ -1194,17 +1199,20 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 // The fence is the block index's record of the version it indexes on its write phase
 // (BlockIndexing.queueStand), which the plan queues only where it won the fence: of one
 // document's version, or of the version of each document an issue room's pass covers, under the
-// tree artifact's owner row (T12a of this branch's plan). The room reconciliation
-// (indexOwedRoom) adds one: under that row, in the pass's transaction, it clears the mark of each
-// artifact of the room the pass covers no version of. The reconciliation of one document
-// (indexOwedDocument) adds another: under the document's owner lock, where the document holds no
-// markdown version to index, it clears the document's marks and states it at the version it
-// leaves. The drain of a query mark (queueRevisionStand) sends the fence's own statement, by its
-// name: under the issue's owner lock, in the drain's batch, it stands the index of a version that
-// stores the bytes of the version before it at the new version, where it stood at that one.
+// tree artifact's owner row (T12a of this branch's plan). The room's pass (stateRoom) adds one:
+// under that row, in the pass's transaction, it clears the mark of each artifact of the room the
+// pass covers no version of. It runs in the reconciliation of the room (indexOwedRoom) and in the
+// repair of a version of the room marked tree_mismatch (repairRoomMismatch), each of which takes
+// that row (lockArtifactOwner on the tree artifact) before it reads what the pass writes. The
+// reconciliation of one document (indexOwedDocument) adds another: under the document's owner
+// lock, where the document holds no markdown version to index, it clears the document's marks and
+// states it at the version it leaves. The drain of a query mark (queueRevisionStand) sends the
+// fence's own statement, by its name: under the issue's owner lock, in the drain's batch, it stands
+// the index of a version that stores the bytes of the version before it at the new version, where
+// it stood at that one.
 var fencedWriters = []struct{ file, function string }{
 	{"refs/block_stand.go", "func (b BlockIndexing) queueStand("},
-	{"docs/block_index.go", "func (s *Service) indexOwedRoom("},
+	{"docs/block_index.go", "func (s *Service) stateRoom("},
 	{"docs/block_index.go", "func (s *Service) indexOwedDocument("},
 	{"docs/version_render.go", "func queueRevisionStand("},
 }

@@ -2,9 +2,17 @@ import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { MemoryRouter, type NavigateFunction, useLocation } from "react-router-dom";
+import {
+  createPath,
+  MemoryRouter,
+  type NavigateFunction,
+  type Navigator,
+  Router,
+  useLocation,
+} from "react-router-dom";
 
 import { api } from "../../../api/client";
+import type { TreeFilter } from "../../../api/queries";
 import type { Comment, IssueDetails } from "../../../api/types";
 import { parseIssuePath } from "../../refs/routes";
 import {
@@ -19,8 +27,13 @@ import { presetPath } from "../issue-address";
 import { TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { STATE_LINES } from "../page-words";
 import { blockNodeId } from "../tree-drafts";
-import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswerNode } from "../tree-read/tree-read";
+import { pagedAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import {
+  outlineQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import { FAILED_READ_RETRY } from "./failed-read-line";
 import { ProvidersSlot } from "./providers";
@@ -110,7 +123,7 @@ function answerVerifiedTree(checks: readonly TreeAnswerNode[] = [], threads = tr
     plan: "plan_task",
     spec: "requirement",
     verification: "check",
-  };
+  } satisfies Record<TreeFilter, string>;
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
     const { view } = query;
     if (view === undefined) return treeOf(nodes, SERVES);
@@ -168,9 +181,11 @@ const COMMENT_ROW = '[data-issue-body] [data-node-row][data-node-id="head-b"]';
 
 // Under a statement the Verification view draws that statement's checks alone
 // (`verificationReading`), so a plan task that serves the statement, which the tree places under
-// it, is no row of the view, though the view keeps it as the address's node. The view tells the
-// stage so, and the stage draws the outline in the view's place, which lands on the task's row.
-test("a plan task under a statement, named on the Verification view's address, draws the outline in the view's place, with the focus on the task's row", async () => {
+// it, is no row of the view, though the view keeps it as the address's node, and Conversation
+// draws no plan task either. The view tells the stage so, and the stage draws the outline in the
+// view's place, which opens the filter of the task's kind, Plan, at the task: its step takes the
+// focus.
+test("a plan task under a statement, named on the Verification view's address, opens Plan at the task, with the focus on its step", async () => {
   answerVerificationReads();
   const task = blockNodeId(PLAN_DOCUMENT.slug, PLAN_TASK);
   const view = drawStage(`#b-${PLAN_TASK}`, { issue: verifiedIssue(), preset: "verification" });
@@ -180,16 +195,18 @@ test("a plan task under a statement, named on the Verification view's address, d
       `the plan task's address left the focus on ${focusedRow() ?? document.activeElement?.tagName}; the stage drew ${drawnSlot(view)}`
     ).toBe(task)
   );
-  // Only the outline draws the task's row, once the view has said it draws none, and the stage
-  // takes nothing more the view says in this following, so nothing is waited for here.
-  expect(drawnSlot(view), "the stage drew the view, which has no row for the plan task").toBe(
-    "the body"
+  expect(
+    view.container.querySelector(TASK_STEP),
+    "the focus is on no step of the Plan view"
+  ).toHaveFocus();
+  expect(drawnSlot(view), "the stage drew the outline, which has no row for the plan task").toBe(
+    "the view"
   );
   expect(
-    view.container.querySelector("[data-verification-body]"),
-    "the Verification view was drawn beside the outline"
+    view.container.querySelector("[data-verification-body], [data-issue-body]"),
+    "the Verification view or the outline was drawn beside Plan"
   ).toBeNull();
-  expect(focusedRow(), "the focus left the plan task's row").toBe(task);
+  expect(focusedRow(), "the focus left the plan task's step").toBe(task);
 });
 
 // A node the Verification view draws a row of keeps the view: a comment of the issue, which is
@@ -251,6 +268,47 @@ test("a comment of the issue, named on the Plan view's address, draws the outlin
     "the Plan view was drawn beside the outline"
   ).toBeNull();
 });
+
+for (const reply of ["answers", "is refused"] as const) {
+  test(`a cold Plan task address waits until its Plan read ${reply} before choosing a row or the outline`, async () => {
+    answerVerificationReads();
+    const plan = Promise.withResolvers<TreeAnswer>();
+    const nodes = verifiedTree();
+    const outline = treeOf(
+      nodes.filter((node) => node.supertag !== "plan_task"),
+      SERVES
+    );
+    spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+      query?.view === "plan" ? plan.promise : outline
+    );
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage(`#b-${PLAN_TASK}`, {
+      client,
+      issue: verifiedIssue(),
+      preset: "plan",
+    });
+    await waitFor(() => {
+      expect(client.getQueryState(viewQuery(KEY, "plan").queryKey)?.fetchStatus).toBe("fetching");
+      expect(client.getQueryData<TreeAnswer>(outlineQuery(KEY, "conversation").queryKey)).toBe(
+        outline
+      );
+      expect(client.isFetching()).toBe(1);
+    });
+    expect(view.container.querySelector("[data-issue-body]")).toBeNull();
+    if (reply === "is refused") {
+      await act(async () => plan.reject(REFUSED));
+      await waitFor(() =>
+        expect(view.getByRole("heading", { name: "No row for this block" })).toHaveFocus()
+      );
+      return;
+    }
+    const planNodes = nodes
+      .filter((node) => node.supertag === "plan_task")
+      .map((node): TreeAnswerNode => ({ ...node, role: "query" }));
+    await act(async () => plan.resolve(treeOf(planNodes)));
+    await rowTakesFocus(view, TASK_STEP, "the Plan read answering last");
+  });
+}
 
 // A key pressed on the Plan view's step is an act of the following too, but the step it leaves the
 // focus on leaves the page with the view where the view then draws no node the address names.
@@ -421,8 +479,11 @@ test("a node address whose node Conversation draws no row of opens Graph at that
     // Conversation draws the task too where the address names it, but no other task: the
     // second task's row is Graph's.
     expect(view.container.querySelector(secondRow), `${what} drew no Graph`).not.toBeNull();
-    // Graph's read the earlier visit brought is the one the address is decided by, and Graph draws.
-    expect(graphReads.length, `${what} sent a Graph read`).toBe(earlier);
+    // Graph's read the earlier visit brought is the one the address is decided by, and Graph draws:
+    // the address sends no Graph read of its own. Only that pass counts Graph's reads.
+    if (!conversationHolds) {
+      expect(graphReads.length, `${what} sent a Graph read`).toBe(earlier);
+    }
     cleanup();
   }
 });
@@ -443,6 +504,33 @@ function SeenStage({ issue }: { readonly issue: IssueDetails }): ReactNode {
       <StageSlot issue={issue} route={route} />
     </ProvidersSlot>
   );
+}
+
+/** Starts recording the heading of each line the body draws in the outline's place
+ *  (`[data-issue-body] h2`), however briefly it stands: one drawn and replaced before a case
+ *  looks is recorded too. Answers the call that ends the record and hands back their words. */
+function watchBodyLines(): () => string[] {
+  const lines: string[] = [];
+  const record = (records: readonly MutationRecord[]): void => {
+    for (const { addedNodes, target } of records) {
+      const inBody = target instanceof Element && target.closest("[data-issue-body]") !== null;
+      for (const added of addedNodes) {
+        if (!(added instanceof Element)) continue;
+        for (const heading of [added, ...added.querySelectorAll("h2")]) {
+          if (heading.matches("h2") && (inBody || heading.closest("[data-issue-body]") !== null)) {
+            lines.push(heading.textContent ?? "");
+          }
+        }
+      }
+    }
+  };
+  const watch = new MutationObserver(record);
+  watch.observe(document.body, { childList: true, subtree: true });
+  return () => {
+    record(watch.takeRecords());
+    watch.disconnect();
+    return lines;
+  };
 }
 
 // R9: a node address no read holds opens the outline's own address without the node, with the
@@ -510,6 +598,7 @@ test("a node address only Graph's read holds opens Graph at it on a cold load, a
       return whole;
     });
     const from = `${conversation}?node=${encodeURIComponent(node)}`;
+    const lines = watchBodyLines();
     const view = render(
       <MemoryRouter initialEntries={[from]}>
         <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
@@ -528,11 +617,117 @@ test("a node address only Graph's read holds opens Graph at it on a cold load, a
         ).not.toBeNull()
       );
     }
-    expect(view.container.querySelector("[data-issue-body] h2"), `${from} drew a line`).toBeNull();
+    expect(lines(), `${from} drew a line`).toEqual([]);
     await waitInAct(50);
     expect(graphReads.length, `${from} sent other than one Graph read`).toBe(1);
     cleanup();
   }
+});
+
+// R9, R15: Graph's read is the whole tree, the read most likely to answer in more than one page.
+// On a cold load of a node address Conversation's read holds none of, the body reads Graph's next
+// pages until one brings the node, as Graph's own address does, and decides only then: a plan
+// task on Graph's second page opens Graph's `?node=` at it, with the focus on its row. A refused
+// next page of Graph on that cold load ends the reading and drops `?node=`, as a refused Graph
+// read does, since Conversation's address draws no Retry for Graph's pages.
+test("a node address only Graph's second page holds opens Graph at it on a cold load", async () => {
+  // The task's id in the tree read, which the tree draws by its block's node id.
+  const readId = `${KEY}/${PLAN_DOCUMENT.slug}#${PLAN_TASK}`;
+  answerVerificationReads();
+  const whole = treeOf(verifiedTree(), SERVES);
+  const held = treeOf(
+    verifiedTree().filter((each) => each.id !== readId),
+    SERVES
+  );
+  // Graph's read in two pages: every node but the task, then the task.
+  const first = pagedAnswer(held, "page-2");
+  const second = pagedAnswer(
+    { ...whole, nodes: (whole.nodes ?? []).filter((each) => each.id === readId), tuples: [] },
+    null
+  );
+  // The cursor of each of Graph's reads, each a read with neither kinds nor view.
+  const graphPages: (string | undefined)[] = [];
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as {
+      readonly cursor?: string;
+      readonly kind?: unknown;
+      readonly view?: string;
+    };
+    if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+    if (asked.kind !== undefined) return held;
+    graphPages.push(asked.cursor);
+    return asked.cursor === "page-2" ? second : first;
+  });
+  const from = `${presetPath(KEY, "conversation")}?node=${encodeURIComponent(readId)}`;
+  const to = `${presetPath(KEY, "graph")}?node=${encodeURIComponent(readId)}`;
+  const view = render(
+    <MemoryRouter initialEntries={[from]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={verifiedIssue()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  await waitFor(() => expect(seen.address, `${from} did not open Graph at the task`).toBe(to));
+  await rowTakesFocus(view, TASK_ROW, `${from} in Graph`);
+  expect(graphPages, "Graph's pages read").toEqual([undefined, "page-2"]);
+});
+
+// R15: a next page refused is no last page. A node address whose node stands on the second page
+// of Conversation's read, that page refused, keeps the node on the address, and no Graph read is
+// sent to decide it: the control after the outline's last row stays, the page's Retry, and a
+// press of it that brings the page lands on the node.
+test("a node address whose page is refused keeps its node, and the next page's Retry lands on it", async () => {
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  const whole = treeOf(commentNodes(TWO_THREADS));
+  const nodes = whole.nodes ?? [];
+  // Conversation's read in two pages, the last reply on the second.
+  const first = pagedAnswer(
+    { ...whole, nodes: nodes.filter(({ id }) => id !== "reply-b") },
+    "page-2"
+  );
+  const second = pagedAnswer({ ...whole, nodes: nodes.filter(({ id }) => id === "reply-b") }, null);
+  // The second page, refused until the case answers it.
+  let secondPage = (): Promise<TreeAnswer> => Promise.reject(REFUSED);
+  // The cursor of each of Conversation's reads, and each of Graph's reads.
+  const pages: (string | undefined)[] = [];
+  const graphReads: unknown[] = [];
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
+    const asked = query as {
+      readonly cursor?: string;
+      readonly kind?: unknown;
+      readonly view?: string;
+    };
+    if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
+    if (asked.kind === undefined) {
+      graphReads.push(query);
+      return whole;
+    }
+    pages.push(asked.cursor);
+    return asked.cursor === "page-2" ? secondPage() : first;
+  });
+  const from = `${presetPath(KEY, "conversation")}?node=reply-b`;
+  const view = render(
+    <MemoryRouter initialEntries={[from]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={issueDetails()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  const retry = () =>
+    view.container.querySelector<HTMLButtonElement>("[data-issue-body] [data-tree-more] button");
+  await waitFor(() => expect(pages, "the second page was not read").toEqual([undefined, "page-2"]));
+  await waitInAct(100);
+  expect(seen.address, "the refused page moved the address off the node").toBe(from);
+  expect(graphReads, "a Graph read was sent to decide the address").toEqual([]);
+  expect(retry(), "no control reads the refused page again").not.toBeNull();
+  secondPage = () => Promise.resolve(second);
+  await act(async () => retry()?.click());
+  await rowTakesFocus(
+    view,
+    '[data-issue-body] [data-node-row][data-node-id="reply-b"]',
+    "the refused page's Retry"
+  );
+  expect(seen.address, "the Retry moved the address off the node").toBe(from);
 });
 
 /** An open question of the issue whose turn is the reader's, alice's, as the asks' read answers
@@ -598,16 +793,75 @@ test("Graph's address with an id no read holds opens with the focus where Graph'
   }
 });
 
+// R10: `/graph/<node id>` opens Graph zoomed to that node, with the breadcrumb above it and only
+// that branch's rows drawn. Where the issue holds an open question outside the branch, the
+// opening stays inside the branch on its first row instead of leaving the zoom for the question.
+test("Graph's zoomed address keeps its zoom on an issue with an open question outside the branch", async () => {
+  spyOn(api, "listComments").mockResolvedValue([...TWO_THREADS]);
+  spyOn(api, "listIssueAskThreads").mockResolvedValue([WAITING_QUESTION] as never);
+  answerTree([
+    ...commentNodes(TWO_THREADS),
+    treeNode(WAITING_QUESTION.id, "ask", KEY, { text: WAITING_QUESTION.question }),
+  ]);
+  const zoomed = `${presetPath(KEY, "graph")}/head-a`;
+  const view = render(
+    <MemoryRouter initialEntries={[zoomed]}>
+      <AppProviders client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <SeenStage issue={issueDetails()} />
+      </AppProviders>
+    </MemoryRouter>
+  );
+  await rowTakesFocus(
+    view,
+    '[data-issue-body] [data-node-row][data-node-id="head-a"]',
+    `${zoomed}, the zoom's own row`
+  );
+  await waitInAct(50);
+  expect(
+    view.container.querySelector(`[data-crumb="${KEY}"]`),
+    `${zoomed} lost its breadcrumb`
+  ).not.toBeNull();
+  expect(
+    view.container.querySelector('[data-node-row][data-node-id="head-b"]'),
+    `${zoomed} drew a row outside the zoomed branch`
+  ).toBeNull();
+  expect(
+    view.container.querySelector(`[data-node-row][data-node-id="${WAITING_QUESTION.id}"]`),
+    `${zoomed} left the zoom for the open question outside it`
+  ).toBeNull();
+  expect(focusedRow(), `${zoomed} moved the focus off the zoomed branch`).toBe("head-a");
+});
+
 // Every entry the browser makes has the key "default". Under the Verification view a check keeps
 // the view. A plan task under the statement, changed to with the fragment alone under the same
-// key, is no row of the view, which draws a statement's checks alone: the stage draws the outline
-// in the view's place, which lands on the task's row.
-test("under the Verification view, a fragment the browser changes under one key from a check to a plan task draws the outline, with the focus on the task's row", async () => {
+// key, is no row of the view, which draws a statement's checks alone, and one Conversation draws
+// no row of either: the stage draws the outline in the view's place, which opens the filter of the
+// task's kind, Plan, at the task, and the task's step takes the focus.
+test("under the Verification view, a fragment the browser changes under one key from a check to a plan task opens Plan at the task, with the focus on its step", async () => {
   answerVerificationReads();
   const commentsOut = Promise.withResolvers<Comment[]>();
   spyOn(api, "listComments").mockReturnValue(commentsOut.promise);
   const verification = presetPath(KEY, "verification");
-  const view = drawAtBrowserEntry(`${verification}#b-${CHECK}`, verifiedIssue());
+  const plan = presetPath(KEY, "plan");
+  // A router that keeps the browser's one key, and records where the page replaces the address.
+  const replaced: string[] = [];
+  const navigator: Navigator = {
+    createHref: (to) => (typeof to === "string" ? to : createPath(to)),
+    go: () => {},
+    push: () => {},
+    replace: (to) => {
+      replaced.push(typeof to === "string" ? to : createPath(to));
+    },
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const draw = (at: string): ReactNode => (
+    <Router location={at} navigator={navigator}>
+      <AppProviders client={client}>
+        <SeenStage issue={verifiedIssue()} />
+      </AppProviders>
+    </Router>
+  );
+  const view = render(draw(`${verification}#b-${CHECK}`));
   const checkRow = `[data-verification-body] [data-node-row][data-node-id="${blockNodeId(VERIFICATION_SLUG, CHECK)}"]`;
   await waitFor(() =>
     expect(
@@ -621,11 +875,20 @@ test("under the Verification view, a fragment the browser changes under one key 
   expect(drawnSlot(view), "the check's fragment drew the outline in place of the view").toBe(
     "the view"
   );
-  view.follow(`${verification}#b-${PLAN_TASK}`);
-  await rowTakesFocus(view, TASK_ROW, "the task's fragment under the same key");
+  expect(replaced, "the check's fragment replaced the address").toEqual([]);
+  view.rerender(draw(`${verification}#b-${PLAN_TASK}`));
+  await waitFor(() =>
+    expect(
+      replaced,
+      "the task's fragment under the same key did not open Plan at the task"
+    ).toEqual([`${plan}#b-${PLAN_TASK}`])
+  );
+  // The address the page replaced it with is the Plan view's, which lands on the task's step.
+  view.rerender(draw(`${plan}#b-${PLAN_TASK}`));
+  await rowTakesFocus(view, TASK_STEP, "the task's fragment under Plan");
   expect(
-    view.container.querySelector("[data-verification-body]"),
-    "the task's fragment drew the Verification view beside the outline"
+    view.container.querySelector("[data-verification-body], [data-issue-body]"),
+    "the task's fragment drew the Verification view or the outline beside Plan"
   ).toBeNull();
 });
 

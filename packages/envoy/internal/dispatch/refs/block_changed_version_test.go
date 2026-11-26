@@ -77,7 +77,7 @@ func TestAPassOverSeveralVersionsDatesATextChangeToTheVersionThatMadeIt(t *testi
 	artifact, _ := createReferenceArtifact(t, tx, "WIND-1", "WIND", "spec-md")
 	first, firstBlocks := documentOf([]part{{"b1", "paragraph", "One."}, {"b2", "paragraph", "Two."}})
 	firstAt := writeStoredVersion(t, tx, artifact, 1, first)
-	if _, _, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, firstAt), first, firstBlocks, nil, nil, TypedFacts{}); err != nil {
+	if _, _, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, firstAt), first, firstBlocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index version 1: %v", err)
 	}
 	second, _ := documentOf([]part{{"b1", "paragraph", "One, rewritten."}, {"b2", "paragraph", "Two."}})
@@ -87,7 +87,7 @@ func TestAPassOverSeveralVersionsDatesATextChangeToTheVersionThatMadeIt(t *testi
 	if !secondAt.Before(thirdAt) {
 		t.Fatalf("version 2 was written at %s and version 3 at %s, want two times of the database's clock in order", secondAt, thirdAt)
 	}
-	if _, won, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 3, thirdAt), third, thirdBlocks, nil, nil, TypedFacts{}); err != nil || !won {
+	if _, won, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 3, thirdAt), third, thirdBlocks, nil, nil, "", TypedFacts{}); err != nil || !won {
 		t.Fatalf("index version 3 in one pass over versions 2 and 3: won %t, %v", won, err)
 	}
 
@@ -142,7 +142,7 @@ func roomFixture(t *testing.T, tx pgx.Tx) (spec, specRef, verification, tree, tr
 }
 
 // A block of an issue room cut from one fragment and pasted with the same text into another moves
-// into the other fragment's document (T12a of dispatch://INFRA-1253's plan): its issue_room_blocks
+// into the other fragment's document (T12a of the issue-tree plan): its issue_room_blocks
 // row names that document, and it records that document's version as its changed_version and as
 // its newest text row, so the text a reader asks of the block at that document's version is
 // there. Block x stands in the spec's fragment at the spec's version 4, then in the Verification
@@ -161,7 +161,7 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 	firstBlocks[0].Document, firstBlocks[1].Document = verification, spec
 	if _, won, _, _, err := IndexBlocks(ctx, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
-	}, first, firstBlocks, nil, nil, TypedFacts{}); err != nil || !won {
+	}, first, firstBlocks, nil, nil, "", TypedFacts{}); err != nil || !won {
 		t.Fatalf("index the room with x in the spec's fragment: won %t, %v", won, err)
 	}
 	for document, version := range map[string]int{tree: 1, spec: 4, verification: 1} {
@@ -173,7 +173,7 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 	secondBlocks[0].Document, secondBlocks[1].Document = verification, verification
 	if _, won, _, _, err := IndexBlocks(ctx, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 5, At: specNext}, verification: {Number: 2, At: verificationNext},
-	}, second, secondBlocks, nil, nil, TypedFacts{}); err != nil || !won {
+	}, second, secondBlocks, nil, nil, "", TypedFacts{}); err != nil || !won {
 		t.Fatalf("index the room with x in the Verification document's fragment: won %t, %v", won, err)
 	}
 	for document, version := range map[string]int{tree: 1, spec: 5, verification: 2} {
@@ -202,7 +202,7 @@ func TestIndexBlocksRecordsARoomBlockMovedIntoAnotherFragmentAtItsNewDocumentsVe
 }
 
 // A block of an issue room reads, as a node, as a block of its own document (T12a of
-// dispatch://INFRA-1253's plan, refs.BlockDocumentSQL): its document, its parent and the reference
+// the issue-tree plan, refs.BlockDocumentSQL): its document, its parent and the reference
 // it is cited by are the spec's, whose fragment holds it, its last change is the spec's version 4
 // at that version's time and by that version's authors, and its node's own address stays the
 // tree's, which keys its row. A read that took the row's artifact as the block's document names
@@ -221,7 +221,7 @@ func TestARoomBlocksNodeReadsAsABlockOfItsOwnDocument(t *testing.T) {
 	blocks[0].Document, blocks[1].Document = verification, spec
 	_, won, write, _, err := IndexBlocks(ctx, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 4, At: specAt}, verification: {Number: 1, At: verificationAt},
-	}, markdown, blocks, nil, nil, TypedFacts{})
+	}, markdown, blocks, nil, nil, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index the room: won %t, %v", won, err)
 	}
@@ -338,7 +338,7 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 	_, won, write, _, err := IndexBlocks(ctx, tx, tree, Versions{
 		tree: {Number: 1, At: treeAt}, spec: {Number: 1, At: specAt}, verification: {Number: 1, At: verificationAt},
 	}, markdown, blocks, text.ExtractAt(markdown, windowServer),
-		[]Pointer{{Block: "k1", BlockType: "check", Kind: "serves", Target: target, Targets: []string{"requirement"}}}, TypedFacts{})
+		[]Pointer{{Block: "k1", BlockType: "check", Kind: "serves", Target: target, Targets: []string{"requirement"}}}, windowServer, TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index the room: won %t, %v", won, err)
 	}
@@ -433,7 +433,7 @@ func TestAReferenceResolvesThroughMovedToBeforeTheRoom(t *testing.T) {
 		insertReference(t, tx, "comment", createReferenceComment(t, tx, key), BlockNodeKind, cited[key])
 	}
 	for key, want := range map[string]string{"WIND-2": verificationRef, "WIND-3": specRef} {
-		references, err := Closure(ctx, tx, model.Actor{}, key)
+		references, err := Closure(ctx, tx, model.Actor{}, key, "")
 		if err != nil {
 			t.Fatalf("read the closure of %s: %v", key, err)
 		}

@@ -13,21 +13,130 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored in
-// one of its documents.
+// one of its documents. With ?node_anchor=true it answers each comment with the member
+// node_anchor (answerNodeAnchoredComments).
 func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	s.answerCommentList(
-		w, r,
-		issueOwner(r.PathValue("key")),
-		strings.TrimSpace(r.URL.Query().Get("artifact")),
-		r.PathValue("key"),
-	)
+	nodeAnchors, err := wantsNodeAnchors(r)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	owner, artifactFilter := issueOwner(r.PathValue("key")), strings.TrimSpace(r.URL.Query().Get("artifact"))
+	if nodeAnchors {
+		s.answerNodeAnchoredComments(w, r, owner, artifactFilter)
+		return
+	}
+	s.answerCommentList(w, r, owner, artifactFilter, r.PathValue("key"))
+}
+
+// wantsNodeAnchors reports whether the request asks for the member node_anchor on each comment
+// whose anchor names a node or a block (this issue's spec R31): ?node_anchor=true. A deployed
+// client parses a comment with the strict CommentSchema of packages/contracts, so only a caller
+// that asks gets the member, and parses it with CommentWithNodeAnchorSchema. Any value but true and
+// false is 400 INVALID_QUERY naming the parameter.
+func wantsNodeAnchors(r *http.Request) (bool, error) {
+	switch value := r.URL.Query().Get("node_anchor"); value {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, errorf(http.StatusBadRequest, "INVALID_QUERY", "node_anchor %q is neither true nor false", value)
+	}
+}
+
+// nodeAnchoredComment is a comment as a read asked with ?node_anchor=true answers it: the comment
+// as every read shapes it, and, where its anchor names a node or a block, node_anchor
+// (model.CommentNodeAnchor).
+type nodeAnchoredComment struct {
+	shapedComment
+	NodeAnchor *model.CommentNodeAnchor `json:"node_anchor,omitempty"`
+}
+
+// answerNodeAnchoredComments answers an issue's comment list asked with ?node_anchor=true: the
+// comments answerCommentList answers, in its order, each with its node_anchor (loadNodeAnchors).
+// It carries no ETag and keeps no answer: a node anchor names its node's state, which a write of
+// that node moves without writing a comment row, so the list's watermark, which only a write of a
+// comment raises, cannot stand behind it.
+func (s *server) answerNodeAnchoredComments(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter string) {
+	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, everyReader, owner, artifactFilter)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	anchors, err := loadNodeAnchors(r.Context(), s.deps.Store.Pool, comments)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	shaped := shapedComments(comments, reader)
+	reader.resolve()
+	reads := make([]nodeAnchoredComment, len(shaped))
+	for index := range shaped {
+		reads[index] = nodeAnchoredComment{shapedComment: shaped[index], NodeAnchor: anchors[shaped[index].ID]}
+	}
+	WriteJSON(w, http.StatusOK, reads)
+}
+
+// nodeAnchorsStatement is the node each comment $1 names whose anchor names one: a node anchor's
+// node (comments.node_anchor), and a document anchor's block, addressed as the block index
+// addresses it (graphstore.AnchorBlockAddressSQL), with the node's state, live where the store
+// holds no row of it, the anchor's quote, its occurrence, null for a document anchor, which stores
+// none, and its orphaned mark as stored.
+var nodeAnchorsStatement = `
+	select c.id::text, named.kind, named.id, coalesce(n.state, '` + graphstore.StateLive + `'),
+	       coalesce(case when c.node_anchor is not null then c.node_anchor->>'quote' else c.anchor->>'quote' end, ''),
+	       case when c.node_anchor is not null then (c.node_anchor->>'occurrence')::int end,
+	       coalesce(case when c.node_anchor is not null then (c.node_anchor->>'orphaned')::boolean
+	                     else (c.anchor->>'orphaned')::boolean end, false)
+	from comments c
+	cross join lateral (
+		select case when c.node_anchor is not null then c.node_anchor->>'node_kind' else '` + refs.BlockNodeKind + `' end as kind,
+		       case when c.node_anchor is not null then c.node_anchor->>'node_id' else ` + graphstore.AnchorBlockAddressSQL("c") + ` end as id
+	) named
+	left join graph_nodes n on n.kind = named.kind and n.id = named.id
+	where c.id = any($1::uuid[]) and named.id is not null`
+
+// loadNodeAnchors is the node_anchor of each of comments whose anchor names a node or a block
+// (nodeAnchorsStatement), by comment id, read through q in one statement. A comment's row read
+// (scanComment) carries no node anchor, so every comment is asked for, and the statement answers
+// those whose anchor names a node or a block.
+func loadNodeAnchors(ctx context.Context, q queryer, comments []model.Comment) (map[string]*model.CommentNodeAnchor, error) {
+	anchors := map[string]*model.CommentNodeAnchor{}
+	ids := make([]string, len(comments))
+	for index, comment := range comments {
+		ids[index] = comment.ID
+	}
+	if len(ids) == 0 {
+		return anchors, nil
+	}
+	rows, err := q.Query(ctx, nodeAnchorsStatement, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the node anchors of %d comments: %w", len(ids), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var anchor model.CommentNodeAnchor
+		if err := rows.Scan(&id, &anchor.Node.Kind, &anchor.Node.ID, &anchor.Node.State, &anchor.Quote, &anchor.Occurrence, &anchor.Orphaned); err != nil {
+			return nil, fmt.Errorf("read a comment's node anchor: %w", err)
+		}
+		anchors[id] = &anchor
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the node anchors of %d comments: %w", len(ids), err)
+	}
+	return anchors, nil
 }
 
 // answerCommentList answers one comment list - an issue's (listComments) or an unlinked
@@ -181,8 +290,21 @@ type commentRead struct {
 	Replies []shapedComment `json:"replies"`
 }
 
+// nodeAnchoredCommentRead is the body GET /api/v1/comments/{id}?node_anchor=true answers: the
+// comment with its node_anchor where its anchor names a node or a block (this issue's spec R31),
+// and its replies, which carry no anchor, as commentRead answers them.
+type nodeAnchoredCommentRead struct {
+	Comment nodeAnchoredComment `json:"comment"`
+	Replies []shapedComment     `json:"replies"`
+}
+
 func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "comment") {
+		return
+	}
+	nodeAnchors, err := wantsNodeAnchors(r)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	who, ok := s.actingReader(w, r)
@@ -209,11 +331,25 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	var anchors map[string]*model.CommentNodeAnchor
+	if nodeAnchors {
+		if anchors, err = loadNodeAnchors(r.Context(), s.deps.Store.Pool, comments); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	read := commentRead{Replies: shapedComments(replies, reader)}
 	read.Comment.Comment = comments[0]
 	read.Comment.shape(reader)
 	reader.resolve()
+	if nodeAnchors {
+		WriteJSON(w, http.StatusOK, nodeAnchoredCommentRead{
+			Comment: nodeAnchoredComment{shapedComment: read.Comment, NodeAnchor: anchors[comment.ID]},
+			Replies: read.Replies,
+		})
+		return
+	}
 	WriteJSON(w, http.StatusOK, read)
 }
 

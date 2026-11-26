@@ -47,3 +47,22 @@ func (st *settlement) holdUnreadableRoom(fragments []roomFragment) {
 		}
 	}
 }
+
+// readsBackAsVersion reports whether markdown, the rendering a version write of a request would
+// store as a version of document - writer names it in the log: a snapshot (SnapshotVersion,
+// SettleVersion, the pin of an anchored comment or ask) or a named version (NamedVersion, the
+// accept of a suggestion) - reads back through the parser every read of a stored version goes
+// through (pmdoc.ParseRendering), as the settlement's does (readsBack): no version Dispatch stores
+// is one its own parser refuses (R25). Where the parser refuses it, the write stores no version,
+// answers the document's newest version, which is the last one that read back, and logs one line
+// naming the writer, the document and the parser's error; the room keeps the edit, so the next
+// version whose tree reads back stores it. An edit that writes the document whole reads its own
+// rendering back already (pmdoc.ParseWritten).
+func readsBackAsVersion(writer, document, markdown string) bool {
+	if _, err := pmdoc.ParseRendering(markdown); err != nil {
+		slog.Warn("dispatch: a version write stores no version of a document whose rendering does not read back; the room keeps the edit for the next version whose tree reads back",
+			"writer", writer, "artifact", document, "error", err)
+		return false
+	}
+	return true
+}

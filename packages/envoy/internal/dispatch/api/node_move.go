@@ -1,6 +1,6 @@
 package api
 
-// node_move.go serves the move of a node (R7 of dispatch://INFRA-1253): PATCH
+// node_move.go serves the move of a node (R7 of the issue-tree spec): PATCH
 // /api/v1/issues/{key}/nodes/{id}, the one route that moves a node of an issue's tree under another
 // parent or among its siblings, on the node's own resource, as HTTP defines the method (RFC 5789).
 //
@@ -8,7 +8,8 @@ package api
 // decodes (node_address.go), of a node that stands under `{key}`; a node the caller may not see
 // there is 404 NOT_FOUND. Every move states the placement revision it read in HTTP's own
 // precondition: an `If-Match` naming, as a quoted entity tag, the node's placement_seq, the seq of
-// its current part_of, which the tree read answers on every node. A move with none is 428
+// its current part_of, or, for a child issue that holds none, of its current child_of
+// (childOfPlacementSQL), which the tree read answers on every node. A move with none is 428
 // PRECONDITION_REQUIRED, and one whose tag is no longer the node's placement_seq 412
 // PRECONDITION_FAILED. The body takes parent and after; one with neither is 400 MOVE_INPUT.
 //
@@ -24,11 +25,14 @@ package api
 // the drain writes their versions after the COMMIT (docs.Service.DrainOwedQueries).
 //
 // The refusals, in the order the route reads them: an ask, a comment or a message, which the route
-// moves none of, for every caller (400 NODE_NOT_MOVABLE); R28's writer check on a requirement, a
-// criterion or a check (403 DOCUMENT_WRITER_NOT_ARCHITECT); R32's refusal of an agent's move of a
-// person's decision, an answered ask's `:::ask` block or a decision a person decided (409
-// ANSWERED_ASK_KEPT); a constraint moved under any node but an issue's (400 INVALID_POINTER);
-// then, under the owner locks (lockMoveOwners), a placement revision that moved (412); a parent
+// moves none of, and a decision that holds a from_ask, which stands under the ask it settles, for
+// every caller (400 NODE_NOT_MOVABLE); a parent nobody holds (404 NOT_FOUND),
+// and a constraint moved under any node but an issue's (400 INVALID_POINTER), which R7 reads before
+// every other rule; a body that names no move (400 MOVE_INPUT) and a move that states no placement
+// (428 PRECONDITION_REQUIRED); R28's writer check on a requirement, a criterion or a check (403
+// DOCUMENT_WRITER_NOT_ARCHITECT); R32's refusal of an agent's move of a person's decision, an
+// answered ask's `:::ask` block or a decision a person decided (409 ANSWERED_ASK_KEPT); then,
+// under the owner locks (lockNodeRouteOwners), a placement revision that moved (412); a parent
 // inside the moving subtree, a parent outside the issue's own tree, and a node that reads its issue
 // from its own row moved under a node of an issue below (each 400 INVALID_POINTER); a parent that
 // is, or stands under, the node of a document a removal could take (409
@@ -52,7 +56,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -67,7 +70,8 @@ const (
 	// codeMoveInput is a body that names neither parent nor after, or names one as no address.
 	codeMoveInput = "MOVE_INPUT"
 	// codeNodeNotMovable is a move of an ask, a comment or a message, whose part_of follows its
-	// own row and no move writes.
+	// own row and no move writes, or of a decision that holds a from_ask, whose part_of follows
+	// that from_ask.
 	codeNodeNotMovable = "NODE_NOT_MOVABLE"
 	// codeParentNotReached is a parent the walk of the issue it stands under does not reach.
 	codeParentNotReached = "PARENT_NOT_REACHED"
@@ -193,7 +197,7 @@ func (s *server) moveNodeRoute(w http.ResponseWriter, r *http.Request) {
 	case afterNamed && input.After != nil && *input.After == "":
 		shape = errorf(http.StatusBadRequest, codeMoveInput, "after names no node: give the store address of a ranked sibling, or null to stand first")
 	}
-	person := proving.Credential.Holds(model.ScopePerson)
+	person := docs.CallerIsPerson(proving)
 	var writer model.Actor
 	if person {
 		writer, ok = s.actingPerson(w, resolved)
@@ -266,6 +270,39 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 			"the %s %s does not move: its part_of follows its own row - an ask's the document that holds its block, a comment's and a message's what each answers or the node its anchor is on - so a move would leave a difference no pass clears, and the next restore would undo it; an ask moves with the block that holds it",
 			moved.word(), moved.named)
 	}
+	// A decision that holds a from_ask stands under the ask it settles, whatever a move would
+	// store (R2): R7 answers it 400 NODE_NOT_MOVABLE at the same point, naming its ask, whoever the
+	// caller is, so an agent's move of a person's such decision is this and not R32's 409.
+	if moved.kind == refs.BlockNodeKind && moved.typ == refs.DecisionSupertag {
+		ask, holds, err := refs.DecisionFromAsk(ctx, tx, moved.id)
+		if err != nil {
+			return nodeMoved{}, nil, nil, err
+		}
+		if holds {
+			return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeNodeNotMovable,
+				"the %s %s does not move: it holds a from_ask, %s, so it stands under the ask it settles and its place follows that from_ask - a move would leave it where the next index pass undoes it; to move it, change or remove its from_ask through a write of its document's text",
+				moved.word(), moved.named, ask)
+		}
+	}
+	// R7 reads the constraint rule next, before every other rule: a constraint stands only under an
+	// issue node, so one moved under any other parent is refused before the body, the If-Match and
+	// the writer are read, and a constraint moved under a document's node is 400, never 409.
+	var named *moveNode
+	if move.parent != nil && *move.parent != "" {
+		parent, err := findMoveParent(ctx, tx, move.who, *move.parent)
+		if err != nil {
+			return nodeMoved{}, nil, nil, err
+		}
+		if moved.kind == graphstore.KindConstraint && parent.kind != graphstore.KindIssue {
+			if err := readBlockType(ctx, tx, &parent); err != nil {
+				return nodeMoved{}, nil, nil, err
+			}
+			return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeInvalidPointer,
+				"the constraint %s may not stand under %s, a %s: a constraint stands only under an issue node, the issue whose constraints list it, and under any other node it would stand under no issue",
+				moved.named, parent.named, parent.word())
+		}
+		named = &parent
+	}
 	if move.shape != nil {
 		return nodeMoved{}, nil, nil, move.shape
 	}
@@ -289,24 +326,24 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 	if err != nil {
 		return nodeMoved{}, nil, nil, err
 	}
+	// A body that names a parent moves the node under the node read above (the shape refuses an
+	// empty one); a body that names none keeps the node's parent.
 	parent := current
-	if move.parent != nil {
-		if parent, err = findMoveParent(ctx, tx, move.who, *move.parent); err != nil {
-			return nodeMoved{}, nil, nil, err
-		}
-	} else if !held {
+	switch {
+	case named != nil:
+		parent = *named
+	case !held:
 		return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeMoveInput,
 			"the %s %s stands under no node, so a move that keeps its parent has none to keep: name parent", moved.word(), moved.named)
 	}
-	if moved.kind == graphstore.KindConstraint && parent.kind != graphstore.KindIssue {
-		if err := readBlockType(ctx, tx, &parent); err != nil {
-			return nodeMoved{}, nil, nil, err
-		}
-		return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeInvalidPointer,
-			"the constraint %s may not stand under %s, a %s: a constraint stands only under an issue node, the issue whose constraints list it, and under any other node it would stand under no issue",
-			moved.named, parent.named, parent.word())
-	}
-	read, err := lockMoveOwners(ctx, tx, move.key, moved, parent)
+	read, err := lockNodeRouteOwners(ctx, tx, move.key, func(q queryer) (moveRead, []string, error) {
+		read, err := readMove(ctx, q, moved, parent)
+		return read, read.issues(), err
+	}, s.betweenNodeRouteReads, func() error {
+		return errorf(http.StatusConflict, parentContended,
+			"the move of %s under %s met a node under an issue it had not locked at each of %d attempts while this request waited for its locks, so nothing was moved: read the tree and move it again",
+			moved.named, parent.named, parentLockAttempts)
+	})
 	if err != nil {
 		return nodeMoved{}, nil, nil, err
 	}
@@ -396,7 +433,7 @@ func placementWords(seq *int64) string {
 
 // matchesPlacement reports whether one of the If-Match header values tags names the placement_seq
 // seq as a strong entity tag (RFC 9110 section 13.1.1, compared strongly): `"<seq>"`. A weak tag,
-// `*`, and any tag of a node that holds no part_of match nothing.
+// `*`, and any tag of a node that holds no placement_seq match nothing.
 func matchesPlacement(tags []string, seq *int64) bool {
 	if seq == nil {
 		return false
@@ -414,78 +451,20 @@ func matchesPlacement(tags []string, seq *int64) bool {
 
 // refusePersonDecisionMove is R32's refusal of an agent's move whose {id} names a person's
 // decision (409 ANSWERED_ASK_KEPT): the `:::ask` block node of an answered ask, or a decision block
-// whose decided_by names a person. An ask's own node never reaches it: R7 answers it 400
-// NODE_NOT_MOVABLE first. The refusal quotes the ask's question or the decision's words and names
-// the node. Any other node passes.
+// whose decided_by names a person (docs.PersonDecisionOfBlock). An ask's own node never reaches it:
+// R7 answers it 400 NODE_NOT_MOVABLE first. The refusal quotes the ask's question or the decision's
+// words and names the node. Any other node passes.
 func refusePersonDecisionMove(ctx context.Context, q queryer, moved moveNode) error {
-	refuse := func(what, words string) error {
-		return errorf(http.StatusConflict, codeAnsweredAskKept,
-			"%s %s, %q, is a person's decision, and an agent cannot move it: a person moves it, or an agent acting under a token that holds the person scope",
-			what, moved.named, words)
+	if moved.kind != refs.BlockNodeKind {
+		return nil
 	}
-	switch {
-	case moved.kind == refs.BlockNodeKind:
-		var typ string
-		err := q.QueryRow(ctx, `select type from document_blocks where node_kind = $1 and node_address = $2 limit 1`, moved.stored, moved.id).Scan(&typ)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read the type of %s: %w", moved.id, err)
-		}
-		switch typ {
-		case "ask":
-			var state, question *string
-			err := q.QueryRow(ctx, `
-				select k.state, k.question from (`+askOfBlockQuery+`) block (ask)
-				join asks k on k.id::text = block.ask`, moved.stored, moved.id).Scan(&state, &question)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil
-			}
-			if err != nil {
-				return fmt.Errorf("read the ask of the block %s: %w", moved.id, err)
-			}
-			if state != nil && *state == asks.StateAnswered {
-				return refuse("the :::ask block", cmp.Or(*question, ""))
-			}
-		case "decision":
-			var decided bool
-			var words *string
-			if err := q.QueryRow(ctx, `
-				select exists (
-					select 1 from (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.asserted`,
-				`t.from_kind = $1 and t.from_id = $2 and t.kind = '`+graphstore.TupleDecidedBy+`' and t.to_kind <> '`+graphstore.KindValue+`'`)+`
-					) held where held.asserted and held.to_kind = '`+graphstore.KindPerson+`'),
-				(select case when t.asserted then t.to_id end from graph_tuples t
-				 where t.from_kind = $1 and t.from_id = $2 and t.kind = '`+graphstore.AttributeText+`' and t.to_kind = '`+graphstore.KindValue+`'
-				 order by t.seq desc limit 1)`, moved.stored, moved.id).Scan(&decided, &words); err != nil {
-				return fmt.Errorf("read who decided %s: %w", moved.id, err)
-			}
-			if decided {
-				return refuse("the decision", decisionWordsOf(words))
-			}
-		}
+	decision, decided, err := docs.PersonDecisionOfBlock(ctx, q, moved.stored, moved.id, moved.typ)
+	if err != nil || !decided {
+		return err
 	}
-	return nil
-}
-
-// decisionWordsOf is a decision block's words as R32's refusal quotes them: its text value without
-// its opening and closing fence lines, each line trimmed and the lines joined by spaces.
-func decisionWordsOf(text *string) string {
-	if text == nil {
-		return ""
-	}
-	lines := strings.Split(strings.TrimSpace(*text), "\n")
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), ":::") {
-		lines = lines[1:]
-	}
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), ":::") {
-		lines = lines[:len(lines)-1]
-	}
-	for index, line := range lines {
-		lines[index] = strings.TrimSpace(line)
-	}
-	return strings.Join(slices.DeleteFunc(lines, func(line string) bool { return line == "" }), " ")
+	return errorf(http.StatusConflict, codeAnsweredAskKept,
+		"%s %s, %q, is a person's decision, and an agent cannot move it: a person moves it, or an agent acting under a token that holds the person scope",
+		decision.What, moved.named, decision.Words)
 }
 
 // currentPlacementStatement reads the far end and the seq of the current part_of of the node the
@@ -588,8 +567,8 @@ type moveSide struct {
 
 // moveRead is what a move reads under its owner locks, and what it reads to learn which locks to
 // take: the moved node and its part_of subtree (beneath, the moved node first), the parent and its
-// part_of chain (above, the parent first), the far end of the moved node's current part_of and its
-// placement_seq, nil where it stands under none.
+// part_of chain (above, the parent first), the far end of the moved node's current part_of, and
+// its placement_seq (readMove), nil where it holds none.
 type moveRead struct {
 	beneath, above       []moveSide
 	parentKind, parentID string
@@ -622,9 +601,10 @@ func standingKind(kind string) bool { return slices.Contains(refs.StandingKinds(
 // moveReadStatement is the read of a move of the node the store keys as $1 and $2 under the node
 // its tuples name $3 and $4: the moved node and every node its current part_of tuples hold beneath
 // it at any depth, as nodesBeneath walks them, each once; the parent and every node up its current
-// part_of chain, at most $5 deep; each with the issue it stands under, read as a write's test of a
-// gone node reads it (refs.GoneStandingIssueSQL: a document no row stands at stands under the
-// issue its address spells), and whether every read answers it as gone (refs.GoneOrStaleRow).
+// part_of chain, at most $5 deep, and none where $3 is null, as for a delete, which names no parent;
+// each with the issue it stands under, read as a write's test of a gone node reads it
+// (refs.GoneStandingIssueSQL: a document no row stands at stands under the issue its address
+// spells), and whether every read answers it as gone (refs.GoneOrStaleRow).
 var moveReadStatement = `
 	with recursive beneath (kind, id) as (
 		select $1::text, $2::text
@@ -638,7 +618,7 @@ var moveReadStatement = `
 		) placed
 		where placed.asserted
 	), above (kind, id, depth) as (
-		select $3::text, $4::text, 0
+		select $3::text, $4::text, 0 where $3::text is not null
 		union all
 		select placed.to_kind, placed.to_id, above.depth + 1
 		from above
@@ -656,9 +636,14 @@ var moveReadStatement = `
 	) reached
 	order by reached.side, reached.depth, reached.kind, reached.id`
 
-// readMove reads moveRead for the move of moved under parent, through q.
+// readMove reads moveRead for the move of moved under parent, through q; for a parent of no id, as
+// a delete reads it, the moved node's subtree alone.
 func readMove(ctx context.Context, q queryer, moved, parent moveNode) (moveRead, error) {
-	rows, err := q.Query(ctx, moveReadStatement, moved.stored, moved.id, parent.stored, parent.id, moveChainDepth)
+	var parentKind, parentID any
+	if parent.id != "" {
+		parentKind, parentID = parent.stored, parent.id
+	}
+	rows, err := q.Query(ctx, moveReadStatement, moved.stored, moved.id, parentKind, parentID, moveChainDepth)
 	if err != nil {
 		return moveRead{}, fmt.Errorf("read the subtree of %s and the chain of %s: %w", moved.named, parent.named, err)
 	}
@@ -690,48 +675,76 @@ func readMove(ctx context.Context, q queryer, moved, parent moveNode) (moveRead,
 	default:
 		read.placementSeq = &seq
 	}
+	if read.placementSeq == nil && moved.stored == graphstore.KindIssue {
+		if err := q.QueryRow(ctx, childOfPlacementStatement, moved.id).Scan(&read.placementSeq); err != nil {
+			return moveRead{}, fmt.Errorf("read the child_of %s hangs from: %w", moved.named, err)
+		}
+	}
 	return read, nil
 }
 
-// lockMoveOwners takes a move's owner locks and answers what it reads under them (R7): it reads
-// the moved node's subtree and the parent's chain once with no lock held, to learn the issue each
-// of their nodes stands under, then, under a savepoint, takes the owner locks of key and of every
-// such issue in one call of lockIssueOwners, which takes them in the store's lock order, and reads
-// again. Where the second read reaches a node under an issue it did not lock - a move that
+// childOfPlacementSQL is the placement_seq of a child issue that holds no current part_of (R7,
+// R8): the seq of the current child_of out of the node the SQL expressions kind and id name, where
+// kind names an issue's node, read as a current relation is read (graphstore.CurrentTupleRead)
+// over the tuples narrow keeps, "true" for the head; null for a node of any other kind and for an
+// issue that holds no child_of. A tag of it is stale once a PATCH writes the child's first part_of,
+// whose seq the node's placement_seq then is, or a reparent appends a new child_of.
+func childOfPlacementSQL(kind, id, narrow string) string {
+	return `(select held.seq from (
+		` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.seq, t.asserted`,
+		kind+` = '`+graphstore.KindIssue+`' and t.from_kind = '`+graphstore.KindIssue+`' and t.from_id = `+id+`
+			and t.kind = '`+graphstore.TupleChildOf+`' and t.to_kind <> '`+graphstore.KindValue+`' and `+narrow) + `
+		) held
+		where held.asserted
+		order by held.seq desc limit 1)`
+}
+
+// childOfPlacementStatement reads childOfPlacementSQL of the issue node $1 at the head.
+var childOfPlacementStatement = `select ` + childOfPlacementSQL(`'`+graphstore.KindIssue+`'`, `$1::text`, `true`)
+
+// lockNodeRouteOwners takes the owner locks of a node route's write (R7: the PATCH and the DELETE)
+// and answers what it reads under them: it reads once with no lock held (read), to learn the issue
+// each node it reaches stands under, then, under a savepoint, takes the owner locks of key and of
+// every such issue in one call of lockIssueOwners, which takes them in the store's lock order, and
+// reads again. Where the second read reaches a node under an issue it did not lock - a write that
 // committed in between moved one there - it gives every lock of the attempt back through the
-// savepoint's rollback and starts over, within parentLockAttempts, as lockPatchOwnersAndParent
-// does; a move that meets such an issue at each attempt is 409 PARENT_CONTENDED, and nothing is
-// stored. It takes no owner lock before that call.
-func lockMoveOwners(ctx context.Context, tx pgx.Tx, key string, moved, parent moveNode) (moveRead, error) {
-	for range parentLockAttempts {
-		first, err := readMove(ctx, tx, moved, parent)
+// savepoint's rollback and starts over from the first read, within parentLockAttempts, as
+// lockPatchOwnersAndParent does; a write that meets such an issue at each attempt is contended's
+// 409 PARENT_CONTENDED, and nothing is stored. It takes no owner lock before that call. pause, where
+// the server holds one (server.betweenNodeRouteReads), runs after each first read, with the
+// attempt's number from 1, before the attempt takes a lock.
+func lockNodeRouteOwners[T any](ctx context.Context, tx pgx.Tx, key string, read func(q queryer) (T, []string, error),
+	pause func(ctx context.Context, attempt int), contended func() error) (T, error) {
+	var none T
+	for attempt := range parentLockAttempts {
+		_, locked, err := read(tx)
 		if err != nil {
-			return moveRead{}, err
+			return none, err
 		}
-		locked := first.issues()
-		attempt, err := tx.Begin(ctx)
+		if pause != nil {
+			pause(ctx, attempt+1)
+		}
+		savepoint, err := tx.Begin(ctx)
 		if err != nil {
-			return moveRead{}, err
+			return none, err
 		}
-		if _, err := lockIssueOwners(ctx, attempt, key, slices.DeleteFunc(slices.Clone(locked), func(issue string) bool { return issue == key })...); err != nil {
-			_ = attempt.Rollback(ctx)
-			return moveRead{}, err
+		if _, err := lockIssueOwners(ctx, savepoint, key, slices.DeleteFunc(slices.Clone(locked), func(issue string) bool { return issue == key })...); err != nil {
+			_ = savepoint.Rollback(ctx)
+			return none, err
 		}
-		second, err := readMove(ctx, attempt, moved, parent)
+		second, reached, err := read(savepoint)
 		if err != nil {
-			_ = attempt.Rollback(ctx)
-			return moveRead{}, err
+			_ = savepoint.Rollback(ctx)
+			return none, err
 		}
-		if !slices.ContainsFunc(second.issues(), func(issue string) bool { return issue != key && !slices.Contains(locked, issue) }) {
-			return second, attempt.Commit(ctx)
+		if !slices.ContainsFunc(reached, func(issue string) bool { return issue != key && !slices.Contains(locked, issue) }) {
+			return second, savepoint.Commit(ctx)
 		}
-		if err := attempt.Rollback(ctx); err != nil {
-			return moveRead{}, err
+		if err := savepoint.Rollback(ctx); err != nil {
+			return none, err
 		}
 	}
-	return moveRead{}, errorf(http.StatusConflict, parentContended,
-		"the move of %s under %s met a node under an issue it had not locked at each of %d attempts while this request waited for its locks, so nothing was moved: read the tree and move it again",
-		moved.named, parent.named, parentLockAttempts)
+	return none, contended()
 }
 
 // refuseMoveParent holds a move that changes the moved node's parent to the rules R7 reads of the

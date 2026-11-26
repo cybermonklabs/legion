@@ -55,6 +55,7 @@ func (r *countingReleaser) CleanupTree(context.Context, string) error {
 // cannot persist; confirming the empty cleanup lets only a fresh explicit workflow admission open
 // epoch two and write it.
 func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, store)
@@ -83,6 +84,7 @@ func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
 // and is no error: the outbox's ordinary fences finish its row, so no boot census has to refuse
 // it, and the tree stays open for its claims.
 func TestACloseOfAGenerationTheRootNeverLingeredAtReservesNothing(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, store)
@@ -101,6 +103,7 @@ func TestACloseOfAGenerationTheRootNeverLingeredAtReservesNothing(t *testing.T) 
 // input. The authority is stored when the authenticated root producer opened the tree, not inferred
 // from a zero/sentinel generation at cleanup.
 func TestMalformedWorkflowCloseCannotSelectOperatorAuthority(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	if _, err := store.OpenTreeLifecycle(ctx, "legion", rootIssue, treelifecycle.AuthorityOperator); err != nil {
@@ -127,6 +130,7 @@ func TestMalformedWorkflowCloseCannotSelectOperatorAuthority(t *testing.T) {
 // A reservation whose transaction commits while a start waits on the shared serializer wins: the
 // start is refused with the named cleanup wait once the reservation commits, and writes nothing.
 func TestAReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	if _, err := store.OpenTreeLifecycle(ctx, "legion", rootIssue, treelifecycle.AuthorityWorkflow); err != nil {
@@ -167,6 +171,7 @@ func TestAReservationThatCommitsFirstRefusesAWaitingStart(t *testing.T) {
 // persistence, and its retry returns the original epoch rather than losing the cleanup marker in a
 // runtime-local cache.
 func TestRestartRetainsTreeCleanupReservation(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, store)
@@ -194,6 +199,7 @@ func TestRestartRetainsTreeCleanupReservation(t *testing.T) {
 // then no authority to launch a later tree lifetime: re-admission writes the same token only after
 // that confirmation, and its persisted TreeEpoch changes with the newly opened lifecycle.
 func TestReservedCleanupWaitsForEveryClaimAndTheNextEpochRebindsIt(t *testing.T) {
+	t.Parallel()
 	store := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, store)
@@ -235,6 +241,7 @@ func TestReservedCleanupWaitsForEveryClaimAndTheNextEpochRebindsIt(t *testing.T)
 // cleanup step that locked a row first and then waited for the serializer would deadlock against
 // it and Postgres would abort one of the two.
 func TestCleanupStepsTakeTheSerializerBeforeTheirRows(t *testing.T) {
+	t.Parallel()
 	const lifecycleRow = `select 1 from tree_lifecycles where project = 'legion' and tree = $1 for update`
 	t.Run("reservation", func(t *testing.T) {
 		store := migratedStore(t)
@@ -309,6 +316,7 @@ func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func()
 // taken off), a fence cancelled or naming a tree the record has moved from, a tree whose cleanup
 // confirmed, an issue never recorded.
 func TestIssueSandboxHomeIsATreeTheIssueIsInOrCanStillBeAdmittedInto(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	const otherTree = "LEGION-300"
@@ -389,6 +397,7 @@ func TestIssueSandboxHomeIsATreeTheIssueIsInOrCanStillBeAdmittedInto(t *testing.
 // says of the issue waiting in its line, lingering or being handed over. The other project's
 // daemon reads its own record as before.
 func TestIssueSandboxHomeReadsNoRecordAnotherProjectKeepsOfTheIssue(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	const other = "OTHER-7"
@@ -438,6 +447,7 @@ func TestIssueSandboxHomeReadsNoRecordAnotherProjectKeepsOfTheIssue(t *testing.T
 // opened it) reserves no cleanup at its linger's close: there is nothing for one to release, and
 // the outbox's ordinary fences finish the close.
 func TestAWorkflowCloseOfATreeNeverOpenedReservesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := migratedStore(t)
 	if _, err := store.Pool().Exec(ctx, `insert into issues

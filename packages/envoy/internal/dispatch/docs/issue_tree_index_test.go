@@ -55,7 +55,7 @@ const (
 		":::callout{#second-check kind=\"note\" title=\"\"}\nThe second check.\n:::\n\n::::\n"
 	// treePlan is an issue's plan: one plan node whose opening line writes its size and one whose
 	// line writes none.
-	treePlan = "## The plan\n\n:::plan_task{#sized size=\"2.5\"}\nThe task that says how big it is.\n:::\n\n" +
+	treePlan = "## The plan\n\n:::plan_task{#sized size=\"1h30m\"}\nThe task that says how big it is.\n:::\n\n" +
 		":::plan_task{#unsized}\nThe task that says nothing of its size.\n:::\n"
 )
 
@@ -364,9 +364,9 @@ type movingPass struct {
 }
 
 // requireTheMove holds the move of the block at address of the document from block from to block
-// to (D2 of dispatch://INFRA-1253's plan, as INFRA-1098's architect ruled it): its newest part_of
-// asserts to and the one before it retracts from, and the two share one time, the moving pass's
-// own, which every parent, rank, text and placement that pass appended out of the document's
+// to (D2 of the issue-tree plan, as the graph-model root spec's architect ruled it): its newest
+// part_of asserts to and the one before it retracts from, and the two share one time, the moving
+// pass's own, which every parent, rank, text and placement that pass appended out of the document's
 // blocks carries too, since the pass reads it once, after it holds the owner row and the fence.
 // That time is no earlier than the version row's created_at, and later than it by at least the
 // wait between the row's write and the pass; both tuples carry the version's writer and its event.
@@ -421,7 +421,7 @@ func requireTheMove(t *testing.T, database *store.Store, artifactID, address, fr
 }
 
 // The issue tree holds the parent and the rank of every block of the version, a block whose text
-// no version changed included (c-parent-written; R1 of dispatch://INFRA-1253).
+// no version changed included (c-parent-written; R1 of the issue-tree spec).
 //
 // A spec is indexed at one version, then at a second that moves a block out of one callout under
 // another, after the block already there, and changes no character of it, so the index writes no
@@ -481,7 +481,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 		t.Fatalf("read the spec's change marks: %v", err)
 	}
 	target := refs.Target{Kind: refs.BlockNodeKind, ID: mover}
-	cited, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target})
+	cited, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}, "")
 	if err != nil || cited[target].Excerpt == nil || !strings.Contains(cited[target].Excerpt.Text, "The words that move.") {
 		t.Fatalf("a citation of the moving block resolves to %+v (%v), want its words", cited[target], err)
 	}
@@ -529,7 +529,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	if now, err := refs.BlockChanges(ctx, database.Pool, spec); err != nil || now["mover"] != marks["mover"] {
 		t.Errorf("the moved block's change mark reads %+v (%v), want the mark before the move %+v", now["mover"], err, marks["mover"])
 	}
-	if now, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}); err != nil ||
+	if now, err := refs.ExcerptedNodes(ctx, database.Pool, alice, []refs.Target{target}, ""); err != nil ||
 		now[target].Excerpt == nil || now[target].Excerpt.Text != cited[target].Excerpt.Text {
 		t.Errorf("a citation of the moved block resolves to %+v (%v), want the words it resolved to before, %+v", now[target], err, cited[target])
 	}
@@ -617,7 +617,7 @@ func TestTheIssueTreeHoldsTheParentAndRankOfEveryBlockOfTheVersion(t *testing.T)
 	}
 	defer staleTx.Rollback(ctx)
 	olderMarkdown, olderBlocks := renderedVersion(t, treeVersion1)
-	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, spec, refs.OneVersion(spec, first.Version.Number, first.Version.CreatedAt), olderMarkdown, olderBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, spec, refs.OneVersion(spec, first.Version.Number, first.Version.CreatedAt), olderMarkdown, olderBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the older pass: %v", err)
 	}
@@ -711,7 +711,7 @@ func renderedVersion(t *testing.T, markdown string) (string, []model.ArtifactBlo
 // The reconciliation's pass dates every parent, rank, text and placement it states at its own
 // time, never at the older version's it indexes, and so does the request's pass: each reads the
 // database's clock once it holds the owner row and the fence, and dates every such tuple of the
-// pass there (D2 of dispatch://INFRA-1253's plan, as INFRA-1098's architect ruled it). The
+// pass there (D2 of the issue-tree plan, as the graph-model root spec's architect ruled it). The
 // document's version is written by SQL, as a build without the block index writes one, so the
 // reconciliation is what indexes it, after clock_timestamp() is read; the request's tuples are
 // then one time, at or after its version's created_at.
@@ -762,13 +762,13 @@ func TestTheReconciliationDatesItsTuplesAtItsOwnTime(t *testing.T) {
 
 // A request pass that waits at the document's owner row behind a reconciliation of the same
 // document dates its tuples after the reconciliation's, so a tuple's at is ordered as its seq is
-// (D2, as INFRA-1098's architect ruled it). The request's transaction begins first, so its own
-// now() is earlier than anything the reconciliation reads; the reconciliation then takes the owner
-// row, writes, and is held at its commit (afterBlockIndexWrite) while the request, on a goroutine,
-// queues at that row. The request's pass is the one the request path runs once it holds the row
-// (indexRenderedVersion over a version the request writes). Released, the reconciliation commits
-// and the request runs on. Read in seq order, the two passes' parents, ranks, texts and placements
-// never go back in time, and each pass dates its own at one time.
+// (D2, as the graph-model root spec's architect ruled it). The request's transaction begins first,
+// so its own now() is earlier than anything the reconciliation reads; the reconciliation then takes
+// the owner row, writes, and is held at its commit (afterBlockIndexWrite) while the request, on a
+// goroutine, queues at that row. The request's pass is the one the request path runs once it holds
+// the row (indexRenderedVersion over a version the request writes). Released, the reconciliation
+// commits and the request runs on. Read in seq order, the two passes' parents, ranks, texts and
+// placements never go back in time, and each pass dates its own at one time.
 func TestAPassThatWaitedForTheOwnerRowDatesItsTuplesAfterThePassItWaitedFor(t *testing.T) {
 	ctx := context.Background()
 	database, service := blockIndexService(t)
@@ -926,8 +926,8 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 	sized, unsized := blockAddress(t, database, plan, "sized"), blockAddress(t, database, plan, "unsized")
 	requireSizes := func(when string) {
 		t.Helper()
-		if size, held := treeValue(t, database, sized, treeSize); !held || size != "2.5" {
-			t.Errorf("%s the plan node sized holds the size %q (held %t), want 2.5, the size its opening line writes", when, size, held)
+		if size, held := treeValue(t, database, sized, treeSize); !held || size != "90" {
+			t.Errorf("%s the plan node sized holds the size %q (held %t), want 90, the minutes its opening line's 1h30m writes", when, size, held)
 		}
 		if size, held := treeValue(t, database, unsized, treeSize); held {
 			t.Errorf("%s the plan node unsized holds the size %q, want none: its opening line writes none", when, size)
@@ -1037,7 +1037,7 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 			FromKind: refs.BlockNodeKind, FromID: rankedAt, Kind: treeRank, ToKind: graphstore.KindValue, ToID: "1U",
 			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
 		}, {
-			FromKind: refs.BlockNodeKind, FromID: sized, Kind: treeSize, ToKind: graphstore.KindValue, ToID: "2.5",
+			FromKind: refs.BlockNodeKind, FromID: sized, Kind: treeSize, ToKind: graphstore.KindValue, ToID: "90",
 			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: false,
 		}})
 	}); err != nil {

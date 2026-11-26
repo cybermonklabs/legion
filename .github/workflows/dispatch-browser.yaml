@@ -1,36 +1,43 @@
 name: Dispatch browser suite
 
 # why: .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
+# why: .github/ci-notes/dispatch-browser.md#the-third-lane-references
 on:
   workflow_call:
     inputs:
       lane:
         description: >-
           Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
-          and the two stubbed projects, held to the rows tagged `@pr`, or `full` for every
-          project, the `-alone` ones and the two-process job among them, over every row. Each
-          caller passes it as a literal: ci.yaml's dispatch-browser-pr job `pull-request`, its
-          dispatch-browser job and the nightly's `full`. The shard job reads it for the projects
-          it runs; no job reads it for a browser to install any more, since the image the shard
-          and alone jobs run in carries all three engines. Any other value fails the shard job's
-          browser step by name, before it starts a row.
+          and the two stubbed projects, held to the rows tagged `@pr`; `full` for every
+          project, the `-alone` ones and the two-process job among them, over every row; or
+          `references` for `chromium` alone, over every row of the twenty-one spec files the
+          `references)` arm of .github/scripts/dispatch-browser-shard-suite.sh names, with the
+          binaries, shard and merge jobs alone. Each caller passes it as a literal: ci.yaml's
+          dispatch-browser-pr job `pull-request`, its dispatch-browser job and the nightly's
+          `full`, and its dispatch-references job `references`. The shard job reads it for the
+          projects it runs; no job reads it for a browser to install any more, since the image
+          the shard and alone jobs run in carries all three engines. Any other value fails the
+          shard job's browser step by name, before it starts a row.
         type: string
         required: true
       job:
         description: >-
-          The id of the job that calls this file: dispatch-browser or dispatch-browser-pr of
-          ci.yaml, or dispatch-browser of the nightly. GitHub names each job of this file
-          `<that id> / <job>`, so the merge job reads only the jobs under it; every artifact name
-          starts with it, so ci.yaml's two callers, which a pull request labelled full-ci runs in
-          one run, upload and download none of each other's; and the merge job's ci-ok report
-          names it.
+          The id of the job that calls this file: dispatch-browser, dispatch-browser-pr or
+          dispatch-references of ci.yaml, or dispatch-browser of the nightly. GitHub names each
+          job of this file `<that id> / <job>`, so the merge job reads only the jobs under it;
+          every artifact name starts with it, so ci.yaml's callers that share a run - a pull
+          request labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that
+          changes what the reference rows test runs dispatch-references beside it - upload and
+          download none of each other's; and the merge job's ci-ok report, where its caller asks
+          for one, names it.
         type: string
         required: true
       ci-ok-changes:
         description: >-
           `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the merge job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends, for the job that calls
-          this file. Empty for the nightly workflow, which reports no check.
+          this file. Empty for the nightly workflow and for ci.yaml's dispatch-references job,
+          neither of which reports a check.
         type: string
         default: ""
 
@@ -58,6 +65,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -314,6 +322,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-restores-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -378,6 +387,7 @@ jobs:
   # why: .github/ci-notes/dispatch-browser.md#the-embedder-job-the-lanes-it-runs-on-and-its-budgets
   # 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s -> 15 min.
   embedder:
+    if: inputs.lane == 'pull-request' || inputs.lane == 'full'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -393,6 +403,7 @@ jobs:
           cache: false
       # go-envoy, restored only, as the multiprocess job restores it and for the same reason:
       # run-server.sh builds the Dispatch server, which the family's saving jobs do not.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -462,6 +473,7 @@ jobs:
           token: ''
           cache: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-restores-go-envoy-test
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

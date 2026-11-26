@@ -30,14 +30,13 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { wordsOf } from "../refs/tree-fragment";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
-import { treeContext } from "./tree-drafts";
+import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
 import { useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { issueCommentsQuery } from "./useIssueTree";
@@ -101,7 +100,7 @@ export function IssuePropertiesRow({
     ...EVENT_FRESH,
   });
   const tree = useTreeRead(issue).answer;
-  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
+  const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
     [coverage.data, nodeIdOf]

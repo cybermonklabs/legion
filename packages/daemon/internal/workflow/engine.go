@@ -310,6 +310,11 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.closed(ctx, tx, fact)
 	case intake.PullRequestDequeued:
 		return e.dequeued(ctx, tx, fact)
+	case intake.PullRequestReviewRequests:
+		// It records nothing: the read it asks for (askMergeState) counts the requests.
+		return intake.Result{}, nil
+	case intake.PullRequestMergeStateUnread:
+		return e.mergeStateUnread(ctx, tx, fact)
 	case intake.MergeQueueReadDone:
 		return e.mergeQueueReadDone(ctx, tx, fact)
 	case intake.ConflictConfirmDone:
@@ -956,18 +961,17 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 }
 
 // leftItsPhase says whether role's completion of a phase its issue has already left is recorded
-// rather than refused: the daemon started role on this issue, which is what gives it the claim the
-// completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
-// (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
-// on without it - the review event taking reviewing on - and its handoff is the findings the next
-// phase reads, which a refusal would lose. Four completions are not: one from a role whose handoff
-// already stands, which is reporting a phase it finished a second time; one from a role the daemon
-// never started on this issue, which has held no phase of it to report; any while the issue stands
-// where no role works - parked, closed or held - which is past recording work at all; and any
-// while it stands at admitted. Admitted is the architect's own phase (phase.RoleFor), which
-// completes nothing (handoff), and it comes before every phase a worker works, so no worker's phase
-// there is one the issue moved on from: the guard keeps the refusal a completion at admitted had
-// while no role was named for that phase. The two holds of an owner's plan are read where their
+// rather than refused. ranUnreported decides whether this run still owes its report.
+// The daemon may have moved the issue on without this completion, such as on a review event.
+// Its handoff gives the next phase findings a refusal would lose. Four completions remain refused:
+// one from a role whose handoff already stands, which reports a phase it finished a second time;
+// one from a role the daemon never started on this issue, which has held no phase to report;
+// any while no role works the issue's phase - parked, closed or held - which is past recording
+// work at all; and any while it stands at admitted. Admitted is the architect's own phase
+// (phase.RoleFor), which completes nothing (handoff), and it comes before every phase a worker
+// works, so no worker's phase there is one the issue moved on from: the guard keeps the refusal
+// a completion at admitted had while no role was named for that phase.
+// The two holds of an owner's plan are read where their
 // issue stands (record.StandsAt), so each report of a run an event ended before the hold is taken
 // as it is without the hold. A parent held for its children stands at its retro: the pass of its
 // last step moved it there in place of the retro, as an approval moves an issue into accepting, so
@@ -988,13 +992,12 @@ func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue
 	return e.ranUnreported(ctx, tx, issue, role, token)
 }
 
-// ranUnreported says whether role's completion naming token reports a run of role the daemon
-// started on issue at its generation, which is what gives it the claim token
-// (record.Store.RoleRun), with no completion of that run reported yet (record.PhaseRow.Completed).
-// That is a completion of a phase the issue no longer stands in that arrives after the daemon
-// ended the run without it: one it records (leftItsPhase), or, for a task with plan rows, one of
-// the run its task's stop ended, which it refuses as late (lateReport). A completion naming no
-// claim reports no run.
+// ranUnreported says whether role started its step in this run and has not reported it.
+// EntryTask is the durable start: enter writes it with the entry, generation clears remove it,
+// and a carried run keeps it. Entry alone survives a clear, and a claim can exist only for a
+// production check's look. Neither proves a started step. A completion without a token reports
+// no run. The first late report is recorded by leftItsPhase, or refused and spent by lateReport
+// when the task's stop ended that started step.
 func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	if token == "" {
 		return false, nil
@@ -1003,11 +1006,7 @@ func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil || row.Completed() {
 		return false, err
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
-	if err != nil {
-		return false, err
-	}
-	return run.Claim != nil, nil
+	return row.EntryTask != "", nil
 }
 
 // pastCompletion answers role's completion of reported, a phase issue no longer stands in, in one
@@ -1242,8 +1241,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // tree holds its members where they stood, so neither tells anyone.
 //
 // The checking role of a closed issue failing inside a look of its production check ends that look
-// as a report of pending would (endLook): a done issue has no phase to hold, and the look's next
-// wake starts the claim again.
+// as a report of pending would (endFailedLook): a done issue has no phase to hold, and the look's
+// next wake starts the claim again, a backoff out that doubles with each failed look in a row. A
+// failure of that role between looks counts the same (failedBetweenLooks), and either is told.
 func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFailed) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -1264,36 +1264,37 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and the daemon starts it again at %s's next phase start", issue.Key, issue.Key)})
 	}
 	// The failure of the role an open check records ends the look of its closed issue's production
-	// check, as its bound would. Which role that is the check's own row says (record.ProductionCheck.Role,
-	// the role it opened under), never the setting as it stands now, so a check opened before the
-	// project changed its `production_check` still ends its look on its own role's failure. Unlike
-	// an ordinary pending report, nobody remains to report the look or wait for
-	// the next wake, so the architect is told now with the persisted launch failure. An issue in the
-	// workflow (one reopened inside its linger with a look still open at the reopen) takes the
-	// live-phase path below instead, where the failure holds the phase and is told; its stale look
-	// ends at the look's own bound (check_look), which endLookPending keeps for the run.
+	// check, as its bound would, and counts it a failed look, so the next look is named a backoff
+	// out that doubles with each failed look in a row (endFailedLook). Which role that is the check's
+	// own row says (record.ProductionCheck.Role, the role it opened under), never the setting as it
+	// stands now, so a check opened before the project changed its `production_check` still ends its
+	// look on its own role's failure. A failure after the look ended, with none open, counts the same
+	// and names the next look the same backoff out, from the failure, where no later wake stands
+	// (failedBetweenLooks). Unlike an ordinary pending report, nobody remains to report the look or
+	// wait for the next wake, so the architect is told now, in either case, with the cause, how the
+	// last process ended, and when the next look retries the claim and how
+	// (checkRoleFailedReason). An issue in the workflow (one reopened inside its
+	// linger with a look still open at the reopen) takes the live-phase path below instead, where
+	// the failure holds the phase and is told; its stale look ends at the look's own bound
+	// (check_look), which endLookPending keeps for the run.
 	if !record.InWorkflow(*issue) {
 		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if check != nil && check.Open() && check.LookOpen && fact.Role == check.Role {
-			if err := e.endLook(ctx, tx, check, "claim failed"); err != nil {
+		if check != nil && check.Open() && fact.Role == check.Role {
+			lost := fmt.Sprintf("production check look %d lost its %s", check.Looks, check.Role)
+			if check.LookOpen {
+				err = e.endFailedLook(ctx, tx, check)
+			} else {
+				lost = fmt.Sprintf("production check of %s lost its %s after look %d ended", issue.Key, check.Role, check.Looks)
+				err = e.failedBetweenLooks(ctx, tx, check)
+			}
+			if err != nil {
 				return intake.Result{}, err
 			}
-			// The supervisor's sentence is text the daemon did not write, so it is carried as
-			// every worker-died's reason carries it, on one line, quoted and cut (deathSentence).
-			// The daemon's own sentence for a fact that holds none is written bare, as deathReason
-			// writes its own words ("the pod ended: ", "the process was last found "): the quotes
-			// in a reason mark text the daemon did not write, and never the daemon's own words.
-			// The pod end deathReason writes bare is the one text it did not write that a reason
-			// leaves unquoted: the kubelet's reason and message, cut at runtime.PodEndRunes.
-			reason := fmt.Sprintf("the %s's claim failed before it reported the look", check.Role)
-			if fact.Reason != "" {
-				reason = deathSentence(fact.Reason)
-			}
 			return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{
-				Kind: "worker-died", Role: fact.Role, Reason: fmt.Sprintf("production check look %d lost its %s: %s", check.Looks, check.Role, reason),
+				Kind: "worker-died", Role: fact.Role, Reason: lost + ": " + checkRoleFailedReason(fact, *check),
 			})
 		}
 	}
@@ -1333,12 +1334,14 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		Failure: failure, Reason: deathReason(fact, failure != nil)})
 }
 
-// deathReason is what a worker-died notice says on the two paths that build no reason of their
-// own — the tree architect's and the held phase's. It names the supervisor's own sentence
-// (supervise.Claim.Failure, intake.ClaimFailed.Reason), then what ended the process: the pod end
-// it was last observed to have died of (supervise.Claim.PodEnd), which is the cause no role
-// chose — an eviction for ephemeral storage above all — or, where the claim holds no pod end and
-// failed because its process died, the first line of the runtime's account of that death
+// deathReason is what a worker-died notice says of how a claim ended: the whole reason on the two
+// paths that build none of their own — the tree architect's and the held phase's — and the start
+// of the checking role's (checkRoleFailedReason), which adds what the check does next. It names
+// the supervisor's own sentence (supervise.Claim.Failure, intake.ClaimFailed.Reason), then what
+// ended the process: the pod end it was last observed to have died of (supervise.Claim.PodEnd),
+// which is the cause no role chose — an eviction for ephemeral storage above all — or, where the
+// claim holds no pod end and failed because its process died, the first line of the runtime's
+// account of that death
 // (supervise.Claim.LastDeathCause, intake.ClaimFailed.Death). They are joined with "; ", and any
 // of them the fact does not hold is left out. The sentence is made one line (deathSentence) and
 // the death's first line is taken without its log tail (deathFirstLine), and each is written
@@ -1378,12 +1381,11 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // them the notice would say nothing of why the claim failed. A held phase's fact that names no
 // cause does not name `died` either, so its reason names no death.
 //
-// The two paths that already build a reason keep theirs: a role that does not work the issue's
-// phase, and a checking role of a closed issue, each say what the failure meant for that issue,
-// which is more than either of these facts is. The first is the daemon's own words alone. The
-// second names the look and the role in the daemon's words and then the supervisor's sentence
-// as this writes it, one line, quoted and cut (deathSentence), or, where the fact holds no
-// sentence, a sentence of the daemon's own, bare (claimFailed).
+// A role that does not work the issue's phase keeps a reason of its own, the daemon's words alone,
+// since what its failure means for that issue is more than this says. A checking role of a closed
+// issue writes this after the look and the role it names (claimFailed), with failureCarried false
+// since that notice carries no failure record, and where this says nothing, a sentence of the
+// daemon's own; then the cause and the look that retries the claim.
 func deathReason(fact intake.ClaimFailed, failureCarried bool) string {
 	said := make([]string, 0, 2)
 	if !failureCarried && fact.Reason != "" {

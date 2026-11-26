@@ -46,7 +46,7 @@ func (r *seedRun) writeDocuments(ctx context.Context) error {
 // marked is whether artifacts carries the node columns (carriesNodeMarker), which is whether the
 // database is this release's or the one before it. On this release's, the document's row names its
 // node, its node hangs under its issue, and each version is the projection of a version node, as
-// this release's server writes them (dispatch://INFRA-1253). On the one before, each is written as
+// this release's server writes them (the issue-tree spec). On the one before, each is written as
 // that release's server writes it, a document's node and nothing of the tree, so the backfill this
 // release runs over the data set writes the rest, and the sizing reads what it will write.
 func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marked bool) error {
@@ -144,7 +144,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
 	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	_, _, blockWrite, _, err := refs.IndexBlocks(ctx, tx, document.ID, refs.OneVersion(document.ID, document.Versions, versionAt), latest, blocks, located, nil, refs.TypedFacts{})
+	_, _, blockWrite, _, err := refs.IndexBlocks(ctx, tx, document.ID, refs.OneVersion(document.ID, document.Versions, versionAt), latest, blocks, located, nil, serverURL, refs.TypedFacts{})
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}
@@ -176,7 +176,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// The document's own references are reconciled after its blocks, as the server's own version
 	// write reconciles them (docs.indexRenderedVersion): the block mentions of a first indexing
 	// date from the document's refs row for their target, so they are written while the document
-	// holds no refs row yet, and take this version's time.
+	// holds no refs row yet, and take this version's time. Its blocks are indexed, so the
+	// reconciliation settles the document's row of the forms queue too.
 	replacement, err := refs.PlanReplace(ctx, tx, "artifact", document.ID, text.Refs(located), &versionAt)
 	if err != nil {
 		return fmt.Errorf("index references: %w", err)
@@ -188,8 +189,8 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int, marke
 	// on the data set would rewrite. They are queued after the reconciliation, whose rows the
 	// update reads (refs.QueueRecordExcerpts).
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-		replacement.Queue(b)
-		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located))
+		replacement.SettlingForms().Queue(b)
+		refs.QueueRecordExcerpts(b, document.ID, document.Versions, refs.MentionExcerpts(latest, blocks, located, serverURL))
 		return nil
 	}); err != nil {
 		return fmt.Errorf("index references: %w", err)

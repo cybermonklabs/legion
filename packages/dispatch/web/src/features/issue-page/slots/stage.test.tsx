@@ -12,7 +12,7 @@ import { parseIssuePath } from "../../refs/routes";
 import { IssueContentsPane } from "../contents-frame";
 import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
-import { readComment, TWO_THREADS } from "../outline-fixtures";
+import { readComment, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
 import { readOlderComments, type TreeAnswer } from "../tree-read/tree-read";
 import { FailedReadLine } from "./failed-read-line";
@@ -203,7 +203,7 @@ function MarkView(): ReactNode {
 // whose first group draws them; where it draws the outline in the Spec view's place, the outline
 // has no such group, and the sentences stand above it. From 1024 px up it draws none: the Contents
 // pane holds them. Each view here is a stand-in that draws no sentences of its own.
-test("below 1024 px the stage draws the three sentences above the slot it chooses, but over the Spec view's own", () => {
+test("below 1024 px the stage draws the three sentences except above the Spec view's own slot", () => {
   const reads = (
     [
       "getIssueCoverage",
@@ -491,9 +491,7 @@ test("below 1024 px the Outline sheet sends Conversation's read on Spec as it op
     const view = drawFrame(client, preset);
     try {
       await waitFor(() => expect(view.container.querySelector(SLOT_MARKS)).not.toBeNull());
-      await act(async () => {
-        await Bun.sleep(200);
-      });
+      await waitInAct(200);
       expect(conversationReadsSent(), `Conversation's reads sent with the load ${where}`).toBe(
         withLoad
       );
@@ -508,9 +506,7 @@ test("below 1024 px the Outline sheet sends Conversation's read on Spec as it op
       );
       await user.click(control);
       await waitFor(() => expect(contentsList(sheet())).not.toBeNull());
-      await act(async () => {
-        await Bun.sleep(200);
-      });
+      await waitInAct(200);
       expect(
         conversationReadsSent(),
         `Conversation's reads sent once the Outline sheet had opened twice ${where}`

@@ -33,6 +33,21 @@ func commentListValidator(t *testing.T, handler http.Handler, target, what strin
 	return listETagOf(t, listRead(t, handler, target, listReadOptions{trees: true}), what)
 }
 
+// unmarkHead takes the head mark of the issue key away (issue_head_marks), as a committed write of
+// the release before leaves it. The tests below write comments by plain SQL, as the release before
+// writes them, with no dispatch.head_rows setting, so the head mark trigger of comments fires for
+// each: on a marked issue it deletes the mark's row inside the first such statement, which holds
+// that row until its transaction ends, and a second writer of the issue waits for it (R8 of the
+// issue tree's spec: none of the head mark triggers is deferred; head_projection_test's
+// markedWritesWait). With the mark gone first, neither writer finds a row of it to wait on, and
+// what the tests hold the writers to is the watermark's triggers alone.
+func unmarkHead(t *testing.T, database *store.Store, key string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `delete from issue_head_marks where issue_key = $1`, key); err != nil {
+		t.Fatalf("take the head mark of %s away: %v", key, err)
+	}
+}
+
 // requireMovedValidator fails unless a reader holding the validator from before write is answered
 // the whole list again under one of its own, and returns the validator the list now stands at.
 func requireMovedValidator(t *testing.T, handler http.Handler, target, before, write string) string {
@@ -323,12 +338,14 @@ func TestADocumentsCommentListAnswersItsOwnNotModified(t *testing.T) {
 // are deferred for: an immediate trigger would take the issue's counter row where the write
 // happens and hold it until that transaction ended, so one long-running comment transaction would
 // serialise every comment write of its issue for its whole life. The second writer sets a lock
-// timeout, so an immediate trigger fails this test in seconds instead of hanging the suite.
+// timeout, so an immediate trigger fails this test in seconds instead of hanging the suite. Both
+// writes are the release before's, on an issue whose head mark is gone (unmarkHead).
 func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "HELDW", "A write held open", "A spec")
 	ctx := context.Background()
+	unmarkHead(t, database, issue.Key)
 
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -424,12 +441,14 @@ func TestTwoWritersCommittingAtOnceEachKeepTheirBump(t *testing.T) {
 // Two transactions whose commits overlap each add to the counter. Both write a row the triggers
 // watch and both are committed from goroutines of their own, so the second commit's bump waits on
 // the first's row lock and is applied to what that commit left, never to what it read before it.
+// Each write is the release before's, on an issue whose head mark is gone (unmarkHead).
 func TestOverlappingCommitsEachAddToTheWatermark(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "RACEW", "Overlapping commits", "A spec")
 	ctx := context.Background()
 	start := commentWatermark(t, database, issue.Key)
+	unmarkHead(t, database, issue.Key)
 
 	const writers = 8
 	open := make([]pgx.Tx, 0, writers)

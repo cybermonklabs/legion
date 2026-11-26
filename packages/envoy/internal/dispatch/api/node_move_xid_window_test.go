@@ -15,18 +15,20 @@ import (
 // The phases of a write of the node routes the xid window test tells apart, each by the
 // statements of its committed transaction (nodeRoutePhaseOf): a move whose text Markdown cannot
 // show, which writes its tuples alone; a move whose text moves, which writes a version of its
-// document under the room's lock in the same transaction (R7); and the drain of the queries the
-// move marked owed, which writes their versions in a transaction of its own once the move has
-// committed (docs.Service.DrainOwedQueries).
+// document under the room's lock in the same transaction (R7); the fill of that version's record
+// digest, which its batch left owed, in a transaction of its own once the move has committed (R15,
+// docs' fillOwedDigests); and the drain of the queries the move marked owed, which writes their
+// versions in a transaction of its own after that (docs.Service.DrainOwedQueries).
 const (
 	phaseFlatMove    = "flat-move"
 	phaseVersionMove = "move-version"
+	phaseFill        = "fill"
 	phaseDrain       = "drain"
 )
 
 // nodeRoutePhaseOf is the phase of the committed transaction window: the drain's clears the
-// issue's query mark, a move that writes a version inserts the version, and a flat move does
-// neither.
+// issue's query mark, the fill's records a record digest on a version_renders row, a move that
+// writes a version inserts the version, and a flat move does none of these.
 func nodeRoutePhaseOf(window storetest.XidWindow) string {
 	var sql strings.Builder
 	for _, statement := range window.Statements {
@@ -36,6 +38,8 @@ func nodeRoutePhaseOf(window storetest.XidWindow) string {
 	switch text := sql.String(); {
 	case strings.Contains(text, "delete from issue_query_marks"):
 		return phaseDrain
+	case strings.Contains(text, "update version_renders set record_sha256"):
+		return phaseFill
 	case strings.Contains(text, "insert into artifact_versions"):
 		return phaseVersionMove
 	}
@@ -44,16 +48,16 @@ func nodeRoutePhaseOf(window storetest.XidWindow) string {
 
 // TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill measures, on the large spec of the xid fixture
 // with a criterion and a requirement after it, the windows of the node routes' writes that change a
-// query and of the drain each runs (R7, c-windows-kept): a flat move, the requirement moved under a
-// lens on the issue, which the requirement's parent attribute cannot name, so its text and its
-// document stay as they are while the spec query's record moves; and a move that writes a version,
-// the requirement moved under the criterion, whose parent attribute the text then gains under the
-// room's lock. Each request's committed transactions are told apart by their statements
+// query and of the fill and the drain each runs (R7, R15, c-windows-kept): a flat move, the
+// requirement moved under a lens on the issue, which the requirement's parent attribute cannot
+// name, so its text and its document stay as they are while the spec query's record moves; and a
+// move that writes a version, the requirement moved under the criterion, whose parent attribute
+// the text then gains under the room's lock, and whose version's record digest the fill records
+// after the COMMIT. Each request's committed transactions are told apart by their statements
 // (nodeRoutePhaseOf), each named with its operation, its phase and its window, and each held to
 // storetest.XidBatchedWindow: its reads, then one batch and its COMMIT. Each step requires the
-// phases it is meant to show, its move's and the drain's, each in one window and no other window:
-// a move that wrote its version in a transaction of its own after its COMMIT would show two
-// windows for one move.
+// phases it is meant to show, each in one window and no other window: a move that wrote its
+// version in a transaction of its own after its COMMIT would show two windows for one move.
 func TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
 	large, _ := xidSpec(1)
@@ -68,7 +72,7 @@ func TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill(t *testing.T) {
 		phases       []string
 	}{
 		{"flat move", graphstore.KindLens + "/" + lens.ID, []string{phaseFlatMove, phaseDrain}},
-		{"move that writes a version", criterion, []string{phaseVersionMove, phaseDrain}},
+		{"move that writes a version", criterion, []string{phaseVersionMove, phaseFill, phaseDrain}},
 	} {
 		t.Run(step.name, func(t *testing.T) {
 			awaitQuietDatabase(t, f.database, false)

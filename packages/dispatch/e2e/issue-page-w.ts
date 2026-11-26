@@ -53,6 +53,10 @@ import type { Gate, TreeAnswerWatch } from "./issue-page-t-tree";
  *   (`requestedTreeRead`). The read ids of the nodes `seedLenses` wrote are read from Graph's
  *   read (`lensReadIds`), which holds each of them as a node of the issue, so a row names each
  *   node by the id the server gave it and never builds one.
+ * - **The event feed**: each event the page's live socket (`/ws/live`) carries it from a row's
+ *   watch on (`watchEventFrames`), by its type, what it is about, its id and when it arrived: a
+ *   row that counts the requests of its own act reads it to tell that act's window from one a
+ *   server duty's event reached, since the page reads again for each event it hears.
  * - **The gate** `findingGate`, which a clause of a row waits on as the rows wait on the gates
  *   of `e2e/issue-page-t-tree.ts`: a `Gate`, read by that file's `owedUnless`.
  */
@@ -579,6 +583,60 @@ export function treePagesOf(page: Page): () => Promise<TreePage[]> {
     );
   });
   return async () => (await Promise.all(kept)).filter((one) => one !== undefined);
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the page received of the event feed.
+// ---------------------------------------------------------------------------------------------
+
+/** One event the page's live socket carried it, as its frame names the event. */
+export interface EventFrame {
+  /** When the frame reached the row, in ms since the epoch (`Date.now()`). */
+  readonly at: number;
+  /** When the server wrote the event (`created_at`), as the frame sends it. */
+  readonly created: string;
+  /** The issue the event is about, else its project, else empty: an event of the workspace. */
+  readonly entity: string;
+  /** The event's id in the log, as the frame sends it. */
+  readonly id: string;
+  /** The event's type, such as `architecture.synced`. */
+  readonly kind: string;
+}
+
+/** An `event` frame of the live socket, as `@legion/contracts`' `LiveEventFrame` names it: only
+ *  the fields `watchEventFrames` keeps, each optional, since a frame of another type has none. */
+interface LiveFrame {
+  readonly event?: {
+    readonly created_at?: string;
+    readonly issue_key?: string | null;
+    readonly project?: string;
+    readonly type?: string;
+  };
+  readonly id?: string;
+  readonly type?: string;
+}
+
+/** Keeps each event the page's live socket (`/ws/live`) carries from now on, in the order the
+ *  socket sent them: the frames of every socket the page opens after this call, one for each
+ *  document it loads. A row watches before its first navigation, so no socket opens unwatched.
+ *  The answer grows as frames arrive; a row reads the part after the length it noted. */
+export function watchEventFrames(page: Page): readonly EventFrame[] {
+  const frames: EventFrame[] = [];
+  page.on("websocket", (socket) => {
+    if (new URL(socket.url()).pathname !== "/ws/live") return;
+    socket.on("framereceived", ({ payload }) => {
+      const frame = JSON.parse(String(payload)) as LiveFrame;
+      if (frame.type !== "event") return;
+      frames.push({
+        at: Date.now(),
+        created: frame.event?.created_at ?? "",
+        entity: frame.event?.issue_key ?? frame.event?.project ?? "",
+        id: frame.id ?? "",
+        kind: frame.event?.type ?? "",
+      });
+    });
+  });
+  return frames;
 }
 
 /** The read ids of what `seedLenses` wrote, as the issue's tree read holds them. */

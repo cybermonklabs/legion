@@ -441,11 +441,12 @@ function sectionsOf(
  * place under the decision (`decisionChangeComments` still holds it), but asks nothing any more: a
  * decision whose every change was deleted waits for review again, as it did before the first.
  * `documents` are the blocks of the issue's documents the page has read, `undefined` where it has
- * read none. A decision with none is not held.
+ * read none. A decision with none is not held. Each change is the comment as `comments` holds it,
+ * so a caller reads whatever else its read gave of it.
  */
-export function decisionChanges(
+export function decisionChanges<Change extends ChangeComment>(
   decisions: Pick<IssueDecisions, "entries"> | undefined,
-  comments: readonly ChangeComment[] | undefined,
+  comments: readonly Change[] | undefined,
   issue: DecisionDocuments,
   documents: readonly DocumentBlocks[] | undefined,
   placed: ReadonlyMap<string, string> = decisionChangeComments(
@@ -454,8 +455,8 @@ export function decisionChanges(
     issue,
     documents
   )
-): ReadonlyMap<string, ChangeComment> {
-  const changes = new Map<string, ChangeComment>();
+): ReadonlyMap<string, Change> {
+  const changes = new Map<string, Change>();
   for (const comment of comments ?? []) {
     const ref = placed.get(comment.id);
     if (ref === undefined || postDeletion(comment) !== null) continue;
@@ -468,23 +469,35 @@ export function decisionChanges(
 }
 
 /**
- * The words of the decision's first block that is no heading, which is what a change is anchored
- * to: the server matches an anchor quote against the document's own text (`pmdoc.FindQuote`),
- * never its markdown, so a list or a hard break quoted as markdown would anchor on nothing. They
- * are read from the decision's reading (`readingOf`), whose top-level blocks are the blocks of the
- * decision's own content: the tree Go read the decision's text into (`DecisionEntry.text_tree`),
- * and where the read carried none that holds blocks - a pod of the build before during a rolling
- * deploy - the reading of its stored text (`storedReading`), so a decision's quote is the words of
- * its text either way, never its markdown. Undefined for a decision whose headings are all it
- * holds.
+ * The decision's first block that is no heading, which is what a change is anchored to, as a
+ * reading of that block alone: the server matches an anchor quote against the document's own
+ * text (`pmdoc.FindQuote`), never its markdown, so a list or a hard break quoted as markdown
+ * would anchor on nothing. It is read from the decision's reading (`readingOf`), whose top-level
+ * blocks are the blocks of the decision's own content: the tree Go read the decision's text into
+ * (`DecisionEntry.text_tree`), and where the read carried none that holds blocks - a pod of the
+ * build before during a rolling deploy - the reading of its stored text (`storedReading`).
+ * Undefined for a decision whose headings are all it holds. The Change draws this block's
+ * plain-text projection (`DecisionActions.tsx`), and anchors to its words (`anchorQuote`).
  */
-export function anchorQuote(
+export function anchorBlock(
   decision: Pick<DecisionEntry, "text" | "text_tree">
-): string | undefined {
-  const blocks = readingOf(decision).content;
+): DisplayTree | undefined {
+  const reading = readingOf(decision);
+  const blocks = reading.content;
   const block = Array.isArray(blocks)
     ? (blocks as DisplayTree[]).find((node) => node.type !== "heading")
     : undefined;
+  return block === undefined ? undefined : { ...reading, content: [block] };
+}
+
+/** The words a change is anchored to: the words of the decision's first block that is no heading
+ *  (`anchorBlock`), as the document's own text holds them, so a decision's quote is the words of
+ *  its text either way, never its markdown. Undefined for a decision whose headings are all it
+ *  holds. */
+export function anchorQuote(
+  decision: Pick<DecisionEntry, "text" | "text_tree">
+): string | undefined {
+  const block = anchorBlock(decision);
   return block === undefined ? undefined : wordsOf(block);
 }
 

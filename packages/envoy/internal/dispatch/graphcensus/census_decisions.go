@@ -9,7 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// decisionProjections are the census's kinds of dispatch://INFRA-1150 (projections): the ties of
+// decisionProjections are the census's kinds of the decisions-tree spec (projections): the ties of
 // decisions, readings and asks that block_refs, document_blocks, asks and ask_followers project,
 // each held triple by triple (projection.tuples) but a person's answer; and after them the same
 // ties as graph_edges answers them, each one that view answers (edgeProjection).
@@ -168,7 +168,7 @@ var decisionProjections = []projection{
 }
 
 // decisionBackfills are the backfill's passes over the asks and their followers
-// (dispatch://INFRA-1150, backfillPasses), after the object pass wrote the node of every ask
+// (the decisions-tree spec, backfillPasses), after the object pass wrote the node of every ask
 // (backfillObjectNodes): the rest of the boot step's first phase (BackfillAsks), so a database the
 // command fills reads as one the boot fills.
 var decisionBackfills = []backfillPass{kindSoFar(backfillAsks), kindSoFar(backfillAskFollowers)}
@@ -188,8 +188,8 @@ func kindSoFar(write func(context.Context, *store.Store) (KindBackfill, error)) 
 // predicate kinds selects (written over t.kind), read as a statement reads a current relation, the
 // newest tuple per (kind, far end) kept while it asserts (graphstore.CurrentTupleRead), each as
 // (from_kind, from_id, kind, to_kind, to_id). A node is present at any state but gone (R12 of
-// dispatch://INFRA-1950, as presentNodes reads one), so a proposed or settled decision's ties are
-// held as a live one's are. Each node's relations are read through graph_tuples_current, one
+// the node-visibility spec, as presentNodes reads one), so a proposed or settled decision's ties
+// are held as a live one's are. Each node's relations are read through graph_tuples_current, one
 // probe per node, as currentLinks reads them.
 func heldTuples(kinds string, holders ...string) string {
 	return `

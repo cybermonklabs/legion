@@ -60,10 +60,17 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
       - name: Memory tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
           go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./internal/dispatch/docs)
+          go test -tags memory -count=1 -timeout 30m -v -run "$pattern" ./internal/dispatch/docs
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

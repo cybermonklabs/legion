@@ -15,7 +15,7 @@ import { parseIssuePath } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { issueAddress, presetPath } from "../issue-address";
 import { LENS_WORDS } from "../page-words";
-import { type Outline, outlineQuery } from "../tree-read/tree-read";
+import { type outlineOf, outlineQuery } from "../tree-read/tree-read";
 import { outlineRowPath } from "./store-link";
 
 /**
@@ -98,6 +98,10 @@ export function useStandingAddress(): StandingAddress {
   }, [location, navigate]);
   return standing;
 }
+
+/** The two outlines a load can hold, Conversation's and Graph's: what `tree-read/tree-read.ts`'s
+ *  `outlineOf` answers for a view that draws one. */
+export type Outline = NonNullable<ReturnType<typeof outlineOf>>;
 
 /** The issue an address names and the outline it opens, read as the page's slots read their
  *  address: Conversation or Graph, and none in a filter or any other view (`outline`), beside

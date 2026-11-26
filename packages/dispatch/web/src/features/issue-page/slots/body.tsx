@@ -70,8 +70,11 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // say nothing. A read that stands failed holds nothing either, and the outline says so over
   // its rows (`failed`). Under a words filter the line that nothing holds the words waits on the
   // names as well (`namesHeld`), and the outline draws nothing in the line's place until they are
-  // held. With no filter on the line reads no words, and does not wait on the names.
-  const { failed, namesHeld, reads, readsHeld, readsSettled, root } = useOutlineReads(issue);
+  // held. With no filter on the line reads no words, and does not wait on the names. What the
+  // page publishes of its batched names read the tree hands its rows and crumbs in the render
+  // that draws them (`published`), so none of them reads a reference the page asks for.
+  const { failed, namesHeld, published, reads, readsHeld, readsSettled, root } =
+    useOutlineReads(issue);
   const key = issue.key;
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it. An item
@@ -81,20 +84,25 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // address's own node; and a block or the children the tree holds no node of are said to be
   // so, in the outline's place.
   const addressed = useAddressTarget(root, address);
+  const zoomed = address.zoom === undefined ? undefined : pathTo(root, address.zoom);
   // An address that names a node no page of the outline read yet holds - its own node, or the
   // node Graph's address zooms to - reads the read's next pages until one brings it, or none is
   // left (R15), and lands on it then as on a node the first page held: until the reading ends,
   // the landing and the outline's first focus wait on it as on the reads the tree is built from.
+  // A next page refused is no last page: until a read of it answers - the control after the
+  // outline's last row reads it again - the landing waits on it still, so the address keeps its
+  // node and its zoom, while the outline takes its first focus as the reads settle.
   const unloaded =
     address.document === undefined &&
     ((address.target !== undefined && addressed.reveal === undefined) ||
-      (address.zoom !== undefined && pathTo(root, address.zoom) === undefined));
-  const readingPages = useReadUntilHeld(issue, unloaded);
+      (address.zoom !== undefined && zoomed === undefined));
+  const pages = useReadUntilHeld(issue, unloaded);
+  const pagesHeld = !pages.reading && !pages.refused;
   const fallback = useAddressFallback({
     address,
     issue,
     reads,
-    readsHeld: readsHeld && !readingPages,
+    readsHeld: readsHeld && pagesHeld,
     reveal: addressed.reveal,
     root,
     route,
@@ -119,40 +127,35 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
   // row while its answer names one (R15).
   const older = useOlderComments(issue);
   const more = useNextTreePage(issue);
-  // An address on Conversation's own address that names a node Conversation draws no row of - a
-  // plan task, a result - opens the filter of its kind at that node (R9): the address is
-  // replaced by that filter's, with the same search and fragment, which the filter lands on as
-  // on any node its own address names, and where it draws none, the stage draws the outline in
-  // its place (`StageSlot`). A block Conversation's read holds no node of, once its reads have
-  // answered, opens the filter whose view answer the page holds it in (`filterHolding`), else
-  // Graph where Graph's read, as the page holds it, answers it (`answerHolds`); where none does,
-  // the outline says in its place that it has no row for the block.
-  // A node address (`?node=`), which the outline alone reads, goes to Graph's of that node
-  // instead where Conversation's tree holds the node and draws no row of it, or where
-  // Conversation's read holds none of it and Graph's read does. A node no read holds opens the
-  // outline's own address, Conversation's or Graph's, with the same search less `node` and the
-  // same fragment, and no line (`addressView`); Graph's keeps the node it zooms to where the tree
-  // holds it (`/graph/<id>`). Graph's address zoomed to a node no read holds, once its reads have
-  // answered, opens as Graph's own address, with the same search and fragment.
+  // `addressView` decides what opens in place of an address the outline cannot draw.
   // A load of Conversation sends no Graph read, so where Conversation's read holds no node of the
-  // address's and the page holds no Graph read, the body sends Graph's read here, once, and
-  // decides once it has answered: Graph's `?node=` where its answer holds the node, else the
-  // issue's own address without it, as where Graph's read is refused. Until then the body draws
-  // what it draws while its own reads are out for an address, and the outline takes no first
-  // focus. It is the read Graph's slot reads, under the same key, which going there reads from the
-  // cache; a page that holds it already sends nothing.
-  const unheldNode =
+  // address's and the page holds no Graph read, the body sends Graph's read here, once, reads its
+  // next pages until one brings the node or none is left, as Graph's own address does
+  // (`useReadUntilHeld`), and decides once that reading has ended: Graph's `?node=` where its
+  // pages hold the node, else the issue's own address without it, as where Graph's read, or a
+  // next page of it, is refused. Until then the body draws what it draws while its own reads are
+  // out for an address, and the outline takes no first focus. It is the read Graph's slot reads,
+  // under the same key, which going there reads from the cache; a page that holds it already
+  // sends nothing.
+  const unheldId =
     address.preset === "conversation" &&
     fallback?.kind === "absent" &&
-    fallback.target.kind === "node";
+    fallback.target.kind === "node"
+      ? fallback.target.id
+      : undefined;
+  const unheldNode = unheldId !== undefined;
   const graph = useQuery({
     ...outlineQuery(key, "graph"),
     enabled: (query) => unheldNode && query.state.status === "pending",
   });
-  const graphOut = unheldNode && graph.status === "pending";
-  const zoomed = address.zoom === undefined ? undefined : pathTo(root, address.zoom);
-  const zoomUnheld =
-    address.zoom !== undefined && readsHeld && !readingPages && zoomed === undefined;
+  const graphHolds = graph.data?.nodes?.some((node) => node.id === unheldId) === true;
+  const graphPages = useReadUntilHeld(
+    issue,
+    unheldNode && graph.data !== undefined && !graphHolds,
+    "graph"
+  );
+  const graphOut = unheldNode && (graph.status === "pending" || graphPages.reading);
+  const zoomUnheld = address.zoom !== undefined && readsHeld && pagesHeld && zoomed === undefined;
   const undrawn: AddressView | undefined = graphOut
     ? undefined
     : (addressView(address, addressed.reveal, root, fallback, graph.data) ??
@@ -235,8 +238,9 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
             more={more}
             older={older}
             onEditing={onEditing}
+            published={published}
             readsHeld={readsHeld}
-            readsSettled={readsSettled && !readingPages && !graphOut}
+            readsSettled={readsSettled && !pages.reading && !graphOut}
             {...(request === undefined ? {} : { request })}
             // The children's own address lands on their section above the outline
             // (`children-section.tsx`), and on no row of the outline (R14).
@@ -256,7 +260,7 @@ export function BodySlot({ acts: given, issue, route }: BodySlotProps): ReactNod
 
 /** Where an address opens in its own view's place (`addressView`): `preset`'s own address, with
  *  the address's search and fragment, less its `?node=` where `keepsNode` is false (`viewPath`). */
-export interface AddressView {
+interface AddressView {
   readonly keepsNode: boolean;
   readonly preset: Preset;
 }
@@ -277,8 +281,11 @@ export interface AddressView {
  * holds none of opens Graph at it where Graph's read answers a node of its id, and else - Graph's
  * read lacking it, or refused - Conversation's own address without it. On Graph's address, a
  * node its read holds none of opens Graph's address without it, zoomed as the address zooms where
- * the tree holds that node (`viewPath`). No line is drawn for a node no read holds. Undefined for
- * every other address, and on every other preset.
+ * the tree holds that node (`viewPath`). No line is drawn for a node no read holds. In a filter's
+ * place, where the stage draws the outline because that filter's view draws no row for the node
+ * (`StageSlot`), the outline is Conversation's, and a node it draws no row of opens the filter of
+ * its kind or Graph as on Conversation's address, but never the filter it stands in, whose view
+ * drew none of it. Undefined for every other address.
  */
 export function addressView(
   address: Pick<IssueAddress, "preset" | "target">,
@@ -292,12 +299,13 @@ export function addressView(
   if (address.preset === "graph") {
     return unheld === undefined ? undefined : { keepsNode: false, preset: "graph" };
   }
-  if (address.preset !== "conversation") return undefined;
   if (reveal !== undefined) {
     const filter = filterOfUndrawn(reveal.at(-1) ?? root);
-    if (filter === undefined) return undefined;
+    if (filter === undefined || filter === address.preset) return undefined;
     return { keepsNode: true, preset: address.target?.kind === "node" ? "graph" : filter };
   }
+  // A node address is the outline's alone (`issueAddress`), so a filter's place opens none.
+  if (unheld !== undefined && address.preset !== "conversation") return undefined;
   if (unheld !== undefined) {
     return (graphRead?.nodes ?? []).some((node) => node.id === unheld.id)
       ? { keepsNode: true, preset: "graph" }
@@ -307,7 +315,9 @@ export function addressView(
   const preset =
     filterHolding(root.views, fallback.target) ??
     (answerHolds(graphRead, fallback.target) ? "graph" : undefined);
-  return preset === undefined ? undefined : { keepsNode: true, preset };
+  return preset === undefined || preset === address.preset
+    ? undefined
+    : { keepsNode: true, preset };
 }
 
 /** The address `view` opens for an address of `search` and `hash`: its preset's own address -

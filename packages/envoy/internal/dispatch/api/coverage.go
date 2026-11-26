@@ -29,7 +29,7 @@ import (
 // after the spec's approval. A requirement whose block's node state is proposed is a question
 // still open (spec requirement r-proposed), so it raises neither gap here and the
 // approval request's answer names none for it; one at settled or live is counted as every
-// requirement is, and one at overtaken is closed (R7 of dispatch://INFRA-1253), so it raises
+// requirement is, and one at overtaken is closed (R7 of the issue-tree spec), so it raises
 // neither gap either. A check or a plan task
 // whose block is proposed is a question still open too, so it serves nothing yet and its
 // requirement is counted without it (queueServingBlockCounts). An issue that is a view on its
@@ -332,7 +332,7 @@ func coverageIssues(ctx context.Context, q queryer, who model.Actor, issueKey st
 // issueKey, for who: its reference, its node's state (queueRequirementStates), how many checks and
 // plan tasks of the documents of issues serve it (queueServingBlockCounts), both read in one batch,
 // and its gaps. A proposed requirement is a question still open and lacks nothing, an overtaken one
-// is closed (R7 of dispatch://INFRA-1253) and lacks nothing either, and so does every requirement
+// is closed (R7 of the issue-tree spec) and lacks nothing either, and so does every requirement
 // while owed, while a document of the issue owes its block index, whose checks and plan tasks the
 // counts may not hold yet (owedGap names that document instead); any other lacks a check where none
 // serves it, and a plan task where hasPlan and none serves it.

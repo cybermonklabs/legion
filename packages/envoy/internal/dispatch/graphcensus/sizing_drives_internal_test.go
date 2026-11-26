@@ -271,8 +271,9 @@ func passDrives(t *testing.T) []StoreDrive {
 	}, {
 		// The anchor pass (backfillAnchoredIn) over a comment this build wrote with its node,
 		// anchored on a block of a document of DRIVE-1, whose node states no anchored_in, as a
-		// process of the release before leaves the row it anchors: the comment's anchored_in,
-		// which the term anchor_block counts.
+		// process of the release before leaves the row it anchors: the comment's anchored_in and,
+		// since it answers nothing, its part_of to the same block (graphstore.AnchorRelation), which
+		// the term anchor_block counts.
 		Name: anchorBatchDrive, Database: database,
 		Sites: []string{"graphcensus/census_anchors.go#writeAnchorBatch", "graphstore/write.go#Write"},
 		Ready: func(t *testing.T) {
@@ -294,8 +295,11 @@ func passDrives(t *testing.T) []StoreDrive {
 				return err
 			})
 		},
-		Drive:  drivenPass(database, backfillAnchoredIn),
-		Counts: map[StoredKind][]string{{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"}},
+		Drive: drivenPass(database, backfillAnchoredIn),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
+		},
 	}, {
 		// The result pass (backfillResults) over a failed result a release before this one
 		// recorded, by alice, of check c1 of DRIVE-1's Verification document, its row and no

@@ -16,7 +16,10 @@
     "refs": [
       "dispatch://CORE-1"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
   },
   {
     "body": "_dispatch://CORE-1/spec_, ~~dispatch://CORE-2~~ and __dispatch://CORE-3/ask/22222222-2222-4222-8222-222222222222__.",
@@ -32,7 +35,11 @@
       "dispatch://CORE-5",
       "dispatch://CORE-6"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-5",
+      "dispatch://CORE-6"
+    ]
   },
   {
     "body": "See [dispatch://CORE-7/spec](dispatch://CORE-7/spec).",
@@ -44,6 +51,18 @@
     "body": "See [**dispatch://CORE-8**](dispatch://CORE-8).",
     "refs": [
       "dispatch://CORE-8"
+    ]
+  },
+  {
+    "body": "See [the rollout plan](dispatch://CORE-22/spec) first.",
+    "refs": [
+      "dispatch://CORE-22/spec"
+    ]
+  },
+  {
+    "body": "See [**the rollout plan**](https://dispatch.test/issues/CORE-23) first.",
+    "refs": [
+      "dispatch://CORE-23"
     ]
   },
   {
@@ -69,6 +88,107 @@
     "refs": [
       "dispatch://CORE-10"
     ]
+  },
+  {
+    "body": "Filed as dispatch://CORE-40/ and dispatch://CORE-41/.",
+    "refs": [
+      "dispatch://CORE-40",
+      "dispatch://CORE-41"
+    ]
+  },
+  {
+    "body": "Nothing: dispatch://CORE-42//, dispatch://CORE-42/notes, dispatch://CORE-42/artifact/, dispatch://CORE-42/ask/ and https://dispatch.test/issues/CORE-42/.",
+    "refs": []
+  },
+  {
+    "body": "See [the notes](<dispatch://CORE-43/a b>) now.",
+    "refs": []
+  },
+  {
+    "body": "Cut at [the notes](<dispatch://CORE-44/",
+    "refs": [
+      "dispatch://CORE-44"
+    ]
+  },
+  {
+    "body": "The verification tab: dispatch://CORE-45/verification and https://dispatch.test/issues/CORE-46/verification.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The plan tab: dispatch://CORE-45/plan and https://dispatch.test/issues/CORE-46/plan.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The steps tab: dispatch://CORE-45/steps and https://dispatch.test/issues/CORE-46/steps.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The activity tab: dispatch://CORE-45/activity and https://dispatch.test/issues/CORE-46/activity.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The children tab: dispatch://CORE-45/children and https://dispatch.test/issues/CORE-46/children.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The artifacts tab: dispatch://CORE-45/artifacts and https://dispatch.test/issues/CORE-46/artifacts.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The collaborators tab: dispatch://CORE-45/collaborators and https://dispatch.test/issues/CORE-46/collaborators.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
+    "body": "The conversation: dispatch://CORE-47/conversation, dispatch://CORE-48/log and https://dispatch.test/issues/CORE-54/conversation.",
+    "refs": [
+      "dispatch://CORE-47",
+      "dispatch://CORE-48",
+      "dispatch://CORE-54"
+    ]
+  },
+  {
+    "body": "The decisions: dispatch://CORE-55/decisions and https://dispatch.test/issues/CORE-56/decisions.",
+    "refs": [
+      "dispatch://CORE-55",
+      "dispatch://CORE-56"
+    ]
+  },
+  {
+    "body": "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan and https://dispatch.test/issues/CORE-49/plan/.",
+    "refs": []
+  },
+  {
+    "body": "https://dispatch.test/issues/CORE-50/artifact/notes-md, https://dispatch.test/issues/CORE-51/artifact/notes-md?v=2 and https://dispatch.test/issues/CORE-52/artifact/notes-md#b-ship-it",
+    "refs": [
+      "dispatch://CORE-50/artifact/notes-md",
+      "dispatch://CORE-51/artifact/notes-md@v2",
+      "dispatch://CORE-52/artifact/notes-md#b-ship-it"
+    ]
+  },
+  {
+    "body": "No page: https://dispatch.test/issues/CORE-53/artifact/notes-md/ and https://dispatch.test/issues/CORE-53/artifact/notes-md?v=02",
+    "refs": []
   },
   {
     "body": "Quoted \"dispatch://CORE-11\", 'dispatch://CORE-12' and <dispatch://CORE-13>.",
@@ -109,7 +229,10 @@
     "refs": [
       "dispatch://CORE-1/comment/44444444-4444-4444-8444-444444444444"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/44444444-4444-4444-8444-444444444444"
+    ]
   },
   {
     "body": "Pairs part at & alone: https://dispatch.test/issues/CORE-1/spec?comment=c1;c2, https://dispatch.test/issues/CORE-1/artifacts/notes-md?v=2;3 and https://dispatch.test/issues/CORE-2/spec?ask=a1;x&comment=c1.",
@@ -186,10 +309,128 @@
     "refs": []
   },
   {
+    "body": "Both dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551 and its dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png here.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png"
+    ]
+  },
+  {
+    "body": "See [the agent](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551).",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Ask [@Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) today.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Ask @Planner and @legion/contracts about it.",
+    "refs": []
+  },
+  {
+    "body": "Waiting on dispatch://role/reviewer today.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "See [the reviewer](dispatch://role/reviewer).",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Ask [@reviewer](dispatch://role/reviewer).",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Asked dispatch://person/alice@example.com today.",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": []
+  },
+  {
+    "body": "See [the owner](dispatch://person/alice@example.com).",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": []
+  },
+  {
+    "body": "Ask [@alice@example.com](dispatch://person/alice@example.com).",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": []
+  },
+  {
+    "body": "Neither dispatch://role/Reviewer nor dispatch://role/sre_oncall names a role.",
+    "refs": []
+  },
+  {
+    "body": "Neither dispatch://person/Alice@example.com nor dispatch://person/alice names a person.",
+    "refs": []
+  },
+  {
+    "body": "No party: dispatch://agent, dispatch://role and dispatch://person here.",
+    "refs": []
+  },
+  {
+    "body": "Owned by dispatch://CORE/component/dispatch-server here.",
+    "refs": [
+      "dispatch://CORE/component/dispatch-server"
+    ]
+  },
+  {
+    "body": "No component: dispatch://CORE/component/Dispatch_Server here.",
+    "refs": []
+  },
+  {
     "body": "![shot.png](dispatch://LEGION-1/artifact/shot-png@v1)",
     "refs": [
       "dispatch://LEGION-1/artifact/shot-png@v1"
     ]
+  },
+  {
+    "body": "[@Bob](dispatch://agent/abc)hello",
+    "refs": [
+      "dispatch://agent/abc"
+    ]
+  },
+  {
+    "body": "[w](dispatch://CORE-24)word",
+    "refs": [
+      "dispatch://CORE-24"
+    ]
+  },
+  {
+    "body": "![shot](dispatch://LEGION-1/artifact/shot-png)word",
+    "refs": [
+      "dispatch://LEGION-1/artifact/shot-png"
+    ]
+  },
+  {
+    "body": "[w](dispatch://agent/a(b)c)tail",
+    "refs": [
+      "dispatch://agent/a(b)c"
+    ]
+  },
+  {
+    "body": "(see dispatch://CORE-1)",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "dispatch://CORE-1)word",
+    "refs": []
   },
   {
     "body": "see dispatch://CORE-1/spec#b-d%C3%A9cision%3A1.",
@@ -314,7 +555,10 @@
     "refs": [
       "dispatch://lens/7c1e0000-0000-4000-8000-000000000002"
     ],
-    "links": []
+    "links": [],
+    "inCode": [
+      "dispatch://lens/7c1e0000-0000-4000-8000-000000000002"
+    ]
   },
   {
     "body": "Not one: dispatch://lens/7c1e0000-0000-4000-8000-000000000002#b-x@v1, dispatch://lens/7C1E0000-0000-4000-8000-000000000002, dispatch://lens/7c1e0000, dispatch://risk/7c1e0000-0000-4000-8000-000000000003/x, dispatch://lens_kind/Pre-mortem, dispatch://lens_kind/pre_mortem, dispatch://risk/7c1e0000-0000-4000-8000-000000000003#b-x, dispatch://CORE-1/lens/7c1e0000-0000-4000-8000-000000000002 and dispatch://interaction/ here.",
@@ -1286,6 +1530,519 @@
     ]
   },
   {
+    "body": "Pasted from the handbook:\n\n    dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Ask [the reviewer](dispatch://role/reviewer) to run:\n\n```sh\ndispatch send-to-agent dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551\n```\n",
+    "refs": [
+      "dispatch://role/reviewer",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ],
+    "links": [
+      "dispatch://role/reviewer"
+    ],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Run `dispatch message --to dispatch://role/reviewer` before the deploy.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- step one\n    - ask dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "1. step one\n\n    more about dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "-   See this:\n\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "-     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "1.  step one\nlazy line\n\n    more about dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> ```\n> dispatch://role/reviewer\n> ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> > ```\n> > dispatch://role/reviewer\n> > ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> See this:\n>\n>     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Run this:\n\n  ```\n  dispatch://role/reviewer\n  ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Ask:\n\n  > ```\n  > dispatch://role/reviewer\n  > ```\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> ```\n> text\n\ndispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "***\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "```\ndispatch://CORE-1\n```",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```sh\ndispatch://CORE-1\n```",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "~~~\ndispatch://CORE-1\n~~~",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\ndispatch://CORE-1\n`````",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "````\n``\ndispatch://CORE-1\n````",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "   ```\ndispatch://CORE-1\n   ```",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\nx\n```\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "~~~`sh\ndispatch://CORE-1\n~~~",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```a`b\ndispatch://CORE-1\n```",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n\tdispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n    x\n\n    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n    dispatch://CORE-1\n",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See:\n\n    x\n\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `dispatch://CORE-1` now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run ``dispatch://CORE-1`` now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `` dispatch://CORE-1 ``` ``",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `dispatch://CORE-1 now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "`a` dispatch://CORE-1 `b`",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Run `one\ndispatch://CORE-1` now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "```\n`\n```\ndispatch://CORE-1",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "See dispatch://CORE-1 now.",
+    "refs": [
+      "dispatch://CORE-1"
+    ]
+  },
+  {
+    "body": "Rename the `foo field.\n\n[Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) please check `bar` too.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "- Rename `foo field\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "> Rename `foo\n>\n> [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Rename `foo field\n\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Rename `foo field\n# Next up\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Rename `foo field\n***\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Rename `foo field\n--\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Rename `foo field\n===\nask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "# Where to ask\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Where to ask\n============\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "[^who]: who to ask\n\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "  [^who]: who to ask\n\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "1. Rename `foo field\n2. ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "1) Rename `foo field\n2) ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "- Rename `foo\n-\n  ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Where to ask\n--\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> Where to ask\n===\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- Where to ask\n===\n    dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Type \\` for a backtick, ask dispatch://role/reviewer, then run `dispatch status`.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Run `grep \\` here` then ask dispatch://role/reviewer.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [
+      "dispatch://role/reviewer"
+    ],
+    "inCode": []
+  },
+  {
+    "body": "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [
+      "dispatch://role/reviewer"
+    ],
+    "inCode": []
+  },
+  {
+    "body": "> > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > > >     dispatch://role/reviewer\n",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
     "body": "`CORE-1` is blocked.",
     "issues": [
       "CORE-1"
@@ -1294,6 +2051,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1305,6 +2065,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1316,6 +2079,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1327,6 +2093,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1338,6 +2107,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1349,6 +2121,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1360,6 +2135,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1371,6 +2149,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1382,6 +2163,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1393,6 +2177,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1404,6 +2191,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1415,6 +2205,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1426,6 +2219,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1437,6 +2233,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1448,6 +2247,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1459,6 +2261,9 @@
       "dispatch://XCORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://XCORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1472,6 +2277,10 @@
       "dispatch://ACME-12"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1",
+      "dispatch://ACME-12"
+    ],
     "grammar": true
   },
   {
@@ -1483,6 +2292,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1494,6 +2306,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1505,6 +2320,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1516,6 +2334,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1527,6 +2348,9 @@
       "dispatch://CORE-1"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1"
+    ],
     "grammar": true
   },
   {
@@ -1540,6 +2364,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1553,6 +2380,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1566,6 +2396,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1579,6 +2412,9 @@
       "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/33333333-3333-4333-8333-333333333333"
+    ],
     "grammar": true
   },
   {
@@ -1592,6 +2428,9 @@
       "dispatch://CORE-1/ask/66666666-6666-4666-8666-666666666666"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/66666666-6666-4666-8666-666666666666"
+    ],
     "grammar": true
   },
   {
@@ -1606,6 +2445,9 @@
       "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
+    ],
     "grammar": true
   },
   {
@@ -1620,6 +2462,9 @@
       "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
+    ],
     "grammar": true
   },
   {
@@ -1634,6 +2479,9 @@
       "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/ask/2a7f1c90-1f4e-4a2b-9c3d-5e6f70819a2b"
+    ],
     "grammar": true
   },
   {
@@ -1648,6 +2496,9 @@
       "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
+    ],
     "grammar": true
   },
   {
@@ -1662,6 +2513,9 @@
       "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
+    ],
     "grammar": true
   },
   {
@@ -1676,6 +2530,9 @@
       "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/comment/3b8e2d01-2a5f-4b3c-8d4e-6f70819a2b3c"
+    ],
     "grammar": true
   },
   {
@@ -1690,6 +2547,9 @@
       "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
+    ],
     "grammar": true
   },
   {
@@ -1704,6 +2564,9 @@
       "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
+    ],
     "grammar": true
   },
   {
@@ -1718,6 +2581,9 @@
       "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/message/4c9f3e12-3b60-4c4d-9e5f-70819a2b3c4d"
+    ],
     "grammar": true
   },
   {
@@ -1732,6 +2598,9 @@
       "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
+    ],
     "grammar": true
   },
   {
@@ -1746,6 +2615,9 @@
       "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
+    ],
     "grammar": true
   },
   {
@@ -1760,6 +2632,41 @@
       "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
     ],
     "links": [],
+    "inCode": [
+      "dispatch://CORE-1/spec#b-5da04f23-4c71-4d5e-8f60-819a2b3c4d5e"
+    ],
     "grammar": true
+  },
+  {
+    "body": "Both `dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551` and its `dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png` here.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png"
+    ]
+  },
+  {
+    "body": "Waiting on `dispatch://role/reviewer` today.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Asked `dispatch://person/alice@example.com` today.",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": [],
+    "inCode": [
+      "dispatch://person/alice@example.com"
+    ]
   }
 ]

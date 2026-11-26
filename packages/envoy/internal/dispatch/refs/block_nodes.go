@@ -83,9 +83,10 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // made_by, so a block is made by the version that first held it: the first of that version's
 // authors at its time (versionAuthors), graph_nodes.made_by holding one actor. A block an earlier
 // build indexed with no project takes its document's here (graphstore.Write fills a project the
-// row does not hold). supertag is BlockSupertag for every block but a decision and a reading,
-// which take their type's (TypedFacts.supertag), so the typed-node pass and this index write one
-// node and neither moves what the other wrote.
+// row does not hold). supertag is the supertag of the block's type (TypedFacts.supertag): its type
+// for a typed block, BlockSupertag for every other kind and for a reading in an ask nobody has
+// answered, so the typed-node pass and this index write one node and neither moves what the other
+// wrote.
 //
 // The index owns a block's text and its place in its document, not its state or its visibility,
 // so every node it writes restates the block (graphstore.Node's Restates): state is live for a
@@ -132,7 +133,7 @@ func (record IndexedVersion) topOf(block model.ArtifactBlock, fragments map[stri
 	return record.top()
 }
 
-// The bands a block's rank stands in (D15 of dispatch://INFRA-1253's plan): its first byte says
+// The bands a block's rank stands in (D15 of the issue-tree plan): its first byte says
 // which document the block is in, and the rest is rank.Between inside that band. So under one
 // parent the spec's blocks come first, then the tree's own fragment's, then the Verification
 // document's, then the plan's, then any other document's, each in its own document order, and the
@@ -204,7 +205,7 @@ func DocumentTopSQL(alias string) string {
 // BlockDocumentSQL is the document the document_blocks row aliased alias is a block of, as SQL
 // text answering a uuid: the document its issue_room_blocks row names, for a block of an issue room
 // (a row keyed by the room's tree artifact, whose fragment's document that row records: T12a of
-// dispatch://INFRA-1253's plan), else the row's own artifact_id. Every reader that takes a row's
+// the issue-tree plan), else the row's own artifact_id. Every reader that takes a row's
 // artifact as the block's document - to find its role, issue, slug or live blocks, or to map the
 // version it records to that document's versions, their times and events, its indexed versions
 // or its keeps - takes it from here, and keys a version by this document and the number: a
@@ -449,7 +450,7 @@ func resolveFarEnds(ctx context.Context, q Queryer, who *model.Actor, addresses 
 // MovedRoomBlockSQL is true of the block block (SQL text) of the artifact artifact (SQL text
 // answering a uuid) while that artifact is an issue's tree and the block's node has stood in more
 // than one document of its room: its in_document tuples, asserted at any time, name more than one
-// (a block cut from one fragment and pasted into another, T12a of dispatch://INFRA-1253's plan).
+// (a block cut from one fragment and pasted into another, T12a of the issue-tree plan).
 // Such a block's document_block_texts rows are keyed by the tree and each records a version of
 // the document that held the block when its pass wrote it, and no row names that document, so
 // which document's version a row records is known of no row: the version that first held the
@@ -497,7 +498,8 @@ func unwritten(nodes, written []graphstore.Node) []graphstore.Node {
 	return kept
 }
 
-// BlockInDocument is block blockID's node, live, and its in_document tuple, its membership of the
+// BlockInDocument is block blockID's node, live and under supertag, the supertag the typed-node
+// pass gives the block (TypedFacts.supertag), and its in_document tuple, its membership of the
 // document record names, both as the index pass states them (blockNode, membership): in the
 // document's project or between its parties, made, dated and stated by record's writer at at, and
 // caused by event. fits is false, and the two are zero, for a block whose address is past
@@ -505,12 +507,12 @@ func unwritten(nodes, written []graphstore.Node) []graphstore.Node {
 // its membership for a writer that holds its cause already: the backfill of the block rows
 // written before the store (graphcensus), under the event that recorded each row's version. Such a
 // block is no block a version changed (blockNode's changed).
-func BlockInDocument(record IndexedVersion, blockID string, at time.Time, event int64) (node graphstore.Node, member graphstore.Tuple, fits bool) {
+func BlockInDocument(record IndexedVersion, blockID, supertag string, at time.Time, event int64) (node graphstore.Node, member graphstore.Tuple, fits bool) {
 	if !blockIDFits(record.RefKey, blockID) {
 		return graphstore.Node{}, graphstore.Tuple{}, false
 	}
 	address := blockNodeAddress(record.RefKey, blockID)
-	node = blockNode(address, record, record.Writer, at, graphstore.StateLive, BlockSupertag, false)
+	node = blockNode(address, record, record.Writer, at, graphstore.StateLive, supertag, false)
 	node.SourceEvent = event
 	member = membership(address, record.RefKey, at, record.Writer).Tuple
 	member.SourceEvent = event
@@ -619,7 +621,7 @@ func versionAuthors(ctx context.Context, q Queryer, held map[documentVersion][]m
 }
 
 // recordsAuthors reports whether the node of a block of type typ, in a document of band band,
-// records its authors by authored_by tuples and by no attribute (T7 of dispatch://INFRA-1253's
+// records its authors by authored_by tuples and by no attribute (T7 of the issue-tree
 // plan): an authored node anywhere, and every block of an issue's tree artifact (RankBandTree),
 // but a decision and a reading, whose authors the typed-node pass states, a decision's by its
 // decided_by (PlanDecisionNodes, TypedFacts.indexedFacts). RecordsAuthorsSQL is the same rule over
@@ -652,7 +654,7 @@ func RecordsAuthorsSQL(row, artifact string) string {
 // The version that first holds a block is the one blockFirstVersion names, the lowest
 // document_block_texts records a text of it in, of its own document, where the block has such a
 // row: a block written before this build, or by a pass that wrote no author - the drain of
-// dispatch://INFRA-1253's T6 marks every stored document for a pass, so every such node takes its
+// T6 of the issue-tree plan marks every stored document for a pass, so every such node takes its
 // authors at the pass that drains its document. A block that has none yet, whose row this pass
 // writes first, takes the authors of the version its text stands since (firstWritten), which is
 // the row the pass records it at. A block of an issue room that has stood in more than one
@@ -667,6 +669,17 @@ func blockAuthors(ctx context.Context, q Queryer, artifactID string, record Inde
 	if len(candidates) == 0 {
 		return nil, nil, nil
 	}
+	// Whether a block of an issue room has stood in more than one of its documents is read by a
+	// probe of its own in_document tuples a candidate (movedInRoom), keyed by the block's address
+	// in the room's tree artifact and behind an offset 0 the planner cannot flatten, in place of
+	// MovedRoomBlockSQL's join of artifacts to graph_tuples, which a plan made on the estimate of a
+	// near-empty graph_tuples read once for each block, a cost that grew with the square of the
+	// room (TestThePassLockTimeGrowsLinearlyWithTheRoom). A document that is no issue's tree binds
+	// no room key, and none of its blocks has moved.
+	var roomKey *string
+	if record.Band == RankBandTree {
+		roomKey = &record.RefKey
+	}
 	rows, err := q.Query(ctx, `
 		select exists (
 			select 1 from (
@@ -676,9 +689,17 @@ func blockAuthors(ctx context.Context, q Queryer, artifactID string, record Inde
 			) held where held.asserted),
 		       first.version is not null, first.authors
 		from unnest($1::text[]) with ordinality as block (id, position)
-		`+blockFirstVersion("first", "$5::uuid", "block.id")+`
+		cross join lateral (
+			select count(distinct moved.to_id) > 1 as moved from (
+				select t.to_id from graph_tuples t
+				where t.from_kind = $2 and t.from_id = $6::text || '#' || block.id
+				  and t.kind = '`+TupleInDocument+`' and t.asserted
+				offset 0
+			) moved
+		) movedInRoom
+		`+blockFirstVersionMoved("first", "$5::uuid", "block.id", "", "movedInRoom.moved")+`
 		order by block.position
-	`, candidates, BlockNodeKind, record.RefKey, graphstore.TupleAuthoredBy, artifactID)
+	`, candidates, BlockNodeKind, record.RefKey, graphstore.TupleAuthoredBy, artifactID, roomKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read who wrote the first versions of the blocks of %s: %w", record.RefKey, err)
 	}
@@ -758,23 +779,33 @@ type blockFarEnd struct{ kind, id string }
 // (placed), the index there of the block holding it (parents, -1 for one at the document's top
 // level and for one that hangs under a node that is no block of the version), and that node
 // where a block hangs under one (ends, nil for every other block, and nil as a whole where there
-// is none): a reading in an answered ask, under the ask's node, and an authored node under a
-// conversation node, a block of another document, or an issue that is not the document's top
-// (placeAuthored). textParents is, beside each, the index among the version's unique blocks of the
-// block whose text holds it, -1 for one no block of the version that is a node holds: the parent
-// the text gives it (placeBlocks), which placeAuthored and an answered ask leave as it is.
+// is none): a reading in an answered ask and a decision that settles an ask of its issue, each
+// under the ask's node, and an authored node under a conversation node, a block of another
+// document, or an issue that is not the document's top (placeAuthored). textParents is, beside
+// each, the index among the version's unique blocks of the block whose text holds it, -1 for one
+// no block of the version that is a node holds: the parent the text gives it (placeBlocks), which
+// placeAuthored and an ask's node leave as it is.
 //
 // stored marks, beside each, a block a move of the node route placed whose part_of the pass keeps
 // as the store holds it (keepStored), and unstored a block the store holds at PlacementStored that
-// the pass places again, by its text or by its author (the two exceptions of planBlockParents and
-// placeAuthored); each is nil where it marks none. A block the store holds stored whose part_of
-// is the one the text gives it is in neither: it keeps its placement all the same
-// (planBlockValues).
+// the pass places again, by its text, under the ask it settles or by its author (the exceptions of
+// planBlockParents and placeAuthored); each is nil where it marks none. A block the store holds
+// stored whose part_of is the one the pass gives it is in neither, and keeps its placement all the
+// same (planBlockValues), but for a decision that settles an ask, which is unstored wherever it
+// stands.
 type blockPlacement struct {
 	ids                          []string
 	placed, parents, textParents []int
 	ends                         []*blockFarEnd
 	stored, unstored             []bool
+}
+
+// askPlacements is the blocks of a version that stand under an ask's node in place of the block
+// their text stands in, each by its id with the id of that ask (planBlockParents): readings, each
+// reading in an answered ask, and decisions, each decision that settles an ask of its issue. The
+// zero value places none.
+type askPlacements struct {
+	readings, decisions map[string]string
 }
 
 // end sets the far end the block at index hangs under, making ends where there is none yet.
@@ -899,7 +930,7 @@ func (p parentProbe) position(position int) int {
 // block of an issue's spec, Verification or plan document, and the document's own node for any
 // other. A block an earlier build placed under its document's node is moved under the issue by
 // the first pass that reaches it, as any other block that moved is. An authored node is the one
-// block the render does not place: its author does (placeAuthored, D4 of dispatch://INFRA-1253's
+// block the render does not place: its author does (placeAuthored, D4 of the issue-tree
 // plan), and one whose part_of stands is no part of the comparison at all.
 //
 // In an issue room each fragment's top-level blocks hang under their own document's top
@@ -914,13 +945,19 @@ func (p parentProbe) position(position int) int {
 // the top projects a null parent_block_id, whichever node its part_of names, and so does an
 // authored node under any node that is no block of the indexed artifact.
 //
-// askParents is each reading of the version that stands in an answered ask, by its id, with that
-// ask's id (DecisionFacts): its part_of is the ask's node, since the decision a reading there
-// reads is the person's answer the node holds, while document_blocks.parent_block_id keeps the
-// id of the ask block holding it, which is that tuple's projection. only, where it is not nil,
-// is the blocks the pass states a parent for, the typed-node pass's own above the deferral bound
-// (PlanDecisionNodes); every block is placed in the version all the same, so the parent each of
-// them takes is the one a pass over the whole version gives it. authored is what the version
+// asks is the blocks of the version that stand under an ask's node in place of the block their
+// text stands in, each by its id with that ask's id (DecisionFacts, TypedFacts.asks): each reading
+// in an answered ask, since the decision a reading there reads is the person's answer the node
+// holds, and each decision that settles an ask of its issue, "a decision under the ask it
+// answers" (R2 of the issue-tree spec). document_blocks.parent_block_id keeps the id of the block
+// whose text holds each - for a reading the ask block holding it, which is that tuple's
+// projection - and so does its text_parent (planBlockValues), so a decision stays where its text
+// stands in its document. A decision that settles an ask stands under it whatever its placement
+// (R7's third exception): a part_of a move of the node route stored is placed again, under the
+// ask (unstore), and the decision takes back the placement PlacementText. only, where it is not
+// nil, is the blocks the pass states a parent for, the typed-node pass's own above the deferral
+// bound (PlanDecisionNodes); every block is placed in the version all the same, so the parent each
+// of them takes is the one a pass over the whole version gives it. authored is what the version
 // writes of where its authored nodes go (authoredSourcesOf), the zero value for a pass that reads
 // none. Every read is q's, in the plan's read phase.
 func (b *BlockIndexing) planBlockParents(
@@ -931,7 +968,7 @@ func (b *BlockIndexing) planBlockParents(
 	nodes []model.ArtifactBlock,
 	fits []bool,
 	fragments map[string]fragmentDocument,
-	askParents map[string]string,
+	asks askPlacements,
 	only map[string]struct{},
 	authored authoredSources,
 ) (blockPlacement, []graphstore.UncausedTuple, map[string]blockFarEnd, error) {
@@ -974,8 +1011,12 @@ func (b *BlockIndexing) planBlockParents(
 		if parents[index] >= 0 {
 			parentIDs[index] = &nodes[parents[index]].ID
 		}
-		if ask, held := askParents[blockIDs[index]]; held {
+		if ask, held := asks.readings[blockIDs[index]]; held {
 			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
+		}
+		if ask, settles := asks.decisions[blockIDs[index]]; settles {
+			placement.end(index, blockFarEnd{kind: graphstore.KindAsk, id: ask})
+			placement.unstore(index)
 		}
 	}
 	kept, err := placeAuthored(ctx, q, b.artifactID, indexed, record, nodes, &placement, parentIDs, authored, b.outside)
@@ -1008,12 +1049,15 @@ func (b *BlockIndexing) planBlockParents(
 	// the rest are read from the store in one probe.
 	//
 	// A block the store holds at PlacementStored keeps the part_of it holds (keepStored): the move
-	// of the node route that placed it decides its parent, and its text does not. The one exception
-	// here is a stored part_of to a block of the document this version no longer holds
-	// (removedParent): the block is placed by its text again (unstore), so no stored block stands
-	// under a gone parent. An authored node's exceptions are placeAuthored's. A block a move of this
+	// of the node route that placed it decides its parent, and its text does not. There are two
+	// exceptions here. A stored part_of to a block of the document this version no longer holds
+	// (removedParent) places the block by its text again (unstore), so no stored block stands
+	// under a gone parent; and a decision that settles an ask of its issue (asks.decisions) stands
+	// under that ask whatever its placement, so its stored part_of is never kept and the pass
+	// unstores it above. An authored node's exceptions are placeAuthored's. A block a move of this
 	// same transaction placed is kept where the move put it (BlockIndex.storedMove), which the store
-	// holds only once the write phase has run.
+	// holds only once the write phase has run; no such move is of a decision that settles an ask,
+	// which the route refuses to move (api's NODE_NOT_MOVABLE).
 	var versionIDs map[string]struct{}
 	removed := func(far blockFarEnd) bool {
 		if versionIDs == nil {
@@ -1023,6 +1067,10 @@ func (b *BlockIndexing) planBlockParents(
 			}
 		}
 		return removedParent(far, refKey, versionIDs)
+	}
+	settles := func(position int) bool {
+		_, settling := asks.decisions[blockIDs[position]]
+		return settling
 	}
 	places := authoredPlaces{document: record, nodes: nodes, placement: &placement, parentIDs: parentIDs, outside: b.outside}
 	keep := func(position int, far blockFarEnd) {
@@ -1052,7 +1100,7 @@ func (b *BlockIndexing) planBlockParents(
 			continue
 		}
 		if indexed.values[id].placement == PlacementStored {
-			if !removed(far) {
+			if !removed(far) && !settles(position) {
 				keep(position, far)
 				continue
 			}
@@ -1068,7 +1116,7 @@ func (b *BlockIndexing) planBlockParents(
 	for _, difference := range read {
 		difference.block = probe.position(difference.block)
 		if difference.placement == PlacementStored {
-			if len(difference.retract) == 1 && !difference.holds && !removed(difference.retract[0]) {
+			if len(difference.retract) == 1 && !difference.holds && !removed(difference.retract[0]) && !settles(difference.block) {
 				keep(difference.block, difference.retract[0])
 				continue
 			}
@@ -1095,13 +1143,15 @@ func (b *BlockIndexing) planBlockParents(
 	return placement, tuples, standing, nil
 }
 
-// queueBlockParents queues the projection of every placed block's parent into document_blocks.
-// The projection is a statement of its own rather than a column of the insert of the blocks a
-// version changed, so that insert keeps firing only for a block whose text changed: a block that
-// only moved keeps its changed_version and changed_at. The statement carries the node columns
-// beside the parent, so a row the insert did not touch learns the address of its node here.
+// queueBlockParents queues the projection of the parent of every placed block whose row the
+// indexing's insert does not write (standingPlaced) into document_blocks: a block that only moved
+// keeps its changed_version and changed_at, so its row is no row of that insert, and a row the
+// insert writes carries its parent and its node columns already (queueRows, rowParents). The
+// statement carries the node columns beside the parent, so a row the insert did not touch learns
+// the address of its node here, and it updates only a row whose parent or node columns differ.
 func (b BlockIndexing) queueBlockParents(batch *store.WriteBatch) {
-	if len(b.placedIDs) == 0 {
+	ids, parents := b.standingPlaced()
+	if len(ids) == 0 {
 		return
 	}
 	batch.Queue(fmt.Sprintf("project the parents of the blocks of %s", b.artifactID), `
@@ -1112,10 +1162,45 @@ func (b BlockIndexing) queueBlockParents(batch *store.WriteBatch) {
 		  and (d.parent_block_id is distinct from p.parent
 		       or d.node_kind is distinct from $3
 		       or d.node_address is distinct from $4 || '#' || p.block_id)
-	`, b.artifactID, b.placedIDs, BlockNodeKind, b.refKey, b.placedParents)
+	`, b.artifactID, ids, BlockNodeKind, b.refKey, parents)
 }
 
-// The block types whose node is an authored node (D4 of dispatch://INFRA-1253's plan): its parent
+// rowParents is, beside each block whose row the indexing's insert writes (ids), the block the
+// placement holds it in (placedIDs, placedParents): nil for a block the document holds at its top
+// level, and for one the pass places nowhere, whose address is past the store's bound. Both lists
+// are in document order, so one walk forward pairs them.
+func (b BlockIndexing) rowParents() []*string {
+	parents := make([]*string, len(b.ids))
+	next := 0
+	for position, id := range b.ids {
+		if found := slices.Index(b.placedIDs[next:], id); found >= 0 {
+			parents[position], next = b.placedParents[next+found], next+found+1
+		}
+	}
+	return parents
+}
+
+// standingPlaced is each placed block whose row the indexing's insert does not write, with the
+// block the placement holds it in: the placement less ids, both in document order, so one walk
+// forward parts them. An indexing whose insert writes no row answers the placement itself.
+func (b BlockIndexing) standingPlaced() ([]string, []*string) {
+	if len(b.ids) == 0 {
+		return b.placedIDs, b.placedParents
+	}
+	ids, parents := make([]string, 0, len(b.placedIDs)), make([]*string, 0, len(b.placedIDs))
+	next := 0
+	for _, id := range b.ids {
+		found := slices.Index(b.placedIDs[next:], id)
+		if found < 0 {
+			continue
+		}
+		ids, parents = append(ids, b.placedIDs[next:next+found]...), append(parents, b.placedParents[next:next+found]...)
+		next += found + 1
+	}
+	return append(ids, b.placedIDs[next:]...), append(parents, b.placedParents[next:]...)
+}
+
+// The block types whose node is an authored node (D4 of the issue-tree plan): its parent
 // is its author's to decide, which its text cannot, since a check sits after the spec's words and
 // not inside a requirement. AuthoredTypesSQL is the same list as SQL, which the store census reads
 // an authored node's row by (graphcensus).
@@ -1130,7 +1215,7 @@ const (
 
 // servesKind is the pointer an authored node names what it serves by: a relation of its own,
 // many to many, whose first target of the node's own issue is the node's first parent and no
-// more (dispatch://INFRA-1253/spec#b-r-serves-coverage).
+// more (R4 of the issue-tree spec, `r-serves-coverage`).
 const servesKind = "serves"
 
 // authoredType reports whether a block of type typ is an authored node.
@@ -1207,7 +1292,7 @@ func authoredSourcesOf(markdown string, nodes []model.ArtifactBlock, located []t
 }
 
 // fromLine is the span of a requirement's From: line in its text body, the line that names where
-// the requirement came from (R3 and R22 of dispatch://INFRA-1253/spec): from the last "From:"
+// the requirement came from (R3 and R22 of the issue-tree spec): from the last "From:"
 // that begins a word outside a code span to the end of its line, so words that quote the label in
 // code - "reads its `From:` line" - name no source, and the line the requirement ends on does. A
 // code span is markdown's: a run of backticks opens one and the next run of as many closes it,
@@ -1386,7 +1471,7 @@ func authoredFarEnds(ctx context.Context, q Queryer, artifactID string, written,
 	return resolvePassFarEnds(ctx, q, artifactID, addresses, written)
 }
 
-// placeAuthored places the authored nodes of placement (D4 of dispatch://INFRA-1253's plan),
+// placeAuthored places the authored nodes of placement (D4 of the issue-tree plan),
 // which placeBlocks placed by their text like any other block. An authored node takes its first
 // parent at the pass that first places it as one - its placement is not PlacementAuthored yet,
 // or it states no part_of - by one precedence (authoredPlaces.candidates): its parent attribute's
@@ -1916,17 +2001,19 @@ func (p *authoredPlaces) target(ref text.Ref, resolved authoredResolution, above
 }
 
 // The values the block index states of every block beside its parent (R1 and R15 of
-// dispatch://INFRA-1253, D1 and D9 of its plan): AttributeRank, its place among its siblings, a
+// the issue-tree spec, D1 and D9 of its plan): AttributeRank, its place among its siblings, a
 // base-62 string compared byte for byte (`collate "C"`), which stands in its document's band
 // (RankBandSpec and the rest); graphstore.AttributeText, the block's whole slice of its version's
 // markdown, its children's text included, which document_block_texts projects; and
 // AttributePlacement, which says what decides the block's parent: PlacementText, the text it
 // stands in, for every block the rendering places, PlacementAuthored for an authored node, whose
 // parent its author decides (placeAuthored), and PlacementStored for a block a move of the node
-// route placed (R7 of dispatch://INFRA-1253: api's PATCH /api/v1/issues/{key}/nodes/{id}), whose
+// route placed (R7 of the issue-tree spec: api's PATCH /api/v1/issues/{key}/nodes/{id}), whose
 // part_of and rank the store holds as that move wrote them and no pass computes from the text, but
-// for the two exceptions planBlockParents and placeAuthored name. A plan node holds one more,
-// AttributePlanSize, the `size` its opening line writes (blockSize).
+// for the exceptions planBlockParents and placeAuthored name: a removed parent, an edited parent
+// attribute, and a decision that settles an ask, which stands under it. A plan node holds more: a
+// value of each attribute its opening line writes that points at nothing, under the attribute's
+// name, its `size` (AttributePlanSize) in whole minutes (blockPlanValues).
 const (
 	AttributeRank      = "rank"
 	AttributePlacement = "placement"
@@ -1953,56 +2040,51 @@ const (
 )
 
 // AttributePlanSize is the value a plan node says how big it is by: the plan_task attribute
-// `size`, a duration in days as its author wrote it, a value of the node since it points at
-// nothing, and absent where its author wrote none. An artifact's `size` (graphstore.AttributeSize)
-// is its bytes, on a node of another kind.
+// `size`, a duration its author wrote in hours and minutes (`45m`, `2h`, `1h30m`), which the node
+// holds as its whole number of minutes (pmdoc.Minutes), a value of the node since it points at
+// nothing, and absent where its author wrote none (blockPlanValues). An artifact's `size`
+// (graphstore.AttributeSize) is its bytes, on a node of another kind.
 const AttributePlanSize = "size"
 
-// blockSize is the size block's opening line writes, which the render read off the block
-// (model.ArtifactBlock.Attributes): its `size` attribute where it is a plan_task, and "" for a
-// plan_task that writes none and for a block of any other type, which declares no size.
-func blockSize(block model.ArtifactBlock) string {
-	if block.Type != planTaskType {
-		return ""
-	}
-	for _, attribute := range block.Attributes {
-		if attribute.Name == AttributePlanSize {
-			return attribute.Value
-		}
-	}
-	return ""
-}
-
-// WrittenSizeSQL is blockSize read back off the store rather than off a render: as SQL over the
-// document_blocks row alias, the size its block's opening line writes in the newest text its
-// document_block_texts rows hold - the `size="..."` of that text's first line, which the renderer
-// writes in that form (pmdoc's renderTypedAttributes) and which no other attribute of a plan_task,
-// each a reference, can hold - for a plan_task, and null for a block of any other type, for one
-// whose line writes none and for one no row holds a text of. It is the row side of the census of a
-// plan node's size (graphcensus' block_size).
+// WrittenSizeSQL is a plan node's size value read back off the store rather than off a render: as
+// SQL over the document_blocks row alias, the size its block's opening line writes in the newest
+// text its document_block_texts rows hold - the `size="..."` of that text's first line, which the
+// renderer writes in that form (pmdoc's renderTypedAttributes), and which no other attribute's
+// value can hold, since the renderer writes a quote inside a value as a character reference - in
+// whole minutes, as the text of the number the node holds (blockPlanValues), for a plan_task, and
+// null for a block of any other type, for one whose line writes none and for one no row holds a
+// text of. It reads the hours before `h` and the minutes before a closing `m`, as pmdoc.Minutes
+// reads a duration the schema took. It is the row side of the census of a plan node's size
+// (graphcensus' block_size).
 func WrittenSizeSQL(alias string) string {
-	return `(case when ` + alias + `.type = '` + planTaskType + `' then substring(split_part((
-			select written.text from document_block_texts written
-			where written.artifact_id = ` + alias + `.artifact_id and written.block_id = ` + alias + `.block_id and written.text is not null
-			order by written.version desc limit 1), chr(10), 1) from ' ` + AttributePlanSize + `="([^"]*)"') end)`
+	return `(case when ` + alias + `.type = '` + planTaskType + `' then (
+			select (coalesce(substring(opened.size from '^([0-9]+)h'), '0')::numeric * 60
+			        + coalesce(substring(opened.size from '([0-9]+)m$'), '0')::numeric)::text
+			from (select substring(split_part((
+				select written.text from document_block_texts written
+				where written.artifact_id = ` + alias + `.artifact_id and written.block_id = ` + alias + `.block_id and written.text is not null
+				order by written.version desc limit 1), chr(10), 1) from ' ` + AttributePlanSize + `="([^"]*)"') as size) opened
+			where opened.size is not null) end)`
 }
 
 // heldBlockValue is what the store holds now of one block the values pass reads: its current
 // rank, "" where it holds none, whether it holds a current text value, its current placement, ""
-// where it holds none, its current size, "" where it holds none, its current text_rank, "" where
-// it holds none, and the far end of its current text_parent, the zero far end where it states
-// none.
+// where it holds none, its current text_rank, "" where it holds none, the far end of its current
+// text_parent, the zero far end where it states none, and the current value of each attribute of
+// a plan node it holds (planValueNames) by name, nil where it holds none.
 type heldBlockValue struct {
-	rank, placement, size, textRank string
-	text                            bool
-	textParent                      blockFarEnd
+	rank, placement, textRank string
+	text                      bool
+	textParent                blockFarEnd
+	plan                      map[string]string
 }
 
 // planBlockValues plans the rank, the text, the placement, the place in the text (a text_parent
-// and a text_rank) and, for a plan node, the size of every block placement placed, dated at the
-// pass's own time (IndexedVersion.At). It answers the values it states, which PlanBlocks appends
-// with the pass's other facts, and what the blocks hold once the indexing is written, for a later
-// indexing of the document in the same transaction (Held).
+// and a text_rank) and, for a plan node, the value of each attribute that points at nothing
+// (blockPlanValues) of every block placement placed, dated at the pass's own time
+// (IndexedVersion.At). It answers the values it states, which PlanBlocks appends with the pass's
+// other facts, and what the blocks hold once the indexing is written, for a later indexing of the
+// document in the same transaction (Held).
 //
 // It reads what the store holds of every one of those blocks in one statement (heldBlockValues),
 // in the plan's read phase, and states a value only where it moves: a rank where the block's place
@@ -2013,18 +2095,20 @@ type heldBlockValue struct {
 // every other block. A text_parent is stated where the block's text parent (placement.textParents,
 // textParentHeld) is not the one it holds, with the retraction of the one it holds where it holds
 // one, and a text_rank where its place among the blocks sharing its text parent moved
-// (textRankBlocks); neither moves a changed_version or a document_block_texts row. A size is
-// stated where the block's opening line writes one the node does not hold (blockSize), and the
-// size the node holds is retracted where the line writes none - its author took it out, or the
-// block is no plan node any more - so a block that holds no size and writes none states nothing. So
-// a block a version only moved takes its new parent, its new rank and its new place in the text
-// here although the pass writes no row of it, a re-index of a document nothing moved states
-// nothing, and the first index of a document, or the first pass to reach a block an earlier build
-// indexed, gives every block its rank, its text, its placement, its text_parent, its text_rank and
-// any size it writes. A block the version dropped is no block the pass places: it keeps the values
-// it held, and its node, stated gone, says it is no part of the version. A block an earlier
-// indexing of this transaction placed (BlockIndex.values) is compared with what that indexing
-// stated of it, which the store holds only once the write phase has run.
+// (textRankBlocks); neither moves a changed_version or a document_block_texts row. A plan node's
+// value is stated under the attribute's name where the block's opening line writes one the node
+// does not hold (blockPlanValues): the text the line writes, and the size in whole minutes. The
+// value the node holds of an attribute of planValueNames is retracted where the line writes none -
+// its author took it out, or the block is no plan node any more - so a block that holds none and
+// writes none states nothing. So a block a version only moved takes its new parent, its new rank
+// and its new place in the text here although the pass writes no row of it, a re-index of a
+// document nothing moved states nothing, and the first index of a document, or the first pass to
+// reach a block an earlier build indexed, gives every block its rank, its text, its placement, its
+// text_parent, its text_rank and any plan value it writes. A block the version dropped is no block
+// the pass places: it keeps the values it held, and its node, stated gone, says it is no part of
+// the version. A block an earlier indexing of this transaction placed (BlockIndex.values) is
+// compared with what that indexing stated of it, which the store holds only once the write phase
+// has run.
 //
 // stale is the BlockIndex's stale stand: another release indexed the document after the store
 // last stated its blocks, and rewrote the rows and the document_block_texts of each block whose
@@ -2049,6 +2133,7 @@ func planBlockValues(
 		return nil, standing, nil
 	}
 	held := make([]heldBlockValue, len(placement.ids))
+	names := planValueNames()
 	var unread []string
 	var unreadAt []int
 	for index, id := range placement.ids {
@@ -2059,7 +2144,7 @@ func planBlockValues(
 		unread, unreadAt = append(unread, id), append(unreadAt, index)
 	}
 	if len(unread) > 0 {
-		read, err := heldBlockValues(ctx, q, document.RefKey, unread)
+		read, err := heldBlockValues(ctx, q, document.RefKey, unread, names)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read the values the blocks of %s hold: %w", document.RefKey, err)
 		}
@@ -2138,20 +2223,27 @@ func planBlockValues(
 		if textRanks[index] != held[index].textRank {
 			value(id, AttributeTextRank, textRanks[index])
 		}
-		size := blockSize(block)
-		switch {
-		case size == held[index].size:
-		case size != "":
-			value(id, AttributePlanSize, size)
-		default:
-			tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
-				FromKind: BlockNodeKind, FromID: blockNodeAddress(document.RefKey, id), Kind: AttributePlanSize,
-				ToKind: graphstore.KindValue, ToID: held[index].size,
-				At: document.At, Who: document.Writer, Asserted: false,
-			}})
+		written, err := blockPlanValues(block)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read the values of %s: %w", document.RefKey, err)
+		}
+		for _, name := range names {
+			stated, writes := written[name]
+			holding, holds := held[index].plan[name]
+			switch {
+			case writes && holds && stated == holding:
+			case writes:
+				value(id, name, stated)
+			case holds:
+				tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+					FromKind: BlockNodeKind, FromID: blockNodeAddress(document.RefKey, id), Kind: name,
+					ToKind: graphstore.KindValue, ToID: holding,
+					At: document.At, Who: document.Writer, Asserted: false,
+				}})
+			}
 		}
 		standing[id] = heldBlockValue{
-			rank: ranks[index], placement: placed, size: size, textRank: textRanks[index], text: true, textParent: standsUnder,
+			rank: ranks[index], placement: placed, textRank: textRanks[index], text: true, textParent: standsUnder, plan: written,
 		}
 	}
 	return tuples, standing, nil
@@ -2169,21 +2261,23 @@ func textParentHeld(far blockFarEnd, refKey, holder, inDocument string) bool {
 		strings.HasPrefix(far.id, refKey) && far.id[len(refKey)] == '#' && strings.HasSuffix(far.id, holder)
 }
 
-// heldBlockValues reads, in one statement, the current rank, text, placement, size and text_rank
-// of each block of ids, as graphstore.CurrentValue reads one value - the newest tuple under the
+// heldBlockValues reads, in one statement, the current rank, text, placement and text_rank of each
+// block of ids, and the current value of each attribute of a plan node that names names
+// (planValueNames), as graphstore.CurrentValue reads one value - the newest tuple under the
 // attribute's name, kept while it asserts - through graph_tuples_values, one probe a value, and
 // its current text_parent as heldAuthoredBlocks reads a part_of, the newest tuple per far end kept
 // while it asserts (graphstore.CurrentTupleRead), through graph_tuples_current. Each lateral of a
 // value writes to_kind = 'value' into its text rather than binding it, as CurrentValue does,
 // because graph_tuples_values is partial on that predicate: a bound kind is a parameter the
 // planner of a generic plan cannot match the index's predicate against. Of a block's text it reads
-// whether one is held and not the text itself, which no comparison here needs. It answers the
-// blocks in ids' order, and names each by its id, building its address from refKey as every other
-// statement of the pass does.
-func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string) ([]heldBlockValue, error) {
+// whether one is held and not the text itself, which no comparison here needs. A block's plan
+// values come back as one object of the values it holds, by name, and none where it holds none, as
+// every block but a plan node holds. It answers the blocks in ids' order, and names each by its
+// id, building its address from refKey as every other statement of the pass does.
+func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids, names []string) ([]heldBlockValue, error) {
 	rows, err := q.Query(ctx, `
-		select coalesce(rank.held, ''), coalesce(text.held, false), coalesce(placement.held, ''), coalesce(size.held, ''),
-		       coalesce(text_rank.held, ''), coalesce(text_parent.to_kind, ''), coalesce(text_parent.to_id, '')
+		select coalesce(rank.held, ''), coalesce(text.held, false), coalesce(placement.held, ''),
+		       coalesce(text_rank.held, ''), coalesce(text_parent.to_kind, ''), coalesce(text_parent.to_id, ''), plan.held
 		from unnest($1::text[]) with ordinality as block (id, position)
 		left join lateral (
 			select case when t.asserted then t.to_id end as held from graph_tuples t
@@ -2208,25 +2302,30 @@ func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string
 			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $7
 			  and t.to_kind = '`+graphstore.KindValue+`'
 			order by t.seq desc limit 1
-		) size on true
-		left join lateral (
-			select case when t.asserted then t.to_id end as held from graph_tuples t
-			where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $8
-			  and t.to_kind = '`+graphstore.KindValue+`'
-			order by t.seq desc limit 1
 		) text_rank on true
 		left join lateral (
 			select held.to_kind, held.to_id from (
 				`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted, t.seq`,
-		`t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $9
+		`t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = $8
 				  and t.to_kind <> '`+graphstore.KindValue+`'`)+`
 			) held
 			where held.asserted
 			order by held.seq desc limit 1
 		) text_parent on true
+		left join lateral (
+			select jsonb_object_agg(attribute.name, newest.to_id) as held
+			from unnest($9::text[]) as attribute (name)
+			cross join lateral (
+				select t.to_id, t.asserted from graph_tuples t
+				where t.from_kind = $2 and t.from_id = $3 || '#' || block.id and t.kind = attribute.name
+				  and t.to_kind = '`+graphstore.KindValue+`'
+				order by t.seq desc limit 1
+			) newest
+			where newest.asserted
+		) plan on true
 		order by block.position
-	`, ids, BlockNodeKind, refKey, AttributeRank, graphstore.AttributeText, AttributePlacement, AttributePlanSize,
-		AttributeTextRank, TupleTextParent)
+	`, ids, BlockNodeKind, refKey, AttributeRank, graphstore.AttributeText, AttributePlacement,
+		AttributeTextRank, TupleTextParent, names)
 	if err != nil {
 		return nil, err
 	}
@@ -2234,8 +2333,8 @@ func heldBlockValues(ctx context.Context, q Queryer, refKey string, ids []string
 	held := make([]heldBlockValue, 0, len(ids))
 	for rows.Next() {
 		var value heldBlockValue
-		if err := rows.Scan(&value.rank, &value.text, &value.placement, &value.size,
-			&value.textRank, &value.textParent.kind, &value.textParent.id); err != nil {
+		if err := rows.Scan(&value.rank, &value.text, &value.placement,
+			&value.textRank, &value.textParent.kind, &value.textParent.id, &value.plan); err != nil {
 			return nil, err
 		}
 		held = append(held, value)
@@ -2302,7 +2401,7 @@ func rankBlocks(bands []byte, placement blockPlacement, held []heldBlockValue, k
 }
 
 // spaceFromStoredRanks keeps each new rank rankBlocks gave a block placed by its text off every
-// rank its parent's other children hold (R7 of dispatch://INFRA-1253): a stored block's, which
+// rank its parent's other children hold (R7 of the issue-tree spec): a stored block's, which
 // the pass leaves where it stands, and those of another document's or another room's children of
 // the same parent. It reads, for each parent a new rank goes under, the rank of every child the
 // store holds under it, in one statement (parentChildRanks) - one read more for each parent the
@@ -2398,9 +2497,10 @@ type parentChild struct {
 }
 
 // parentChildRanks reads, in one statement, every block each of parents holds now through its
-// current part_of (graphstore.CurrentTupleRead, into a node, which graph_tuples_as_of_in serves),
-// with the rank it holds now, read as heldBlockValues reads a value; a child that holds no rank,
-// or that is no block, is left out.
+// current part_of (graphstore.CurrentTupleRead, into a node, which graph_tuples_as_of_in serves:
+// the read names to_kind <> 'value', the index's predicate, which a far end bound to a column of
+// the probe does not prove), with the rank it holds now, read as heldBlockValues reads a value; a
+// child that holds no rank, or that is no block, is left out.
 func parentChildRanks(ctx context.Context, q Queryer, parents []blockFarEnd) ([]parentChild, error) {
 	kinds, ids := make([]string, len(parents)), make([]string, len(parents))
 	for index, parent := range parents {
@@ -2412,7 +2512,8 @@ func parentChildRanks(ctx context.Context, q Queryer, parents []blockFarEnd) ([]
 		join lateral (
 			select held.from_id from (
 				`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-		`t.to_kind = parent.kind and t.to_id = parent.id and t.kind = $3 and t.from_kind = $4`)+`
+		`t.to_kind = parent.kind and t.to_id = parent.id and t.kind = $3 and t.from_kind = $4
+				  and t.to_kind <> '`+graphstore.KindValue+`'`)+`
 			) held
 			where held.asserted
 		) child on true
@@ -2693,21 +2794,29 @@ func (b *BlockIndexing) planRoomBlocks(
 	} else {
 		// The statement answers each row whose document the pass moves, with the document the row
 		// holds, and the ref_key of each of the two, so the retraction and the assertion need no
-		// second read.
+		// second read. Each block the room holds probes its own row through issue_room_blocks'
+		// key (tree_artifact_id, block_id_key(block_id)), and each moved row its two documents
+		// through artifacts' primary key, each probe behind an offset 0 the planner cannot flatten:
+		// joined plainly, a plan made on the estimate of a near-empty table read the room's rows
+		// once for each block, a cost that grew with the square of the room (37 s at 20,000
+		// blocks), where a probe a block costs the same whatever the statistics say
+		// (TestThePassLockTimeGrowsLinearlyWithTheRoom).
 		rows, err := q.Query(ctx, `
-			with wanted as (
-				select w.block_id, w.document_id::uuid as document_id
-				from unnest($2::text[], $3::text[]) as w (block_id, document_id)
-			), held as (
-				select r.block_id, r.document_id from issue_room_blocks r
-				join wanted on block_id_key(r.block_id) = block_id_key(wanted.block_id) and r.block_id = wanted.block_id
-				where r.tree_artifact_id = $1::uuid
-			)
-			select held.block_id, old.ref_key, new.ref_key
-			from held
-			join wanted on wanted.block_id = held.block_id and wanted.document_id <> held.document_id
-			join artifacts old on old.id = held.document_id
-			join artifacts new on new.id = wanted.document_id
+			select wanted.block_id, old.ref_key, new.ref_key
+			from unnest($2::text[], $3::text[]) as wanted (block_id, document_id)
+			cross join lateral (
+				select r.document_id from issue_room_blocks r
+				where r.tree_artifact_id = $1::uuid and block_id_key(r.block_id) = block_id_key(wanted.block_id)
+				  and r.block_id = wanted.block_id
+				offset 0
+			) held
+			cross join lateral (
+				select a.ref_key from artifacts a where a.id = held.document_id offset 0
+			) old
+			cross join lateral (
+				select a.ref_key from artifacts a where a.id = wanted.document_id::uuid offset 0
+			) new
+			where held.document_id <> wanted.document_id::uuid
 		`, artifactID, ids, documents)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read the documents of the room blocks of %s: %w", artifactID, err)
@@ -3336,7 +3445,7 @@ func heldLinkKinds(blockRefKinds string) string {
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple
 // into the document's artifact address) and that the store holds present (at any state but gone,
-// R12 of dispatch://INFRA-1950), with every link it states now of a kind a version's pairs write
+// R12 of the node-visibility spec), with every link it states now of a kind a version's pairs write
 // (heldLinkKinds) - a mention or a pointer (BlockRefKindsSQL), or a decision's or an ask block's
 // tie (typedKinds) - read the way the store reads a current relation (graphstore.CurrentTupleRead),
 // in kind and far-end order. A member that states no such link is in the map with none, and one

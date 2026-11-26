@@ -192,13 +192,22 @@ type StoreReport struct {
 	// how many reach one in a document that still owes its block index (storeOnlyRead). An
 	// unresolved far end refuses the census; a count does not, and neither does a far end left out.
 	StoreOnly []StoreOnlyReport
-	// Dangling is the dangling-citation counter over the restore's work (DanglingCitations), and
+	// Dangling is the dangling-citation counter over the restore's work (danglingCitations), and
 	// Collisions the collision census of the same work (CollisionsOf), the block ids the restore
 	// must change for each issue: both read the census's snapshot, so both answer before the
 	// restore moves anything. Neither refuses the census: the returning set counts before the
 	// restore by design, and the moved set is a finding the driver that watches it holds to zero.
 	Dangling   DanglingReport
 	Collisions []Collision
+	// UnresolvedCitations is the counter of every block citation whose address resolves to no
+	// node, directly or through a moved_to tuple (UnresolvedCitations), read in the census's
+	// snapshot. It refuses nothing: an instance already holds prose citations of blocks no version
+	// holds.
+	UnresolvedCitations UnresolvedCitationReport
+	// MovedOwnerWindows is how many windows the documents converted into their issues' rooms still
+	// hold under their own artifact ids (movedOwnerWindows), read in the census's snapshot. It
+	// refuses nothing: the root's pull request deletes them.
+	MovedOwnerWindows int64
 	// Decisions is what the decisions step's third phase still owes (DecisionsCensus), set by the
 	// census command from docs' reader of the decisions documents' sections, nil where no caller
 	// read it. It refuses nothing.
@@ -696,7 +705,7 @@ func commentPeople(authors string) string {
 // tie and not the node is a difference here. An ask a build before the store wrote states no
 // authored_by until the backfill marks its row, so it names no author here.
 //
-// The authors of artifact_versions name people and sessions too (dispatch://INFRA-1253's T7):
+// The authors of artifact_versions name people and sessions too (T7 of the issue-tree plan):
 // every author of the version that first held each block whose authors the block_author kind
 // holds - an authored node or a block of an issue room, of a document that owes no block index
 // (blockVersionAuthors, blockAuthorsHeld) - since the block index states an authored_by to each of
@@ -1116,7 +1125,13 @@ func storeCensus(ctx context.Context, databaseURL string, sizing bool, declined 
 			return nil, err
 		}
 		report.Collisions = CollisionsOf(work)
-		if report.Dangling, err = danglingCitationsOver(ctx, tx, work, declined); err != nil {
+		if report.Dangling, err = danglingCitations(ctx, tx, work, declined); err != nil {
+			return nil, err
+		}
+		if report.UnresolvedCitations, err = UnresolvedCitations(ctx, tx); err != nil {
+			return nil, err
+		}
+		if report.MovedOwnerWindows, err = movedOwnerWindows(ctx, tx); err != nil {
 			return nil, err
 		}
 		if report.Projects, err = ProjectCensus(ctx, tx); err != nil {
@@ -1681,7 +1696,8 @@ func readDifferences(ctx context.Context, tx pgx.Tx, kind, sql string, args []an
 func (r *StoreReport) Write(w io.Writer) { r.write(w, false) }
 
 // WriteVerbose is Write with one line for each citation the dangling-citation counter counted,
-// naming its set, the node that cites and the address it cites, under the counter's line.
+// naming its set, the node that cites and the address it cites, under the counter's line, and one
+// for each citation the counter of unresolved citations counted (writeUnresolvedCitations).
 func (r *StoreReport) WriteVerbose(w io.Writer) { r.write(w, true) }
 
 func (r *StoreReport) write(w io.Writer, verbose bool) {
@@ -1728,6 +1744,8 @@ func (r *StoreReport) write(w io.Writer, verbose bool) {
 	}
 	if !r.Absent {
 		writeMoves(w, r.Dangling, r.Collisions, verbose)
+		writeUnresolvedCitations(w, r.UnresolvedCitations, verbose)
+		writeMovedOwnerWindows(w, r.MovedOwnerWindows)
 		// kept for one release: decisions-documents-fn
 		if r.Decisions != nil {
 			writeDecisions(w, *r.Decisions)

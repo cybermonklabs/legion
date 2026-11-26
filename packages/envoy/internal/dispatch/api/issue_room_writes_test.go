@@ -23,7 +23,7 @@ import (
 // holdIssuesUnconverted makes a process that lists no issue_room live beside the test's server for
 // the rest of the test - a server_processes row with no capabilities, as a build before the column
 // registers none - so every issue the test creates is created as before the issue room, one room
-// per document (decision 7 of dispatch://INFRA-1253's plan). The process registers this build's
+// per document (decision 7 of the issue-tree plan). The process registers this build's
 // schema and this build's owner lock protocol, so it moves no other rule the fleet decides: the ask
 // roll window, which a process of an older schema opens (docs' anotherBuildServes), stays shut as
 // with this server alone, and the owner locks stay in this build's mode, where a row of protocol 0
@@ -96,7 +96,7 @@ func documentRoomOf(t *testing.T, q queryer, artifactID string) (room, fragment 
 // artifact lands in the tree's own fragment of the issue's room and reads back through
 // GET /api/v1/artifacts/{tree}/text, the tree artifact reads as a document whose room is itself
 // and whose fragment is the room's own, and the issue read's documents name no tree artifact (R8 of
-// dispatch://INFRA-1253, T12b of its plan). The read of the criterion through the tree read
+// the issue-tree spec, T12b of its plan). The read of the criterion through the tree read
 // (GET /api/v1/issues/{key}/tree) is T16a's, which adds that half of this test when it lands.
 func TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -149,9 +149,9 @@ func TestACriterionWrittenThroughEditsOnTheTreeArtifactReadsBackInTheTreeRead(t 
 // document_rooms row naming the issue's tree from its first write, which is stored in the room,
 // none under the spec's own id; the spec is a query node of query spec; and the issue holds its
 // decisions query node, a document with an empty version 1 whose role reads decisions, which
-// INFRA-1150's decisions step does not select (decisions_documents()). One created while a process
-// of the release before is live is created as today, with no tree and no document_rooms row
-// (decision 7 of dispatch://INFRA-1253's plan).
+// the decisions-tree spec's decisions step does not select (decisions_documents()). One created
+// while a process of the release before is live is created as today, with no tree and no
+// document_rooms row (decision 7 of the issue-tree plan).
 func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -227,7 +227,7 @@ func TestAnIssueIsBornConvertedOnlyWhileEveryLiveProcessListsTheIssueRoom(t *tes
 // query value; its text reads back; a later upload of its name and an edit of it each reach that
 // fragment alone, leaving the spec's text as it was; and the room's pass the upload runs causes
 // nothing of the spec's blocks under the upload's event: an unchanged sibling fragment's facts
-// append nothing (T12b of dispatch://INFRA-1253's plan).
+// append nothing (T12b of the issue-tree plan).
 func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -318,7 +318,7 @@ func TestAPlanUploadedToAConvertedIssueLandsInItsFragment(t *testing.T) {
 
 // A document write addressed through a parent issue that names, by its store address, a node of
 // its child issue - a criterion written into the child's own room - is refused 409
-// NODE_IN_OTHER_ISSUE naming the child, and writes nothing (D3 of dispatch://INFRA-1253's plan).
+// NODE_IN_OTHER_ISSUE naming the child, and writes nothing (D3 of the issue-tree plan).
 func TestAWriteThroughTheParentNamingAChildsNodeIsRefused(t *testing.T) {
 	ctx := context.Background()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -452,7 +452,7 @@ func TestARemovalOfADocumentCitedWhileTheIssueRoomHoldsAnUnsettledEditIsRefusedF
 }
 
 // An ask block of a converted document is that document's own ask (the T12b fixes of
-// dispatch://INFRA-1253's plan): settlement indexes it keyed by the issue's tree, whose room holds
+// the issue-tree plan): settlement indexes it keyed by the issue's tree, whose room holds
 // the block, and every read of it names the document whose fragment holds the block. The ask read
 // names the spec as its block's document; the spec's text read shows the block as the spec's own
 // ask, as no copy of another document's (its asks member, where the text routes answer an ask's

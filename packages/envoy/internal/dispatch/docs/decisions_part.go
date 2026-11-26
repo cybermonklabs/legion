@@ -389,6 +389,8 @@ var pointerLineLead = regexp.MustCompile(`^(see|see (the )?decisions (in|at)|(th
 // before it but a lead naming the decisions (pointerLineLead). Every other paragraph is a person's
 // prose, which the step keeps: one that cites the document among other words, or that cites a
 // section of it.
+//
+// kept for one release: decisions-step
 func isPointerLine(node *pmdoc.Node, documents map[string]bool, serverURL string) bool {
 	if node.Type != "paragraph" || len(documents) == 0 {
 		return false

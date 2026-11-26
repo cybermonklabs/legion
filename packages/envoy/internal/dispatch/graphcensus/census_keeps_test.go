@@ -83,7 +83,7 @@ func seedShapedDecisions(t *testing.T, database *store.Store, artifactID, pointe
 		if err != nil {
 			return err
 		}
-		_, _, stated, _, err := refs.IndexBlocks(ctx, tx, artifactID, versions, rendered, blocks, nil, nil, facts)
+		_, _, stated, _, err := refs.IndexBlocks(ctx, tx, artifactID, versions, rendered, blocks, nil, nil, "", facts)
 		if err != nil {
 			return err
 		}
@@ -206,7 +206,7 @@ func requireKeepSumCensus(t *testing.T, database *store.Store, when string, rows
 }
 
 // A Keep a release before this one made on a decision that carries shaped holds a sum over the
-// decision's words with shaped (R32 of dispatch://INFRA-1253's spec). The Keep pass rewrites the
+// decision's words with shaped (R32 of the issue-tree spec). The Keep pass rewrites the
 // Keep of d1, whose stored sum is that sum over its words as they stand, to the sum this build
 // reads, in its decision_keeps row and its node's kept_text_sum, so d1 still reads kept and
 // waiting for no review; it leaves d2, whose stored sum is over words d2 no longer holds, as it
@@ -266,7 +266,7 @@ func TestTheKeepPassRewritesTheKeepsThatMatchedOverTheWordsWithShaped(t *testing
 	}
 }
 
-// TestTheKeepSumBatchTakesTheStoreLockOrder holds writeKeepSumBatch (R32 of dispatch://INFRA-1253's
+// TestTheKeepSumBatchTakesTheStoreLockOrder holds writeKeepSumBatch (R32 of the issue-tree
 // spec) to the store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other
 // batches: the owner row the Keep stands under, its issue's row, first, then the Keep's
 // decision_keeps row. The kept_text_sum is stated at the sentinel, which no repeat key holds, so no
