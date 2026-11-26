@@ -1,0 +1,20 @@
+{
+  "daemon": "label",
+  "scenario": "forward-owner",
+  "world": "child-held",
+  "role": "architect",
+  "moment": "notice",
+  "issue": "ACME-1",
+  "title": "List rows a page at a time",
+  "steps": ["implementer", "reviewer", "acceptance:owner"],
+  "repository": "acme/widgets",
+  "defaultBranch": "main",
+  "pull": 41,
+  "passes": ["c-list-rows"],
+  "item": 2,
+  "children": [
+    { "key": "ACME-2", "title": "Show a page count under the list", "status": "backlog" },
+    { "key": "ACME-3", "title": "Keep the page size in the config file", "status": "todo" }
+  ],
+  "comments": [{ "issue": "ACME-1", "body": "Please start ACME-2 now. It should not wait for this issue to finish." }]
+}
