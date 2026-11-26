@@ -1,0 +1,17 @@
+# The forms .github/scripts/shell_reader_forms.py generates that bash runs the client of and this
+# repository's reader of shell misses: its known limits. Tab-separated: an fnmatch pattern of form
+# ids (context/payload), the reader (release: check-release-credentials.sh's; guard:
+# check-log-guard.sh's), and why it is a limit. The generator fails on a missed form no row matches
+# and on a row that matches none.
+*/variable-word	release	the command word is a positional parameter's value ("$@"), which no reader of the text knows
+*/variable-word	guard	the command word is a positional parameter's value ("$@"), which no reader of the text knows
+*/string-split	release	the command word is a variable's value, split by the shell ($s), which no reader of the text knows
+*/string-split	guard	the command word is a variable's value, split by the shell ($s), which no reader of the text knows
+*/eval-of-variable	release	eval runs a variable's value (eval "$s"), which no reader of the text knows
+*/eval-of-variable	guard	eval runs a variable's value (eval "$s"), which no reader of the text knows
+*/script-written-and-sourced	release	the script runs a file it writes at run time (. ./x.sh), which is no file of the repository
+*/script-written-and-sourced	guard	the script runs a file it writes at run time (. ./x.sh), which is no file of the repository
+*/array-copied	guard	the log guard expands an array only where "${name[@]}" names the array assigned; a copy (b=("${a[@]}")) it does not follow, and the release check reads the values as a command
+*/array-sliced	guard	the log guard expands an array only where "${name[@]}" names the array assigned; a slice ("${a[@]:0}") it does not follow, and the release check reads the values as a command
+*/array-nameref	guard	the log guard expands an array only where "${name[@]}" names the array assigned; a nameref (declare -n r=a) it does not follow, and the release check reads the values as a command
+*/array-element	guard	the log guard expands an array only where "${name[@]}" names the array assigned; an element (${a[0]}) it does not follow, and the release check reads the values as a command

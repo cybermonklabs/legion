@@ -295,6 +295,35 @@ check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 1 proble
 # closes is a call.
 echo "case: the forms that run no command read as none, and those that run one as one, as bash runs them"
 cat >"$work/forms.sh" <<'SH'
+trap 'v1=(true)' USR1
+v1+=(curl -sS https://example.com/V)
+"${v1[@]}"
+bash -c 'v2=(true)'
+v2+=(curl -sS https://example.com/W)
+"${v2[@]}"
+( bash -c 'v3=(true)' )
+v3+=(curl -sS https://example.com/X)
+"${v3[@]}"
+fv4() { eval 'v4=(true)'; }
+v4+=(curl -sS https://example.com/Y)
+"${v4[@]}"
+if false; then eval 'v5=(true)'; fi
+v5+=(curl -sS https://example.com/Z)
+"${v5[@]}"
+shopt -s expand_aliases
+alias zz0='curl -sS https://example.com/0'
+trap 'alias zz0=true' USR1
+zz0
+alias zz1='curl -sS https://example.com/1'
+bash -c 'alias zz1=true'
+zz1
+alias zz2='curl -sS https://example.com/2'
+if false; then eval 'alias zz2=true'; fi
+zz2
+case x in "$(echo $(echo y)#)") : ;; esac
+curl -sS https://example.com/3
+case x in "$(cat <(echo a)#)") : ;; esac
+curl -sS https://example.com/4
 bash -c 'FOO=1 curl -sS https://example.com/E'
 eval 'if curl -sS https://example.com/F; then :; fi'
 ( trap 'X=1 command curl -sS https://example.com/G' EXIT )
@@ -415,8 +444,8 @@ for client in curl gh jq go; do
 done
 : >"$work/ran"
 (cd "$work" && PATH="$work/bin:$PATH" bash -c ". '$script_dir/ci-log-guard.sh'; . ./forms.sh" >/dev/null 2>&1)
-check "bash runs curl forty-five times, go once, gh three times and jq once" \
-  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 45 curl 3 gh 1 go 1 jq ")"
+check "bash runs curl fifty-five times, go once, gh three times and jq once" \
+  "$(is "$(sort "$work/ran" | uniq -c | tr -s ' \n' ' ')" " 55 curl 3 gh 1 go 1 jq ")"
 root=$(fixture forms "$(cat "$work/forms.sh")")
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -433,8 +462,10 @@ check "and not the quoted body's" "$(is "$(contains "$out" 'repos/o/w')" false)"
 # inside it, and a quoted paren in `((` and in a case pattern's substitution); E to U: review 6065555289's (a client behind an assignment or a keyword in
 # a `-c`, eval or trap string, an array used in an eval inside an eval, an array an eval or a
 # `bash -c` string assigns and the text after it runs, a `#` comment inside a `$(…)` in a case
-# pattern or in arithmetic, and env handed a slice).
-for form in e f g h i j k l m n o p q r s t u v w x y z A B C D E F G H I J K L M N O P Q R S T U; do
+# pattern or in arithmetic, and env handed a slice); V to 4: review 6066469064's (an array a decoy
+# assignment bash never runs might shadow, then appended to; an alias a decoy definition bash never
+# runs might shadow; and a `#` after the `)` of a nested substitution, which continues the word).
+for form in e f g h i j k l m n o p q r s t u v w x y z A B C D E F G H I J K L M N O P Q R S T U V W X Y Z 0 1 2 3 4; do
   check "names the curl of form $form" "$(contains "$out" "step \"Fetch\" runs .[^\`]*https://example.com/$form.")"
 done
 check "names the stderr guard after the string, and not the one inside it" \
@@ -442,7 +473,34 @@ check "names the stderr guard after the string, and not the one inside it" \
 check "names the go behind an assignment in a sh -c string" \
   "$(contains "$out" 'step "Fetch" runs .go test \./\.\.\.., a go command')"
 check "and not the curl a string runs under ci_log_guard" "$(is "$(contains "$out" 'routed-in-string')" false)"
-check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 49 problem(s)$')"
+check "and nothing else" "$(contains "$out" '^::error::check-log-guard: 59 problem(s)$')"
+
+# The generated forms: shell_reader_forms.py crosses contexts with payloads, runs each form under
+# bash with a recording stand-in, and holds both readers to what bash ran: a form bash runs and a
+# reader misses fails unless .github/shell-reader-misses.tsv lists it. The control is a copy of the
+# reader with the `+=` rule of review 6066469064 taken back out: the generator names its forms.
+echo "case: the generated forms, run under bash, are read by both readers or listed as known limits"
+gen_status=0
+gen_out=$(cd "$repo" && python3 .github/scripts/shell_reader_forms.py 2>&1) || gen_status=$?
+check "the generator passes" "$(is "$gen_status" 0)"
+[ "$gen_status" = 0 ] || printf '%s\n' "$gen_out"
+check "and says how many forms it ran and found" \
+  "$(contains "$gen_out" '^shell_reader_forms: [0-9]* forms for each of 2 readers; bash runs the client in [1-9][0-9]* (release) and [1-9][0-9]* (guard); 0 regression(s); [0-9]* missed by this tree, 0 of them unlisted$')"
+mkdir -p "$work/gen-control/scripts"
+cp "$script_dir/shell_reader_forms.py" "$script_dir/check-log-guard.sh" "$work/gen-control/scripts/"
+cp "$repo/.github/shell-reader-misses.tsv" "$work/gen-control/"
+python3 - "$script_dir/shell_commands.py" "$work/gen-control/scripts/shell_commands.py" <<'PY'
+import sys
+text = open(sys.argv[1]).read()
+rule = "            if self.words not in lists:\n                lists.append(list(self.words))\n"
+assert text.count(rule) == 1, "the += rule is not there once"
+open(sys.argv[2], "w").write(text.replace(rule, "            if not append and self.words not in lists:\n                lists.append(list(self.words))\n"))
+PY
+gen_status=0
+gen_out=$(python3 "$work/gen-control/scripts/shell_reader_forms.py" 2>&1) || gen_status=$?
+check "control: with the += rule taken out, the generator fails" "$(is "$gen_status" 1)"
+check "naming a form an appended array after a decoy runs, which the log guard then misses" \
+  "$(contains "$gen_out" '^UNLISTED if-false/array-appended-after-decoy .guard.')"
 
 echo "case: each routed form passes"
 root=$(fixture routed "$(cat <<'SH'

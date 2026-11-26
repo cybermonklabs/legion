@@ -763,6 +763,87 @@ for step in 'Eval of a single-quoted array' 'Eval of a double-quoted array' 'Eva
   check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
 done
 
+# The forms of review 6066469064: an assignment or an alias definition that bash never runs (a trap
+# that never fires, a `bash -c` child, an eval under `if false`, an uncalled function) shadows no
+# other, so an array appended to after such a decoy and an alias redefined by one still read as
+# what bash runs; a `#` after the `)` of a nested substitution continues the word; and a copy, a
+# slice, an element or a nameref of an array runs its values, which this check reads as a command.
+# Each runs bunx in a credentialed job under bash, and each is refused by name.
+echo "case: decoy assignments, a hash after a substitution, and built array words, in a credentialed job"
+root=$(fixture decoy-and-hash-forms)
+add_publish_step "$root" "$(cat <<'YAML'
+      - name: Append after a trap decoy
+        run: |
+          trap 'a=(true)' USR1
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after a bash -c decoy
+        run: |
+          bash -c 'a=(true)'
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after a subshell decoy
+        run: |
+          ( bash -c 'a=(true)' )
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after an uncalled function decoy
+        run: |
+          f() { eval 'a=(true)'; }
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Append after an if false decoy
+        run: |
+          if false; then eval 'a=(true)'; fi
+          a+=(bunx evil-package)
+          "${a[@]}"
+      - name: Alias after a trap decoy
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          trap "alias b=true" USR1
+          b
+      - name: Alias after a bash -c decoy
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          bash -c "alias b=true"
+          b
+      - name: Alias after an if false decoy
+        run: |
+          shopt -s expand_aliases
+          alias b='bunx evil-package'
+          if false; then eval "alias b=true"; fi
+          b
+      - name: Hash after a nested substitution
+        run: |
+          case x in "$(echo $(echo y)#)") : ;; esac
+          bunx evil-package
+      - name: Hash after a process substitution
+        run: |
+          case x in "$(cat <(echo a)#)") : ;; esac
+          bunx evil-package
+      - name: Array copy
+        run: |
+          base=(bunx evil-package)
+          args=("${base[@]}")
+          "${args[@]}"
+      - name: Array nameref
+        run: |
+          a=(bunx evil-package)
+          declare -n r=a
+          "${r[@]}"
+YAML
+)"$'\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+for step in 'Append after a trap decoy' 'Append after a bash -c decoy' 'Append after a subshell decoy' \
+  'Append after an uncalled function decoy' 'Append after an if false decoy' 'Alias after a trap decoy' \
+  'Alias after a bash -c decoy' 'Alias after an if false decoy' 'Hash after a nested substitution' \
+  'Hash after a process substitution' 'Array copy' 'Array nameref'; do
+  check "names bunx in '$step'" "$(contains "$out" "holds a credential, but step '$step' runs [^;]*'bunx'")"
+done
+
 echo "case: a built binary under out/ in a credentialed job"
 root=$(fixture out-path)
 add_publish_step "$root" $'      - name: Smoke test\n        run: out/legion version\n'

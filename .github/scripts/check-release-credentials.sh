@@ -118,10 +118,13 @@
 # assignments and keywords before a command, and an interpreter, `-c` or `eval` looked through.
 # This check reads it with `every_body`: every here-document body is read as commands, whatever
 # its line runs, so a body that reaches a shell by any route (`eval "$(cat <<'EOT' …)"`, `. <(cat
-# <<'EOT' …)`, a pipe continued after the body, a runner the reader does not know) is read. A
-# variable in command position (`"$tool" build`), a command behind `xargs` or `nohup`, or a
-# program not on the list passes here; the job-level tripwire (`release-push.sh no-credential`)
-# and review hold the rest.
+# <<'EOT' …)`, a pipe continued after the body, a runner the reader does not know) is read, and so
+# is every array's values, so a copy, a slice, an element or a nameref of the array that runs them
+# is read too. A variable in command position (`"$tool" build`, `"$@"`, `$s`, `eval "$s"`), a
+# script the step writes and then runs, a command behind `xargs` or `nohup`, or a program not on
+# the list passes here; the job-level tripwire (`release-push.sh no-credential`) and review hold
+# the rest. .github/scripts/shell_reader_forms.py runs generated forms under bash and holds this
+# reader to them, and .github/shell-reader-misses.tsv lists the forms it knows it misses.
 #
 # What this check is for, so it is held to the right bar: it pins the release workflows' shape
 # against drift — a later well-meant edit that puts dependency code, a cache or a credential in the

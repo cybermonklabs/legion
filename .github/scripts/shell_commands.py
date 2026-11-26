@@ -23,7 +23,8 @@ arithmetic only where bash reads it so, the `)` closing its inner `(` followed a
 (`((cmd) || true)` is two subshells), its parentheses counted as bash's matched-pair parse counts
 them, none inside a quoted string (`((echo "))"; cmd) || true)` is two subshells too) nor in a
 comment a `#` at word start begins inside a `$(…)` (`$(: # )` + newline + `cmd)` is one
-substitution); an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a
+substitution), where a `#` just after a quoted string or a substitution's `)` continues the word
+(`$(echo $(echo y)#)`); an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a
 command, and a redirection's target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is not one of its
 words. A here-document's body, from the newline after its `<<WORD` (or `<<-WORD`, whose body's
 lines may start with tabs) to the line that is WORD (or, inside a `$(…)` or a backtick pair, WORD,
@@ -34,7 +35,9 @@ bash`, `setsid bash <<'EOT'`, `bash /dev/stdin <<'EOT'`, `. /dev/stdin <<EOT`, `
 echo or printf pipes straight into such a shell (`echo 'cmd' | bash`). Any other body is text, but
 with an unquoted WORD bash expands its `$(…)` and backtick substitutions, which are read as the
 commands they run; commands_of's `every_body`, the release check's rule, reads every body as
-commands instead, in a string the text hands a shell (`bash -c '…'`, eval, a trap) too. Such a
+commands instead, in a string the text hands a shell (`bash -c '…'`, eval, a trap) too, and
+every array's values as a command, as main's reader did, so a copy, a slice, an element or a
+nameref of the array that runs them is read. Such a
 string is read by the rules of the text that holds it, sharing its arrays and aliases, so an array
 an eval or `bash -c` string assigns is the text's too (`eval 'a=(cmd)'`, then `"${a[@]}"`). Arithmetic (`$(( … ))`, `(( … ))`) runs no command but its substitutions
 (`$(( $(cmd) ))` runs `cmd`). An array's values (`tools+=(curl jq)`), to the first `)` outside
@@ -45,12 +48,17 @@ function a `()` defines (`curl() {`).
 
 A command word a shell builds rather than one written is read as what it will be only where the
 text itself says what: `"${name[@]}"` of an array the text assigns is each list of values an
-assignment gives it, wherever the assignment stands; an alias the text defines is its text
-(whether or not expand_aliases is set: this reads more, never less); a `$'…'` word is decoded;
-env's `-S STRING` is STRING's words, and the `$@`, `$*` and `${name[@]}` words env is handed are
-arguments of env, and so are their slices (`"${@:2}"`, `"${a[@]:0}"`); `trap 'cmd' …` runs cmd; `function NAME {` and `coproc [NAME]` stand before the
-command. Any other built word, a variable or a substitution in command position (`"$tool" build`,
-`$cmd`, `"$@"`), is read as that word, not as a command this reader can name.
+assignment gives it, wherever the assignment stands (a `+=` is a list of its own too); an alias
+the text defines is each text a definition gives it (whether or not expand_aliases is set); a
+`$'…'` word is decoded; env's `-S STRING` is STRING's words, and the `$@`, `$*` and `${name[@]}`
+words env is handed are arguments of env, and so are their slices (`"${@:2}"`, `"${a[@]:0}"`);
+`trap 'cmd' …` runs cmd; `function NAME {` and `coproc [NAME]` stand before the command. Every
+assignment and definition is kept, whether or not bash would run it where it stands (a trap that
+never fires, `if false`, an uncalled function, a `bash -c` child), so none shadows another: this
+reads more, never less. Any other built word, a variable or a substitution in command position
+(`"$tool" build`, `$cmd`, `"$@"`), is read as that word, not as a command this reader can name.
+.github/scripts/shell_reader_forms.py runs generated forms under bash and holds this reader to
+them, and .github/shell-reader-misses.tsv lists the forms it knows it misses.
 
 Each command sheds its leading `VAR=value` assignments and the keywords that precede a command (if,
 then, for, do, `{`, `}`, …), env, exec and time with their options, and the wrappers that run the
@@ -120,7 +128,7 @@ class Scanner:
         # an alias stands for. The first pass collects them (`collecting`); the text's own pass and
         # each scanner of a part of it (child) read them.
         self.arrays: dict[str, list[list[str]]] = {}
-        self.aliases: dict[str, str] = {}
+        self.aliases: dict[str, list[str]] = {}
         self.collecting = False
         self.prepared = False
         # Whether every here-document body is read as commands, whatever its line runs: the release
@@ -175,8 +183,8 @@ class Scanner:
             if self.collecting and self.words[0] == "alias":
                 for definition in self.words[1:]:
                     name, _, value = definition.partition("=")
-                    if _ and name:
-                        self.aliases[name] = value
+                    if _ and name and value not in self.aliases.setdefault(name, []):
+                        self.aliases[name].append(value)
             for words in self.expand(self.words):
                 self.line_words.append(list(words))
                 self.line_pipes.append(self.pipe_in)
@@ -188,17 +196,24 @@ class Scanner:
     def expand(self, words: list[str]) -> list[list[str]]:
         """The words a command runs: each `"${name[@]}"` or `"${name[*]}"` of an array the text
         assigns read as that array's values (one command for each list an assignment gives it),
-        and an alias at command position, past the assignments before it, read as its text."""
+        and an alias at command position, past the assignments before it, read as its text (one
+        command for each definition the text gives it). Every assignment and definition is kept,
+        wherever it stands and whether or not bash would run it there (a trap that never fires,
+        `if false`, an uncalled function, a `bash -c` child): a reader of more than bash runs,
+        never less, may not let one shadow another."""
         options: list[list[list[str]]] = []
         for word in words:
             ref = ARRAY_REFERENCE.fullmatch(word)
             options.append(self.arrays[ref.group(1)] if ref and self.arrays.get(ref.group(1)) else [[word]])
         expanded = [[w for part in choice for w in part] for choice in itertools.product(*options)]
+        out = []
         for words in expanded:
             at = next((i for i, word in enumerate(words) if not ASSIGNMENT.match(word)), len(words))
             if at < len(words) and words[at] in self.aliases:
-                words[at:at + 1] = self.aliases[words[at]].split()
-        return expanded
+                out += [words[:at] + value.split() + words[at + 1:] for value in self.aliases[words[at]]]
+            else:
+                out.append(words)
+        return out
 
     def record(self, words: list[str]) -> None:
         """Notes the command an ended simple command's words run (command_of), a string it hands a
@@ -228,11 +243,19 @@ class Scanner:
         if self.collecting and assigned:
             name, append = assigned.group(1), assigned.group(2)
             lists = self.arrays.setdefault(name, [])
-            if append and lists:
+            # `name+=(…)` extends each list an earlier assignment gave the array, and is a list of
+            # its own too: the earlier assignment may be one bash never runs (a trap, `if false`,
+            # an uncalled function, a child shell), and then the array holds only these values.
+            if append:
                 for values in lists:
                     values.extend(self.words)
-            elif self.words not in lists:
+            if self.words not in lists:
                 lists.append(list(self.words))
+        # The release check's rule (every_body) reads an array's values as a command too, as main's
+        # reader did: a copy (`b=("${a[@]}")`), a slice (`"${a[@]:0}"`), an element (`${a[0]}`) or a
+        # nameref (`declare -n r=a`) of the array can run them, and this reader expands none of those.
+        if self.every_body and self.words and not self.collecting:
+            self.commands += command_of(list(self.words), self)
         self.words, self.word, self.redirect_target, self.pipe_in = saved
         self.started, self.at_word_start = True, False
 
@@ -618,23 +641,32 @@ def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
     `$(…)`, or a subshell inside one), where a `#` at the start of a word starts a comment to the
     end of its line, as bash's parse of a command substitution reads it (`$(: # )` + newline +
     `cmd)` is one substitution); a `$(` inside is read so too, wherever it stands."""
-    depth, start = 0, i
+    depth = 0
+    # Whether the next character starts a word: after the `(` itself, a blank, a newline or an
+    # operator (`;`, `&`, `|`, `<`, `>`, and a `(` or `)` that opens or closes a subshell). A
+    # quoted string, a backslash and a substitution `$(…)`, `<(…)` or `>(…)` are parts of a word,
+    # so a `#` just after one of those continues the word (`$(echo y)#`), as bash reads it.
+    word_start = True
     while i < len(text):
         char = text[i]
         if char == "\\":
             i += 2
+            word_start = False
             continue
         if char == "'":
             end = text.find("'", i + 1)
             i = len(text) if end < 0 else end + 1
+            word_start = False
             continue
         if char == '"':
             i = double_quote_end(text, i)
+            word_start = False
             continue
-        if char == "$" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
+        if char in "$<>" and text[i + 1:i + 2] == "(" and text[i + 2:i + 3] != "(":
             i = arithmetic_end(text, i + 1, commands=True)
+            word_start = False
             continue
-        if commands and char == "#" and i > start and text[i - 1] in " \t\n;&|()<>":
+        if commands and char == "#" and word_start:
             end = text.find("\n", i)
             i = len(text) if end < 0 else end
             continue
@@ -644,6 +676,7 @@ def arithmetic_end(text: str, i: int, commands: bool = False) -> int:
             depth -= 1
             if depth == 0:
                 return i + 1
+        word_start = char in " \t\n;&|()<>"
         i += 1
     return i
 
