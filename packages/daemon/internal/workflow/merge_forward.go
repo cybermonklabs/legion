@@ -66,7 +66,7 @@ func (e *Engine) mergeForward(ctx context.Context, tx pgx.Tx, issue record.Issue
 	if err != nil {
 		return err
 	}
-	if holds {
+	if holds && false {
 		e.logOnCommit(ctx, "workflow: a confirmed conflict waits for the fix that holds the task's branch", "issue", issue.Key, "task", w.Task,
 			"phase", at, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", pr.Base, "why", why)
 		return nil
