@@ -201,14 +201,17 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	// The holder the runtime's launches read the update round over a pod through, made here and
-	// filled once the supervision is open: openSupervision builds the runtime before the
-	// supervision exists (launchRounds, daemon.run). The runtime takes it in its Options, so the
-	// factory carries it as it carries every other option; the plan holds it by pointer, as it
-	// holds the two holders above.
+	// The holder the runtime's launches read the update round over a pod through, and tell what a
+	// launch's own replacement of an issue pod took through, made here and filled once the
+	// supervision is open: openSupervision builds the runtime before the supervision exists
+	// (launchRounds, daemon.run). The runtime takes it in its Options, so the factory carries it as
+	// it carries every other option; the plan holds it by pointer, as it holds the two holders
+	// above.
 	p.launchRounds = &launchRounds{}
 	opts := reads.opts
 	opts.RoundPodEnds = p.launchRounds.ends
+	opts.LaunchTakes = p.launchRounds.takes
+	opts.LaunchTook = p.launchRounds.took
 	p.newRuntime = sandboxRuntime(reads.client, opts, p.repositories.servesRepository, p.repositories.serving, cfg.RepositoryRenames, p.installed, p.left, o.githubAPI,
 		p.memoryGuardKills, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
@@ -873,34 +876,6 @@ func volumeMissing(missing []shimwire.LauncherVolumeMissing) []record.VolumeMiss
 		kept = append(kept, record.VolumeMissing{Path: one.Path, Reason: one.Reason})
 	}
 	return kept
-}
-
-// launchRounds is the seam between the Kubernetes runtime, which openSupervision builds before the
-// supervision exists, and the supervision's reading of the update round over a pod a launch would
-// keep (supervision.roundPodEndsAtLaunch, dispatch://INFRA-4109 R7). prepareSandbox makes one and
-// hands its ends to the runtime (sandbox.Options.RoundPodEnds), and the boot fills it the moment
-// the supervision is open (plan.launchRounds, daemon.run).
-//
-// It is filled once, in the boot's own goroutine, before any claim's machine exists and so before
-// any launch can ask: there is nothing to lock, and nothing ever replaces what was filled.
-type launchRounds struct {
-	read runtime.RoundPodEnds
-}
-
-// bind gives the holder the supervision's reading of the round.
-func (l *launchRounds) bind(read runtime.RoundPodEnds) {
-	l.read = read
-}
-
-// ends is the runtime's RoundPodEnds: the supervision's reading of the round over podUID. A holder
-// nothing filled keeps the pod, as a runtime handed no reading keeps it; only a boot that skipped
-// plan.launchRounds.bind leaves it so, and the pod's round then replaces the pod as it did before
-// the reading existed.
-func (l *launchRounds) ends(ctx context.Context, token claim.Token, podUID string) (bool, error) {
-	if l.read == nil {
-		return false, nil
-	}
-	return l.read(ctx, token, podUID)
 }
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every

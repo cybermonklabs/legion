@@ -19,9 +19,9 @@ import (
 // unpushedCandidates is every commit that can be unpushed work: each visible commit that no remote
 // branch and no tag holds, less the root commit and each commit with no change and no description.
 // A commit a remote bookmark or a tag reaches is pushed already; tags are subtracted beside remote
-// bookmarks for the reason workspaceWorkRevset subtracts them. A commit with no change and no
+// bookmarks for the reason workspace.WorkRevset subtracts them. A commit with no change and no
 // description carries nothing a deletion can lose: each working copy left so, and the parent a bare
-// `jj new` leaves (workspaceWorkRevset). Every such working copy is subtracted, not only this
+// `jj new` leaves (workspace.WorkRevset). Every such working copy is subtracted, not only this
 // workspace's own: a pod's shared clone has a workspace of its own, `default`, whose working copy
 // is an empty commit on the default branch that no remote holds (workspace's feedClone abandons the
 // clone's first snapshot), so a read that subtracted only `@` would count one commit in every pod.
@@ -31,7 +31,7 @@ const unpushedCandidates = `~::(remote_bookmarks() | tags()) ~ root() ~ (empty()
 // unpushedRevset is the commits of the issue's unpushed work as read asks for them, the term
 // "Unpushed work" of dispatch://INFRA-3583's spec: of unpushedCandidates, each commit under a working
 // copy or a local bookmark, which is the set of the pod update round's read
-// (workspaceWorkRevset); each commit with a change and no description; and, while the issue's pull
+// (workspace.WorkRevset); each commit with a change and no description; and, while the issue's pull
 // request has not merged (read.Merged), each commit whose description has a line
 // `Omp-Session: <id>` naming one of read.Sessions, the session names the issue's claims hold, or a
 // line `Dispatch: <read.Issue>`. Any other such commit is another's, and is not counted.
@@ -62,11 +62,12 @@ const unpushedCandidates = `~::(remote_bookmarks() | tags()) ~ root() ~ (empty()
 // merge, the first pull request's commits. Each makes the release ask the pod's roles once more,
 // and none makes it lose work.
 //
-// It differs from the update round's set on purpose, and that set stays as it is: the round
-// replaces the pod and names what goes with it, so it counts only what a working copy or a bookmark
-// reaches and lets a side head of the issue's own go unnamed. The release deletes the pod with its
-// disk, replaces it with nothing and asks the roles before the disk goes, so it also counts each
-// side head it can tell is the issue's own.
+// It differs from the update round's set on purpose, and that set stays as it is: the round keeps
+// the pod over the work that set finds, or replaces it over a drift that breaks the pod and names
+// that work, so it counts only what a working copy or a bookmark reaches and lets a side head of
+// the issue's own go uncounted (workspace.WorkRevset says why). The release deletes the pod with
+// its disk, replaces it with nothing and asks the roles before the disk goes, so it also counts
+// each side head it can tell is the issue's own.
 func unpushedRevset(read shimwire.ReadUnpushed) string {
 	issueWork := []string{`::(working_copies() | bookmarks())`, `(~empty() & description(exact:""))`}
 	if !read.Merged {
@@ -150,8 +151,8 @@ func ReadUnpushed(ctx context.Context, start procgroup.Starter, dir string, env 
 // answered with the reason when it names an id to answer, and a shim with no workspace refuses by
 // name rather than answering that nothing is unpushed. The budget bounds the shim's command
 // context (s.commands), so the shim's own end ends the read's jj at once. The answer goes out as
-// one line, so a refusal carries at most maxAnswerErrorBytes of its reason (cutAnswerError): jj's
-// standard error has no bound of its own.
+// one line, so a refusal carries at most shimwire.MaxAnswerErrorBytes of its reason
+// (shimwire.CutAnswerError): jj's standard error has no bound of its own.
 func (s *shim) readUnpushed(request shimwire.ReadUnpushed) {
 	result := shimwire.ReadUnpushedResult{ID: request.ID, OK: true}
 	if err := request.Validate(); err != nil {
@@ -159,11 +160,11 @@ func (s *shim) readUnpushed(request shimwire.ReadUnpushed) {
 			s.log.Printf("[worker-shim] refusing a read-unpushed frame: %v", err)
 			return
 		}
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	} else if dir := envValue(s.cfg.Env, "LEGION_WORKSPACE"); dir == "" {
 		result.OK, result.Error = false, "worker-shim: LEGION_WORKSPACE is not set; no workspace to read for unpushed work"
 	} else if read, err := ReadUnpushed(s.commands, s.children.Starter(), dir, s.cfg.Env, request); err != nil {
-		result.OK, result.Error = false, cutAnswerError(err.Error())
+		result.OK, result.Error = false, shimwire.CutAnswerError(err.Error())
 	} else {
 		result.Commits, result.WorkingCopyChanged = read.Commits, read.WorkingCopyChanged
 	}

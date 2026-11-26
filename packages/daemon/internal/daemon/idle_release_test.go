@@ -67,12 +67,29 @@ type releaseRuntime struct {
 	// its issues with them.
 	sandboxReached chan string
 	sandboxGate    map[string]chan struct{}
+	// afterPodRead, when set, runs once each read through the pod's launcher has answered and
+	// before its answer reaches the daemon: a test replaces the issue's pod there, as a launch can
+	// while a read is in flight.
+	afterPodRead func()
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.onImage
+}
+
+// PodWorkspaceWork is the embedded fake's read through the pod's launcher, with afterPodRead run
+// between the read and its answer.
+func (r *releaseRuntime) PodWorkspaceWork(ctx context.Context, issue string) (runtime.WorkspaceWork, error) {
+	work, err := r.Runtime.PodWorkspaceWork(ctx, issue)
+	r.mu.Lock()
+	hook := r.afterPodRead
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return work, err
 }
 
 func (r *releaseRuntime) IssueSandbox(issue string) (string, bool) {
