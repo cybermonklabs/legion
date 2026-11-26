@@ -3281,6 +3281,159 @@ test("offline, Take out of epic under the Epic filter whose list read outlives i
   }
 });
 
+/** Gives each drawn row of the List its measured height so the 600 px virtualizer window draws
+ *  only the rows near its scroll position, and restores the descriptor after the case. */
+function sizeVirtualRows(linePx = 64): void {
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+  Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+    configurable: true,
+    get() {
+      return this.dataset.index === undefined ? (descriptor?.get?.call(this) ?? 0) : linePx;
+    },
+  });
+  restores.push(() => {
+    if (descriptor) Object.defineProperty(HTMLElement.prototype, "offsetHeight", descriptor);
+    else Reflect.deleteProperty(HTMLElement.prototype, "offsetHeight");
+  });
+}
+
+/** Moves the List's scroll box to `top` and fires `scroll`, as a browser does when scrolling the
+ *  virtualizer's window. */
+function scrollListBoxTo(box: HTMLElement, top: number): void {
+  act(() => {
+    box.scrollTop = top;
+    box.dispatchEvent(new Event("scroll"));
+  });
+}
+
+// INFRA-3135, round 29 (F3): when the table's landing on a listed, undrawn row is pending
+// (`DataTableModel.focusRow`), a wheel of the reader's own cancels it before the row is drawn,
+// so drawing the row later never pulls the focus back to it.
+test("a wheel while the List's table is drawing an undrawn row cancels its pending landing", async () => {
+  sizeVirtualRows();
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 50 }, (_, index) => issue(`CORE-${index + 1}`));
+  table(rows, "", { inMain: true });
+  await screen.findByRole("checkbox", { name: "Select CORE-1" });
+  const box = tableBox();
+  if (box === null) throw new Error("The List drew no box for its rows");
+  // Hold `scrollTo` as a browser's smooth/async scroll: the virtualizer asks to scroll back to
+  // CORE-1, and the scroll event that draws CORE-1 comes only after the reader's wheel.
+  const scrolledTo: number[] = [];
+  const scrollToSpy = spyOn(box, "scrollTo").mockImplementation(
+    (options?: ScrollToOptions | number, y?: number) => {
+      const top = typeof options === "number" ? y : options?.top;
+      if (top !== undefined) scrolledTo.push(top);
+    }
+  );
+  restores.push(() => scrollToSpy.mockRestore());
+
+  // Mark CORE-1, then scroll far enough down that the virtualizer drops CORE-1 from the DOM.
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-1" }));
+  scrollListBoxTo(box, 2_500);
+  expect(screen.queryByRole("checkbox", { name: "Select CORE-1" })).toBeNull();
+
+  // Clear selection from the bar: CORE-1 is listed but undrawn, so `drawRow` asks `focusRow` to
+  // scroll to it and owes its canceller while the table's own stop holds the focus.
+  const clear = within(screen.getByRole("toolbar", { name: "Selected issues" })).getByRole(
+    "button",
+    { name: "Clear selection" }
+  );
+  act(() => clear.focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("toolbar")).toBeNull());
+  expect(scrolledTo.length).toBeGreaterThan(0);
+  expect(screen.queryByRole("checkbox", { name: "Select CORE-1" })).toBeNull();
+  expect(focusedName()).toBe("Project issues table");
+
+  // The reader's own wheel arrives before CORE-1 is drawn and cancels the pending landing.
+  document.dispatchEvent(new WheelEvent("wheel", { bubbles: true }));
+
+  // Even when the box scrolls back and draws CORE-1 later, focus never goes to CORE-1.
+  scrollListBoxTo(box, scrolledTo.at(-1) ?? 0);
+  expect(screen.getByRole("checkbox", { name: "Select CORE-1" })).toBeInTheDocument();
+  expect(focusedName()).not.toBe("Select CORE-1");
+  expect(focusedName()).toBe("Project issues table");
+});
+
+// INFRA-3135, round 29 (N1): offline, a table action whose list read outlives its bound drops the
+// bar while the changed rows are still named as leaving (state Owed). When the read settles with
+// the row marked last still listed but outside the virtualizer's drawn window, the delayed landing
+// asks the table to draw that row and lands on its checkbox, never staying on the table's stop or
+// dropping to the body.
+test("offline, Take out of epic whose list read outlives its bound lands on an undrawn marked row once the read settles", async () => {
+  sizeVirtualRows();
+  const online = onlineManager.isOnline();
+  const answer = Promise.withResolvers<Issue>();
+  const send = spyOn(api, "send").mockImplementation(() => answer.promise as never);
+  restores.push(() => send.mockRestore());
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const epic = issue("CORE-1", { labels: ["epic"], title: "Table epic" });
+  // No Epic filter, so Take out of epic keeps CORE-2 listed after the read settles.
+  const rows = [
+    epic,
+    issue("CORE-2", { parent: "CORE-1" }),
+    ...Array.from({ length: 48 }, (_, index) => issue(`CORE-${index + 3}`)),
+  ];
+  const { listing } = table(rows, "", { client, inMain: true });
+  await screen.findByRole("checkbox", { name: "Select CORE-2" });
+  const box = tableBox();
+  if (box === null) throw new Error("The List drew no box for its rows");
+  const scrolledTo: number[] = [];
+  const scrollToSpy = spyOn(box, "scrollTo").mockImplementation(
+    (options?: ScrollToOptions | number, y?: number) => {
+      const top = typeof options === "number" ? y : options?.top;
+      if (top !== undefined) scrolledTo.push(top);
+    }
+  );
+  restores.push(() => scrollToSpy.mockRestore());
+
+  await userEvent.setup().click(screen.getByRole("checkbox", { name: "Select CORE-2" }));
+  // Scroll down so CORE-2 leaves the virtualizer's drawn window before the action starts.
+  scrollListBoxTo(box, 2_500);
+  expect(screen.queryByRole("checkbox", { name: "Select CORE-2" })).toBeNull();
+
+  const bar = () => screen.queryByRole("toolbar", { name: "Selected issues" });
+  const takeOut = within(bar() as HTMLElement).getByRole("button", { name: "Take out of epic" });
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    act(() => takeOut.focus());
+    await user.keyboard("{Enter}");
+    await tick(0);
+    expect(send).toHaveBeenCalledTimes(1);
+    answer.resolve(savedIssue("CORE-2"));
+    const focusedWhileWaiting = new Set<string>();
+    for (let waited = 0; bar() !== null && waited <= REQUEST_DEADLINE_MS + 2_000; waited += 500) {
+      focusedWhileWaiting.add(focusedName());
+      await tick(500);
+    }
+    expect(bar()?.textContent ?? "no bar").toBe("no bar");
+    expect(focusedWhileWaiting).not.toContain("the body");
+    // The read is still paused, so CORE-2 is still named as leaving (Owed), and nothing has asked
+    // the table to scroll to CORE-2 yet.
+    expect(scrolledTo).toEqual([]);
+    expect(focusedName()).toBe("Project issues table");
+
+    // The network returns and the read settles with CORE-2 still listed (outside the epic) and
+    // still undrawn. The delayed landing calls `drawRow`, which scrolls the box to draw CORE-2.
+    listing.mockImplementation(async () => [epic, issue("CORE-2"), ...rows.slice(2)]);
+    act(() => onlineManager.setOnline(true));
+    for (let waited = 0; scrolledTo.length === 0 && waited <= 5_000; waited += 250) {
+      await tick(250);
+    }
+    expect(scrolledTo.length).toBeGreaterThan(0);
+    // The box scrolls to where the virtualizer asked and draws CORE-2; `focusRow` lands on it.
+    scrollListBoxTo(box, scrolledTo.at(-1) ?? 0);
+    expect(screen.getByRole("checkbox", { name: "Select CORE-2" })).toBeInTheDocument();
+    expect(focusedName()).toBe("Select CORE-2");
+  } finally {
+    onlineManager.setOnline(online);
+    realClock();
+  }
+});
+
 // INFRA-3135, round 29 (the architect's ruling of 2026-11-26 07:42Z): a refused table action keeps
 // its selection, so its bar stays and no hand-off runs then, and it names no row as leaving: only
 // an action that answered what it changed does (`useIssueTableActions`'s `moved`). So when the
