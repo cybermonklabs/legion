@@ -1072,7 +1072,11 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 			if err == nil {
 				t.Fatal("the gate passed a launch that failed")
 			}
-			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(shellprefix.Command([]string{f.prefix}) + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
+			// The launch text is written out, not rendered with shellprefix.Command, the gate's own
+			// rendering, so a rendering that drops the prefix fails here. The prefix's path, under
+			// TMPDIR, holds only characters the rendering leaves bare: one it quoted would fail the
+			// row, never pass it. The invocation is already one shell word (fakeOmp.invocation).
+			for _, want := range []string{"OMP launch probe failed " + ending + " for launch command", strconv.Quote(f.prefix + " " + f.invocation), "secrets: ANTHROPIC_API_KEY was denied"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal does not say %q: %v", want, err)
 				}
