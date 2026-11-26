@@ -369,16 +369,21 @@ func newRoleKeepGuards() *roleKeepGuards {
 	return &roleKeepGuards{}
 }
 
-// begin counts one handover of role as started, and returns the call that counts it as ended,
-// which the handover's goroutine makes as it returns (startHandover). A config built with no
-// guards counts nothing.
-func (g *roleKeepGuards) begin(role string) (end func()) {
+// begin counts one handover of role as started, and returns role's count, which the handover's
+// goroutine lowers by one as it returns (startHandover). The count is made on the first handover
+// of that role, as guard makes the guard: a load first, so a role already seen allocates nothing.
+// A config built with no guards counts nothing, and begin returns nil.
+func (g *roleKeepGuards) begin(role string) *atomic.Int64 {
 	if g == nil {
-		return func() {}
+		return nil
 	}
-	count, _ := g.started.LoadOrStore(role, new(atomic.Int64))
-	count.(*atomic.Int64).Add(1)
-	return func() { count.(*atomic.Int64).Add(-1) }
+	count, ok := g.started.Load(role)
+	if !ok {
+		count, _ = g.started.LoadOrStore(role, new(atomic.Int64))
+	}
+	started := count.(*atomic.Int64)
+	started.Add(1)
+	return started
 }
 
 // guard is role's own guard, made on the first handover of that role: a channel of one, which the
@@ -730,9 +735,11 @@ func runKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 // own, counted on cfg's guards as started from before that goroutine exists until it returns
 // (roleKeepGuards.begin). Every start of a handover that does not wait for it goes through here.
 func startHandover(cfg listenerDeliveryHandlerConfig, role string, run func(listenerDeliveryHandlerConfig, string)) {
-	end := cfg.roleKeepDrains.begin(role)
+	started := cfg.roleKeepDrains.begin(role)
 	go func() {
-		defer end()
+		if started != nil {
+			defer started.Add(-1)
+		}
 		run(cfg, role)
 	}()
 }
