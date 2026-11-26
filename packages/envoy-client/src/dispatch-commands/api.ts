@@ -23,8 +23,13 @@
 // reviews (`gatedWrite`, src/askgate-marker.ts). The gate sits in the command itself
 // (`sendApiCall`), under a host and with none.
 
-import type { DispatchApiMethod } from "@legion/contracts";
+import {
+  type DispatchApiMethod,
+  type DispatchToolRoute,
+  dispatchToolSpecs,
+} from "@legion/contracts";
 import { type AskgateState, askgateState } from "../askgate-marker";
+import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import { SESSION_VARIABLES, sessionDirectory } from "../dispatch-session-directory";
 import { ToolInputError } from "../tool-input-errors";
@@ -54,14 +59,11 @@ export interface WriteRoute {
 }
 
 /**
- * Each write route a `dispatch` command sends, with the commands that send it, which the refusal
- * of a gated session names. A route that writes nothing (`markdown/round-trip`, `related`,
- * `results/dry-run`) names the command that sends it, since the gate refuses it all the same. A
- * write method of `DispatchClient` that no command calls has no row, and neither has `sendRoute`,
- * which sends the route its caller names: `dispatch-api-routes.test.ts` names each in its
- * `NO_COMMAND`, and holds the table to every write `DispatchClient` sends.
+ * Each write route a hand-written `dispatch` command sends, with the commands that send it. A route
+ * that writes nothing (`markdown/round-trip`, `related`, `results/dry-run`) names the command that
+ * sends it, since the gate refuses it all the same.
  */
-export const WRITE_ROUTES: readonly WriteRoute[] = [
+const HAND_WRITTEN_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/issues", commands: ["issue"] },
   { method: "PATCH", pattern: "/api/v1/issues/{key}", commands: ["issue-update"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/status-change", commands: ["issue-update"] },
@@ -140,6 +142,38 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
     commands: ["architecture-sync"],
   },
 ];
+
+/** `rows`, then each route but GET a spec binds (`DispatchToolSpec.routes`), named by the spec's
+ *  command: a route a row already matches (its method, and its pattern with each `{name}` one
+ *  segment) adds that command to the row once, after the row's own, and any other route is a row
+ *  of its own. */
+function withBoundRoutes(rows: readonly WriteRoute[]): readonly WriteRoute[] {
+  const shape = (pattern: string) => pattern.replace(/\{[^}]*\}/g, "{}");
+  const table = rows.map((row) => ({ ...row, commands: [...row.commands] }));
+  for (const spec of dispatchToolSpecs) {
+    const routes: readonly DispatchToolRoute[] = "routes" in spec ? spec.routes : [];
+    for (const { method, path } of routes) {
+      if (method === "GET") continue;
+      const command = commandName(spec.name);
+      const row = table.find(
+        (each) => each.method === method && shape(each.pattern) === shape(path)
+      );
+      if (row === undefined) table.push({ method, pattern: path, commands: [command] });
+      else if (!row.commands.includes(command)) row.commands.push(command);
+    }
+  }
+  return table;
+}
+
+/**
+ * Each write route a `dispatch` command sends, with the commands that send it, which the refusal
+ * of a gated session names: the hand-written commands' rows, then the routes but GET of each spec
+ * that binds its routes (`routeCommand`), every alternate route included. No row is needed for a
+ * write method of `DispatchClient` that no command calls, nor for `sendRoute`, which sends the
+ * route its caller names: `dispatch-api-routes.test.ts` names each in its `NO_COMMAND`, and holds
+ * the table to every other write `DispatchClient` sends.
+ */
+export const WRITE_ROUTES: readonly WriteRoute[] = withBoundRoutes(HAND_WRITTEN_ROUTES);
 
 /** The row of {@link WRITE_ROUTES} that `method` on `path` (a route, without its query) matches,
  *  or undefined: each segment of the row's pattern as written, and each `{name}` one segment that

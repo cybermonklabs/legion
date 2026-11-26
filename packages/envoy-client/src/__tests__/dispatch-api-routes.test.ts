@@ -4,13 +4,20 @@
 // src/dispatch-commands/api.ts), from which its AskGate refusal names the `dispatch` command that
 // makes a write. It drives every method of DispatchClient through a recording fetch and holds the
 // table to the writes they send: each write route has a row, and each row is a route some method
-// sends. A write method added to DispatchClient later fails here until its route has a row, or it
-// joins the methods no `dispatch` command calls, below, with its reason.
+// sends. `callRoute` sends each route but GET of every spec that binds its routes
+// (`DispatchToolSpec.routes`), every alternate route included, and each one's row names that
+// spec's command. A write method added to DispatchClient later fails here until its route has a
+// row, or it joins the methods no `dispatch` command calls, below, with its reason.
 
 import { expect, test } from "bun:test";
-import { NO_ROUTE_MESSAGE_PREFIX } from "@legion/contracts";
+import {
+  type DispatchToolRoute,
+  dispatchToolSpecs,
+  NO_ROUTE_MESSAGE_PREFIX,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential } from "../bearer";
+import { commandName } from "../dispatch-command";
 import { WRITE_ROUTES, writeRoute } from "../dispatch-commands/api";
 import { DispatchClient } from "../dispatch-http";
 
@@ -24,8 +31,9 @@ type ClientMethod = Exclude<
   "fetchImpl"
 >;
 
-/** The write methods with no row, each with why: no `dispatch` command calls it, or, for
- *  `sendRoute`, the route it sends is the one its caller names. */
+/** The write methods whose writes need no row, each with why: no `dispatch` command calls it (a
+ *  route of its that a command sends another way still has a row), or, for `sendRoute`, the route
+ *  it sends is the one its caller names. */
 const NO_COMMAND: Readonly<Partial<Record<ClientMethod, string>>> = {
   deliveryReply: "the plugins' answer to a delivery they took (src/delivery.ts)",
   acceptMessageDelivery:
@@ -46,6 +54,17 @@ const check = {
   verdict: "pass",
   commit: "1111111111111111111111111111111111111111",
 } as const;
+
+/** Each route but GET of every spec that binds its routes (`DispatchToolSpec.routes`), every
+ *  alternate route included, with the command that sends it and each `{name}` of its path filled
+ *  with that name. */
+const BOUND_WRITES = dispatchToolSpecs.flatMap((spec) => {
+  const routes: readonly DispatchToolRoute[] = "routes" in spec ? spec.routes : [];
+  const command = commandName(spec.name);
+  return routes.flatMap(({ method, path }) =>
+    method === "GET" ? [] : [{ command, method, path: path.replace(/\{([^}]+)\}/g, "$1") }]
+  );
+});
 
 /** One call of each method, with placeholder arguments of the shapes it takes. */
 const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> = {
@@ -79,6 +98,12 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listAgents: (client) => client.listAgents(),
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
+  // Each write route a spec binds, one call apiece, as its command calls them (`callBoundRoute`).
+  callRoute: async (client) => {
+    for (const { method, path } of BOUND_WRITES) {
+      await client.callRoute(method, path.split("/").slice(1), { body: {} });
+    }
+  },
   readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
   sendRoute: (client) => client.sendRoute("POST", "/api/v1/issues/DSP-1/comments", "{}"),
   inbox: (client) => client.inbox("me"),
@@ -221,6 +246,13 @@ test("every write DispatchClient sends has a row in dispatch api's table", async
     }
   }
   expect(rowless).toEqual([]);
+  // Each route a spec binds names that spec's command, once, in the row it matches: a command
+  // missing from that row, or a row that shadows the route, shows here.
+  const unnamed = BOUND_WRITES.filter(({ command, method, path }) => {
+    const commands = writeRoute(method, path)?.commands ?? [];
+    return commands.filter((name) => name === command).length !== 1;
+  });
+  expect(unnamed).toEqual([]);
   // Each row is a route some method sends: a row no method sends, or a method the walk no longer
   // reaches, shows here.
   expect([...reached].sort()).toEqual(
