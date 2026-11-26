@@ -71,8 +71,10 @@
 # over one that took the first branch with N+1's text reworded, where that text opens no entry file
 # and the refusal names the entry's constant, which the entry file declares too;
 # and the crossed branch with two merge bases with the first branch, converted, where the refusal
-# names both and the way to one: rebased onto the commit it names, with the commit that came in
-# through a merge dropped, the crossed branch converts N+2 alone.
+# names both and the way to one. The commit both branches merge carries a numbered entry, so a
+# plain rebase of the crossed branch onto the commit the refusal names stops; rebased onto it with
+# each commit the first branch holds dropped, the crossed branch is its own commit alone, and
+# converts N+2 alone.
 # Then the script run on the stacked branch with --base naming the first branch converts N+2 alone
 # and merges the first branch, in a commit that names it: the stacked branch then differs from the
 # first branch by N+2's entry file and fixture, so N+1, which the first branch converted, is not
@@ -132,11 +134,11 @@ write_goldens() {
     { cat "$scratch/goldens.txt"; fail "$1: the goldens were not written"; }
 }
 
-# numbered_text NUMBER LINE... adds numbered entry NUMBER's text to version.go of the branch of the
-# current directory as an author did before the cutover: a `// NUMBER: ` paragraph of the LINEs
-# above the const line, and the const line raised to NUMBER.
+# numbered_text VERSION_GO NUMBER LINE... adds numbered entry NUMBER's text to the file VERSION_GO
+# as an author did before the cutover: a `// NUMBER: ` paragraph of the LINEs above the const line,
+# and the const line raised to NUMBER.
 numbered_text() {
-  python3 - "$api/version.go" "$@" <<'PY'
+  python3 - "$@" <<'PY'
 import re, sys
 
 path, number, *lines = sys.argv[1:]
@@ -160,7 +162,7 @@ PY
 numbered_entry() {
   local change="which changes nothing of the contract."
   [ -z "${3:-}" ] || change="the field \`$3\` of the body of \`POST /legion/v1/project/pause\`."
-  numbered_text "$1" "dispatch://INFRA-1569 conversion test -- the entry \`$2\` of the conversion test," "$change"
+  numbered_text "$api/version.go" "$1" "dispatch://INFRA-1569 conversion test -- the entry \`$2\` of the conversion test," "$change"
   python3 - "$@" <<'PY'
 import re, sys
 
@@ -283,7 +285,7 @@ echo "this change ${this:0:10}, branched from ${base:0:10}, which declares contr
 step "the branch: numbered entry $k by the rule before the cutover"
 git worktree add -q -b "$branch" "$repo" "$base"
 cd "$repo"
-numbered_text "$k" "dispatch://INFRA-1569 conversion test -- the probe entry the conversion test adds:" \
+numbered_text "$api/version.go" "$k" "dispatch://INFRA-1569 conversion test -- the probe entry the conversion test adds:" \
   "a band that takes nothing off the state, an answer no route writes, and the word" \
   "\`convert_probe\` of the waiting line's \`kind\`."
 python3 - "$k" <<'PY'
@@ -387,12 +389,18 @@ numbered_entry "$((k + 1))" stacked
 git add -A
 git commit -q -m "feat(daemon): the conversion test's entry $((k + 1)), stacked on entry $k"
 stacked_commit=$(git rev-parse HEAD)
-# A commit from before the cutover, which the stacked branch merges apart from the first branch, as
-# a branch merges main: the crossed branch. Where the first branch merges it too, the two have two
-# merge bases, that commit and the first branch's commit of entry $k.
+# A commit from before the cutover with a numbered entry of its own, as a commit of main had, which
+# the stacked branch merges apart from the first branch, as a branch merges main: the crossed
+# branch. Where the first branch merges it too, the two have two merge bases, that commit and the
+# first branch's commit of entry $k. Each merge keeps its own version.go, as an author's merge
+# that renumbers would, and takes the commit's file convert-side.txt.
 side_blob=$(printf 'convert-test: a commit both branches merge\n' | git hash-object -w --stdin)
 side_file=(--add --cacheinfo "100644,$side_blob,convert-side.txt")
-side=$(git commit-tree "$(tree_with "$base" "${side_file[@]}")" -p "$base" -m "convert-test: a commit before the cutover")
+git show "$base:$api/version.go" >"$scratch/side-version.go"
+numbered_text "$scratch/side-version.go" "$k" "dispatch://INFRA-1569 conversion test -- the entry of a commit before the cutover that both branches merge."
+side_version=$(git hash-object -w "$scratch/side-version.go")
+side=$(git commit-tree "$(tree_with "$base" "${side_file[@]}" --cacheinfo "100644,$side_version,$api/version.go")" -p "$base" \
+  -m "convert-test: a commit before the cutover")
 crossed=$(git commit-tree "$(tree_with "$stacked_commit" "${side_file[@]}")" -p "$stacked_commit" -p "$side" -m "convert-test: the stacked branch merges it")
 git branch "$branch_crossed" "$crossed"
 cd "$repo"
@@ -439,7 +447,7 @@ step "an entry with no constant is refused where an entry file of the ref declar
 # another change's entry file declares that name, the second declaration would not compile.
 cd "$repo_stacked"
 git checkout -q -b "$branch_named" "$base"
-numbered_text "$k" "dispatch://INFRA-1569 conversion test -- an entry with no constant of its own."
+numbered_text "$api/version.go" "$k" "dispatch://INFRA-1569 conversion test -- an entry with no constant of its own."
 git commit -q -am "feat(daemon): the conversion test's entry $k, with no constant"
 named_file=$api/contract_20000101000000_infra-1569.go
 named_blob=$(printf '%s\n' "package api" "" \
@@ -603,18 +611,40 @@ refused "the conversion of the crossed branch with two merge bases with its base
 step "the way out of two merge bases that the refusal names leads to one"
 # The refusal names the first branch as it was before it merged the cutover, the first parent of
 # its conversion: its commit of entry $k, which the crossed branch holds already, so a merge of it
-# leaves the two merge bases. `git rebase -i` onto it, with the commit that came in through the
-# merge dropped, leaves the crossed branch its own commit alone on it; that commit is then the one
-# merge base, and the conversion over the first branch converts entry $((k + 1)) alone.
+# leaves the two merge bases. A plain `git rebase` onto it replays the merged commit too, whose
+# numbered entry meets the branch's own in version.go, and stops. `git rebase -i` onto it, with
+# each commit the first branch holds dropped as the refusal says, leaves the crossed branch its own
+# commit alone on it; that commit is then the one merge base, and the conversion over the first
+# branch converts entry $((k + 1)) alone.
 git checkout -q -b "$branch_rebased" "$branch_crossed"
-GIT_SEQUENCE_EDITOR="sed -i '/convert-test: a commit before the cutover\$/s/^pick /drop /'" git rebase -q -i "$entry_commit" ||
-  fail "the rebase of the crossed branch onto ${entry_commit:0:10}, its merged commit dropped, failed"
+! git rebase -q "$entry_commit" >"$scratch/rebase-plain.txt" 2>&1 ||
+  fail "a plain rebase of the crossed branch onto ${entry_commit:0:10} replays the merged commit's numbered entry and does not stop"
+git rebase --abort
+# The sequence editor: drops each commit of the todo list that the ref, its first argument, holds.
+cat >"$scratch/drop-held.py" <<'PY'
+import subprocess, sys
+
+ref, todo = sys.argv[1:3]
+with open(todo) as f:
+    lines = f.read().split("\n")
+for i, line in enumerate(lines):
+    words = line.split()
+    if len(words) > 1 and words[0] in ("pick", "p") and \
+            subprocess.run(["git", "merge-base", "--is-ancestor", words[1], ref]).returncode == 0:
+        lines[i] = "drop " + " ".join(words[1:])
+with open(todo, "w") as f:
+    f.write("\n".join(lines))
+PY
+GIT_SEQUENCE_EDITOR="python3 $scratch/drop-held.py $base_crossed" git rebase -q -i "$entry_commit" ||
+  fail "the rebase of the crossed branch onto ${entry_commit:0:10}, each commit ${base_crossed:0:10} holds dropped, failed"
+[ "$(git rev-parse HEAD^)" = "$entry_commit" ] && [ "$(git rev-list --count "$entry_commit..HEAD")" = 1 ] ||
+  fail "the rebased crossed branch is not its own commit alone on ${entry_commit:0:10}: $(git log --format=%s "$entry_commit..HEAD" | tr '\n' ';')"
 [ "$(git merge-base --all HEAD "$base_crossed")" = "$entry_commit" ] ||
   fail "the rebased crossed branch has merge bases $(git merge-base --all HEAD "$base_crossed" | tr '\n' ' ')with the first branch, want ${entry_commit:0:10} alone"
 bash "$root/scripts/daemon-contract-convert.sh" --base "$base_crossed" >"$scratch/convert-rebased.txt" 2>&1 ||
   { cat "$scratch/convert-rebased.txt"; fail "scripts/daemon-contract-convert.sh --base ${base_crossed:0:10} failed on the rebased crossed branch"; }
 rebased=$(stacked_alone "$base_crossed" "the rebased crossed branch")
-echo "PASS: rebased onto ${entry_commit:0:10} with the merged commit dropped, the crossed branch has one merge base, and converts entry $((k + 1)) alone to $rebased"
+echo "PASS: a plain rebase onto ${entry_commit:0:10} stops; rebased onto it with each commit the first branch holds dropped, the crossed branch is its own commit alone, has one merge base, and converts entry $((k + 1)) alone to $rebased"
 git checkout -q "$branch_stacked"
 
 step "the conversion of the stacked branch over its base branch"
