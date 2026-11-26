@@ -15,7 +15,8 @@ export function aliveBy(read: StatRead): (pid: number) => boolean {
       return false;
     }
     const stat = statOf(pid, read);
-    return stat !== undefined && !stat.replace(/^.*\) /, "").startsWith("Z");
+    // The name in parentheses may hold `) ` or a newline, so the state follows the last `) `.
+    return stat !== undefined && !stat.replace(/^[\s\S]*\) /, "").startsWith("Z");
   };
 }
 

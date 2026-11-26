@@ -79,7 +79,7 @@ const tmuxDir = temporaryDirectory("pdt-tmux", { root: "/tmp" });
 const sessionOf = (pid: number) =>
   Number(
     readFileSync(`/proc/${pid}/stat`, "utf8")
-      .replace(/^.*\) /, "")
+      .replace(/^[\s\S]*\) /, "")
       .split(" ")[3]
   );
 const membersOf = (sid: number) =>

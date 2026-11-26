@@ -23,4 +23,7 @@ test("a running process is alive, and a zombie is not", () => {
   expect(aliveBy(() => `${process.pid} (bun) S 1 1 1\n`)(process.pid)).toBe(true);
   expect(aliveBy(() => `${process.pid} (a) Z) S 1 1 1\n`)(process.pid)).toBe(true);
   expect(aliveBy(() => `${process.pid} (bun) Z 1 1 1\n`)(process.pid)).toBe(false);
+  // A name may hold a newline: the state is the field after the last `) `, not after the first
+  // line's.
+  expect(aliveBy(() => `${process.pid} () S 1\n) Z 1 1 1\n`)(process.pid)).toBe(false);
 });
