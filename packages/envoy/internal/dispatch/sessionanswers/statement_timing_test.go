@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -35,7 +34,7 @@ func TestStatementTimings(t *testing.T) {
 	database := benchtime.OpenStore(t, os.Getenv(benchtime.DatabaseURLEnv))
 	for _, session := range subjects.AnswerSessions {
 		name := "the answers read for " + session.Name
-		arguments := []any{session.Session, subjects.AnswersSince, contracts.LegacyAgentSubject(session.Session)}
+		arguments := []any{session.Session, subjects.AnswersSince, agentTopic(session.Session)}
 		mains := benchtime.Statement{SQL: mainQuery, Args: arguments}
 		reads := benchtime.Statement{SQL: query, Args: arguments}
 		t.Run(name+", its rows", func(t *testing.T) {

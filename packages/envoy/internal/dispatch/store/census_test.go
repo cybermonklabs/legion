@@ -1333,37 +1333,19 @@ func TestCensusRefusesTheAnswersIndexBesideItsPendingExtension(t *testing.T) {
 // comes from btreeGinVersion alone, which a deploy applies before them: a create extension in
 // either would take the census's concurrent index exemption from every pending migration after it,
 // and would bring its extension in the release of the index instead of the one before it. The test
-// reads the files themselves, and not the set pgmigrate.Load answers, so it fails on the words
-// whatever the loader makes of a second statement. The words match in any case, with each comment
-// read as a space (pgmigrate.WithoutComments) and white space folded.
+// reads the files themselves (MigrationText), and not the set pgmigrate.Load answers, so it fails
+// on the words whatever the loader makes of a second statement. The words match in any case, with
+// each comment read as a space (pgmigrate.WithoutComments) and white space folded.
 func TestTheAnswersAndBacklogIndexMigrationsCreateNoExtension(t *testing.T) {
 	t.Parallel()
-	files, err := fs.ReadDir(migrationFiles, "migrations")
-	if err != nil {
-		t.Fatal(err)
-	}
-	read := map[int]bool{}
-	for _, file := range files {
-		digits, _, _ := strings.Cut(file.Name(), "_")
-		version, err := strconv.Atoi(digits)
+	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
+		migration, err := MigrationText(version)
 		if err != nil {
-			t.Fatalf("%s: %v", file.Name(), err)
-		}
-		if version != answersDestinationsIndexVersion && version != backlogMovesIndexVersion || !strings.HasSuffix(file.Name(), ".up.sql") {
+			t.Error(err)
 			continue
 		}
-		data, err := migrationFiles.ReadFile("migrations/" + file.Name())
-		if err != nil {
-			t.Fatal(err)
-		}
-		read[version] = true
-		if text := strings.ToLower(strings.Join(strings.Fields(pgmigrate.WithoutComments(string(data))), " ")); strings.Contains(text, "create extension") {
-			t.Errorf("%s holds a create extension, comments aside: %q; want the one create index concurrently and nothing else", file.Name(), text)
-		}
-	}
-	for _, version := range []int{answersDestinationsIndexVersion, backlogMovesIndexVersion} {
-		if !read[version] {
-			t.Errorf("the embedded set has no migration file of version %d to read", version)
+		if text := strings.ToLower(strings.Join(strings.Fields(pgmigrate.WithoutComments(migration)), " ")); strings.Contains(text, "create extension") {
+			t.Errorf("migration %d holds a create extension, comments aside: %q; want the one create index concurrently and nothing else", version, text)
 		}
 	}
 }

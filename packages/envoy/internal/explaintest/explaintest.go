@@ -12,7 +12,7 @@
 // prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
 // or run and measured (AnalyzedGenericPlan), and the plan made for a statement's values, run and
 // measured (AnalyzedPlan). A test that holds such a plan to a check it writes itself holds the
-// same check to failing a control's plan (RequireControlFails, through Failures). For a statement
+// same check to failing a control's plan (RequireControlFails). For a statement
 // over a batch of rows (batch.go) it runs the statement a writer sent, after the statements it
 // sent first, under each plan-cache mode (ExplainAfter), and holds the analyzed plan to reading
 // the batch once and each named table by a probe of one row's key (UnprobedReads,
@@ -569,21 +569,21 @@ func AnalyzedPlan(t testing.TB, ctx context.Context, db Beginner, statement stri
 	return OnePlan(t, raw)
 }
 
-// Failures is the testing.TB a control's plan is run through a check by (RequireControlFails). It
-// keeps each failure that the check reports through Errorf rather than failing the test, so the
-// test can hold the check to failing the control. Every other call goes to the test, a fatal
-// failure of the test's own making among them.
-type Failures struct {
+// controlFailures is the testing.TB a control's plan is run through a check by
+// (RequireControlFails). It keeps each failure that the check reports through Errorf rather than
+// failing the test, so the test can hold the check to failing the control. Every other call goes
+// to the test, a fatal failure of the test's own making among them.
+type controlFailures struct {
 	testing.TB
 	failures []string
 }
 
-func (f *Failures) Errorf(format string, args ...any) {
+func (f *controlFailures) Errorf(format string, args ...any) {
 	f.failures = append(f.failures, fmt.Sprintf(format, args...))
 }
 
-// FirstLines is the first line of each failure, which names the read without the plan it prints.
-func (f *Failures) FirstLines() []string {
+// firstLines is the first line of each failure, which names the read without the plan it prints.
+func (f *controlFailures) firstLines() []string {
 	lines := make([]string, 0, len(f.failures))
 	for _, failure := range f.failures {
 		line, _, _ := strings.Cut(failure, "\n")
@@ -592,17 +592,17 @@ func (f *Failures) FirstLines() []string {
 	return lines
 }
 
-// RequireControlFails runs check, a check of plan that reports each failure through Errorf, on
-// Failures, and fails t where the check reports none, since the check would then be one that
-// cannot fail. subject names the plan, control names the plan's part ("the control", or "a
+// RequireControlFails runs check, a check of plan that reports each failure through Errorf, on a
+// controlFailures, and fails t where the check reports none, since the check would then be one
+// that cannot fail. subject names the plan, control names the plan's part ("the control", or "a
 // control" where there are several), and cannotTell is what such a check cannot tell apart: the
 // failure says all three and prints plan. Where the check fails, as the control must, it logs the
 // first line of each failure.
 func RequireControlFails(t testing.TB, subject, control, cannotTell string, plan json.RawMessage, check func(testing.TB)) {
 	t.Helper()
-	failures := &Failures{TB: t}
+	failures := &controlFailures{TB: t}
 	check(failures)
-	lines := failures.FirstLines()
+	lines := failures.firstLines()
 	if len(lines) == 0 {
 		t.Errorf("%s, %s, passes the check, so the check cannot tell %s:\n%s", subject, control, cannotTell, plan)
 		return

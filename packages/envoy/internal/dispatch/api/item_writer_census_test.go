@@ -64,7 +64,7 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// Nineteen entries take no owner lock - seven exceptions, since cmd/dispatch-seed's four loaders
+// Eighteen entries take no owner lock - seven exceptions, since cmd/dispatch-seed's three loaders
 // share one, the boot rename pass's three statement builders share another, the migration
 // runners' four writers of their version tables share a third and the broker's hold store's five
 // writers share a fourth - and each says why. Everything else on the list holds the item's owner,
@@ -77,7 +77,9 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // entry here.
 var itemRowWriters = map[string]map[string]string{
 	"cmd/dispatch-seed/write_deliveries.go": {
-		"transitionAsk": seedLoaderException,
+		"transitionAsk": "the ask's owner lock, which its one caller holds: the delivery batch " +
+			"takes the owner lock of every ask it answers or declines before any other statement " +
+			"(writeDeliveries, store.LockOwners, through seedRun.askOwner)",
 	},
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
@@ -235,12 +237,12 @@ var itemRowWriters = map[string]map[string]string{
 	},
 }
 
-// seedLoaderException is why the seed's four loaders are on the census with no lock, written so
+// seedLoaderException is why the seed's three loaders are on the census with no lock, written so
 // that a reader of the allowlist can weigh the exception without leaving the file. An owner lock
 // serialises writers of one owner against each other, and cmd/dispatch-seed is a command a person
 // runs from a shell against an empty, migrated database, filling it before any server is started
 // on it (cmd/dispatch-seed/main.go): while it writes there is no second writer for a lock to
-// serialise it against. Run instead against a database a server serves, these four would write
+// serialise it against. Run instead against a database a server serves, these three would write
 // comment, ask and message rows beside the routes, and each would need the owner lock every
 // serving writer takes; that is the line this exception sits on.
 const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a command run from a " +
@@ -294,7 +296,7 @@ const holdTableException = "none, and none to take: the tables are the broker's 
 // without taking its owner. No writer a server runs is one: the lock table holds those that open
 // their own transaction behind a held owner lock (item_row_owner_lock_test.go), those that write
 // inside a transaction their caller opened rest on the lock that caller took, which that table
-// does not drive (itemRowLockNoRow names each with why), and the nineteen entries here that take
+// does not drive (itemRowLockNoRow names each with why), and the eighteen entries here that take
 // no owner lock each say why they take none. What this test keeps out is a writer arriving unnamed:
 // a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
 // on the census with the lock it takes.
@@ -401,6 +403,15 @@ const itemRowCallersTransaction = "runs inside another writer's transaction, whi
 	"it, or the block-index tick - and then telling the callee's statement from its caller's, " +
 	"which one call on one backend does not tell"
 
+// itemRowSeedDeliveryBatch is why the seed's answer or decline of an ask (transitionAsk) has no row
+// of the lock table: it writes inside the transaction of the delivery batch that calls it
+// (writeDeliveries), which takes the ask's owner lock before any other statement, and the seed's
+// own lock-step test, not the lock table, follows that batch.
+const itemRowSeedDeliveryBatch = "writes inside a transaction its caller opened and locked: the " +
+	"seed's delivery batch takes the owner lock of every ask it answers or declines before any " +
+	"other statement (writeDeliveries, store.LockOwners), and cmd/dispatch-seed's own lock-step " +
+	"test follows that batch (TestTheSeedsDeliveryWriteTakesTheStoreLockOrder)"
+
 // itemRowNoOwnerLock is why a writer that takes no owner lock has no row: there is nothing for it
 // to wait for, and the census entry says why it takes none.
 const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entry's exception: " +
@@ -415,6 +426,7 @@ const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entr
 // it needs - and either way nobody has to read the table to find out which writers it left out.
 var itemRowLockNoRow = map[string]map[string]string{
 	// Writers whose statements run in a transaction some other writer opened and locked.
+	"cmd/dispatch-seed/write_deliveries.go":    {"transitionAsk": itemRowSeedDeliveryBatch},
 	"internal/dispatch/api/comment_actions.go": {"recordOrphanedCommentAnchor": itemRowCallersTransaction},
 	"internal/dispatch/api/comment_create.go":  {"queueCommentRow": itemRowCallersTransaction},
 	"internal/dispatch/api/post_history.go":    {"queueDeletedPostSettlement": itemRowCallersTransaction},
@@ -443,7 +455,6 @@ var itemRowLockNoRow = map[string]map[string]string{
 	"internal/dispatch/refs/refs.go": {"queueStamp": itemRowCallersTransaction},
 
 	// Writers that take no owner lock, each by its census entry's own exception.
-	"cmd/dispatch-seed/write_deliveries.go": {"transitionAsk": itemRowNoOwnerLock},
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     itemRowNoOwnerLock,
 		"writeComments": itemRowNoOwnerLock,

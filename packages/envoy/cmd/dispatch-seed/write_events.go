@@ -352,7 +352,7 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 	}
 	sessions := r.plan.sessions
 	moves := r.planStatusMoves(events)
-	moved, err := r.statusMovePayloads(ctx)
+	movePayloads, err := r.statusMovePayloads(ctx)
 	if err != nil {
 		return err
 	}
@@ -383,7 +383,7 @@ func (r *seedRun) writeEvents(ctx context.Context) error {
 				payload := `{"seeded":true}`
 				if status, move := moves[index]; move {
 					var err error
-					if payload, err = statusMovePayload(moved[r.plan.issues[event.index].Key], status, event); err != nil {
+					if payload, err = statusMovePayload(movePayloads[r.plan.issues[event.index].Key], status, event); err != nil {
 						return err
 					}
 				}

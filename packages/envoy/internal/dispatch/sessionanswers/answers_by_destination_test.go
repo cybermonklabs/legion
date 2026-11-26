@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -234,7 +233,7 @@ func (r answerRows) String() string {
 // readAnswerRows runs statement for session since since, bound as List binds the read.
 func readAnswerRows(t *testing.T, database *store.Store, statement, session string, since time.Time) answerRows {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), statement, session, since, contracts.LegacyAgentSubject(session))
+	rows, err := database.Pool.Query(context.Background(), statement, session, since, agentTopic(session))
 	if err != nil {
 		t.Fatalf("read %s's answers: %v", session, err)
 	}
@@ -290,7 +289,7 @@ func TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex(t *testing.T) {
 		t.Errorf("the schema holds no index %s, which the read finds the session's events in the window through", destinationsIndex)
 	}
 	since := f.now.Add(-72 * time.Hour)
-	topic := contracts.LegacyAgentSubject(answersReader)
+	topic := agentTopic(answersReader)
 	delivered := f.delivered(answersReader, since)
 	t.Logf("the fixture delivered %d events of a person of the five types to %s in the window", delivered, answersReader)
 	connection, err := f.database.Pool.Acquire(ctx)

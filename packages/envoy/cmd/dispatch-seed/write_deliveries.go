@@ -291,10 +291,6 @@ func (r *seedRun) writeDeliveries(ctx context.Context) error {
 	columns := append(slices.Clone(eventColumns), "published_destinations")
 	if err := r.inBatches(ctx, "deliveries", len(deliveries), batchItems,
 		func(ctx context.Context, tx pgx.Tx, from, to int) error {
-			// The owner lock of every ask the batch answers or declines comes first, in owner key
-			// order, as the store's lock order has it: an answer's window write takes its ask's
-			// owner lock (indexAskParts, refs.WriteItemWindows), which a batch holding the asks
-			// row and the ask's index rows would otherwise take after them.
 			var owners []store.Owner
 			for _, planned := range deliveries[from:to] {
 				switch planned.eventType {
@@ -593,7 +589,7 @@ func transitionAsk(ctx context.Context, tx pgx.Tx, id string, planned delivery) 
 			return nil, fmt.Errorf("answer ask %s: %w", id, err)
 		}
 		ask.State, ask.Answer = "answered", &answer
-		if err := indexAskParts(ctx, tx, ask, refs.AskPartsAt(ask)); err != nil {
+		if err := indexAskParts(ctx, tx, ask, refs.AskPartsAt(ask), false); err != nil {
 			return nil, err
 		}
 		payload := model.AskAnsweredEventPayload{AskEventPayload: model.NewAskEventPayload(ask, model.ReferenceChanges{})}

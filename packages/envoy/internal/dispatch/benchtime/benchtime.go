@@ -34,7 +34,7 @@
 //
 // PairBuffers is a pair's other gate, for a statement whose claim is fewer buffer reads: it reads
 // each side's shared buffers at its top plan node, under the plan made for its values and under
-// the generic plan a prepared statement settles on (TopBuffers), logs every count with its plan,
+// the generic plan a prepared statement settles on (topBuffers), logs every count with its plan,
 // and fails where the after text does not read fewer under each plan. ReportBuffers is the same
 // reading with no bound, for a candidate text beside a before side already read, and
 // AfterBuffers reads and logs one statement's alone. ReportCachedPlans runs each side as a
@@ -108,8 +108,8 @@ type Statement struct {
 	// `set local` settings, or a change of an index for the one read. The related-item check's
 	// meaning query raises hnsw.ef_search to 400 for its own transaction, and a measurement under
 	// pgvector's default 40 would be of a statement production never runs; the before side of a
-	// read whose gain needs an index of this release puts back the index the release before read
-	// through.
+	// read whose gain needs an index of this release drops that index, or puts back the one the
+	// release before read through.
 	Setup []string
 }
 
@@ -297,10 +297,10 @@ func (r *Runner) bothSides(t *testing.T, name string, before, after []Statement)
 // Before and After measure one side of a statement whose two sides no one schema holds, because
 // its gain needs a table a migration of this release adds: the after text runs only on this
 // release's schema and the before text only on a database migrated from the release before it.
-// A gain that needs an index alone is a pair, whose before side's Setup puts the release
-// before's index back (Statement.Setup). Neither sets a bound, since the two readings come from
-// two runs and putting them together is the caller's; each names the side it measured, so
-// neither can be read as the other's.
+// A gain that needs an index alone is a pair, whose before side's Setup drops that index, or puts
+// back the one the release before read through (Statement.Setup). Neither sets a bound, since the
+// two readings come from two runs and putting them together is the caller's; each names the side
+// it measured, so neither can be read as the other's.
 func (r *Runner) Before(t *testing.T, name string, before Statement) {
 	t.Helper()
 	r.oneSide(t, name, beforeSide, []Statement{before})

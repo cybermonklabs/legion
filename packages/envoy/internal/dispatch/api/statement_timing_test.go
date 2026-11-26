@@ -45,7 +45,7 @@ const (
 //     and relatedProbeSQL - the newest event under each priority (priorityNewestEventQuery),
 //     with a report of the same statement with its walk keyed
 //     (priorityNewestEventKeyedWalkQuery) and one of main's text with its walk keyed
-//     (mainPriorityNewestEventKeyedWalkQuery), and the move into backlog or icebox
+//     (keyedWalkOverMainsNewestEventQuery), and the move into backlog or icebox
 //     (backlogMoveLateral) in the second fault and in the listing with ?moved=true, each without
 //     and with events_backlog_moves, with a reading of each walk over the members alone: main's
 //     (memberWalkQuery) and the walk keyed through issues_parent_key (keyedMemberWalkQuery). The
@@ -362,7 +362,7 @@ const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 	join member_event on member_event.key = m.key
 	group by m.priority`
 
-// mainPriorityNewestEventKeyedWalkQuery is main's text (mainPriorityNewestEventQuery) with its
+// keyedWalkOverMainsNewestEventQuery is main's text (mainPriorityNewestEventQuery) with its
 // walk keyed as priorityNewestEventKeyedWalkQuery keys it: the same steps through
 // issues_parent_key, written the same way, and each member row's own issues row read through
 // issues_pkey by a lateral probe that `offset 0` keeps from being flattened. What it reads of
@@ -371,7 +371,7 @@ const priorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 // what keying the walk alone saves, as priorityNewestEventKeyedWalkQuery beside
 // priorityNewestEventQuery measures it over the read of one event of each member issue. It is
 // written out whole, as that text is, for the same reason.
-const mainPriorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
+const keyedWalkOverMainsNewestEventQuery = `with recursive members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)
 	), members_spread as (
@@ -406,7 +406,7 @@ const mainPriorityNewestEventKeyedWalkQuery = `with recursive members_seed as (
 // reads, and the top node's buffers are what a plan read on production shows on its top line.
 // Two texts with the walk keyed are reported against main's text, each timed and read the same
 // way with no bound: priorityNewestEventKeyedWalkQuery, which must answer
-// priorityNewestEventQuery's rows, and mainPriorityNewestEventKeyedWalkQuery, which must answer
+// priorityNewestEventQuery's rows, and keyedWalkOverMainsNewestEventQuery, which must answer
 // main's. The four are each statement's two walks, main's hashed walk and the keyed one, under
 // each of its two reads of events. For each of the four texts under each plan the walk's share of
 // the top node's buffers is logged (logNewestEventWalk), and so is each text with its sha256,
@@ -425,7 +425,7 @@ func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner, database
 		{"main's text (mainPriorityNewestEventQuery)", mainPriorityNewestEventQuery},
 		{"priorityNewestEventQuery", priorityNewestEventQuery},
 		{"the keyed-walk text (priorityNewestEventKeyedWalkQuery)", priorityNewestEventKeyedWalkQuery},
-		{"main's text with the walk keyed (mainPriorityNewestEventKeyedWalkQuery)", mainPriorityNewestEventKeyedWalkQuery},
+		{"main's text with the walk keyed (keyedWalkOverMainsNewestEventQuery)", keyedWalkOverMainsNewestEventQuery},
 	}
 	for _, text := range texts {
 		t.Logf("%s: %s, sha256 %x:\n%s", priorityNewestEventTiming, text.name, sha256.Sum256([]byte(text.sql)), text.sql)
@@ -433,14 +433,14 @@ func measurePriorityNewestEvent(t *testing.T, runner *benchtime.Runner, database
 	mains := benchtime.Statement{SQL: mainPriorityNewestEventQuery, Args: arguments}
 	reads := benchtime.Statement{SQL: priorityNewestEventQuery, Args: arguments}
 	keyed := benchtime.Statement{SQL: priorityNewestEventKeyedWalkQuery, Args: arguments}
-	mainsKeyed := benchtime.Statement{SQL: mainPriorityNewestEventKeyedWalkQuery, Args: arguments}
+	mainsKeyed := benchtime.Statement{SQL: keyedWalkOverMainsNewestEventQuery, Args: arguments}
 
 	runner.Pair(t, priorityNewestEventTiming, mains, reads)
 	runner.Report(t, priorityKeyedWalkTiming, mains, keyed)
 	runner.Report(t, mainKeyedWalkTiming, mains, mainsKeyed)
 	for _, keyedWalk := range []struct{ name, text, wantName, want string }{
 		{priorityKeyedWalkTiming, priorityNewestEventKeyedWalkQuery, "priorityNewestEventQuery", priorityNewestEventQuery},
-		{mainKeyedWalkTiming, mainPriorityNewestEventKeyedWalkQuery, "main's text", mainPriorityNewestEventQuery},
+		{mainKeyedWalkTiming, keyedWalkOverMainsNewestEventQuery, "main's text", mainPriorityNewestEventQuery},
 	} {
 		t.Run(keyedWalk.name+", its rows", func(t *testing.T) {
 			want := newestEventTimes(t, database, keyedWalk.want, keys, priorities, []string{})
@@ -583,7 +583,7 @@ func measureBacklogMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, key
 		} {
 			t.Logf("%s, sha256 %x:\n%s", text.name, sha256.Sum256([]byte(text.sql)), text.sql)
 		}
-		withoutIndex := []string{"drop index " + backlogMoveIndex}
+		withoutIndex := []string{dropBacklogMoveIndex}
 		pairBuffers := func(name string, before, after benchtime.Statement) {
 			t.Run(name+", its top node's buffers", func(t *testing.T) {
 				runner.PairBuffers(t, name, before, after)
