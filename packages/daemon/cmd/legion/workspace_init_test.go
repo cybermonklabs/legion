@@ -185,9 +185,10 @@ func (v *issueVolume) args(issue string) []string {
 	return []string{"provision", "--issue", issue, "--repo", winitRepo, "--root", v.root, "--credential-helper", winitHelper, "--feed", v.feed, "--default-branch", v.defaultBranch}
 }
 
-// runtimeOptionalEnv are the variables a runtime sets on an init container only for some
-// launches; no run in these tests inherits them from whoever runs the tests.
-var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE"}
+// runtimeOptionalEnv are the variables a runtime sets on an init container, or on a cache's
+// container, only for some launches; no run in these tests inherits them from whoever runs the
+// tests.
+var runtimeOptionalEnv = []string{"LEGION_PROVISION_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_URL", "LEGION_REPOSITORY_CACHE_TOKEN_FILE", "LEGION_REPOSITORY_CACHE_BUCKET"}
 
 // process is what a run of the command inside this test process reads instead of the process's
 // own (runIn): proc, with its environment less runtimeOptionalEnv and with the volume's env over it
@@ -1146,8 +1147,9 @@ func killProcessesRunning(t *testing.T, path string) []string {
 // workspace-init's lines and its failures pass the URL rule. A repository cache that cannot be
 // reached is logged on stdout while `fetch` waits for it, and named on stderr in the failure the
 // wait ends in, each time with the error of the ask (workspace's askCache), which quotes
-// --cache-url with its user name and its query: each line keeps the cache's host and path, and
-// neither the user name nor the query reaches the init log. A cache that is never ready is a cause
+// --cache-url with its user name and its query: each line names the cache by its scheme, the mark
+// of a URL with credentials and its path, and neither the user name nor the query reaches the init
+// log. A cache that is never ready is a cause
 // outside the issue's volume, so `fetch` exits workspace.InitExitOutsideVolume.
 func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	t.Parallel()
@@ -1159,7 +1161,7 @@ func TestWorkspaceInitFetchWritesNoURLCredentials(t *testing.T) {
 	v.instantClock()
 
 	code, stdout, stderr := v.run(append(v.fetchArgs(), "--cache-url", "http://legion-reader@"+cache+"/widgets?token=planted-query-token-7"))
-	shown := "http://" + cache + "/widgets"
+	shown := "http://[a URL with credentials]/widgets"
 	if want := "workspace-init fetch: waiting for the repository cache " + shown + " to be ready: Get \"" + shown + "\": "; !strings.HasPrefix(stdout, want) {
 		t.Errorf("stdout %q, want the wait logged as %q", stdout, want)
 	}

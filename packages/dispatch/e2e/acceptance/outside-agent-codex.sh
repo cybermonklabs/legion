@@ -272,7 +272,10 @@ fi
 
 # --- Codex, pinned: one exact release from npm, its integrity and its binary package's checked
 # against the leg's own record of them before it runs. ---
-real_tools "$work/tools" bun npm node git tmux
+if ! tools_problem=$(real_tools "$work/tools" bun npm node git tmux); then
+  all_unknown "$tools_problem"
+  finish
+fi
 tools_path="$work/tools:$PATH"
 if [ -n "$(PATH=$tools_path tool_problem npm)" ]; then
   all_unknown "npm not on PATH, so @openai/codex@$codex_version is not installed"

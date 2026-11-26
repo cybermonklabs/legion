@@ -151,8 +151,11 @@ jobs:
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-postgres.test.sh bash scripts/dev-postgres.test.sh
         working-directory: packages/envoy
-      - name: Required-input test for airlock-check.sh k7 (no stack or network)
+      - name: Required-input and result test for airlock-check.sh (no stack or network)
         run: ../../.github/scripts/harness-pool.sh start scripts/airlock-check.test.sh bash scripts/airlock-check.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for proxy-chain-check.sh (its arguments, call's reading of an s_client-shaped transcript, the clock file, the report; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/proxy-chain-check.test.sh bash scripts/proxy-chain-check.test.sh
         working-directory: packages/envoy
       - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
         run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants.test.sh bash scripts/airlock-mutants.test.sh
@@ -163,7 +166,7 @@ jobs:
       - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
         run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
         working-directory: packages/envoy
-      - name: Broker-start test for judge-check.sh and lib/exec-env.sh (a stand-in broker; no stack)
+      - name: Stack and broker-start test for lib/check-stack.sh and lib/exec-env.sh, which judge-check.sh and proxy-chain-check.sh share, and judge-check.sh's result (a stand-in broker; no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/judge-check.test.sh bash scripts/judge-check.test.sh
         working-directory: packages/envoy
       - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
