@@ -5858,7 +5858,7 @@ Each item below names a path with its method and identity, then its purpose.
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
   A role can be named for more than one session: two claims of one issue can hold one role, each by its own token.
-  A claim is the Legion claim token of an agent of the issue (`legionclaim.CutClaimToken`), named once.
+  A claim is the Legion claim token of an issue's agent (`legionclaim.CutClaimToken`), named once.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
   A holder whose role, session and claim did not change keeps its `recorded_at`.
   The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
@@ -5869,7 +5869,7 @@ Each item below names a path with its method and identity, then its purpose.
   With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove the daemon's session is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
   Each stored holder carries a mark that says whether the daemon's own token wrote it (`issue_role_holders.daemon_proven`, Database migrations above).
   Each publication sets the mark on every holder it stores or keeps, regardless of either setting.
-  Only a marked holder identifies an architect who can write a Legion issue's status under the status guard.
+  Only a marked holder names an architect whose status write the status guard lets through.
   The answer does not carry the mark.
   A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a session or a claim named twice, a claim that is no claim token of the issue and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
