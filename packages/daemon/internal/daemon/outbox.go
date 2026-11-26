@@ -2390,13 +2390,7 @@ func (r *outbox) besideBranchesDelete(ctx context.Context, row record.OutboxRow,
 		}
 		attributes := []any{"row", row.ID, "issue", row.Issue, "repo", repo.String(), "task", payload.Task, "fix", fixes[i], "prefix", prefix}
 		for _, found := range listed {
-			if !strings.HasPrefix(found.Ref, "refs/heads/"+prefix) {
-				refused := fmt.Errorf("GitHub listed %s under %s, which is no branch under that prefix", found.Ref, prefix)
-				r.log.Warn("outbox refused a ref GitHub listed outside the branches beside a fix; it deletes nothing for it, and the row keeps it for its retry",
-					append(slices.Clone(attributes), "ref", found.Ref, "commit", found.Object.SHA)...)
-				failed = append(failed, refused)
-				continue
-			}
+			// Control: every listed ref is taken for a branch under the prefix, unchecked.
 			branch := strings.TrimPrefix(found.Ref, "refs/heads/")
 			at := append(slices.Clone(attributes), "branch", branch, "commit", found.Object.SHA)
 			deleted := github.Delete(ctx, "/git/refs/heads/"+branch)
