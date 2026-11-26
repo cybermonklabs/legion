@@ -1676,7 +1676,7 @@ These arrive as messages on the Dispatch issue:
   newer base code breaks. If the queue removed the pull request for a transient check failure,
   the merger enqueues the same head again. A check that still blocks the merge and also fails on
   the base takes the bounded wait or return to `implementing` described in
-  [The merge](../concepts/#the-merge). A fix to the change's own logic that cannot go in a forward
+  [The merge](/legion/legion/concepts/#the-merge). A fix to the change's own logic that cannot go in a forward
   merge also returns the issue to `implementing`. The merger tells the architect about settings
   or permissions only a person can change. If a person already merged the pull
   request, the daemon reads that merge and closes the issue. It closes a root whose tree still

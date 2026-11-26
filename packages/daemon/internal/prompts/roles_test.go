@@ -436,6 +436,7 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 		"the daemon asks the implementer to merge the base forward while the issue stays in `merging`",
 		"That is work to fix. Send the issue back with `request_backward_move`",
 		"You push nothing.",
+		"wait for the base's fix",
 	} {
 		if strings.Contains(merger, gone) {
 			t.Errorf("roles/merger.md still says %q", gone)
@@ -443,9 +444,23 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	}
 	// The design-gate section below also names the operation, so only the failed-check subsection
 	// is read.
-	_, failed, _ := strings.Cut(merger, "### A check that failed")
-	failed, _, _ = strings.Cut(failed, "\n## ")
-	for _, want := range []string{"request_backward_move", `to: "implementing"`} {
+	_, failed, ok := strings.Cut(merger, "### A check that failed")
+	if !ok {
+		t.Fatalf("roles/merger.md has no %q heading", "### A check that failed")
+	}
+	failed, _, ok = strings.Cut(failed, "\n## ")
+	if !ok {
+		t.Fatalf("roles/merger.md has no %q heading after %q", "## ", "### A check that failed")
+	}
+	for _, want := range []string{
+		"enqueue the same head again (step 4)",
+		"claimed and `in_progress`, and its holder said on Envoy",
+		"merge the base forward as *A head that conflicts with its base* says",
+		"request_backward_move",
+		`to: "implementing"`,
+		"names the check and says it also fails on the base",
+		"`skill://legion-worker/references/findings.md`, step 1",
+	} {
 		if !strings.Contains(failed, want) {
 			t.Errorf("roles/merger.md's failed-check subsection does not say %q", want)
 		}
