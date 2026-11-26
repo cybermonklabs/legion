@@ -325,10 +325,11 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 // settings, with no enable_* setting changed, which are the settings the server's connections
 // plan under: the generic plan that a prepared statement settles on
 // (explaintest.AnalyzedGenericPlan) and the plan made for the values of the read
-// (explaintest.AnalyzedPlan). Each is read with no project named and with one. Sequential scans
-// stay on: with them off, the planner reads a table it would scan whole through the whole of one
-// of its indexes instead, with no index condition, which is the same read under another name, in
-// a plan the server does not run. Each plan of priorityNewestEventQuery (requireNewestEventPlan):
+// (explaintest.AnalyzedPlanUnder). Each is read with no project named and with one. Sequential
+// scans stay on: with them off, the planner reads a table it would scan whole through the whole
+// of one of its indexes instead, with no index condition, which is the same read under another
+// name, in a plan the server does not run. Each plan of priorityNewestEventQuery
+// (requireNewestEventPlan):
 //
 //   - reads one event of each member issue it joins (requireOneEventOfEachMember), and not one
 //     for each member row: an issue that advances three priorities is read once. The corpus holds
@@ -396,7 +397,7 @@ func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 		for textNumber, text := range texts {
 			plans[0].plans = append(plans[0].plans, explaintest.AnalyzedGenericPlan(t, ctx, connection,
 				fmt.Sprintf("newest_event_%d_%d", scopeNumber, textNumber), text.statement, parameters, literals))
-			plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlan(t, ctx, corpus.database.Pool,
+			plans[1].plans = append(plans[1].plans, explaintest.AnalyzedPlanUnder(t, ctx, corpus.database.Pool,
 				text.statement, nil, arguments...))
 		}
 		for _, plan := range plans {

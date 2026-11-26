@@ -10,20 +10,21 @@
 // it, which is what tells a read served by an index from one that reads the whole index and
 // filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
 // prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
-// or run and measured (AnalyzedGenericPlan), and the plan made for a statement's values, run and
-// measured (AnalyzedPlan). A test that holds such a plan to a check it writes itself holds the
-// same check to failing a control's plan (RequireControlFails). For a statement
-// over a batch of rows (batch.go) it runs the statement a writer sent, after the statements it
-// sent first, under each plan-cache mode (ExplainAfter), and holds the analyzed plan to reading
-// the batch once and each named table by a probe of one row's key (UnprobedReads,
-// RequireEachRowProbedOnce), with a control that must fail it (RequireTheCheckFails), and it runs
-// any statement under a plan-cache mode with the planner's own settings and explains it with the
-// shared buffers each node hit and read (ExplainBuffered).
-// dispatch/api, dispatch/refs, dispatch/graphstore, dispatch/sessionanswers and cipher/requests
-// each pin a plan with these checks, so they live here once rather than as a second (or third)
-// hand copy of the same recursive walk; it is an ordinary package rather than a _test.go file
-// because Go cannot share test-only code across packages (see internal/stacktest's identical
-// reasoning).
+// or run and measured (AnalyzedGenericPlan), runs a statement with sequential scans off and
+// measures the plan it read its rows by (AnalyzedPlan), and measures the plan made for a
+// statement's values under the caller's own settings (AnalyzedPlanUnder). A test that holds such
+// a plan to a check it writes itself holds the same check to failing a control's plan
+// (RequireControlFails). For a statement over a batch of rows (batch.go) it runs the statement a
+// writer sent, after the statements it sent first, under each plan-cache mode (ExplainAfter), and
+// holds the analyzed plan to reading the batch once and each named table by a probe of one row's
+// key (UnprobedReads, RequireEachRowProbedOnce), with a control that must fail it
+// (RequireTheCheckFails), and it runs any statement under a plan-cache mode with the planner's own
+// settings and explains it with the shared buffers each node hit and read (ExplainBuffered).
+// dispatch/api, dispatch/refs, dispatch/graphstore, dispatch/sessionanswers, dispatch/delivery and
+// cipher/requests each pin a plan with these checks, so they live here once rather than as a
+// second (or third) hand copy of the same recursive walk; it is an ordinary package rather than a
+// _test.go file because Go cannot share test-only code across packages (see internal/stacktest's
+// identical reasoning).
 package explaintest
 
 import (
@@ -545,12 +546,21 @@ func AnalyzedGenericPlan(
 	return explainGenericPlan(t, ctx, connection, "analyze, buffers, format json", false, name, statement, parameters, literals, settings)
 }
 
-// AnalyzedPlan is the plan Postgres makes for statement with the values arguments, run and
+// AnalyzedPlanUnder is the plan Postgres makes for statement with the values arguments, run and
 // measured (EXPLAIN (ANALYZE, BUFFERS)) under settings, the `set local` statements the caller
 // names (none: the planner's default settings), in a transaction of db that it rolls back. An
 // EXPLAIN that binds its own parameters is planned for their values, a custom plan, the plan
-// AnalyzedGenericPlan's forced mode leaves out.
-func AnalyzedPlan(t testing.TB, ctx context.Context, db Beginner, statement string, settings []string, arguments ...any) json.RawMessage {
+// AnalyzedGenericPlan's forced mode leaves out. AnalyzedPlan is this plan under the one setting
+// every small fixture needs, with the plan's text beside it.
+func AnalyzedPlanUnder(t testing.TB, ctx context.Context, db Beginner, statement string, settings []string, arguments ...any) json.RawMessage {
+	t.Helper()
+	return OnePlan(t, analyzedPlan(t, ctx, db, statement, settings, arguments))
+}
+
+// analyzedPlan is the answer of `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` for statement with the
+// values arguments, after the statements of settings, in a transaction of db that it rolls back,
+// so nothing a setting changes or the statement writes outlasts it.
+func analyzedPlan(t testing.TB, ctx context.Context, db Beginner, statement string, settings []string, arguments []any) []byte {
 	t.Helper()
 	tx, err := db.Begin(ctx)
 	if err != nil {
@@ -566,7 +576,7 @@ func AnalyzedPlan(t testing.TB, ctx context.Context, db Beginner, statement stri
 	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
 		t.Fatalf("explain the statement: %v", err)
 	}
-	return OnePlan(t, raw)
+	return raw
 }
 
 // controlFailures is the testing.TB a control's plan is run through a check by
@@ -652,4 +662,18 @@ func explainGenericPlan(
 		t.Fatalf("deallocate %s: %v", name, err)
 	}
 	return OnePlan(t, raw)
+}
+
+// AnalyzedPlan runs statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with sequential
+// scans off, in a transaction of its own that is rolled back, and answers its one plan node for
+// the checks above and the plan's text, which a failure prints. A test's fixtures hold a handful
+// of rows, which is read fastest whole however a statement is written, so without that setting
+// the planner answers a sequential scan whatever indexes exist and the plan says nothing about the
+// statement; with it, a read that no index serves still shows up, as a sequential scan or a scan
+// carrying no index condition. ANALYZE runs the statement, so the plan is the one that read the
+// rows, with the buffers it touched; the rollback keeps a write it makes out of the database.
+func AnalyzedPlan(t testing.TB, ctx context.Context, pool Beginner, statement string, arguments ...any) (json.RawMessage, string) {
+	t.Helper()
+	raw := analyzedPlan(t, ctx, pool, statement, []string{"set local enable_seqscan = off"}, arguments)
+	return OnePlan(t, raw), string(raw)
 }
