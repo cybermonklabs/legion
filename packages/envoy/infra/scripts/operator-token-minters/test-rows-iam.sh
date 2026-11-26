@@ -21,7 +21,8 @@
 #   (t)  grade-ci holding roles/container.admin on a GKE fleet member's project (example-grade)
 #        exits 1, since GKE authorizes IAM beside RBAC;
 #   (ad) container.replicationControllers.create and update and container.nodes.proxy, each held on
-#        the project by an agent's Google service account, exit 1 (their RBAC rights are row b's);
+#        the project by an agent's Google service account through a role granting it alone, are
+#        each a finding naming it, in one world (their RBAC rights are row b's);
 #   (ae) a CI account holding roles/gkehub.admin on the pool project exits 1;
 #   (ag) an agent's Google service account holding roles/iam.serviceAccountTokenCreator on a holder
 #        of roles/container.admin is a finding naming the chain, through one service account and
@@ -37,13 +38,15 @@
 #        container.clusterRoleBindings.create and container.clusterRoles.bind, there exits 1;
 #   (bh) container.mutatingWebhookConfigurations.create and update and
 #        container.validatingWebhookConfigurations.create and update, each held on the project by an
-#        agent's Google service account, exit 1 (their RBAC rights are row bf's);
+#        agent's Google service account through a role granting it alone, are each a finding naming
+#        it, in one world (their RBAC rights are row bf's);
 #   (bk) container.certificateSigningRequests.approve held on the project by an agent's Google
 #        service account exits 1 (its RBAC chain is row bj's);
 #   (bl) each permission by which a holder makes a namespace or RBAC on the fleet's members
 #        (gkehub.namespaces, rbacrolebindings and membershipbindings create and update, the scopes'
-#        create, update and setIamPolicy, and the features' create and update), held alone on the
-#        pool project by an agent's Google service account, exits 1;
+#        create, update and setIamPolicy, and the features' create and update), held on the pool
+#        project by an agent's Google service account through a role granting it alone, is a
+#        finding naming it, in one world;
 #   (bn) grade-ci, bound to cluster-admin on a fleet member, is an RBAC finding, so an agent's
 #        Google service account that may mint its token is a finding too, naming grade-ci's account;
 #   (bq) container.clusters.update, by which a holder turns on legacy ABAC, held on the project by
@@ -187,29 +190,21 @@ if row t; then
 fi
 
 # --- (ad) The new container.* permissions, through IAM. ---
-# new_container_rows PERMISSION...: each permission held by an agent's Google service account
-# through a role of its own that grants nothing else, projects/<project>/roles/only.<permission>,
-# all bound in one world and judged by one run; each is a finding naming its role.
+# new_container_rows PERMISSION...: each permission held by an agent's Google service account on the
+# project through a role of its own that grants nothing else (plant_permissions), all in one world
+# and one run; each is a finding naming its role.
 new_container_rows() {
-  local permission
   base_world
-  for permission in "$@"; do
-    role "projects/$project/roles/only.$permission" "$permission"
-    iam "$project_res" "projects/$project/roles/only.$permission" "serviceAccount:$worker_gsa"
-  done
+  plant_permissions "$project_res" "serviceAccount:$worker_gsa" "$@"
   run
-  want_status 1 "$* held by $worker_gsa, each through a role of its own"
-  for permission in "$@"; do
-    want_line "FINDING serviceAccount:$worker_gsa: $permission on $project_res through projects/$project/roles/only.$permission, granted at $project_res" \
-      "$permission held by $worker_gsa through a role granting it alone"
-  done
+  want_planted "$* held by $worker_gsa, each through a role of its own" lines
   # An UNKNOWN beside the findings (a permission name the role does not hold) leaves exit 1 but
   # means the world is not the clean one plus these grants.
   [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "$* held by $worker_gsa: an UNKNOWN beside the findings"
 }
 if row ad; then
   new_container_rows container.replicationControllers.create container.replicationControllers.update container.nodes.proxy
-  passed "(ad) container.replicationControllers.create and update and container.nodes.proxy, each held by an agent's Google service account, exit 1"
+  passed "(ad) container.replicationControllers.create and update and container.nodes.proxy, each held by an agent's Google service account through a role granting it alone, are each a finding naming it"
 fi
 
 # --- (ae) Who can register a cluster to the pool's fleet. ---
@@ -272,9 +267,7 @@ if row ah; then
 fi
 
 # --- (at) A fleet member's own project's IAM: each member permission held by grade-ci through a
-# role of its own that grants nothing else, projects/<project>/roles/only.<permission>, all bound in
-# one world and judged by one run (a run a permission cost 25 runs of the check). A permission the
-# check does not ask leaves its role's line out. ---
+# role of its own that grants nothing else (plant_permissions), all in one world and one run. ---
 member_iam_permissions=(container.namespaces.update container.serviceAccounts.update container.pods.update
   container.clusters.impersonate container.clusterRoles.bind container.clusterRoles.escalate
   container.clusterRoleBindings.create container.clusterRoleBindings.update container.roles.bind container.roles.escalate
@@ -284,23 +277,12 @@ member_iam_permissions=(container.namespaces.update container.serviceAccounts.up
   resourcemanager.projects.setIamPolicy
   resourcemanager.folders.setIamPolicy resourcemanager.organizations.setIamPolicy iam.serviceAccounts.setIamPolicy
   secretmanager.secrets.setIamPolicy iam.roles.update)
-member_iam_rows() {
-  local permission
+if row at; then
   base_world
   grade_member
-  for permission in "${member_iam_permissions[@]}"; do
-    role "projects/$project/roles/only.$permission" "$permission"
-    iam "$grade_res" "projects/$project/roles/only.$permission" "serviceAccount:$grade_ci"
-  done
+  plant_permissions "$grade_res" "serviceAccount:$grade_ci" "${member_iam_permissions[@]}"
   run
-  want_status 1 "grade-ci holding each member permission through a role of its own on the fleet member's project"
-  for permission in "${member_iam_permissions[@]}"; do
-    want_line "FINDING serviceAccount:$grade_ci: $permission on $grade_res through projects/$project/roles/only.$permission, granted at $grade_res" \
-      "$permission held by grade-ci on the fleet member's project through a role granting it alone"
-  done
-}
-if row at; then
-  member_iam_rows
+  want_planted "grade-ci holding each member permission through a role of its own on the fleet member's project" lines
   passed "(at) each of the ${#member_iam_permissions[@]} member permissions, held by grade-ci on a fleet member's project through a role granting it alone, is a finding naming it"
 fi
 
@@ -346,7 +328,7 @@ fi
 if row bh; then
   new_container_rows container.mutatingWebhookConfigurations.create container.mutatingWebhookConfigurations.update \
     container.validatingWebhookConfigurations.create container.validatingWebhookConfigurations.update
-  passed "(bh) container.mutatingWebhookConfigurations.create and update and container.validatingWebhookConfigurations.create and update, each held by an agent's Google service account, exit 1"
+  passed "(bh) container.mutatingWebhookConfigurations.create and update and container.validatingWebhookConfigurations.create and update, each held by an agent's Google service account through a role granting it alone, are each a finding naming it"
 fi
 
 # --- (bk) The certificate approval permission, through IAM: GKE's IAM authorizer checks
@@ -363,7 +345,7 @@ if row bl; then
   new_container_rows gkehub.namespaces.create gkehub.namespaces.update gkehub.rbacrolebindings.create \
     gkehub.rbacrolebindings.update gkehub.membershipbindings.create gkehub.membershipbindings.update gkehub.scopes.create \
     gkehub.scopes.update gkehub.scopes.setIamPolicy gkehub.features.create gkehub.features.update
-  passed "(bl) each fleet namespace, RBAC, scope and feature permission, held on the pool project by an agent's Google service account through a role granting it alone, exits 1"
+  passed "(bl) each fleet namespace, RBAC, scope and feature permission, held on the pool project by an agent's Google service account through a role granting it alone, is a finding naming it"
 fi
 
 # --- (bn) Who can mint the token of a Google service account an RBAC finding names holds what the

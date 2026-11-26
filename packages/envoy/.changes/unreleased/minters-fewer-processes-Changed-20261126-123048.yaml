@@ -1,12 +1,13 @@
 kind: Changed
 body: |-
   `infra/scripts/operator-token-minters.sh` starts fewer processes a run, with the same verdicts:
-  a role's permission file is named by the shell and its permissions sorted by the jq that reads
-  them; a preview's binding is matched to its role's permissions in the shell; `with_rights` checks
-  and joins its two rights lists in one jq; an analysis's error record, holders and witness are read
-  in one pass; the Kubernetes groups a cluster's reviews add are picked out by one awk; only a
-  cluster's allowed or errored reviews are read by the shell; and `rec` rewrites a record's control
-  characters only when one is there.
+  a role's permission file is named by the shell, and a described role's permissions are sorted by
+  the jq that reads them; a preview's binding is matched to its role's permissions in the shell;
+  `with_rights` checks and joins its two rights lists in one jq; an analysis's error record is read
+  by the shell, and its holders and witness by one awk; the Kubernetes groups a cluster's reviews
+  add are picked out by one awk; `judge_reviews` reads only a cluster's allowed or errored reviews,
+  picked out by one awk, and reads UNKNOWN when that pick fails; and `rec` rewrites a record's
+  control characters only when one is there.
 time: 2026-11-26T12:30:48Z
 custom:
     Issue: minters-fewer-processes

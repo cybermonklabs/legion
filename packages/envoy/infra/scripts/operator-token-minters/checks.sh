@@ -153,18 +153,24 @@ role_perms() {
     return 1
   fi
 }
-# role_granted CHECK: sets GRANTED to those of CHECK's permissions (CHECK_PERMS, in that order) that
-# the role file ROLE_FILE (role_perms) lists, comma-separated, or "" for none. Each role file is
-# read into ROLE_LISTED once a run, so a preview's many bindings of one role start no process.
+# role_listed PERMISSION: whether the role file ROLE_FILE (role_file, role_perms) lists PERMISSION.
+# Each role file is read into ROLE_LISTED once a run, every line of it, a last one no line break
+# ends too, so a preview's many bindings of one role start no process.
 declare -A ROLE_READ=() ROLE_LISTED=()
-role_granted() {
+role_listed() {
   local permission
   if [ -z "${ROLE_READ[$ROLE_FILE]:-}" ]; then
-    while IFS= read -r permission; do ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE"
+    while IFS= read -r permission || [ -n "$permission" ]; do ROLE_LISTED["$ROLE_FILE $permission"]=1; done <"$ROLE_FILE"
     ROLE_READ[$ROLE_FILE]=1
   fi
+  [ -n "${ROLE_LISTED["$ROLE_FILE $1"]:-}" ]
+}
+# role_granted CHECK: sets GRANTED to those of CHECK's permissions (CHECK_PERMS, in that order) that
+# the role file ROLE_FILE lists (role_listed), comma-separated, or "" for none.
+role_granted() {
+  local permission
   GRANTED=""
   for permission in ${CHECK_PERMS[$1]}; do
-    [ -z "${ROLE_LISTED["$ROLE_FILE $permission"]:-}" ] || GRANTED="${GRANTED:+$GRANTED,}$permission"
+    ! role_listed "$permission" || GRANTED="${GRANTED:+$GRANTED,}$permission"
   done
 }

@@ -61,7 +61,8 @@
 #        validatingwebhookconfigurations, validatingadmissionpolicies and their bindings, and of
 #        mutatingadmissionpolicies and their bindings where the discovery lists them) given on the
 #        operator's cluster, and create of each on another cluster, to a ServiceAccount that holds
-#        nothing else, is a finding naming it (two worlds, one ServiceAccount a right);
+#        nothing else, is a finding naming it, and no other right is a finding of that ServiceAccount
+#        (two worlds, one ServiceAccount a right);
 #   (bg) a discovery of admissionregistration.k8s.io that lists no validatingwebhookconfigurations,
 #        or cannot be read on the operator's cluster or another, reads UNKNOWN;
 #   (bi) on a fleet member that is no GKE cluster, a User that looks like an email
@@ -95,9 +96,10 @@
 #   (cc) legion/worker that may get, by name, a token Secret of envoy-operator that no ServiceAccount
 #        lists exits 1 naming it, and a refused list of the namespace's token Secrets reads UNKNOWN.
 
-# --- (b) Each right of the RBAC list, allowed to one agent ServiceAccount. Each entry is the grant
-# (verb, API group, resource, subresource, the binding's namespace or none for cluster-wide, the
-# resource name or none) and the right the run must name. ---
+# --- (b) Each right of the RBAC list, allowed to an agent ServiceAccount of its own that holds
+# nothing else, legion/right-<its place in the list>, all in one world and one run (plant_rights,
+# want_planted). Each entry is the grant (verb, API group, resource, subresource, the binding's
+# namespace or none for cluster-wide, the resource name or none) and the right the run must name. ---
 rbac_rights=(
   "create||serviceaccounts|token|envoy-operator|envoy-operator=create serviceaccounts/token envoy-operator in envoy-operator"
   "impersonate||serviceaccounts||envoy-operator|envoy-operator=impersonate serviceaccounts envoy-operator in envoy-operator"
@@ -153,33 +155,11 @@ rbac_rights=(
   "create||nodes|proxy|||=create nodes/proxy cluster-wide"
   "get||nodes|proxy|||=get nodes/proxy cluster-wide"
 )
-# All the rights in one world and one run, each allowed to an agent ServiceAccount of its own,
-# legion/right-<its place in the list>, which holds nothing else: a run per right cost the harness
-# about 55 runs of the check. A right the check does not ask leaves its account's line out, and a
-# finding misread onto another principal names an account no right was given to.
-rbac_rights_row() {
-  local i=0 entry verb group resource sub namespace name
-  base_world
-  for entry in "${rbac_rights[@]}"; do
-    i=$((i + 1))
-    IFS='|' read -r verb group resource sub namespace name <<<"${entry%%=*}"
-    add_sa operator-cluster legion "right-$i"
-    subject_grant operator-cluster "$(sa_subject legion "right-$i")" "$verb" "$group" "$resource" "$sub" "$namespace" "$name"
-  done
-  run
-  want_status 1 "each right of the RBAC list allowed to its own agent ServiceAccount"
-  i=0
-  for entry in "${rbac_rights[@]}"; do
-    i=$((i + 1))
-    want_line "FINDING system:serviceaccount:legion:right-$i: ${entry#*=}" "${entry#*=} allowed to legion/right-$i alone"
-  done
-  # An unnamed grant also allows each name the check asks by name (a bound group or user, a bound
-  # role), so every finding must name one of the accounts a right was given to, not another.
-  [ "$(count_prefix 'FINDING system:serviceaccount:legion:right-[0-9]*: ')" -eq "$(count_prefix 'FINDING ')" ] ||
-    fail "each right of the RBAC list allowed to its own agent ServiceAccount: a finding names another principal"
-}
 if row b; then
-  rbac_rights_row
+  base_world
+  plant_rights operator-cluster legion "" "${rbac_rights[@]}"
+  run
+  want_planted "each right of the RBAC list allowed to an agent ServiceAccount of its own" only
   passed "(b) each of the ${#rbac_rights[@]} rights of the RBAC list, allowed to an agent ServiceAccount that holds nothing else, is a finding naming it and the right, and nothing else is"
 fi
 
@@ -620,65 +600,41 @@ if row bd; then
 fi
 
 # --- (bf) The admission rights. A mutating webhook or policy can add a container to the operator's
-# next pod, and a validating one can block or reshape what the operator applies. Each entry is the
-# verb, the resource of admissionregistration.k8s.io, and the cluster: the operator's, given to
-# legion/right-<its place in the list>, or another of the pool, given to ci/right-<its place>, each
-# a ServiceAccount that holds nothing else. The fake's discovery lists the four a GKE cluster
-# serves; the mutating admission policies, beta and off by default, are listed in a world of their
-# own items alone, since the check asks what the cluster's discovery lists. So the row is two
-# worlds and two runs (a run an item cost 24 runs of the check). ---
-admission_items=()
-for admission_resource in mutatingwebhookconfigurations validatingwebhookconfigurations validatingadmissionpolicies \
-  validatingadmissionpolicybindings mutatingadmissionpolicies mutatingadmissionpolicybindings; do
-  admission_items+=("create|$admission_resource|operator" "update|$admission_resource|operator" "patch|$admission_resource|operator" "create|$admission_resource|other")
-done
-# admission_rights_row gke|mutating: the items of the four resources a GKE cluster serves, or of
-# the mutating admission policies with both clusters' discovery listing them, in one world.
+# next pod, and a validating one can block or reshape what the operator applies. Create, update and
+# patch of each resource of admissionregistration.k8s.io on the operator's cluster, each given to
+# legion/right-<its place>, and create of each on another of the pool, each given to
+# ci/right-<its place>, each a ServiceAccount that holds nothing else (plant_rights). The fake's
+# discovery lists the four a GKE cluster serves; the mutating admission policies, beta and off by
+# default, are listed in a world of their own items alone, since the check asks what the cluster's
+# discovery lists. So the row is two worlds and two runs. ---
+# admission_rights_row RESOURCE...: the admission rights on each RESOURCE, in one world.
 admission_rights_row() {
-  local i=0 entry verb resource where cluster pass
+  local resource verb cluster operator=() other=()
   base_world
   add_cluster other-cluster us-east1
-  if [ "$1" = mutating ]; then
-    for cluster in operator-cluster other-cluster; do
-      printf '%s.admissionregistration.k8s.io\n' mutatingadmissionpolicies mutatingadmissionpolicybindings mutatingwebhookconfigurations \
-        validatingadmissionpolicies validatingadmissionpolicybindings validatingwebhookconfigurations >"$world/clusters/$cluster/admission-resources"
+  for resource in "$@"; do
+    for verb in create update patch; do
+      operator+=("$verb|admissionregistration.k8s.io|$resource|||=$verb $resource.admissionregistration.k8s.io cluster-wide")
     done
-  fi
-  for pass in plant judge; do
-    [ "$pass" = plant ] || {
-      run
-      want_status 1 "the admission rights ($1), each given to its own ServiceAccount"
-    }
-    i=0
-    for entry in "${admission_items[@]}"; do
-      i=$((i + 1))
-      IFS='|' read -r verb resource where <<<"$entry"
-      case "$resource" in mutatingadmission*) [ "$1" = mutating ] || continue ;; *) [ "$1" = gke ] || continue ;; esac
-      case "$pass:$where" in
-        plant:operator)
-          add_sa operator-cluster legion "right-$i"
-          subject_grant operator-cluster "$(sa_subject legion "right-$i")" "$verb" admissionregistration.k8s.io "$resource" "" "" ""
-          ;;
-        plant:other)
-          add_sa other-cluster ci "right-$i"
-          subject_grant other-cluster "$(sa_subject ci "right-$i")" "$verb" admissionregistration.k8s.io "$resource" "" "" ""
-          ;;
-        judge:operator)
-          want_line "FINDING system:serviceaccount:legion:right-$i: $verb $resource.admissionregistration.k8s.io cluster-wide" \
-            "legion/right-$i with $verb $resource alone"
-          ;;
-        judge:other)
-          want_line "FINDING system:serviceaccount:ci:right-$i: $verb $resource.admissionregistration.k8s.io cluster-wide on cluster $project/us-east1/other-cluster" \
-            "ci/right-$i with $verb $resource on other-cluster alone"
-          ;;
-      esac
-    done
+    other+=("create|admissionregistration.k8s.io|$resource|||=create $resource.admissionregistration.k8s.io cluster-wide")
   done
+  case " $* " in
+    *" mutatingadmissionpolicies "*)
+      for cluster in operator-cluster other-cluster; do
+        printf '%s.admissionregistration.k8s.io\n' mutatingadmissionpolicies mutatingadmissionpolicybindings mutatingwebhookconfigurations \
+          validatingadmissionpolicies validatingadmissionpolicybindings validatingwebhookconfigurations >"$world/clusters/$cluster/admission-resources"
+      done
+      ;;
+  esac
+  plant_rights operator-cluster legion "" "${operator[@]}"
+  plant_rights other-cluster ci " on cluster $project/us-east1/other-cluster" "${other[@]}"
+  run
+  want_planted "the admission rights on $*, each given to a ServiceAccount of its own" own
 }
 if row bf; then
-  admission_rights_row gke
-  admission_rights_row mutating
-  passed "(bf) each of the ${#admission_items[@]} admission rights, given on the operator's cluster or another of the pool where its discovery lists the resource to a ServiceAccount that holds nothing else, is a finding naming it"
+  admission_rights_row mutatingwebhookconfigurations validatingwebhookconfigurations validatingadmissionpolicies validatingadmissionpolicybindings
+  admission_rights_row mutatingadmissionpolicies mutatingadmissionpolicybindings
+  passed "(bf) each of the 24 admission rights, given on the operator's cluster or another of the pool where its discovery lists the resource to a ServiceAccount that holds nothing else, is a finding naming it, and no other right is"
 fi
 
 # --- (bg) The admission resources' discovery. Every API server serves the two webhook

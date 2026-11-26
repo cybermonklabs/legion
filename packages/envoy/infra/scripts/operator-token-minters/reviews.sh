@@ -274,15 +274,22 @@ judge_chain() {
 # witness's is judged (judge_grant), except the certificate signing chain's parts, which csr_part
 # gathers for csr_chains (the caller runs it after live_named, whose named approvals join the
 # chain). Returns 1 with an UNKNOWN when the witness's reviews are missing or one was refused
-# (witness_held).
+# (witness_held), and when the reviews to judge could not be picked out of the answer.
 judge_reviews() {
-  local principal label verdict error reason policy residual
+  local principal label verdict error reason policy residual status=0
   FOUND_SAS=() RESIDUAL_SAS=()
   csr_reset
   # Only an allowed or errored review of a principal but the witness is judged; one awk picks them
   # out, since most of a cluster's thousands of reviews are refused, and a shell read of each costs
-  # more than the run's other steps.
-  awk -F"$US" '$1 != "witness" && ($3 == "allowed" || $3 == "error")' "$WORK/review.rec" >"$WORK/review-judged.rec"
+  # more than the run's other steps. Both callers run this function as a condition, where errexit
+  # is off, so the awk's status is read here: an awk that stopped part way (a full disk, a file size
+  # limit) leaves the reviews after its stop unjudged, which must read UNKNOWN, never as refused.
+  awk -F"$US" '$1 != "witness" && ($3 == "allowed" || $3 == "error")' "$WORK/review.rec" \
+    >"$WORK/review-judged.rec" 2>"$WORK/review-judged.err" || status=$?
+  if [ "$status" -ne 0 ]; then
+    unknown "$1" "the reviews to judge could not be picked out of the API server's answer (awk exited $status), so none is judged$([ ! -s "$WORK/review-judged.err" ] || printf ': %s' "$(first_line "$WORK/review-judged.err")")"
+    return 1
+  fi
   while IFS="$US" read -r -u 4 principal label verdict error reason policy residual; do
     case "$verdict" in
       allowed)
@@ -776,7 +783,8 @@ shape_error() {
 # with_rights RIGHTS MORE: RIGHTS and MORE, two JSON arrays of rights, each right once by its key;
 # where both hold one, RIGHTS's label stays. Both reach jq through files (process substitutions),
 # never its command line. It refuses anything but two JSON arrays (rec.jq's is_one_array, the rule
-# is_rights holds), an empty argument included, printing why and returning 1: a step assigns its
+# is_rights holds), an empty argument included, printing why (jq's own error for an argument that
+# is not JSON) and returning non-zero: a step assigns its
 # result, so under errexit the run stops there, UNKNOWN, rather than go on without the rights the
 # argument owed. Every rights value a step joins goes through it, about twenty times a run, so the
 # check and the join are one jq. custom_rights, admission_rights and binding_rights check what they
@@ -788,14 +796,16 @@ with_rights() {
     include "rec";
     if is_one_array($rights) and is_one_array($more) then
       $rights[0] + $more[0] | reduce .[] as $r ([]; if any(.[]; .key == $r.key) then . else . + [$r] end)
-    else "" | halt_error(3) end' 2>"$WORK/with-rights.err" || status=$?
+    else "" | halt_error(10) end' 2>"$WORK/with-rights.err" || status=$?
   case "$status" in
     0) return 0 ;;
-    # 2: an argument that is not JSON at all; 3: JSON, but not one array each.
-    2 | 3)
+    # 10, a status jq never exits with itself: two arguments, but not one JSON array each.
+    10)
       echo "with_rights takes two JSON arrays, and was given: $(printf '%.60s' "$1"), $(printf '%.60s' "$2")" >&2
       return 1
       ;;
+    # Any other: jq's own error (an argument that is not JSON, a part of the program that does not
+    # compile), which it printed.
     *)
       cat "$WORK/with-rights.err" >&2
       return "$status"
