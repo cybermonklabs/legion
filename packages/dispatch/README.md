@@ -776,24 +776,62 @@ bearer, which it reads as `read_bearer` (below) reads that file and prints nowhe
 names the issue.
 It prints, once the five loads are done: `/proc/loadavg` before the first load; each request the
 page made, by what the script did with it, and the count of those it failed in the browser; each
-socket the page opened and the count of its frames the rule refused; one reading line for each
-bound, with its five readings and its limit, and the largest contentful paint's five readings,
-which no limit holds; the rows drawn, the elements and the bytes of text at the end of each load;
-the issue tree's `converted`; `/proc/loadavg` after the last load; and a last line,
+socket the page opened and the count of its frames the rule refused; for each load, before any
+reading, whether it drew the first screen's rows at all and where it stopped; one reading line for
+each bound, with its five readings and its limit, and the largest contentful paint's five
+readings, which no limit holds; the rows drawn, the elements and the bytes of text at the end of
+each load; the issue tree's `converted`; `/proc/loadavg` after the last load; and a last line,
 `page-load: pass` or `page-load: fail: <the bound, request or socket>: <the readings>`.
 A bound holds where the fourth smallest of its five readings meets it: the first screen's rows
 painted within 3,750 ms; each act's result within 300 ms, and where it needed a read, the event to
 the page showing it loads, the event to the read and the read's answer to the rows, each within
 300 ms, which leaves the server's time out; no task after the first drawing of the view row over
 300 ms; and a layout shift of at most 0.1.
+
+Each load's first line is `load <n> drew-first-screen=<yes|no> after=<ms>`: `yes` where a frame
+held a row of the view, `after` then being the ms from the navigation's start to that frame; `no`
+where none did, `after` then being how long the load waited; and `after=none` for a load that
+stopped before its navigation.
+No load holds the run, because each wait of a load has a bound (`LOAD_BOUNDS` in the script):
+`setup-wait`, 60 s, for the load's context, its routes, the event head and the instruments;
+`first-screen-wait`, 180 s, for the navigation and the first drawing of a row of the view
+together; `load-end-wait`, 120 s, for the load's end, as the load ends and again after its acts;
+`act-wait`, 180 s, for one act and the steps that put the page back after it; `page-read-wait`,
+60 s, for each read of what the instruments hold, which waits for the page's main thread; and
+`close-wait`, 30 s, for the close of the load's context, and after the last load of the browser.
+A load that waits past one prints
+`load <n> stopped: <bound>: <the wait> did not end within <ms> ms`, or
+`load <n> stopped: <bound>: <the wait> failed: <why>` where the wait failed on its own first, and
+the run goes on with the next load; a load stopped at two bounds names both.
+A stopped load keeps what it read before it stopped and reads `none` for the rest, and its page
+shape prints `none` where it stopped before its load had ended.
+An act that stops ends the acts of that load, since the next act would start from a page the act
+left half done, and the acts made before it are still read.
+A load that drew no row reads `none` for the first screen's paint, each act's result, the longest
+task and the layout shift, and `none` counts as over every limit: one such load in five passes, as
+one load in five may read over any limit, and two such loads fail those bounds.
+A close of the browser that does not end within its bound is said on stderr.
 It exits 0 on a pass, 1 on a fail, and 2 where it cannot run (no `--issue`, no `DISPATCH_URL`, a
-token file it cannot read or that is empty, a tree read that does not answer, or no browser), with
-the reason on stderr and before it starts a browser. From `packages/dispatch`:
+token file it cannot read or that is empty, a tree read that does not answer, no browser, or a
+browser that opens no context for a load), with the reason on stderr and, but for the last,
+before it starts a browser.
+From `packages/dispatch`:
 
 ```bash
 DISPATCH_URL=https://dispatch.internal.example DISPATCH_TOKEN_FILE=<file holding the bearer> \
   bun e2e/acceptance/page-load.ts --issue <KEY>
 ```
+
+The load-time part's production check also runs it once on the deployment's largest issue, for a
+reading that is no bound and holds no merge: on a preview of the head that also copies that issue
+(`./serve.sh <head> <KEY> <largest KEY>` of the preview recipe), the script runs with
+`--issue <largest KEY>`.
+Its record says, for each of the five loads, whether the page drew the first screen's rows at all,
+and where it did, every reading beside the production check's limits.
+On an earlier base, a cold load of such a copy drew no page after 165 s, which is why
+`first-screen-wait` is 180 s: such a load stops there and the run goes on with the next one.
+The check's result does not depend on that run, since the bounds are held on the issue it names;
+its record goes on the pull request with the rest.
 
 `cd packages/dispatch && bun run test:harness e2e/__tests__/page-load-policy.test.ts` holds what it
 does with each request, socket and frame, its verdict and its lines without a browser.
