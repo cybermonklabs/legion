@@ -321,29 +321,28 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	return day, nil
 }
 
-// scanWindowRow reads one row of a DayWindowIn read that names no repository: whether it answers
-// for the window or the compare range, then its eval, series and day, its parts, its updated_at and
-// the owner it is stored under (owners.go). Every row of that read is stored under "", which the
-// row's repo, left empty, says.
+// scanWindowRow reads one row of a DayWindowIn read that names no repository and folds at most one
+// deploy repository per project: whether it answers for the window or the compare range, then its
+// eval, series and day, its parts, its updated_at and the owner it is stored under (owners.go).
+// Every row of that read is stored under "", which the row's repo, left empty, says.
 func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
-	return scanWindowRowOf(row, false)
+	return scanWindowRowOf(row, false, false)
 }
 
-// scanRepoWindowRow is scanWindowRow of a read that names repositories, which answers each row's
-// repository after its owner (DayWindowIn).
-func scanRepoWindowRow(row pgx.CollectableRow) (WindowRow, error) {
-	return scanWindowRowOf(row, true)
-}
-
-func scanWindowRowOf(row pgx.CollectableRow, repo bool) (WindowRow, error) {
+// scanWindowRowOf reads one row of a DayWindowIn read, scanning repo and deployRepo after owner
+// when the query selects them.
+func scanWindowRowOf(row pgx.CollectableRow, repo, deployRepo bool) (WindowRow, error) {
 	var inWindow bool
 	var day WindowRow
 	part := &day.Part
-	fields := append(make([]any, 0, 19), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
+	fields := append(make([]any, 0, 20), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
 		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
 		&day.UpdatedAt, &day.owner)
 	if repo {
 		fields = append(fields, &day.repo)
+	}
+	if deployRepo {
+		fields = append(fields, &day.deployRepo)
 	}
 	if err := row.Scan(fields...); err != nil {
 		return WindowRow{}, err

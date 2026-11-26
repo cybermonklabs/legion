@@ -52,11 +52,12 @@ import (
 // it. At INFRA's size the fold of the day rows of one repository read 35,297 rows at 84 days with a
 // compare range, 75 to 175 ms on the farm, past R8's 150 ms (the eval list's 84-day read bound),
 // where its stored cut answered in at most 17 ms at 04de13fa. Each is kept for the rows of each
-// deploy repository apart, as the day rows are (deploy_repos.go): a fold of the evals that read the
-// deploy repository for each repository whose rows of them are kept, and a read looks up the fold
-// of its project's repository recorded with the rows (DeployReposIn), or folds the day rows where
-// the project reads several (StoredFigures.several).
-//
+// deploy repository apart, as the day rows are (deploy_repos.go), and for each project's union of
+// all its currently recorded deploy repositories under deploy_repo `*` (unionDeployRepo): a fold
+// of the evals that read the deploy repository over the rows of DeployRepos.Of(project), which
+// ReadStoredFiguresIn looks up for every deploy-keyed eval, whether the project reads one deploy
+// repository or several (a project with two GitHub sources, or a GitHub source and an events
+// source).
 // A range exists for every length of FigureLengths and every end day from the day after the
 // eval's first row through FigureLead days after today: a compare range ends on any day before the
 // window's, and a page held open keeps its compare range while its window rolls on.
@@ -649,11 +650,11 @@ func (s daySpan) widen(day time.Time) daySpan {
 // figureCut is one fold a read of a project's stored figures looks up: its rows of repo, the empty
 // string for the project's own rows (repo "") and a repository's name for the rows a read that
 // names that one repository folds (cutOf), of one deploy repository ("" for the evals no deploy
-// repository moves; deploy_repos.go).
+// repository moves, a repository's name or events repository for its own rows, or unionDeployRepo
+// "*" for the fold of all the project's currently recorded deploy repositories; deploy_repos.go).
 type figureCut struct {
 	repo, deployRepo string
 }
-
 // compareFigureCuts orders cuts by repository and then by deploy repository, each by its bytes.
 func compareFigureCuts(a, b figureCut) int {
 	return cmp.Or(strings.Compare(a.repo, b.repo), strings.Compare(a.deployRepo, b.deployRepo))
@@ -712,10 +713,13 @@ type evalSpan struct {
 // via_repository as the project reads it, and each row in the cut cutOf names) is not the one the
 // day's stored row of the cut recorded, which holds rows and no stored row or a stored row and no
 // rows, or whose stored row was folded under another fold key than the eval's definition now has
-// (a register write). Which build folded a stored row is no part of the test: a figure whose rows
-// stand is the fold every build of these folds answers. A day on or after scope.through is the figures
-// walks', and none of it is read. The days of an eval are those any of spans names, each read once
-// (spansOf), and none between two spans of it that none names.
+// (a register write). For an eval keyed by the deploy repository (KeyedByDeployRepo), each row
+// whose deploy repository is among the project's currently recorded deploy repositories
+// (DeployReposIn) is also stamped into the project's union cut (`deploy_repo` `*`, unionDeployRepo),
+// beside its own deploy repository's cut. Which build folded a stored row is no part of the test:
+// a figure whose rows stand is the fold every build of these folds answers. A day on or after
+// scope.through is the figures walks', and none of it is read. The days of an eval are those any
+// of spans names, each read once (spansOf), and none between two spans of it that none names.
 //
 // Each of its two reads is one range of an index for each of those spans, every cut's rows in it:
 // eval_days_stamps (project_key, eval_id, writer, day) of the rows' stamps, one for each key the
@@ -728,10 +732,14 @@ type evalSpan struct {
 // statementBytes (statementChunks), each read by both statements.
 func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, spans ...map[string]daySpan) (map[figureGroupKey]map[time.Time]bool, error) {
 	var named []evalSpan
+	hasKeyed := false
 	for _, evalID := range spannedEvals(spans) {
 		entry, held := entries[evalID]
 		if !held {
 			continue
+		}
+		if KeyedByDeployRepo(entry.Definition) {
+			hasKeyed = true
 		}
 		for _, span := range spansOf(spans, evalID, scope.through.AddDate(0, 0, -1)) {
 			named = append(named, evalSpan{eval: evalID, writer: entry.Definition.writer(), daySpan: span})
@@ -740,6 +748,13 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 	moved := map[figureGroupKey]map[time.Time]bool{}
 	if len(named) == 0 {
 		return moved, nil
+	}
+	var deployRepos *DeployRepos
+	if hasKeyed {
+		var err error
+		if deployRepos, err = DeployReposIn(ctx, q); err != nil {
+			return nil, err
+		}
 	}
 	type dayKey struct {
 		group figureGroupKey
@@ -777,6 +792,11 @@ func movedFigureDays(ctx context.Context, q delivery.Querier, scope figureScope,
 		if _, err := pgx.ForEachRow(rows, []any{&key.group.eval, &key.group.deployRepo, &key.group.repo, &key.day, &row.series, &row.updatedAt, &row.via}, func() error {
 			key.day = key.day.UTC()
 			stamped[key] = append(stamped[key], row)
+			if deployRepos.hasRepo(scope.project, key.group.deployRepo) && KeyedByDeployRepo(entries[key.group.eval].Definition) {
+				union := key
+				union.group.deployRepo = unionDeployRepo
+				stamped[union] = append(stamped[union], row)
+			}
 			return nil
 		}); err != nil {
 			return nil, fmt.Errorf("read the stamps of %s's day rows: %w", scope.project, err)
@@ -995,10 +1015,14 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 		first, last time.Time
 	}
 	var named []given
+	hasKeyed := false
 	for _, evalID := range slices.Sorted(maps.Keys(spans)) {
 		entry, held := entries[evalID]
 		if !held {
 			continue
+		}
+		if KeyedByDeployRepo(entry.Definition) {
+			hasKeyed = true
 		}
 		span := spans[evalID]
 		first, last := span.first.AddDate(0, 0, 1-figureSpan), span.last.AddDate(0, 0, figureSpan-1)
@@ -1009,6 +1033,14 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 			named = append(named, given{entry: entry, first: first, last: last})
 		}
 	}
+	var deployRepos *DeployRepos
+	if hasKeyed {
+		var err error
+		if deployRepos, err = DeployReposIn(ctx, q); err != nil {
+			return nil, err
+		}
+	}
+	multiDeploy := len(deployRepos.Of(scope.project)) > 1
 	byGroup := map[figureGroupKey][]WindowRow{}
 	size := func(one *given) int {
 		return 4*4 + len(one.entry.Definition.EvalID) + len(one.entry.Definition.writer()) + 2*8 + windowEntryBytes(&one.entry, false)
@@ -1054,6 +1086,15 @@ func readFoldGroups(ctx context.Context, q delivery.Querier, scope figureScope, 
 			row.Range, row.EvalID, row.UpdatedAt = RangeWindow, key.eval, row.UpdatedAt.UTC()
 			utcPart(part)
 			byGroup[key] = append(byGroup[key], row)
+			if deployRepos.hasRepo(scope.project, key.deployRepo) && KeyedByDeployRepo(entries[key.eval].Definition) {
+				union := key
+				union.deployRepo = unionDeployRepo
+				unionRow := row
+				if multiDeploy {
+					unionRow.deployRepo = key.deployRepo
+				}
+				byGroup[union] = append(byGroup[union], unionRow)
+			}
 			row, read = WindowRow{}, read+1
 			return nil
 		}); err != nil {
@@ -1260,13 +1301,14 @@ func foldInChunks(n, workers int, fold func(index int), ends []int, send func(ch
 
 // readFigureGroups reads, in q, the listed rows of cut (its repository the empty string for the
 // project's own rows, its deploy repository the empty string for the evals no deploy repository
-// moves) of each eval of evalIDs over r, as DayWindowIn reads them with no repository named, or
-// with the cut's one repository, and answers each eval's group, none for an eval with no row
-// there. An eval whose rows the cut's deploy repository does not key (KeyedByDeployRepo) is none
-// of its evals. An eval none of whose series is listed any more, whose rows a register write has
-// not relisted yet, still has a group of the rows DayWindowIn reads, whose figures fold no series:
-// so a day that holds a listed row always holds its stored row, the one a read of the stamps
-// compares (movedFigureDays).
+// moves, a single deploy repository's name or events repository for its own rows, or unionDeployRepo
+// `*` for all of the project's currently recorded deploy repositories; cutDeployRepos) of each eval
+// of evalIDs over r, as DayWindowIn reads them with no repository named, or with the cut's one
+// repository, and answers each eval's group, none for an eval with no row there. An eval whose rows
+// the cut's deploy repository does not key (KeyedByDeployRepo) is none of its evals. An eval none
+// of whose series is listed any more, whose rows a register write has not relisted yet, still has a
+// group of the rows DayWindowIn reads, whose figures fold no series: so a day that holds a listed
+// row always holds its stored row, the one a read of the stamps compares (movedFigureDays).
 func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, evalIDs []string, cut figureCut, r Range) (map[string]*figureGroup, error) {
 	groups := map[string]*figureGroup{}
 	var read []Entry
@@ -1278,7 +1320,11 @@ func readFigureGroups(ctx context.Context, q delivery.Querier, scope figureScope
 	if len(read) == 0 || !r.From.Before(r.To) {
 		return groups, nil
 	}
-	rows, err := DayWindowIn(ctx, q, []string{scope.project}, read, DeployReposOf(scope.project, cut.deployRepo), cut.repos(), r, nil)
+	deployRepos, err := cutDeployRepos(ctx, q, scope.project, cut.deployRepo)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := DayWindowIn(ctx, q, []string{scope.project}, read, deployRepos, cut.repos(), r, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -1923,11 +1969,14 @@ func buildFigureEnds(ctx context.Context, tx pgx.Tx, scope figureScope, entries 
 // readFigureCuts reads, in q, each cut project's listed day rows of the days of r hold, its own and
 // those of the owner keys it reads under the published defaults (eval_project_owners, owners.go),
 // each row in the cut cutOf names, in their order (compareFigureCuts); or, where repo is not nil,
-// those of the one cut of repo (cutDeployReposQuery). The published default's cut is among them
-// wherever a row stored under legionfacts.DefaultRepo is. One statement: for every cut, a walk of
-// each owner's repositories through eval_days_window, one probe each, and the read of each one's
-// deploy repositories from its rows of the days of r, one range of the index each, rather than
-// every listed row of the project.
+// those of the one cut of repo (cutDeployReposQuery). For each repository cut that holds a row of
+// any of the project's currently recorded deploy repositories (DeployReposIn), it also names the
+// project's union cut (`deploy_repo` `*`, unionDeployRepo), whose fold reads all of the project's
+// current deploy repositories together. The published default's cut is among them wherever a row
+// stored under legionfacts.DefaultRepo is. One statement: for every cut, a walk of each owner's
+// repositories through eval_days_window, one probe each, and the read of each one's deploy
+// repositories from its rows of the days of r, one range of the index each, rather than every
+// listed row of the project.
 func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r Range, repo *string) ([]figureCut, error) {
 	var rows pgx.Rows
 	var err error
@@ -1958,10 +2007,33 @@ func readFigureCuts(ctx context.Context, q delivery.Querier, project string, r R
 	if err != nil {
 		return nil, fmt.Errorf("read the cuts of %s's day rows: %w", project, err)
 	}
+	cuts, err = withUnionCuts(ctx, q, project, cuts)
+	if err != nil {
+		return nil, err
+	}
 	slices.SortFunc(cuts, compareFigureCuts)
-	return cuts, nil
+	return slices.Compact(cuts), nil
 }
 
+// withUnionCuts adds, for every repository in cuts that holds a row of one of project's currently
+// recorded deploy repositories (DeployReposIn), the project's union cut (`deploy_repo` `*`).
+func withUnionCuts(ctx context.Context, q delivery.Querier, project string, cuts []figureCut) ([]figureCut, error) {
+	if !slices.ContainsFunc(cuts, func(cut figureCut) bool { return cut.deployRepo != "" && cut.deployRepo != unionDeployRepo }) {
+		return cuts, nil
+	}
+	deployRepos, err := DeployReposIn(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	added := map[string]bool{}
+	for _, cut := range cuts {
+		if !added[cut.repo] && deployRepos.hasRepo(project, cut.deployRepo) {
+			added[cut.repo] = true
+			cuts = append(cuts, figureCut{repo: cut.repo, deployRepo: unionDeployRepo})
+		}
+	}
+	return cuts, nil
+}
 // cutDeployReposQuery is readFigureCuts' read of one cut, of the repository $4, of project $1's
 // listed day rows of the days $2 to $3, each a cut of $4 and of the deploy repository of a row of
 // it, as the read of every cut answers those of $4 (cutOf): for each key the project reads

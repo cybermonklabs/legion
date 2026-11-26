@@ -294,12 +294,14 @@ type WindowRow struct {
 	// key of the repository it publishes, whose row of one series and day can stand beside the
 	// project's; a rebuild's overlay of staged rows replaces each owner's row alone. repo is the
 	// repository it is stored under: a read that names repositories answers it, and every row of
-	// one that names none is stored under "". The folds take a day's rows in the order of the two
-	// and the series (sortWindowRows), and the overlay replaces a row of each repository alone.
-	owner string
-	repo  string
+	// one that names none is stored under "". deployRepo is the deploy repository the row is stored
+	// under when a read folds several deploy repositories (a project's union cut or a multi-source
+	// day-row fallback), and empty otherwise. The folds take a day's rows in the order of those
+	// three and the series (sortWindowRows), and the overlay replaces a row of each whole key.
+	owner      string
+	repo       string
+	deployRepo string
 }
-
 // The two ranges a DayWindowIn read answers rows for.
 const (
 	RangeWindow  = "window"

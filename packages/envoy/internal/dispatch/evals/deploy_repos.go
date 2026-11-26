@@ -159,9 +159,16 @@ func (d *DeployRepos) pairs(projects []string) (keys, repos []string) {
 	return keys, repos
 }
 
+// unionDeployRepo is the deploy_repo value under which a project's stored figures (figures.go)
+// fold the union of all its current deploy repositories (DeployRepos.Of): a sentinel no
+// repository's name (`owner/name`) or events repository (`events:<KEY>`) can take. Not `""`, which
+// names the evals keyed by no deploy repository (KeyedByDeployRepo).
+const unionDeployRepo = "*"
+
 // DeployReposOf is the DeployRepos that read repo alone ("" for none): one cut of the stored
 // figures (figureCut), or one repository a test reads, project's where repo is its events
-// repository.
+// repository. For unionDeployRepo ("*"), which stands for a project's current deploy repositories
+// (DeployReposIn), callers read the selection from the database (cutDeployRepos).
 func DeployReposOf(project, repo string) *DeployRepos {
 	switch posted := IsEventsRepo(repo); {
 	case repo == "":
@@ -172,6 +179,35 @@ func DeployReposOf(project, repo string) *DeployRepos {
 	return &DeployRepos{sources: []string{repo}, owners: map[string]string{repo: project}}
 }
 
+// unionPairs is each of projects paired with unionDeployRepo ("*"), as two arrays of one element
+// per project, which ReadStoredFiguresIn passes to deployRepoCase to look up every deploy-keyed
+// eval's stored figures from its project's union cut.
+func unionPairs(projects []string) (keys, repos []string) {
+	keys = slices.Clone(projects)
+	repos = make([]string, len(projects))
+	for index := range repos {
+		repos[index] = unionDeployRepo
+	}
+	return keys, repos
+}
+
+// cutDeployRepos answers the DeployRepos whose day rows a fold of cut reads: all of the project's
+// currently recorded deploy repositories (DeployReposIn) for the union cut (unionDeployRepo), and
+// DeployReposOf(project, deployRepo) for a single deploy repository or none.
+func cutDeployRepos(ctx context.Context, q delivery.Querier, project, deployRepo string) (*DeployRepos, error) {
+	if deployRepo == unionDeployRepo {
+		return DeployReposIn(ctx, q)
+	}
+	return DeployReposOf(project, deployRepo), nil
+}
+
+// hasRepo reports whether repos contains repo.
+func (d *DeployRepos) hasRepo(project, repo string) bool {
+	if d == nil || repo == "" {
+		return false
+	}
+	return slices.Contains(d.Of(project), repo)
+}
 // DeployReposIn is, read in q, the repositories whose rows a read of a project's evals that read
 // the deploy repository answers (DeployRepos): those the refresher recorded with the stored rows
 // (eval_days_rules, recordRules) under a project, every repository a source reads and each

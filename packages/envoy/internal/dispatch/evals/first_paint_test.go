@@ -988,6 +988,58 @@ func TestARefoldGoesOnWithACutMarkedAgainBeforeItsLastBatchCommits(t *testing.T)
 	expectTruth(t, "once the refold is done", r.storedFigures(t), r.truthFigures(t))
 }
 
+// TestTheUnionCutsFirstPaintIsFoldedAtBoot (dispatch://INFRA-978, R14; plan T19 path 2): over the
+// settled three-source history, ALPHA holds two deploy repositories (acme/alpha-app and
+// acme/alpha-ops). With ALPHA's own cut (`repo` `""`) marked stale and its first paint owed
+// (`ready_through` null) for its deploy-keyed evals, a read of ALPHA's first paint falls back to
+// the day rows before the boot. FoldFirstPaintsAtBoot folds ALPHA's union cut's (`deploy_repo` `*`)
+// first paint before the server serves: no mark owes a first paint once it returns, the union cut's
+// stored rows of the first paint equal the fold of the day rows, and every first-paint read of
+// ALPHA answers its deploy-keyed evals from the stored figures, bit for bit the fold of its day
+// rows.
+func TestTheUnionCutsFirstPaintIsFoldedAtBoot(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	ctx, pool := t.Context(), r.database.Pool
+	r.seedSources(t)
+	r.settle(t)
+	through := refresherToday.AddDate(0, 0, FigureLead)
+	evalIDs := make([]string, len(deployRepoSlugs))
+	for index, slug := range deployRepoSlugs {
+		evalIDs[index] = EvalID("ALPHA", slug)
+	}
+	slices.Sort(evalIDs)
+	cut := staleCut{project: "ALPHA", repo: ""}
+	marked := map[staleCut][]string{cut: evalIDs}
+	r.exec(t, "mark ALPHA's own cut stale with its first paint owed", `
+		insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals)
+		values ($1, $2, 1, null, null, $3)
+		on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, ready_through = null, next_day = null, evals = excluded.evals`,
+		cut.project, cut.repo, evalIDs)
+	// Corrupt the union cut's stored range figures before the boot so the check proves the boot
+	// actually folded the union cut rather than serving whatever stood before.
+	r.exec(t, "corrupt ALPHA's union cut stored range figures", `
+		update eval_range_figures set figures = '\x00'::bytea where project_key = 'ALPHA' and repo = '' and deploy_repo = '*'`)
+	r.expectReads(t, "before the boot", marked, readsOf(moveShapes()), func(staleCut) bool { return false })
+	folded, err := FoldFirstPaintsAtBoot(ctx, pool, storetest.Leases(t, pool), r.build)
+	if err != nil || folded.Marks != 1 || folded.Evals != len(evalIDs) || folded.Waited {
+		t.Fatalf("the boot's fold answered %+v (%v), want 1 mark of %d evals folded with no wait", folded, err, len(evalIDs))
+	}
+	if owed, err := owedFirstPaints(ctx, pool); err != nil || len(owed) != 0 {
+		t.Fatalf("after the boot's fold the marks %v owe a first paint (%v), want none", owed, err)
+	}
+	marks := r.staleMarks(t)
+	if mark, held := marks[cut]; !held || mark.ready == nil || !mark.ready.Equal(through) {
+		t.Fatalf("the boot left ALPHA's own cut marked at %+v (held %t), want its first paint folded through %s", mark, held, through.Format(time.DateOnly))
+	}
+	if rows := r.count(t, `select count(*) from eval_range_figures where project_key = 'ALPHA' and repo = '' and deploy_repo = '*' and eval_id = $1`,
+		EvalID("ALPHA", SlugDeployFrequency)); rows == 0 {
+		t.Fatalf("after the boot's fold ALPHA holds no stored range figures under the union cut '*' for deploy-frequency")
+	}
+	expectPaintTruth(t, "after the boot", through, marked, r.storedFigures(t), r.truthFigures(t))
+	r.expectReads(t, "after the boot", marked, firstPaintReads(through), func(staleCut) bool { return true })
+}
+
 // daysText is r's days as a message names them.
 func daysText(r Range) string {
 	return r.From.Format(time.DateOnly) + ".." + r.To.Format(time.DateOnly)

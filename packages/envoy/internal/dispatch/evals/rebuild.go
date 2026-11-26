@@ -1205,6 +1205,9 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 		return fmt.Errorf("read the cuts of %s's staged rows: %w", project, err)
 	}
 	cuts = slices.Concat(cuts, more)
+	if cuts, err = withUnionCuts(ctx, pool, project, cuts); err != nil {
+		return err
+	}
 	slices.SortFunc(cuts, compareFigureCuts)
 	cuts = slices.Compact(cuts)
 	built := map[rangeFigureKey]rangeFigureRow{}
@@ -1467,37 +1470,51 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if len(read) == 0 || !r.From.Before(r.To) {
 		return groups, nil
 	}
-	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, DeployReposOf(scope.project, cut.deployRepo), cut.repos(), r, nil)
+	deployRepos, err := cutDeployRepos(ctx, q, scope.project, cut.deployRepo)
 	if err != nil {
 		return nil, err
 	}
+	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, deployRepos, cut.repos(), r, nil)
+	if err != nil {
+		return nil, err
+	}
+	multiDeploy := len(deployRepos.Of(scope.project)) > 1
+	var stagedDeployRepos []string
+	if cut.deployRepo == "" {
+		stagedDeployRepos = []string{""}
+	} else {
+		stagedDeployRepos = deployRepos.Of(scope.project)
+	}
 	type rowKey struct {
-		owner, repo, eval, series string
-		day                       time.Time
+		owner, repo, deployRepo, eval, series string
+		day                                   time.Time
 	}
 	shadowed := map[rowKey]bool{}
 	var added []WindowRow
-	if len(computed) > 0 {
+	if len(computed) > 0 && len(stagedDeployRepos) > 0 {
 		rows, err := q.Query(ctx, `
-			select s.project_key, s.repo, s.op, s.listed, `+evalIDAs("o.project_key", "s.eval_id", "o.owner")+`, s.series, s.day, s.n, s.sum, s.num,
+			select s.project_key, s.repo, s.deploy_repo, s.op, s.listed, `+evalIDAs("o.project_key", "s.eval_id", "o.owner")+`, s.series, s.day, s.n, s.sum, s.num,
 				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), `+viaAsRead("s.via_repository")+`, s.updated_at
 			from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
 			where o.project_key = $2 and s.rebuild_id = $1 and `+evalIDAs("o.project_key", "s.eval_id", "o.owner")+` = any($3)
-				and `+repoCut("s", "$7::text[]", "$2")+` and s.deploy_repo = $4 and s.day >= $5::date and s.day < $6::date
-		`, rb, scope.project, computed, cut.deployRepo, r.From.UTC(), r.To.UTC(), []string{cut.repo})
+				and `+repoCut("s", "$7::text[]", "$2")+` and s.deploy_repo = any($4::text[]) and s.day >= $5::date and s.day < $6::date
+		`, rb, scope.project, computed, stagedDeployRepos, r.From.UTC(), r.To.UTC(), []string{cut.repo})
 		if err != nil {
 			return nil, fmt.Errorf("read the staged rows of %s: %w", scope.project, err)
 		}
-		var op, owner, repo string
+		var op, owner, repo, deployRepo string
 		var listed bool
 		var row WindowRow
 		part := &row.Part
-		if _, err := pgx.ForEachRow(rows, []any{&owner, &repo, &op, &listed, &row.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den,
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &repo, &deployRepo, &op, &listed, &row.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den,
 			&part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
 			row.Range, row.UpdatedAt, row.owner, row.repo = RangeWindow, row.UpdatedAt.UTC(), owner, repo
+			if multiDeploy {
+				row.deployRepo = deployRepo
+			}
 			part.LastRecordedAt, part.LastReading = nil, ""
 			utcPart(part)
-			shadowed[rowKey{owner: owner, repo: repo, eval: row.EvalID, series: part.Series, day: part.Day}] = true
+			shadowed[rowKey{owner: owner, repo: repo, deployRepo: row.deployRepo, eval: row.EvalID, series: part.Series, day: part.Day}] = true
 			if op == "u" && listed {
 				added = append(added, row)
 			}
@@ -1509,7 +1526,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	}
 	byEval := map[string][]WindowRow{}
 	for _, row := range live {
-		if !shadowed[rowKey{owner: row.owner, repo: row.repo, eval: row.EvalID, series: row.Part.Series, day: row.Part.Day}] {
+		if !shadowed[rowKey{owner: row.owner, repo: row.repo, deployRepo: row.deployRepo, eval: row.EvalID, series: row.Part.Series, day: row.Part.Day}] {
 			byEval[row.EvalID] = append(byEval[row.EvalID], row)
 		}
 	}
