@@ -144,15 +144,15 @@ func WarmCodegraphIndex(ctx context.Context, start procgroup.Starter, dir string
 
 // warmCodegraphIndexOn builds a workspace's codegraph index before any worker needs it, each
 // codegraph run bounded by codegraphTimeout on c. Its one caller outside the tests is
-// WarmCodegraphIndex, which passes clock.Real; a test hands it a fake (boundRow). The tester's
-// `affected` and the reviewer's `impact`/`callers` queries need an index already built, not one
+// WarmCodegraphIndex, which passes clock.Real; a test hands it a fake (boundRow). Each role's
+// `impact`, `callers`, `affected` and `explore` queries (the role prompts) need an index already built, not one
 // built on first use. Callers run it through WarmCodegraphIndexInBackground, outside any
 // provisioning serialization: indexing reads only the issue's own workspace directory. codegraph
 // is deliberately not one of the tools Runner requires — the daemon must still boot where it is
 // absent (the tmux runtime's host provisioning never installs it) — so this resolves it from PATH
 // on its own, directly with os/exec, and never fails provisioning: a missing CLI, a non-zero exit,
 // or a timeout is logged loudly to stderr. Warming simply does not happen when the CLI is missing
-// or fails; the worker falls back to grep, per its role prompt. An index an earlier warm-up left
+// or fails; the worker reads the source instead, per its role prompt. An index an earlier warm-up left
 // partial (`initialized` true but `index.state` not `"complete"`) is repaired with `codegraph
 // index` rather than accepted as built — `codegraph init` on an already-initialized directory only
 // prints "Already initialized" and exits 0, so it cannot do this repair itself — unless the build
