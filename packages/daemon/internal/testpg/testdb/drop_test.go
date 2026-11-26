@@ -24,9 +24,12 @@ func TestDropNamesTheHolderWhenTheLastDropAttemptEndsWithItsContext(t *testing.T
 	admin := &heldDropAdmin{blockSecondAttempt: make(chan struct{})}
 	result := make(chan error, 1)
 	go func() { result <- Drop(ctx, admin, "legion_drop_holder") }()
+	bound := testwait.Context(t)
 	select {
 	case <-admin.blockSecondAttempt:
 		cancel()
+	case <-bound.Done():
+		t.Fatal("Drop did not reach its second forced-drop attempt before the test bound")
 	case err := <-result:
 		t.Fatalf("Drop returned before its second forced-drop attempt: %v", err)
 	}
@@ -38,6 +41,39 @@ func TestDropNamesTheHolderWhenTheLastDropAttemptEndsWithItsContext(t *testing.T
 		t.Fatalf("Drop did not retain both the PostgreSQL refusal and the attempt context: %v", err)
 	}
 	requireHolderDiagnostic(t, err, admin)
+}
+
+// TestDropFailsByNameWhenStuckBeforeItsSecondAttempt plants a Drop whose context ends between its
+// first refusal and its second attempt. It must fail by name at its bound, naming the holder,
+// rather than wait for go test's alarm.
+func TestDropFailsByNameWhenStuckBeforeItsSecondAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	admin := &heldDropAdmin{firstAttempt: make(chan struct{})}
+	result := make(chan error, 1)
+	go func() { result <- Drop(ctx, admin, "legion_drop_holder") }()
+	bound := testwait.Context(t)
+	select {
+	case <-admin.firstAttempt:
+		cancel()
+	case <-bound.Done():
+		t.Fatal("Drop did not make its first forced-drop attempt before the test bound")
+	case err := <-result:
+		t.Fatalf("Drop returned before its first forced-drop attempt: %v", err)
+	}
+	err := testwait.Receive(t, "Drop to fail once its context ended before the second attempt", result)
+	if err == nil {
+		t.Fatal("Drop returned nil although its context ended before the second attempt")
+	}
+	if !errors.Is(err, admin.refusal) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("Drop did not retain both the PostgreSQL refusal and the context: %v", err)
+	}
+	if admin.attempts != 1 {
+		t.Fatalf("Drop made %d forced-drop attempts, want it stuck before the second", admin.attempts)
+	}
+	if !strings.Contains(err.Error(), "backends still holding legion_drop_holder: "+heldBackend) {
+		t.Fatalf("Drop's error does not name the backend still holding the database:\n%s", err)
+	}
 }
 
 func requireHolderDiagnostic(t *testing.T, err error, admin *heldDropAdmin) {
@@ -54,6 +90,7 @@ func requireHolderDiagnostic(t *testing.T, err error, admin *heldDropAdmin) {
 type heldDropAdmin struct {
 	attempts              int
 	blockSecondAttempt    chan struct{}
+	firstAttempt          chan struct{}
 	refusal               *pgconn.PgError
 	query, database       string
 	liveDiagnosticContext bool
@@ -65,6 +102,9 @@ func (a *heldDropAdmin) Exec(ctx context.Context, _ string, _ ...any) (pgconn.Co
 		a.refusal = &pgconn.PgError{Code: objectInUse, Message: "database is being accessed by other users"}
 	}
 	if a.attempts == 1 {
+		if a.firstAttempt != nil {
+			close(a.firstAttempt)
+		}
 		return pgconn.CommandTag{}, a.refusal
 	}
 	if a.blockSecondAttempt != nil {
