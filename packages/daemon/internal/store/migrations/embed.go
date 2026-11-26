@@ -68,7 +68,13 @@ const StepRecordsRollForward = 20261117064152
 //   - 20261120042902_claim_agent_resume_generation.up.sql
 //   - 20261120055717_dispatch_issue_value_sequences.up.sql
 //   - 20261120144241_intake_failures.up.sql
+//   - 20261120210115_approval_route_records.up.sql
+//   - 20261120224328_claim_suspended_by_hold.up.sql
+//   - 20261121000254_work_holds.up.sql
 //   - 20261121170714_dispatch_issue_applied_seq.up.sql
+//   - 20261122023421_work_hold_openings.up.sql
+//   - 20261122072401_cleared_spec_approval_latest_version.up.sql
+//   - 20261122085244_pending_delivery_opening.up.sql
 //   - 20261123050533_idle_release_keeps_no_workspace.up.sql
 //   - 20261123224717_members_owed.up.sql
 //   - 20261124033010_plan_earlier_givers.up.sql
