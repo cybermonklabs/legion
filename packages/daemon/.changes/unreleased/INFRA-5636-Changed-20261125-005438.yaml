@@ -21,7 +21,10 @@ body: |-
   resolved-priority Dispatch release, it treats both explicit and inherited P0 the same way. In each
   case it starts eligible P0 issues outside the regular cap and no longer counts those P0 holders
   against it. On the resolved-priority release, the boot listing gives each recorded issue its
-  resolved priority with no edit of the issue.
+  resolved priority with no edit of the issue. A deployment whose own instructions count the
+  controller's free slots counts them, once it runs this release, as
+  `skills/legion-controller/references/admission.md`, "The lists", says: P0 holders and P0 waiters
+  take no slot of the cap.
 
   The P0 bound limits how many P0 issues may hold a slot at once. It has no value unless
   `legion.yaml` gives one in the new key `admission_p0_bound`. A person sets it to a number or to
