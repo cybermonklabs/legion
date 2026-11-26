@@ -23074,7 +23074,14 @@ console.log(JSON.stringify(args));
       timestamp: new Date(45).toISOString(),
       type: "custom_message",
     },
-    { id: "e7", summary: "The conversation so far.", type: "compaction" },
+    // A compaction that kept every turn above from the Send on: the live context, which the
+    // session's terminal draws on a resume, starts there.
+    {
+      firstKeptEntryId: "e2",
+      id: "e7",
+      summary: "The conversation so far.",
+      type: "compaction",
+    },
     {
       id: "e8",
       message: {

@@ -1127,9 +1127,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     legionManagedTranscript = branch.some(isLegionManagedEntry);
     const entries = context.sessionManager.getEntries();
     handledDispatchAttempts = handledAttempts(entries);
-    // The turns the transcript already holds, for a viewer who opens the session: a process that
-    // takes a session up records none of them itself (`restoreAgentStream`).
-    restoreAgentStream(sessionID, branch, entries);
+    // The turns of the conversation the session's terminal shows, for a viewer who opens the
+    // session: a process that takes a session up records none of them itself
+    // (`restoreAgentStream`). That is its live context: Oh My Pi draws a resumed session from the
+    // latest compaction's cut on (`display.collapseCompacted`, on by default), and no body before
+    // the cut is read (`liveContext`).
+    const live = liveContext(branch);
+    restoreAgentStream(sessionID, live, entries);
     // The delivery ledger, from every entry of the session file as handled attempts are: what
     // this session was shown, on any branch, with the cards the host wrote, and the topics it
     // follows. The notices it records held and not handed, which a
@@ -1144,7 +1148,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     // it (every match asks under the live id; another instance in the process may still serve the
     // id) and its typed turns already handed their pictures (`TypedPictures.dropOtherSessions`
     // says which survive).
-    markPicturesShown(shownPictures(sessionID), transcriptPictures(liveContext(branch)));
+    markPicturesShown(shownPictures(sessionID), transcriptPictures(live));
     if (previousSessionID !== sessionID) {
       forgetShownPictures(previousSessionID);
       if (notedSessionIDs.delete(previousSessionID)) forgetInjectedUserTurns(previousSessionID);

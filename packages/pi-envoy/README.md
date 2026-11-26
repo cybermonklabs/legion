@@ -199,9 +199,11 @@ Dispatch's store instead.
 The live view's replay is the session's answer from a ring of its newest messages held in the
 process (`AgentStreamPublisher` in `@legion/pi-shared/agent-stream`). A process that takes up a
 session whose transcript already holds turns (a pod's restart and `omp --continue`, a
-`--resume`, a `/resume`, a fork) fills that ring from the session's branch when it takes the
-session up (`restoreLocalSessionState`), within the ring's bounds: the newest 200 messages it
-carries, and the replay's 512 KiB. So a person who opens the session after a restart sees the
+`--resume`, a `/resume`, a fork) fills that ring from the session's live context when it takes
+the session up (`restoreLocalSessionState`): the branch from the latest compaction's cut on, which
+is what Oh My Pi draws a resumed session from by default, with no body before the cut read. It
+keeps to the ring's bounds: the newest 200 messages it carries, and the replay's 512 KiB. So a
+person who opens the session after a restart sees the
 turns its terminal shows, as the process before the restart would have replayed them; a session
 that starts fresh has no turns to read back. The ring keys a card that names no id, such as one of
 the plugin's own notices, by what it says, since Oh My Pi hands `message_end` a copy of the
