@@ -684,6 +684,13 @@ func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 	if err != nil || fix == nil || fix.Way != wayAfterFix || place <= fix.Place {
 		return startFacts{}, false, err
 	}
+	if fix.EndedAt == nil {
+		return startFacts{}, false, nil
+	}
+	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
+	if err != nil || start.StartedAt.Before(*fix.EndedAt) {
+		return startFacts{}, false, err
+	}
 	role := RoleFor(w.steps()[place-1])
 	pushed := fix.Pushed[string(role)]
 	if role == claim.RoleImplementer || pushed == "" {
