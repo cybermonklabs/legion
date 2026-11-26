@@ -532,13 +532,13 @@ func owedMergeSentence(facts startFacts) string {
 
 // fixPushSentence is how fix pushes, which its task says after the failures it holds: from its own
 // working copy at dir, its work in progress only to its own branch own (F), never to the task's
-// branch; once, when it ends, to the task's branch, then it completes. Before that push it fetches
-// the task's branch and rebases its own commits onto its head where it moved, and takes the commits
-// each step beside it pushed to a branch of its own (workspace.BesideTakeCommands): a copy under its
-// working copy of each commit of those branches the task's branch lacks, rebasing and rewriting none,
-// and a commit a step names by its id and could not push copied the same way. The copy goes under
-// the working copy (`--insert-before @`), so it becomes `@-`, the commit the push and the completion
-// read; a copy `--onto @-` would be a sibling of `@`. A fix whose own branch cannot be named, which
+// branch; once, when it ends, to the task's branch, then it completes. Before that push it takes the
+// commits each step beside it pushed to a branch of its own, and the head of the task's branch
+// where it moved (workspace.BesideTakeCommands): a rebase of its own commits onto them, which
+// rewrites none of theirs and which a run again leaves as it stands, so the commit under its working
+// copy, `@-`, which the push and the completion read, holds each of them once. A commit a step names
+// by its id and could not push is copied under the working copy (`--insert-before @`), so it becomes
+// `@-`; a copy `--onto @-` would be a sibling of `@`. A fix whose own branch cannot be named, which
 // the fix rule refuses to open (refuseFixName), pushes to the task's branch alone.
 func fixPushSentence(issue record.Issue, fix record.TaskFix, own, dir string) string {
 	if dir == "" {
@@ -552,9 +552,9 @@ func fixPushSentence(issue record.Issue, fix record.TaskFix, own, dir string) st
 	}
 	return fmt.Sprintf(" Push only from this working copy. Until your fix ends, push your commits only to your own branch %s, never to the branch of the task: run %s, then %s. "+
 		"When your fix ends, push it to the branch of the task once, then complete. "+
-		"Before that push, fetch the branch of the task and rebase your own commits onto its head where it moved, and take the commits of the steps beside you: %s. "+
-		"That copies under your working copy each commit of their branches that the branch of the task does not hold; never rebase or rewrite one, since another working copy may stand on it. "+
-		"A commit that a step names by its id and could not push is in this clone by that id: copy it the same way, with jj duplicate <commit> --insert-before @.",
+		"Before that push, take the commits of the steps beside you and the head of the branch of the task where it moved: %s. "+
+		"That puts their commits under yours as they are and rebases only yours, and a run of it again changes nothing; never rebase or rewrite one of their commits, since another working copy may stand on it. "+
+		"A commit that a step names by its id and could not push is in this clone by that id: copy it under your working copy once, with jj duplicate <commit> --insert-before @.",
 		own, shellprefix.Command([]string{"jj", "-R", dir, "bookmark", "set", own, "-r", "@-"}),
 		shellprefix.Command([]string{"jj", "-R", dir, "git", "push", "--remote", "origin", "--bookmark", own}),
 		strings.Join(workspace.BesideTakeCommands(dir, prefix, own, taskBranch), ", then "))

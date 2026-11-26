@@ -516,13 +516,13 @@ func TestARewriteFromTheFixCopyIsBroughtUpToDate(t *testing.T) {
 // The first clone is removed. The second holds origin's default branch and the issue's branch and
 // nothing of F or B, as a node provisions it; the adoption with FixFrom X and FixBranch F reads F on
 // origin, fetches it, tracks it, and makes the fix's copy on F's head, which holds fix.txt. The
-// fix's take (BesideTakeCommands) copies the tester's commit under its working copy, and the
-// tester's fetch of B in the second clone finds its commit. Each assertion reads files, never
-// commit ids, since a copy has an id of its own. Each command the texts give is run as an agent's
-// shell runs it, and its exit status on this jj is held to 0: a push of a new branch, a fetch of a
-// branch origin does not hold, and a copy of no commit among them. The controls, each on a pod of
-// its own: the adoption with no FixBranch makes the copy at X with no fix.txt, and the take with
-// its fetch left out copies no commit of B, so the test fails for the cause it guards.
+// fix's take (BesideTakeCommands) puts the tester's commit under its own, and the tester's fetch of
+// B in the second clone finds its commit. Each assertion reads files, never commit ids. Each
+// command the texts give is run as an agent's shell runs it, and its exit status on this jj is held
+// to 0: a push of a new branch, a fetch of a branch origin does not hold, and a rebase of commits
+// already in place among them. The controls, each on a pod of its own: the adoption with no
+// FixBranch makes the copy at X with no fix.txt, and the take with its fetch left out takes no
+// commit of B, so the test fails for the cause it guards.
 func TestAFixInAFreshPodTakesItsCommitsFromItsBranch(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -608,7 +608,7 @@ func TestAFixInAFreshPodTakesItsCommitsFromItsBranch(t *testing.T) {
 			exits0(t, second, second.fixDir, command)
 		}
 		if files := second.filesOf(second.fixDir, "@-"); !has(files, "red_test.txt") || !has(files, "fix.txt") {
-			t.Errorf("after the take the commit under the fix's working copy holds %v, want the tester's red_test.txt over the fix's fix.txt", files)
+			t.Errorf("after the take the commit under the fix's working copy holds %v, want the fix's fix.txt and the tester's red_test.txt", files)
 		}
 		exits0(t, second, second.workspace, `jj -R "$LEGION_WORKSPACE" git fetch --remote origin --branch `+testerBranch)
 		if body := second.jjIn(second.workspace, "file", "show", "-r", testerBranch+"@origin", "red_test.txt"); body != "test: the red test" {
@@ -628,13 +628,14 @@ func TestAFixInAFreshPodTakesItsCommitsFromItsBranch(t *testing.T) {
 			t.Errorf("the fix's copy made with no fix branch holds %v, want no fix.txt", files)
 		}
 	})
-	t.Run("control: the take with its fetch left out copies no commit of the tester's branch", func(t *testing.T) {
+	t.Run("control: the take with its fetch left out takes no commit of the tester's branch", func(t *testing.T) {
 		fourth := newPodRig(t, jj, origin, key)
 		if got := fourth.adopt("fix", shimwire.AdoptWorkingCopy{FixFrom: head, FixBranch: fixBranch}); !got.OK || got.FixDir != fourth.fixDir {
 			t.Fatalf("the adoption answered %#v, want ok with fixDir %s", got, fourth.fixDir)
 		}
-		take := workspace.BesideTakeCommands(fourth.fixDir, prefix, fixBranch, taskBranch)
-		exits0(t, fourth, fourth.fixDir, take[len(take)-1])
+		for _, command := range workspace.BesideTakeCommands(fourth.fixDir, prefix, fixBranch, taskBranch)[1:] {
+			exits0(t, fourth, fourth.fixDir, command)
+		}
 		if files := fourth.filesOf(fourth.fixDir, "@-"); has(files, "red_test.txt") || !has(files, "fix.txt") {
 			t.Errorf("the take with no fetch leaves the fix's copy on a commit with %v, want fix.txt and no red_test.txt", files)
 		}
