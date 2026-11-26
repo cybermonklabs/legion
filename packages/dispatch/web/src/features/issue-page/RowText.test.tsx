@@ -1,11 +1,13 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { DisplayTree } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "../refs/reference-names";
@@ -317,5 +319,108 @@ test("a block address beside a named store address is linked by the row's link p
   } finally {
     view.unmount();
     blocks.mockRestore();
+  }
+});
+
+/** The declarations of each rule of `styles.css` whose selectors match `element`. A unit test's
+ *  DOM never loads the stylesheet, so a case that reads what the page's rules do to an element
+ *  reads them from the file; a selector the DOM cannot match, as one naming a pseudo-element,
+ *  matches nothing. */
+function stylesheetDeclarations(element: Element): ReadonlySet<string>[] {
+  const css = readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    ""
+  );
+  return [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(([, selectors = "", body = ""]) => {
+    let matched = false;
+    try {
+      matched = element.matches(selectors.trim());
+    } catch {
+      matched = false;
+    }
+    return matched ? [new Set(body.split(";").map((one) => one.replace(/\s+/g, " ").trim()))] : [];
+  });
+}
+
+/** What keeps `element`'s words from breaking, or lets them break anywhere, from `element` up to
+ *  the row's words: the rules of `styles.css` that match each element and each one's classes. */
+function breaksOf(element: Element): { anywhere: boolean; nowrap: string[] } {
+  const nowrap: string[] = [];
+  let anywhere = false;
+  for (let at: Element | null = element; at !== null; at = at.parentElement) {
+    const declared = stylesheetDeclarations(at);
+    const name = at.getAttribute("data-row-reference") ?? at.localName;
+    if (declared.some((one) => one.has("white-space: nowrap"))) nowrap.push(`${name}'s rule`);
+    if (at.classList.contains("whitespace-nowrap")) nowrap.push(`${name}'s class`);
+    if (
+      declared.some((one) => one.has("overflow-wrap: anywhere")) ||
+      at.classList.contains("[overflow-wrap:anywhere]")
+    ) {
+      anywhere = true;
+    }
+    if (at.hasAttribute("data-node-words")) break;
+  }
+  return { anywhere, nowrap };
+}
+
+/** `children` under the names store, with `gone` published as references the page's batched
+ *  read answered gone. */
+function Gone({ children, gone }: { children: ReactNode; gone: readonly string[] }): ReactNode {
+  const names = useMemo(() => publishedNames(new Map(), { gone: new Set(gone) }), [gone]);
+  usePublishReferenceNames(names);
+  return children;
+}
+
+// A reference the page cannot name - a comment that is gone, an issue that does not exist or that
+// the reader may not see, which the batched read answers gone - is drawn as the words its author
+// wrote, and whatever the row draws it with breaks inside the row, so a written address of some
+// 60 characters does not widen the page at 390 px. A unit test's DOM lays nothing out, so this
+// reads what the break rests on: no rule of `styles.css` and no class keeps the reference's
+// element, or anything around it in the row's words, on one line, and a word there may break
+// anywhere. The widths are the browser suite's (`e2e/issue-page-t-unnamed.e2e.ts`).
+test("a reference the page cannot name is drawn as written, in an element that breaks inside the row", async () => {
+  const comment = "dispatch://CORE-1/comment/1df0a7c8-5b2e-4c1a-9e3d-7f6a2b8c4d01";
+  const issue = "dispatch://CORE-404";
+  const text = `The answer stood in ${comment}, which ${issue} quoted.`;
+  const gone = [comment, issue];
+  // In the commit before the page's names reach the store the row reads each reference on its own,
+  // and the server answers both as it answers any node that is not there.
+  const comments = spyOn(api, "getComment").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
+  );
+  const summaries = spyOn(api, "getIssueSummary").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "no issue CORE-404" })
+  );
+  const view = draw(
+    <ReferenceNamesProvider>
+      <Gone gone={gone}>
+        <div data-node-words="">
+          <RowText markdown={text} tree={displayTree(text)} />
+        </div>
+      </Gone>
+    </ReferenceNamesProvider>
+  );
+  try {
+    const drawn = await waitFor(() => {
+      const chip = view.container.querySelector(`a[data-row-reference="${comment}"]`);
+      const key = view.container.querySelector(`a[data-row-reference="${issue}"]`);
+      expect(chip?.textContent, "the gone comment is not drawn as written").toBe(comment);
+      expect(key?.textContent, "the issue that does not exist is not drawn as written").toBe(issue);
+      return { chip: chip as Element, key: key as Element };
+    });
+    expect(drawn.chip.hasAttribute("data-row-chip"), "the gone comment is no chip in place").toBe(
+      true
+    );
+    for (const element of [drawn.chip, drawn.key]) {
+      const reference = element.getAttribute("data-row-reference");
+      expect(breaksOf(element), `${reference} is kept on one line`).toEqual({
+        anywhere: true,
+        nowrap: [],
+      });
+    }
+  } finally {
+    view.unmount();
+    comments.mockRestore();
+    summaries.mockRestore();
   }
 });
