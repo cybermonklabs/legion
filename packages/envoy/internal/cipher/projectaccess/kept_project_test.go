@@ -218,10 +218,10 @@ func TestAnOlderProjectAnswerDoesNotReplaceTheKeptOne(t *testing.T) {
 	dispatch.SetRow("PRIV", keptProjects()["PRIV"])
 	earlier.readAll(t, map[string][]string{keptAda: {"PRIV"}})
 	st := openStore(t, url)
-	if vis, visible, at, found, err := st.KeptProjectStanding(t.Context(), keptAda, "PRIV"); err != nil || !found || vis != projectaccess.VisibilityPrivate ||
-		visible || !at.Equal(later.clock.read()) {
-		t.Fatalf("KeptProjectStanding(ada, PRIV) = %q visible %t as of %v (found %t, %v); want private, not visible, as asked at the later clock %v",
-			vis, visible, at, found, err, later.clock.read())
+	if standing, found, err := st.KeptProjectStanding(t.Context(), keptAda, "PRIV"); err != nil || !found || standing.Visibility != projectaccess.VisibilityPrivate ||
+		standing.Visible || !standing.AskedAt.Equal(later.clock.read()) {
+		t.Fatalf("KeptProjectStanding(ada, PRIV) = %+v (found %t, %v); want private, not visible, as asked at the later clock %v",
+			standing, found, err, later.clock.read())
 	}
 	dispatch.SetDown(true)
 	keepingClientOf(dispatch, st).hidden(t, "PRIV", keptAda, "after an earlier-asked answer was written last")

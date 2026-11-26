@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
@@ -21,8 +22,8 @@ func TestProjectStandingKeepsTheLaterAnswer(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := t.Context()
 	const ada, bob = "ada@example.com", "bob@example.com"
-	if vis, visible, at, found, err := st.KeptProjectStanding(ctx, ada, "PRIV"); err != nil || found || vis != "" || visible || !at.IsZero() {
-		t.Fatalf("KeptProjectStanding(ada, PRIV) with nothing kept = %q, %t, %v, %t, %v; want not found", vis, visible, at, found, err)
+	if got, found, err := st.KeptProjectStanding(ctx, ada, "PRIV"); err != nil || found || got != (store.ProjectStanding{}) {
+		t.Fatalf("KeptProjectStanding(ada, PRIV) with nothing kept = %+v, %t, %v; want not found", got, found, err)
 	}
 	t1 := time.Date(2026, 11, 22, 0, 0, 1, 0, time.UTC)
 	t2, t3, t4 := t1.Add(time.Second), t1.Add(2*time.Second), t1.Add(3*time.Second)
@@ -49,7 +50,8 @@ func TestProjectStandingKeepsTheLaterAnswer(t *testing.T) {
 			t.Fatalf("KeepProjectStanding for %s: %v", step.write, err)
 		}
 		for _, want := range step.want {
-			vis, visible, at, found, err := st.KeptProjectStanding(ctx, want.person, "PRIV")
+			got, found, err := st.KeptProjectStanding(ctx, want.person, "PRIV")
+			vis, visible, at := got.Visibility, got.Visible, got.AskedAt
 			if want.at.IsZero() {
 				if err != nil || found {
 					t.Fatalf("KeptProjectStanding(%s, PRIV) after %s = %q visible %t as of %v (found %t, %v); want nothing kept",
@@ -106,7 +108,8 @@ func TestProjectStandingNoSuchProjectEndsAtAnAnswerThatItExists(t *testing.T) {
 			t.Fatalf("KeepProjectStanding for %s: %v", step.write, err)
 		}
 		for _, want := range step.want {
-			vis, visible, at, found, err := st.KeptProjectStanding(ctx, want.person, "ACME")
+			got, found, err := st.KeptProjectStanding(ctx, want.person, "ACME")
+			vis, visible, at := got.Visibility, got.Visible, got.AskedAt
 			if want.at.IsZero() {
 				if err != nil || found {
 					t.Fatalf("KeptProjectStanding(%q, ACME) after %s = %q visible %t as of %v (found %t, %v); want nothing kept",
@@ -137,11 +140,11 @@ func TestProjectStandingKeepsANoPersonAnswerForNoPersonAlone(t *testing.T) {
 	if err := st.KeepProjectStanding(ctx, "", "PUB", "public", true, asked); err != nil {
 		t.Fatal(err)
 	}
-	if vis, visible, at, found, err := st.KeptProjectStanding(ctx, "", "PUB"); err != nil || !found || vis != "public" || !visible || !at.Equal(asked) {
-		t.Fatalf("KeptProjectStanding(no person, PUB) = %q visible %t as of %v (found %t, %v); want public and visible as of %v", vis, visible, at, found, err, asked)
+	if got, found, err := st.KeptProjectStanding(ctx, "", "PUB"); err != nil || !found || got.Visibility != "public" || !got.Visible || !got.AskedAt.Equal(asked) {
+		t.Fatalf("KeptProjectStanding(no person, PUB) = %+v (found %t, %v); want public and visible as of %v", got, found, err, asked)
 	}
-	if vis, visible, at, found, err := st.KeptProjectStanding(ctx, "carol@example.com", "PUB"); err != nil || found {
-		t.Fatalf("KeptProjectStanding(carol, PUB) after the no-person answer = %q visible %t as of %v (found %t, %v); want nothing kept", vis, visible, at, found, err)
+	if got, found, err := st.KeptProjectStanding(ctx, "carol@example.com", "PUB"); err != nil || found {
+		t.Fatalf("KeptProjectStanding(carol, PUB) after the no-person answer = %+v (found %t, %v); want nothing kept", got, found, err)
 	}
 }
 
@@ -191,7 +194,8 @@ func TestProjectStandingPublicEndsAtAnAnswerThatItIsPrivate(t *testing.T) {
 			t.Fatalf("KeepProjectStanding for %s: %v", step.write, err)
 		}
 		for _, want := range step.want {
-			vis, visible, at, found, err := st.KeptProjectStanding(ctx, want.person, "PUBP")
+			got, found, err := st.KeptProjectStanding(ctx, want.person, "PUBP")
+			vis, visible, at := got.Visibility, got.Visible, got.AskedAt
 			if want.at.IsZero() {
 				if err != nil || found {
 					t.Fatalf("KeptProjectStanding(%q, PUBP) after %s = %q visible %t as of %v (found %t, %v); want nothing kept",
