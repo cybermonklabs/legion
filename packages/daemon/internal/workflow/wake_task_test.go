@@ -222,7 +222,7 @@ func TestACancelledWakeTaskKeepsThePausesWordsOfASettlementOrABackstop(t *testin
 	}
 }
 
-// The reviewer's comment 4672066581 on cybermonklabs/legion#4194: every retell renders WakeTask
+// R3 of dispatch://INFRA-3589, the woken role's wake text is true: every retell renders WakeTask
 // again from the wake's kind and detail (retellWakeTask) and cuts no words out of the sentence.
 // A detail is whatever the wake names, a role token, a session, a head's settlement, and here it
 // holds the very words a retell of a message wake changes, ") while your pod was gone. ". A retell

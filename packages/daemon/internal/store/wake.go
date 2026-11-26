@@ -389,15 +389,20 @@ func RecordPodWakeTx(ctx context.Context, tx pgx.Tx, res PodResume) (id int64, t
 	return id, true, nil
 }
 
-// newestPodRelease is the newest release of issue of whatever kind, or 0 when the issue has none.
-// It is the one reading of "the pod of this issue was taken away": a wake records it as the
-// release it was taken after (RecordPodWakeTx), and the heal asks whether a release has been
-// recorded since (ClosePodGoneResume), so the writer and the healer read the same thing.
+// newestPodRelease is the newest recorded release of issue of whatever kind, or 0 when the issue
+// has none. It is the one reading of "a release of this issue's pod was recorded": a wake records
+// it as the release it was taken after (RecordPodWakeTx), and the heal asks whether a release has
+// been recorded since (ClosePodGoneResume), so the writer and the healer read the same thing.
+//
+// It reads pod_releases alone. A release whose teardown gave up on its record took the pod too,
+// and writes a pod_release_give_ups row in place of the record. No resume holds the id of that
+// row, so the heal compares the row's time with the resume's own (ClosePodGoneResume), as the two
+// reads of a pause's stop compare it with the stop's end (podReleaseEnded).
 //
 // It counts a release that suspended no role, where LatestPodRelease below passes over one. The
-// two answer different questions: this one is whether the pod went away, and every release takes
-// the pod away, while that one is which release a wake ends, which a release that woke nobody
-// never is.
+// two answer different questions: this one is whether a recorded release took the pod away, and
+// every release takes the pod away, while that one is which release a wake ends, which a release
+// that woke nobody never is.
 func newestPodRelease(ctx context.Context, tx pgx.Tx, project, issue string) (int64, error) {
 	var id int64
 	if err := tx.QueryRow(ctx, `select coalesce(max(id), 0) from pod_releases

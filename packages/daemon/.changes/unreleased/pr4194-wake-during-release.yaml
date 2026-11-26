@@ -43,6 +43,9 @@ body: |-
   them. A role whose stop did not record it on the release's mark is told the same words by a
   cancel, and when a close, a linger or an operator took its claim over too, its wake's resume is
   not recorded either; a role that an earlier release left released keeps its start's words. A
+  cancel now resumes a role whose stop the release's mark did not record when no start of that
+  role is queued, or records it stopped by the pause while the project is paused, where before
+  that role stayed released until some wake came. A
   cancel or a release's record that tells a wake's start again renders the task from the wake kind
   and the detail the start carries (`wakeKind` and `wakeDetail`), which its task was written with,
   also where a later wake of the role is of another kind; a start an earlier daemon queued with no
@@ -68,7 +71,9 @@ body: |-
   release, and each wake taken while it stood still starts its role once, recorded against no
   release.
   A role that a project's pause stopped before such a release is told the release's words at its
-  next wake, that its pod was released, as after a recorded release.
+  next wake, that its pod was released, as after a recorded release, and the next wake of a role
+  whose earlier wake still waits for the pod that release took closes that wake's resume and takes
+  its own, as after a recorded release.
   While such a release has not finished, the issue's whole workflow waits: every start of its
   roles, and every notice, hook prompt, merge-queue removal message and merge-forward message to a
   released role. The docs say how an operator ends it when the cluster cannot be fixed. A delivery

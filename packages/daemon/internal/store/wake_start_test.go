@@ -621,7 +621,7 @@ func earlierDaemonsWakes(t *testing.T, st *Store) {
 		rootIssue, pods.WakeChecks))
 }
 
-// The reviewer's comment 4672066581 on cybermonklabs/legion#4194: a cancel and a release's record
+// R3 of dispatch://INFRA-3589, the woken role's wake text is true: a cancel and a release's record
 // tell a wake's start again by rendering WakeTask from the wake's kind and the detail its start
 // carries (record.SuperviseRequest.WakeDetail). A start that an earlier daemon queued carries no
 // detail, so its task cannot be rendered again, and no words are cut out of it either. Each retell

@@ -270,8 +270,9 @@ func (s *Store) OwedLaunchesWithNoIssueRecord(ctx context.Context, held Pause) (
 // on the record (pod_release_give_ups.at, the moment SettleUnrecordedRelease gave up), and
 // -infinity where it has neither. A release that gave up took the pod as a recorded one did, and
 // writes no pod_releases row, so a read of pod_releases alone would take a pause's stop before it
-// as what stopped the role last. Every other read of the issue's newest release reads pod_releases
-// alone (LatestPodRelease, ClosePodGoneResume, the release measurements).
+// as what stopped the role last. The close of a resume whose pod went away reads the give-ups too,
+// each against the resume's own time (ClosePodGoneResume). Every other read of the issue's newest
+// release reads pod_releases alone (LatestPodRelease, the release measurements).
 const podReleaseEnded = `coalesce(greatest(
 	(select max(r.at) from pod_releases r where r.project = $1 and r.issue = $2),
 	(select max(g.at) from pod_release_give_ups g where g.project = $1 and g.issue = $2)), '-infinity'::timestamptz)`

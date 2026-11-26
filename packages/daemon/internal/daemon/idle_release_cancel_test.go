@@ -53,26 +53,41 @@ func (r *idleRig) queueRoleMessageWake(t *testing.T, role claim.Role) string {
 	return task
 }
 
+// queuedStarts is every start the outbox holds for the rig's issue, in id order.
+func (r *idleRig) queuedStarts(t *testing.T) []record.SuperviseRequest {
+	t.Helper()
+	rows, err := r.pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' order by id`, r.issue.Key)
+	if err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	defer rows.Close()
+	var starts []record.SuperviseRequest
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatalf("read a queued start: %v", err)
+		}
+		var start record.SuperviseRequest
+		if err := json.Unmarshal(payload, &start); err != nil {
+			t.Fatalf("decode the queued start %s: %v", payload, err)
+		}
+		starts = append(starts, start)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	return starts
+}
+
 // startsOf is the task of each start of role the outbox holds for the rig's issue, in id order.
 func (r *idleRig) startsOf(t *testing.T, role claim.Role) []string {
 	t.Helper()
-	rows, err := r.pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
-		and payload->>'op' = 'start' and payload->>'role' = $2 order by id`, r.issue.Key, string(role))
-	if err != nil {
-		t.Fatalf("read the queued starts of the %s: %v", role, err)
-	}
-	defer rows.Close()
 	var tasks []string
-	for rows.Next() {
-		var payload []byte
-		var start record.SuperviseRequest
-		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
-			t.Fatalf("read a queued start of the %s: %v", role, err)
+	for _, start := range r.queuedStarts(t) {
+		if start.Role == role {
+			tasks = append(tasks, start.Task)
 		}
-		tasks = append(tasks, start.Task)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the queued starts of the %s: %v", role, err)
 	}
 	return tasks
 }
@@ -119,13 +134,12 @@ func (r *idleRig) wakePairs(t *testing.T, role claim.Role) []wakePair {
 	return pairs
 }
 
-// The reviewer's comment 4672066589 on cybermonklabs/legion#4194 (R3 of dispatch://INFRA-3589,
-// the woken role's wake text is true). A cancel tells the wake's start of each role its release
-// stopped and no cancel resumes in the words of a release that did not finish, and leaves the
-// start of a role the release did not stop as it was.
+// R3 of dispatch://INFRA-3589, the woken role's wake text is true. A cancel tells the wake's start
+// of each role its release stopped and no cancel resumes in the words of a release that did not
+// finish, and leaves the start of a role the release did not stop as it was.
 //
-// The first row traces the comment. The release's stop suspends the implementer as `released`,
-// and its record of that on the mark fails (ReleaseSuspendedClaim), so the mark names no role and
+// The first row is the test. The release's stop suspends the implementer as `released`, and its
+// record of that on the mark fails (ReleaseSuspendedClaim), so the mark names no role and
 // the stop's row stays queued. A role message wakes the implementer, and its start says that the
 // pod was released. The stop's retry reads that wake as a wake of a role outside the mark's set,
 // so the release is overtaken and cancelled. The pod never went away, so the start must say that
@@ -335,21 +349,7 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	rows, err := rig.pool.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`,
-		rig.issue.Key)
-	if err != nil {
-		t.Fatalf("read the queued starts: %v", err)
-	}
-	var starts []record.SuperviseRequest
-	for rows.Next() {
-		var payload []byte
-		var start record.SuperviseRequest
-		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
-			t.Fatalf("read a queued start: %v", err)
-		}
-		starts = append(starts, start)
-	}
-	rows.Close()
+	starts := rig.queuedStarts(t)
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
 	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
@@ -418,21 +418,7 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	rows, err := rig.pool.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`,
-		rig.issue.Key)
-	if err != nil {
-		t.Fatalf("read the queued starts: %v", err)
-	}
-	var starts []record.SuperviseRequest
-	for rows.Next() {
-		var payload []byte
-		var start record.SuperviseRequest
-		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
-			t.Fatalf("read a queued start: %v", err)
-		}
-		starts = append(starts, start)
-	}
-	rows.Close()
+	starts := rig.queuedStarts(t)
 	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByPause)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
 		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {
@@ -491,21 +477,7 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	rows, err := rig.pool.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
-		order by id`, rig.issue.Key)
-	if err != nil {
-		t.Fatalf("read the queued starts: %v", err)
-	}
-	var starts []record.SuperviseRequest
-	for rows.Next() {
-		var payload []byte
-		var start record.SuperviseRequest
-		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
-			t.Fatalf("read a queued start: %v", err)
-		}
-		starts = append(starts, start)
-	}
-	rows.Close()
+	starts := rig.queuedStarts(t)
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
 	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."

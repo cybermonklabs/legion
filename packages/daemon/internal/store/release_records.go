@@ -265,18 +265,19 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 // still reads it. Its seen_release stays the issue's newest release when the wake was taken
 // (RecordPodWakeTx). While the mark stands, a record of the issue's release names that mark
 // (RecordPodRelease), none does, and this writes none, so that is still the issue's newest
-// release. So the role's next wake does not close the resume as one whose pod went away
-// (ClosePodGoneResume), the open resume refuses that wake's take (pod_resumes_one_open_per_role),
-// and the role gets no second start. A release recorded later, whose pod went away again, lets
-// the next wake close it, as it does for every such resume. Its time and its stuck clock
-// (clock_at) move to at where they were earlier, as the record moves them, because the pod starts
-// to come back at the release's end. A held wake keeps its pause. The same transaction retells the
-// start of each such wake in the release's words (retellWakesUnderRelease, wakeTask), since the
-// pod is gone, ends every running hold streak of the pod, as the record does, records that the
-// teardown gave up on the record of the mark at at (recordReleaseGiveUp, pod_release_give_ups),
-// and then deletes the mark (deleteIssueRelease). With no mark, or no such resume, it changes no
-// resume, and with no mark it records no give-up. The rule of the resumes it settles is the
-// record's own (wakeTakenUnderMark).
+// release. Its time and its stuck clock (clock_at) move to at where they were earlier, as the
+// record moves them, because the pod starts to come back at the release's end, and at is the
+// time of this release's give-up, which the close compares strictly with a resume's own time. So
+// the role's next wake does not close the resume as one whose pod went away (ClosePodGoneResume),
+// the open resume refuses that wake's take (pod_resumes_one_open_per_role), and the role gets no
+// second start. A release recorded later, or a later release that gives up on its record, takes
+// the pod again and lets the next wake close it, as it does for every such resume. A held wake
+// keeps its pause. The same transaction retells the start of each such wake in the release's
+// words (retellWakesUnderRelease, wakeTask), since the pod is gone, ends every running hold streak
+// of the pod, as the record does, records that the teardown gave up on the record of the mark at
+// at (recordReleaseGiveUp, pod_release_give_ups), and then deletes the mark (deleteIssueRelease).
+// With no mark, or no such resume, it changes no resume, and with no mark it records no give-up.
+// The rule of the resumes it settles is the record's own (wakeTakenUnderMark).
 //
 // The settle, the retell, the give-up's row and the delete of the mark are one transaction, under
 // the mark's lock, so each wake of the issue is taken either before it or after it. A take locks
@@ -386,8 +387,9 @@ func lockMarkForRecord(ctx context.Context, tx pgx.Tx, project, issue string, re
 // record at at (pod_release_give_ups): one row for the mark that stands, which the caller holds
 // `for update` and deletes after this in the same transaction (SettleUnrecordedRelease), and none
 // where no mark stands. at is the moment that release ended. The two reads of a pause's stop
-// compare the stop's end against it as against a recorded release's time (podReleaseEnded), and
-// no other read counts the row as a release.
+// compare the stop's end against it as against a recorded release's time (podReleaseEnded), the
+// close of a resume whose pod went away closes a resume written before it (ClosePodGoneResume),
+// and no other read counts the row as a release.
 func recordReleaseGiveUp(ctx context.Context, tx pgx.Tx, project, issue string, at time.Time) error {
 	if _, err := tx.Exec(ctx, `insert into pod_release_give_ups (project, issue, issue_release_id, at)
 		select project, issue, id, $3 from issue_releases where project = $1 and issue = $2`, project, issue, at); err != nil {

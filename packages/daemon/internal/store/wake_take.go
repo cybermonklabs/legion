@@ -480,14 +480,23 @@ func (p *PodRecords) LockReleaseMark(ctx context.Context, tx pgx.Tx, issue strin
 }
 
 // ClosePodGoneResume closes the open resume of issue's role when the pod that resume was waiting
-// for has gone away: a release of the issue, of whatever kind, recorded since the wake was taken
-// (newestPodRelease, seen_release). Without it that row would refuse every later wake of the role
-// for as long as the issue lives, because a release that suspends no role closes no resume and a
-// pod fully released is never released again.
+// for has gone away since the wake was taken: a release of the issue, of whatever kind, recorded
+// since (newestPodRelease, seen_release), or a release whose teardown gave up on its record after
+// the resume's time (pod_release_give_ups.at after pod_resumes.at). A release that gave up took
+// the pod as a recorded release does, and it writes no pod_releases row (SettleUnrecordedRelease),
+// so a read of pod_releases alone would leave such a resume open. Without the close that row would
+// refuse every later wake of the role for as long as the issue lives, because a release that
+// suspends no role closes no resume and a pod fully released is never released again.
+//
+// The comparison with a give-up's time is strict. The give-up's settle moves the time of each wake
+// taken under that release's mark to the give-up's time where it was earlier, as a record moves it
+// to the release's time, so such a resume is not closed by the give-up of the release it was
+// taken under: its start is the role's one start, in the pod that comes back.
 //
 // It is one update that matches nothing in the ordinary case, so a caller runs it before the take
 // rather than after a refusal: a resume of a pod still coming back was written after the newest
-// release there is, so no release stands above its own, and the row stands.
+// release there is, or dated to the give-up of the release it was taken under, so no release
+// stands above its own, and the row stands.
 //
 // It locks the issue's release mark `for share` before it reads the newest release, as the take
 // does (lockReleaseMark; PodRecords.TakePodWake gives the lock order). The workflow runs the
@@ -495,35 +504,38 @@ func (p *PodRecords) LockReleaseMark(ctx context.Context, tx pgx.Tx, issue strin
 // runs. Without the lock here, a release recorded after this read and before the take's lock is
 // missed by the close and read by the take. The take then finds the old resume still open and
 // takes nothing, so the wake is lost while the role's pod is gone: a fired backstop is spent, and
-// a listener's report is dropped.
+// a listener's report is dropped. A give-up is written under the mark's lock too, in the
+// transaction that deletes the mark (SettleUnrecordedRelease), so the lock orders it the same way.
 //
-// It answers the issue's newest release where it closed a row, and 0 where it closed none, so the
-// caller can say in the log that a pod went away under an open resume. That release is the one
-// standing above the resume's own, which with two releases since the wake is the later of them
-// rather than the one that took the pod. Nothing else records that: the row it
-// closes leaves the stuck warning and the stranded report with it (release_records.go's
+// It answers whether it closed a row, so the caller can say in the log that a pod went away under
+// an open resume, and, where it closed one, the issue's newest recorded release (newest is 0 where
+// it closed none). Where a recorded release closed the row, that release is the one standing
+// above the resume's own, which with two releases since the wake is the later of them rather than
+// the one that took the pod. Where a give-up alone closed it, newest is the resume's own seen
+// release, which is 0 for an issue with no recorded release. Nothing else records the close: the
+// row it closes leaves the stuck warning and the stranded report with it (release_records.go's
 // podResumesWithoutAFirstTurn), so without the line a pod vanishing under a waiting role is
 // written down nowhere.
 //
 // The other way a resume sticks — a daemon that stopped between the take and the resume it leads
 // to, with no release since — is the outbox's to heal, in process, because the claim's own state
 // is what tells it (the delivery wake, internal/daemon's wakeForDelivery).
-func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error) {
+func (p *PodRecords) ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (newest int64, closed bool, err error) {
 	if _, err := lockReleaseMark(ctx, tx, p.project, issue); err != nil {
-		return 0, err
+		return 0, false, err
 	}
-	newest, err := newestPodRelease(ctx, tx, p.project, issue)
-	if err != nil {
-		return 0, err
+	if newest, err = newestPodRelease(ctx, tx, p.project, issue); err != nil {
+		return 0, false, err
 	}
-	tag, err := tx.Exec(ctx, `update pod_resumes set closed_at = now()
-		where project = $1 and issue = $2 and role = $3 and first_turn_at is null and closed_at is null
-		and seen_release < $4`, p.project, issue, string(role), newest)
+	tag, err := tx.Exec(ctx, `update pod_resumes r set closed_at = now()
+		where r.project = $1 and r.issue = $2 and r.role = $3 and r.first_turn_at is null and r.closed_at is null
+		and (r.seen_release < $4 or exists (select 1 from pod_release_give_ups g
+			where g.project = $1 and g.issue = $2 and g.at > r.at))`, p.project, issue, string(role), newest)
 	if err != nil {
-		return 0, fmt.Errorf("close the stale resume of %s's %s: %w", issue, role, err)
+		return 0, false, fmt.Errorf("close the stale resume of %s's %s: %w", issue, role, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return 0, nil
+		return 0, false, nil
 	}
-	return newest, nil
+	return newest, true, nil
 }

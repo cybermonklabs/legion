@@ -94,9 +94,10 @@ type Pods interface {
 	// newest release, so it locks the issue's release mark first, as the take does.
 	PauseOfWake(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, mark int64) (held, stopping int64, err error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
-	// has gone away: a release of the issue recorded since that wake was taken. It answers the
-	// issue's newest release where it closed a row, and 0 where it closed none.
-	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
+	// has gone away: a release of the issue recorded since that wake was taken, or one whose
+	// teardown gave up on its record after it. It answers whether it closed a row and, where it
+	// did, the issue's newest recorded release, which is 0 where it closed none.
+	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (newest int64, closed bool, err error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
 	// VolumeNoticeCounts and RecordVolumeNotice are the bounds on what an issue's architect is
@@ -733,9 +734,10 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // use ends no wake and so closes no resume, and it still takes the pod, leaving a row that would
 // otherwise refuse every later wake of that role — a CI settlement queueing nothing, and R5's
 // backstop spent on a refusal, since podBackstopDue fires the row before it calls this. So each
-// wake first closes a resume of this role written before the issue's newest release
-// (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back, since such a
-// resume was itself written after every release there is.
+// wake first closes a resume of this role written before the issue's newest release, recorded or
+// given up on (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back,
+// since such a resume was itself written after every release there is, or dated to the give-up of
+// the release it was taken under.
 func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issue, released supervise.Claim, kind, detail string) (bool, error) {
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil {
@@ -757,11 +759,11 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
 		return false, nil
 	}
-	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
+	newest, closed, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
 	if err != nil {
 		return false, err
 	}
-	if newest > 0 {
+	if closed {
 		e.warnOnCommit(ctx, "wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}

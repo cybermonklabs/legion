@@ -263,7 +263,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 		var w woken
 		w.err = Transact(wakeCtx, store.Pool(), func(wakeCtx context.Context, tx pgx.Tx) error {
 			var err error
-			if w.closed, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, claim.RoleImplementer); err != nil {
+			if w.closed, _, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, claim.RoleImplementer); err != nil {
 				return err
 			}
 			w.taken, err = records.TakePodWake(wakeCtx, tx, rootIssue, claim.RoleImplementer, pods.WakeBackstop, at, 0)

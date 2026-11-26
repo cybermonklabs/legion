@@ -319,11 +319,11 @@ func TestATurnAfterTheMarkCancelsTheReleaseAndStartsTheWokenRoleOnce(t *testing.
 	}
 }
 
-// The reviewer's comment 4672066589 on cybermonklabs/legion#4194, for the resume. The release's
-// stop suspends the implementer as `released`, and its record of that on the mark fails, so the
-// mark does not record the role (unrecordedStops). A wake of the implementer is taken while the
-// project runs and the release stands, after an earlier release of the pod, so its resume names
-// that earlier release. No cancel resumes the implementer while that wake's start is queued, so
+// R3 of dispatch://INFRA-3589, for the resume. The release's stop suspends the implementer as
+// `released`, and its record of that on the mark fails, so the mark does not record the role
+// (unrecordedStops). A wake of the implementer is taken while the project runs and the release
+// stands, after an earlier release of the pod, so its resume names that earlier release. No cancel
+// resumes the implementer while that wake's start is queued, so
 // the start is its one start, and the cancel keeps the resume. This release took no pod, so the
 // cancel makes the resume name release 0, whether the project runs or is paused. No pause holds
 // it, and its kind and its seen release stay. The control is a wake of the architect, whose stop
@@ -493,9 +493,9 @@ func TestACancelDeletesTheWakeOfARoleItsMarkDoesNotRecordThatAnotherPathTookOver
 	}
 }
 
-// The reviewer's round 5 on cybermonklabs/legion#4194, minor. The release's stop suspends the
-// implementer as `released`, and its record of that on the mark fails (ReleaseSuspendedClaim), so
-// the mark does not record the role and the stop's row stays queued (unrecordedStops). The
+// R3 of dispatch://INFRA-3589: a cancel queues a start for the role. The release's stop suspends
+// the implementer as `released`, and its record of that on the mark fails (ReleaseSuspendedClaim),
+// so the mark does not record the role and the stop's row stays queued (unrecordedStops). The
 // architect's stop has not run when the cancel comes. No wake of the implementer was taken, so no
 // start brings it back, and its stop's row, run again, reads the release over: the cancel queues
 // the implementer's one resume and answers it resumed, as it does for a role its mark records.

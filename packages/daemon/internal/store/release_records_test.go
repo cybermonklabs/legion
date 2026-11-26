@@ -295,10 +295,10 @@ func TestAnUnrecordedReleaseSettlesTheWakeUnderItsMarkUnlessARecordNamesIt(t *te
 	}
 }
 
-// The reviewer's round 5 on cybermonklabs/legion#4194, medium. A project's pause stops the
-// implementer after the release's workspace check, and the release's stop then suspends it as
-// `released` and records it on the mark. Every record of the release fails, and the teardown gives
-// up on it (SettleUnrecordedRelease), which writes no pod release. That release took the pod all
+// R3 of dispatch://INFRA-3589. A project's pause stops the implementer after the release's
+// workspace check, and the release's stop then suspends it as `released` and records it on the
+// mark. Every record of the release fails, and the teardown gives up on it
+// (SettleUnrecordedRelease), which writes no pod release. That release took the pod all
 // the same, so the moment it gave up ends what the pause's stop says of the role, as a recorded
 // release's time does: before the settle the stop is the pause's, for a wake's words and the pause
 // that holds it (StoppingPauseTx) and for the held role message's debt (StoppedByAPause), and after

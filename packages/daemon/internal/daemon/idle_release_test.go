@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"slices"
 	"sync"
@@ -483,21 +482,7 @@ func TestARecordedReleaseTellsAHeldWakeThatTheReleaseTookItsPod(t *testing.T) {
 		t.Fatalf("the mark stands = %t and the releases = %+v, want the release finished and recorded once", rig.marked(t), records.Releases)
 	}
 
-	rows, err := rig.pool.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`,
-		rig.issue.Key)
-	if err != nil {
-		t.Fatalf("read the queued starts: %v", err)
-	}
-	var starts []record.SuperviseRequest
-	for rows.Next() {
-		var payload []byte
-		var start record.SuperviseRequest
-		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
-			t.Fatalf("read a queued start: %v", err)
-		}
-		starts = append(starts, start)
-	}
-	rows.Close()
+	starts := rig.queuedStarts(t)
 	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByRelease)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
 		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {

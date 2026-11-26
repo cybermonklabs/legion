@@ -88,10 +88,10 @@ func TestAWakeResumesAClaimLeftReleasedUnderAnOpenResume(t *testing.T) {
 	}
 }
 
-// The review of cybermonklabs/legion#4194 at b8053fa6: a workflow wake taken while a release stood,
-// after the release recorded the role, holds the role's one open resume, and its start waits for
-// the release's teardown row (record's outboxInOrder). The teardown clears the release's mark
-// before its row leaves the outbox, so a delivery's wake can meet that open resume before the start
+// A workflow wake taken while a release stood (R3 of dispatch://INFRA-3589), after the release
+// recorded the role, holds the role's one open resume, and its start waits for the release's
+// teardown row (record's outboxInOrder). The teardown clears the release's mark before its row
+// leaves the outbox, so a delivery's wake can meet that open resume before the start
 // runs. That is a normal order of the release (store.Store.TakeDeliveryWake), so the delivery's
 // wake says so at Debug and writes no Warn that the resume stands open with no process behind it.
 // It resumes the role, as it does for every open resume over a released claim.
