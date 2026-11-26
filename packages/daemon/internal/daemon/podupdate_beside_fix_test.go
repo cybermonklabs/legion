@@ -10,17 +10,25 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 const (
@@ -241,6 +249,319 @@ func TestAnUpdateRoundBesideARunningFixAsksEachRoleToPushToItsOwnBranch(t *testi
 		t.Parallel()
 		rig := beside(t, record.FixRunning)
 		rig.s.updatePushes = nil
+		wantPushes(t, rig.askedPushes(besideRoles...), map[claim.Role]supervise.UpdatePush{})
+	})
+}
+
+// startStanding writes the start of the step the rig's issue stands in, by the engine's own path
+// for that step, in a transaction opened and settled as a fact's is. The owner's acceptance, which
+// starts no worker, starts through its named start (workflow.(*Engine).StartStepRecord), as the
+// move into accepting writes it. A phase worker's step starts through the worker's start
+// (StartPromotedWorker), which raises the worker's entry and starts the run of its step as a
+// transition's start does (enter). Each binds that step to its own branch beside a fix that reads
+// or runs.
+func (r *podUpdateRig) startStanding() {
+	r.t.Helper()
+	issue := r.issue()
+	r.inTx("start the step of "+string(issue.Phase), func(ctx context.Context, tx pgx.Tx) error {
+		fact := r.engine.OpenFact(ctx)
+		var err error
+		if issue.Phase == phase.Accepting {
+			err = r.engine.StartStepRecord(fact, tx, issue)
+		} else {
+			err = r.engine.StartPromotedWorker(fact, tx, issue, workflow.RoleFor(issue.Phase))
+		}
+		if err != nil {
+			return err
+		}
+		return r.engine.SettleFact(fact, tx)
+	})
+}
+
+// endFix ends fix 1, which runs, at besideY, passed, with its way still to take (Way 0).
+func (r *podUpdateRig) endFix() {
+	r.t.Helper()
+	r.inTx("end fix 1", func(ctx context.Context, tx pgx.Tx) error {
+		fix, err := r.records.RunningFix(ctx, tx, podUpdateIssue, 1, "a")
+		if err != nil {
+			return err
+		}
+		if fix == nil || fix.State != record.FixRunning {
+			return fmt.Errorf("fix 1 of task a = %+v, want it running", fix)
+		}
+		ended := podUpdateStart.Add(-time.Minute)
+		fix.State, fix.Result, fix.EndHead, fix.EndedAt = record.FixEnded, "passed", besideY, &ended
+		return r.records.UpdateFix(ctx, tx, *fix)
+	})
+}
+
+// latestFix is the latest fix of task a (record.Store.LatestFix), and fails where it has none.
+func (r *podUpdateRig) latestFix() record.TaskFix {
+	r.t.Helper()
+	var fix *record.TaskFix
+	r.inTx("read the latest fix", func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		fix, err = r.records.LatestFix(ctx, tx, podUpdateIssue, 1, "a")
+		return err
+	})
+	if fix == nil {
+		r.t.Fatalf("task a of %s holds no fix", podUpdateIssue)
+	}
+	return *fix
+}
+
+// startAt is the latest start of place of task a (record.Store.StepStarts).
+func (r *podUpdateRig) startAt(place int) record.StepStart {
+	r.t.Helper()
+	var start record.StepStart
+	r.inTx(fmt.Sprintf("read the start of place %d", place), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		start, err = r.records.StepStarts(ctx, tx, podUpdateIssue, besidePlace(place))
+		return err
+	})
+	return start
+}
+
+// endStart ends the open run of place at besideX, as the end of its step does
+// (record.Store.EndStepStart), and fails where the place has no open run.
+func (r *podUpdateRig) endStart(place int) {
+	r.t.Helper()
+	r.inTx(fmt.Sprintf("end the run of place %d", place), func(ctx context.Context, tx pgx.Tx) error {
+		_, ended, err := r.records.EndStepStart(ctx, tx, podUpdateIssue, besidePlace(place), besideX)
+		if err == nil && !ended {
+			err = fmt.Errorf("place %d of task a has no open run to end", place)
+		}
+		return err
+	})
+}
+
+// entryOf is the entry role's phases row of the rig's issue names, 0 where the issue has no row
+// of role.
+func (r *podUpdateRig) entryOf(role claim.Role) int64 {
+	r.t.Helper()
+	var entry int64
+	r.inTx("read the phases rows", func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := r.records.Phases(ctx, tx, podUpdateIssue)
+		for _, row := range rows {
+			if row.Role == role {
+				entry = row.Entry
+			}
+		}
+		return err
+	})
+	return entry
+}
+
+// besideOrigin is the repository on GitHub that the issue's pods clone, bare: its default branch
+// main, the base, and the issue's branch, a commit of the task over it.
+func besideOrigin(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	origin, seed := filepath.Join(dir, "widgets.git"), filepath.Join(dir, "seed")
+	git := fixturegit.Isolated(t, t.TempDir())
+	git.Run(dir, fixturegit.InitBare(origin, "main")...)
+	git.Run(dir, fixturegit.InitWorkTree(seed, "main")...)
+	for _, file := range []struct{ name, body, message string }{
+		{"README.md", "widgets\n", "chore: the base"},
+		{"feature.txt", "the task's change\n", "feat: the task's change"},
+	} {
+		if err := os.WriteFile(filepath.Join(seed, file.name), []byte(file.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git.Run(seed, "git", "add", file.name)
+		git.Run(seed, "git", "commit", "--quiet", "-m", file.message)
+	}
+	git.Run(seed, "git", "push", "--quiet", origin, "HEAD~1:refs/heads/main", "HEAD:refs/heads/"+claim.IssueBranch(podUpdateIssue))
+	return origin
+}
+
+// besidePod is one pod of the issue as a node provisions it from origin, with the real git and
+// jj: a clone that holds origin's main and the issue's branch and nothing else of origin,
+// colocated with jj, and the issue's workspace of it, LEGION_WORKSPACE, at the issue's branch. An
+// update round deletes the pod and its disk, so the pod after the round is a new besidePod.
+type besidePod struct {
+	t                          *testing.T
+	jj, home, clone, workspace string
+}
+
+func newBesidePod(t *testing.T, jj, origin string) *besidePod {
+	t.Helper()
+	state := t.TempDir()
+	p := &besidePod{t: t, jj: jj, home: t.TempDir(),
+		clone:     filepath.Join(state, "repos", "github.com", "acme", "widgets"),
+		workspace: filepath.Join(state, "workspaces", "acme", "widgets", strings.ToLower(podUpdateIssue))}
+	for _, dir := range []string{p.clone, filepath.Dir(p.workspace)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git := fixturegit.Isolated(t, p.home)
+	git.Run(p.clone, fixturegit.InitWorkTree("", "main")...)
+	git.Run(p.clone, "git", "remote", "add", "origin", origin)
+	git.Run(p.clone, "git", "fetch", "--quiet", "origin", "main", claim.IssueBranch(podUpdateIssue))
+	git.With("JJ_USER=setup", "JJ_EMAIL=setup@example.test").Run(p.clone, append([]string{jj}, fixturegit.JJInit(p.clone, true)[1:]...)...)
+	p.jjIn(p.clone, "workspace", "add", p.workspace, "--name", filepath.Base(p.workspace), "--revision", claim.IssueBranch(podUpdateIssue)+"@origin")
+	return p
+}
+
+// shell runs command with sh in the pod's workspace, as an agent's shell runs a command its text
+// gives it: LEGION_WORKSPACE names the workspace and the real jj is first on PATH. It holds the
+// command's exit status to 0.
+func (p *besidePod) shell(command string) {
+	p.t.Helper()
+	run := exec.Command("sh", "-c", command)
+	run.Dir = p.workspace
+	run.Env = append(fixtureenv.Isolated(p.home), "JJ_USER=setup", "JJ_EMAIL=setup@example.test",
+		"LEGION_WORKSPACE="+p.workspace, "PATH="+filepath.Dir(p.jj)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := run.CombinedOutput()
+	p.t.Logf("%s:\n%s", command, output)
+	if err != nil {
+		p.t.Fatalf("%s in the pod's workspace: %v\n%s", command, err, output)
+	}
+}
+
+// jjIn runs the real jj on the repository of dir, in dir, and fails the test where it fails.
+func (p *besidePod) jjIn(dir string, args ...string) string {
+	p.t.Helper()
+	command := exec.Command(p.jj, append(args, "-R", dir)...)
+	command.Dir = dir
+	command.Env = append(fixtureenv.Isolated(p.home), "JJ_USER=setup", "JJ_EMAIL=setup@example.test")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		p.t.Fatalf("jj %v in %s: %v\n%s", args, dir, err, output)
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// commit writes name in the workspace's working copy with body and commits it there, as a role's
+// step does.
+func (p *besidePod) commit(name, body string) {
+	p.t.Helper()
+	if err := os.WriteFile(filepath.Join(p.workspace, name), []byte(body+"\n"), 0o644); err != nil {
+		p.t.Fatal(err)
+	}
+	p.jjIn(p.workspace, "commit", "-m", body)
+}
+
+// remove deletes the pod's clone and workspace, as the update round deletes the pod's disk.
+func (p *besidePod) remove() {
+	p.t.Helper()
+	for _, dir := range []string{p.workspace, p.clone} {
+		if err := os.RemoveAll(dir); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+}
+
+// An update round after fix 1 ended at Y, with its way still to take (Way 0), keeps the branch of
+// each step that is still open beside it: the tester, whose start the engine bound to its branch B
+// while the fix ran, still tests at X, and its row holds B; and, as a case of its own, the owner
+// in accepting, whose phases row raised no entry and whose named acceptance start is open, holds
+// its own B. The ended fix's implementer holds neither OwnFix nor FixReads, and no branch. Each
+// step's work survives the round: in the pod before the round the step commits its work and runs
+// the command its row's branch names (workspace.BesidePushCommand), the pod goes, and a new pod's
+// clone, which holds nothing of B, fetches B and finds that work.
+//
+// It was run red with the engine's seam updateByRunningFix, which answers a branch only from a
+// fix that reads or runs: after the fix ended, both open steps' rows lost B.
+//
+// The controls, kept: a start with no fix binds no branch, so every row holds the zero push; the
+// run of the tester that ended keeps its bound branch on its row, and no row names it; and a
+// later start of that place, beside no fix, takes no binding of the ended one.
+func TestAnUpdateAfterTheFixEndsKeepsEachOpenStepsBranch(t *testing.T) {
+	t.Parallel()
+	jj := fixturegit.CompiledJJ(t)
+	prefix, err := claim.BesideTaskPrefix(podUpdateIssue, 1, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		place int
+		at    phase.Phase
+		role  claim.Role
+		file  string
+	}{
+		{name: "the tester still tests at X", place: 2, at: phase.Testing, role: claim.RoleTester, file: "red_test.txt"},
+		{name: "the accepting owner, whose phases row raised no entry", place: 4, at: phase.Accepting, role: claim.RoleArchitect, file: "acceptance.txt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newBesideRig(t)
+			rig.seedBesideTask(tc.place, tc.at)
+			rig.openFix(record.FixRunning)
+			rig.startStanding()
+			rig.endFix()
+			if fix := rig.latestFix(); fix.State != record.FixEnded || fix.EndHead != besideY || fix.Way != 0 {
+				t.Fatalf("fix 1 after its end = %+v, want it ended at %s with its way still to take (Way 0)", fix, besideY)
+			}
+			own := besideBranch(t, tc.role)
+			if start := rig.startAt(tc.place); start.Run != record.RunOpen || start.PushBranch != own {
+				t.Fatalf("the start of the %s after fix 1 ended = %+v, want it open and bound to %s", tc.role, start, own)
+			}
+			if entry := rig.entryOf(tc.role); tc.role == claim.RoleArchitect && entry != 0 {
+				t.Fatalf("the owner's phases row names entry %d, want none raised", entry)
+			}
+
+			asks := rig.askedPushes(besideRoles...)
+			wantPushes(t, asks, map[claim.Role]supervise.UpdatePush{tc.role: {Branch: own}})
+			branch := asks[tc.role].Branch
+			if branch == "" {
+				t.Fatalf("the ask to the %s names no branch, so its work has nowhere to go before the pod does", tc.role)
+			}
+
+			origin := besideOrigin(t)
+			work := "the " + string(tc.role) + "'s work at X"
+			before := newBesidePod(t, jj, origin)
+			before.commit(tc.file, work)
+			before.shell(workspace.BesidePushCommand(branch))
+			before.remove()
+			after := newBesidePod(t, jj, origin)
+			if held := after.jjIn(after.workspace, "log", "-r", `remote_bookmarks(glob:"`+prefix+`*")`, "--no-graph", "-T", `commit_id ++ "\n"`); held != "" {
+				t.Fatalf("the new pod's clone holds a branch beside the fix before any fetch:\n%s", held)
+			}
+			after.shell(`jj -R "$LEGION_WORKSPACE" git fetch --remote origin --branch ` + branch)
+			if body := after.jjIn(after.workspace, "file", "show", "-r", branch+"@origin", tc.file); body != work {
+				t.Errorf("the new pod fetches %s holding %s as %q, want %q", branch, tc.file, body, work)
+			}
+		})
+	}
+	t.Run("control: a start with no fix binds no branch", func(t *testing.T) {
+		t.Parallel()
+		rig := newBesideRig(t)
+		rig.seedBesideTask(2, phase.Testing)
+		rig.startStanding()
+		if start := rig.startAt(2); start.Starts != 1 || start.Run != record.RunOpen || start.PushBranch != "" {
+			t.Fatalf("the tester's start with no fix = %+v, want start 1 open and bound to no branch", start)
+		}
+		wantPushes(t, rig.askedPushes(besideRoles...), map[claim.Role]supervise.UpdatePush{})
+	})
+	t.Run("control: the tester's ended run names its branch on no row", func(t *testing.T) {
+		t.Parallel()
+		rig := newBesideRig(t)
+		rig.seedBesideTask(2, phase.Testing)
+		rig.openFix(record.FixRunning)
+		rig.startStanding()
+		rig.endFix()
+		rig.endStart(2)
+		own := besideBranch(t, claim.RoleTester)
+		if start := rig.startAt(2); start.Run != record.RunEnded || start.PushBranch != own {
+			t.Fatalf("the tester's ended start = %+v, want it ended with its binding %s still on it", start, own)
+		}
+		wantPushes(t, rig.askedPushes(besideRoles...), map[claim.Role]supervise.UpdatePush{})
+	})
+	t.Run("a later start of the tester's place takes no binding of the ended one", func(t *testing.T) {
+		t.Parallel()
+		rig := newBesideRig(t)
+		rig.seedBesideTask(2, phase.Testing)
+		rig.openFix(record.FixRunning)
+		rig.startStanding()
+		rig.endFix()
+		rig.endStart(2)
+		rig.startStanding()
+		if start := rig.startAt(2); start.Starts != 2 || start.Run != record.RunOpen || start.PushBranch != "" {
+			t.Fatalf("the tester's later start = %+v, want start 2 open and bound to no branch", start)
+		}
 		wantPushes(t, rig.askedPushes(besideRoles...), map[claim.Role]supervise.UpdatePush{})
 	})
 }

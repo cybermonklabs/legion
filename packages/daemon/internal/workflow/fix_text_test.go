@@ -1,11 +1,15 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -101,5 +105,54 @@ func TestAStepThatStartsBesideAFixTaskTextNamesTheFix(t *testing.T) {
 	t.Run("the control: no fix names none", func(t *testing.T) {
 		r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady, TriggerTesterPassed)
 		assertLacks(t, "the reviewer's task", r.lastStart(claim.RoleReviewer), "k-ci", fixHead)
+	})
+}
+
+// recordsPush records that role pushed its branch beside fix 1 of LEGION-208's task a to head, as a
+// push of that branch does (record.Store.RecordBesidePush).
+func (r *fixRig) recordsPush(role claim.Role, head string) {
+	r.t.Helper()
+	onStored(r.t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		return r.engine.store.RecordBesidePush(ctx, tx, issue.Key, 1, "a", 1, string(role), head)
+	})
+}
+
+// Each start of a step of a task that takes a fix is told what its task says of the fix by one
+// typed value (startFacts), which this test reads, never a sentence. The fix's own start holds its
+// number, its check, the head, its job, the job's page and its own branch F. A tester that starts
+// while the fix runs holds fix 1, its check and head, and its own branch beside the fix, which is
+// no branch of the issue (claim.IsBesideBranch), and no pushed head until the daemon holds a push of
+// that branch, then that head. The reviewer, which creates no commit, holds the fix and no branch.
+// The control: the same starts with no fix hold none of it.
+func TestEachStartBesideAFixHoldsItsFixAndItsBranch(t *testing.T) {
+	const pushed = "2222222222222222222222222222222222222222"
+	t.Run("beside fix 1", func(t *testing.T) {
+		r := startedFix(t, intake.FixJobRead{Name: "unit", URL: fixPage})
+		own := r.startFactsIn(phase.Implementing)
+		if !own.Own || own.Fix != 1 || own.Check != "k-ci" || own.Head != fixHead || own.Job != "unit" || own.Page != fixPage ||
+			own.Branch != besideFix1(t, claim.RoleImplementer) {
+			t.Fatalf("the fix's own start facts = %+v, want fix 1 of k-ci at %s, job unit at %s, on its own branch", own, fixHead, fixPage)
+		}
+		tester := r.startFactsIn(phase.Testing)
+		if tester.Own || tester.Fix != 1 || tester.Check != "k-ci" || tester.Head != fixHead || !claim.IsBesideBranch(tester.Branch) ||
+			tester.Branch != besideFix1(t, claim.RoleTester) || tester.Pushed != "" {
+			t.Fatalf("the tester's start facts = %+v, want fix 1 of k-ci at %s on the tester's own branch beside it, with no push held", tester, fixHead)
+		}
+		if reviewer := r.startFactsIn(phase.Reviewing); reviewer.Fix != 1 || reviewer.Check != "k-ci" || reviewer.Branch != "" || reviewer.Pushed != "" {
+			t.Fatalf("the reviewer's start facts = %+v, want fix 1 of k-ci and no branch", reviewer)
+		}
+		r.recordsPush(claim.RoleTester, pushed)
+		if tester := r.startFactsIn(phase.Testing); tester.Branch != besideFix1(t, claim.RoleTester) || tester.Pushed != pushed {
+			t.Fatalf("the tester's start facts after its push = %+v, want its branch at %s", tester, pushed)
+		}
+	})
+
+	t.Run("the control: no fix", func(t *testing.T) {
+		r := reviewing(t)
+		for _, at := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing} {
+			if facts := r.startFactsIn(at); facts.Fix != 0 || facts.Own || facts.Branch != "" || facts.Pushed != "" {
+				t.Fatalf("the start facts in %s with no fix = %+v, want none of a fix", at, facts)
+			}
+		}
 	})
 }

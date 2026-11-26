@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -82,8 +83,13 @@ func (e *Engine) refuseFixName(ctx context.Context, tx pgx.Tx, pass *fixPass, ch
 // binding stands until that step's run ends, also after the fix ended with its way pending; the
 // implementer pushes to its own branch F while its fix runs (OwnFix), and pushes nothing while the
 // fix reads its job (FixReads), since neither its copy nor F exists yet and the task's branch has
-// one writer then. Every other role gets the zero push, main's ask. An issue with no fix, and one
-// whose run has no plan rows, gets nothing but zero pushes.
+// one writer then. Every other role gets the zero push, main's ask: the reviewer, which creates no
+// commit, and a step whose start no fix named. An issue with no fix, and one whose run has no plan
+// rows, gets nothing but zero pushes. The role of each step is the role of its phase, a phase of a
+// step of the plan, which admitted, the architect's phase of the tree's design, never is.
+//
+// The seam updateByRunningFix reads no binding: a step's branch comes from the fix that reads its
+// job or runs alone, so once that fix ended each step beside it gets the zero push.
 func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[claim.Role]supervise.UpdatePush, error) {
 	pushes := map[claim.Role]supervise.UpdatePush{}
 	issue, err := e.store.Issue(ctx, tx, key)
@@ -94,18 +100,32 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 	if err != nil || !w.Stored {
 		return pushes, err
 	}
+	fix, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task)
+	if err != nil {
+		return nil, err
+	}
 	for i, at := range w.steps() {
 		start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: i + 1})
 		if err != nil {
 			return nil, err
 		}
-		if role := RoleFor(at); start.Run == record.RunOpen && start.PushBranch != "" && role != claim.RoleReviewer {
-			pushes[role] = supervise.UpdatePush{Branch: start.PushBranch}
+		role := RoleFor(at)
+		if start.Run != record.RunOpen || role == claim.RoleReviewer {
+			continue
+		}
+		branch := start.PushBranch
+		if e.updateByRunningFix {
+			branch = ""
+			if fix != nil && fix.Place != i+1 {
+				branch, _ = e.besideBranchOf(*issue, w.Task, fix.Fix, role)
+			}
+		}
+		if branch != "" {
+			pushes[role] = supervise.UpdatePush{Branch: branch}
 		}
 	}
-	fix, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil {
-		return pushes, err
+	if fix == nil {
+		return pushes, nil
 	}
 	switch fix.State {
 	case record.FixReading:
@@ -116,6 +136,102 @@ func (e *Engine) UpdatePushes(ctx context.Context, tx pgx.Tx, key string) (map[c
 		}
 	}
 	return pushes, nil
+}
+
+// UpdateByRunningFix sets the seam updateByRunningFix on e: an update round's ask reads no step's
+// binding to a branch beside a fix, only the fix that reads its job or runs (UpdatePushes), so after
+// the fix ends each step beside it gets the zero push. Only tests call it, as the control of the
+// binding on an engine another package builds.
+func (e *Engine) UpdateByRunningFix() { e.updateByRunningFix = true }
+
+// WithoutEndBesideDelete sets the seam noEndBesideDelete on e: a task's move into its retro with no
+// hold, at a transition and at the release of an end hold, queues no deletion of the branches beside
+// its fixes (queueTaskEnd). Only tests call it, as the control of that deletion on an engine another
+// package builds.
+func (e *Engine) WithoutEndBesideDelete() { e.noEndBesideDelete = true }
+
+// FixBranchFromRecordedPush sets the seam fixBranchFromRecordedPush on e: a start or a resume of a
+// fix names the fix's own branch only where the daemon holds a push of it (fixBranchOf). Only tests
+// call it, as the control of the fix's branch on a new pod on an engine another package builds.
+func (e *Engine) FixBranchFromRecordedPush() { e.fixBranchFromRecordedPush = true }
+
+// fixBranchOf is the fix's own branch F (claim.BesideBranch of the implementer) that every start and
+// resume of fix carries (startMarks.fixBranch), whether or not a push of it is recorded: the shim
+// reads origin for it, and makes the fix's working copy at its head where origin holds it, so a fix
+// that pushed at an update round's ask goes on from its own commits on a new pod. The seam
+// fixBranchFromRecordedPush names it only where the daemon holds the implementer's push of it
+// (record.TaskFix.Pushed).
+func (e *Engine) fixBranchOf(issue record.Issue, fix record.TaskFix) string {
+	if e.fixBranchFromRecordedPush && fix.Pushed[string(claim.RoleImplementer)] == "" {
+		return ""
+	}
+	branch, _ := e.besideBranchOf(issue, fix.Task, fix.Fix, claim.RoleImplementer)
+	return branch
+}
+
+// bindBesideFix writes what start number starts of place, a step of issue's task that role runs,
+// names of the fix of its task that reads its job or runs: the fix (record.Store.MarkStepBesideFix)
+// and, for every role but the reviewer, which creates no commit, the branch beside the fix it pushes
+// to until its run ends (SetStepPushBranch). The task of that start named the same (startFacts), and
+// the fix's start tells no fix-started row to a step whose start named the fix (tellStepsOfFix). A
+// start of no step, of the fix's own place or of no role (a fix's own start), and one while no fix is
+// open, names no fix: the store wrote none at the start, so a binding of an earlier start never
+// reaches it.
+func (e *Engine) bindBesideFix(ctx context.Context, tx pgx.Tx, issue record.Issue, place record.StepPlace, starts int64, role claim.Role) error {
+	if role == "" || place.Kind != record.PlaceStep {
+		return nil
+	}
+	open, err := e.store.RunningFix(ctx, tx, issue.Key, issue.Generation, place.Task)
+	if err != nil || open == nil || open.Place == place.Place {
+		return err
+	}
+	if err := e.store.MarkStepBesideFix(ctx, tx, issue.Key, place, starts, open.Fix); err != nil {
+		return err
+	}
+	if role == claim.RoleReviewer {
+		return nil
+	}
+	branch, ok := e.besideBranchOf(issue, place.Task, open.Fix, role)
+	if !ok {
+		return nil
+	}
+	return e.store.SetStepPushBranch(ctx, tx, issue.Key, place, starts, branch)
+}
+
+// toldByStart says whether start, the latest start of a step beside fix, told that step of fix
+// already: it named fix (record.StepStart.BesideFix, written in the transaction that counted the
+// start), so the fix's start sends that step no fix-started row. A start before the fix opened, in
+// an earlier fact or earlier in the fact that opened it, named none. The seams: tellEveryStepOfFix
+// reads no start, and toldByClock reads the clock instead, a start at or after the moment the fix
+// opened (opened) taken as told, which a fixed clock or one shared microsecond confuses.
+func (e *Engine) toldByStart(start record.StepStart, fix record.TaskFix, opened time.Time) bool {
+	switch {
+	case e.tellEveryStepOfFix:
+		return false
+	case e.toldByClock:
+		return start.Starts > 0 && !start.StartedAt.Before(opened)
+	}
+	return start.BesideFix == fix.Fix
+}
+
+// toldBranch is the branch beside fix that role's step at place pushes to, which the fix-started row
+// to it names, "" for the reviewer, which creates no commit: the branch the step's open start is
+// bound to already, which a later fix's start keeps, else the step's branch beside fix, which the
+// open start is bound to here (SetStepPushBranch). A step whose run has ended is bound to nothing.
+func (e *Engine) toldBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, place record.StepPlace, start record.StepStart, fix record.TaskFix,
+	role claim.Role) (string, error) {
+	if role == claim.RoleReviewer {
+		return "", nil
+	}
+	open := start.Run == record.RunOpen
+	if open && start.PushBranch != "" {
+		return start.PushBranch, nil
+	}
+	branch, ok := e.besideBranchOf(issue, place.Task, fix.Fix, role)
+	if !ok || !open {
+		return branch, nil
+	}
+	return branch, e.store.SetStepPushBranch(ctx, tx, issue.Key, place, start.Starts, branch)
 }
 
 // queueBesideDelete queues the deletion of the branches beside fix of task in issue's generation,
@@ -234,32 +350,43 @@ func besideWorkSentence(issue string, generation uint64, task string, fix int) s
 		"Legion keeps them until no step of the task can run again.", fix, prefix, own)
 }
 
-// besideStepSentence is what the task of a step that starts beside fix says of it (fixLines): the
-// fix runs, its failure is the fix's, and, where the step has a branch of its own (branch, ""
-// for the reviewer, which creates no commit), that it pushes only there, names that branch and its
-// commits in its report, records each result at the pull request's head, and what it does where
-// GitHub refuses the push; and, where the daemon holds a push of that branch (TaskFix.Pushed, the
-// role the branch is of), where those commits stand for a new pod.
-func besideStepSentence(key string, fix record.TaskFix, branch string) string {
-	sentence := fmt.Sprintf(" A fix of this task runs: check %s failed at %s. Leave that failure to the fix.", fix.Check, fix.Head)
-	if branch == "" {
+// besideStepSentence is what the task of a step that starts beside a fix says of it (fixLines),
+// from the start's facts (startFacts): the fix runs, its failure is the fix's, and, where the step
+// has a branch of its own (facts.Branch, "" for the reviewer, which creates no commit), that it
+// pushes only there, names that branch and its commits in its report, records each result at the
+// pull request's head, and what it does where GitHub refuses the push; and, where the daemon holds a
+// push of that branch (facts.Pushed), where those commits stand for a new pod. No text names a ref
+// the daemon holds no push of.
+func besideStepSentence(facts startFacts) string {
+	sentence := fmt.Sprintf(" A fix of this task runs: check %s failed at %s. Leave that failure to the fix.", facts.Check, facts.Head)
+	if facts.Branch == "" {
 		return sentence
 	}
-	sentence += fmt.Sprintf(" Until this step ends, push nothing to the branch of the task: push your commits to your own branch %s with %s, and name that branch and each commit in your report.",
-		branch, workspace.BesidePushCommand(branch)) + recordAtHead(fix.Head)
-	if _, _, _, _, role, ok := claim.MatchBesideBranch(branch, []string{fix.Task}); ok {
-		if pushed := fix.Pushed[string(role)]; pushed != "" {
-			sentence += fmt.Sprintf(" Your pushed commits are on %s at %s: on a new pod, run jj -R \"$LEGION_WORKSPACE\" git fetch --remote origin --branch %s first and go on at %s@origin.",
-				branch, pushed, branch, branch)
-		}
+	sentence += pushBesideSentence(facts.Branch) + recordAtHead(facts.Head)
+	if facts.Pushed != "" {
+		sentence += fmt.Sprintf(" Your pushed commits are on %s at %s: on a new pod, run jj -R \"$LEGION_WORKSPACE\" git fetch --remote origin --branch %s first and go on at %s@origin.",
+			facts.Branch, facts.Pushed, facts.Branch, facts.Branch)
 	}
 	return sentence
+}
+
+// pushBesideSentence is the sentence that tells a step beside a fix where it pushes until its step
+// ends: to branch, its own branch beside the fix, with the command that pushes there
+// (workspace.BesidePushCommand), never to the task's branch, naming that branch and each commit in
+// its report.
+func pushBesideSentence(branch string) string {
+	return fmt.Sprintf(" Until your step ends, push nothing to the branch of the task: push your commits to your own branch %s with %s, and name that branch and each commit in your report.",
+		branch, workspace.BesidePushCommand(branch))
 }
 
 // recordAtHead is the two sentences a step beside a fix that pushes is told of where it records
 // and what it does where GitHub refuses its push: each result, and its head, at head, the pull
 // request's, never at a commit of its own branch.
 func recordAtHead(head string) string {
-	return fmt.Sprintf(" Record each result, and name your head, at %s, the head of the pull request, never at a commit of your own branch, where a result counts for nothing. "+
-		"If GitHub refuses that push, push nothing else, and name each commit by its id, with GitHub's answer, in your report.", head)
+	return fmt.Sprintf(" Record each result, and name your head, at %s, the head of the pull request, never at a commit of your own branch, where a result counts for nothing.", head) +
+		refusedPushSentence
 }
+
+// refusedPushSentence is what a step beside a fix does where GitHub refuses the push to its own
+// branch: it pushes nothing else, and names each commit by its id, with GitHub's answer.
+const refusedPushSentence = " If GitHub refuses that push, push nothing else, and name each commit by its id, with GitHub's answer, in your report."
