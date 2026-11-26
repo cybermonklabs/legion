@@ -384,48 +384,49 @@ func (b *bucket) list(ctx context.Context) (objects map[string]storedObject, ign
 }
 
 // put makes name's object hold local's file, returning only once Cloud Storage has stored the
-// whole object, so a caller may name it in a listed set as soon as put returns. An object already
-// under name is taken for the file where its size, CRC32C and sha256Metadata are all the file's,
-// with nothing uploaded; one that differs in any of them is an error naming the name and the field,
-// and is left as it is: put never replaces or deletes an object, since a pack's name is its
-// checksum and an object of that name holding other bytes is a fault to report, not a pack to
-// overwrite.
+// whole object, so a caller may name it in a listed set as soon as put returns, and answers whether
+// it wrote the object (uploaded) or took one already there. An object already under name is taken
+// for the file where its size, CRC32C and sha256Metadata are all the file's, with nothing uploaded;
+// one that differs in any of them is an error naming the name and the field, and is left as it is:
+// put never replaces or deletes an object, since a pack's name is its checksum and an object of
+// that name holding other bytes is a fault to report, not a pack to overwrite.
 //
 // The upload streams the file (a storage.Writer holds one chunk of it at a time), creates the
 // object only where none of its name exists (ifGenerationMatch=0), sets sha256Metadata to the
 // file's SHA-256 and states its CRC32C, so that Cloud Storage refuses bytes that changed on the
 // way. Where another upload created the object between put's read and its own (412), put reads the
-// object again and takes it only where it holds the file's bytes.
-func (b *bucket) put(ctx context.Context, name string, local localObject) error {
+// object again and takes it only where it holds the file's bytes: that object is another writer's,
+// so put answers it taken, not uploaded.
+func (b *bucket) put(ctx context.Context, name string, local localObject) (uploaded bool, err error) {
 	if _, err := b.clonePath(name); err != nil {
-		return err
+		return false, err
 	}
 	if err := local.check(); err != nil {
-		return fmt.Errorf("upload %s: %w", name, err)
+		return false, fmt.Errorf("upload %s: %w", name, err)
 	}
 	object := b.handle.Object(name)
 	attrs, err := object.Attrs(ctx)
 	switch {
 	case err == nil:
-		return b.reuse(storedOf(attrs), local)
+		return false, b.reuse(storedOf(attrs), local)
 	case !errors.Is(err, storage.ErrObjectNotExist):
-		return fmt.Errorf("read %s in bucket %s: %w", name, b.name, err)
+		return false, fmt.Errorf("read %s in bucket %s: %w", name, b.name, err)
 	}
 	created, err := upload(ctx, object, local)
 	if statusOf(err) == http.StatusPreconditionFailed {
 		attrs, err := object.Attrs(ctx)
 		if err != nil {
-			return fmt.Errorf("read %s in bucket %s again, after another upload created it first: %w", name, b.name, err)
+			return false, fmt.Errorf("read %s in bucket %s again, after another upload created it first: %w", name, b.name, err)
 		}
-		return b.reuse(storedOf(attrs), local)
+		return false, b.reuse(storedOf(attrs), local)
 	}
 	if err != nil {
-		return fmt.Errorf("upload %s to bucket %s: %w", name, b.name, err)
+		return false, fmt.Errorf("upload %s to bucket %s: %w", name, b.name, err)
 	}
 	if field := created.differs(local); field != "" {
-		return fmt.Errorf("bucket %s stored %s with another %s than the cache sent", b.name, name, field)
+		return false, fmt.Errorf("bucket %s stored %s with another %s than the cache sent", b.name, name, field)
 	}
-	return nil
+	return true, nil
 }
 
 // upload creates object from local's file, which it streams, and answers what Cloud Storage

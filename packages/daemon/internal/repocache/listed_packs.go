@@ -128,7 +128,10 @@ func (c *cache) syncPacks(ctx context.Context) {
 // retires what no set names any more (retire). A snapshot that lists exactly the listed set's refs
 // and objects (listedSet.lists) installs nothing: that set stays listed, so a /packs answer signed
 // from it while the sync ran is no answer from a set that was switched, and retire runs at the
-// sync's time as it does after a switch, so each object's clock still counts.
+// sync's time as it does after a switch, so each object's clock still counts. The line it logs of a
+// switch counts apart the objects put wrote and those it found whole in the bucket already and took
+// as they were (reused), so a restarted cache, whose first sync finds its whole clone in the bucket,
+// logs none of it uploaded.
 func (c *cache) publishPacks(ctx context.Context) error {
 	if c.store == nil {
 		store, err := openBucket(ctx, c.opts.Bucket, c.opts.Repo)
@@ -146,20 +149,25 @@ func (c *cache) publishPacks(ctx context.Context) error {
 		c.retire(ctx, current, inventory, c.clock.Now())
 		return nil
 	}
-	uploaded := 0
+	uploaded, reused := 0, 0
 	for _, object := range next.objects {
 		if current.holdsSame(object) {
 			continue
 		}
-		if err := c.store.put(ctx, object.name, object.local); err != nil {
+		wrote, err := c.store.put(ctx, object.name, object.local)
+		if err != nil {
 			return err
 		}
-		uploaded++
+		if wrote {
+			uploaded++
+		} else {
+			reused++
+		}
 	}
 	c.listed.Store(next)
 	switched := c.clock.Now()
-	if current == nil || uploaded > 0 {
-		c.opts.Log(fmt.Sprintf("listed %d packs and indexes in bucket %s, %d of them uploaded now", len(next.objects), c.opts.Bucket, uploaded))
+	if current == nil || uploaded+reused > 0 {
+		c.opts.Log(fmt.Sprintf("listed %d packs and indexes in bucket %s, %d of them uploaded now, %d reused as the bucket held them", len(next.objects), c.opts.Bucket, uploaded, reused))
 	}
 	c.retire(ctx, next, inventory, switched)
 	return nil

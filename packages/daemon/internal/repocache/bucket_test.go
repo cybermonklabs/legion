@@ -194,8 +194,8 @@ func testObjectNames(t *testing.T) {
 
 // testUploadVisibleOnceClosed: an upload held in the double after its last byte arrived, before
 // its object became visible, leaves put waiting and the object absent from a metadata read and
-// from list; once released, put returns, and the object is there with the file's size, CRC32C
-// and sha256 metadata.
+// from list; once released, put returns, answering that it wrote the object, and the object is
+// there with the file's size, CRC32C and sha256 metadata.
 func testUploadVisibleOnceClosed(t *testing.T, mode bucketMode) {
 	rig := openRig(t, mode)
 	ctx := testwait.Context(t)
@@ -205,7 +205,12 @@ func testUploadVisibleOnceClosed(t *testing.T, mode bucketMode) {
 	hold := rig.double.HoldNext(func(bucket, object string) bool { return bucket == testBucket && object == name })
 	defer hold.Release()
 	done := make(chan error, 1)
-	go func() { done <- rig.bucket.put(ctx, name, local) }()
+	uploaded := false
+	go func() {
+		var err error
+		uploaded, err = rig.bucket.put(ctx, name, local)
+		done <- err
+	}()
 	testwait.Receive(t, "the upload to stop at the double's hold", hold.Reached())
 	select {
 	case err := <-done:
@@ -222,6 +227,9 @@ func testUploadVisibleOnceClosed(t *testing.T, mode bucketMode) {
 	if err := testwait.Receive(t, "put to return once its upload was released", done); err != nil {
 		t.Fatalf("put of %s failed: %v", name, err)
 	}
+	if !uploaded {
+		t.Fatalf("put of %s, which the bucket did not hold, answered that it took an object already there", name)
+	}
 	status, res := rig.resource(t, name)
 	if status != http.StatusOK {
 		t.Fatalf("a metadata read of %s after put answered %d", name, status)
@@ -237,8 +245,8 @@ func testUploadVisibleOnceClosed(t *testing.T, mode bucketMode) {
 }
 
 // testMatchingObjectReused: an object already under the name with the file's size, CRC32C and
-// sha256 metadata is the file's: put returns with no upload request, and the object keeps its
-// generation.
+// sha256 metadata is the file's: put returns with no upload request, answering that it took the
+// object rather than wrote it, and the object keeps its generation.
 func testMatchingObjectReused(t *testing.T, mode bucketMode) {
 	rig := openRig(t, mode)
 	content := randomContent(t, 32<<10)
@@ -246,8 +254,12 @@ func testMatchingObjectReused(t *testing.T, mode bucketMode) {
 	name := packObject(content, "idx")
 	generation := rig.seed(t, name, content, map[string]string{sha256Metadata: local.SHA256})
 	uploads := rig.double.Count(fakegcs.RouteUpload).Requests
-	if err := rig.bucket.put(testwait.Context(t), name, local); err != nil {
+	uploaded, err := rig.bucket.put(testwait.Context(t), name, local)
+	if err != nil {
 		t.Fatalf("put of a file whose object is there already failed: %v", err)
+	}
+	if uploaded {
+		t.Fatalf("put of a file whose object is there already answered that it wrote the object")
 	}
 	if got := rig.double.Count(fakegcs.RouteUpload).Requests; got != uploads {
 		t.Fatalf("put sent %d upload requests for an object already there", got-uploads)
@@ -281,7 +293,7 @@ func testDifferingObjectRefused(t *testing.T, mode bucketMode) {
 			name := packObject(content, "pack")
 			generation := rig.seed(t, name, tc.stored, tc.metadata)
 			uploads, deletes := rig.double.Count(fakegcs.RouteUpload).Requests, rig.double.Count(fakegcs.RouteDelete).Requests
-			err := rig.bucket.put(testwait.Context(t), name, local)
+			_, err := rig.bucket.put(testwait.Context(t), name, local)
 			if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "another "+tc.field) {
 				t.Fatalf("put over an object holding %s answered %v, not a refusal naming %s and its %s", tc.name, err, name, tc.field)
 			}
@@ -299,8 +311,9 @@ func testDifferingObjectRefused(t *testing.T, mode bucketMode) {
 
 // testCreateConflict: an object created under the name while put's own upload was held, after
 // put found the name free, makes the upload's create-only condition fail (412); put then reads
-// the object again and takes it where it holds the file's bytes, or refuses it, by name, where it
-// holds others, leaving it at the generation the other upload wrote.
+// the object again and takes it where it holds the file's bytes, answering that it wrote nothing,
+// since the object is the other upload's, or refuses it, by name, where it holds others, leaving it
+// at the generation the other upload wrote.
 func testCreateConflict(t *testing.T, mode bucketMode) {
 	content := randomContent(t, 32<<10)
 	other := slices.Clone(content)
@@ -321,7 +334,12 @@ func testCreateConflict(t *testing.T, mode bucketMode) {
 			hold := rig.double.HoldNext(func(bucket, object string) bool { return bucket == testBucket && object == name })
 			defer hold.Release()
 			done := make(chan error, 1)
-			go func() { done <- rig.bucket.put(ctx, name, local) }()
+			uploaded := false
+			go func() {
+				var err error
+				uploaded, err = rig.bucket.put(ctx, name, local)
+				done <- err
+			}()
 			testwait.Receive(t, "the upload to stop at the double's hold", hold.Reached())
 			generation := rig.seed(t, name, tc.stored, map[string]string{sha256Metadata: sha256Of(tc.stored)})
 			gets := rig.double.Count(fakegcs.RouteGet).Requests
@@ -332,6 +350,8 @@ func testCreateConflict(t *testing.T, mode bucketMode) {
 				t.Fatalf("put that lost the create to an object of other bytes answered %v, not a refusal naming %s and its CRC32C", err, name)
 			case !tc.refused && err != nil:
 				t.Fatalf("put that lost the create to an object of the same bytes failed: %v", err)
+			case uploaded:
+				t.Fatalf("put that lost the create to another upload answered that it wrote the object")
 			}
 			if got := rig.double.Count(fakegcs.RouteGet).Requests - gets; got != 1 {
 				t.Fatalf("put read the object %d times after its create failed, not once", got)
@@ -375,7 +395,7 @@ func testRequestsNameThePrefix(t *testing.T, mode bucketMode) {
 	content := randomContent(t, 8<<10)
 	local := writeLocal(t, content)
 	name := packObject(content, "pack")
-	if err := rig.bucket.put(ctx, name, local); err != nil {
+	if _, err := rig.bucket.put(ctx, name, local); err != nil {
 		t.Fatalf("put of %s failed: %v", name, err)
 	}
 	listed = rig.list(t)
@@ -387,7 +407,7 @@ func testRequestsNameThePrefix(t *testing.T, mode bucketMode) {
 	}
 	before := len(rig.double.Requests())
 	for other, generation := range others {
-		if err := rig.bucket.put(ctx, other, local); err == nil {
+		if _, err := rig.bucket.put(ctx, other, local); err == nil {
 			t.Errorf("put of %s, outside the cache's objects, succeeded", other)
 		}
 		if err := rig.bucket.delete(ctx, other, generation); err == nil {
@@ -433,7 +453,7 @@ func testDeleteMatchesGeneration(t *testing.T, mode bucketMode) {
 	ctx := testwait.Context(t)
 	content := randomContent(t, 8<<10)
 	name := packObject(content, "pack")
-	if err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
+	if _, err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
 		t.Fatalf("put of %s failed: %v", name, err)
 	}
 	generation := rig.list(t)[name].Generation
@@ -469,7 +489,7 @@ func testSignedDownload(t *testing.T, mode bucketMode) {
 	ctx := testwait.Context(t)
 	content := randomContent(t, 64<<10)
 	name := packObject(content, "pack")
-	if err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
+	if _, err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
 		t.Fatalf("put of %s failed: %v", name, err)
 	}
 	address, err := rig.bucket.sign(ctx, name)
@@ -557,7 +577,7 @@ func testOnlyMetadataIdentity(t *testing.T, mode bucketMode) {
 	ctx := testwait.Context(t)
 	content := randomContent(t, 16<<10)
 	name := packObject(content, "pack")
-	if err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
+	if _, err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
 		t.Fatalf("put with the metadata server's token failed: %v", err)
 	}
 	if listed := rig.list(t); len(listed) != 1 {
@@ -605,7 +625,7 @@ func testEmulatorSendsNoCredential(t *testing.T, mode bucketMode) {
 	ctx := testwait.Context(t)
 	content := randomContent(t, 16<<10)
 	name := packObject(content, "pack")
-	if err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
+	if _, err := rig.bucket.put(ctx, name, writeLocal(t, content)); err != nil {
 		t.Fatalf("put in emulator mode failed: %v", err)
 	}
 	address, err := rig.bucket.sign(ctx, name)
