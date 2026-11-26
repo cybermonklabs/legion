@@ -26,7 +26,8 @@ export interface AuthenticatedUser {
 /** GET /api/v1/whoami: a person by lowercase email (`login`), or an agent with its personal
  *  token's owner (a lowercase email) — null under the shared token or a verified service token —
  *  and that service token's subject (`service`), or for a broker-issued token naming no person the
- *  fleet its machine belongs to or the Kubernetes account an exchange entry lists, null otherwise.
+ *  fleet its machine belongs to, the Kubernetes account an exchange entry lists or a job's identity
+ *  as its job entry lists it, null otherwise.
  *  `session` is the session the credential itself proved, which only an access token the secrets
  *  broker issued does, and `project` the project key that credential's token names, null where
  *  it names none. Such a token writes other projects' objects as a credential that names none
@@ -38,6 +39,14 @@ export interface AuthenticatedUser {
  *  `service` is absent from one older than verified service tokens, `session` and `project` from
  *  one older than broker-issued tokens, and `sign_in_required` from one older than the field,
  *  whose rule the client then reads from the owner, the service and the session.
+ *
+ *  `project_scope` is a broker-issued token's project scope, absent for every other credential:
+ *  `named` for a token an operator's or a job's entry mapped to its project, and for an exchange
+ *  account entry's token naming no person and no project, `public` for a job's token, and `person`
+ *  for a person's own token and for a machine's. Of the tokens that name a service and no person,
+ *  a job's (`named` or `public`) and an exchange account entry's (`named`) write as that service,
+ *  and Dispatch refuses a machine's (`person`) every write with `SIGN_IN_REQUIRED`. A Dispatch
+ *  older than the field leaves it out for every credential, and refuses a job's token outright.
  *
  *  `scopes` is the OAuth scopes the caller's own credential holds, which decide the routes it may
  *  call: both of them for a person at a browser, the set its row names for a personal token, and

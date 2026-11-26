@@ -44,8 +44,8 @@ func TestCredentialCoversDecidesOnlyPrivateProjects(t *testing.T) {
 // TestACredentialOfNoPersonSeesThePrivateProjectsItLists (R3): a credential that names no person
 // sees every public project and the private projects its list names, as Resolve answers it: a
 // service-account token that lists PRIV sees PRIV and PUB, and one that lists nothing, the shared
-// token, sees PUB alone. No broker token names no person and lists a project
-// (ciphertoken.sessionCaller refuses one), so this is the rule's row, read through Resolve.
+// token, sees PUB alone. These two rows are the rule's, read through Resolve. A job's broker token
+// also names no person and lists projects, and no row of this test runs that shape.
 func TestACredentialOfNoPersonSeesThePrivateProjectsItLists(t *testing.T) {
 	database := seedAccess(t)
 	for _, test := range []struct {

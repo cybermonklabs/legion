@@ -2386,6 +2386,9 @@ const COMMAND_OF: Partial<Record<ClientMethod, string | null>> = {
   // The host plugins' reply to a delivery. No command calls it, but its reply to a message is the
   // request that `messageReply` sends.
   deliveryReply: "message",
+  // `dispatch api --method` sends the route its caller names, with no key; the walk's call names
+  // the issue comment route, whose refusal without a key names `dispatch comment`.
+  sendRoute: "comment",
   // No command sends these requests.
   acceptMessageDelivery: null,
   nameArtifactVersion: null,

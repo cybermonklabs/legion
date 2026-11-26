@@ -15,15 +15,15 @@ body: |-
   `403 SIGN_IN_REQUIRED`. `GET /api/v1/whoami` answers `sign_in_required`, true only for that
   machine's token, from the same decision Dispatch refuses its writes on. An entry that names a
   project and no person refuses the broker's start, naming that rule: an entry that names a project
-  names its person, so no token that names a project is personless. A broker of an older build
-  refuses to start on an entry naming no person, and an Envoy listener or a Dispatch of an older
-  build answers its token `401`, so deploy the broker, Dispatch and every Envoy listener before you
-  write one, and remove every entry that names no person before you roll any of the three back below
-  this release. Bring the pi-envoy release and the claude-envoy rebuild that carry this release's
-  `dispatch` command to the session images first too: an older `dispatch whoami` ignores
-  `sign_in_required` and tells such a session that its writes are refused, though they succeed. A
-  `BROKER_POD_OPERATORS` mapping of an account that the exchange lists with no person refuses the
-  start too.
+  names its person, so no account entry's token that names a project is personless. A broker of
+  an older build refuses to start on an entry naming no person, and an Envoy listener or a Dispatch
+  of an older build answers its token `401`, so deploy the broker, Dispatch and every Envoy
+  listener before you write one, and remove every entry that names no person before you roll any of
+  the three back below this release. Bring the pi-envoy release and the claude-envoy rebuild that
+  carry this release's `dispatch` command to the session images first too: an older `dispatch
+  whoami` ignores `sign_in_required` and tells such a session that its writes are refused, though
+  they succeed. A `BROKER_POD_OPERATORS` mapping of an account that the exchange lists with no
+  person refuses the start too.
 time: 2026-11-21T17:54:41.000000000Z
 custom:
   Issue: pr4873

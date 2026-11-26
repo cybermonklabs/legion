@@ -285,14 +285,16 @@ enrollments of it hold that a login of the same account enrolled, so move the po
 keep the launcher's login account ([Concepts](/legion/broker/concepts/#requests-and-grants)). A
 pair works both ways, so moving the pods back needs no change here, and it does not chain: with
 `A=B` and `B=C`, `C` does not take a name `A` holds. No pair takes a name an entry of
-`BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_READ_ACCOUNTS`, `BROKER_EXCHANGE_WORKFLOWS` or
-`BROKER_VM_EXCHANGE_ACCOUNTS` fixes. The broker refuses to start, naming the entry, on an entry
+`BROKER_EXCHANGE_ACCOUNTS`, `BROKER_EXCHANGE_READ_ACCOUNTS`, `BROKER_EXCHANGE_JOB_ACCOUNTS`,
+`BROKER_EXCHANGE_WORKFLOWS`, `BROKER_EXCHANGE_JOB_WORKFLOWS`, `BROKER_VM_EXCHANGE_ACCOUNTS` or
+`BROKER_VM_EXCHANGE_JOB_ACCOUNTS` fixes. The broker refuses to start, naming the entry, on an entry
 not of that form, a namespace's `default` account, an account paired with itself, and a pair given
 twice, in either order. Set the pairs, bind the new account in `BROKER_SERVICES` beside the old
 one, and, where the pods trade their projected tokens at the exchange, list the new account in
-`BROKER_EXCHANGE_ACCOUNTS`, before the deployment moves its pods: a pair added after a role's
-enrollment was refused takes effect at that role's next enrollment, and the grants and pending
-requests of the old enrollment come across only while the broker still keeps them,
+`BROKER_EXCHANGE_ACCOUNTS`, or in `BROKER_EXCHANGE_JOB_ACCOUNTS` for a job's pods, before the
+deployment moves its pods: a pair added after a role's enrollment was refused takes effect at
+that role's next enrollment, and the grants and pending requests of the old enrollment come across
+only while the broker still keeps them,
 `BROKER_SESSION_CARRY_SECONDS` after that enrollment ended. While a pair stands, a pod of either
 account can claim any session name the other holds, not only its own role's, so remove the pairs
 with the old account once no live pod runs as it. The start line `session account pairs` names
@@ -400,9 +402,9 @@ registers the next. The authority goes no wider than the cluster's own rights to
 pod's token — the same kind of access over that pod's account as the paragraph that opens "Whoever
 can get a token" (below) names over a listed one — and it stops short of them: the caller needs a
 `BROKER_SERVICE_LOGINS` token of its own and a `BROKER_POD_REGISTRARS` entry that pairs its
-account with the pod's, and the pod's account must be one `BROKER_EXCHANGE_ACCOUNTS` lists,
-`403 POD_ACCOUNT_NOT_LISTED`. A deployment that does not want that pairs no such account with
-itself.
+account with the pod's, and the pod's account must be one `BROKER_EXCHANGE_ACCOUNTS` or
+`BROKER_EXCHANGE_JOB_ACCOUNTS` lists, `403 POD_ACCOUNT_NOT_LISTED`. A deployment that does not
+want that pairs no such account with itself.
 
 A release (below) belongs to the account the caller logs in as, not to the caller's pod. Every pod
 of an account paired with itself can log in as that account: the pair registers nothing unless
@@ -415,8 +417,8 @@ account whose pods may end the trades of every pod that account registers. An ac
 itself is the common case of an account whose pods may not.
 
 An account `BROKER_EXCHANGE_READ_ACCOUNTS` lists (below) is refused `409 SESSION_FIXED`, as is an
-account whose `BROKER_EXCHANGE_ACCOUNTS` entry fixes a session: such an entry fixes the session its
-tokens name, so its pods need no registration.
+account whose `BROKER_EXCHANGE_ACCOUNTS` or `BROKER_EXCHANGE_JOB_ACCOUNTS` entry fixes a session:
+such an entry fixes the session its tokens name, so its pods need no registration.
 A daemon that stops registering costs its pods their writes within the registration's own retention
 (24 hours past the last write). Do not list such an account in `BROKER_API_ACCOUNTS` as well: that
 is the separate list of the callers that relay a person's decisions and read tokens back.
@@ -637,6 +639,9 @@ broker refuses to start, naming the entry or the account, on:
   side of an entry is not refused);
 - a mapped account that a `BROKER_EXCHANGE_READ_ACCOUNTS` entry names, since the exchange would
   then mint the person's pod a read-only token that names a service and no person;
+- a mapped account that a `BROKER_EXCHANGE_JOB_ACCOUNTS` entry names, since the exchange would
+  then mint the person's pod a job's token that names the account as its service and no person
+  and reaches the entry's projects;
 - a mapped account that a `BROKER_API_ACCOUNTS` entry names, since that caller's routes relay
   approvals in the name the caller gives;
 - a mapped account that a `BROKER_NATS_SERVICES` entry names, since the person's pod would then be
@@ -775,16 +780,16 @@ project's Legion daemon URL (`PUT` and `DELETE /api/v1/projects/{key}/legion/dae
 repository (`PUT /api/v1/projects/{key}/default-repository`), and the delivery session groups
 (`POST`, `PATCH` and `DELETE /api/v1/delivery/session-groups`). The broker refuses to start on an
 entry that names a project and no person: an entry that names a project names its person, so no
-token that names a project is personless. A broker of a build older than the entry naming no person
-refuses to start on one, and an Envoy listener or a Dispatch of a build older than it answers such
-a token `401`, so deploy the broker, Dispatch and every Envoy listener before you write one. For the
-same reason, before you roll the broker, Dispatch or an Envoy listener back to a build older than
-this release, remove every entry that names no person and redeploy the broker: an older broker
-refuses to start on such an entry and restarts in a loop, and an older Dispatch or listener answers
-the account's tokens `401`. Bring the session images' pi-envoy and claude-envoy builds that carry
-the same release's `dispatch` command there first too: an older `dispatch whoami` ignores
-Dispatch's `sign_in_required` and tells such a session that its writes are refused, though they
-succeed.
+account entry's token that names a project is personless. A broker of a build older than the entry
+naming no person refuses to start on one, and an Envoy listener or a Dispatch of a build older than
+it answers such a token `401`, so deploy the broker, Dispatch and every Envoy listener before you
+write one. For the same reason, before you roll the broker, Dispatch or an Envoy listener back to a
+build older than this release, remove every entry that names no person and redeploy the broker: an
+older broker refuses to start on such an entry and restarts in a loop, and an older Dispatch or
+listener answers the account's tokens `401`. Bring the session images' pi-envoy and claude-envoy
+builds that carry the same release's `dispatch` command there first too: an older `dispatch whoami`
+ignores Dispatch's `sign_in_required` and tells such a session that its writes are refused, though
+they succeed.
 An entry whose fixed session is `legion-daemon:<its own project>` is a Legion daemon's own, for
 example `system:serviceaccount:example-ns:example-daemon=EXAMPLE=ada@example.com=legion-daemon:EXAMPLE`.
 The token of such an entry holds the OAuth scope `legion-status` alone, which Dispatch reads
@@ -810,9 +815,63 @@ read entry without the audience. It also refuses an entry with a missing field, 
 build older than this setting does not read it, so it mints those accounts no token. The boot line
 `token exchange state=on` counts the read entries as `read_accounts`.
 
-No setting turns on a read trade. Every trade the exchange takes may ask for the scope `read`
-(`scope=read`), and its token keeps the identity the same trade would have had and writes nothing
-([Concepts](/legion/broker/concepts/#sessions-and-enrollment)). Such a trade may name a cut
+A job that writes to Dispatch for no person, such as a sweeper or a release workflow, gets a job
+entry in place of an entry that names a person. `BROKER_EXCHANGE_JOB_ACCOUNTS` lists a pod's
+service account, as whitespace-separated `<service account>=<projects>[=<session>]` entries, and
+`BROKER_EXCHANGE_JOB_WORKFLOWS` lists a GitHub Actions workflow of one repository on one ref, as
+`<repository>=<workflow path>=<ref>=<projects>[=<session>]` entries, for example:
+
+```sh
+BROKER_EXCHANGE_JOB_ACCOUNTS=system:serviceaccount:example-ns:example-job=EXAMPLE
+BROKER_EXCHANGE_JOB_WORKFLOWS=example-org/example-repo=.github/workflows/sweep.yaml=refs/heads/main=public,PRIVA=example-sweep
+```
+
+`<projects>` is one project key, or `public` followed by `,<key>` for each of at most 16 private
+projects. The token the exchange mints for a job entry names the entry's identity as its service
+(the account, or `<repository>/<workflow path>@<ref>` for a workflow) and no person, holds no OAuth
+scope, so a route that needs `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED` before
+Dispatch's project check runs, and carries the entry's projects whatever the request names: under
+the project scope `named` its one project, for which that check judges the token as it judges a
+person's `named` token for that project (a write to another project is `403 PROJECT_SCOPE` for
+both until dispatch://INFRA-4799 changes that), or under the project scope `public` its private
+projects, beside which it reaches every public project. A request may name no project or only
+projects of the entry, and the broker refuses one that names any other, a public project's key
+under `public` included, since it cannot tell a public project's key from a key no project holds.
+The broker asks Dispatch nothing for such a token: the entry chose its projects. Dispatch records
+each write of the token under its session, for its service and under no person. At this release
+Dispatch does not read a `public` token's list, so such a token writes wherever a token that
+names no project may. An entry that fixes no session takes the session the trade names, and the
+broker refuses a trade that names none; a daemon may register a pod of a job account whose entry
+fixes none (above).
+
+The broker refuses to start, naming the entry, on an entry of either setting not of its form or
+with a blank field, a pod account that is not `system:serviceaccount:<namespace>:<name>` or is a
+namespace's `default` account, an identity listed twice, and projects of any other spelling. It
+also refuses an account that `BROKER_EXCHANGE_JOB_ACCOUNTS` and `BROKER_EXCHANGE_ACCOUNTS` or
+`BROKER_EXCHANGE_READ_ACCOUNTS` both list, and a workflow that `BROKER_EXCHANGE_JOB_WORKFLOWS` and
+`BROKER_EXCHANGE_WORKFLOWS` both list, since one identity has one answer, and an account
+`BROKER_POD_OPERATORS` maps to a person (above). `BROKER_EXCHANGE_JOB_ACCOUNTS` needs
+`BROKER_K8S_OIDC_ISSUER` and `BROKER_EXCHANGE_K8S_AUDIENCE`, and `BROKER_EXCHANGE_JOB_WORKFLOWS`
+needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`. A broker of a build
+older than these settings does not read them, so it mints those identities no token. The boot line
+`token exchange state=on` counts their entries as `job_accounts` and `job_workflows`.
+
+A GitHub Actions job trades its run's own token, with no stored secret. Give the job the
+permission `id-token: write`, so that GitHub sets `ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` in it, and set `AGENT_SECRETS_URL`,
+`AGENT_SECRETS_MACHINE_IDENTITY=github-actions` and `AGENT_SECRETS_MACHINE_AUDIENCE`, which must
+equal the broker's `BROKER_EXCHANGE_GITHUB_AUDIENCE`: the client asks GitHub for a token of that
+audience, and the broker refuses a token of any other. Each trade asks GitHub for a new token,
+since the broker takes each GitHub token once. `dispatch api --path <route>`, the `bin/dispatch`
+of `@sjawhar/codex-envoy` or `@sjawhar/pi-envoy`, then sends the job's requests to Dispatch under
+the traded token: a `GET`, or with `--method POST`, `PUT`, `PATCH` or `DELETE` a write, whose body
+`--body-file` reads from a file or, as `--body-file -`, from standard input. `agent-secrets`
+refuses `github-actions` (exit 2), as it refuses `kubernetes`, since the broker mints no launcher
+credential for a workflow run.
+
+No setting turns on a read trade. Every trade the exchange takes but a job entry's may ask for
+the scope `read` (`scope=read`), and its token keeps the identity the same trade would have had
+and writes nothing ([Concepts](/legion/broker/concepts/#sessions-and-enrollment)). Such a trade may name a cut
 (`as_of`), an RFC 3339 time with at most six fractional digits, no later than the trade. The broker
 refuses each of these with `400 invalid_request`, naming what is wrong:
 
@@ -820,6 +879,7 @@ refuses each of these with `400 invalid_request`, naming what is wrong:
   time (`0001-01-01T00:00:00Z`, under any offset), which would read as no cut, and a cut in any
   other form.
 - `launcher_credential=true` on a read trade, which makes, moves and extends no credential.
+- A read trade of a job entry's identity: a job's token is minted whole, with no OAuth scope.
 - A `DPoP-Holder` header on a trade that does not ask for `read`, a holder proof that does not
   verify, and a holder proof signed with the DPoP proof's own key.
 - A person's read trade with no `DPoP-Holder` proof.
@@ -880,6 +940,15 @@ account as a VM service. The remaining fleet settings are optional, subject to t
   only by signing in on it. The person an entry names is also whose Inbox lists a request one of
   the fleet's machines makes for a shared human-tier secret; an account with no person leaves such
   a request in every person's Inbox.
+- `BROKER_VM_EXCHANGE_JOB_ACCOUNTS`: `<service account email>=<projects>[=<session>]`, a job's
+  projects in place of a person, spelled as `BROKER_EXCHANGE_JOB_ACCOUNTS` spells them, for an
+  account `BROKER_VM_SERVICES` lists. A machine of that account trades for a job's token, which
+  names the account's address as its service and no person; the machine login that trade mints
+  still names the fleet's service. Every machine that runs as the account then writes to Dispatch
+  as the job, for no person, so list an account here only when every machine that runs as it is
+  that job's. The broker refuses to start on an account this setting and
+  `BROKER_VM_EXCHANGE_ACCOUNTS` both name, an account `BROKER_VM_SERVICES` does not list, and
+  projects of any other spelling. The boot line counts these entries as `job_machines`.
 
 One fleet's entry, `example-fleet`, whose machines run as one account in `example-project`, are
 named `example-vm-...`, and write for one person:
@@ -1016,7 +1085,9 @@ which identity this machine proves: `metadata` with `AGENT_SECRETS_MACHINE_AUDIE
 Engine machine's own token from its metadata server, which is the fleet above; `kubernetes` with
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`, a pod's projected service-account token, which `agent-secrets`
 refuses (exit 2) since the broker mints no launcher credential for it, so no session could be
-registered under it; or `pool`, a token
+registered under it; `github-actions` with `ACTIONS_ID_TOKEN_REQUEST_URL`,
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN` and `AGENT_SECRETS_MACHINE_AUDIENCE`, a GitHub Actions run's
+token (above), which `agent-secrets` refuses in the same way; or `pool`, a token
 minted through a workload identity pool, which takes all four of
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`, the projected service-account token the pool federates as the
 external credential; `AGENT_SECRETS_POOL_AUDIENCE`, the pool provider that credential is
@@ -1388,7 +1459,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Dispatch | Dispatch's server calls the broker's account routes as its own ServiceAccount: it lists the requests and machine logins waiting on the signed-in person, each secret request with its page on the broker (`approve_url`), which its Inbox links to, and relays a person's machine-login decisions and revokes. Set Dispatch's `DISPATCH_AGENT_SECRETS_URL` to the broker's URL and `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to the path of its projected token for `BROKER_K8S_OIDC_AUDIENCE`, and list that account in the broker's `BROKER_API_ACCOUNTS`. Without the URL, Dispatch hides its credential pages. Deploy a broker with the approval page before a Dispatch whose Inbox links it ([Approval sign-in](#approval-sign-in)). |
 | The sign-in provider | A person's browser signs in to the broker at the provider (Google, under the Workspace's internal consent screen), and the broker reaches its token endpoint and keys over HTTPS at a sign-in, and its discovery document at the first sign-in each process serves (kept once a read succeeds) and at the client check it takes at startup and every hour after. A discovery that could not be read, or a code exchange the token endpoint answers `408`, `429` or `5xx`, answers with a body cut off before it arrives whole, or does not answer, answers the page `503` naming the issuer and logs `approval sign-in: reach the provider`; machines are served as before, and `GET /signin/status` reports `issuer_unreachable`: in `last_failed_sign_in_reason` for a failure at the sign-in's callback, and in `client_check` once a client check finds the provider down, which is the only field that shows a failure at the sign-in's start ([What the sign-in is doing](#what-the-sign-in-is-doing)). |
 | Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
-| Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
+| Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`, `BROKER_VM_EXCHANGE_ACCOUNTS` and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. It calls the listener with its own projected ServiceAccount token, which `BROKER_ENVOY_ACCOUNT_TOKEN_FILE` names and which it reads for each notice, so the listener must admit that account. The shared bearer `BROKER_ENVOY_TOKEN` is removed, and a broker started with it refuses to start. |
 | The Envoy hub's NATS auth service (optional) | With `BROKER_NATS_URLS`, the broker answers the authorization of each connection the Envoy hub sends it: a session presenting its broker access token and a proof of its key gets its own delivery channel, and a service presenting a platform token for `BROKER_NATS_K8S_AUDIENCE` or `BROKER_NATS_GOOGLE_AUDIENCE`, from an account `BROKER_NATS_SERVICES` lists, gets its kind's grant; an `edge-listener` entry's connection gets the edge listener's grant for the projects its entry lists. It connects to the hub as the user `BROKER_NATS_SEED_FILE` holds, signs with the account seed in `BROKER_NATS_ISSUER_SEED_FILE` and opens each request with the curve seed in `BROKER_NATS_XKEY_SEED_FILE`; each file is refused at startup unless it holds a seed of its kind. It places every client it admits, the operator and the hold's probe included, in the hub account `BROKER_NATS_ACCOUNT` names, `$G`, the global account, when unset; a hub that keeps JetStream in an account of its own names the account its clients sit in, never the account JetStream sits in (`JETSTREAM`, which refuses the start), and must declare that account before the broker names it, since the hub refuses every client placed in an account it does not have. A value that is neither `$G` nor one subject token of at most 64 letters, digits, `_` and `-`, or one that holds an nkey seed in any spelling (in either case, behind a prefix, or split by `-` or `_`), refuses the start, naming the setting and never the value. Every replica answers in one queue group, so a stopped replica delays no connection. With none of these set the broker runs no auth service. `BROKER_NATS_SERVICES` may list one `operator` entry, the deployment's one operator identity, whose grant follows the NATS writer hold's phase, and one `probe` entry, the hold's probe. The hold's row lives in this broker's Postgres, signed by the operator's Ed25519 key, whose public halves are `BROKER_NATS_HOLD_SIGNING_KEYS`, and only the operator writes it, through `/v1/nats-hold`. With `BROKER_NATS_HOLD_READ=true` (default `false`) the auth service reads the row at each decision on a pool of its own (`BROKER_NATS_HOLD_POOL_SIZE`, default 2) and, while no row that verifies can be read, refuses every client but the operator; the broker then needs the `operator` entry and the signing keys to start, and starts with no row, so the operator writes the first row (`POST /v1/nats-hold/restore`) before the setting is turned on. |
 | The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read at call time and never at boot, so a rotation needs no restart. It reads one issue, that issue's spec document and the ask the reason cites there for the judge, and one issue's assignee for a Legion worker pod's request for a shared secret, and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). With `BROKER_JUDGE_MODEL_ACCOUNT` set, the token it presents to the model is that service account's, which it mints at IAM Service Account Credentials' `generateIdToken`, so it also needs outbound HTTPS to `iamcredentials.googleapis.com` on 443, and a read of the metadata server's token path (`/computeMetadata/v1/instance/service-accounts/default/token`, plain HTTP on the node's own link) for the access token the mint spends; the broker's principal holds `roles/iam.serviceAccountOpenIdTokenCreator` on the account; and the account's project has the IAM Service Account Credentials API turned on. A mint that fails hands the request to its person, and the broker never falls back to the metadata server's identity token. |
@@ -2655,7 +2726,8 @@ every enrollment that login made, but not the copied token: within its hour the 
 under a login of its own. To end it for certain, take the machine out of the fleet's settings and
 redeploy the broker: change `BROKER_VM_INSTANCES` so the glob no longer matches the machine's name,
 or, for the whole fleet, remove the account's entries from `BROKER_VM_SERVICES`,
-`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS`. From then every
+`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`, `BROKER_VM_EXCHANGE_ACCOUNTS` and
+`BROKER_VM_EXCHANGE_JOB_ACCOUNTS`. From then every
 trade and every call of that machine, the copy's included, is refused. Find and remove what copied
 the token before you put the machine back: the latest `token_expires_at` above says when the last
 copied token ends, at most an hour after it was minted. Rotate any secret the copy may have read;

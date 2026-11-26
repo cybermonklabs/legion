@@ -35,11 +35,7 @@ import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { settingsBesideTokenFiles, tokenFilesSet } from "../dispatch-config";
 import { loginHelp } from "../dispatch-login-command";
 import { messageFor } from "../errors";
-
-/** `dispatch login`'s exit codes: done, refused, and a usage error. */
-const OK = 0;
-const REFUSED = 1;
-const USAGE = 2;
+import { OK, REFUSED, USAGE } from "./exit-codes";
 
 /** What the command writes to and waits with. */
 export interface LoginIo {

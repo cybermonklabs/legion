@@ -24,7 +24,7 @@ package api
 //     and the check needs no transaction of its own.
 //   - The check is a no-op for a credential that carries no project: a browser cookie, a personal
 //     agent token, a Kubernetes service-account token and the shared token name none, and so do
-//     five access tokens the broker issues, each of which reaches brokerTokenActor with no
+//     six access tokens the broker issues, each of which reaches brokerTokenActor with no
 //     Project. Two of them the broker scopes to a person rather than to one project, and both
 //     carry `project_scope` `person`: a dev box session's, unscoped here with no second mechanism
 //     of its own, and a machine's that names a service and no person, whose every write
@@ -33,15 +33,21 @@ package api
 //     account's), which names its person and writes wherever Dispatch's own rules let it
 //     (brokerTokenActor). The fourth is the `named` token of an account entry that names no
 //     person either (`<service account>==`), which names the account as its service and writes
-//     the same way, recorded under that account. The fifth is the read entry's token, which
-//     carries `project_scope` `none` and the scope `read` alone and names a service and no
-//     person. It never reaches this check, and nor does any other read-only credential (a token
-//     narrowed to reading, which may name the project it reads as, or an account it would have
-//     written as): the read-only gate register puts outside it answers every such credential 403
+//     the same way, recorded under that account. The fifth is a job's `public` token, which
+//     names its job's identity as its service and no person, carries the private projects its
+//     list names, which no check here reads, and writes wherever Dispatch's own rules let a token
+//     naming no project: writeNeedsASignedInPerson lets it write, and a write that belongs to the
+//     deployment is not refused here. The sixth is the read entry's token, which carries
+//     `project_scope` `none` and the scope `read` alone and names a service and no person. It
+//     never reaches this check, and nor does any other read-only credential (a token narrowed to
+//     reading, which may name the project it reads as, or an account it would have written as):
+//     the read-only gate register puts outside it answers every such credential 403
 //     READ_ONLY_TOKEN on every route outside the read class, every write among them
-//     (refuseReadOnlyToken, readClasses). That is the rule and not a transitional measure: every
-//     caller that exists today writes exactly what it wrote before, which is what lets this
-//     deploy before anything presents a broker token.
+//     (refuseReadOnlyToken, readClasses). A job's `named` token is no such credential: it carries
+//     the one project its entry names, and the check below judges it as it judges a person's
+//     named token for that project. That is the rule and not a transitional measure: every caller
+//     that exists today writes exactly what it wrote before, which is what lets this deploy before
+//     anything presents a broker token.
 //
 // A credential that names one project writes every project's objects that a credential naming
 // none may write. The one exception is a private project that the credential does not name.
@@ -66,12 +72,23 @@ package api
 // a scoped caller can tell an object it may write from an id nobody holds, but not an id nobody
 // holds from an object it cannot see. Nothing is read out that way: no GET route is
 // project-scoped.
+//
+// A third check stands outside both, in front of every mutating row whatever its class
+// (writeNeedsASignedInPerson): a broker credential that names a service and no person writes only
+// when its project scope is `named` or `public`: the two shapes of a job's token, which the
+// exchange mints from an entry that names the job's identity and its projects and no person, and
+// under `named` the token of an account entry that names no person and no project, whose service
+// is that account. Every other broker credential naming no person is refused SIGN_IN_REQUIRED. The
+// rule names the scopes that write rather than the one that does not, so it fails closed: today the
+// one other scope that reaches it is `person`, a machine nobody has signed in on, and a project
+// scope the broker answers later is refused until this rule names it.
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -484,25 +501,31 @@ func addressesOneSession(route apiRoute) bool {
 	return route.Scope == scopeSession && strings.Contains(route.Pattern, "{session_id}")
 }
 
-// writeNeedsASignedInPerson refuses every write by a caller whose credential names a service and
-// no person under the project scope person: an access token the secrets broker issued to a
-// machine nobody has signed in on. The refusal is here, in front of every mutating row whatever
-// its class, rather than in each route, for the reason the two checks above are: a route added
-// later is covered by the table it joins and not by a line someone remembered to write.
+// writeNeedsASignedInPerson refuses every write by a caller whose broker-issued credential names
+// a service and no person, unless its project scope is `named` or `public`: the two shapes of a
+// job's token, which the secrets broker's exchange mints from a job entry that names the job's
+// identity, its projects and no person, and, under `named`, the token of an exchange account
+// entry that names no person and no project, whose service is that account (brokerTokenActor).
+// Such a token writes as its session, for its service, and the project check judges a `named` one
+// naming a project as it judges a person's named token for that project. The refusal is here, in
+// front of every mutating row whatever its class, rather than in each route, for the reason the
+// two checks above are: a route added later is covered by the table it joins and not by a line
+// someone remembered to write.
 //
-// Such a caller may read everything its session may read. What it may not do is write, because
-// Dispatch records a write under the person who made it and this credential names none; a
-// session that accepted a delivery or answered an ask under it would write as nobody. The
-// refusal's message names `agent-secrets login`, the command that signs a person in on that
-// machine, since running it is the whole remedy.
+// The rule names the scopes that write and refuses every other, so it fails closed. The one
+// other scope the verifier lets reach it is `person` (ciphertoken.Caller): an access token the
+// broker issued to a machine nobody has signed in on. Such a caller may read everything its
+// session may read. What it may not do is write, because nobody signed in on that machine and no
+// entry named it a job's; a session that accepted a delivery or answered an ask under it would
+// write for a machine nobody stands behind. The refusal's message names `agent-secrets login`,
+// the command that signs a person in on that machine, since running it is the whole remedy. A
+// project scope the broker answers later is refused the same way until this rule names it.
 //
-// A token that names a service and no person under the project scope named is no such caller:
-// the broker minted it from an account entry that names no person and no project, and its
-// service is that account, which the operator listed. Its writes are recorded under that account
-// (model.Actor.Service), so it reaches the handler as a credential naming a person does, and it
-// is held to the routes its lack of OAuth scope leaves it (gateRouteScopes). The test is on the
-// project scope the broker answered, `named` and nothing else, so a scope this check does not
-// know is refused as a machine's is.
+// A token naming no person that writes under one of the named scopes has its writes recorded
+// under its service (model.Actor.Service), so it reaches the handler as a credential naming a
+// person does, and it is held to the routes its lack of OAuth scope leaves it (gateRouteScopes).
+// The test is on the project scope the broker answered, one of writingServiceScopes and nothing
+// else, so a scope this check does not know is refused as a machine's is.
 //
 // A read-only token may name a service and no person too, an account entry's narrowed to
 // reading among them, but it is no such caller: it may only read, and signing a person in is no
@@ -532,27 +555,40 @@ func (s *server) writeNeedsASignedInPerson(handler http.HandlerFunc) http.Handle
 
 // signInRequired is the one decision writeNeedsASignedInPerson refuses a write on and whoami
 // answers as sign_in_required: whether r presents a broker-issued token that resolved, may write,
-// and names a service and no person, and is no account entry's (actsAsItsAccount), which is a
-// machine nobody has signed in on, and the service that token names. Every other caller answers
-// false: a credential that is no broker token, one that did not resolve (its refusal is written
-// further in), one that names a person, an account entry's token naming no person, whose writes
-// are recorded under its account, and a read-only token, whatever it names. A read-only token
-// writes nothing whoever signs in: the read-only gate answers its every write 403
-// READ_ONLY_TOKEN before writeNeedsASignedInPerson runs, and whoami tells it read among its
-// scopes rather than that a person must sign in.
+// and names a service and no person, and whose project scope is not one under which such a token
+// writes as its service (writesAsItsService), which is a machine nobody has signed in on, and the
+// service that token names. Every other caller answers false: a credential that is no broker
+// token, one that did not resolve (its refusal is written further in), one that names a person, a
+// job's token and an account entry's token naming no person, whose writes are recorded under
+// their service, and a read-only token, whatever it names. A read-only token writes nothing
+// whoever signs in: the read-only gate answers its every write 403 READ_ONLY_TOKEN before
+// writeNeedsASignedInPerson runs, and whoami tells it read among its scopes rather than that a
+// person must sign in.
 func (s *server) signInRequired(r *http.Request) (string, bool) {
 	actor, resolved := s.brokerCredentialActor(r)
-	if !resolved || actor.Owner != nil || actor.Service == nil || actsAsItsAccount(actor) || (actor.Credential != nil && actor.Credential.ReadOnly) {
+	if !resolved || actor.Owner != nil || actor.Service == nil || writesAsItsService(actor.Credential) || (actor.Credential != nil && actor.Credential.ReadOnly) {
 		return "", false
 	}
 	return *actor.Service, true
 }
 
-// actsAsItsAccount answers whether a broker-issued token naming a service and no person is an
-// account entry's that names no person (the project scope named), whose writes are recorded under
-// the account it names, rather than a machine's nobody signed in on (the project scope person).
-func actsAsItsAccount(actor model.Actor) bool {
-	return actor.Credential != nil && actor.Credential.ProjectScope == ciphertoken.ProjectScopeNamed
+// writingServiceScopes holds the project scopes under which a broker-issued token that names a
+// service and no person writes as that service: `named`, which a job's token naming its one
+// project and an exchange account entry's naming no person and no project (whose service is that
+// account) carry, and `public`, a job's. Dispatch refuses every other such token every write with
+// SIGN_IN_REQUIRED, a project scope the broker answers later among them, until this list names
+// it.
+var writingServiceScopes = []string{ciphertoken.ProjectScopeNamed, ciphertoken.ProjectScopePublic}
+
+// writesAsItsService answers whether a broker-issued credential carries one of the project
+// scopes under which a token naming a service and no person writes as that service,
+// writingServiceScopes: `named`, a job's token naming its one project or an exchange account
+// entry's naming no person and no project, whose service is that account, and `public`, a job's.
+// whoami answers the decision built on it as sign_in_required (signInRequired), which `dispatch
+// whoami` reads. A nil credential, an empty scope and every other word answer false, `person`
+// among them, a machine's nobody signed in on.
+func writesAsItsService(credential *model.Credential) bool {
+	return credential != nil && slices.Contains(writingServiceScopes, credential.ProjectScope)
 }
 
 // undecidableWrites names every mutating row the project check cannot decide: one writeClasses

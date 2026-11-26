@@ -55,6 +55,7 @@ export const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unk
   whoami: (client) => client.whoami(),
   limits: (client) => client.limits(),
   readRoute: (client) => client.readRoute("/api/v1/issues/DSP-1/events?limit=200"),
+  sendRoute: (client) => client.sendRoute("POST", "/api/v1/issues/DSP-1/comments", "{}"),
   inbox: (client) => client.inbox("me"),
   myReplies: (client) => client.myReplies(),
   credentialPending: (client) => client.credentialPending(),

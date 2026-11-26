@@ -249,8 +249,8 @@ func TestPriorityNode(t *testing.T) {
 	}
 
 	// The two credential refusals the write class brings: a credential that names one project may
-	// not write a priority, which belongs to no project and is the deployment's, and a token
-	// naming a service and no person may write nothing at all.
+	// not write a priority, which belongs to no project and is the deployment's, and the token of a
+	// machine nobody signed in on, which names a service and no person, may write nothing at all.
 	refuseScopedCredentials(t)
 }
 
