@@ -53,11 +53,11 @@ func openEmptyTestStore(t *testing.T) *Store {
 	ctx := context.Background()
 	baseURL, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
-	store, err := Open(ctx, testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	store, err := Open(ctx, testdb.DatabaseOn(t, adminURL.String(), "", "dispatch_test"))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -719,11 +719,11 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	ctx := context.Background()
 	baseURL, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
-	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "", "dispatch_test"))
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}
@@ -1106,7 +1106,7 @@ func adminDatabaseURL(t *testing.T) url.URL {
 	t.Helper()
 	admin, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
 	}
 	admin.Path = "/postgres"
 	return *admin

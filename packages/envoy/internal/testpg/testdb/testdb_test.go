@@ -67,7 +67,7 @@ func TestADatabaseURLsSetPairsReplaceTheServersOfTheirKey(t *testing.T) {
 // configuration parameter "+work_mem".
 func TestATestDatabaseOnAnOptionsURLConnectsWithTheOption(t *testing.T) {
 	t.Parallel()
-	database := DatabaseOn(t, withPairs(testServer(t), "options=-c%20work_mem%3D7MB"), "testdb_options_test")
+	database := DatabaseOn(t, withPairs(testServer(t), "options=-c%20work_mem%3D7MB"), "", "testdb_options_test")
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, database)
 	if err != nil {

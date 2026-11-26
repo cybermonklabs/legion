@@ -115,7 +115,7 @@ func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn 
 		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
 	}
 	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "pgmigrate_catalog"))
+	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "", "pgmigrate_catalog"))
 	if _, err := conn.Exec(ctx, catalogOnlyFixture(rows)); err != nil {
 		t.Fatalf("load the fixture: %v", err)
 	}

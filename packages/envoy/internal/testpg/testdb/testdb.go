@@ -1,9 +1,9 @@
 // Package testdb is the half of internal/testpg that needs no container runtime: DatabaseOn makes
-// an empty Postgres database of a test's own on a server the test already holds, and DatabaseURL
-// names a database on such a server. It imports no testcontainers package, so a test helper every
-// Postgres-backed test links (the broker's storetest among them) does not pay testcontainers'
-// package init, which walks every process on the machine before any test runs. internal/testpg
-// keeps the container path and calls this.
+// a Postgres database of a test's own on a server the test already holds, empty or a copy of a
+// template, and DatabaseURL names a database on such a server. It imports no testcontainers
+// package, so a test helper every Postgres-backed test links (the broker's storetest among them)
+// does not pay testcontainers' package init, which walks every process on the machine before any
+// test runs. internal/testpg keeps the container path and calls this.
 package testdb
 
 import (
@@ -20,33 +20,39 @@ import (
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
-// test ends, and returns a URL of that database (DatabaseURL: adminURL with its path replaced by
-// it, and its query's pairs kept byte for byte but for any dbname or database). The name is
-// prefix, an underscore and eight random bytes in hex: it is random because every test of every
-// package sharing one server takes a name there.
+// test ends, and returns a URL of that database with each of set added (DatabaseURL: adminURL with
+// its path replaced by it, and its query's pairs kept byte for byte but for any dbname or database
+// and those set replaces). The database is a copy of template's files, or of template1's where
+// template is "", Postgres's own default. The name is prefix, an underscore and eight random bytes
+// in hex (NewDatabaseName): it is random because every test of every package sharing one server
+// takes a name there.
 //
 // Both statements run on adminURL itself, which is exact for every caller because a caller passes
 // the URL its own statements run on, and that URL and the result differ only in the database they
-// select.
+// select. Each opens a connection of its own, so no pool outlives the test.
 //
 // A failure names the server's host and the database, never adminURL: a DSN carries a credential,
 // and a test here prints none (docs/solutions/testing/a-proof-script-never-prints-a-dsn-a-userinfo-scrubber-leaks-the-query-and-keyword-password-forms-INFRA-229.md).
 // This function reads no environment variable and starts no container, so its failures can name
 // neither.
-func DatabaseOn(t testing.TB, adminURL, prefix string) string {
+func DatabaseOn(t testing.TB, adminURL, template, prefix string, set ...string) string {
 	t.Helper()
 	server, err := url.Parse(adminURL)
 	if err != nil {
 		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
 		t.Fatalf("parse the admin URL of the Postgres server: %v", errors.Unwrap(err))
 	}
-	name, err := newDatabaseName(prefix)
+	name, err := NewDatabaseName(prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A copy of template1's files: created the default way, through the write-ahead log, an empty
+	from := ""
+	if template != "" {
+		from = " template " + pgx.Identifier{template}.Sanitize()
+	}
+	// A copy of the source's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
-	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
+	adminExec(t, adminURL, server.Host, "create database "+name+from+" strategy file_copy")
 	// `with (force)` ends every backend attached to the database, which the drop needs because a
 	// database a connection still holds cannot be dropped. That covers a connection the test left
 	// open, so one leaked pool cannot keep a database on a shared server for the rest of the run.
@@ -55,11 +61,12 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	// the role, which nothing in the database then holds (internal/dispatch/store's
 	// dropRoleAfterTestDatabase).
 	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database if exists "+name+" with (force)") })
-	return DatabaseURL(*server, name)
+	return DatabaseURL(*server, name, set...)
 }
 
-// newDatabaseName is prefix, an underscore and eight random bytes in hex.
-func newDatabaseName(prefix string) (string, error) {
+// NewDatabaseName is prefix, an underscore and eight random bytes in hex: the name of a database a
+// test, or a harness, makes of its own on a server others share.
+func NewDatabaseName(prefix string) (string, error) {
 	var suffix [8]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return "", fmt.Errorf("random database name: %w", err)
@@ -102,25 +109,16 @@ func DatabaseURL(server url.URL, database string, set ...string) string {
 
 // adminExec runs one statement over a connection of its own to adminURL, failing t: neither
 // create database nor drop database may run inside a transaction or against the database it
-// names.
+// names. host is that server's host, printed in place of adminURL, which carries a credential.
 func adminExec(t testing.TB, adminURL, host, statement string) {
 	t.Helper()
-	if err := execOn(adminURL, host, statement); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// execOn runs statement over a connection of its own to adminURL. host is that server's host,
-// printed in place of adminURL, which carries a credential.
-func execOn(adminURL, host, statement string) error {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		return fmt.Errorf("connect to the Postgres server at %s: %w", host, err)
+		t.Fatalf("connect to the Postgres server at %s: %v", host, err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, statement); err != nil {
-		return fmt.Errorf("%s on %s: %w", statement, host, err)
+		t.Fatalf("%s on %s: %v", statement, host, err)
 	}
-	return nil
 }

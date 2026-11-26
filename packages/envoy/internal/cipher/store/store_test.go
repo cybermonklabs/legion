@@ -35,7 +35,7 @@ func testServerURL(t *testing.T) string {
 // migrations of every other test and of every other run on the server would hold it too.
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
-	return testdb.DatabaseOn(t, testServerURL(t), "broker_store_test")
+	return testdb.DatabaseOn(t, testServerURL(t), "", "broker_store_test")
 }
 
 func TestMigrateIsIdempotentAndCreatesTables(t *testing.T) {

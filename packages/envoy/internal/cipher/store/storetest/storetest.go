@@ -10,7 +10,29 @@
 // locks: Migrate's lock (store.go's lockAndPin) and the serving beat's (enroll's servingLock). In
 // one shared database, every test's migration, every broker's boot and every beat waited for those
 // of every other test of every package of the run, and the tests of a package could not run at
-// once. It also writes the rows only a database writer other than the broker could (Exec,
+// once.
+//
+// Dispatch's storetest and the daemon's testpg each make a template of the test binary's own and
+// drop it, and their clones, in the package's TestMain. This harness differs in three ways:
+//   - The template is the server's, not the binary's, and nothing drops it: every broker test
+//     binary of a run, and of every later run of the same migration set on that server, copies the
+//     one template, so no binary owns it, and none could drop it while another copies it. CI gives
+//     each job a server of its own. A server that outlives runs (a dev box's) keeps one template per
+//     migration set, which drop database reclaims when no run is using it. The name comes from the
+//     embedded migration files alone (store.MigrationsDigest), so a change to how Migrate applies
+//     them that leaves the files as they are reuses the template the earlier code built; drop it
+//     there to build it again.
+//   - A test drops its own database in its own cleanup and waits for the drop's checkpoint, where
+//     Dispatch's drops run in the background and its TestMain waits for them: no package of the
+//     broker needs a TestMain for its databases, so nothing would wait for a drop left running.
+//   - Each create and drop opens a connection of its own (testdb.DatabaseOn), so no pool is held
+//     that a TestMain would have to close.
+//
+// A test binary that -timeout ends leaves the databases of the tests it was running behind
+// (broker_test_<hex>), as every harness here does on a kill; on a long-lived server they are
+// dropped by hand when no run is going (docs/testing.md, "A database a Go test creates").
+//
+// It also writes the rows only a database writer other than the broker could (Exec,
 // ForgeRequestSignature, CopyAsOtherKind), for the tests that pin what a release or an
 // authentication refuses. It is an ordinary package rather than a _test.go file so every broker
 // package can import it.
@@ -18,9 +40,8 @@ package storetest
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -53,18 +74,6 @@ func serverURL(t testing.TB) string {
 	return raw
 }
 
-// randomName mints the name of the database one test gets of its own. It is random rather than
-// derived from t.Name() because two concurrent runs of one test - this package's tests and a
-// sibling package's, against the one server - would otherwise mint the same name.
-func randomName(t testing.TB) string {
-	t.Helper()
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		t.Fatalf("random database name: %v", err)
-	}
-	return "broker_test_" + hex.EncodeToString(suffix[:])
-}
-
 // testSchema is the schema the template's tables are migrated into, and every clone's connection
 // string names as its search_path, as each test's own schema was named before.
 const testSchema = "broker_test"
@@ -79,10 +88,19 @@ type templateDatabase struct {
 	err  error
 }
 
-// templateLockKey is the session advisory lock, in the server URL's own database, under which a
-// process looks for the template and makes it when it is missing: every broker test binary of a
-// run, and of every other run on the server, asks at once.
+// templateLockKey is the session advisory lock under which a process looks for the template and
+// makes it when it is missing: every broker test binary of a run, and of every other run on the
+// server, asks at once. Postgres keeps an advisory lock per database, so the lock is taken on a
+// connection to the server's postgres database (lockDatabase), whatever database the server's URL
+// names: two binaries that name the same server through different databases take the one lock,
+// and the sweep of unfinished builds below, which drops every build it finds, never drops one that
+// another process is building.
 const templateLockKey = "envoy broker storetest template"
+
+// lockDatabase is the database of the server templateLockKey is taken in: one every Postgres
+// server has, which the template is never copied from (a database a session is connected to
+// cannot be a template's source, so template1 would be the wrong one).
+const lockDatabase = "postgres"
 
 // template is the name of the database every test's own database is copied from: the server's
 // broker_template_<16 hex digits of store.MigrationsDigest>, migrated once by the first process to
@@ -110,12 +128,14 @@ func makeTemplate(raw string) (string, error) {
 	name := "broker_template_" + digest[:16]
 	server, err := url.Parse(raw)
 	if err != nil {
-		return "", fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
+		// url.Parse's own error quotes the URL it was given, password and all, so only the error it
+		// wraps is printed.
+		return "", fmt.Errorf("parse %s: %w", DatabaseURLEnv, errors.Unwrap(err))
 	}
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, raw)
+	conn, err := pgx.Connect(ctx, testdb.DatabaseURL(*server, lockDatabase))
 	if err != nil {
-		return "", fmt.Errorf("connect to %s: %w", DatabaseURLEnv, err)
+		return "", fmt.Errorf("connect to the %s database of %s: %w", lockDatabase, DatabaseURLEnv, err)
 	}
 	defer conn.Close(ctx)
 	if _, err := conn.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey); err != nil {
@@ -129,8 +149,8 @@ func makeTemplate(raw string) (string, error) {
 	if exists {
 		return name, nil
 	}
-	// Builds only happen under the lock, so any build database on the server now is one whose
-	// process died before it renamed it.
+	// Builds only happen under the lock, which is the server's, so any build database on the server
+	// now is one whose process died before it renamed it.
 	rows, err := conn.Query(ctx, "select datname from pg_database where datname like 'broker_template_build_%'")
 	if err != nil {
 		return "", fmt.Errorf("list unfinished template builds: %w", err)
@@ -144,11 +164,10 @@ func makeTemplate(raw string) (string, error) {
 			return "", fmt.Errorf("drop the unfinished template build %s: %w", leftover, err)
 		}
 	}
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
+	build, err := testdb.NewDatabaseName("broker_template_build")
+	if err != nil {
 		return "", err
 	}
-	build := "broker_template_build_" + hex.EncodeToString(suffix[:])
 	if _, err := conn.Exec(ctx, "create database "+build+" strategy file_copy"); err != nil {
 		return "", fmt.Errorf("create the template build: %w", err)
 	}
@@ -192,21 +211,12 @@ func migrateTemplate(ctx context.Context, server *url.URL, build string) error {
 
 // URL creates a database of the test's own on the DatabaseURLEnv server, a file copy of the
 // migrated template (template), drops it when t ends, and returns a connection string whose
-// connections use its migrated schema. params are extra connection parameters as raw query pairs,
-// key=value (e.g. "pool_max_conns=2"), each replacing any pair of its key the server's URL holds.
-// It skips t when DatabaseURLEnv is unset. The server's login needs CREATEDB.
+// connections use its migrated schema (testdb.DatabaseOn). params are extra connection parameters
+// as raw query pairs, key=value (e.g. "pool_max_conns=2"), each replacing any pair of its key the
+// server's URL holds. It skips t when DatabaseURLEnv is unset. The server's login needs CREATEDB.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
 	raw := serverURL(t)
-	tmpl := template(t, raw)
-	name := randomName(t)
-	admin(t, raw, "create database "+name+" template "+tmpl+" strategy file_copy")
-	t.Cleanup(func() { admin(t, raw, "drop database if exists "+name+" with (force)") })
-
-	server, err := url.Parse(raw)
-	if err != nil {
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, err)
-	}
 	set := []string{"search_path=" + testSchema}
 	for _, param := range params {
 		if _, err := url.ParseQuery(param); err != nil {
@@ -214,7 +224,7 @@ func URL(t testing.TB, params ...string) string {
 		}
 		set = append(set, param)
 	}
-	return testdb.DatabaseURL(*server, name, set...)
+	return testdb.DatabaseOn(t, raw, template(t, raw), "broker_test", set...)
 }
 
 // Open is store.Open on a fresh URL(t, params...), closed when t ends.
@@ -271,20 +281,7 @@ func PerPodLoginSchema(t testing.TB, st *store.Store) {
 // tables runs store.Migrate on it itself.
 func DatabaseURL(t testing.TB) string {
 	t.Helper()
-	return testdb.DatabaseOn(t, serverURL(t), "broker_test")
-}
-
-func admin(t testing.TB, databaseURL, statement string) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect to %s: %v", DatabaseURLEnv, err)
-	}
-	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, statement); err != nil {
-		t.Fatalf("%s: %v", statement, err)
-	}
+	return testdb.DatabaseOn(t, serverURL(t), "", "broker_test")
 }
 
 // Querier is what AwaitLockWaiters and LockWaitersBehind read through: a pool, or a connection of

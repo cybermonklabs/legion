@@ -69,7 +69,7 @@ func passwordRole(t *testing.T, password string) (role, adminURL, databaseURL st
 	adminExec(t, raw, "create role "+role+" login password '"+password+"'")
 	t.Cleanup(func() { adminExec(t, raw, "drop role if exists "+role) })
 	adminExec(t, raw, "grant "+role+" to current_user with inherit true")
-	adminURL = testdb.DatabaseOn(t, raw, "broker_iam_test")
+	adminURL = testdb.DatabaseOn(t, raw, "", "broker_iam_test")
 	adminExec(t, adminURL, "grant create on schema public to "+role)
 	parsed, err := url.Parse(adminURL)
 	if err != nil {
@@ -84,7 +84,7 @@ func endpointOf(t *testing.T, databaseURL string) string {
 	t.Helper()
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("parse the test database's URL: %v", errors.Unwrap(err))
 	}
 	return net.JoinHostPort(parsed.Hostname(), cmp.Or(parsed.Port(), "5432"))
 }

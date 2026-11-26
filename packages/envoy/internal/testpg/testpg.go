@@ -68,7 +68,7 @@ func databaseOn(t testing.TB, raw string) string {
 		t.Fatalf("parse %s: %v", databaseURLEnv, errors.Unwrap(err))
 	}
 	server.Path = "/postgres"
-	return testdb.DatabaseOn(t, server.String(), "testpg")
+	return testdb.DatabaseOn(t, server.String(), "", "testpg")
 }
 
 // containerURL starts Image, waits for Postgres to finish its first initialization and be ready
