@@ -33,9 +33,11 @@ test("the done checkpoint fails on a close that waits and on a pr-merged notice 
   expect(done).toContain(
     `log_lines "workflow: a merged issue's close waits for the issues beneath it"`
   );
-  expect(done).toContain('[ "$waited" = 0 ]');
-  expect(done).toContain('notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")"');
-  expect(done).toContain('[ -z "$merged_notice" ]');
+  expect(done).toContain('[ "$close_waited" = 0 ]');
+  expect(done).toContain(
+    'notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")"'
+  );
+  expect(done).toContain('[ "$merged_notices" = 0 ]');
 });
 
 test("the done checkpoint waits for no merged root left in merging and parks no child again", () => {
