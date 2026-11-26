@@ -5,9 +5,9 @@ body: |-
   login records the account that approved it (`approver_issuer` and `approver_subject` in the
   approve), and an approval-page session records the account that signed in (migration
   `0045_person_subjects`). A recorded account never changes (`0046_recorded_accounts_unchanged`),
-  and the guards that hold these tables run under a `search_path` of their own
-  (`0047_guards_search_path`). Introspection answers `account_issuer`, `account_subject` and
-  `credential_created_at` beside a token whose credential records them. `POST
+  and the guards that hold these tables run under a `search_path` of their own, set by the same two
+  migrations. Introspection answers `account_issuer`, `account_subject` and `credential_created_at`
+  beside a token whose credential records them. `POST
   /v1/person-subjects/revoke` takes an address, the account another account replaced there and the
   replacement's session generation: it ends every sign-in, machine login and approval-page session
   that account made under the address, with the tokens each holds, and every one that records no

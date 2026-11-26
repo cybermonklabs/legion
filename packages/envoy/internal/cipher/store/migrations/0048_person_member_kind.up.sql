@@ -1,4 +1,4 @@
--- packages/envoy/internal/cipher/store/migrations/0050_person_member_kind.up.sql
+-- packages/envoy/internal/cipher/store/migrations/0048_person_member_kind.up.sql
 -- The member kind the last answer of Dispatch's person route named for each person, so that while
 -- Dispatch cannot be asked the broker serves a person last answered a full member as one and
 -- refuses everyone else (projectaccess.Client.MemberKind), at a restart and at a second broker

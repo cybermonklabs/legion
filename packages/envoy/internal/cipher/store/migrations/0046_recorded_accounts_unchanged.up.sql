@@ -6,8 +6,9 @@
 -- and subject), and the account a token's trade recorded on the token itself (the account_issuer
 -- and account_subject of the session an access or refresh token stores in its request). Every
 -- reader of a credential's account reads it from that credential's own row, so a credential acts
--- as the account it was made by and no other. A sign-in that records no account is ended and
--- replaced by a row of its own (store.RecordPersonSignIn), never given one.
+-- as the account it was made by and no other. A sign-in that records no account is never given
+-- one: where the broker asks Dispatch its next trade ends it and writes a row of its own, and
+-- elsewhere it goes on recording none (store.RecordPersonSignIn).
 --
 -- These triggers make that hold for every write, whatever code, language or migration sends it:
 -- an update that would change a recorded account, null to an account included, is refused with
@@ -19,6 +20,11 @@
 -- or revoke, a machine login's new key or expiry, a token's revoke or grace) costs nothing; one
 -- that names a column and leaves it as it was passes, since the trigger's condition compares the
 -- old row with the new.
+--
+-- refuse_recorded_account_change runs under a search_path of its own, pg_catalog, the schema the
+-- broker's tables are in, pg_temp (the do block at the end), as 0045's guards do and for the
+-- reason 0045 gives: it raises alone, and still resolves its own call under the caller's path
+-- without one.
 create function refuse_recorded_account_change() returns trigger language plpgsql as $$
 begin
   raise exception 'the Google account % records is written once, when it is made, and is never changed', tg_table_name
@@ -52,3 +58,9 @@ create trigger oauth_refresh_tokens_account_unchanged before update of request o
     or (old.request #>> '{session,extra,account_subject}') is distinct from (new.request #>> '{session,extra,account_subject}')
     or (old.request #>> '{session,extra,credential_created_at}') is distinct from (new.request #>> '{session,extra,credential_created_at}'))
   execute function refuse_recorded_account_change();
+
+do $$
+begin
+  execute format('alter function %I.refuse_recorded_account_change() set search_path = pg_catalog, %I, pg_temp', current_schema(), current_schema());
+end
+$$;
