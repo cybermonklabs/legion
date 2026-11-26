@@ -1636,8 +1636,10 @@ type supervision struct {
 	// (supervise.UpdatePush): a step beside a running fix to its own branch, the fix to its own, the
 	// implementer while a fix reads its job nowhere, and every other role, the zero push, to the
 	// issue's branch (workflow.(*Engine).UpdatePushes, in one read transaction). askRound reads it
-	// once for each issue it asks. nil in a deployment with no workflow, whose rounds ask every role
-	// with the zero push. The workflow sets it where it attaches, as it sets enqueue above.
+	// once for each issue it asks, and the outbox reads the same function again before it publishes
+	// each ask (the outbox's updateAsk), so an ask goes only while the role's push is the one it
+	// names. nil in a deployment with no workflow, whose rounds ask every role with the zero push.
+	// The workflow sets it where it attaches, as it sets enqueue above.
 	updatePushes func(ctx context.Context, issue string) (map[claim.Role]supervise.UpdatePush, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them

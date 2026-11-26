@@ -1784,13 +1784,15 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records, or whose claim the daemon suspended after the row was queued, finishes without
-// a publish (the daemon's updateAsk). The daemon marks a claim asked only once its row's publish
-// reached a session, so an ask that finished undelivered is lost, not given, and the daemon's
-// sweep writes the claim a new row of this kind at a later tick.
+// longer records, or whose claim the daemon suspended after the row was queued, or whose push is
+// no longer the role's push, finishes without a publish (the daemon's updateAsk). The daemon marks
+// a claim asked only once its row's publish reached a session, so an ask that finished undelivered
+// is lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later
+// tick.
 //
 // Branch, OwnFix and FixReads are the push the ask told the role to make (supervise.UpdatePush),
-// copied from it so a test reads them: Branch the branch beside a running fix the role pushes to,
+// copied from it so a test reads them, and so the daemon's updateAsk publishes the ask only while
+// the role's push is still this one: Branch the branch beside a running fix the role pushes to,
 // OwnFix that the branch is the fix's own, and FixReads that the fix still reads its job, so the
 // implementer pushes nothing. An ask of an issue with no fix names none of them, and its row is
 // the release before's; the way back of 20261123134547_fix_beside_steps takes them off each queued
