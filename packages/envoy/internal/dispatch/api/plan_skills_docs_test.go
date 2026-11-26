@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -53,6 +54,39 @@ func orderedNode(order refs.TreeOrder, address string) (refs.OrderedNode, bool) 
 	return refs.OrderedNode{}, false
 }
 
+// requireEmptyLists fails t unless skills and docs, the lists what answers for a node that names
+// none, are each an empty list: `[]` in the JSON of an answer, never null and never left out.
+func requireEmptyLists(t *testing.T, what string, skills, docs []string) {
+	t.Helper()
+	for _, list := range []struct {
+		attribute string
+		got       []string
+	}{{refs.AttributePlanSkills, skills}, {refs.AttributePlanDocs, docs}} {
+		switch {
+		case list.got == nil:
+			t.Errorf("%s answers no empty list of %s, which it holds none of", what, list.attribute)
+		case len(list.got) != 0:
+			t.Errorf("%s answers %s %q, want an empty list", what, list.attribute, list.got)
+		}
+	}
+}
+
+// requirePlanJSONLists fails t unless raw, a JSON object representing an IssueTreePlan in the plan
+// view's body, writes both skills and docs as `[]`, neither null nor left out.
+func requirePlanJSONLists(t *testing.T, what string, raw json.RawMessage) {
+	t.Helper()
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		t.Fatalf("decode %s %s: %v", what, raw, err)
+	}
+	for _, name := range []string{refs.AttributePlanSkills, refs.AttributePlanDocs} {
+		got, present := members[name]
+		if !present || string(got) != "[]" {
+			t.Errorf("%s writes %s as %q (present=%t), want []", what, name, string(got), present)
+		}
+	}
+}
+
 // TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead is c-ordered-read's proof that a plan node
 // carries the skills and the docs its implementer should read (R18 of the issue tree's spec). An
 // issue is created whose spec holds one requirement, and its plan is uploaded with two plan tasks
@@ -60,10 +94,11 @@ func orderedNode(order refs.TreeOrder, address string) (refs.OrderedNode, bool) 
 // each as the renderer writes a `string[]` attribute, and the second writes neither. The ordered
 // read (refs.PlanOrder) answers the first task's lists item for item and in order, and the
 // second's two empty lists, never absent ones, each beside the task's needs - its issue's start -
-// and its size in whole minutes. The plan view (`GET /api/v1/issues/{key}/tree?view=plan`)
-// answers the same lists on each task's node. The check's control - skills and docs dropped from
-// plan_task in pmdoc/schema/blocks.json - has the parse refuse the upload, and the test fails
-// naming the upload's answer before it reads anything.
+// and its size in whole minutes; each half of the issue answers two empty lists too. The plan view
+// (`GET /api/v1/issues/{key}/tree?view=plan`) answers the same lists on each task's node, and `[]`
+// for each on the issue's own entry and on each of its two halves. The check's control - skills
+// and docs dropped from plan_task in pmdoc/schema/blocks.json - has the parse refuse the upload,
+// and the test fails naming the upload's answer before it reads anything.
 func TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead(t *testing.T) {
 	ctx := context.Background()
 	handler, database := blockIndexHandler(t)
@@ -112,7 +147,15 @@ func TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead(t *testing.T) {
 				key, task.id, node.Size, node.Needs, task.size, key)
 		}
 	}
-
+	for _, half := range []string{refs.HalfStart, refs.HalfDone} {
+		want := refs.OrderNode{Kind: graphstore.KindIssue, ID: key, Half: half}
+		index := slices.IndexFunc(order.Order, func(node refs.OrderedNode) bool { return node.OrderNode == want })
+		if index < 0 {
+			t.Fatalf("the ordered read of %s answers no %s half for the issue", key, half)
+		}
+		requireEmptyLists(t, fmt.Sprintf("the ordered read of %s, for the issue's %s half,", key, half),
+			order.Order[index].Skills, order.Order[index].Docs)
+	}
 	view := treeRead(t, handler, key, "?view=plan", "alice", false)
 	for _, task := range tasks {
 		nodes := view.nodesNamed(refs.BlockNodeKind, document.address(task.id))
@@ -130,6 +173,45 @@ func TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead(t *testing.T) {
 		}
 		if size := nodes[0].Attributes[refs.AttributePlanSize]; size != task.size {
 			t.Errorf("the plan view of %s answers %s with %s %q, want %q", key, task.id, refs.AttributePlanSize, size, task.size)
+		}
+	}
+	issueNode, _ := view.node(t, graphstore.KindIssue, key)
+	if issueNode.Plan == nil || issueNode.Plan.Start == nil || issueNode.Plan.Done == nil {
+		t.Fatalf("the plan view of %s answers the issue node with plan %+v, want its entry and both halves", key, issueNode.Plan)
+	}
+	requireEmptyLists(t, fmt.Sprintf("the plan view of %s, for the issue's own entry,", key),
+		issueNode.Plan.Skills, issueNode.Plan.Docs)
+	requireEmptyLists(t, fmt.Sprintf("the plan view of %s, for the issue's start half,", key),
+		issueNode.Plan.Start.Skills, issueNode.Plan.Start.Docs)
+	requireEmptyLists(t, fmt.Sprintf("the plan view of %s, for the issue's done half,", key),
+		issueNode.Plan.Done.Skills, issueNode.Plan.Done.Docs)
+
+	// Check the raw JSON body so neither a missing member nor null can pass for `[]`.
+	var rawBody struct {
+		Nodes []struct {
+			Kind string          `json:"kind"`
+			ID   string          `json:"id"`
+			Plan json.RawMessage `json:"plan"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(view.body), &rawBody); err != nil {
+		t.Fatalf("decode the raw plan view body of %s: %v", key, err)
+	}
+	for _, rawNode := range rawBody.Nodes {
+		switch {
+		case rawNode.Kind == refs.BlockNodeKind && rawNode.ID == document.address("t-bare"):
+			requirePlanJSONLists(t, fmt.Sprintf("the plan view JSON of %s for t-bare", key), rawNode.Plan)
+		case rawNode.Kind == graphstore.KindIssue && rawNode.ID == key:
+			requirePlanJSONLists(t, fmt.Sprintf("the plan view JSON of %s for the issue's own entry", key), rawNode.Plan)
+			var halves struct {
+				Start json.RawMessage `json:"start"`
+				Done  json.RawMessage `json:"done"`
+			}
+			if err := json.Unmarshal(rawNode.Plan, &halves); err != nil {
+				t.Fatalf("decode the raw halves of %s: %v", key, err)
+			}
+			requirePlanJSONLists(t, fmt.Sprintf("the plan view JSON of %s for the issue's start half", key), halves.Start)
+			requirePlanJSONLists(t, fmt.Sprintf("the plan view JSON of %s for the issue's done half", key), halves.Done)
 		}
 	}
 }

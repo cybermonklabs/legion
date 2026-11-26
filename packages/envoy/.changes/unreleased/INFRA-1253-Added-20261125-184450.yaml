@@ -1,0 +1,22 @@
+kind: Added
+body: |-
+  A write of a document version of more than 2,000 blocks leaves the version's block index to the
+  block-index reconciliation. When the reconciliation indexes such a version, Dispatch now appends
+  one `artifact.indexed` event on the document's issue, in the same transaction that clears the
+  document's owed index. The payload is `{artifact_ids}`: each document whose owed index that pass
+  cleared, sorted. The actor is the system actor `block-index`, and the event is quiet: it wakes
+  nobody. Dispatch appends no `artifact.indexed` for a version that its own write indexed, for a
+  document that still owes its index after the pass, or for a project document.
+
+  While a document of an issue owes its index, the Spec tab of the issue page shows
+  `<file> version <n> is still being indexed; its coverage shows once that ends.` in place of each
+  missing check and missing plan task. An open issue page now reads the issue's coverage, its
+  checks' results, its decisions and the blocks of each document the event names again when
+  `artifact.indexed` arrives, so the line goes and each missing check and plan task shows again
+  without a reload. Before this change the page kept the line until a reload, because no event
+  marked the end of the indexing.
+  A page of an earlier build does not know the event type and reads everything it holds again, as
+  it does for every event type it does not know.
+time: 2026-11-25T18:44:50Z
+custom:
+    Issue: INFRA-1253

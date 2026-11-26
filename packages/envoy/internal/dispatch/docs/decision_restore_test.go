@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -63,12 +64,14 @@ func TestTheSectionReaderCutsADecisionsDocumentIntoItsSections(t *testing.T) {
 	}
 }
 
-// restoreIssue is issue DOC-1 of a test database, its spec and the documents the decisions step
-// writes, each written through the document service and settled as the release before left it.
+// restoreIssue is an issue of a test database, DOC-1 unless another names it, its spec and the
+// documents the decisions step writes, each written through the document service and settled as
+// the release before left it.
 type restoreIssue struct {
 	t        *testing.T
 	database *store.Store
 	service  *Service
+	key      string
 	spec     string
 }
 
@@ -86,13 +89,30 @@ func newRestoreIssue(t *testing.T, markdown string) *restoreIssue {
 	}
 	service := newTestServiceOn(t, database)
 	service.settle = time.Hour
-	issue := &restoreIssue{t: t, database: database, service: service}
+	issue := &restoreIssue{t: t, database: database, service: service, key: "DOC-1"}
 	issue.spec = issue.document("spec", "spec.md", true, "", markdown)
 	return issue
 }
 
-// document creates a document of DOC-1 holding markdown as its version 1, written by alice and
-// indexed as an upload of a new document is, and settles it, so each ask block holds its ask.
+// another creates issue number of project DOC, DOC-<number>, after issue, on its database and
+// document service, and its spec holding markdown, settled as newRestoreIssue settles DOC-1's.
+func (issue *restoreIssue) another(number int, markdown string) *restoreIssue {
+	t := issue.t
+	t.Helper()
+	key := "DOC-" + strconv.Itoa(number)
+	if _, err := issue.database.Pool.Exec(context.Background(), `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ($1, 'DOC', $2, 'Document', '{"kind":"user","id":"alice"}', $3)
+	`, key, number, "V"+strconv.Itoa(number)); err != nil {
+		t.Fatalf("create the issue %s: %v", key, err)
+	}
+	other := &restoreIssue{t: t, database: issue.database, service: issue.service, key: key}
+	other.spec = other.document("spec", "spec.md", true, "", markdown)
+	return other
+}
+
+// document creates a document of the issue holding markdown as its version 1, written by alice
+// and indexed as an upload of a new document is, and settles it, so each ask block holds its ask.
 func (issue *restoreIssue) document(slug, name string, primary bool, role, markdown string) string {
 	t := issue.t
 	t.Helper()
@@ -103,9 +123,9 @@ func (issue *restoreIssue) document(slug, name string, primary bool, role, markd
 	}
 	if err := issue.database.Pool.QueryRow(context.Background(), `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, role, created_by)
-		values ('DOC-1', 'DOC', $1, $2, 'doc', $3, $4, '{"kind":"user","id":"alice"}')
+		values ($5, 'DOC', $1, $2, 'doc', $3, $4, '{"kind":"user","id":"alice"}')
 		returning id::text
-	`, slug, name, primary, rolePointer).Scan(&id); err != nil {
+	`, slug, name, primary, rolePointer, issue.key).Scan(&id); err != nil {
 		t.Fatalf("create document %s: %v", slug, err)
 	}
 	if err := joinedWrite(issue.service, func(ctx context.Context) error {
@@ -611,6 +631,40 @@ func TestTheRestoreGivesACollidingAskAFreshBlockIDInEachShape(t *testing.T) {
 	}
 }
 
+// A reading in a copy of an answered ask, on another document of the issue, hangs on the source's
+// node (refs.TypedSources.Shown), while its row names the copy's own block as its parent. The
+// census reads such a part_of as the block the reading stands in, the copy's, and not as the block
+// of the source's id in the reading's document (graphcensus' askBlockID): once the restore gives
+// the source a fresh block id (R6's collision rule), the copy keeps the id it was copied under.
+//
+// DOC-1's spec holds the answered ask q-shelf, and its notes hold a copy of it holding a reading.
+// The release before's agent takes q-shelf's block out of the spec and writes a callout under its
+// id there, and the restore returns the ask under a fresh id, while the copy in the notes keeps
+// q-shelf. The census reads no difference of the block kind or of reading_parent.
+func TestTheCensusReadsAReadingInACopyUnderTheCopyOnceTheRestoreRenamedItsSource(t *testing.T) {
+	ctx := context.Background()
+	const shelf = "Which shelf holds the printed corpus?"
+	issue := newRestoreIssue(t, "# Spec\n\n:::ask{#q-shelf urgency=\"low\" multiple=\"false\"}\n"+shelf+"\n:::\n")
+	source := issue.answer(issue.spec, "q-shelf", "The top shelf.")
+	notes := issue.document("notes-md", "notes.md", false, "", "# Notes\n\n::::ask{#q-shelf urgency=\"low\" multiple=\"false\"}\n"+shelf+"\n\n"+
+		":::reading{#g-shelf}\nThe agent reads the top shelf as the one by the door.\n:::\n::::\n")
+	reading := issue.refKey(notes) + "#g-shelf"
+	parents, err := graphstore.CurrentOut(ctx, issue.database.Pool, refs.BlockNodeKind, reading, []string{graphstore.TuplePartOf})
+	if err != nil || len(parents) != 1 || parents[0].ToKind != graphstore.KindAsk || parents[0].ToID != source {
+		t.Fatalf("the reading in the copy states part_of %+v (%v), want the source ask %s's node", parents, err, source)
+	}
+	issue.replace(issue.spec, "# Spec\n\n:::callout{#q-shelf kind=\"note\" title=\"\"}\nThe shelf is labelled.\n:::\n")
+
+	result := issue.run(false)
+	if len(result.Restored) != 1 || !result.Restored[0].NewID {
+		t.Fatalf("the restore did %+v, want the source ask returned under a fresh block id", result)
+	}
+	if block, _ := issue.askRow(source); block == "q-shelf" {
+		t.Fatalf("the source ask's row names block %s after the restore, want a fresh id", block)
+	}
+	requireNoCensusDifference(t, takeStoreCensus(t, issue.database), refs.BlockNodeKind, "reading_parent")
+}
+
 // A spec that holds no `## Decisions` part: the restore adds the
 // heading, at the end of the spec, and the restored ask block under it.
 func TestTheRestoreAddsADecisionsPartToASpecThatHoldsNone(t *testing.T) {
@@ -1075,7 +1129,9 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t
 // that cites it into a reading of that block and another section into a decision in one version.
 // That version holds the reading inside the ask's block, and the reading's node and its
 // document_blocks row exist, so the moved_to from the section's heading names a block that holds
-// the section's words.
+// the section's words. The restore that gives the returning ask its fresh id points the ask's
+// asked_on at the fresh block and retracts the old one in its own write, so the store census's
+// asked_on kind reads no difference in either direction right after it, with no backfill between.
 func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t *testing.T) {
 	ctx := context.Background()
 	const pointer = "The decisions this spec rests on are in dispatch://DOC-1/artifact/decisions-md."
@@ -1089,6 +1145,21 @@ func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t
 		"## Readings come from the seeded database\n\nThe person ruled the test database, and we add that it stays small. "+
 		"Decided in dispatch://DOC-1/ask/"+left+".\n\n"+
 		"## Files stay out of the corpus\n\nWe write no file beside the database.\n")
+	askedOn := func() []string {
+		t.Helper()
+		held, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, left, []string{graphstore.TupleAskedOn})
+		if err != nil {
+			t.Fatalf("read the asked_on of ask %s: %v", left, err)
+		}
+		ends := make([]string, len(held))
+		for index, tuple := range held {
+			ends[index] = tuple.ToKind + ":" + tuple.ToID
+		}
+		return ends
+	}
+	if ends, want := askedOn(), refs.BlockNodeKind+":"+issue.refKey(issue.spec)+"#q-left"; !slices.Equal(ends, []string{want}) {
+		t.Fatalf("before the restore ask %s states asked_on %v, want the one to %s: this case proves nothing", left, ends, want)
+	}
 
 	restored := issue.run(false)
 	if len(restored.Restored) != 1 || !restored.Restored[0].NewID {
@@ -1097,6 +1168,18 @@ func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t
 	block, _ := issue.askRow(left)
 	if spec := issue.latest(issue.spec); strings.Index(spec, "#q-first ") > strings.Index(spec, "#"+block+" ") {
 		t.Fatalf("the restored ask block %s does not stand after the spec's first ask block:\n%s", block, spec)
+	}
+	if ends, want := askedOn(), refs.BlockNodeKind+":"+issue.refKey(issue.spec)+"#"+block; !slices.Equal(ends, []string{want}) {
+		t.Errorf("after the restore ask %s states asked_on %v, want only the one to its fresh block %s", left, ends, want)
+	}
+	census := takeStoreCensus(t, issue.database)
+	found := slices.IndexFunc(census.Kinds, func(kind graphcensus.KindReport) bool { return kind.Kind == graphstore.TupleAskedOn })
+	if found < 0 {
+		t.Fatalf("the store census holds no %s kind", graphstore.TupleAskedOn)
+	}
+	if kind := census.Kinds[found]; kind.Rows != 2 || kind.Nodes != 2 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+		t.Errorf("after the restore the asked_on census reads %d rows, %d tuples, %d rows no tuple states and %d tuples no row projects (%+v, %+v), want the two asks' rows and tuples and no difference",
+			kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}
 
 	result := issue.run(true)

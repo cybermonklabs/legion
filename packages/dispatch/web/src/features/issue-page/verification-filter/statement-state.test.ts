@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
 
-import type { Artifact, CheckBlock, IssueDetails } from "../../../api/types";
-import { buildIssueTree, type TreeNode } from "../issue-tree";
+import type {
+  Artifact,
+  CheckBlock,
+  IssueCoverage,
+  IssueDetails,
+  RequirementCoverage,
+} from "../../../api/types";
+import { buildIssueTree, isCheck, type TreeNode } from "../issue-tree";
 import { NODE_STATE_WORDS, RESULT_STANDS_WORDS } from "../page-words";
 import { filterSignals, presetView } from "../presets";
 import { blockNodeId } from "../tree-drafts";
@@ -10,6 +16,7 @@ import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
   COMMIT_CHARACTERS,
+  issueCovered,
   namedCommit,
   shortCommit,
   statementCounts,
@@ -33,9 +40,9 @@ import {
 
 /**
  * How the Verification filter reads the issue's results: the one commit the page names, how
- * each statement stands at it, and how many statements carry a check. Each row below is one of
- * the ways a statement can stand, read over the tree the filter leaves and the results read the
- * page already made.
+ * each statement stands at it, and which statements carry a check. Each row below is one of the
+ * ways a statement can stand, read over the tree the filter leaves and the results read the page
+ * already made.
  *
  * What the body draws of this reading is `VerificationFilterBody.drawn.test.tsx`.
  */
@@ -47,6 +54,56 @@ function reading(
   ...loose: readonly TreeNode[]
 ): VerificationReading {
   return verificationReading({ checks, view: verificationView([...statements, ...loose]) });
+}
+
+/** How many of `statements` carry a check by the rule each statement's own standing reads
+ *  (`statementStandings`), which the Spec filter's mark draws. */
+function coveredOf(statements: readonly TreeNode[], checks: readonly CheckBlock[]): number {
+  const issue = node({ children: [...statements], id: ISSUE_KEY, type: "issue" });
+  return [...statementStandings(issue, checks).values()].filter((held) => held.covered).length;
+}
+
+/** The coverage read the server answers for an issue whose spec holds `statements` alone, in
+ *  that order (`coverage_tuples.go`'s `coverTreeRequirements`): each one's `checks` counts the
+ *  checks drawn under it but a proposed or an overtaken one, which serve nothing
+ *  (`readServingChecks`), and its `coverage` is `closed` at or under an overtaken node and
+ *  `proposed` for a statement only put forward, whatever serves it. */
+function servedCoverage(statements: readonly TreeNode[]): IssueCoverage {
+  return {
+    gaps: [],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: statements.map((statement) => {
+      const serving = statement.children.filter(
+        (child) => isCheck(child) && child.life === undefined
+      );
+      return {
+        block_id: statement.id.slice(statement.id.lastIndexOf("#b-") + "#b-".length),
+        checks: serving.length,
+        coverage: coverageState(statement, serving),
+        gaps: [],
+        plan_tasks: 0,
+        ref: statement.reference ?? statement.id,
+        state: statement.life ?? "live",
+        text: statement.text,
+      };
+    }),
+    spec_artifact_id: "artifact-spec",
+  };
+}
+
+/** What the coverage read says of `statement`, served by the checks `serving`, as the server
+ *  decides it (`coverTreeRequirements`): closed at or under an overtaken node and proposed while
+ *  it is only put forward, whatever serves it, else a gap where no check serves it, and proved
+ *  where a check of it passed. */
+function coverageState(
+  statement: TreeNode,
+  serving: readonly TreeNode[]
+): RequirementCoverage["coverage"] {
+  if (statement.closed === true) return "closed";
+  if (statement.life === "proposed") return "proposed";
+  if (serving.length === 0) return "gap";
+  return serving.some((one) => one.state === "passed") ? "proved" : "unproven";
 }
 
 /** A check that passed at the commit the page names, which is the basis it compares with, so
@@ -68,7 +125,7 @@ test("a statement whose every check passed at the commit the page names reads Me
   expect(read.commit).toBe(COMMIT);
   expect(read.statements.map((held) => held.state)).toEqual(["met"]);
   expect(read.statements[0]?.checks.map((held) => held.state)).toEqual(["passed", "passed"]);
-  expect(read.covered).toBe(1);
+  expect(coveredOf([statement], blocks)).toBe(1);
   expect(statementCounts(read.statements)).toEqual({ met: 1, not_met: 0, unknown: 0 });
 });
 
@@ -179,12 +236,13 @@ test("a check whose every result was withdrawn reads Retracted and names no comm
 // statement is covered all the same, since a check serves it.
 test("a check with no result reads No result, and its statement is covered and Unknown", () => {
   const unrun = check({ block_id: "c-one", pass_stands: { answer: "no" }, results: [] });
-  const read = reading([statementNode("r1", "The page draws it.", [checkNode(unrun)])], [unrun]);
+  const statement = statementNode("r1", "The page draws it.", [checkNode(unrun)]);
+  const read = reading([statement], [unrun]);
 
   expect(read.statements[0]?.checks.map((held) => held.state)).toEqual(["no-result"]);
   expect(read.statements[0]?.checks[0]?.latest).toBeUndefined();
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
-  expect(read.covered).toBe(1);
+  expect(coveredOf([statement], [unrun])).toBe(1);
   expect(read.commit).toBeUndefined();
   expect(NODE_STATE_WORDS.check["no-result"]).toBe("No result");
 });
@@ -205,23 +263,21 @@ test("a check that serves two statements is read under both, and both are covere
     checkNode(shared).id,
   ]);
   expect(read.statements.map((held) => held.state)).toEqual(["met", "met"]);
-  expect(read.covered).toBe(2);
+  expect(coveredOf([first, second], [shared])).toBe(2);
 });
 
 // A statement no check serves is Unknown and is in no covered count: "a statement that has a
 // check is not a statement that is true" cuts both ways (R17).
 test("a statement no check serves is Unknown and is not covered", () => {
   const served = passing("c-one");
-  const read = reading(
-    [
-      statementNode("r1", "The page draws it.", [checkNode(served)]),
-      statementNode("r2", "Nothing proves this.", []),
-    ],
-    [served]
-  );
+  const statements = [
+    statementNode("r1", "The page draws it.", [checkNode(served)]),
+    statementNode("r2", "Nothing proves this.", []),
+  ];
+  const read = reading(statements, [served]);
 
   expect(read.statements.map((held) => held.state)).toEqual(["met", "unknown"]);
-  expect(read.covered).toBe(1);
+  expect(coveredOf(statements, [served])).toBe(1);
   expect(statementCounts(read.statements)).toEqual({ met: 1, not_met: 0, unknown: 1 });
 });
 
@@ -466,6 +522,14 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
     title: "The issue page draws one ordered body",
     updated_at: "2026-11-05T00:00:00Z",
     verification_artifact_id: verification.id,
+    queries: [
+      {
+        query: "verification",
+        artifact_id: verification.id,
+        takes: ["check", "result"],
+        subtree: `issue:${ISSUE_KEY}`,
+      },
+    ],
   };
   return buildIssueTree({
     coverage: {
@@ -803,7 +867,7 @@ test("a statement a child issue's check serves is covered", () => {
   };
   const read = reading([served, unserved], []);
 
-  expect(read.covered).toBe(1);
+  expect(coveredOf([served, unserved], [])).toBe(1);
   expect(read.statements.map((held) => held.state)).toEqual(["unknown", "unknown"]);
 });
 
@@ -827,15 +891,76 @@ test("every statement of the whole tree is read as the Verification filter reads
   ]);
 });
 
+// R17's covered count is the issue's: every statement of the issue's spec is a row of the
+// coverage read, whichever of them the view has loaded, and one is covered where a check of the
+// issue or of an issue under it serves it. While a document of the issue is still being indexed,
+// the read's counts may not hold what serves a statement yet, so it answers that document's line
+// in place of any count.
+test("the issue's covered count is the coverage read's rows a check serves, or its owed line while indexing", () => {
+  const coverageOf = (checks: readonly number[], gaps: readonly string[] = []): IssueCoverage => ({
+    gaps: [...gaps],
+    has_plan: false,
+    issue: ISSUE_KEY,
+    requirements: checks.map((count, at) => ({
+      block_id: `r${at + 1}`,
+      checks: count,
+      gaps: [],
+      plan_tasks: 0,
+      ref: `dispatch://${ISSUE_KEY}/${SPEC_SLUG}#b-r${at + 1}`,
+      text: `Statement ${at + 1}.`,
+    })),
+    spec_artifact_id: "artifact-spec",
+  });
+  const owed =
+    "verification.md version 2 is still being indexed; its coverage shows once that ends.";
+
+  expect(issueCovered(coverageOf([1, 0, 3], ["r2 has no check"]))).toEqual({
+    covered: 2,
+    kind: "count",
+    total: 3,
+  });
+  expect(issueCovered(coverageOf([0, 0], [owed]))).toEqual({ kind: "owed", notes: [owed] });
+  expect(issueCovered(undefined)).toEqual({ covered: 0, kind: "count", total: 0 });
+});
+
+// A statement nested inside another statement in the spec is read as its own statement in
+// document order, with its own checks and state apart from its parent's.
+test("a statement nested under another statement is read in document order with its own checks", () => {
+  const c1 = passing("c1");
+  const c1a = passing("c1a");
+  const c1a1 = check({
+    block_id: "c1a1",
+    pass_stands: { answer: "no" },
+    results: [result({ check_block_id: "c1a1", failed: 1, id: "fail-1a1", verdict: "fail" })],
+  });
+  const c2 = passing("c2");
+  const r1a1 = statementNode("r1a1", "Grandchild statement.", [checkNode(c1a1)]);
+  const r1a = statementNode("r1a", "Child statement.", [checkNode(c1a), r1a1]);
+  const r1 = statementNode("r1", "Parent statement.", [checkNode(c1), r1a]);
+  const r2 = statementNode("r2", "Sibling statement.", [checkNode(c2)]);
+  const read = reading([r1, r2], [c1, c1a, c1a1, c2]);
+
+  expect(
+    read.statements.map((held) => [held.node.id, held.state, held.checks.map((one) => one.node.id)])
+  ).toEqual([
+    [r1.id, "met", [checkNode(c1).id]],
+    [r1a.id, "met", [checkNode(c1a).id]],
+    [r1a1.id, "not_met", [checkNode(c1a1).id]],
+    [r2.id, "met", [checkNode(c2).id]],
+  ]);
+  expect(statementCounts(read.statements)).toEqual({ met: 3, not_met: 1, unknown: 0 });
+});
+
 // While the results read is still out the page has read nothing of how the check stands, so it
 // draws no state for it and no statement of it is Met.
 test("a check the results read has not answered for draws no state", () => {
   const unread = passing("c-one");
-  const read = reading([statementNode("r1", "The page draws it.", [checkNode(unread)])], []);
+  const statement = statementNode("r1", "The page draws it.", [checkNode(unread)]);
+  const read = reading([statement], []);
 
   expect(read.statements[0]?.checks.map((held) => held.state)).toEqual([undefined]);
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
-  expect(read.covered).toBe(1);
+  expect(coveredOf([statement], [])).toBe(1);
 });
 
 // A check whose `serves` names no statement is a row of the filter all the same, and so is a
@@ -843,18 +968,16 @@ test("a check the results read has not answered for draws no state", () => {
 test("the body is given the checks that serve no statement and every other row the filter kept", () => {
   const loose = passing("c-loose");
   const named = node({ id: "comment-1", text: "A comment an address named.", type: "comment" });
+  const statement = statementNode("r1", "The page draws it.", []);
   const read = verificationReading({
     checks: [loose],
-    view: verificationView(
-      [statementNode("r1", "The page draws it.", []), checkNode(loose), named],
-      [named.id]
-    ),
+    view: verificationView([statement, checkNode(loose), named], [named.id]),
   });
 
   expect(read.loose.map((held) => held.node.id)).toEqual([checkNode(loose).id]);
   expect(read.loose.map((held) => held.state)).toEqual(["passed"]);
   expect(read.others.map((held) => held.id)).toEqual(["comment-1"]);
-  expect(read.covered).toBe(0);
+  expect(coveredOf([statement], [loose])).toBe(0);
 });
 
 // The page draws a commit as the picture draws it, in the short form git itself writes. The
@@ -890,20 +1013,18 @@ test("a proposed check serves no statement", () => {
   const proposedFail = failedAt("c-two");
   const overtakenFail = failedAt("c-three");
   const proposedPass = passing("c-four");
-  const read = reading(
-    [
-      statementNode("r1", "The page draws the checks.", [
-        checkNode(passed),
-        { ...checkNode(proposedFail), ...PROPOSED },
-      ]),
-      statementNode("r2", "The page draws them again.", [
-        { ...checkNode(passed), transcluded: true },
-        { ...checkNode(overtakenFail), ...OVERTAKEN },
-      ]),
-      statementNode("r3", "The page may draw it.", [{ ...checkNode(proposedPass), ...PROPOSED }]),
-    ],
-    [passed, proposedFail, overtakenFail, proposedPass]
-  );
+  const statements = [
+    statementNode("r1", "The page draws the checks.", [
+      checkNode(passed),
+      { ...checkNode(proposedFail), ...PROPOSED },
+    ]),
+    statementNode("r2", "The page draws them again.", [
+      { ...checkNode(passed), transcluded: true },
+      { ...checkNode(overtakenFail), ...OVERTAKEN },
+    ]),
+    statementNode("r3", "The page may draw it.", [{ ...checkNode(proposedPass), ...PROPOSED }]),
+  ];
+  const read = reading(statements, [passed, proposedFail, overtakenFail, proposedPass]);
 
   expect(read.statements.map((held) => held.checks.map((one) => one.state))).toEqual([
     ["passed", "failed"],
@@ -911,14 +1032,15 @@ test("a proposed check serves no statement", () => {
     ["passed"],
   ]);
   expect(read.statements.map((held) => held.state)).toEqual(["met", "met", "unknown"]);
-  expect(read.covered).toBe(2);
+  expect(issueCovered(servedCoverage(statements))).toEqual({ covered: 2, kind: "count", total: 3 });
   expect(statementCounts(read.statements)).toEqual({ met: 2, not_met: 0, unknown: 1 });
 });
 
-// The Spec filter's mark is `statementStandings` over the whole tree and the Verification filter's
-// is this reading over its view. On a statement whose only check is proposed both say it carries
-// no check and stands on none: not covered, and Unknown. The same statement with that check live
-// is covered and Met in both.
+// The Spec filter's mark is `statementStandings` over the whole tree; the Verification filter's
+// state is this reading over its view, and its covered count the coverage read's (`issueCovered`).
+// On a statement whose only check is proposed all three say it carries no check and stands on
+// none: not covered, and Unknown. The same statement with that check live is covered and Met in
+// all three.
 test("the Spec and Verification views agree on a statement whose only check is proposed", () => {
   const block = passing("c-one");
   const issueOf = (statement: TreeNode) =>
@@ -932,14 +1054,14 @@ test("the Spec and Verification views agree on a statement whose only check is p
     [proposed.id, { covered: false, state: "unknown" }],
   ]);
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
-  expect(read.covered).toBe(0);
+  expect(issueCovered(servedCoverage([proposed]))).toEqual({ covered: 0, kind: "count", total: 1 });
 
   const live = statementNode("r1", "The page may draw it.", [checkNode(block)]);
   expect([...statementStandings(issueOf(live), [block])]).toEqual([
     [live.id, { covered: true, state: "met" }],
   ]);
   expect(reading([live], [block]).statements.map((held) => held.state)).toEqual(["met"]);
-  expect(reading([live], [block]).covered).toBe(1);
+  expect(issueCovered(servedCoverage([live]))).toEqual({ covered: 1, kind: "count", total: 1 });
 });
 
 // A proposed statement is put forward and not yet settled, and a statement at or under an
@@ -975,7 +1097,11 @@ test("a proposed statement is neither covered nor counted", () => {
     under.id,
     live.id,
   ]);
-  expect(read.covered).toBe(1);
+  expect(issueCovered(servedCoverage([proposed, overtaken, under, live]))).toEqual({
+    covered: 1,
+    kind: "count",
+    total: 1,
+  });
   expect(statementCounts(read.statements)).toEqual({ met: 1, not_met: 0, unknown: 0 });
   const standings = statementStandings(
     node({ children: [proposed, overtaken, replaced, live], id: ISSUE_KEY, type: "issue" }),
@@ -1038,5 +1164,9 @@ test("the reading keeps every row, proposed and overtaken ones included", () => 
     checkNode(overtakenLoose).id,
   ]);
   expect(read.others.map((held) => held.id)).toEqual(["comment-1"]);
-  expect(read.covered).toBe(0);
+  expect(issueCovered(servedCoverage([proposed, overtaken]))).toEqual({
+    covered: 0,
+    kind: "count",
+    total: 0,
+  });
 });

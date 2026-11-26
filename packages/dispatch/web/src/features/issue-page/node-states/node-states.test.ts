@@ -18,8 +18,10 @@ import {
 import type {
   CheckBlock,
   IssueCheckResults,
+  IssueCoverage,
   IssueDetails,
   IssueTreeParent,
+  RequirementCoverage,
 } from "../../../api/types";
 import { pageStateText } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
@@ -56,6 +58,8 @@ import { artifactsBySlug } from "../issue-artifacts";
 import {
   buildIssueTree,
   heldBy,
+  isCheck,
+  isStatement,
   type NodeChip,
   type ParentLine,
   type TreeNode,
@@ -80,8 +84,8 @@ import {
 } from "../page-words";
 import { PlanFilterBody } from "../plan-filter/PlanFilterBody";
 import { planOrder } from "../plan-filter/plan-order";
-import { filterSignals, presetView } from "../presets";
-import { blockReads, Publisher, publishedNames, publishedTree } from "../projection-fixture";
+import { filterSignals, nodeReading, presetView } from "../presets";
+import { blockReads, Publisher, publishedChips, publishedTree } from "../projection-fixture";
 import { drawAtBrowserEntry, drawnSlot } from "../slots/stage-fixtures";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import {
@@ -699,14 +703,63 @@ function checkThat(blockId: string, passed: boolean): CheckBlock {
   });
 }
 
-/** The Verification view over `root`, with `checks` as the issue's results read, drawn as its
- *  slot draws it (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`,
- *  where a case types any, with the view under no query as `whole`, which is that view itself
- *  where no query is typed, on the page's `address`, which carries the words as the page's own
- *  does (`?q=`); with `addressed`, the nodes the address names and what the body tells the slot
- *  of them, as the slot hands them on where it may tell (`slots/view-verification.tsx`); under
- *  the names store with what the page publishes for the tree's chips (`publishedTree`), and no
- *  names line. */
+/** The coverage read the server answers for the issue `root` is the tree of
+ *  (`coverage_tuples.go`'s `coverTreeRequirements`): a row for each statement of the tree, at any
+ *  depth, in its order, whose `checks` counts the checks under it but a proposed or an overtaken
+ *  one, which serve nothing (`readServingChecks`), and whose `coverage` is `closed` at or under an
+ *  overtaken node and `proposed` for a statement only put forward, whatever serves it. */
+function coverageOf(root: TreeNode): IssueCoverage {
+  const statements = new Map<string, TreeNode>();
+  const walk = (at: TreeNode): void => {
+    if (isStatement(at) && !statements.has(at.id)) statements.set(at.id, at);
+    for (const child of at.children) walk(child);
+  };
+  walk(root);
+  return {
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [...statements.values()].map((statement) => {
+      const serving = statement.children.filter(
+        (child) => isCheck(child) && child.life === undefined
+      );
+      return {
+        block_id: statement.id.slice(statement.id.lastIndexOf("#b-") + "#b-".length),
+        checks: serving.length,
+        coverage: coverageState(statement, serving),
+        gaps: [],
+        plan_tasks: 0,
+        ref: statement.reference ?? statement.id,
+        state: statement.life ?? "live",
+        text: statement.text,
+      };
+    }),
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  };
+}
+
+/** What the coverage read says of `statement`, served by the checks `serving`, as the server
+ *  decides it (`coverTreeRequirements`): closed at or under an overtaken node and proposed while
+ *  it is only put forward, whatever serves it, else a gap where no check serves it, and proved
+ *  where a check of it passed. */
+function coverageState(
+  statement: TreeNode,
+  serving: readonly TreeNode[]
+): RequirementCoverage["coverage"] {
+  if (statement.closed === true) return "closed";
+  if (statement.life === "proposed") return "proposed";
+  if (serving.length === 0) return "gap";
+  return serving.some((one) => one.state === "passed") ? "proved" : "unproven";
+}
+
+/** The Verification view over `root`, with `checks` as the issue's results read and the coverage
+ *  read the server answers for `root` (`coverageOf`), drawn as its slot draws it
+ *  (`VerificationFilterBody.drawn.test.tsx`'s `bodyOf`): under the words `query`, where a case
+ *  types any, with the view under no query as `whole`, which is that view itself where no query
+ *  is typed, on the page's `address`, which carries the words as the page's own does (`?q=`);
+ *  with `addressed`, the nodes the address names and what the body tells the slot of them, as the
+ *  slot hands them on where it may tell (`slots/view-verification.tsx`); under the names store
+ *  with what the page publishes for the tree's chips (`publishedTree`), and no names line. */
 function drawVerification(
   root: TreeNode,
   checks: readonly CheckBlock[],
@@ -737,6 +790,7 @@ function drawVerification(
               ...(addressed === undefined ? {} : { addressed }),
               checks,
               context: preset.context,
+              coverage: coverageOf(root),
               namesLine: NO_FAILED_READS,
               published,
               reads: { state: "answered" },
@@ -3178,13 +3232,17 @@ test("the Plan chart marks a proposed step, and what a step needs and serves", (
     reading: { words: "Task t1 is carried out." },
     ref: planRef("t1"),
   };
-  // What the page's batched read names the step's need and the statement it serves by.
-  const published = publishedNames(
-    new Map([
-      [needs.ref, "Task t1 is carried out."],
-      [serves.reference ?? "", serves.text],
-    ])
-  );
+  // The statement's chip takes its projected line from the same reading as the view.
+  const published = publishedChips([
+    needs,
+    {
+      answered: true,
+      gone: false,
+      label: BLOCK_ATTRIBUTE_LABELS.serves,
+      reading: nodeReading(serves),
+      ref: serves.reference ?? "",
+    },
+  ]);
   const view = drawPlan(
     stamped(
       node(KEY, "issue", [planTask("t1"), planTask("t2", { chips: [needs], parentLine: serves })]),

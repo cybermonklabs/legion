@@ -12,8 +12,11 @@
 # sets for every server it boots) and with the pinned agent bearer e2e-token as
 # DISPATCH_AGENT_TOKEN, which it takes from DISPATCH_TOKEN. Beside the seed's corpus, where each
 # document holds one review, it has the person review two documents again through that server:
-# spec B approved a second time at its newest version, and spec C approved and then sent back for
-# changes, so its newest review is no approval. Neither moves the count the corpus holds. It then
+# spec B approved a second time at its newest version and then sent back for changes, and spec C
+# approved and then sent back for changes, so the newest review of neither is an approval, and spec
+# B's newest review disagrees with its oldest. The corpus's count of standing approvals is then
+# recorded again (seed-decisions.sh's seed_standing_approvals), one fewer than seed_decisions
+# printed: spec B's approval no longer stands. It then
 # stops that server and runs the three statements of the spec's section "What this child measures
 # before it writes a migration", verbatim, over the database, each in a read-only transaction, and
 # prints
@@ -35,7 +38,10 @@
 # printed hold both shapes. It also reads the approval reviews over those documents at each one's
 # newest version, and the documents holding one, and fails unless each reads apart from the
 # standing approvals: a statement that counted reviews rather than documents, or any approval
-# rather than the newest review, reads another count here.
+# rather than the newest review, reads another count here. And it reads the second statement again
+# with its order reversed, each document's oldest review in place of its newest, and fails unless
+# that count reads apart from the standing approvals too, so the order the statement reads the
+# reviews in decides its count.
 #
 # BASELINE_SHA, the commit of the release this branch lands after, is required and has no
 # default: only the caller knows which release that is. Once the base server has booted, and
@@ -178,11 +184,16 @@ readonly base_commit
     "it serves '$base_commit', and BASELINE_SHA $BASELINE_SHA is $base_sha"
 pass base "the base release serves $base_commit, the commit BASELINE_SHA names"
 seed_decisions
-# A second review on two documents, so the standing approvals read apart from the approval reviews
-# and from the documents holding one; the corpus count seed_decisions printed stands.
+# A second and a third review on spec B, and two more on spec C, so the standing approvals read
+# apart from the approval reviews and from the documents holding one, and spec B's newest review, a
+# request for changes, disagrees with its oldest, an approval. The corpus's count of standing
+# approvals is recorded again over them.
 seed_review review_spec_b_again "${seed_ids[spec_b]}" approved
+seed_review review_spec_b_changes "${seed_ids[spec_b]}" changes_requested "Say which build writes the corpus."
 seed_review review_spec_c_approved "${seed_ids[spec_c]}" approved
 seed_review review_spec_c_again "${seed_ids[spec_c]}" changes_requested "Name the fourth issue before asking again."
+seed_wait_settled "the second reviews settle"
+seed_standing_approvals
 # Nothing writes while the statements read.
 baseline_stop_server
 
@@ -328,8 +339,8 @@ done
 pass measurement "colliding_block_ids prints the corpus's collision of each shape: ${corpus_shape[block_left_spec]} and ${corpus_shape[block_in_decisions_document]}"
 
 # The corpus tells the standing approvals apart from the approval reviews at a document's newest
-# version and from the documents holding one: spec B holds two approvals, and spec C an approval
-# its newest review, a request for changes, overrides. The documents are the second statement's,
+# version and from the documents holding one: spec B holds two approvals and spec C one, each
+# overridden by its newest review, a request for changes. The documents are the second statement's,
 # the rows of open and answered asks and the copies of one.
 read -r -d '' approval_reviews_sql <<'SQL' || true
 select count(*), count(distinct r.artifact_id)
@@ -358,6 +369,22 @@ printf 'corpus approval_reviews_at_the_newest_version=%s documents_holding_one=%
   fail corpus "the standing approvals read apart from the approval reviews and from the documents holding one" \
     "approval reviews $approval_reviews, documents holding one $approved_documents, standing approvals $approvals"
 pass corpus "the standing approvals ($approvals) read apart from the approval reviews ($approval_reviews) and the documents holding one ($approved_documents)"
+
+# The corpus tells the newest review apart from the oldest: spec B's oldest review is an approval of
+# its newest version and its newest a request for changes. The second statement read with its order
+# reversed, each document's oldest review in place of its newest and the rest as the spec writes
+# it, must read another count, so the order of the reviews decides the count it measured.
+readonly newest_first='order by artifact_id, event_seq desc nulls last, created_at desc, id desc'
+oldest_first_sql="${approvals_sql/"$newest_first"/order by artifact_id, event_seq nulls first, created_at, id}"
+[[ "$oldest_first_sql" != "$approvals_sql" ]] ||
+  fail measurement standing_approvals_over_those_documents "the second statement orders its reviews by no '$newest_first' this run can reverse"
+measure "$oldest_first_sql" || fail corpus "read the approvals of each document's oldest review" "psql: $(<"$work/psql")"
+oldest_first="$(<"$work/rows")"
+printf 'corpus standing_approvals_read_at_the_oldest_review=%s standing_approvals=%s\n' "$oldest_first" "$approvals"
+[[ "$oldest_first" =~ ^[0-9]+$ && "$oldest_first" != "$approvals" ]] ||
+  fail corpus "the standing approvals read apart from the approvals each document's oldest review gives" \
+    "read at the oldest review $oldest_first, at the newest $approvals"
+pass corpus "the standing approvals ($approvals) read apart from the count each document's oldest review gives ($oldest_first): the statement's order of reviews decides it"
 
 # The tables this child's migrations touch, as the Go test names them, and the limit each is held
 # to. `go -C` runs it from packages/envoy, as `(cd ../envoy && go test …)` from packages/dispatch.

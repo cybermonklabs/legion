@@ -35,7 +35,9 @@
 # difference prints the node, the parent the row holds and the parent the tuple gives. The
 # siblings of one document under one parent stand in the order of their source rows by rank, byte
 # for byte, and in the tree read's walk, which two reads answer alike; the top-level blocks of an
-# issue's documents stand in one run per document.
+# issue's documents stand in one run per document. Each half's issues are then reported in two
+# classes, those that have converted and those that have not, each with its documents and their
+# document_blocks rows, so the rows of the unconverted issues stand as a class of their own.
 #
 # It takes the same two-sided count for check_results against the result nodes, the rows the
 # earlier release wrote read byte for byte as captured and each still listed under its check by GET
@@ -45,8 +47,10 @@
 # component nodes and their part_of, depends_on and affects tuples; and node_search against the text
 # values. It prints each side's count and the symmetric difference, and reads `envoy-dispatch census
 # --store`'s line of each of those kinds at zero differences each way and its `census: versions`
-# line at `tree_mismatch=0` and `tree_mismatch_repaired=0`, failing and printing that line
-# otherwise. It asserts it read more than zero issues and that each half holds more than zero rows.
+# line at `tree_mismatch=0` and `tree_mismatch_repaired=0` (lib-tree.sh's tree_census_versions),
+# failing and printing that line otherwise, and prints the census's own class of the rows of issues
+# that have not converted, its `unstated_rows` lines, which it compares with nothing. It asserts it
+# read more than zero issues and that each half holds more than zero rows.
 #
 # Inputs: DATABASE_URL, PROJECT, BASELINE_SHA (or BASELINE_BINARY), DISPATCH_TOKEN (the agent
 # bearer every server here accepts), DEV_SIGNIN_LOGIN (optional, default alice), and envoy-dispatch
@@ -516,6 +520,37 @@ issue_tree_graph_projections() {
     "select issue_key || '>' || project_key || '/' || component_id from issue_component_members where issue_key = any($keys_sql)" "$links_sql"
 }
 
+# issue_tree_graph_classes SECTION HALF ISSUE…: the half's issues in two classes, each reported
+# apart: those that have converted (an issue_trees row holds the issue) and those that have not,
+# whose rows are the class the store census counts by itself (graphcensus's unconvertedUnstated,
+# printed as `unstated_rows`, the store section). For each class it prints its issues, their
+# documents and the document_blocks rows of those documents, a room's rows under its tree artifact.
+issue_tree_graph_classes() {
+  local section="$1" half="$2" class converted issues count documents rows
+  shift 2
+  issue_tree_graph_keys "$@"
+  for class in converted unconverted; do
+    converted=false
+    [[ "$class" == unconverted ]] || converted=true
+    query "$section" "read the $class issues of the $half half and their rows" "
+      with held as (
+        select i.key,
+               (select count(*) from artifacts a
+                where a.issue_key = i.key and a.kind in ('doc', 'tree') and a.retired_at is null) as documents,
+               (select count(*) from document_blocks d join artifacts a on a.id = d.artifact_id
+                where a.issue_key = i.key) as block_rows
+        from issues i
+        where i.key = any($keys_sql) and exists (select 1 from issue_trees t where t.issue_key = i.key) = $converted)
+      select coalesce(string_agg(key, ' ' order by key), '') || '|' || count(*) || '|'
+          || coalesce(sum(documents), 0) || '|' || coalesce(sum(block_rows), 0)
+      from held"
+    IFS='|' read -r issues count documents rows <<<"$answer"
+    printf 'class %s %s: issues=%s (%s) documents=%s document_blocks_rows=%s\n' \
+      "$half" "$class" "$count" "${issues:-none}" "$documents" "$rows"
+  done
+  pass "$section" "the $half half's issues and rows, reported in two classes: converted and not converted"
+}
+
 # --- setup: the earlier release over an emptied database --------------------------------------
 
 section=setup
@@ -621,6 +656,8 @@ issues_read="$answer"
 pass "$section" "the census reads $issues_read issues of $project: base ${base_issues[*]}, head ${head_issues[*]}"
 issue_tree_graph_census "$section" base "${base_issues[@]}"
 issue_tree_graph_census "$section" head "${head_issues[@]}"
+issue_tree_graph_classes "$section" base "${base_issues[@]}"
+issue_tree_graph_classes "$section" head "${head_issues[@]}"
 sections=$((sections + 1))
 
 # --- projections: the two-sided count of each projection, each half apart ------------------------
@@ -680,12 +717,7 @@ tree_envoy_dispatch_status census --store
 cp "$work/out" "$work/census.out"
 [[ "$tree_envoy_status" -le 1 ]] ||
   fail "$section" "run the store census" "envoy-dispatch census --store exited $tree_envoy_status: $(tail -n 20 "$work/census.out")"
-versions_line="$(grep -E '^census: versions rendered_from_tree=' "$work/census.out" || true)"
-printf '%s\n' "${versions_line:-census: versions (no line)}"
-[[ "$versions_line" =~ (^|[[:space:]])tree_mismatch=0([[:space:]]|$) && "$versions_line" =~ (^|[[:space:]])tree_mismatch_repaired=0([[:space:]]|$) ]] ||
-  fail "$section" "the census reads tree_mismatch=0 and tree_mismatch_repaired=0" \
-    "the census reads $(grep -oE 'tree_mismatch=[0-9,]+' <<<"$versions_line" || printf 'tree_mismatch=none') $(grep -oE 'tree_mismatch_repaired=[0-9,]+' <<<"$versions_line" || printf 'tree_mismatch_repaired=none'), want 0 and 0: ${versions_line:-no census: versions line}"
-pass "$section" "the census reads tree_mismatch=0 and tree_mismatch_repaired=0"
+tree_census_versions "$section" "the census reads tree_mismatch=0 and tree_mismatch_repaired=0" "" "$work/census.out"
 for kind in "${census_kinds[@]}"; do
   line="$(grep -E "^census: store kind=$kind (nodes|tuples)=" "$work/census.out" || true)"
   [[ -n "$line" ]] || fail "$section" "the store census reads the kind $kind" "it prints no line of it: $(grep -E '^census: store' "$work/census.out" | head -n 5 | paste -sd ';' -)"
@@ -697,6 +729,13 @@ for kind in "${census_kinds[@]}"; do
       "$line; $(grep -E "^census: store kind=$kind difference at" "$work/census.out" | head -n 10 | paste -sd ';' -)"
 done
 pass "$section" "the store census reads zero differences in both directions for ${census_kinds[*]}"
+# The rows of documents of issues that have not converted which no pass of this build's rule has
+# stated, which the census counts as a class of their own and compares with nothing.
+grep -E '^census: store kind=[a-z_]+ unstated_rows=' "$work/census.out" >"$work/unstated" ||
+  fail "$section" "the store census counts the rows of issues that have not converted as a class of their own" \
+    "it prints no 'census: store kind=<kind> unstated_rows=' line: $(grep -E '^census: store kind=block_text' "$work/census.out" | head -n 5 | paste -sd ';' -)"
+cat "$work/unstated"
+pass "$section" "the store census reports the rows of issues that have not converted as a class of their own: $(sed -E 's/^census: store kind=([a-z_]+) unstated_rows=([0-9,]+).*/\1 \2/' "$work/unstated" | paste -sd ',' -)"
 sections=$((sections + 1))
 
 printf 'PASS: %s complete %d sections\n' "$driver" "$sections"

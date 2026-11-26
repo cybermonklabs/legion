@@ -186,16 +186,16 @@ issue_tree_redirects_pointers() {
 
 # issue_tree_redirects_census SECTION: `envoy-dispatch census --store` over the database, which
 # exits 0 or 1 (a refusal, whose reasons are other classes than the lines read here); its
-# dangling_citations line in `dangling`, its unresolved_citations count in `unresolved`; it fails
-# printing the census's versions line unless that line reads tree_mismatch=0 and
-# tree_mismatch_repaired=0.
+# dangling_citations line in `dangling`, its unresolved_citations count in `unresolved`; and its
+# `census: versions` line read by lib-tree.sh's tree_census_versions, which fails printing that
+# line unless it reads tree_mismatch=0 and tree_mismatch_repaired=0.
 issue_tree_redirects_census() {
   local section="$1" line
   tree_envoy_dispatch_status census --store
   [[ "$tree_envoy_status" == 0 || "$tree_envoy_status" == 1 ]] ||
     fail "$section" "envoy-dispatch census --store is taken" "it exited $tree_envoy_status: $(tail -n 20 "$work/out")"
   cp "$work/out" "$work/census.$section"
-  grep -E '^census: (dangling_citations|versions rendered_from_tree)|unresolved_citations' "$work/census.$section" | sed 's/^/  /' || true
+  grep -E '^census: dangling_citations|unresolved_citations' "$work/census.$section" | sed 's/^/  /' || true
   line="$(grep -m 1 '^census: dangling_citations ' "$work/census.$section")" ||
     fail "$section" "census --store prints its dangling_citations line" "it prints none: $(tail -n 20 "$work/census.$section")"
   [[ "$line" =~ moved=([0-9,]+)\ returning=([0-9,]+) ]] ||
@@ -206,11 +206,9 @@ issue_tree_redirects_census() {
   [[ "$line" =~ unresolved_citations\ n=([0-9,]+) ]] ||
     fail "$section" "census --store prints its unresolved_citations line" "the line reads: $line"
   unresolved="${BASH_REMATCH[1]//,/}"
-  line="$(grep -m 1 '^census: versions rendered_from_tree=' "$work/census.$section")" ||
-    fail "$section" "census --store prints its census: versions line" "it prints none: $(tail -n 20 "$work/census.$section")"
-  [[ "$line" =~ (^|\ )tree_mismatch=0(\ |$) && "$line" =~ (^|\ )tree_mismatch_repaired=0(\ |$) ]] ||
-    fail "$section" "the census: versions line reads tree_mismatch=0 and tree_mismatch_repaired=0" "$line"
-  pass "$section" "census --store reads dangling_citations $dangling, unresolved_citations n=$unresolved, and tree_mismatch=0 tree_mismatch_repaired=0"
+  tree_census_versions "$section" "each run of census --store reads tree_mismatch=0 and tree_mismatch_repaired=0" "" \
+    "$work/census.$section"
+  pass "$section" "census --store reads dangling_citations $dangling and unresolved_citations n=$unresolved"
 }
 
 # issue_tree_redirects_tuple SECTION WHAT FROM_KIND FROM_ID TO_ID: a tuple the store holds now from

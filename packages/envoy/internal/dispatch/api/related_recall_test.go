@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -223,14 +225,24 @@ func loadRecallCorpus(t *testing.T, corpus recallCorpus) (*server, *store.Store,
 // title and spec as of that filing, so an issue that is the target of several queries filed at
 // different times holds, for each, its text at that query's filing. The query is taken out of
 // the search, its issue's and its spec's vectors emptied: it is not a competitor of its own text.
-// Every other issue stays as it is now. The term statistics are refreshed after, as each pair's
-// picker would have read them over that state.
+// Every other issue stays as it is now. The check ranks a spec from its node_search document row,
+// which no trigger keeps, so the staging and the restore each end with that row's own writer over
+// the pair's two specs (writeStagedDocumentRows). The term statistics are refreshed after, as each
+// pair's picker would have read them over that state.
 func recallStagePair(t *testing.T, database *store.Store, corpus recallCorpus, pair recallRecord) (restore func()) {
 	t.Helper()
 	ctx := context.Background()
 	exec := func(what, statement string, arguments ...any) {
 		t.Helper()
 		if _, err := database.Pool.Exec(ctx, statement, arguments...); err != nil {
+			t.Fatalf("%s for %s: %v", what, pair.Query, err)
+		}
+	}
+	documentRows := func(what string) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			return writeStagedDocumentRows(ctx, tx, pair.Target, pair.Query)
+		}); err != nil {
 			t.Fatalf("%s for %s: %v", what, pair.Query, err)
 		}
 	}
@@ -255,6 +267,7 @@ func recallStagePair(t *testing.T, database *store.Store, corpus recallCorpus, p
 	exec("empty the query's spec vectors", `
 		update artifact_versions v set search = ''::tsvector
 		  from artifacts a where a.id = v.artifact_id and a.issue_key = $1 and a.is_primary`, pair.Query)
+	documentRows("write the staged specs' search rows")
 	if _, err := refreshSearchTermStats(ctx, database.Pool, corpus.project); err != nil {
 		t.Fatalf("refresh the term statistics for %s: %v", pair.Query, err)
 	}
@@ -266,6 +279,7 @@ func recallStagePair(t *testing.T, database *store.Store, corpus recallCorpus, p
 		exec("refill the query's spec vectors", `
 			update artifact_versions v set markdown = v.markdown
 			  from artifacts a where a.id = v.artifact_id and a.issue_key = $1 and a.is_primary`, pair.Query)
+		documentRows("write the restored specs' search rows")
 	}
 }
 

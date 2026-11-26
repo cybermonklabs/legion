@@ -747,9 +747,12 @@ test("the approval entries stay in the header and read the document each step ap
       title: "Unapproved",
     });
     await oneChip((await childOf(unapproved.key, "Child of an unapproved parent")).key);
+    // An approval covers the record of the Spec query - the spec's memo, criteria and
+    // requirements - and not its paragraphs (R14), so the words the edit changes are a
+    // requirement's: as a paragraph, the edit would carry the approval to the new version.
     const changed = await createIssue({
       project: "PLAIN",
-      spec: "Before.",
+      spec: ":::requirement{#r-before}\nBefore.\n:::\n",
       title: "Changed since",
     });
     await reviewArtifact(changed.primary_artifact_id ?? "", { state: "approved" });

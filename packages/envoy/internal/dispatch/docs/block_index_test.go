@@ -1342,7 +1342,9 @@ func issueRoomAheadOfItsVersion(t *testing.T) (*store.Store, *Service, issueRoom
 // ahead of it with every block that version holds and the room's index keeps (heldVersionBlocks):
 // the block an unsettled edit deleted is matched by its row of the index, which the room keys
 // under its tree artifact (indexedBlocks, refs.DocumentRoomBlocksSQL), so its text stands in a
-// window, as the version holds it.
+// window, as the version holds it. The windows of every document of the room stand under the
+// room's tree artifact (refs.DocumentWindowOwner, R17 of the issue-tree spec), so the spec's are
+// read there; no other fragment of the room holds the paragraph.
 //
 // The control is the read of the index by the spec's own id, which finds no row: the deleted
 // paragraph matches neither a row nor a live block, and no window holds its text.
@@ -1351,7 +1353,7 @@ func TestWindowArmKeepsTheBlockAnUnsettledEditOfAnIssueRoomDeleted(t *testing.T)
 	if tick := reconcileBlockIndex(t, service, ""); tick.Windows == 0 {
 		t.Fatalf("the window arm gave windows to no owner (%#v), want the spec", tick)
 	}
-	windows := windowTextsOf(t, database, refs.DocumentWindowKind, room.spec)
+	windows := windowTextsOf(t, database, refs.DocumentWindowKind, room.tree)
 	held := false
 	for _, text := range windows {
 		held = held || strings.Contains(text, roomGoneParagraph)
@@ -1365,7 +1367,9 @@ func TestWindowArmKeepsTheBlockAnUnsettledEditOfAnIssueRoomDeleted(t *testing.T)
 // earlier version is the window arm's, as one that is its own room is (refs.DocumentsOwedWindows):
 // its blocks are the room's rows its fragment holds, which the room keys under its tree artifact,
 // and the arm windows its stored version while the owed arm leaves the room, whose live text is
-// ahead, owed.
+// ahead, owed. Its windows stand under the room's tree artifact, as every document's of the room
+// do (refs.DocumentWindowOwner, R17 of the issue-tree spec), so they are read there; no other
+// fragment of the room holds the paragraph.
 //
 // The control is the read of the blocks by the spec's own id, which finds none: the spec is
 // listed owed nothing, and it holds no window.
@@ -1379,7 +1383,7 @@ func TestWindowArmWindowsADocumentOfAnIssueRoomOwedItsBlockIndex(t *testing.T) {
 	if tick.LiveAhead == 0 {
 		t.Fatalf("the tick found no document live ahead (%#v), want the room left owed", tick)
 	}
-	windows := windowTextsOf(t, database, refs.DocumentWindowKind, room.spec)
+	windows := windowTextsOf(t, database, refs.DocumentWindowKind, room.tree)
 	held := false
 	for _, text := range windows {
 		held = held || strings.Contains(text, roomKeptParagraph)

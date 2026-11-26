@@ -3,8 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
 import { api } from "../../api/client";
+import { issueAskThreadsQuery } from "../../api/queries";
 import type { AskWithTrees } from "../../api/types";
-import { issueAskThreadsQuery } from "../issue-page/useIssueTree";
 import { useNewIssuePageFreshness } from "../refs/reference-target";
 import type { MarginOwner } from "./useMarginItems";
 

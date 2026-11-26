@@ -86,7 +86,7 @@ export function standingReviewLines(advice: WriteAdvice | undefined): string[] {
   const review = advice?.standing_review;
   if (review === undefined) return [];
   const carriedFrom = review.carried_from_version;
-  if (carriedFrom !== undefined) {
+  if (carriedFrom != null) {
     return [
       `${review.by}'s approval of this issue's spec was carried forward from the approval of version ${carriedFrom}, and Dispatch recorded that carry on ${review.at}.`,
       "Say what changed since that review in a reply on this ask.",

@@ -169,13 +169,17 @@ func FillIssueHeads(ctx context.Context, database *store.Store, limit int) (fill
 	return filled, more, err
 }
 
-// fillEachIssueHeads fills each issue of keys (fillIssueHeads), each in a transaction of its own,
-// and answers how many it filled.
+// fillEachIssueHeads fills each issue of keys (fillIssueHeads), each in a transaction of its own
+// whose first statement has Postgres plan its statements at the tables' sizes as they run
+// (graphstore.PlanAtCurrentSizes), and answers how many it filled.
 func fillEachIssueHeads(ctx context.Context, database *store.Store, keys []string) (int, error) {
 	filled := 0
 	for _, key := range keys {
 		var wrote bool
 		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+			if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+				return err
+			}
 			var err error
 			wrote, err = fillIssueHeads(ctx, tx, key)
 			return err

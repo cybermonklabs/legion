@@ -359,7 +359,11 @@ func restoreEvents(t *testing.T, handler http.Handler, issueKey, artifactID stri
 // it inserted the review, and the fill read the record by its own walk and found it equal. The
 // spec holds a requirement, so its record is not empty. An approval request the agent opened on the
 // changed version is answered by the carry, and the edit's own answer, read once its write phase
-// has run, says it moved no request.
+// has run, says it moved no request. The agent's edit changes a word of that requirement, so its
+// version moves the record and the approval reads stale until the undo: R14 covers the approval by
+// the Spec query's record, which an edit of the spec's opening paragraph does not move, so the
+// record carry would carry the approval to that edit's version and the request would open no ask
+// (TestTheRecordCarryCarriesOnlyWhereTheDigestHolds holds that carry).
 func TestARestoreOfTheApprovedRecordPinsItsDigestBeforeItsVersion(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	createReferenceAPIProject(t, handler, "PINS")
@@ -370,10 +374,11 @@ func TestARestoreOfTheApprovedRecordPinsItsDigestBeforeItsVersion(t *testing.T) 
 	if review := reviewDocument(t, handler, spec.id, "alice", "approved", ""); review.ContentSHA256 == nil || *review.ContentSHA256 != pin {
 		t.Fatalf("alice's approval of version %d pins %v, want its record's digest %s", approved.number, review.ContentSHA256, pin)
 	}
-	agentEdit(t, handler, spec.id, approved.number+1, replaceOp("The spec's opening words.", "The spec's first words."))
+	agentEdit(t, handler, spec.id, approved.number+1, replaceOp("The list comes first.", "The list comes last."))
+	requireNoCarry(t, handler, spec.id, 1, "stale")
 	request := requestApproval(t, handler, spec.id)
 
-	advice := agentEdit(t, handler, spec.id, approved.number+2, replaceOp("The spec's first words.", "The spec's opening words."))
+	advice := agentEdit(t, handler, spec.id, approved.number+2, replaceOp("The list comes last.", "The list comes first."))
 	restored := newestQueryVersion(t, database, spec.id)
 	if restored.number != approved.number+2 || restored.markdown != approved.markdown {
 		t.Fatalf("the undo leaves the spec at version %d holding %q, want version %d holding version %d's text %q",
@@ -491,9 +496,15 @@ func TestARestoreOfTheApprovedTextOverAMovedRecordCarriesNothing(t *testing.T) {
 // with it: the request stays open, moved to the versions the settlement wrote, and no ask event
 // answers it, while the spec's own carry stands, approval first, naming the request it was given
 // against. Where the record is the one alice approved, both carries stand, each artifact.approved
-// before its version's artifact.version, and the request is answered in alice's name.
+// before its version's artifact.version, and the request is answered in alice's name. The spec
+// holds the requirement r1, whose word the first settlement changes beside the paragraph's, so that
+// version moves the spec's record and its approval reads stale until the restore: R14 covers the
+// spec's approval by the Spec query's record, which a change of the paragraph alone does not move,
+// so the record carry would carry the approval to that version, and the restore would then follow
+// that carry rather than alice's approval.
 func TestATwoDocumentRequestClosesOnlyOnTheCarriesTheWritePhaseKeeps(t *testing.T) {
 	changedChecks := strings.Replace(revisedChecks, "the urgent asks first", "every ask", 1)
+	const requirementWords, changedWords = "The flag guards every region.", "The flag guards one region."
 	for _, test := range []struct {
 		name, key string
 		moved     bool
@@ -504,8 +515,9 @@ func TestATwoDocumentRequestClosesOnlyOnTheCarriesTheWritePhaseKeeps(t *testing.
 		t.Run(test.name, func(t *testing.T) {
 			handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 			documents := deps.Docs.(*docs.Service)
-			issue := createInteractionIssue(t, handler, test.key, "Two documents restored at once", restoreSpec)
+			issue := createInteractionIssue(t, handler, test.key, "Two documents restored at once", restoreSpec+"\n:::requirement{#r1}\n"+requirementWords+"\n:::\n")
 			spec := issue.PrimaryArtifactID
+			approvedSpec := versionMarkdown(t, handler, spec, 1)
 			verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", revisedChecks).Artifact.ID
 			reviewDocument(t, handler, spec, "alice", "approved", "")
 			approval := reviewDocument(t, handler, verification, "alice", "approved", "")
@@ -521,7 +533,12 @@ func TestATwoDocumentRequestClosesOnlyOnTheCarriesTheWritePhaseKeeps(t *testing.
 				}
 				settleIssue(t, documents, issue.Key)
 			}
-			writeBoth(strings.Replace(restoreSpec, "behind a flag.", "behind a flag and a canary.", 1), changedChecks)
+			changedSpec := strings.Replace(strings.Replace(approvedSpec, "behind a flag.", "behind a flag and a canary.", 1), requirementWords, changedWords, 1)
+			if strings.Count(approvedSpec, requirementWords) != 1 || changedSpec == approvedSpec {
+				t.Fatalf("the spec's version 1 reads %q, want it holding the requirement's words %q once", approvedSpec, requirementWords)
+			}
+			writeBoth(changedSpec, changedChecks)
+			requireNoCarry(t, handler, spec, 1, "stale")
 			request := requestApprovalWithVerification(t, handler, spec)
 			if test.moved {
 				if recorded := recordResult(t, handler, issue.Key, resultBody("c1", "fail", headCommit, map[string]any{"failed": 1})); recorded.Code != http.StatusCreated {
@@ -536,7 +553,7 @@ func TestATwoDocumentRequestClosesOnlyOnTheCarriesTheWritePhaseKeeps(t *testing.
 				}
 			}
 
-			writeBoth(restoreSpec, revisedChecks)
+			writeBoth(approvedSpec, revisedChecks)
 			specVersion, checksVersion := newestQueryVersion(t, database, spec), newestQueryVersion(t, database, verification)
 			if specVersion.number != 3 || specVersion.markdown != versionMarkdown(t, handler, spec, 1) || checksVersion.markdown != versionMarkdown(t, handler, verification, 1) {
 				t.Fatalf("the settlement leaves the spec at version %d and the Verification document at version %d, want the spec at 3 and both holding their approved texts",

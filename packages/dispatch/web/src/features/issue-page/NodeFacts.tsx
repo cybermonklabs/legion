@@ -10,6 +10,7 @@ import {
 } from "../../theme/classes";
 import { DispatchPicture } from "../refs/DispatchPicture";
 import { parseNodeReference } from "../refs/routes";
+import { ChildIssueTag } from "./IssueChildren";
 import type { NodeFact } from "./issue-tree";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, nodeFactLabel } from "./page-words";
@@ -93,6 +94,11 @@ function FactValue({ fact, tabStops }: { fact: NodeFact; tabStops: boolean }): R
   }
   if (fact.draw === "command") {
     return <Command command={fact.value} tabStops={tabStops} />;
+  }
+  // An issue's key, a link to that issue, drawn as the children's section draws a child's key
+  // (`ChildIssueTag`): the Plan view's step of another issue's task names that issue so.
+  if (fact.draw === "issue") {
+    return <ChildIssueTag child={{ key: fact.value }} tabStops={tabStops} />;
   }
   if (fact.draw === "picture") {
     return <Picture reference={fact.value} />;

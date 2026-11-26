@@ -122,22 +122,18 @@ func readingAnswers(ctx context.Context, tx pgx.Tx, blockIDs []string, rows map[
 
 // askAnswers reads what the store holds now of each ask ids names, by ask id: its address,
 // whether its row names its node, and whether it holds an answer, which it reads off the ask's
-// node - its newest answer_state value (graphstore.TupleAnswerState), which asks.Settle appends,
-// and which an ask node holding none - an ask a process of the release before wrote, before the
-// boot step states it - reads as open. The asks row names the ask and its document's address alone.
+// node - its newest answer_state value (asks.NodeValueOf), which asks.Settle appends, decoded as
+// every ask read decodes it (asks.NodeAnswer.Read) - and which an ask node holding none - an ask a
+// process of the release before wrote, before the boot step states it - reads as open. The asks
+// row names the ask and its document's address alone.
 func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAnswer, error) {
 	rows, err := tx.Query(ctx, `
-		select k.id::text, coalesce(answer.to_id, $2), k.issue_key, a.project_key, coalesce(a.slug, ''),
+		select k.id::text, coalesce(`+asks.NodeValueOf("k", graphstore.TupleAnswerState)+`, '`+asks.StateOpen+`'),
+		       k.issue_key, a.project_key, coalesce(a.slug, ''),
 		       k.node_kind is not null and k.node_address is not null
 		from asks k join artifacts a on a.id = `+refs.AskBlockDocumentSQL("k")+`
-		left join lateral (
-			select t.to_id, t.asserted from graph_tuples t
-			where t.from_kind = $3 and t.from_id = k.id::text and t.kind = $4 and t.to_kind = $5
-			order by t.seq desc
-			limit 1
-		) answer on answer.asserted
 		where k.id = any($1::uuid[])
-	`, ids, asks.StateOpen, graphstore.KindAsk, graphstore.TupleAnswerState, graphstore.KindValue)
+	`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("read the answers of the asks readings stand in: %w", err)
 	}
@@ -150,13 +146,18 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 		if err := rows.Scan(&id, &state, &issueKey, &project, &slug, &named); err != nil {
 			return nil, fmt.Errorf("scan the answer of an ask a reading stands in: %w", err)
 		}
+		var node asks.NodeAnswer
+		if _, err := node.Read(graphstore.TupleAnswerState, state); err != nil {
+			return nil, fmt.Errorf("read the answer state of ask %s: %w", id, err)
+		}
 		ref := text.Ref{ID: id, Document: slug}
 		if issueKey != nil {
 			ref.IssueKey = *issueKey
 		} else if project != nil {
 			ref.Project = *project
 		}
-		answers[id] = askAnswer{id: id, address: refs.AskRef(ref), named: named, answered: state == asks.StateAnswered}
+		// Read states the answer state it was given, so State is set.
+		answers[id] = askAnswer{id: id, address: refs.AskRef(ref), named: named, answered: *node.State == asks.StateAnswered}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the answers of the asks readings stand in: %w", err)
