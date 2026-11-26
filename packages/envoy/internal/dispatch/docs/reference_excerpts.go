@@ -317,24 +317,6 @@ func indexedVersionOf(ctx context.Context, tx pgx.Tx, artifactID string, version
 	if err != nil {
 		return refs.IndexedVersion{}, err
 	}
-	if ledger := queueFor(ctx, tx); ledger != nil {
-		if pending, queued := ledger.latest[artifactID]; queued && pending.version.Number == version {
-			record := refs.IndexedVersion{RefKey: address.RefKey}
-			if len(pending.version.Authors) > 0 {
-				record.Writer = pending.version.Authors[0]
-			}
-			if _, created := pendingArtifact(ctx, artifactID); created {
-				record.Project, record.Parties = graphstore.SessionScope(address.Project, address.Session)
-				return record, nil
-			}
-			stored, err := refs.ReadIndexedVersion(ctx, tx, artifactID, version)
-			if err != nil {
-				return refs.IndexedVersion{}, err
-			}
-			record.Project, record.Parties = stored.Project, stored.Parties
-			return record, nil
-		}
-	}
 	writer, err := versionWriterOf(ctx, tx, artifactID, version)
 	if err != nil {
 		return refs.IndexedVersion{}, err
