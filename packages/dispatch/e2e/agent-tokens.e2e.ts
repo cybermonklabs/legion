@@ -1,6 +1,9 @@
+import { mkdirSync } from "node:fs";
+
 import { DISPATCH_READ_ONLY_TOKEN } from "@legion/contracts";
 
-import { baseUrl, createIssue, createProject } from "./api";
+import { baseUrl, createIssue, createProject, e2eAgentToken, getIssue } from "./api";
+import { runDispatch } from "./dispatch-cli";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -187,4 +190,139 @@ test("read-only tokens made in Settings list their scopes, read whoami, and are 
     expect(comment.status, `POST /api/v1/issues/${issue.key}/comments with ${label}`).toBe(403);
     expect(await comment.json()).toMatchObject({ code: DISPATCH_READ_ONLY_TOKEN });
   }
+});
+
+/** The `--priority` row of a command's help: the flag's own line and the lines of its
+ *  description under it, up to the next flag. */
+function priorityRow(help: string): string {
+  const lines = help.split("\n");
+  const start = lines.findIndex((line) => /^ {2}--priority\b/.test(line));
+  expect(start, `the help has no --priority row:\n${help}`).toBeGreaterThan(-1);
+  const next = lines.findIndex((line, index) => index > start && /^ {2}--/.test(line));
+  return lines.slice(start, next === -1 ? undefined : next).join("\n");
+}
+
+// This row carries no `@pr` tag: the pull-request lane's real-stack share is at its cap
+// (`realStackBudget`, e2e/__tests__/pull-request-lane.test.ts), so the full lane runs it.
+// SLOW(>=2s): seven cold `bun` starts of the real `dispatch` command around minting and widening
+// personal tokens in Settings.
+test("Settings gives p0 only where its box is ticked, and the command sets P0 only under a token that holds it", async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== "chromium", "the command runs outside the browser");
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  // Each credential writes an issue of its own, seeded at priority 2 as alice, so no earlier step
+  // leaves a later step writing priority 0 onto an issue already at P0.
+  const [first, second, third, fourth] = [
+    await createIssue({ priority: 2, project: "CORE", title: "Rotate the signing key" }),
+    await createIssue({ priority: 2, project: "CORE", title: "Drain the stale worker pool" }),
+    await createIssue({ priority: 2, project: "CORE", title: "Trim the audit log retention" }),
+    await createIssue({ priority: 2, project: "CORE", title: "Verify the backup restore" }),
+  ] as const;
+
+  const home = testInfo.outputPath("dispatch-home");
+  mkdirSync(home, { recursive: true });
+
+  await page.goto("/settings");
+  await expect(page.getByText("No agent tokens yet.")).toBeVisible();
+  const newTokenSetP0 = page.getByRole("checkbox", { exact: true, name: "Set P0 (new token)" });
+  // A build before p0 draws no Set P0 box on the mint form, so it fails here.
+  await expect(
+    newTokenSetP0,
+    'the mint form has a "Set P0 (new token)" box once whoami answers'
+  ).toBeVisible();
+  await expect(newTokenSetP0).not.toBeChecked();
+  await expect(
+    page.locator("form").getByText("Set an issue's priority to P0.", { exact: true })
+  ).toBeVisible();
+
+  const withoutP0 = await makeToken(page, "Without P0");
+  await newTokenSetP0.check();
+  const withP0 = await makeToken(page, "With P0");
+  await expect(newTokenSetP0).not.toBeChecked();
+
+  // Whoami names p0 for "With P0" alone among the three credentials.
+  for (const [label, token, holdsP0] of [
+    ["With P0", withP0, true],
+    ["Without P0", withoutP0, false],
+    ["shared token", e2eAgentToken, false],
+  ] as const) {
+    const whoami = await whoamiWithToken(token);
+    expect(whoami.status, `GET /api/v1/whoami with ${label}`).toBe(200);
+    const { scopes } = (await whoami.json()) as { scopes: string[] };
+    expect(scopes.includes("p0"), `whoami scopes for ${label}: ${scopes.join(",")}`).toBe(holdsP0);
+  }
+
+  // The command's help names p0 on the --priority row under each credential.
+  for (const [label, token] of [
+    ["With P0", withP0],
+    ["Without P0", withoutP0],
+    ["shared token", e2eAgentToken],
+  ] as const) {
+    const help = await runDispatch(["issue-update", "--help"], home, { token });
+    expect(help.code, `issue-update --help under ${label}: ${help.stdout}${help.stderr}`).toBe(0);
+    expect(priorityRow(help.stdout), `the --priority row under ${label}`).toMatch(/\bp0\b/);
+  }
+
+  // Both credentials without p0 are refused priority 0, and each issue keeps priority 2.
+  for (const [label, token, issue] of [
+    ["Without P0", withoutP0, first],
+    ["shared token", e2eAgentToken, second],
+  ] as const) {
+    const refused = await runDispatch(
+      ["issue-update", "--issue", issue.key, "--priority", "0"],
+      home,
+      { token }
+    );
+    expect(refused.code, `P0 under ${label}: ${refused.stdout}${refused.stderr}`).toBe(1);
+    const lines = `${refused.stdout}\n${refused.stderr}`.split("\n");
+    expect(
+      lines.some((line) => line.includes("OAUTH_SCOPE_REQUIRED") && /\bp0\b/.test(line)),
+      `refusal under ${label} names OAUTH_SCOPE_REQUIRED and p0: ${refused.stdout}${refused.stderr}`
+    ).toBe(true);
+    expect((await getIssue(issue.key)).priority, `${issue.key} after refusal under ${label}`).toBe(
+      2
+    );
+  }
+
+  // The token minted with Set P0 ticked sets priority 0.
+  const allowed = await runDispatch(
+    ["issue-update", "--issue", third.key, "--priority", "0"],
+    home,
+    { token: withP0 }
+  );
+  expect(allowed.code, `P0 under With P0: ${allowed.stdout}${allowed.stderr}`).toBe(0);
+  expect((await getIssue(third.key)).priority).toBe(0);
+
+  // Giving p0 to "Without P0" on its row widens it in place, and the command then sets priority 0.
+  const rowSetP0 = page.getByRole("checkbox", { exact: true, name: "Set P0 (Without P0)" });
+  await expect(rowSetP0).toBeVisible();
+  await expect(rowSetP0).not.toBeChecked();
+  const patched = page.waitForResponse(
+    (response) =>
+      response.request().method() === "PATCH" &&
+      /^\/api\/v1\/me\/agent-tokens\/[^/]+$/.test(new URL(response.url()).pathname)
+  );
+  await rowSetP0.click();
+  expect((await patched).status(), "PATCH scopes of Without P0").toBe(200);
+  await expect(rowSetP0).toBeChecked();
+
+  const widenedWhoami = await whoamiWithToken(withoutP0);
+  expect(widenedWhoami.status, "GET /api/v1/whoami after widening Without P0").toBe(200);
+  const widened = (await widenedWhoami.json()) as { scopes: string[] };
+  expect(widened.scopes, `widened scopes of Without P0: ${widened.scopes.join(",")}`).toContain(
+    "p0"
+  );
+
+  const afterWiden = await runDispatch(
+    ["issue-update", "--issue", fourth.key, "--priority", "0"],
+    home,
+    { token: withoutP0 }
+  );
+  expect(
+    afterWiden.code,
+    `P0 after widening Without P0: ${afterWiden.stdout}${afterWiden.stderr}`
+  ).toBe(0);
+  expect((await getIssue(fourth.key)).priority).toBe(0);
 });

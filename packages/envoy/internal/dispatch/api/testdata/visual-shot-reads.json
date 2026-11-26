@@ -46,7 +46,8 @@
     "/api/v1/settings/architecture-sources",
     "/api/v1/settings/delivery",
     "/api/v1/settings/project-default-assignees",
-    "/api/v1/signins"
+    "/api/v1/signins",
+    "/api/v1/whoami"
   ],
   "live": ["events", "measures", "pipeline", "timeline"],
   "auth": ["/auth/whoami"]

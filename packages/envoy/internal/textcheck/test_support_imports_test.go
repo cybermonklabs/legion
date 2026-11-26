@@ -21,6 +21,7 @@ import (
 // test file, whatever build constraint the file carries, so a file of any tag that imports the
 // package fails here, naming the file.
 func TestOnlyTestFilesImportSpecgraphtest(t *testing.T) {
+	t.Parallel()
 	const support = "github.com/sjawhar/envoy/internal/dispatch/specgraph/specgraphtest"
 	importers, read := nonTestImporters(t, "../..", support)
 	if read == 0 {
