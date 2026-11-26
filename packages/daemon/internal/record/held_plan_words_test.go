@@ -39,6 +39,15 @@ func heldFactsOf(issues []Issue, facts LineFacts) HeldFacts {
 		Chain: chainOf(byKey, facts.Parents), Facts: facts}
 }
 
+// withRetroHolds is facts with the three holds on the acceptance of each parent among issues held
+// before its retro put together as ReadLineFacts puts them (retroHoldsOf): over issues and the
+// records above them facts carries (LineFacts.Parents), with the open Dispatch children and the
+// resting roots a case gives each parent.
+func withRetroHolds(facts LineFacts, issues []Issue, children map[string]ChildWait, resting map[string][]RestingRoot) LineFacts {
+	facts.RetroHolds = retroHoldsOf(&passChain{issues: issues, above: facts.Parents}, RetroHeldParents(issues), children, resting)
+	return facts
+}
+
 // planHeld is the record of key held from from for reason, as the workflow writes a hold: at
 // the status of the last step it ran, since a hold writes no Dispatch status of its own.
 func planHeld(key, tree string, parent *string, from phase.Phase, reason HoldReason) Issue {
@@ -96,10 +105,23 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		planChild("LEGION-71", "LEGION-70", "LEGION-70", "in_progress", phase.Implementing),
 		parked,
 		planHeld("LEGION-72", "LEGION-73", new("LEGION-73"), phase.Merging, HoldTaskStopped),
+		// Roots held before their retro with nothing beneath them in the workflow: one a root of
+		// another tree rests on, one an open Dispatch child holds, and one held by both, which
+		// names the resting root, the hold that comes first in R8's order.
+		planHeld("LEGION-80", "LEGION-80", nil, phase.Retro, HoldForChildren),
+		planHeld("LEGION-81", "LEGION-81", nil, phase.Retro, HoldForChildren),
+		planHeld("LEGION-82", "LEGION-82", nil, phase.Retro, HoldForChildren),
 	}
 	facts := planHoldFacts([]string{"LEGION-30", "LEGION-40", "LEGION-50", "LEGION-51", "LEGION-52",
-		"LEGION-60", "LEGION-61", "LEGION-62", "LEGION-63", "LEGION-70", "LEGION-73"}, doneChild)
+		"LEGION-60", "LEGION-61", "LEGION-62", "LEGION-63", "LEGION-70", "LEGION-73", "LEGION-80", "LEGION-81", "LEGION-82"}, doneChild)
 	facts.Held = map[string][]string{"LEGION-70": {"LEGION-900"}}
+	facts = withRetroHolds(facts, issues, map[string]ChildWait{
+		"LEGION-81": {Parent: "LEGION-81", Open: []OpenChild{{Key: "LEGION-91", Status: "backlog"}}},
+		"LEGION-82": {Parent: "LEGION-82", Open: []OpenChild{{Key: "LEGION-93", Status: "todo"}}},
+	}, map[string][]RestingRoot{
+		"LEGION-80": {{Key: "LEGION-90", Phase: phase.Implementing, Steps: []DesignStep{DesignStepSpec}}},
+		"LEGION-82": {{Key: "LEGION-92", Phase: phase.Admitted, Steps: []DesignStep{DesignStepSpec}}},
+	})
 	held := heldFactsOf(issues, facts)
 	byKey := held.ByKey
 
@@ -120,6 +142,9 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 		{"control: a failed claim from implementing, the hold of an issue with no plan rows", "LEGION-63", HeldUnclassified, nil},
 		{"a Dispatch blocker answers before the hold for children", "LEGION-70", HeldDispatchBlocker, []string{"LEGION-900"}},
 		{"a parked tree answers before the stopped task", "LEGION-72", HeldTreeParked, []string{"LEGION-73"}},
+		{"a root held before its retro names the root resting on it", "LEGION-80", HeldChildrenBeforeRetro, []string{"LEGION-90"}},
+		{"a root held before its retro names its open Dispatch child", "LEGION-81", HeldChildrenBeforeRetro, []string{"LEGION-91"}},
+		{"a resting root comes before an open Dispatch child", "LEGION-82", HeldChildrenBeforeRetro, []string{"LEGION-92"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			word, heldBy := HeldReasonOf(byKey[tc.issue], held)
@@ -132,7 +157,7 @@ func TestEachHoldOfAPlanReadsItsOwnHeldWord(t *testing.T) {
 	// The chain is what names the grandchild: over the live records alone the walk up from
 	// LEGION-43 stops at its done parent and reads only the root above, so LEGION-41 would name
 	// nobody.
-	alone := planHoldFacts([]string{"LEGION-40"})
+	alone := withRetroHolds(planHoldFacts([]string{"LEGION-40"}), issues, nil, nil)
 	if word, heldBy := HeldReasonOf(byKey["LEGION-41"], heldFactsOf(issues, alone)); word != HeldChildrenBeforeRetro || heldBy != nil {
 		t.Fatalf("HeldReasonOf(LEGION-41) with no record of LEGION-42 = %s %v, want children_before_retro naming nobody", word, heldBy)
 	}
@@ -150,7 +175,7 @@ func TestTheHeldListGivesEachHoldOfAPlanItsWord(t *testing.T) {
 		planHeld("LEGION-52", "LEGION-52", nil, phase.Merging, HoldTaskStopped),
 		planHeld("LEGION-62", "LEGION-62", nil, phase.Retro, ""),
 	}
-	facts := planHoldFacts([]string{"LEGION-30", "LEGION-52", "LEGION-62"})
+	facts := withRetroHolds(planHoldFacts([]string{"LEGION-30", "LEGION-52", "LEGION-62"}), issues, nil, nil)
 	slots := []Slot{{Issue: "LEGION-31", Index: 0, AdmittedAt: admitted}}
 
 	line, dropped := Waiting(issues, slots, facts)

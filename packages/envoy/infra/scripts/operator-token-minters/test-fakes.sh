@@ -270,9 +270,13 @@ case "${args[*]}" in
     mark() { [ -e "$dir/$1" ] && echo on || echo off; }
     # A world marked review-refuse-holding or review-short-holding (a subject, as the record's
     # last field writes it) refuses, or answers one review short, the one call that asks about
-    # that subject, whichever batch that is (row cz's later-batch items). awk reads the whole file:
-    # a grep -q that stops at its first match, under pipefail, can end cut with SIGPIPE.
-    holding() { [ -s "$dir/$1" ] && awk -F '\t' -v s="$(cat "$dir/$1")" '$7 == s { f = 1 } END { exit !f }' "$dir/review-requests-$calls.tsv"; }
+    # that subject, whichever batch that is (row cz's later-batch items). The subjects reach grep
+    # through a process substitution, never `cut | grep -q`: this fake runs under pipefail, grep
+    # stops at its first match (the marked subject is its batch's first line), and cut's next write
+    # then fails the pipeline with SIGPIPE, so the call that holds the subject read as one that does
+    # not and answered in full (row cz's later-refused item's run so passed its step under load
+    # on 2026-11-26).
+    holding() { [ -s "$dir/$1" ] && grep -qxF -- "$(cat "$dir/$1")" < <(cut -f7 "$dir/review-requests-$calls.tsv"); }
     ! holding review-refuse-holding ||
       forbidden subjectaccessreviews.authorization.k8s.io 'create resource "subjectaccessreviews" in API group "authorization.k8s.io"' container.subjectAccessReviews.create
     short=off
