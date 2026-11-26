@@ -4711,6 +4711,25 @@ DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=first-start-tip VERIFICATION_RESU
 # → FAIL first-start-tip: T1: the first start wrote heads from the events the bus held: #21 open at
 #   d1d1d1d1d1d1; #22 open at d2d2d2d2d2d2 … T1: the first start's intake bound at stream sequence 1,
 #   want 4 … T1: the first start read the pull requests of the events the bus held from GitHub: …
+# The build of main at 1af8393264, whose intake binds no durable and writes no head with no
+# delivery settings:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-no-settings VERIFICATION_RESULTS_E2E_NO_SETTINGS_CONTROL=1 \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-no-settings: S1 the project's default repository: dispatch results compares k1 with
+#   the head of #11 and a pass stands within 5000 ms of the event (took 45036 ms, not within 45000 ms) …
+# This checkout with the state taken from the event's action, then with the head taken from the event:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=state \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-from-github: L: 3 s after the labeled event of the closed #48, #48 is still no basis: …
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=head-from-github VERIFICATION_RESULTS_E2E_FROM_GITHUB_CONTROL=head \
+  bash scripts/e2e/verification-results.sh
+# → FAIL head-from-github: F1: a forged synchronize back to an older commit that carries a pass moves
+#   no head, and that pass does not stand: … F6: …
+# The build of 4b2d1e83f85c, about 16 minutes:
+DATABASE_URL=… VERIFICATION_RESULTS_E2E_ONLY=github-outage VERIFICATION_RESULTS_E2E_OUTAGE_CONTROL=1 \
+  bash scripts/e2e/verification-results.sh
+# → FAIL github-outage: #2001's head row is open a001… not within 600000 ms (it is absent) after
+#   GitHub answered again …
 ```
 
 ## child-adoption.sh
