@@ -488,11 +488,8 @@ func main() {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
 	if started.EdgeListener != nil {
-		// BROKER_EDGE_MACHINE_LOGIN_URL is held to a scheme and a host (config's httpURLSetting), so
-		// it can carry user information or a query: it prints through the URL rule. BROKER_EDGE_URL
-		// is refused with either at load.
 		slog.Info("broker edge listening", "addr", started.EdgeListener.Addr().String(), "url", cfg.EdgeURL,
-			"verification_uri", redact.URL(cfg.EdgeMachineLoginURL), "workspace_domains", cfg.WorkspaceDomains())
+			"verification_uri", "(the page BROKER_EDGE_MACHINE_LOGIN_URL names; not printed)", "workspace_domains", cfg.WorkspaceDomains())
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
 	// on port 0 reads each one's own metrics address from its own log.
@@ -628,9 +625,7 @@ func main() {
 	}, oauthStore)
 	fatal(err)
 	if provider.DeviceGrant() {
-		// BROKER_MACHINE_LOGIN_URL is held to a scheme and a host alone, so it prints through the
-		// URL rule: user information or a query in it is never logged.
-		slog.Info("machine login device grant", "state", "on", "verification_uri", redact.URL(cfg.MachineLoginURL))
+		slog.Info("machine login device grant", "state", "on", "verification_uri", "(the page BROKER_MACHINE_LOGIN_URL names; not printed)")
 	} else {
 		slog.Info("machine login device grant", "state", "off", "detail", "BROKER_MACHINE_LOGIN_URL is unset, so no person types a code and POST /v1/oauth/device_authorization is not served")
 	}
@@ -889,8 +884,8 @@ func main() {
 		callout.Store(service)
 		go func() {
 			if err := service.Ready(ctx); err == nil {
-				// Each hub server by its host alone: config refuses user information in an entry
-				// but not a query, which can carry a credential.
+				// Each hub server by its host alone, and one whose host could be a piece of its
+				// credential by BROKER_NATS_URLS alone (natscallout.HubHosts).
 				slog.Info("broker: the NATS auth service is answering", "servers", natscallout.HubHosts("BROKER_NATS_URLS", cfg.NATS.URLs), "services", len(cfg.NATS.Services))
 			}
 		}()
@@ -1038,7 +1033,7 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	}
 	st, err := store.Open(ctx, cfg.DatabaseURL, opts...)
 	if err != nil {
-		return nil, aws.Config{}, fmt.Errorf("open the database: %w", err)
+		return nil, aws.Config{}, fmt.Errorf("open the database BROKER_DATABASE_URL names: %w", err)
 	}
 	return st, awsCfg, nil
 }
@@ -1579,8 +1574,6 @@ func wireJudge(ctx context.Context, cfg config.Config, rules proxyrules.Rules, m
 	// nothing of a run is on the requester's path.
 	m.Judge = runner.Consider
 	identity := cmp.Or(account.ServiceAccount, "metadata")
-	// BROKER_JUDGE_DISPATCH_URL is held to a scheme and a host alone, so it prints through the URL
-	// rule: user information or a query in it is never logged.
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
 		"dispatch", redact.URL(cfg.JudgeDispatchURL), "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }

@@ -468,7 +468,7 @@ func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 		"BROKER_SIGNIN_WORKSPACE_DOMAINS=" + ciphertest.EdgeWorkspaceDomain,
 		"BROKER_DRAIN_SECONDS=30",
 	}})
-	line := broker.AwaitRecord(t, "broker edge listening", map[string]any{"url": testEdgeURL, "verification_uri": testEdgeMachineLoginURL})
+	line := broker.AwaitRecord(t, "broker edge listening", map[string]any{"url": testEdgeURL, "verification_uri": "(the page BROKER_EDGE_MACHINE_LOGIN_URL names; not printed)"})
 	edgeAddr, _ := line["addr"].(string)
 	if edgeAddr == "" {
 		t.Fatalf("the edge's line names no addr: %v", line)

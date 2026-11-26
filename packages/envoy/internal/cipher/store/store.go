@@ -28,6 +28,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -71,11 +72,13 @@ func WithTokenMinter(mint TokenMinter) Option {
 	}
 }
 
-// Open opens the pool databaseURL names, configured by opts, and pings it.
+// Open opens the pool databaseURL names, configured by opts, and pings it. A URL pgx cannot read
+// is refused in fixed words: pgx's own text quotes the URL, its user and query among it, and a
+// query pair it could not read.
 func Open(ctx context.Context, databaseURL string, opts ...Option) (*Store, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("open Postgres pool: %w", err)
+		return nil, fmt.Errorf("open Postgres pool: %w", redact.Masked(err, "pgx cannot read its connection settings"))
 	}
 	for _, opt := range opts {
 		opt(config)

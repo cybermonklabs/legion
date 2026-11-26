@@ -144,17 +144,20 @@ type Settings struct {
 
 // HubHosts is urls, the hub's servers, as a line names them: each entry by its host alone, with
 // its port (url.URL.Host, of the entry read as nats.go reads it: nats://<entry> when it names no
-// scheme), comma-separated, and an entry that does not parse, or names no host, by setting, the
-// name of the setting that holds urls, alone. An entry's user information is a NATS credential and
-// its query can carry one, and its host holds neither; an entry that does not parse is never
-// printed, since nothing can say which part of it is the host.
+// scheme), comma-separated, and an entry that does not parse, names no host, or holds an "@" past
+// its authority by setting, the name of the setting that holds urls, alone. An entry's user
+// information is a NATS credential and its query can carry one. A "/", "?" or "#" written into the
+// user information ends the authority there, so the host url.Parse reads is a piece of the
+// credential, and nothing tells that entry from one whose path, query or fragment holds an "@", as
+// the bus names a server (natsServerName). An entry that does not parse is never printed either,
+// since nothing can say which part of it is the host.
 func HubHosts(setting string, urls []string) string {
 	hosts := make([]string, len(urls))
 	for i, entry := range urls {
 		if !strings.Contains(entry, "://") {
 			entry = "nats://" + entry
 		}
-		if parsed, err := url.Parse(entry); err == nil && parsed.Host != "" {
+		if parsed, err := url.Parse(entry); err == nil && parsed.Host != "" && !strings.Contains(parsed.Path+parsed.RawQuery+parsed.Fragment, "@") {
 			hosts[i] = parsed.Host
 		} else {
 			hosts[i] = setting

@@ -1,6 +1,7 @@
 package natscallout
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -9,13 +10,16 @@ import (
 )
 
 // TestAConnectErrorNamesTheHubWithNoCredentialItsURLsCarry: Start's error when the connection to
-// the hub cannot be made names each server by its host alone, and an entry that does not parse by
-// BROKER_NATS_URLS alone, so none prints a run of the probe's user, password or token, which an
-// entry carries in its user information and its query (calloutd hands its -nats flag to Start
-// unchecked). The two ways a list is refused are both read: a nats:// entry beside a ws:// one,
-// which nats.go refuses in words of its own, and an entry whose port is no number, which net/url
-// cannot parse and the bus names by its class alone. The twin shows each list as written holds
-// every marker. Captures natscallout.hub-hosts/<case>.
+// the hub cannot be made names each server by its host alone, and an entry that does not parse,
+// or whose host could be a piece of its credential, by BROKER_NATS_URLS alone, so none prints a
+// run of the probe's user, password or token, which an entry carries in its user information and
+// its query (calloutd hands its -nats flag to Start unchecked). The two ways a list is refused are
+// both read: a nats:// entry beside a ws:// one, which nats.go refuses in words of its own, and an
+// entry whose port is no number, which net/url cannot parse and the bus names by its class alone.
+// In at-authority, a "?", a "/" and a "#" written into an entry's user information end its
+// authority there, so the host url.Parse reads is the probe's user, password or token, and an "@"
+// stands past the authority. The twin shows each list as written holds every marker. Captures
+// natscallout.hub-hosts/<case>.
 func TestAConnectErrorNamesTheHubWithNoCredentialItsURLsCarry(t *testing.T) {
 	credentialed := func(hostport string) string {
 		return "nats://" + redacttest.User + ":" + redacttest.Password + "@" + hostport + "/?access" + "_token=" + redacttest.Token
@@ -27,13 +31,17 @@ func TestAConnectErrorNamesTheHubWithNoCredentialItsURLsCarry(t *testing.T) {
 	}{
 		{"mixed", []string{credentialed("127.0.0.1:4"), "ws://127.0.0.1:5"}, []string{"127.0.0.1:4", "127.0.0.1:5", "mixing of websocket"}},
 		{"unparsed", []string{credentialed("127.0.0.1:port")}, []string{"BROKER_NATS_URLS"}},
+		{"at-authority", []string{
+			"nats://" + redacttest.User + ":4222?access" + "_token=x@127.0.0.1:4",
+			"nats://" + redacttest.Password + "/x@127.0.0.1:5",
+			"nats://" + redacttest.Token + "#x@127.0.0.1:6",
+			"ws://127.0.0.1:7",
+		}, []string{"connect to BROKER_NATS_URLS,BROKER_NATS_URLS,BROKER_NATS_URLS,127.0.0.1:7: ", "mixing of websocket"}},
 	}
 	t.Run("twin", func(t *testing.T) {
 		for _, c := range cases {
-			for _, marker := range redacttest.Secrets {
-				if !strings.Contains(strings.Join(c.urls, ","), marker) {
-					t.Errorf("%s: the URLs as written, %q, hold no %q, so the row cannot see it printed", c.name, c.urls, marker)
-				}
+			if held := redacttest.Held(strings.Join(c.urls, ",")); !slices.Equal(held, redacttest.Secrets) {
+				t.Errorf("%s: the URLs as written, %q, hold %q, want %q, so the row can see each printed", c.name, c.urls, held, redacttest.Secrets)
 			}
 		}
 	})

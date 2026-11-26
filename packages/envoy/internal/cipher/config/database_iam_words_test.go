@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -25,15 +26,13 @@ func TestAnIAMDatabaseURLPgxCannotReadIsRefusedQuotingNoneOfIt(t *testing.T) {
 		written = redacttest.User + ":" + redacttest.Password
 	)
 	cases := []struct{ name, url, says string }{
-		{"parse", base + "&" + written, "pgx cannot read its connection settings"},
+		{"parse", base + "&" + written, "pgx cannot read its connection settings (pgx's own words are not printed: they can quote the URL); check each query pair and the sslrootcert, sslcert and sslkey files it names"},
 		{"file", base + "&sslrootcert=/nonexistent/" + written + "/ca.pem", "no such file or directory"},
 	}
 	t.Run("twin", func(t *testing.T) {
 		for _, c := range cases {
-			for _, marker := range redacttest.Secrets {
-				if !strings.Contains(c.url, marker) {
-					t.Errorf("%s: the URL as written, %q, holds no %q, so the row cannot see it printed", c.name, c.url, marker)
-				}
+			if held := redacttest.Held(c.url); !slices.Equal(held, redacttest.Secrets) {
+				t.Errorf("%s: the URL as written, %q, holds %q, want %q, so the row can see each printed", c.name, c.url, held, redacttest.Secrets)
 			}
 		}
 	})

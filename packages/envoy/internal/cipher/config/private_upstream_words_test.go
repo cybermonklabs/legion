@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,10 +18,8 @@ import (
 func TestAPrivateUpstreamHostRefusalQuotesNoneOfTheEntry(t *testing.T) {
 	const entry = "https://" + redacttest.User + ":" + redacttest.Password + "@dispatch.test/?access" + "_token=" + redacttest.Token
 	t.Run("twin", func(t *testing.T) {
-		for _, marker := range redacttest.Secrets {
-			if !strings.Contains(entry, marker) {
-				t.Errorf("the entry as written, %q, holds no %q, so the row cannot see it printed", entry, marker)
-			}
+		if held := redacttest.Held(entry); !slices.Equal(held, redacttest.Secrets) {
+			t.Errorf("the entry as written, %q, holds %q, want %q, so the row can see each printed", entry, held, redacttest.Secrets)
 		}
 	})
 	t.Run("host", func(t *testing.T) {

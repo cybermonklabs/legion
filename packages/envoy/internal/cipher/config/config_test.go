@@ -1963,7 +1963,7 @@ func TestLoadRefusesAnIAMURLThatDoesNotVerifyTheServer(t *testing.T) {
 		"a later sslmode undoing verify-full":      {verifiedRDSURL + "&sslmode=require", "its sslmode is not verify-full"},
 		"a second host":                            {"postgres://agent_secrets_broker@" + rdsHost + ":5432,other.example.net:5432/agent_secrets?sslmode=verify-full&sslrootcert=" + rdsBundle, "it names another host too"},
 		"an sslrootcert that names no file":        {base + "?sslmode=verify-full&sslrootcert=/nonexistent/rds-bundle.pem", "pgx cannot read a file its connection settings name: open: no such file or directory"},
-		"an sslrootcert that holds no certificate": {base + "?sslmode=verify-full&sslrootcert=config_test.go", "pgx cannot read its connection settings"},
+		"an sslrootcert that holds no certificate": {base + "?sslmode=verify-full&sslrootcert=config_test.go", "pgx cannot read its connection settings (pgx's own words are not printed: they can quote the URL); check each query pair and the sslrootcert, sslcert and sslkey files it names"},
 		"sslrootcert=system":                       {base + "?sslmode=verify-full&sslrootcert=system", "sslrootcert=system"},
 		"sslrootcert=system under sslmode=require": {base + "?sslmode=require&sslrootcert=system", "sslrootcert=system"},
 	} {

@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -35,10 +36,8 @@ func TestTheReadyRefusalNamesTheServerWithNoCredentialItsURLCarries(t *testing.T
 	}
 	server := "nats://" + redacttest.User + ":" + redacttest.Password + "@" + addr + "/?access" + "_token=" + redacttest.Token
 	t.Run("twin", func(t *testing.T) {
-		for _, marker := range redacttest.Secrets {
-			if !strings.Contains(server, marker) {
-				t.Errorf("the -nats value as written, %q, holds no %q, so the row cannot see it printed", server, marker)
-			}
+		if held := redacttest.Held(server); !slices.Equal(held, redacttest.Secrets) {
+			t.Errorf("the -nats value as written, %q, holds %q, want %q, so the row can see each printed", server, held, redacttest.Secrets)
 		}
 	})
 	t.Run("ready", func(t *testing.T) {
