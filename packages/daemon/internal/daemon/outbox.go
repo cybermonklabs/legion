@@ -2036,7 +2036,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		if err := r.parkDecision(ctx, row.Issue, tree.root.Key, payload, key, row.ID); err != nil {
 			return err
 		}
-		if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, architect, "it stopped with its finished tree"); err != nil {
+		if err := r.tellControllerOfKeptPod(ctx, row.Issue, row.ID, notice, key, recipient, "it stopped with its finished tree"); err != nil {
 			return err
 		}
 		r.log.Info("outbox notice finished undelivered: its architect stopped with its finished tree",

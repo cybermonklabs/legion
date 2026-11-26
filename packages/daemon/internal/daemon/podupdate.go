@@ -1544,14 +1544,14 @@ func (s *supervision) readPodWorkspace(ctx context.Context, issue, round string,
 	defer done()
 	if process != (runtime.Known{}) {
 		reader, ok := s.runtime.(runtime.WorkspaceWorkReader)
-		role, named := process.Claim.Role()
+		_, agent, named := process.Claim.Cut()
 		switch {
 		case !ok:
 			read.err = errNoRoleReader
 		case !named:
 			read.err = fmt.Errorf("the claim %s names no role to read the workspace through", process.Claim)
 		default:
-			read.role = role
+			read.role = claim.Role(agent)
 			read.work, read.err = reader.WorkspaceWork(limited, issue, process.Claim)
 		}
 		return read

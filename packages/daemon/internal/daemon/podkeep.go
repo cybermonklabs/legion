@@ -80,16 +80,16 @@ func (s *supervision) keepPodForRound(ctx context.Context, issue, round, pod, re
 // (keptPodReadDue). A turn that started after read.at owes that read anyway (the Legion
 // reviewer's point 1).
 //
-// The open phase's worker (workflow.OpenPhaseRole of issuePhase) is told, where its claim has a
-// process in the pod and is not gone, and the read could read: by a role message that the pod
-// waits for the push of the work (podKeptMessage). Otherwise the issue's architect is told, by the
-// workspace-kept notice (record.WorkspaceKeptNotice, roundKeptMessage) on the decline a launcher's
-// read records too (keptNoticeDecline), with each claim's state and what the read found or why it
-// failed. Each is told once: the store queues a role's message only where the decline names other
-// work than the row on record, and the architect's notice once for each pod (store's
-// recordDecline). So a read after a turn that finds the same work moves the row's moment and tells
-// nobody. again is a read that may end an earlier round's keep of the pod, made with no round
-// (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage).
+// The open phase's worker (openPhaseWorker: the step that takes work at issuePhase) is told,
+// where its claim has a process in the pod and is not gone, and the read could read: by a role
+// message that the pod waits for the push of the work (podKeptMessage). Otherwise the issue's
+// architect is told, by the workspace-kept notice (record.WorkspaceKeptNotice, roundKeptMessage)
+// on the decline a launcher's read records too (keptNoticeDecline), with each claim's state and
+// what the read found or why it failed. Each is told once: the store queues a role's message only
+// where the decline names other work than the row on record, and the architect's notice once for
+// each pod (store's recordDecline). So a read after a turn that finds the same work moves the row's
+// moment and tells nobody. again is a read that may end an earlier round's keep of the pod, made
+// with no round (readKeptPod), whose messages name no round (podKeptMessage, roundKeptMessage).
 func (s *supervision) recordPodKept(ctx context.Context, issue, round, pod, reasons string, read workspaceRead, group []supervise.Claim, issuePhase phase.Phase, again bool) (bool, error) {
 	after, err := s.supervisor.Claims(ctx)
 	if err != nil {
@@ -131,14 +131,19 @@ func keptMoment(readAt time.Time, group []supervise.Claim) time.Time {
 	return at
 }
 
-// openPhaseWorker is the claim of the open phase's worker of an issue in issuePhase
-// (workflow.OpenPhaseRole), where that claim records a process in round's pod and is not gone: the
-// one role a round's keep tells by a message of its own (recordPodKept).
+// openPhaseWorker is the claim of the open phase's worker of an issue in issuePhase — the role of
+// the step that takes work at that phase (workflow.OpenStepsOf, which answers none for the
+// architect's phases), as main's OpenPhaseRole named it — where that claim records a process in
+// round's pod and is not gone: the one role a round's keep tells by a message of its own
+// (recordPodKept).
 func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Phase) (supervise.Claim, bool) {
-	role := workflow.OpenPhaseRole(issuePhase)
-	if role == "" {
+	at := record.Issue{Phase: issuePhase}
+	at.Running = record.RunningOf(at, false, nil)
+	steps := workflow.OpenStepsOf(at)
+	if len(steps) == 0 {
 		return supervise.Claim{}, false
 	}
+	role := steps[0].Role
 	for _, c := range group {
 		if c.Role == role && inRoundPod(c, round) && !c.Gone() {
 			return c, true
@@ -405,7 +410,7 @@ func workspaceTakenMessage(issue, round, pod, reasons string, named []supervise.
 // architect reads it in its session and people read it in its history, so it follows ASD-STE100.
 func launchTakenMessage(taken runtime.TakenPod) string {
 	role := string(taken.Claim)
-	if named, ok := taken.Claim.Role(); ok {
+	if _, named, ok := taken.Claim.Cut(); ok {
 		role = string(named)
 	}
 	why := taken.Why
