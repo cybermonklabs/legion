@@ -439,7 +439,7 @@ readonly caller_trees=(packages/dispatch/web/src packages/envoy-client/src packa
 # The two fallbacks of the release roll, each by its file and the one function that holds it, each
 # with its line in root-deletes.txt and a test that drives it against the refusal it answers:
 # - the page's openAsksOfTheReleaseBefore (web/src/api/client.ts), which reads GET /api/v1/inbox
-#   only where the read of every project's open asks is refused 400
+#   and which openAsksQuery calls only where the read of every project's open asks is refused 400
 #   AUTHOR_SESSION_OR_PROJECT_REQUIRED, as a Dispatch process of the release before refuses it;
 # - `dispatch inbox`'s inboxReadOfTheReleaseBefore (envoy-client/src/dispatch-commands/session.ts),
 #   which reads GET /api/v1/inbox and GET /api/v1/me/replies only where the server answers
@@ -642,9 +642,8 @@ TS
   mkdir -p "$plant/packages/dispatch/web/src/api" "$plant/packages/envoy-client/src/dispatch-commands"
   cat >"$plant/packages/dispatch/web/src/api/client.ts" <<'TS'
 export class PlantedClient {
-  async openAsksOfTheReleaseBefore(refusal: unknown, query: { readonly project?: string }) {
-    if (!(refusal instanceof Error)) throw refusal;
-    return await this.read("/api/v1/inbox", {}, query);
+  openAsksOfTheReleaseBefore(query: { readonly project?: string }) {
+    return this.read("/api/v1/inbox", {}, query);
   }
 
   plantedRead() {
@@ -679,7 +678,7 @@ TS
     "packages/dispatch/e2e/planted-caller.e2e.ts:7: GET /api/v1/me/replies"
     "packages/dispatch/e2e/planted-caller.e2e.ts:8: GET /api/v1/agents/{session_id}/messages"
     "packages/dispatch/e2e/__recordings__/planted-caller.ts:1: GET /api/v1/inbox"
-    "packages/dispatch/web/src/api/client.ts:8: GET /api/v1/inbox"
+    "packages/dispatch/web/src/api/client.ts:7: GET /api/v1/inbox"
     "packages/envoy-client/src/dispatch-commands/session.ts:8: GET /api/v1/me/replies"
   )
   for want in "${wants[@]}"; do
