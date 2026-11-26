@@ -202,7 +202,7 @@ func TestTheDispatchTokenCountsFollowTheLaunches(t *testing.T) {
 // a daemon that wrote it otherwise would have left: a runtime built after it reads it so.
 func rewriteRecord(t *testing.T, g *rig, loc runtime.Locator, edit func(map[string]any)) {
 	t.Helper()
-	role, _ := loc.Claim.Role()
+	role := slotOf(loc.Claim)
 	s := g.sandbox(loc.Sandbox.Name)
 	if s == nil {
 		t.Fatalf("sandbox %s is absent", loc.Sandbox.Name)

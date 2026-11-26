@@ -54,7 +54,11 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 			return ghrepo.MustParse("zeta/tools"), "main", nil
 		},
 		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
-			asked = append(asked, string(appauth.AppRoleFor(role))+" on "+repository.String())
+			app, err := appauth.AppRoleFor(role, nil)
+			if err != nil {
+				return runtime.GitIdentity{}, err
+			}
+			asked = append(asked, string(app)+" on "+repository.String())
 			return bot, nil
 		}}
 	spec, err := s.SpawnSpec(context.Background(), c)

@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -257,6 +258,12 @@ func newHarnessUnrelaunchable(t *testing.T) *harness {
 // (DaemonAPIVersion): the stale-plugin trigger lives in internal/supervise, exercised by its own
 // tests.
 func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
+	return newHarnessIn(t, relaunchable, plan.Deployment{})
+}
+
+// newHarnessIn is newHarnessDeps under deployment, the roles the deployment defines beside
+// Legion's own (Options.Deployment); the zero deployment is Legion's own roles alone.
+func newHarnessIn(t *testing.T, relaunchable bool, deployment plan.Deployment) *harness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -312,7 +319,7 @@ func newHarnessDeps(t *testing.T, relaunchable bool) *harness {
 		Supervisor: sup, BootTokens: tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: st,
 		Log:  slog.New(slog.NewTextHandler(serverLog, nil)),
 		Pool: st.Pool(), Record: record.NewStore(), Releaser: rt, Trees: st, ReleaseRecords: st, ClaimActivity: st,
-		PluginRelaunchable: relaunchable,
+		PluginRelaunchable: relaunchable, Deployment: deployment,
 		ClaimReady:         func(c supervise.Claim) { *readied = append(*readied, c) },
 		PromptAgents:       testPromptAgents,
 		PodUpdateRounds:    func() PodUpdateRounds { return *rounds },
