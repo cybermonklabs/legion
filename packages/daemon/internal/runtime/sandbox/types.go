@@ -141,8 +141,8 @@ type Pod struct {
 	ServiceAccount string
 }
 
-// ProvisionTokens mints the installation token a pod's workspace-fetch container clones the
-// repository with, for the repository it clones, which the token names and reaches alone.
+// ProvisionTokens mints the installation token workspace-init clones the repository with, for the
+// repository it clones, which the token names and reaches.
 // The daemon's is appauth; a harness's may be a token file read on every call.
 type ProvisionTokens interface {
 	Token(ctx context.Context, repo ghrepo.Repository) (string, error)
