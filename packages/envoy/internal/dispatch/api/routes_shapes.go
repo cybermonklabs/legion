@@ -169,7 +169,8 @@ type deliveryWindowQuery struct {
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
 	// lowercase hex characters; any other value is 400 INVALID_QUERY. The only read of GitHub it
-	// leaves is the check runs of a check CI proves, read at the issue's newest pull request head.
+	// leaves is the check runs of a check CI proves, read at each open pull request head, or with
+	// none open the final head of the newest merged one.
 	At string `query:"at"`
 }
 
