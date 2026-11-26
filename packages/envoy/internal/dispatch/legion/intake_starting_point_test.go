@@ -359,6 +359,9 @@ func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *test
 	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
 		t.Fatalf("the write naming B read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
 	}
+	rig.waitFor(5*time.Second, func() bool { return rig.clock.deferredCalls() >= 1 }, func() string {
+		return "the write naming B deferred no call within 5 s"
+	})
 	if deferred := rig.clock.deferredCalls(); deferred != 1 {
 		t.Fatalf("the intake deferred %d calls by the write naming B, want the one call of that write's wake: the take-over and the first write found the starting read due", deferred)
 	}
@@ -420,6 +423,9 @@ func TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart(t 
 	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
 		t.Fatalf("the write naming B after the delete read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
 	}
+	rig.waitFor(5*time.Second, func() bool { return rig.clock.deferredCalls() >= 1 }, func() string {
+		return "the write naming B after the delete deferred no call within 5 s"
+	})
 	if deferred := rig.clock.deferredCalls(); deferred != 1 {
 		t.Fatalf("the intake deferred %d calls by the write naming B after the delete, want the one call of its wake: the take-over found the starting read due", deferred)
 	}
@@ -456,6 +462,9 @@ func TestATakeOverThatFindsTheStartingReadNotDueDefersOneCallThatMakesIt(t *test
 	if testwait.Holds(2*time.Second, 25*time.Millisecond, func() bool { return b.served() > 0 }) {
 		t.Fatalf("the second take-over read B about 10 s after the read of A began, on the intake's clock: want no read before a minute has passed")
 	}
+	rig.waitFor(5*time.Second, func() bool { return rig.clock.deferredCalls() >= 1 }, func() string {
+		return "the second take-over deferred no call within 5 s"
+	})
 	if deferred, made := rig.clock.deferrals(); deferred != 1 || made != 0 {
 		t.Fatalf("the intake deferred %d calls and made %d of them by the second take-over, want the one call that take-over defers, not made yet", deferred, made)
 	}

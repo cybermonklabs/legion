@@ -488,18 +488,19 @@ func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinut
 // TestATakeOverWhileAMessageHoldsTheStartingReadBeforeItIsDueDefersNoCall: no timer recurs (R3),
 // and the redelivery of the message that holds an owed read makes it, a starting read included
 // (read-rule-cases row 7.5, state S0h). INFRA's message holds its starting read while the cursor
-// follows no daemon yet (startingReadHeld, whose write deferred one call). With about 20 s of the
-// starting read's minute left on the intake's clock, a second intake takes the durable over. The
-// take-over redelivers the message, which holds the read again for its second hand-back, and the
-// take-over's starting point finds the starting read not due and held: it joins the held read and
-// defers no call (Intake.startingPoint, readAnswer.later). So the intake has deferred the one call
-// of startingReadHeld's write alone (intakeClock.deferrals).
+// follows no daemon yet (startingReadHeld, whose write deferred one call). With about 45 s of the
+// starting read's minute left on the intake's clock, which moves with the wall clock, a second
+// intake takes the durable over, so the stop and the start of the take-over finish well before the
+// read is due on a slow run too. The take-over redelivers the message, which holds the read again
+// for its second hand-back, and the take-over's starting point finds the starting read not due and
+// held: it joins the held read and defers no call (Intake.startingPoint, readAnswer.later). So the
+// intake has deferred the one call of startingReadHeld's write alone (intakeClock.deferrals).
 //
 // The test catches a revert of the rule that a call no message makes answers the time left until
 // the starting read is due only where no message holds that read (cursor.readFor): the take-over's
 // starting point then defers a second call.
 func TestATakeOverWhileAMessageHoldsTheStartingReadBeforeItIsDueDefersNoCall(t *testing.T) {
-	const left = 20 * time.Second
+	const left = 45 * time.Second
 	rig, _, holder, _, _ := startingReadHeld(t, left)
 
 	rig.stop()
