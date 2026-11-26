@@ -61,8 +61,10 @@ type probeRig struct {
 
 func newProbeRig(t *testing.T, objects []k8sruntime.Object, options ...rigOption) *probeRig {
 	t.Helper()
-	g := &probeRig{rig: newRig(t, objects, options...), finishedUID: map[types.UID]bool{}}
-	g.autoStart.Store(false)
+	// The controller stand-in starts no pod from its first pass (withoutAutoStart): the probe rig
+	// finishes its pods itself, and an autoStart turned off once newRig had returned left a pass in
+	// that gap that could make a seeded Running Sandbox's pod scheduled and Running.
+	g := &probeRig{rig: newRig(t, objects, append([]rigOption{withoutAutoStart()}, options...)...), finishedUID: map[types.UID]bool{}}
 	g.kube.PrependReactor("get", "pods", func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
 		if action.GetSubresource() != "log" {
 			return false, nil, nil
@@ -342,9 +344,9 @@ func TestProbeImageRefusesRoleReferencesTheImageWouldRefuseBeforeAnyPod(t *testi
 }
 
 // The probe is a Sandbox named for the project and the image, running the image's Go `legion
-// probe-image` with the daemon's contract on the Legion pool; it passes on the OK line confirming
-// that contract — which names no model: Legion's probe makes no model round trip — and it deletes
-// its Sandbox when it is done.
+// probe-image` with the daemon's contract on the cluster's general nodes; it passes on the OK line
+// confirming that contract — which names no model: Legion's probe makes no model round trip — and
+// it deletes its Sandbox when it is done.
 func TestProbeImagePassesOnTheOKLineConfirmingTheContract(t *testing.T) {
 	t.Parallel()
 	g := newProbeRig(t, nil)
@@ -863,7 +865,7 @@ func TestProbeImageRetriesAProbeThatNeverFinished(t *testing.T) {
 		{"a missing manifest met on one pull", func(g *probeRig) {
 			g.waitsSaying("ErrImagePull", pullFailure("ErrImagePull", "NotFound", resolving(testImage+": not found"))).pullsFailed(1, "NotFound", resolving(testImage+": not found"))
 		}, []string{"(container probe waiting: ErrImagePull)"}},
-		{"no pod at all", func(g *probeRig) { g.hold.Store(true) },
+		{"no pod at all", func(g *probeRig) { g.setHold(true) },
 			[]string{"probe pod " + probeSandboxName + " did not start within " + neverFinishedBudget.String() + ": no pod"}},
 		// A pod whose probe outlasts the attempt: what it logged so far is quoted.
 		{"a pod still probing", func(g *probeRig) {
@@ -1149,9 +1151,10 @@ func TestProbeImageReplacesOnlyItsOwnProjectsLeftover(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			// No pod: the fakes' watches ignore label selectors, so a pod of another project's
-			// Sandbox would reach the runtime's store, which a real API server never sends it.
-			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)})
-			g.hold.Store(true)
+			// Sandbox would reach the runtime's store, which a real API server never sends it. So
+			// the controller stand-in is held from its first pass (withHeld): a hold set once the
+			// rig is made let a pass make that pod first.
+			g := newProbeRig(t, []k8sruntime.Object{sandboxObject(t, probeSandboxName, "uid-foreign", modeRunning, labels)}, withHeld())
 
 			err := g.probe(probeOptions(t))
 

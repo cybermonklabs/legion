@@ -181,8 +181,9 @@ func TestASocketWhoseWriteFailedSendsNothingMoreOnceTheLinkMoves(t *testing.T) {
 			}
 		}
 	}()
-	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "a write of the stalled socket failed at its deadline", func() bool {
-		return writeFailedOn(dialer)
+	testwait.Until(t, "a write of the stalled socket to fail at its deadline", func() (bool, bool) {
+		failed := writeFailedOn(dialer)
+		return failed, failed
 	})
 	testwait.Receive(t, "control: nats.go to give the stalled connection up after its failed write", gaveUp)
 	if receivedOnceSettled(t, relay, subscriber, received, marker) {

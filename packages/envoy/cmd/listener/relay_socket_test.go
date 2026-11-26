@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -204,12 +205,13 @@ func TestAProbeOfASocketIsNeitherForwardedNorAnswered(t *testing.T) {
 	}
 }
 
-// Rows 4, 5, 7 and 8, in one process, each on its own socket: the broker's answer for the
+// Rows 4, 5, 7, 8, 9 and 10, in one process, each on its own socket: the broker's answer for the
 // socket's token changes, and the socket closes with the code the wire gives that case within a
 // second of the first check that reads it (the rig's verifier clock moved past the five seconds a
-// live answer is reused for, so the next check asks the broker). The last case is the negative
-// control of all of them: an answer that has not changed keeps the socket open. Each row's own
-// control is the check of its case removed, and the socket stays open.
+// live answer is reused for, so the next check asks the broker). The last two cases are the
+// negative controls of all of them: an answer that has not changed, and one whose not-held
+// deadline is still ahead, keep the socket open. Each row's own control is the check of its case
+// removed, and the socket stays open.
 func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 	type outcome struct {
 		code int
@@ -246,12 +248,30 @@ func TestAnOpenSocketClosesByTheBrokersAnswer(t *testing.T) {
 			later: func(rig *relaySocketRig, session, token string) {
 				rig.broker.Says(token, relaySocketAnswer("ses_another", rig.caller.JKT(), time.Hour, relaySocketProject))
 			}},
+		{name: "its person became held", life: time.Hour, want: &outcome{relaySocketCloseRefused, relaySocketReasonMembershipHeld},
+			later: func(rig *relaySocketRig, session, token string) {
+				answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+				answer.Held = true
+				rig.broker.Says(token, answer)
+			}},
+		{name: "its not-held answer's deadline passed", life: time.Hour, want: &outcome{websocket.CloseTryAgainLater, relaySocketReasonDeadlinePassed},
+			later: func(rig *relaySocketRig, session, token string) {
+				answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+				answer.NotHeldUntil = oauthwire.NotHeldUntilPassed
+				rig.broker.Says(token, answer)
+			}},
 		{name: "the broker cannot be asked", life: time.Hour, want: &outcome{websocket.CloseTryAgainLater, relaySocketReasonBrokerUnavailable},
 			later: func(rig *relaySocketRig, session, token string) {
 				rig.broker.Server.Close()
 			}},
 		{name: "its answer stands", life: time.Hour,
 			later: func(rig *relaySocketRig, session, token string) {}},
+		{name: "its not-held answer's deadline is ahead", life: time.Hour,
+			later: func(rig *relaySocketRig, session, token string) {
+				answer := relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject)
+				answer.NotHeldUntil = rig.clock.now().Add(time.Hour).Unix()
+				rig.broker.Says(token, answer)
+			}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			rig := newRelaySocketRig(t)
@@ -520,80 +540,81 @@ const relaySocketFrameWire = 700 << 10
 // sends as fragments of that size, and a control frame may go between two fragments (RFC 6455,
 // section 5.4). A close behind all of a frame's data waits as long as the client takes to read it,
 // and past relaySocketCloseGrace the connection is dropped with no close frame: a client that
-// reads slowly read 1006. The client here reads through the least buffers the kernel allows
-// (dialHeldReader) and is held after the first bytes of a frame of 512 KiB, so that frame's write
-// blocks; 2 frames more come, and the second of them closes the socket, which holds at most 2. The
-// row waits until the close waits for the connection's write lock (awaitControlWriteWaiting), so
-// it is handed the lock the moment the write holding it lets go, and only then lets the client
-// read. The grace and the write deadline are raised to an hour and the socket checks its token
-// once an hour, so no clock decides the row; it reads the order on the wire: the client has read
-// less than half the frame (relaySocketFrameWire) when the close comes, and it waits on the
-// client's own reads, bounded only by the test binary's deadline. Control: write handing gorilla
-// each frame whole (WriteJSON), which writes a frame past twice its buffer as one fragment under
-// its connection's write lock, and the frame's empty last fragment after it; the close waits for
-// all of the frame's data, which the client reads first, and the row names it.
+// reads slowly read 1006. The row holds the socket's writer inside its write of the first fragment
+// of a frame of 512 KiB (heldWrites), as a client that reads nothing holds it, so that write holds
+// the connection's write lock; 2 frames more come, and the second of them closes the socket, which
+// holds at most 2. The row waits until the close waits for the connection's write lock
+// (awaitControlWriteWaiting), so it is handed the lock the moment the write holding it lets go, and
+// only then lets the write through. The writer is held at the gate rather than by a client that
+// reads nothing through the least buffers the kernel allows: there a write holds the lock only
+// while the kernel blocks it, and a close that came while the writer was between two fragments
+// took the free lock at once and waited for it never, so the row waited for it until the test
+// binary's deadline. The grace and the write deadline are raised to an hour and the socket checks
+// its token once an hour, so no clock decides the row; it reads the order on the wire: the client
+// has read less than half the frame (relaySocketFrameWire) when the close comes, and it waits on
+// the client's own reads, bounded only by the test binary's deadline. Control: write handing
+// gorilla each frame whole (WriteJSON), which writes a frame past twice its buffer as one fragment
+// under its connection's write lock, and the frame's empty last fragment after it; the close waits
+// for all of the frame's data, which the client reads first, and the row names it.
 func TestARelaySocketsCloseGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
-	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(2, 1<<30), withCloseGrace(time.Hour), withWriteWait(time.Hour))
-	const session = "ses_edge_held_reader"
-	token := "access-token-of-a-held-reader"
+	held := &heldWrites{}
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(2, 1<<30), withCloseGrace(time.Hour), withWriteWait(time.Hour), withHeldWrites(held))
+	const session = "ses_edge_held_writer"
+	token := "access-token-of-a-held-writer"
 	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
-	conn, held, socket := rig.dialHeldReader(t, session, token)
+	conn, counted, socket := rig.dialCounted(t, session, token)
 	// nats.go's own pending limits on the subscription are the socket's 2 frames; a frame counts
 	// there until enqueue returns, so they are raised above the 3 frames the row sends, leaving the
 	// socket's own limit of 2 the one that closes it.
 	if err := socket.awaitSubscription(t).SetPendingLimits(1<<16, 1<<30); err != nil {
 		t.Fatalf("raise the subscription's pending limits: %v", err)
 	}
-	resume := make(chan struct{})
-	held.resume = resume
 	client := startRelaySocketClient(t, conn)
-	before := held.read.Load()
+	before := counted.read.Load()
+	held.hold(t)
 	flood(t, rig.owner.url, session, 1)
-	testwait.Until(t, "the client to read the first bytes of the first frame", func() (int64, bool) {
-		read := held.read.Load()
-		return read, read > before
-	})
+	held.waitHeld(t, "the socket's write of the first frame to wait at the gate")
 	flood(t, rig.owner.url, session, 2)
 	awaitControlWriteWaiting(t, "the socket's close to wait for its connection's write lock")
-	close(resume)
-	err := testwait.Receive(t, "the held reader's socket to end, after 2 frames more of 512 KiB came", client.closed)
-	if read := held.read.Load() - before; read >= relaySocketFrameWire/2 {
+	held.release()
+	err := testwait.Receive(t, "the socket to end, after 2 frames more of 512 KiB came", client.closed)
+	if read := counted.read.Load() - before; read >= relaySocketFrameWire/2 {
 		t.Fatalf("the client read %d bytes of the first frame before the socket's close, half the frame's %d or more: the close waited for the frame's data being written", read, relaySocketFrameWire)
 	}
 	var closed *websocket.CloseError
 	if !errors.As(err, &closed) || closed.Code != websocket.CloseTryAgainLater || closed.Text != relaySocketReasonSlowConsumer {
 		heldMsgs, heldBytes := socket.held()
-		t.Fatalf("the client read %v after %d bytes, want the close %d %q in the middle of the first frame (the socket ended %v, holding %d frames, %d bytes)", err, held.read.Load()-before, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer, socket.ended.Load(), heldMsgs, heldBytes)
+		t.Fatalf("the client read %v after %d bytes, want the close %d %q in the middle of the first frame (the socket ended %v, holding %d frames, %d bytes)", err, counted.read.Load()-before, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer, socket.ended.Load(), heldMsgs, heldBytes)
 	}
 }
 
 // A socket's ping goes between two fragments of the data frame being written to its client,
 // behind one fragment of its data rather than all of it, as the close does: the ping is not held
 // behind a frame for up to relaySocketWriteWait, past which it would take a client that reads
-// slowly for gone. The client reads through the least buffers the kernel allows (dialHeldReader)
-// and is held after the first bytes of a frame of 512 KiB, so that frame's write blocks; the row
-// starts a ping (socket.ping), waits until the ping waits for the connection's write lock
-// (awaitControlWriteWaiting), and only then lets the client read. The client's ping handler notes
-// how many bytes it had read: under half the frame (relaySocketFrameWire). The frame then comes
-// whole, its data intact across the fragments and the ping between them. The write deadline is
-// raised to an hour and the socket checks its token once an hour, so no clock decides the row; it
-// reads the order on the wire and waits on the client's own reads, bounded only by the test
-// binary's deadline. Control: write handing gorilla each frame whole (WriteJSON); the ping waits
-// for all of the frame's data, which the client reads first, and the row names it.
+// slowly for gone. The row holds the socket's writer inside its write of the first fragment of a
+// frame of 512 KiB (heldWrites), as a client that reads nothing holds it, so that write holds the
+// connection's write lock; it starts a ping (socket.ping), waits until the ping waits for that lock
+// (awaitControlWriteWaiting), and only then lets the write through. The writer is held at the gate
+// for the reason the close's row gives. The client's ping handler notes how many bytes it had read:
+// under half the frame (relaySocketFrameWire). The frame then comes whole, its data intact across
+// the fragments and the ping between them. The write deadline is raised to an hour and the socket
+// checks its token once an hour, so no clock decides the row; it reads the order on the wire and
+// waits on the client's own reads, bounded only by the test binary's deadline. Control: write
+// handing gorilla each frame whole (WriteJSON); the ping waits for all of the frame's data, which
+// the client reads first, and the row names it.
 func TestARelaySocketsPingGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
-	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withWriteWait(time.Hour))
+	held := &heldWrites{}
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withWriteWait(time.Hour), withHeldWrites(held))
 	const session = "ses_edge_held_ping"
-	token := "access-token-of-a-held-pinged-reader"
+	token := "access-token-of-a-held-pinged-writer"
 	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
-	conn, held, socket := rig.dialHeldReader(t, session, token)
-	resume := make(chan struct{})
-	held.resume = resume
+	conn, counted, socket := rig.dialCounted(t, session, token)
 	// pinged carries how many bytes the client had read in all when the first ping came, or -1
 	// when its read ended first (ended then holds why).
 	pinged := make(chan int64, 1)
 	conn.SetPingHandler(func(data string) error {
 		select {
-		case pinged <- held.read.Load():
+		case pinged <- counted.read.Load():
 		default:
 		}
 		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Time{})
@@ -617,15 +638,13 @@ func TestARelaySocketsPingGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
 			}
 		}
 	}()
-	before := held.read.Load()
+	before := counted.read.Load()
+	held.hold(t)
 	flood(t, rig.owner.url, session, 1)
-	testwait.Until(t, "the client to read the first bytes of the frame", func() (int64, bool) {
-		read := held.read.Load()
-		return read, read > before
-	})
+	held.waitHeld(t, "the socket's write of the frame to wait at the gate")
 	socket.ping()
 	awaitControlWriteWaiting(t, "the socket's ping to wait for its connection's write lock")
-	close(resume)
+	held.release()
 	atPing := testwait.Receive(t, "the client's ping handler to run", pinged)
 	if atPing < 0 {
 		t.Fatalf("the client's read ended before any ping came: %v", <-ended)

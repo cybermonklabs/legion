@@ -7,6 +7,7 @@ import type {
   UploadPrecondition,
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
+import { commandName } from "../dispatch-command";
 import type { DispatchClient } from "../dispatch-http";
 import { dispatchDocumentRef, documentLabel, issueTopic } from "../dispatch-owner";
 import { shownPictureLine } from "../dispatch-picture-tools";
@@ -35,8 +36,12 @@ import {
   optionalString,
   stringArg,
 } from "./context";
-import { refuseOpenDecisionBlocks, refuseRemovingOpenDecisionBlocks } from "./decision-blocks";
 import { approvalLine, documentPlaysPlan, liveBlocks } from "./document-targets";
+import {
+  OPEN_BLOCK_WAIVED,
+  refuseOpenDecisionBlocks,
+  refuseRemovingOpenDecisionBlocks,
+} from "./open-decision-blocks";
 import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
@@ -445,6 +450,18 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** `dispatch request-approval`'s words around the open blocks it refuses over, which it counts as
+ *  ask blocks. */
+const APPROVAL_REQUEST_OPEN_BLOCKS = {
+  blocks: "ask block",
+  effect:
+    "Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.",
+  remedy:
+    "Do not request approval over an open block, even when a human asked for it. Tell the human which block is open and ask them to answer it or to waive it. Their answer is held on the ask, not in the text: Dispatch records its state, and who answered and when, on the block's opening line, which settles into a version on its own about two seconds later and changes no word of the text, so once every block is answered, request approval of the latest version, after any version a line above says to wait for. When the answer changes design text outside the block, rewrite that text (never to restate the answer), then request approval once the human has agreed to every point in the new version, with a one-sentence --summary naming what changed since any earlier approval. " +
+    OPEN_BLOCK_WAIVED +
+    ", write their decision into the text with dispatch doc-edit, then request approval again once the human has agreed to every point in the new version. The call opens the request, or hands an open one back to the human.",
+} as const;
+
 /** `dispatch request-approval`: ask the human to approve this version of a document. */
 export async function requestApprovalCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, ownerArguments, documentOwner, resolveDocument } = context;
@@ -454,7 +471,10 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
       ? ownerArguments.ref.id
       : undefined);
   const resolved = await resolveDocument(documentOwner(), artifactReference);
-  await refuseOpenDecisionBlocks(client, input.tool, resolved);
+  await refuseOpenDecisionBlocks(client, resolved, {
+    call: `dispatch ${commandName(input.tool)}`,
+    ...APPROVAL_REQUEST_OPEN_BLOCKS,
+  });
   const includeVerification = optionalBoolean(args, "include_verification") === true;
   const result = await client.requestApproval(resolved.artifact.id, {
     actor,

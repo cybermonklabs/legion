@@ -245,12 +245,23 @@ type execRunner struct {
 	timeout time.Duration
 	// tools maps each command's name to the executable boot resolved for it.
 	tools map[string]string
+	// environ is the environment each child's is built from (Run), or nil for this process's own
+	// (os.Environ, read at each command).
+	environ []string
 }
 
 // NewRunner returns the production process runner. The supplied timeout is applied to every
-// command separately, rather than bounding the whole provisioning sequence.
+// command separately, rather than bounding the whole provisioning sequence. Each child's
+// environment is built from this process's own.
 func NewRunner(timeout time.Duration, tools map[string]string) Runner {
 	return execRunner{timeout: timeout, tools: tools}
+}
+
+// NewRunnerIn is NewRunner whose children's environments are built from environ instead of this
+// process's: the environment `legion workspace-init` was handed, which a test of the command run
+// inside its test process hands it without changing that process's own.
+func NewRunnerIn(environ []string, timeout time.Duration, tools map[string]string) Runner {
+	return execRunner{timeout: timeout, tools: tools, environ: slices.Clone(environ)}
 }
 
 func (r execRunner) Timeout() time.Duration {
@@ -311,8 +322,13 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	// before transportEnvironment and the command's own entries are merged in, so pinGitConfig
 	// counts the command's own pairs alone (withoutGitConfigPairs). A Legion pod hands every
 	// process such a block, a role's GitHub credential helper among them, which no clone or fetch
-	// provisioning starts may read.
-	base := withoutGitConfigPairs(runtime.WithoutNATSSeeds(os.Environ()))
+	// provisioning starts may read. The environment those entries are taken from is the one the
+	// runner was made with (NewRunnerIn), or this process's own.
+	environ := r.environ
+	if environ == nil {
+		environ = os.Environ()
+	}
+	base := withoutGitConfigPairs(runtime.WithoutNATSSeeds(environ))
 	env, err := pinGitConfig(without(merge(merge(base, transportEnvironment), command.Env), "GIT_CONFIG_PARAMETERS"))
 	if err != nil {
 		return Result{}, err
@@ -435,6 +451,27 @@ func disarmLegacyConfig(jjDir, repo string) error {
 	return nil
 }
 
+// GuardJJ holds the workspace at dir to the layout before a jj command that a process other than
+// the daemon's own runner starts there, with the guards that runner runs before each of its own
+// (execRunner.Run): the layout's components and the workspace's .jj, its .jj/repo naming the shared
+// clone that Location puts beside it (guardWorkspace), and no legacy configuration file that jj
+// would migrate into the configuration it reads (disarmLegacyConfig, which removes each). The clone
+// is derived from dir's place in the layout and from nothing inside dir, by the derivation
+// WorkspaceOf makes (layoutWorkspace). The Kubernetes issue pod's launcher calls it before its
+// workspace read (R6 of #5285). An error is a workspace in which no jj command is
+// to run.
+func GuardJJ(dir string) error {
+	located, err := layoutWorkspace(dir)
+	if err != nil {
+		return fmt.Errorf("refusing to run jj in %s: %w", dir, err)
+	}
+	guarded, err := guardWorkspace(located.Dir, located.Clone, true)
+	if err != nil {
+		return err
+	}
+	return disarmLegacyConfig(guarded.jjDir, guarded.repo)
+}
+
 // refuseSymlinkedLayout refuses an operation at root when dir, or any of the directories above it
 // up to the state directory (layoutDepth of them in all), is a symlink, naming it. Provisioning
 // creates every one as a real directory; a symlink there would make jj open, and workspace
@@ -515,7 +552,10 @@ func refuseEnclosingWorkspace(dir string) error {
 // built as jj builds it (workspaceRepository, never cleaned) and stat'ed by the kernel, which
 // resolves it physically as jj's canonicalize does; it must be the same directory as the clone's
 // own (os.SameFile), or the command is refused, naming both, before jj opens a repository Legion
-// did not provision and before anything there is removed.
+// did not provision and before anything there is removed. The refusal names the path the file
+// holds quoted (%q), as data: a role writes it, and the refusal reaches the issue's architect and
+// the controller as a read's error (the Legion reviewer's point 14 on R6 of
+// #5285), so a path of several lines reaches them as one quoted string.
 func sharedRepository(jjDir, clone string) (string, error) {
 	own := filepath.Join(jjDir, "repo")
 	if clone != "" {
@@ -545,7 +585,7 @@ func sharedRepository(jjDir, clone string) (string, error) {
 		if resolved, err := filepath.EvalSymlinks(target); err == nil {
 			named = resolved
 		}
-		return "", fmt.Errorf("refusing to run jj in %s: its .jj/repo names %s, not the shared clone's %s", filepath.Dir(jjDir), named, expected)
+		return "", fmt.Errorf("refusing to run jj in %s: its .jj/repo names %q, not the shared clone's %s", filepath.Dir(jjDir), named, expected)
 	}
 	return expected, nil
 }
