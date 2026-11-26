@@ -363,9 +363,11 @@ func (read statusChangeRead) walked() []string {
 
 // leftOut is the issues of read (walked) that a status change leaves out of its plan, where hidden
 // reports each issue in a private project that the request's credential does not name: each such
-// issue, and each issue that the cascade reaches only through one, an ancestor above it or a
-// descendant below it. The ancestors come parent first and the descendants nearest first, so each
-// issue is judged after the issue the cascade reaches it through.
+// ancestor and descendant, and each issue that the cascade reaches only through one, an ancestor
+// above it or a descendant below it. It does not judge the issue the call names:
+// planStatusChangeUnderLocks decides that issue's scope once, under the same locks, before it
+// answers anything about it. The ancestors come parent first and the descendants nearest first,
+// so each issue is judged after the issue the cascade reaches it through.
 func (read statusChangeRead) leftOut(hidden func(key string) bool) map[string]bool {
 	out := map[string]bool{}
 	judge := func(key string, through bool) {
@@ -373,7 +375,6 @@ func (read statusChangeRead) leftOut(hidden func(key string) bool) map[string]bo
 			out[key] = true
 		}
 	}
-	judge(read.named.key, false)
 	below := read.named.key
 	for _, ancestor := range read.ancestors {
 		judge(ancestor.key, out[below])
@@ -388,18 +389,21 @@ func (read statusChangeRead) leftOut(hidden func(key string) bool) map[string]bo
 // planStatusChange is the plan of change on the issue key, checked under its owner locks before
 // any step writes. It reads the plan with plain reads, then, in a transaction of its own that
 // writes nothing, takes the owner locks of every step's issue and of each step's current and
-// new parent in one store.LockOwners call. Under them it loads the issue the call names and
-// decides expected_sequence first (409 ISSUE_CHANGED), then the closed-issue gate as the PATCH has
-// it (409 ISSUE_CLOSED), and reads the plan again. Where the request's credential names one
-// project, writer.callerProject, it asks access.CredentialCovers about each issue that the cascade
-// walks, and leaves out of the plan each step whose issue is in a private project that the
-// credential does not name, and each step whose issue the cascade reaches only through such an
-// issue: a descendant below it, or an ancestor above it (statusChangeRead.leftOut). Then it checks
-// the whole plan (refuseIssueWritePlan). A plan whose issues moved between the two reads, so that
-// it needs a lock the transaction does not hold, starts over with what the second read found, as
-// lockPatchOwnersAndParent does, and a plan that moves at every attempt is 409 PARENT_CONTENDED
-// with nothing applied. The transaction rolls back before the first step, and each step takes its
-// own locks in its own transaction.
+// new parent in one store.LockOwners call. Under them, where the request's credential names one
+// project, writer.callerProject, it first asks access.CredentialCovers about the issue the call
+// names: an issue of a private project that the credential does not name, and an issue no row
+// holds, are 403 PROJECT_SCOPE, the answer of the route's pre-handler check for an issue that does
+// not exist. Then it loads the issue the call names and decides expected_sequence (409
+// ISSUE_CHANGED), then the closed-issue gate as the PATCH has it (409 ISSUE_CLOSED), and reads the
+// plan again. Where the credential names one project, it asks access.CredentialCovers about each
+// other issue that the cascade walks, and leaves out of the plan each step whose issue is in a
+// private project that the credential does not name, and each step whose issue the cascade
+// reaches only through such an issue: a descendant below it, or an ancestor above it
+// (statusChangeRead.leftOut). Then it checks the whole plan (refuseIssueWritePlan). A plan whose
+// issues moved between the two reads, so that it needs a lock the transaction does not hold,
+// starts over with what the second read found, as lockPatchOwnersAndParent does, and a plan that
+// moves at every attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls back
+// before the first step, and each step takes its own locks in its own transaction.
 //
 // resumed is the recovery point of an earlier attempt that this attempt resumes, nil for a first
 // attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
@@ -449,6 +453,24 @@ func (s *server) planStatusChangeUnderLocks(
 	if err := lockIssueWriteOwners(ctx, tx, held); err != nil {
 		return statusChangePlan{}, nil, err
 	}
+	// The route's pre-handler check (withinProjectScope) read the project of the issue the path
+	// names before these locks, and that project can turn private after it. The fence, the
+	// closed-issue gate and a dry run's plan each tell something about the issue, so its scope is
+	// decided here, under the locks and before any of them. An issue of a private project that the
+	// credential does not name gets the answer that the pre-handler check gives an issue that does
+	// not exist, and so does an issue no row holds.
+	callerProject := writer.callerProject
+	var credential access.Credential
+	if callerProject != "" {
+		credential = access.Credential{Listed: []string{callerProject}}
+		project, private, err := issueProject(ctx, tx, key)
+		if err != nil {
+			return statusChangePlan{}, nil, err
+		}
+		if project == "" || !access.CredentialCovers(credential, project, private) {
+			return statusChangePlan{}, nil, outsideProjectScopeError(callerProject)
+		}
+	}
 	named, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return statusChangePlan{}, nil, err
@@ -474,20 +496,18 @@ func (s *server) planStatusChangeUnderLocks(
 		return statusChangePlan{}, &again, nil
 	}
 	// A credential that names one project writes, in a step, an issue of every project that
-	// access.CredentialCovers covers. The route's pre-handler check reads only the project of the
-	// issue the path names (project_scope.go), and a parent may be an issue of another project
-	// (validateIssueParent), so an ancestor that include_parent moves and a descendant that
-	// include_children moves or unlink_children unlinks can each belong to another. Each issue
-	// that the cascade walks is asked about here, as this transaction read it under the owner
-	// locks, before the first step and for a dry run as well: each step's issue, and each issue
-	// that the cascade passes on its way to one, which need not be a step's. A step whose issue is
-	// in a private project that the credential does not name is left out of the plan, and so is
-	// each step whose issue the cascade reaches only through such an issue: a descendant below it,
-	// or an ancestor above it (statusChangeRead.leftOut). The call does not move or unlink those
-	// issues, and neither its answer nor its dry run names them. The parent status rule still
-	// judges each pair that the plan changes, a left-out issue's included (parentStatusConflictOf
-	// reads it as it stands).
-	callerProject := writer.callerProject
+	// access.CredentialCovers covers. The check above decided the issue the path names, and a
+	// parent may be an issue of another project (validateIssueParent), so an ancestor that
+	// include_parent moves and a descendant that include_children moves or unlink_children unlinks
+	// can each belong to another. Each other issue that the cascade walks is asked about here, as
+	// this transaction read it under the owner locks, before the first step and for a dry run as
+	// well: each step's issue, and each issue that the cascade passes on its way to one, which need
+	// not be a step's. A step whose issue is in a private project that the credential does not name
+	// is left out of the plan, and so is each step whose issue the cascade reaches only through
+	// such an issue: a descendant below it, or an ancestor above it (statusChangeRead.leftOut). The
+	// call does not move or unlink those issues, and neither its answer nor its dry run names them.
+	// The parent status rule still judges each pair that the plan changes, a left-out issue's
+	// included (parentStatusConflictOf reads it as it stands).
 	var keys []string
 	if callerProject != "" {
 		keys = again.walked()
@@ -503,7 +523,6 @@ func (s *server) planStatusChangeUnderLocks(
 	}
 	var leftOut map[string]bool
 	if callerProject != "" {
-		credential := access.Credential{Listed: []string{callerProject}}
 		leftOut = again.leftOut(func(key string) bool {
 			row := rows[key]
 			return !access.CredentialCovers(credential, row.project, row.private)

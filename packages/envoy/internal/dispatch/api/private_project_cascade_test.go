@@ -11,6 +11,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -240,5 +241,95 @@ func TestAScopedIncludeParentStopsAtAPrivateParent(t *testing.T) {
 		if got := rig.cascadeStatus(t, key); got != "in_progress" {
 			t.Errorf("after the naming token's call %s is %s, want in_progress", key, got)
 		}
+	}
+}
+
+// TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne: the pre-handler project check
+// (withinProjectScope) runs before planStatusChangeUnderLocks takes its locks, so the named
+// issue's project can turn private between the two. Calling the route's handler past that
+// pre-handler check with the project already private exercises the check under the locks alone:
+// a plain call, one with a stale expected_sequence, and a close of an already closed issue — each
+// as a call and as a dry run — write nothing, name neither the issue's key nor its title, and
+// answer the 403 PROJECT_SCOPE that a target that does not exist answers through the route. The
+// token that names the private project reaches the dry run's plan and names the issue.
+func TestAStatusChangeWhoseIssueTurnedPrivateAnswersAsAMissingOne(t *testing.T) {
+	t.Parallel()
+	rig := newPrivateProjectRig(t, testServerOptions{})
+	openTitle := "Open issue whose project turned private"
+	fencedTitle := "Fenced issue whose project turned private"
+	closedTitle := "Closed issue whose project turned private"
+	open := rig.issue(t, privateTestProject, openTitle, nil)
+	fenced := rig.issue(t, privateTestProject, fencedTitle, nil)
+	closed := rig.issue(t, privateTestProject, closedTitle, nil)
+	if moved := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+closed, map[string]any{"status": "done"}); moved.Code != http.StatusOK {
+		t.Fatalf("close %s: status=%d body=%s", closed, moved.Code, moved.Body.String())
+	}
+	readIssue := func(key string) model.Issue {
+		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+key, nil)
+		if read.Code != http.StatusOK {
+			t.Fatalf("read %s: status=%d body=%s", key, read.Code, read.Body.String())
+		}
+		return decodeBody[model.Issue](t, read)
+	}
+	if readIssue(closed).ClosedAt == nil {
+		t.Fatalf("%s has no closed_at after moving to done", closed)
+	}
+	staleSeq := readIssue(fenced).LastSeq + 100
+	rig.makePrivate(t)
+
+	direct := rig.served.decideBrokerToken(rig.served.changeIssueStatus)
+	sendDirect := func(token, key string, body map[string]any) *httptest.ResponseRecorder {
+		request := rig.caller.presenting(t, http.MethodPost, "/api/v1/issues/"+key+"/status-change", token, body)
+		request.SetPathValue("key", key)
+		recorder := httptest.NewRecorder()
+		direct(recorder, request)
+		return recorder
+	}
+
+	absent := rig.send(t, scopedToken, http.MethodPost, "/api/v1/issues/"+missingIssue+"/status-change", map[string]any{"status": "in_progress"})
+	if code, _ := refusalOf(t, absent); absent.Code != http.StatusForbidden || code != codeProjectScope {
+		t.Fatalf("status change of %s: status=%d body=%s, want 403 %s", missingIssue, absent.Code, absent.Body.String(), codeProjectScope)
+	}
+	if strings.Contains(absent.Body.String(), missingIssue) {
+		t.Fatalf("status change of %s names the missing key: %s", missingIssue, absent.Body.String())
+	}
+
+	for _, tc := range []struct {
+		name  string
+		key   string
+		title string
+		body  map[string]any
+	}{
+		{"open issue", open, openTitle, map[string]any{"status": "in_progress"}},
+		{"stale expected_sequence", fenced, fencedTitle, map[string]any{"status": "in_progress", "expected_sequence": staleSeq}},
+		{"closed issue", closed, closedTitle, map[string]any{"status": "done"}},
+	} {
+		for _, call := range []struct {
+			name    string
+			members map[string]any
+		}{{"call", nil}, {"dry run", map[string]any{"dry_run": true}}} {
+			t.Run(tc.name+"/"+call.name, func(t *testing.T) {
+				before := rig.written(t, tc.key)
+				got := sendDirect(scopedToken, tc.key, withMembers(tc.body, call.members))
+				if after := rig.written(t, tc.key); after != before {
+					t.Errorf("the refused write changed %s to %s, want nothing written", before, after)
+				}
+				body := got.Body.String()
+				if got.Code != absent.Code || body != absent.Body.String() {
+					t.Errorf("direct status change answered %d %s, want %d %s", got.Code, body, absent.Code, absent.Body.String())
+				}
+				for _, hidden := range []string{tc.key, tc.title} {
+					if strings.Contains(body, hidden) {
+						t.Errorf("direct status change names %q: %s", hidden, body)
+					}
+				}
+			})
+		}
+	}
+
+	allowed := sendDirect(namingToken, open, map[string]any{"status": "in_progress", "dry_run": true})
+	requireTaken(t, "the naming token's dry run through the direct handler", allowed, http.StatusOK)
+	if !strings.Contains(allowed.Body.String(), open) {
+		t.Errorf("the naming token's dry run does not name %s: %s", open, allowed.Body.String())
 	}
 }

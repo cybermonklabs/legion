@@ -214,7 +214,8 @@ func (s *server) projectOfIssue(ctx context.Context, q queryer, r *http.Request)
 // issueProject reads the project of the issue key and whether that project is private, in one
 // statement. An empty project with no error means that no issue has the key (scanProjectKey). It
 // serves the pre-handler check of an issue's address (projectOfIssue), the results routes' check
-// of a check's issue (checkIssueProject), and the reads under the locks of a parent
+// of a check's issue (checkIssueProject), a status change's check of its named issue under its
+// locks (planStatusChangeUnderLocks), and the reads under the locks of a parent
 // (validateIssueParent) and of a blocked_by target (writeBlockedBy). A write check that needs more
 // of the issue's row reads the project and its visibility in a statement of its own, as a
 // create's read of its parent under its locks does (readCreateParent).
@@ -446,9 +447,10 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 // nothing of the credential itself. It names no project of the target, since there is none to
 // name and an invented one would say something about what exists. withinProjectScope answers it
 // before a handler runs, also for an object of a private project that the credential does not
-// name, and retractCheckResult answers it for a check of such a project
-// (refuseRetractionOfUncoveredCheck), so each answers as for a target that does not exist. Both
-// write this one value through writeHandlerError, so the answers cannot drift.
+// name, retractCheckResult answers it for a check of such a project
+// (refuseRetractionOfUncoveredCheck), and planStatusChangeUnderLocks answers it for a named issue
+// whose project turned private after withinProjectScope, so each answers as for a target that does
+// not exist. Each writes this one value through writeHandlerError, so the answers cannot drift.
 func outsideProjectScopeError(covers string) *apiError {
 	return errorf(http.StatusForbidden, codeProjectScope,
 		"this request's credential names project %s, and this write resolves to no project", covers)
