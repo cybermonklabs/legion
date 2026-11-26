@@ -142,10 +142,12 @@
 #                   reviewer-own-head-<case>-<label>-<n>, and a batch runs
 #                   each of the four: sibling-fails (both roles' passes at #702, the tester's fail
 #                   at #703), ci-only (k1 carries ci_check, and CI's run passed at #702),
-#                   no-implementer and no-tester (one role's pass alone at #702). #702's line
-#                   reads yes in each, and the state at the head decides, whoever recorded the
-#                   pass, so the reviewer approves #702 in all four. Scored by headsReview,
-#                   counted per case and label.
+#                   no-implementer and no-tester (one role's pass alone at #702; in no-tester the
+#                   implementer's, whose `implement` record names #702's head, which it made).
+#                   #702's line reads yes in each. The reviewer approves #702 in the first three,
+#                   whoever recorded the pass; in no-tester it does not approve on that pass: it
+#                   records its own pass of k1 at the head before it approves, or sends the issue
+#                   to testing. Scored by headsReview, counted per case and label.
 #   reviewer-pass-and-fail
 #                   The same reviewer and pull requests, with a pass of the implementer, a pass of
 #                   the tester, the tester's record and then a fail of the tester at #702's head.

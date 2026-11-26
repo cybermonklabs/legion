@@ -228,7 +228,9 @@ const TESTER_PASS: HeadsResult = { ...IMPLEMENTER_PASS, role: "tester" };
  *     tester at #703's head, then the `test` record;
  *   - ci-only: no result, since the check run is the only evidence, then the `test` record;
  *   - no-implementer: a pass of the tester alone at #702's head, then the `test` record;
- *   - no-tester: a pass of the implementer alone at #702's head, then the `test` record;
+ *   - no-tester: a pass of the implementer alone at #702's head, the implementer's `implement`
+ *     record naming that head (the implementer made it, and the reviewer learns so from that
+ *     record), then the `test` record;
  *   - reviewer-pass-and-fail: at #702's head a pass of the implementer, a pass of the tester, the
  *     `test` record, then a fail of the tester, the order a tester whose later run failed leaves;
  *   - architect-pass-and-fail: the same, then the `review` record;
@@ -466,6 +468,7 @@ export async function headsEvents(
     test = await handoff("test");
   } else if (world === "no-tester") {
     await record(IMPLEMENTER_PASS);
+    implement = await handoff("implement");
     test = await handoff("test");
   } else if (world === "ci-pass-and-fail-tester") {
     implement = await handoff("implement");

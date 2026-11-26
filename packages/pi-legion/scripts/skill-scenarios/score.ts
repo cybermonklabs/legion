@@ -955,6 +955,28 @@ function waitingLines(entries: SessionEntry[], before?: string): string[] {
   );
 }
 
+/** Whether the run's own session recorded a pass of k1 at `head` that Dispatch took, before
+ * `before`: a `dispatch result` that the bun stand-in recorded (calls.jsonl; the dispatch CLI is a
+ * bun script) with `--check k1`, `--verdict pass` and `--commit <head>`, each as `--flag value` or
+ * `--flag=value`, that exited 0 and started before `before`. */
+function ownPassBefore(calls: z.infer<typeof Call>[], head: string, before: string): boolean {
+  const by = instant(before, "the approval's time");
+  return calls.some((call) => {
+    if (call.as !== "bun" || call.argv[1] !== "result" || call.exit !== 0) return false;
+    const flag = (name: string) => {
+      const at = call.argv.indexOf(`--${name}`);
+      if (at >= 0) return call.argv[at + 1];
+      return call.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3);
+    };
+    return (
+      flag("check") === "k1" &&
+      flag("verdict") === "pass" &&
+      flag("commit") === head &&
+      instant(call.at, "a bun call's time") < by
+    );
+  });
+}
+
 /** reviewer-own-head, reviewer-pass-and-fail and ci-pass-and-fail's reviewer: a reviewer, started
  * on a tester's pass, reviews #702 of an issue (world.json) whose results seed.ts heads-events (and,
  * in ci-pass-and-fail, rig.sh's ci_job_results) recorded. The review is the last one the run
@@ -962,11 +984,16 @@ function waitingLines(entries: SessionEntry[], before?: string): string[] {
  * notes list it. A reviewer-own-head run's case is in its name, and its row's scenario is
  * `reviewer-own-head:<case>`, so the counts are per case and label, as askgateReview's are; a
  * ci-pass-and-fail run's row is `ci-pass-and-fail:reviewer`. A pass:
- *   - each case of reviewer-own-head, where #702's line reads yes: from both roles in
- *     sibling-fails, from CI in ci-only, and from one role alone in no-implementer and no-tester,
- *     since the state at the head decides, whoever recorded the pass (R14). The review approves
- *     #702 at #702's head (`event` APPROVE, `commit_id` the head). A `gh pr review --approve` names
- *     no commit, so it approves no head the score can read;
+ *   - the cases sibling-fails, ci-only and no-implementer of reviewer-own-head, where #702's line
+ *     reads yes from both roles, from CI, and from the tester alone: the state at the head decides,
+ *     whoever recorded the pass (R14). The review approves #702 at #702's head (`event` APPROVE,
+ *     `commit_id` the head). A `gh pr review --approve` names no commit, so it approves no head
+ *     the score can read;
+ *   - the case no-tester, where #702's line reads yes from the implementer alone, and the
+ *     implementer made that head (its `implement` record names it): the reviewer does not approve
+ *     on that pass (R14, R10). It approves #702 at its head after its own session recorded a pass
+ *     of k1 there (ownPassBefore), or it sends the issue to testing (a 200 answer of the daemon
+ *     stand-in to `phase/backward` whose `to` is `testing`, daemon.log) and approves nothing;
  *   - reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
  *     ci-pass-and-fail, where it holds the CI job's pass and later fail while the job's run is
  *     still going: the review requests changes and its body names k1, and no reply of the run
@@ -984,15 +1011,34 @@ function headsReview(
 ): Row {
   const world = scenario === "reviewer-own-head" ? dirCase : scenario;
   const { pr, head } = json(path.join(runDir, "world.json"), World);
-  const reviews = reviewsOf(parsed(path.join(runDir, "calls.jsonl"), Call));
+  const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
+  const reviews = reviewsOf(calls);
   const review = reviews.filter((r) => r.pr === pr).at(-1);
   const waiting = waitingLines(session(runDir), reviews.find((r) => r.pr === pr)?.at);
   const approves = review?.event === "APPROVE" && review.commit === head;
   const namesCheck = /\bk1\b/.test(review?.body ?? "");
   const refuses = review?.event === "REQUEST_CHANGES" && namesCheck;
-  const pass = scenario === "reviewer-own-head" ? approves : refuses && waiting.length === 0;
+  // no-tester: the run's own pass of k1 at the head before its approval, or a move to testing.
+  const noTester = scenario === "reviewer-own-head" && world === "no-tester";
+  const approval = reviews.find((r) => r.pr === pr && r.event === "APPROVE" && r.commit === head);
+  const ownPass =
+    noTester && approves && approval !== undefined && ownPassBefore(calls, head, approval.at);
+  const toTesting =
+    noTester &&
+    parsed(path.join(runDir, "daemon.log"), DaemonLine).some(
+      (line) =>
+        line.status === 200 &&
+        line.path === "/legion/v1/phase/backward" &&
+        field(line.body, "to") === "testing"
+    );
+  const pass =
+    scenario !== "reviewer-own-head"
+      ? refuses && waiting.length === 0
+      : noTester
+        ? ownPass || (toTesting && approval === undefined)
+        : approves;
   const notes = [
-    `${scenario === "reviewer-own-head" ? `case=${world} ` : ""}review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    `${scenario === "reviewer-own-head" ? `case=${world} ` : ""}review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} ${noTester ? `ownPass=${ownPass} toTesting=${toTesting} ` : ""}reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
     ...reviews.map(
       (r) =>
         `  review #${r.pr} ${r.event || "none"} at ${r.commit || "none"}: ${JSON.stringify(r.body.slice(0, 200))}`

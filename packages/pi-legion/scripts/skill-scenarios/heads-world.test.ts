@@ -183,6 +183,33 @@ test("ci-pass-and-fail takes the three roles and no other case", () => {
   ]);
 });
 
+// Catches: a no-tester world in which the reviewer cannot learn who made #702's head. Its pass is
+// the implementer's, and the reviewer's prompt finds the head's maker through the `implement`
+// handoff whose `head` names the head it reviews, so the implementer's session records both: the
+// pass of k1 at #702's head and that handoff, before the tester's `test` record.
+test("reviewer-own-head no-tester: the implementer's session records the pass and the implement handoff of #702's head", async () => {
+  // The ports the hook above sets, which restoreEnvironment puts back after each test.
+  process.env.DISPATCH_E2E_PORT = "18777";
+  process.env.FAKE_GITHUB_PORT = "18778";
+  process.env.DISPATCH_E2E_NATS_URLS = "nats://127.0.0.1:1";
+  const { calls, fixture } = await world("no-tester", "reviewer-own-head");
+  const writes = calls
+    .filter((call) => call.path.endsWith("/results") || call.path.includes("/handoffs/"))
+    .map((call) =>
+      call.path.endsWith("/results")
+        ? `result ${call.body.verdict} of ${call.body.check} at ${call.body.commit} by ${JSON.stringify(call.body.actor)}`
+        : `${call.path.split("/").at(-1)} at ${JSON.parse(String(call.body.body)).head} by ${JSON.stringify(call.body.actor)}`
+    );
+  const by = (id: string) => JSON.stringify({ kind: "session", id });
+  const head = "a".repeat(40);
+  expect(writes).toEqual([
+    `result pass of k1 at ${head} by ${by("rig-implementer")}`,
+    `implement at ${head} by ${by("rig-implementer")}`,
+    `test at ${head} by ${by("rig-tester")}`,
+  ]);
+  expect(fixture.implement).toEqual({ id: "h-1", version: 1 });
+});
+
 // The words the pull-request line Dispatch prints for a result keeps (plainWord,
 // packages/envoy/internal/dispatch/api/results.go): letters, digits and .,;:!?'"-()/.
 const PLAIN_WORD = /^[\p{L}\p{N}.,;:!?'"\-()/]+$/u;
