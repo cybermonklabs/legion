@@ -64,8 +64,9 @@ type issueDecisions struct {
 }
 
 // decisionSection is one decision as the document's own blocks give it, before the links, asks and
-// keeps that complete it are read. Start and End are its first and last block's bounds in the
-// document's canonical markdown.
+// keeps that complete it are read. start is where its heading block starts in the document's
+// canonical markdown, and end the furthest end of its blocks there, an empty paragraph's included,
+// which ends where it starts.
 type decisionSection struct {
 	headingBlock string
 	heading      string
@@ -124,7 +125,7 @@ func (s *server) loadIssueDecisions(ctx context.Context, who model.Actor, key st
 	if specFound {
 		specID = spec.ID
 	}
-	if answer.Decisions, err = s.readDecisions(ctx, who, document, reference, specID, reader); err != nil {
+	if answer.Decisions, err = s.readDecisions(ctx, who, document, reference, specID, reader, true); err != nil {
 		return issueDecisions{}, err
 	}
 	reader.resolve()
@@ -233,16 +234,32 @@ func (s *server) specOpenQuestions(
 
 // readDecisions builds every decision of the decisions document: its sections from the document's
 // own blocks, its links from the block graph (refs.BlockLinks), its asks from the block mentions
-// its blocks hold, and its keeps from decision_keeps. specID is "" when the issue has no spec, and
-// every decision then has no links.
+// its blocks hold, and its keeps from decision_keeps, a keep's text read through the version it
+// names where its sum is not the decision's (markKeptAcrossRenderers). specID is "" when the
+// issue has no spec, and every decision then has no links.
+//
+// The document is cut into its decisions at most once a view (decisionCuts), and that cut is the
+// one reader of the document as it stands for both the keeps and the links (markStaleLinks): each
+// decision is its cut that starts where its heading block does, named by that cut's key, the same
+// key a stored version's cut gives it. A decision whose heading stands in a list item, a quote or
+// a footnote definition has no cut, since such a heading opens none (decisionCuts); its key names
+// no cut of any version (noCut), so it is never read as another decision of its heading. The cut
+// parses the whole document, so it is made only where a mark can change a decision - some
+// decision links the spec, or waits for review under a keep - and neither mark changes any other
+// decision. It is taken from the cuts the process keeps (documentCuts) under the document's live
+// key, which names no stored version, so a view of a markdown an earlier view cut parses none of
+// it again. Each stored version the marks read is cut by scanStoredDecisions.
 //
 // reader is the answer's own, and each decision registers its text with it once the slice has
 // stopped growing, as the open questions beside them do (specOpenQuestions): a shaping registers
 // a pointer into the row, and an append that moved the backing array would leave the reader
 // filling a tree into memory the answer no longer holds. Keep reads the decisions to compare one
-// sum and answers none of them, so it passes no reader and no tree is read for it.
+// sum and answers none of them, so it passes no reader and no tree is read for it. It passes mark
+// false too, since it reads no field either mark sets: neither the cut nor the marks are made for
+// it, and a Keep parses no markdown and makes no read of the versions its keeps name
+// (markKeptAcrossRenderers), so no failure of that read fails a Keep.
 func (s *server) readDecisions(
-	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader,
+	ctx context.Context, who model.Actor, document model.Artifact, reference, specID string, reader *displayTreeReader, mark bool,
 ) ([]model.Decision, error) {
 	markdown, sections, err := s.decisionSections(ctx, document.ID)
 	if err != nil {
@@ -267,11 +284,10 @@ func (s *server) readDecisions(
 		return nil, err
 	}
 	decisions := make([]model.Decision, 0, len(sections))
-	keys := make([]sectionKey, 0, len(sections))
-	seen := map[string]int{}
+	// markable is whether a mark can change some decision: one that links the spec
+	// (markStaleLinks), or one that waits for review under a keep (markKeptAcrossRenderers).
+	markable := false
 	for _, section := range sections {
-		keys = append(keys, sectionKey{heading: section.heading, occurrence: seen[section.heading]})
-		seen[section.heading]++
 		decision := model.Decision{
 			BlockID:  section.headingBlock,
 			Heading:  section.heading,
@@ -313,11 +329,32 @@ func (s *server) readDecisions(
 		decision.WaitingReview = decision.Kind == "agent" && !decision.Replaced &&
 			(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)
 		decisions = append(decisions, decision)
+		markable = markable || len(decision.Links) > 0 || decision.WaitingReview && decision.Kept != nil
 	}
 	for index := range decisions {
 		reader.text(&decisions[index].TextTree, decisions[index].Text)
 	}
-	if err := s.markStaleLinks(ctx, document.ID, markdown, decisions, keys); err != nil {
+	if !mark || !markable {
+		return decisions, nil
+	}
+	current := documentCuts.cut(documentCutKey{artifactID: document.ID, live: true}, markdown)
+	keyAt := make(map[int]sectionKey, len(current.cuts))
+	for key, cut := range current.cuts {
+		keyAt[cut.start] = key
+	}
+	keys := make([]sectionKey, len(sections))
+	for i, section := range sections {
+		key, found := keyAt[section.start]
+		if !found {
+			key = sectionKey{heading: section.heading, occurrence: noCut}
+		}
+		keys[i] = key
+	}
+	versions, err := s.markKeptAcrossRenderers(ctx, document.ID, decisions, keys, current)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.markStaleLinks(ctx, document.ID, decisions, keys, current, versions); err != nil {
 		return nil, err
 	}
 	return decisions, nil
@@ -333,13 +370,22 @@ func (s *server) readDecisions(
 // whether the decision changed since; the text at the version current when the spec block last
 // changed says whether it changed since that, which is what clears a link the spec answered.
 //
-// A version this document does not hold, and a spec block Dispatch records no change for, each
-// leave the link as it is: the view marks nothing it cannot read, as the block index's first
-// pass over a document marks nothing. Each decision is named across versions by its heading and
-// its occurrence among the decisions of that heading (sectionKey), the same pair the view's own
-// walk gives it, so a document that carries one heading twice still names each of them.
+// A version this document does not hold, a version whose markdown the parser refuses
+// (storedDecisions.refused), and a spec block Dispatch records no change for, each leave the link
+// as it is: the view marks nothing it cannot read, as the block index's first pass over a
+// document marks nothing. Each decision is named across versions by its heading and its
+// occurrence among the cuts of that heading (sectionKey), and current is the document as it
+// stands cut by the same rule (readDecisions), so a document that carries one heading twice still
+// names each of them, and a decision with no cut leaves its links as they are. A version another
+// renderer version stored, or none stamped, holds the decision's text where this build reads its
+// text of the decision as the text now, both alone (storedDecisions.holds), so a renderer change,
+// which leaves every version stored before it in its renderer's spelling, marks no link. A text
+// that does not stand alone then or now (decisionCut.alone), or that holds `[^`
+// (pmdoc.FragmentReadsAs), is compared by its sum alone. keepsRead is the versions the keeps' pass
+// read (markKeptAcrossRenderers), which storedDecisionsAt takes rather than reading them again.
 func (s *server) markStaleLinks(
-	ctx context.Context, artifactID, markdown string, decisions []model.Decision, keys []sectionKey,
+	ctx context.Context, artifactID string, decisions []model.Decision, keys []sectionKey,
+	current documentCut, keepsRead map[int]storedDecisions,
 ) error {
 	times := map[int64]time.Time{}
 	numbers := map[int]bool{}
@@ -361,40 +407,51 @@ func (s *server) markStaleLinks(
 	for _, number := range atTime {
 		numbers[number] = true
 	}
-	sums, err := s.decisionSumsAt(ctx, artifactID, sortedNumbers(numbers))
+	versions, err := s.storedDecisionsAt(ctx, artifactID, sortedNumbers(numbers), current, keepsRead)
 	if err != nil {
 		return err
 	}
-	current := decisionSums(markdown)
 	for i := range decisions {
 		decision := &decisions[i]
-		now, ok := current[keys[i]]
-		if !ok {
+		now, ok := current.cuts[keys[i]]
+		if !ok || len(decision.Links) == 0 {
 			continue
 		}
+		// One decision's links mostly name the same few versions, and comparing a version another
+		// renderer version stored can pay pmdoc.FragmentReadsAs (storedDecisions.holds), so each
+		// version is compared with the decision once.
+		compared := map[int]bool{}
+		heldAt := func(number int) (bool, bool) {
+			version, read := versions[number]
+			if !read || version.refused {
+				return false, false
+			}
+			held, done := compared[number]
+			if !done {
+				held = version.holds(keys[i], now)
+				compared[number] = held
+			}
+			return true, held
+		}
 		for j := range decision.Links {
-			decision.Links[j].Stale = staleLink(now, keys[i], decision.Links[j], sums, atTime)
+			decision.Links[j].Stale = staleLink(decision.Links[j], heldAt, atTime)
 		}
 	}
 	return nil
 }
 
-// staleLink is that rule for one link, over the sums markStaleLinks read. A time keys those
-// reads by its own instant (UnixNano), since a time read back from Postgres is the same instant
-// in another `time.Time` value, which no map matches.
+// staleLink is that rule for one link, over the versions markStaleLinks read: heldAt reports
+// whether the view read the version of that number - the document holds it, and the parser reads
+// its markdown - and whether that version holds the decision's text now (storedDecisions.holds).
+// A time keys atTime by its own instant (UnixNano), since a time read back from Postgres is the
+// same instant in another `time.Time` value, which no map matches.
 //
-// A version this document does not hold leaves the link as it is. A version it holds that gives
-// this decision no sum - its heading was renamed since, or that version carried fewer decisions
-// of that heading - is text that differs from the text now, which it is.
-func staleLink(
-	now string,
-	key sectionKey,
-	link model.DecisionLink,
-	sums map[int]map[sectionKey]string,
-	atTime map[int64]int,
-) bool {
-	atCreated, read := sums[link.CreatedVersion]
-	if !read || atCreated[key] == now {
+// A version the view did not read leaves the link as it is. A version it read that gives this
+// decision no text - its heading was renamed since, or that version carried fewer decisions of
+// that heading - holds text that differs from the text now, which it does.
+func staleLink(link model.DecisionLink, heldAt func(number int) (read, held bool), atTime map[int64]int) bool {
+	read, held := heldAt(link.CreatedVersion)
+	if !read || held {
 		return false
 	}
 	if link.To.ChangedAt == nil {
@@ -409,8 +466,8 @@ func staleLink(
 		// change of the decision came after it.
 		return true
 	}
-	atChange, read := sums[number]
-	return read && atChange[key] != now
+	read, held = heldAt(number)
+	return read && !held
 }
 
 // versionsAtTimes is, for each time, the document's greatest version written at or before it:
@@ -451,136 +508,6 @@ func (s *server) versionsAtTimes(
 		}
 	}
 	return at, rows.Err()
-}
-
-// decisionSumsAt is each named version's decisions, with the sum of each one's text: the
-// version's own stored markdown (versionsMarkdown), cut by the same rule as the document as it
-// stands.
-func (s *server) decisionSumsAt(
-	ctx context.Context, artifactID string, numbers []int,
-) (map[int]map[sectionKey]string, error) {
-	sums := map[int]map[sectionKey]string{}
-	if len(numbers) == 0 {
-		return sums, nil
-	}
-	markdown, err := s.versionsMarkdown(ctx, artifactID, numbers)
-	if err != nil {
-		return nil, err
-	}
-	for number, text := range markdown {
-		sums[number] = decisionSums(text)
-	}
-	return sums, nil
-}
-
-// decisionSums cuts a document's markdown into its decisions and sums each one's text. It cuts
-// by the rule the block walk cuts the document that stands by (decisionSections): a `##` heading
-// outside `## Replaced` and a `###` heading under it opens a decision, a heading of its own
-// level or higher closes it - `#` included, which opens none - and a deeper heading is text of
-// the decision it stands in.
-//
-// A stored version holds no block id, so a decision is keyed by its heading and by how many
-// decisions before it carry that heading (sectionKey): a document that carries one heading twice,
-// which a replaced decision made again does, is two decisions here as it is two in the view,
-// rather than one the sum cannot name. Its sum is taken over the section's text with the blank
-// lines at its end removed, so the same section of two versions sums alike whatever follows it.
-func decisionSums(markdown string) map[sectionKey]string {
-	sums := map[sectionKey]string{}
-	seen := map[string]int{}
-	type section struct {
-		key   sectionKey
-		level int
-		start int
-	}
-	var open *section
-	inReplaced := false
-	fenced := ""
-	offset := 0
-	closeAt := func(end int) {
-		if open == nil {
-			return
-		}
-		sums[open.key] = decisionTextSum(strings.TrimRight(markdown[open.start:end], "\n"))
-		open = nil
-	}
-	for _, line := range strings.SplitAfter(markdown, "\n") {
-		if line == "" {
-			break
-		}
-		trimmed := strings.TrimRight(line, "\n")
-		if fence := codeFence(trimmed); fence != "" {
-			if fenced == "" {
-				fenced = fence
-			} else if strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced) {
-				fenced = ""
-			}
-			offset += len(line)
-			continue
-		}
-		if fenced == "" {
-			if level, heading := markdownHeading(trimmed); level > 0 {
-				if open != nil && level <= open.level {
-					closeAt(offset)
-				}
-				if level <= 2 {
-					inReplaced = level == 2 && heading == replacedHeading
-				}
-				if open == nil && isDecisionHeading(level, inReplaced) {
-					occurrence := seen[heading]
-					seen[heading] = occurrence + 1
-					open = &section{
-						key:   sectionKey{heading: heading, occurrence: occurrence},
-						level: level,
-						start: offset,
-					}
-				}
-			}
-		}
-		offset += len(line)
-	}
-	closeAt(len(markdown))
-	return sums
-}
-
-// sectionKey names one decision of a document across its versions: its heading, and how many
-// decisions before it carry that heading.
-type sectionKey struct {
-	heading    string
-	occurrence int
-}
-
-// codeFence is the fence a line opens or closes a fenced code block with (three or more
-// backticks or tildes, at most three spaces in), else "". A heading inside such a block is the
-// code's own text.
-func codeFence(line string) string {
-	trimmed := strings.TrimLeft(line, " ")
-	if len(line)-len(trimmed) > 3 {
-		return ""
-	}
-	for _, marker := range []string{"```", "~~~"} {
-		if strings.HasPrefix(trimmed, marker) {
-			run := 0
-			for run < len(trimmed) && trimmed[run] == marker[0] {
-				run++
-			}
-			return trimmed[:run]
-		}
-	}
-	return ""
-}
-
-// markdownHeading is a line's ATX heading level and title, or level 0 for a line that is no
-// heading. It reads a title as `headingOf` reads one off a heading block's own markdown, closing
-// hashes and all, so the heading a version is keyed by is the heading the view names.
-func markdownHeading(line string) (int, string) {
-	level := 0
-	for level < len(line) && line[level] == '#' {
-		level++
-	}
-	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
-		return 0, ""
-	}
-	return level, strings.TrimSpace(line[level:])
 }
 
 // sortedNumbers and sortedTimes are the keys of a set, in order, so one read asks for each once.
@@ -844,7 +771,7 @@ func (s *server) keptDecision(ctx context.Context, who model.Actor, document mod
 	if !found || decisionsDocument.ID != document.ID {
 		return model.Decision{}, notFound
 	}
-	decisions, err := s.readDecisions(ctx, who, document, artifactReference(document), "", nil)
+	decisions, err := s.readDecisions(ctx, who, document, artifactReference(document), "", nil, false)
 	if err != nil {
 		return model.Decision{}, err
 	}
