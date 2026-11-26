@@ -1,0 +1,12 @@
+spec-check: subject c1, the head of order-change
+statement sessions-keep-their-messages: not built (the files do not hold the approved text of a-session-reads-its-messages-in-order)
+statement a-session-reads-its-messages-in-order: not built (the files hold approved version 1, and version 2 is current)
+  check messages-come-in-the-order-of-their-writes: unknown (statement_changed)
+spec-check: subject c2, the head of order-change
+statement sessions-keep-their-messages: unknown (check messages-come-in-the-order-of-their-writes: statement_changed)
+statement a-session-reads-its-messages-in-order: unknown (check messages-come-in-the-order-of-their-writes: statement_changed)
+  check messages-come-in-the-order-of-their-writes: unknown (statement_changed)
+spec-check: subject c3, the head of revert-order-change
+statement sessions-keep-their-messages: not built (the files do not hold the approved text of a-session-reads-its-messages-in-order)
+statement a-session-reads-its-messages-in-order: not built (the files hold approved version 1, and version 2 is current)
+  check messages-come-in-the-order-of-their-writes: unknown (statement_changed)

@@ -52,12 +52,13 @@ Each bullet says what the helper does not do, so a site that must keep its own b
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+  A server that takes neither and can listen on a unix socket listens on one in a directory of the test's own (`testtmp.Dir`), and on no TCP port, as `internal/ompsessions`' PgBouncer does in a directory docker mounts into its container.
   A daemon a test boots in its own process (`packages/daemon/internal/daemon`) takes its API listener from a socket the test holds (`heldListen`, through `overrides.listen`), and a test whose daemons must listen on one port across a restart, as the controller sandbox rig's worker stream must, hands each boot a descriptor of a socket it holds for its whole run (`heldSocketListen`, through `overrides.listen` and `overrides.streamListen`).
   A port a test holds so that another bind of it fails is held at the address that bind names: a wildcard listener from `net.Listen` (`0.0.0.0` or `[::]`, which sets `SO_REUSEADDR`) keeps a bind of one address off its port under Linux but not under gVisor, whose netstack lets a second socket that sets `SO_REUSEADDR` bind that address beside it (`internal/testnats`'s `TestAServerThatLoggedAFatalErrorFailsItsStartEvenOnceReady` holds its server's profiler port at the server's own host for this reason).
 
 - A listener a client dials — a test NATS server, a relay, proxy or fake in front of one — listens on `testport.ListenLoopback()` in `packages/envoy` and on `testnats.ListenLoopback()` in `packages/daemon`: a port the kernel chooses at a loopback address of its own, one of `127.0.0.0/8` chosen at random on Linux (`LoopbackIP`), and `127.0.0.1` elsewhere.
   A client a test leaves behind keeps dialing its server's address (a bus client reconnects forever), and the kernel or Docker gives a freed port to the next listener that asks, in the same test binary or in another one `go test` runs beside it; on `127.0.0.1` that listener's test takes the stranger's connections for its own.
-  So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
+  So does every server `packages/envoy/internal/testnats` and `packages/daemon/internal/testnats` start: an in-process server's relay and nats-server's own client, monitoring and route listeners, a leaf node listener a test's configuration opens (in `packages/envoy` the configuration names a `testport.LoopbackIP` address itself, since the start sets only the client and monitoring hosts), and a container's published client port (the daemon's containers' monitoring port too), so a leftover client cannot reach it, whichever port it gets.
   So do the `nats-server` processes `packages/envoy/infra/gcp`'s natslive tests run as the clustered hub's pods, the route tests' servers and rogues among them: each test's servers listen at one such address (`-a`), with their ports reserved there (`reservePortsOn`).
   Of those, the route check's staged hub (`clusteredhub_routecheck_fixture_live_test.go`) keeps each server's route port, and each peer's, on the `127.0.0.x` address the rows name it by, `127.0.0.1` being the pods' IP: the check takes a route connection from a pod IP as the hub's own, and a route from `127.0.0.1` reads as from `127.0.0.1` on any loopback (the Linux kernel's sources every loopback connection from `127.0.0.1` whatever `127/8` address it dials; gVisor's sources it from the address dialed). Their client and monitoring ports are at addresses of their own, and a test checks that a client at `127.0.0.1` reaches none of them (`requireNoStrayReaches`).
   A stray client can still dial such a route port: a reservation stops a second bind, not a dial. The check reads nothing of it: it skips a route connection from a pod IP, and counts a pod IP's refused route login only when the mesh is split (`infra/routes/log.go`, `routeConnections`). The route check's first row has a stray log in at each server's route port and requires the check to stay clean.
@@ -70,10 +71,35 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A test still closes every client it opens before its server, and registers the close as soon as the connect succeeds, so a setup that fails closes it too: `cmd/listener`'s `setupTestNATS` left ten tests' bus clients dialing for minutes after their tests had ended, and they reached the test servers of other packages' binaries.
   A container start tried again after a taken port refused it builds its container's options anew, a configuration file's reader among them: testcontainers reads a file's reader to its end as it creates the container, before Docker refuses the publish, so a retry handed the first attempt's reader copies an empty file in, and a server started from it enforces none of the users its configuration names.
 
+- A test that needs `packages/envoy`'s notification stream full fills it with `internal/testnats`'s `FillStream`: `internal/bus/bustest`'s `FillStream` outside package bus, which passes it the bus's stream and subjects that stream captures, and `testnats.FillStream` itself in package bus, which cannot import `bustest`.
+  It publishes until the stream's own count, its info's bytes against its byte limit, leaves less room than a one-byte fill message takes, so the stream refuses every message the test then sends whose stored size (subject, headers and payload) is no smaller, every envelope among them. It measures that size from a one-byte message the stream stored alone, by the sequences around it, so another writer into the stream does not skew it.
+  A refusal alone does not show the stream full: a three-copy stream's leader counts the message it last acknowledged as still in flight until it has finished applying it, a moment after the acknowledgement, so the publish that follows can be refused while the stream has room for it (nats-server 2.15.1). A fill that stopped at such a refusal left room for the role forward its test expected refused, and the stream stored the forward (dispatch://INFRA-3904).
+  It does not fill a stream with no byte limit, which fails the test, and a test that reads back what a fill stored keeps a loop of its own, as the single-server `TestAFullStreamRefusesAPublishAndKeepsEveryStoredMessage` does.
+
+- A test that counts the client connections an in-process test NATS server took, open and closed, or reads when each opened and closed, takes `packages/envoy/internal/testnats`'s `Server.Connections`.
+  One read of `/connz?state=all` can leave out a connection that has just closed, or list it twice: nats-server takes a closing connection out of its open list in the close, and saves its closed record from a goroutine of its own. `Connections` reads until the listing names each connection the server counted (`total_connections`) once, and `connections_test.go` holds it to that.
+  It lists client connections alone, not leaf nodes, routes or gateways; it reads an in-process `*testnats.Server`, not a container; on a server that has dropped closed records past `max_closed_clients` it fails where `testwait.Until` ends, 30 s before the test binary's deadline; and it waits for no connection that has not been made yet, so a test that counts an operation's connections waits for that operation first.
+  A reader of open connections alone keeps its own body, since a closed record's lateness does not reach it: `cmd/dispatch`'s `natsSubscribers`, which looks for live subscribers, and `packages/daemon/internal/testnats`'s `Connections`, which lists the open clients its drain and leak check read.
+
 - A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
   `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
   The package documentation is the whole list and the rule each check holds.
   It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
+
+## A test database's teardown waits for its binary
+
+`packages/daemon/internal/testpg/testdb.Drop` retries PostgreSQL's 42501
+(`insufficient_privilege`) and 55006 (`object_in_use`) refusals until its context ends. A test
+that creates one database (`testdb.PlainDatabase` and `internal/store`'s `emptyStore`) takes
+`testwait.TeardownContext(t)` in its cleanup, bounded to stay before go test's alarm and finite
+under `-timeout 0`. A clone teardown after `testpg.Main` takes `testwait.TeardownDeadline`: the
+binary's parsed `-timeout` plus its post-test grace, because Go stops its own alarm when `m.Run`
+returns.
+
+Never give `Drop` `context.Background()`. A correct backend can take longer than an arbitrary
+retry span to exit under load. When the binary's bound does end, the error names the database and
+the backends still attached from `pg_stat_activity`; clear those backends rather than retrying the
+test.
 
 
 ## Bun tests
@@ -142,6 +168,17 @@ itself, whose tests import its sources by relative path.
   spawns, and the names the test deleted stay deleted in the real environment. Under `--parallel`,
   which implies `--isolate`, the next file gets a fresh `process` and never sees the swap, so the
   damage shows only where it is hardest to read.
+
+- Hand a child whose `HOME` the test replaces, and a stand-in that runs the real program, the
+  program itself: `realHostTool(name)` (`@legion/test-fixtures/host-tools`), read once at module
+  scope, before any directory of the test's own goes first on `PATH`, never `name` from `PATH`. On
+  a machine where `name` on `PATH` is a mise shim, the shim reads its configuration from the
+  child's `HOME` and from the directories above the child's working directory. Under a `HOME` of
+  the test's own it refuses the real home's config as untrusted, or finds no version, and exits 1
+  before the program runs; behind a stand-in of the same name first on `PATH` it falls back to the
+  stand-in, which runs the shim again, and mise stops with "shim fallback recursion detected".
+  `realHostTool` takes what `mise which` names for a shim, or the program the shim would fall back
+  to, and skips the directory a stand-in lives in when it is given one.
 
 - `mock.module` at module scope outlives the file that wrote it: a filtered run that selects no row
   of the file still applies it, Bun 1.4.4 has no API that takes a module mock off again, and every
@@ -240,7 +277,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 125 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -334,6 +371,36 @@ included.
 When a test waits for a process that the code under test starts, the code tells the test that
 process's pid. A command that a test hands to the code, such as a `!` token command or a stand-in,
 writes its own pid (`echo $$ >FILE`) as its first act.
+
+## A Go test that starts a copy of its own test binary
+
+A copy of a Go test binary that a test starts with a marker, an environment variable or a first
+argument, gets its role from the package's `TestMain`, which runs that role and no test. In a build
+of the tests without that `TestMain` (a build constraint that keeps its file out of one build, a
+split of the test files) the copy runs every test, and each test that starts a copy starts more:
+on 2026-11-25 a copy of `packages/envoy/clitest`'s tests, split so that its `TestMain` was in an
+`integration` build alone, grew to 21,523 live copies and 505,340 threads, and stopped a 288-CPU
+host for 3.5 hours.
+
+So before every start of such a copy, a test asks one function of its package that returns an
+error in a process that carries a copy's marker itself (`fakeCopyRefusal` in
+`packages/envoy/clitest`, `legionCopyRefusal` in the daemon's `cmd/legion`, `helperCopyRefusal` in
+its `internal/launcher`), and refuses to start the copy on that error. A test that must set a
+copy's marker in its own process, because a copy started by code under test inherits it from there,
+starts every copy of its own before it sets it.
+
+The package has two tests of this. One is a unit test of that function: under `t.Setenv` of the
+marker (and, for a role given by the first argument, with `os.Args` set and put back) it returns
+the error, and with the marker unset it returns nil. While `TestMain` is in the build no copy ever
+reaches the function, so this test is the one that fails when the check is deleted. The other
+starts one copy with its marker and `-h`. Whatever the role does with `-h`, the testing package
+reads it before any test runs: in a build without `TestMain` that copy prints the testing package's
+flag usage and exits, so the test fails by name and starts nothing more. That covers a role chosen
+by an environment variable alone: Go stops reading flags at the first argument that is not one, so
+a copy whose role is its first argument (the launcher's `worker-shim` stand-in) never reads a `-h`
+after it, and for such a role the unit test, with `os.Args` set, is the only test. A copy started
+with `-test.run=^Name$`, whose named test reads its marker, is not of this kind: without
+`TestMain` it still runs that one test.
 
 ## The act rule of a Dispatch unit test
 
@@ -597,6 +664,65 @@ bound that the parallel tests' load could make it miss, which the comment names 
 one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
 comment runs alone for no reason, as 46 tests did by 2026-11-25.
 
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
+
+## A test in `packages/daemon/internal/runtime/sandbox` runs beside the others
+
+Every top-level test of `packages/daemon/internal/runtime/sandbox`, in the default build and the
+e2e build, calls `t.Parallel()` as its first statement or says on its first line, in a
+`// Not parallel:` comment, why it cannot; the package's `TestMain` runs 8 at once
+(`sandboxTestParallelism`). Each test drives a fake API server, launchers and store of its own
+(`newRig`). A test stays serial when it calls `t.Setenv` (`newSetupRig`), writes
+`gitHubRefreshInterval`, or needs a step to land inside a window of the wall clock, which the
+comment names. A test that asserts which deadline a wait meets sets a `clocktest.Fake` as the
+runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), and runs beside the
+others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
+by 2026-11-25.
+
+## A test in Dispatch's smaller packages runs beside the others
+
+Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
+statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
+
+- `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
+  `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
+  `internal/dispatch/horizontest`, `internal/dispatch/processes`, `internal/dispatch/redeliver`,
+  `internal/dispatch/routes`, `internal/dispatch/sessionanswers`, `internal/dispatch/startup`;
+- `internal/cmdtest`, `internal/contracts`, `internal/integration`, `internal/pglisten`,
+  `internal/testport`, `internal/textcheck`;
+- `natsversion`, `natsversion/cmd/natsfloor`.
+
+The ten of them whose tests open a database (architecture, duty, events, files, processes,
+redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
+`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
+`storetest.DefaultParallel` says why it is 4. Each test has a database of its own
+(`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+
+A test stays serial when it, or a helper it calls, changes something the whole test process
+shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
+through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
+variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `HeartbeatInterval`,
+`PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
+`syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
+bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
+on a correct product or pass with the defect present; the comment names the span. A wait for an
+event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
+and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
+marker in these packages: a new test with neither the call nor the comment runs alone for no
+reason.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -621,7 +747,8 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
 Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
-for it (or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
+for it, or, as `internal/daemon` does, in a group of its tests in each of several legs of one job
+(or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
 daemon package, change its line there in the same change: every daemon-go leg fails, naming the
 package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
 time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
@@ -792,6 +919,14 @@ The daemon's own production clients are named too: `natsauth.Connect` takes the 
 parameter rather than an option, so no call site can leave one empty, and an operator reading
 `/connz` on the Envoy NATS sees which process holds each connection.
 
+A JetStream `no_wait` pull asks the consumer's current pending count; it is not a read of the
+stream's store. nats-server stores a published message and sends its publish acknowledgement before
+its signal goroutine raises the matching consumer's pending count. A test that publishes messages
+and must then pull them makes a waiting pull for its batch and waits with the test's own deadline
+(`testwait.Context(t)`), not a `no_wait` pull or a fixed read timeout: a loaded machine may delay
+the signal after the acknowledgement without losing the stored messages. A test whose claim is the
+`404 No Messages` answer of an empty consumer still uses `no_wait`.
+
 ## A test that deletes a KV watcher's consumer
 
 A KV watcher reads its bucket through an ordered consumer nats.go creates and keeps in memory, and a test that deletes that consumer, to stand for one the server lost, has a state that does not last.
@@ -942,6 +1077,15 @@ pods, a write blocked for a third of a second completed the moment the page sent
 `TestARepeatedSubReplacesAnotherKind` then waited for a queued frame the writer had already
 written, and failed 8 of 300 runs. Those two helpers are for tests of a slow page itself, such as
 one whose queue overflows.
+
+A test that needs a close or a ping (gorilla/websocket's `WriteControl`) to wait for the
+connection's write lock holds the writer the same way, before the close or the ping comes. gorilla
+holds that lock for each write to the connection, not for a whole message, so a writer that TCP
+backpressure stalls holds it only while the kernel blocks a write: between two fragments of a frame
+it holds none, and a close that comes then takes the free lock and is written at once. The relay
+socket rows of `packages/envoy/cmd/listener` build their rig with `withHeldWrites`
+(`relay_socket_fixture_test.go`), the same gate. Use small TCP buffers and a client that reads
+nothing only to test the slow client itself, not to make `WriteControl` wait for a lock.
 
 ## A fake HTTP server whose client gives up on requests
 

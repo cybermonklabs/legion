@@ -200,6 +200,9 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 	if len(kept) > 0 {
 		return fmt.Errorf("%s: the plan holds no waiting or stopped task %v", describe, kept)
 	}
+	if len(deleted) > 0 {
+		noteRecordWrite(ctx)
+	}
 	return nil
 }
 
@@ -244,6 +247,7 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is in the workflow, or the task no such step", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -267,6 +271,7 @@ func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is not done and in the workflow", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 

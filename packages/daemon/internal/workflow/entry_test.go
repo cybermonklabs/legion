@@ -240,7 +240,8 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer)
+		_, err = engine.StartPromotedWorker(ctx, tx, s, claim.RoleImplementer, false)
+		return err
 	})
 
 	starts := superviseRowsOf(t, pool, entryIssue, "start")

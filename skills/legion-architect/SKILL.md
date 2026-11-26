@@ -61,7 +61,7 @@ Your role prompt holds the lifecycle rules, this skill the procedures.
 
 - Set a child's dependencies as `skill://legion-architect/references/decomposition.md`, "Recording a wait on other work", says.
 
-- Release each child once its spec is approved and it has its plan: `legion({ op: "release_children", issues: ["LEGION-41"] })`.
+- Release each child once its spec is approved and it has its plan: `legion({ op: "release_children", issues: ["ACME-41"] })`.
   Legion holds a child whose blockers are not `done`.
   Never hold a release back for a close, except as `skill://legion-architect/references/decomposition.md` says: the daemon refuses one under an accepted issue.
   Never block a child on its own parent, which merges last.
@@ -74,9 +74,9 @@ A parent's own first phase does not start while Dispatch shows an open child und
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), and never downgrade one.
+- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`references/acceptance.md`, "Accepting"), and never downgrade one.
   Only the part a child carries is proven in the child, with a check of its own whose `serves` names the criterion.
-  A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
+  A parent signs off only after its last round (`references/acceptance.md`, "The last round").
 
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would:
   a passing check does not show that a person can do their job with it.
@@ -88,29 +88,33 @@ A parent's own first phase does not start while Dispatch shows an open child und
 Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
 Never message the implementer to start retro.
 A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
-A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
+A retro that cannot write the body: `references/acceptance.md`, "Retro's result".
 
 ## 6. Acceptance and the merge
 
 In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
-read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
+read, against the goal, every check and requirement in `references/acceptance.md`, "Accepting".
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
-Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
+Merge holds, finding asks, refusals and what follows: `references/acceptance.md`.
 
 ## 7. Close
 
-Nothing after the issue closes is yours (`skill://legion-architect/references/acceptance.md`, "The close").
+Nothing after the issue closes is yours (`references/acceptance.md`, "The close").
 
 ## Escalation judgment
 
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and two trees changing the same code.
+- Send the controller a child serving no criterion of the root and a need for admission slots.
+  Two trees changing the same code: mention the other tree's architect on its issue (`skill://legion-worker/references/findings.md`).
 
-- Carry a clear defect the controller gives you in this tree:
-  in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.
-  It changes the root spec only where it changes the Summary, a requirement, a check or the scope (`skill://legion-architect/references/design-gate.md`, "After approval").
+- Carry a clear defect another role writes to you in this tree, in an open pull request or a child.
+
+- An action on an agent is the controller's: ask it in a `dispatch comment` on that agent's issue mentioning its role, never by `envoy_publish`.
+
+- Your tree's failed CI runs and its pull requests that no merger merges are yours, never another session's.
+  Read `skill://legion-architect/references/operations.md` before each of these three.
 
 - A tool a worker cannot get is a pull request to the worker image (`skill://legion-worker/references/tools.md`).

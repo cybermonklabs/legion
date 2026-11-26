@@ -311,14 +311,15 @@ Dispatch read them, delete the files, then install every App from
   only). Each takes `cpu` and `memory` (the limits), `cpu_request` and `memory_request` (what the
   scheduler reserves of them), `ephemeral_storage` (the disk limit) and
   `ephemeral_storage_request` (what the scheduler reserves of it), each optional, each request at
-  most its limit, and the daemon's defaults fill the rest: `issue` 3 CPU and 19Gi, request and
+  most its limit, and the daemon's defaults fill the rest: `issue` 2 CPU and 8Gi, request and
   limit alike, 80Gi of disk over a 6Gi request; `controller` 1 CPU and 4Gi, 10Gi of disk over 1Gi.
   A workflow role's key is refused (`runtime.kubernetes.resources.<role> is gone: an issue pod has
   one reservation, runtime.kubernetes.resources.issue`). Under gVisor every process of a pod already
-  used whatever the pod had free, so the pod's peak must fit its reservation: an issue pod measured
-  at 1-minute resolution used its whole 19Gi for minutes while its reviewer ran a review
-  (2026-10-21). A cpu or memory request the file leaves out equals the limit, so a deployment that
-  sets none runs only `Guaranteed` pods. A lower request — `issue: {memory: 32Gi, memory_request:
+  used whatever the pod had free, so the pod's peak must fit its reservation: an issue pod that
+  still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while
+  its reviewer ran a review (2026-10-21). A cpu or memory request the file leaves out equals the
+  limit, so a deployment that sets none runs only `Guaranteed` pods.
+  A lower request — `issue: {memory: 32Gi, memory_request:
   8Gi}` for issues whose memory comes in bursts — makes the issue pod `Burstable`: more pods fit a
   node and a cluster that bills by requests bills less, but under node memory pressure the kubelet
   evicts a `Burstable` pod using more than its request before any `Guaranteed` one, or the kernel
@@ -349,7 +350,8 @@ Dispatch read them, delete the files, then install every App from
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
   and why, open until `capabilities.decided.pool-capacity` names a reason. An issue pod, whatever
-  roles it runs, sums to 3 CPU and 19 GiB at the defaults, its disk limits to 80Gi over 6Gi requested. A container
+  roles it runs, reserves 2 CPU and 8 GiB at the defaults, with a disk limit of 80Gi over a 6Gi
+  request. A container
   past its disk limit has its own pod evicted, the offending issue's alone, rather than the node
   reaching `DiskPressure` where another tree's pod can go; the 1Gi request reserves almost no disk,
   so a node's root volume can be oversubscribed by the pods' limits — an operator who knows the
@@ -358,9 +360,11 @@ Dispatch read them, delete the files, then install every App from
   Autopilot adds its own to an issue or controller pod): an issue pod carries a disk of its own and
   shares none, so the
   scheduler places it wherever the pool has room and Karpenter
-  adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
-  `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
-  at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
+  adds nodes under the pool's limits. Concurrent issue pods are bounded by the nodes the pool's
+  `limits.cpu` and `limits.memory` let Karpenter make, since Karpenter counts each node's whole
+  capacity against those limits (three pods per 8-vCPU floor node, so about 96 on the 32 floor
+  nodes of `limits.cpu: 256`, or three on each of `limits.memory` / 64 GiB floor nodes when that is
+  smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot —
   through `accepting`, `retro` and `merging`, which hold none, on to its own close — and an issue
@@ -833,7 +837,7 @@ What each part is for:
 - Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
   closed issue's production check runs before its last look, 14 days by default,
   decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
-  update round ends and the pod is replaced, whatever the roles answered and unless an operator's
+  update round ends and the pod is replaced, whatever the roles answered and unless the operator's or the controller's
   suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
   `pod_update_rounds_per_minute` (how many rounds one sweep opens), each a positive integer whose
@@ -841,7 +845,7 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
-  link, on its open children, or for a slot it needs and does not hold — while the project's line
+  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it needs and does not hold — while the project's line
   can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
   the line can move, one whose only quiet issues gave their slot back to wait on work outside
@@ -867,7 +871,16 @@ What each part is for:
   Anthropic organization refuses the calls over its per-minute uncached-input cap. The rate is a
   ceiling, not the rate a wave keeps: each wake waits its turn and then a random part of up to one
   interval more, so a long wave sustains about two thirds of the rate, which is about 5 a minute at
-  the default of 8. The arithmetic behind the defaults: 8 a minute with a burst of 1 holds any
+  the default of 8. Each paced wake waits in one of two queues. The first holds the wake of a role
+  that has an Envoy message waiting, which Envoy keeps for one hour, and the relaunch of a role
+  whose own process died; the second holds every other paced wake. At each turn the pacing lets
+  out the head of the first queue, except that while both hold wakes the turn after three
+  first-queue wakes in a row goes to the second, which so keeps one turn in four. No two wakes go
+  out in one turn, so the queues change the order of a wave and never its rate. The daemon's line
+  `supervise: wake ran` names the `queue` each paced wake came from (`message` or `other`) and the
+  turns it waited (`turnsWaited`), and is a warning with `lateForMessage` for a message wake let
+  out more than 45 minutes after the message that marked it. The arithmetic behind the defaults: 8
+  a minute with a burst of 1 holds any
   minute to 9 paced wakes, which at the mean is 5.2M tokens, split over the two Anthropic
   organizations one gateway key reaches, against an acceptance bar of 8M an organization a minute.
   They also leave room beside the pod-update round rate: one round opening a minute costs up to
@@ -949,7 +962,7 @@ What each part is for:
   that owns the issue is told what the record held: how long the agent was silent, the bound it
   passed, when the turn began, and the call the record names, if any. The stall of a child's own
   architect is told to the architect above that child. A root architect's own stall is told to
-  the controller as well.
+  the controller as well only when the replacement failed that architect's claim.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
   judges — 8 hours for an implementer and a reviewer, 2 for every other role and the controller —
@@ -1236,7 +1249,7 @@ Send from the Agents page is answered in the conversation that page shows.
 Size its pod under `runtime.kubernetes.resources.controller`: with no requests it is the first pod
 the kubelet evicts under memory pressure.
 To hand the controller back to a person, set `controller: operator`, drop
-`runtime.kubernetes.resources.controller` (the daemon refuses that key unless `controller: daemon`)
+`runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account` (the daemon refuses each of those keys unless `controller: daemon`)
 and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
@@ -1247,8 +1260,8 @@ it lists the controller's claim as an issue keyed `""`, which every agent's plug
 stop using the in-cluster controller, switch to `controller: operator` on this release rather than
 rolling back the image. If you must roll back, do it in this order:
 
-1. Remove `controller` and `runtime.kubernetes.resources.controller` from `legion.yaml`: the
-   earlier release refuses both as unknown keys, and without them this release runs
+1. Remove `controller`, `runtime.kubernetes.resources.controller` and `runtime.kubernetes.pod.controller_service_account` from `legion.yaml`: the
+   earlier release refuses each as an unknown key, and without them this release runs
    `controller: operator`. Restart this release once with that file. Do not skip this boot: only
    this release ends the stopped controller's registration. It is done when `legion claims list`
    shows `legion-<project>-controller` `retired`. If the boot is refused,
@@ -1386,7 +1399,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
-   **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
+   **An operator's suspension holds until the operator resumes the agent.** The daemon keeps every
    claim of an open issue live and idle between phases and while the root waits on a person. A child
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other agent at
@@ -1396,17 +1409,21 @@ Closing the terminal leaves the project without one, and the daemon logs
    or when an agent's next step is of another role than the one its claim holds: the start of that
    step suspends the claim at the end of its turn, keeping its session, gives it the step's role
    and resumes it on the same session. A phase start gives its task to that live claim. At boot
-   the daemon resumes by rule a suspended worker that still owns its issue's phase, but never a
-   claim an
-   operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
-   operator-suspended architect waits until the operator resumes it. A notice for a child whose
-   own architect an operator suspended goes to the architect above that child. A drain therefore
-   ends with the operator resuming every claim they suspended, one `legion claims resume` each;
-   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`,
-   `released`, or `unknown` for one suspended before this release). A daemon suspension of a
-   claim whose issue left the workflow waits for its current turn to finish, with no stop timeout:
-   a child parked in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's
-   current turn ends, and a lingering tree's claims stay suspended until the tree is re-admitted.
+   the daemon resumes by rule a suspended worker that still owns its issue's phase and that the
+   daemon itself suspended, but never an agent the operator or the project's controller
+   suspended: a start for an agent either of them holds waits instead, until a resume lifts the
+   hold. The operator's resume lifts either, and the controller's only its own. A notice for a
+   root's architect that the operator or the controller suspended waits until a resume lifts that
+   suspension. A notice for a child whose own architect is suspended, whoever suspended it, goes
+   to the architect above that child, unless the daemon only released that architect's idle pod,
+   which the notice wakes. A drain therefore ends with the operator resuming every agent they
+   suspended, one `legion claims resume` each; `legion claims list --json` names each one's
+   `suspendedBy` (`operator`, `controller`, `daemon`, `exit`, `released` for one whose idle pod
+   the daemon released, or `unknown` for one suspended before this release). A daemon suspension
+   of a claim whose issue left the workflow waits for its current turn to finish, with no stop
+   timeout: a child parked in Dispatch (`backlog` or `icebox`) stops its worker only once the
+   worker's current turn ends, and a lingering tree's claims stay suspended until the tree is
+   re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
    suspended reads `unknown`. The next phase start, re-admission and the controller keeper
@@ -1623,12 +1640,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   it is — `launch`, a role process about to start; `plugin-refresh`, the relaunch of a session
   whose plugin speaks an earlier daemon contract, which the daemon replaces at that one wake and
   asks nothing of first; `catch-up`, the notice a start writes to an
-  architect that is already running — and the moment the pacing gave it (`wakes waiting: 2 —
-  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`).
+  architect that is already running — and the pacing's estimate, at the read, of the moment it
+  lets that wake out, by its place in the queues (`wakes waiting: 2 —
+  legion-widgets-widgets-12-implementer launch due 2026-10-03T09:13:08Z; …`). A waiting wake
+  holds a place and no moment of its own. A change to the queues or to the pace can move that
+  moment earlier or later, so two reads can name two moments: for example, a wake ahead of it in
+  its own queue that leaves moves it earlier, and a wake that joins and is let out ahead of it
+  moves it later.
   Nothing waits outside a restart, a re-admission or a stale-plugin wave, which is why an
   ordinary read has no such line.
-  It is what says whether a wave is still going out, and the last `due` on it is when
-  the last of that wave goes.
+  It is what says whether a wave is still going out, and the latest `due` on it is the pacing's
+  estimate of when the last of that wave goes.
 
   The plain line does not say how much of a stale-plugin wave is still to come, and the JSON body
   does: `legion state --json | jq .claimsToRefresh` is how many sessions the lane still has to
@@ -1668,7 +1690,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   says what each reason means and what to do.
 
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
-  issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
+  issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), on a root
+  `treeRuns` (true when the root's tree runs: its lifecycle is open, the root does not linger, and
+  the root does not wait in the line for its tree to open), `repo` and `defaultBranch`, `holdReason`,
   `priority` (the issue's own Dispatch priority, 0 for P0 to 3 for P3, or null for none; absent on an
   issue the workflow does not record, and absent, with the `priority` of each member of the line
   below, for a caller below contract 250),
@@ -1677,7 +1701,14 @@ Closing the terminal leaves the project without one, and the daemon logs
   made none), `pullRequest` (`repo`, `number`, `head`, `state`, `mergeState`, `reviewDecision`),
   `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
-  — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
+  — `unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or
+  `pending_on_basis` — `changesReason`, and on the last two words `basis`: the ancestor `issue`,
+  its `artifactId`, the `version`, and `approver` and `approvedAt` for an approval or `askId` for a
+  request; `open_on_basis` is a step open on a person's approval of an ancestor's document, and its
+  `approvedVersion` is the root's version that its architect registered, which no person approved;
+  `pending_on_basis` is a step closed until a person approves the ancestor's version that the open
+  request names; a pod whose plugin is older than these fields gets no `treeRuns`, and no
+  `gatedSteps` on an issue with a step on a basis), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
   `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
   `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
@@ -1712,7 +1743,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `heldOutboxRows` ([An issue's stop or start waits behind its own launch](/legion/legion/troubleshooting/#an-issues-stop-or-start-waits-behind-its-own-launch)),
   `strandedClaims` ([A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)),
   `wakesWaiting` (each wake the pacing holds until its turn, in claim order: `claim`, `issue`,
-  `role`, `kind` and `dueAt`; an array, never null, and empty at every moment outside a wave),
+  `role`, `kind` and `dueAt`, the pacing's estimate, at the read, of the moment it lets the wake
+  out, which a later read can name earlier or later; an array, never null, and empty at every
+  moment outside a wave),
   `repositories` (`live`, one entry for each repository the project's live records name, sorted:
   its `repo`, as the records keep it; `servedAs`, the other name of its `repository_renames` pair
   where the daemon calls GitHub under that one; `apps` — `{"implement": bool, "review": bool}`,

@@ -66,7 +66,7 @@ type roleForReader struct {
 // an implementer step, and Engine.startAfterWait, which reads the step a task whose start waited
 // stands at, a step place: a first step whose join ended or is queued again, or a step whose freed
 // agent takes it, since only a step waits for its join or its agent), or reads the retro's own
-// phase (retroHeldNotice and Engine.startHeldRetro, which run only for a parent held before its
+// phase (retroHeldNotice and Engine.StartHeldRetro, which run only for a parent held before its
 // retro for the issues beneath it), or answers the running steps' roles to the readers this list
 // holds (record.RunningOf, and record.stepOfRow, the one reading of a row of plan rows, which
 // Postgres.AgentWaiter reads too), or reads of the running steps at a phase only whether one is
@@ -75,8 +75,21 @@ type roleForReader struct {
 // only past the refusal of a plan's own hold, which is the one hold an issue at admitted takes
 // (heldStepRole, which Engine.retryOrEscalate reads for the retry of a named claim and
 // Engine.retryPhase for the role it restarts), or never reads admitted at all because a check
-// before it refuses that phase, which is what each named test holds it to. The owner walk reads no role:
-// where it starts is its caller's to say (record.NoticeStartsAtParent, for a notice).
+// before it refuses that phase, which is what each named test holds it to.
+//
+// A parent's wait on its open children (awaiting_children.go, dispatch://INFRA-3320) is of that
+// last kind: each of its readers runs only past record.OpenChildHolds, which refuses admitted, or
+// on the start a hold kept, which is never admitted's. Where one reads accepting's architect it
+// starts no phase worker: the return of a parent whose pull request merged during the wait starts
+// what a move into accepting starts, a child's failed architect again and the accepting step's run
+// (ReturnFromChildren), and the stop holds accepting with no role told (StopForChildren), since the
+// architect's notice tells it. The entry the phase's role stands on is read for R9's exemption of a
+// move out of retro or merging (samePhaseExempt) only past record.OpenChildHolds, by the stop and
+// by the guard on a start of the phase the issue stands in, so it reads accepting's architect at
+// most and never admitted's.
+//
+// The owner walk reads no role: where it starts is its caller's to say
+// (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.
@@ -84,66 +97,59 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "cmd/legion/main.go", fn: "entriesBehind"}: {calls: 1, tests: []string{"TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsTheStateNamesAnArmFor"}},
 	{file: "internal/admit/stalled.go", fn: "stalledTreeReason"}: {calls: 1, tests: []string{
 		"TestAWaitByDesignIsNeverToldAsAStall", "TestTheAdmissionReadsTheRunningDeploymentRole"}},
+	{file: "internal/api/claimstart.go", fn: "server.worksPhase"}: {calls: 1, tests: []string{
+		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
 	{file: "internal/api/handoff.go", fn: "server.answerCompletion"}: {calls: 1, tests: []string{
 		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit"}},
-	{file: "internal/api/operator.go", fn: "server.worksPhase"}: {calls: 1, tests: []string{
-		"TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine", "TestTheOperatorRetriesADeploymentRolesClaim"}},
-	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 1, tests: []string{"TestOnlyAPhaseWorkerHoldsAMembersPhase"}},
+	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}: {calls: 2, tests: []string{"TestOnlyAPhaseWorkerHoldsAMembersPhase"}},
+	{file: "internal/daemon/design_news_send.go", fn: "memberDraft.told"}: {calls: 2, tests: []string{
+		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend", "TestTheServedStateNamesTheRunningDeploymentRole"}},
 	// Whether the task the per-issue read judges stands in implementing, for a plan of several tasks:
 	// a running step of that task at implementing, which no step at admitted is.
 	{file: "internal/daemon/issue_reads.go", fn: "issueRecords.implementing"}: {calls: 1, tests: []string{
 		"TestAMissingPullRequestIsOfTheCompletingTask", "TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest"}},
+	{file: "internal/daemon/outbox.go", fn: "outbox.heldStartRefused"}: {calls: 1, tests: []string{"TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt"}},
 	{file: "internal/intake/facts.go", fn: "EntryFence"}: {calls: 1, tests: []string{
-		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit",
-		"TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused"}},
+		"TestArchitectUnchangedByItsCompletionAtAdmitted", "TestADeploymentRoleReportsWithAVerdictAndACommit", "TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused"}},
 	{file: "internal/phase/phase.go", fn: "Of"}: {calls: 1, tests: []string{"TestArchitectUnchangedByItsCompletionAtAdmitted"}},
 	// The role of the issue's running step at its phase, and of the phase where no step runs at it.
 	{file: "internal/projection/project.go", fn: "Project"}: {calls: 2, tests: []string{
 		"TestProjectShowsARootsArchitectHandshake", "TestTheServedStateNamesTheRunningDeploymentRole"}},
-	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 1, tests: []string{"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"}},
+	{file: "internal/record/design_news.go", fn: "untold"}: {calls: 2, tests: []string{"TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"}},
 	// Whether queued work stands at a running step's phase, away from step, where it reads only
 	// whether the step is held and never its role; at admitted, where no step runs, the issue's own
 	// phase answers, as it did before running steps were read.
 	{file: "internal/record/record.go", fn: "Issue.HoldsQueued"}: {calls: 1, tests: []string{
-		"TestAQueuedStartIsHeldToTheRunningStepOfItsRole", "TestAnOwedStartOfAnotherStepsRoleIsEnded",
-		"TestAStartOfAnotherStepsRoleFinishesWithoutActing", "TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess",
-		"TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep", "TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy",
-		"TestAnIssueThatComesBackIsNotStrandedByTheStartFence"}},
+		"TestAQueuedStartIsHeldToTheRunningStepOfItsRole", "TestAnOwedStartOfAnotherStepsRoleIsEnded", "TestAStartOfAnotherStepsRoleFinishesWithoutActing", "TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess", "TestPhaseHoldsAnswersFromTheRoleOfTheRunningStep", "TestOnlyThePhaseOwnersTaskAdoptsTheWorkingCopy", "TestAnIssueThatComesBackIsNotStrandedByTheStartFence"}},
 	// The role of the phase of an issue with no plan rows.
-	{file: "internal/record/record.go", fn: "RunningOf"}: {calls: 1, tests: []string{
-		"TestAnIssueReadsTheRoleOfItsRunningStep"}},
+	{file: "internal/record/record.go", fn: "RunningOf"}: {calls: 1, tests: []string{"TestAnIssueReadsTheRoleOfItsRunningStep"}},
 	// The role of a row's retro or merge, and of a step whose role runs as a phase of Legion's own.
 	{file: "internal/record/record.go", fn: "stepOfRow"}: {calls: 1, tests: []string{
 		"TestAnIssueReadsEachOfItsRunningSteps", "TestTheStepThatWaitedLongestForItsAgentIsNext"}},
 	{file: "internal/workflow/architect_start.go", fn: "writeCarriedPhase"}: {calls: 1, tests: []string{
 		"TestTheArchitectTaskOfEachShape", "TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole"}},
-	{file: "internal/workflow/design_news.go", fn: "memberWords"}: {calls: 1, tests: []string{
-		"TestTheRootArchitectsSummaryNamesEachMemberAsTheRecordStandsAtItsSend"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.ReturnFromChildren"}: {calls: 2, tests: []string{"TestAParentWhosePullRequestMergedGoesBackToTheStartItHeld"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.StopForChildren"}:    {calls: 1, tests: []string{"TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "Engine.samePhaseExempt"}:    {calls: 1, tests: []string{"TestParentWaitsHoldsEveryPhaseStart"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "heldCause"}:                 {calls: 1, tests: []string{"TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting"}},
+	{file: "internal/workflow/awaiting_children.go", fn: "undeliveredStart"}:          {calls: 1, tests: []string{"TestTheAdmissionPassStopsAStartedParentAnOpenChildHolds"}},
 	// The role of the held step, and of the phase the hold is from where no step stands there.
 	{file: "internal/workflow/effects.go", fn: "HeldNotice"}: {calls: 2, tests: []string{
 		"TestACarriedRootResumesFromTheApprovedHeadAndTheHold", "TestAHeldStepOfTheDeploymentNamesItsRole"}},
 	{file: "internal/workflow/effects.go", fn: "RoleFor"}: {calls: 1, tests: []string{"TestRoleForAnswersEveryPhaseOfPhaseAll"}},
-	// The role of the held step a retry restarts: of a retry naming a claim, read past the refusal
-	// of a plan's own hold, and of the restart of the phase the hold is from.
-	{file: "internal/workflow/engine.go", fn: "heldStepRole"}: {calls: 1, tests: []string{
-		"TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks",
-		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole",
-		"TestAnIssueHeldAtTheReleaseIsRetriedAsBefore"}},
 	// The role the move starts, read by the phase on an issue with no plan rows and by the place on
 	// a task with them.
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}: {calls: 2, tests: []string{
-		"TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody", "TestAnIssueAtAdmittedRunsNoStep",
-		"TestADeploymentRoleOfAnyTypeStartsAndReports"}},
+		"TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody", "TestAnIssueAtAdmittedRunsNoStep", "TestADeploymentRoleOfAnyTypeStartsAndReports"}},
 	// The requester's role, twice, and the roles of the two earlier places that run as step.
 	{file: "internal/workflow/engine.go", fn: "backwardRefusal"}: {calls: 4, tests: []string{
 		"TestArchitectUnchangedByABackwardMoveFromAdmitted", "TestABackwardMoveToStepNamesWhichStep", "TestADeploymentRoleMovesItsTaskBack"}},
+	// The role of the held step a retry restarts: of a retry naming a claim, read past the refusal
+	// of a plan's own hold, and of the restart of the phase the hold is from.
+	{file: "internal/workflow/engine.go", fn: "heldStepRole"}: {calls: 1, tests: []string{
+		"TestARestartNamingAClaimRestartsNoStepAnotherClaimWorks", "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole", "TestAnIssueHeldAtTheReleaseIsRetriedAsBefore"}},
 	// The retro's role, the merge's, and the role a step's role runs as.
 	{file: "internal/workflow/line.go", fn: "Walk.RoleAt"}: {calls: 3, tests: []string{"TestADeploymentRoleOfAnyTypeStartsAndReports"}},
-	// The running steps a settlement of a held issue's checks tells, at the phase its hold is
-	// from (record.Issue.RunningAt). A hold from admitted names the architect's role, whom
-	// tellChecks tells as the issue's owner too.
-	{file: "internal/workflow/review.go", fn: "Engine.checksSteps"}: {calls: 1, tests: []string{
-		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase"}},
 	// The role whose step a move ends (Engine.transition, Engine.arrive, Engine.holdBeforeRetro and
 	// endOfTransition read it), read by the place on a task with plan rows and by the phase on an
 	// issue with none.
@@ -156,33 +162,33 @@ var roleForReaders = map[roleForSite]roleForReader{
 	// The role of a stopped task's first step where it starts again, whatever the plan's count of
 	// tasks.
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.startAtFirstStep"}: {calls: 1, tests: []string{
-		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole",
-		"TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone"}},
+		"TestATodoOnAStoppedRootStartsItsTaskAtStepOne", "TestARetryOfADeploymentStepRestartsItsRole", "TestAStoppedTaskStartsAgainOnlyWhereItsNeedsAreDone"}},
 	// The role of the step the stop ended, and of the phase where no step of the task ran.
 	{file: "internal/workflow/plan_stop.go", fn: "Engine.taskStopped"}: {calls: 2, tests: []string{
 		"TestStopTaskHoldsTheIssueAndStopsTheStep", "TestAStopReachesTheDeploymentRoleThatRuns"}},
 	// The roles of the steps at a phase, a failed claim's (Engine.claimFailed), a late report's
 	// (Engine.leftItsPhase) and an operator's restart's (Engine.restartPhase) through worksAt.
 	{file: "internal/workflow/plan_stop.go", fn: "rolesAt"}: {calls: 1, tests: []string{
-		"TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice", "TestAHeldStepOfTheDeploymentNamesItsRole",
-		"TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing",
-		"TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
+		"TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice", "TestAHeldStepOfTheDeploymentNamesItsRole", "TestArchitectUnchangedByAWorkersCompletionAtAdmitted", "TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing", "TestTheOperatorsRestartOfAPhaseStartsItsWorkerWithThePhasesTask", "TestARetryOfADeploymentStepRestartsItsRole"}},
+	{file: "internal/workflow/retro_hold.go", fn: "Engine.StartHeldRetro"}: {calls: 1, tests: []string{
+		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
+	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
+	// The running steps a settlement of a held issue's checks tells, at the phase its hold is
+	// from (record.Issue.RunningAt). A hold from admitted names the architect's role, whom
+	// tellChecks tells as the issue's owner too.
+	{file: "internal/workflow/review.go", fn: "Engine.checksSteps"}: {calls: 1, tests: []string{
+		"TestASettlementMovesNothingAndTellsTheThreeRoles", "TestASettlementOfAHeldIssueTellsTheWorkerOfItsHeldPhase"}},
 	// The role of the step a task whose start waited stands at: the end of its join, its join again
 	// at the issue's generation, and the hand-on of its freed agent each start it through here.
 	{file: "internal/workflow/run_end.go", fn: "Engine.startAfterWait"}: {calls: 1, tests: []string{
-		"TestAFreedAgentTakesTheStepThatWaitedLongest", "TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter",
-		"TestTheEndOfAJoinStartsTheStepThatWaits", "TestTheEndOfAJoinWhoseAgentIsBusyWaitsForTheAgent",
-		"TestAJoinThatWaitedAtAReadmissionStartsAgain"}},
-	{file: "internal/workflow/retro_hold.go", fn: "Engine.startHeldRetro"}: {calls: 1, tests: []string{
-		"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro", "TestAHeldRetroAfterADeploymentStepGetsItsReport"}},
-	{file: "internal/workflow/retro_hold.go", fn: "retroHeldNotice"}: {calls: 1, tests: []string{"TestAParentWithNoAcceptanceIsHeldBeforeItsRetro"}},
-	{file: "internal/workflow/standing.go", fn: "reportsBefore"}:     {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
-	// The role of the first step of a task whose needs are done.
-	{file: "internal/workflow/tasks.go", fn: "Engine.startReady"}: {calls: 1, tests: []string{"TestEachTaskStartsWhenItsNeedsAreDone"}},
+		"TestAFreedAgentTakesTheStepThatWaitedLongest", "TestAnAgentFreedByAMoveToANextStepGoesToItsWaiter", "TestTheEndOfAJoinStartsTheStepThatWaits", "TestTheEndOfAJoinWhoseAgentIsBusyWaitsForTheAgent", "TestAJoinThatWaitedAtAReadmissionStartsAgain"}},
+	{file: "internal/workflow/standing.go", fn: "reportsBefore"}: {calls: 1, tests: []string{"TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.startAgent"}: {calls: 1, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestTheStartOfADeploymentStepNamesItsAgent"}},
 	{file: "internal/workflow/steps.go", fn: "Engine.upgradedStart"}: {calls: 2, tests: []string{
 		"TestAnIssueAtAdmittedRunsNoStep", "TestATaskMovesToItsRowsPlaceAndCountsItsReturn"}},
+	// The role of the first step of a task whose needs are done.
+	{file: "internal/workflow/tasks.go", fn: "Engine.startReady"}: {calls: 1, tests: []string{"TestEachTaskStartsWhenItsNeedsAreDone"}},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The

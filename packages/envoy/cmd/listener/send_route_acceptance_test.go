@@ -82,6 +82,16 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 	}
 }
 
+// assertRecordErrorCarries fails unless the error field of one record line carries want: a line's
+// error wraps the cause a test planted in what the reader that met it adds.
+func assertRecordErrorCarries(t *testing.T, record map[string]any, want string) {
+	t.Helper()
+	if message, _ := record["error"].(string); !strings.Contains(message, want) {
+		line, _ := json.Marshal(record)
+		t.Fatalf("the record's error %q does not carry %q: %s", message, want, line)
+	}
+}
+
 // A send reads the target from the session bucket itself when this listener's cache has not seen
 // it: the cache follows the bucket through a watcher and so trails it, and a sender told its
 // destination is gone routes around the pane. This drives the send route with a session another
@@ -206,9 +216,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	// nats.go notices the closed link from its own read loop, so the send below is issued on a
 	// connection already known to be down rather than on one that is about to be: the measured
 	// time is the handler's, not the client's time to notice.
-	for deadline := time.Now().Add(5 * time.Second); client.Conn.IsConnected(); {
+	for deadline := time.Now().Add(listenerWaitBound(t)); client.Conn.IsConnected(); {
 		if time.Now().After(deadline) {
-			t.Fatal("the NATS client still reports itself connected 5s after the relay cut every link")
+			t.Fatal("the NATS client still reports itself connected the time this package gives a wait after the relay cut every link")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -104,9 +104,9 @@ var implementerReviewer = []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}
 // (plan.Supported) and a role nobody defines with plan.Validate's: both checks run, so a plan
 // with a cause of each kind is answered both, and none of them records anything. A plan both
 // checks take is recorded as the one fact the workflow reads (intake.PlanGiven) and answered with
-// its tasks. Whether a registration given again is the one taken is the record's to say
-// (intake.ApplyFact), and this handler stores no version: each registration reaches it, answered
-// the same, under the one id the route names it by.
+// its tasks. No id decides whether a registration given again is the one taken (intake.ApplyFact
+// applies every PlanGiven), so each registration reaches this handler, which stores no version,
+// under the one id the route names it by, and is answered the same.
 func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -154,7 +154,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 		givenPlan("LEGION-208", 1, architect.token, planDoc, 5),
 	}
 	if got := facts.recorded(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("facts = %#v, want %#v: one for each registration taken, the store holding no version of version 4 when it is given again", got, want)
+		t.Fatalf("facts = %#v, want %#v: one for each registration, version 4's second among them, the store holding no version of version 4 when it is given again", got, want)
 	}
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
 }

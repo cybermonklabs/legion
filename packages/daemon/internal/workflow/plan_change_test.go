@@ -121,8 +121,8 @@ func stepsOfTask(stored *record.StoredPlan, task string) []string {
 	return words
 }
 
-// processed says whether the fact id is marked applied, so that the same id given again is
-// answered as a duplicate.
+// processed says whether the fact id is marked applied. A release before answers a marked id given
+// again as a duplicate; this one applies a PlanGiven whatever its mark (intake's factApplies).
 func processed(t *testing.T, pool *pgxpool.Pool, id string) bool {
 	t.Helper()
 	var marked bool
@@ -132,15 +132,16 @@ func processed(t *testing.T, pool *pgxpool.Pool, id string) bool {
 	return marked
 }
 
-// assertPlanRefusal fails unless result is exactly want, left unspent so the same id applies
-// when given again (its processed mark gone), and key stands at generation as before stood.
+// assertPlanRefusal fails unless result is exactly want, left unspent with its processed mark gone,
+// which only a release before reads (this one applies a PlanGiven whatever its mark, intake's
+// factApplies), and key stands at generation as before stood.
 func assertPlanRefusal(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64, id string, result intake.Result, want *intake.Refusal, before planStanding) {
 	t.Helper()
 	if !reflect.DeepEqual(result.Refusal, want) {
 		t.Fatalf("the plan = %+v, want the refusal %+v", result.Refusal, want)
 	}
 	if !result.Unspent || processed(t, pool, id) {
-		t.Fatalf("the refused plan %s is spent (unspent %v), want it unspent and unmarked so the same version applies when given again", id, result.Unspent)
+		t.Fatalf("the refused plan %s is spent (unspent %v), want it unspent and unmarked, so a release before applies the same version when given again", id, result.Unspent)
 	}
 	if after := planStandingOf(t, pool, engine, key, generation); !reflect.DeepEqual(after, before) {
 		t.Fatalf("the refused plan changed %s:\n before %+v\n after  %+v", key, before, after)
@@ -337,8 +338,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 
 		result := applyFacts(t, pool, engine)(id, ownersPlan(t, member.Key, member.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer")))
 
-		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, &intake.Refusal{Status: 409, Code: "TREE_LINGERING",
-			Message: "the tree LEGION-208 is lingering after it left the workflow, so version 1 of the owner's plan of LEGION-209 changed nothing"}, before)
+		assertPlanRefusal(t, pool, engine, member.Key, member.Generation, id, result, lingeringPlan(), before)
 	})
 }
 
@@ -558,9 +558,11 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 	})
 }
 
-// A version refused because its task ran leaves its fact unspent, so the owner's same call after
-// stop_task, which the route names by the same id (issue, generation, document, version), applies
-// and is taken, rather than answered as a duplicate that took nothing.
+// A version refused because its task ran is judged again when the owner's same call comes after
+// stop_task, which the route names by the same id (issue, generation, document, version): the
+// workflow judges every PlanGiven whatever its id's mark (intake's factApplies), so it is taken,
+// rather than answered as a duplicate that took nothing. The refusal leaves the id unmarked, which
+// only a release before reads.
 func TestARefusedVersionIsTakenWhenGivenAgainAfterTheStop(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)

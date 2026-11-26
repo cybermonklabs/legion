@@ -39,14 +39,16 @@ func narrowStreamAsTheQuiesce(t *testing.T, js nats.JetStreamContext) nats.Strea
 	return before
 }
 
-// awaitDeployedCapture waits, at most 15 s, until client's last read of the deployed subjects
-// answers captures for topic: the control that a publish after it is judged on the list the test
-// just deployed, and not on the one the client held before.
+// awaitDeployedCapture waits until client's last read of the deployed subjects answers captures
+// for topic: the control that a publish after it is judged on the list the test just deployed, and
+// not on the one the client held before.
 func awaitDeployedCapture(t *testing.T, client *Client, topic string, captures bool) {
 	t.Helper()
-	testwait.WithinPolling(t, testwait.Bounded(t, 15*time.Second, time.Second), 20*time.Millisecond,
-		"the client to read a deployed list where "+topic+" is captured="+strconv.FormatBool(captures),
-		func() bool { return client.DeployedStreamCaptures(topic) == captures })
+	testwait.Until(t, "the client to read a deployed list where "+topic+" is captured="+strconv.FormatBool(captures),
+		func() (bool, bool) {
+			read := client.DeployedStreamCaptures(topic)
+			return read, read == captures
+		})
 }
 
 // A topic this build stores, which the deployed stream does not capture, is sent nowhere: each of
@@ -153,7 +155,7 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 		if _, err := client.PublishAckWithin(context.Background(), envelope(topic, "control-"+topic)); err != nil {
 			t.Fatalf("the control publish of %s: %v", topic, err)
 		}
-		msg, err := received.NextMsg(5 * time.Second)
+		msg, err := received.NextMsgWithContext(testwait.Context(t))
 		if err != nil {
 			t.Fatalf("the subscriber received nothing of the control publish of %s: %v", topic, err)
 		}

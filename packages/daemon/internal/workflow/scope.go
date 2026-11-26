@@ -73,12 +73,15 @@ func scopeOn(issue record.Issue, stored *record.StoredPlan, task string) (TaskSc
 }
 
 // scopeStanding is where the copy of issue read for w's task, of stored, stands: the task's own
-// phase and hold (taskStanding), with three readings of the issue's own standing kept over it.
+// phase and hold (taskStanding), with four readings of the issue's own standing kept over it.
 //   - A running task whose issue is held from that task's phase stands held, with the issue's hold:
 //     a hold the release before wrote on the issue alone, beside its running task, which
 //     record.RunningOf reads as that step held.
 //   - A root that waits on a person before its first step stands in awaiting_person over the
 //     admitted of a task at no act.
+//   - A task standing at the phase of the start a wait on the issue's open Dispatch children holds
+//     (record.ChildrenWait.Start) stands in awaiting_children, as the issue does: the wait holds
+//     that task's start, and an act on it is refused with the wait's own code (waitingRefusal).
 //   - A task waiting at no act while no other task of the plan has started stands where the issue
 //     stands: plan rows written while the issue already stood in a step, before any move named a
 //     place (Walk.placeIn reads such a task so). A task that waits while another task has run,
@@ -91,6 +94,8 @@ func scopeStanding(issue record.Issue, w Walk, stored *record.StoredPlan) (phase
 		return issue.Phase, issue.Hold
 	case at == phase.Admitted && issue.Phase == phase.AwaitingPerson:
 		return issue.Phase, issue.Hold
+	case issue.Phase == phase.AwaitingChildren && issue.ChildrenWait != nil && at == issue.ChildrenWait.Start:
+		return issue.Phase, nil
 	case w.State == record.TaskWaiting && w.Place.Kind == "" && !otherTaskStarted(stored, w.Task):
 		return issue.Phase, issue.Hold
 	}
@@ -593,20 +598,41 @@ func planWithWalk(stored *record.StoredPlan, w Walk) *record.StoredPlan {
 }
 
 // derivedStanding is where an issue standing as issue stands for its tasks, the walk of each
-// (issuePhaseOfTasks), with the two readings of the issue's own standing kept over it: a root that
-// waits on a person before its first step stands in awaiting_person over admitted, and, where
-// keepsHold says issue's hold is one the release before wrote on the issue alone beside its
-// running task (heldBefore, heldBeforeOver), that hold stands where the tasks derive none and
-// put the issue in the phase it is from.
+// (issuePhaseOfTasks), with the three readings of the issue's own standing kept over it: a root
+// that waits on a person before its first step stands in awaiting_person over admitted; a parent
+// that waits on its open Dispatch children stands in awaiting_children over the phase of the start
+// it holds, where a task of it stands (waitsOnChildren), since no hold and no task state records
+// that wait (record.ChildrenWait); and, where keepsHold says issue's hold is one the release
+// before wrote on the issue alone beside its running task (heldBefore, heldBeforeOver), that hold
+// stands where the tasks derive none and put the issue in the phase it is from.
 func derivedStanding(issue record.Issue, tasks []Walk, keepsHold bool) (phase.Phase, *record.Hold) {
 	at, hold := issuePhaseOfTasks(tasks)
 	switch {
 	case at == phase.Admitted && issue.Phase == phase.AwaitingPerson:
 		return issue.Phase, nil
+	case waitsOnChildren(issue, tasks):
+		return issue.Phase, nil
 	case keepsHold && hold == nil && issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == at:
 		return issue.Phase, issue.Hold
 	}
 	return at, hold
+}
+
+// waitsOnChildren says whether issue waits on its open Dispatch children over the start it holds
+// (record.ChildrenWait, dispatch://INFRA-3320 R9): it stands in awaiting_children, it holds a
+// start, and a task of it stands at the phase of that start, where the move into the wait left it
+// (awaitChildren). The wait is the issue's own, as a root's wait on a person is: no hold names it
+// and no task state records it, so the issue's standing keeps it over the phase its tasks derive.
+func waitsOnChildren(issue record.Issue, tasks []Walk) bool {
+	if issue.Phase != phase.AwaitingChildren || issue.ChildrenWait == nil {
+		return false
+	}
+	for _, w := range tasks {
+		if issuePhaseOf(w, w.Place, w.State) == issue.ChildrenWait.Start {
+			return true
+		}
+	}
+	return false
 }
 
 // heldBefore says whether s's copy holds a hold the release before wrote on the issue alone beside

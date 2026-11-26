@@ -65,7 +65,7 @@ func TestOwnerStepsLive(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (newOwnerStepsLive).
 	l := newOwnerStepsLive(t, "scripts/e2e/owner-steps.sh", 5)
 	planned, byDefault, rowsDeleted, unplanned, anyOrder := l.issues[0].key, l.issues[1].key, l.issues[2].key, l.issues[3].key, l.issues[4].key
-	l.note("Dispatch %s (database of its own), project %s mapped to %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",
+	l.note("Dispatch %s (database of its own), project %s whose default repository is %s, issues %s, %s, %s, %s and %s; daemon at dispatch_url %s",
 		l.dispatch.base, l.cfg.Project, liveRepo, planned, byDefault, rowsDeleted, unplanned, anyOrder, l.cfg.DispatchURL)
 	var plan string
 	l.check("plan-written", func() {

@@ -339,12 +339,12 @@ export const PHASE_OP_SENTENCES = {
     "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
     "A held issue names in `heldFrom` the phase the hold took it out of, and in `holdReason` why it is held when its hold has a reason: " +
     "`escalated` (its architect sent it to the controller), `task-stopped` (its owner stopped its task with stop_task) or `children` (it " +
-    "waits, before its retro, for the issues beneath it). A failed claim carries `failure`: the " +
+    "waits, before its retro, for the issues beneath it, the roots that rest on its approval or its open Dispatch children). A failed claim carries `failure`: the " +
     "`cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and " +
     "`attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts " +
     "that phase again, as the architect's retry_or_escalate with retry does, but a root held `task-stopped` starts its task again at its " +
     "first step (a task that never started waits for its gate and its line, as any task does before its first step), and a root held " +
-    "`children` stays held until the issues beneath it close. ",
+    "`children` stays held until none of those holds it any longer. ",
   readReleaseRecords:
     "read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: " +
     "every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no " +
@@ -439,7 +439,10 @@ export function legionToolDescription(host: {
     "daemon takes your answer for that round alone. The reviewer creates no commit and pushes nothing, so each commit " +
     "and push this description names is not its own, and the merger pushes the merge of the base it made. Push every commit you want kept to the issue branch " +
     "first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made " +
-    "before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message " +
+    "before you answer. The daemon replaces the pod and its disk when the round ends. A kept volume stays with its Sandbox " +
+    "through the round, but a reset or a change of its disk shape still deletes it, so push first there too. If the daemon " +
+    "finds work that origin does not hold, it keeps the pod and says so; push that work. A round over a drift that breaks the " +
+    "pod replaces the pod anyway. The round ends at the moment the message " +
     "names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running " +
     "subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background " +
     "job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. " +

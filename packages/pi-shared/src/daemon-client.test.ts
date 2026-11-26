@@ -389,6 +389,11 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly issueStatus: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
+    readonly stopAgent: (body: object) => Promise<unknown>;
+    readonly retryAgent: (body: object) => Promise<unknown>;
+    readonly suspendAgent: (body: object) => Promise<unknown>;
+    readonly resumeAgent: (body: object) => Promise<unknown>;
+    readonly issuePodUpdate: (body: object) => Promise<unknown>;
     readonly projectPause: (body: object) => Promise<unknown>;
     readonly projectResume: (body: object) => Promise<unknown>;
     readonly intakeReplay: (body: object) => Promise<unknown>;
@@ -459,6 +464,41 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
       "compact.json",
     ],
+    // Four of the six agent actions (stop, retry, suspend, resume) take the body of the other
+    // two, the recoveries, and answer the claim's state after each, with who holds a suspension
+    // over the agent.
+    [
+      "stopAgent",
+      "/legion/v1/agents/stop",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-stop.json",
+    ],
+    [
+      "retryAgent",
+      "/legion/v1/agents/retry",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-retry.json",
+    ],
+    [
+      "suspendAgent",
+      "/legion/v1/agents/suspend",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-suspend.json",
+    ],
+    [
+      "resumeAgent",
+      "/legion/v1/agents/resume",
+      { grantId: "grant-208", issue: "LEGION-209", role: "implementer" },
+      "agent-resume.json",
+    ],
+    // The controller's replace_pod: the daemon's update round over the issue's pod, its reasons,
+    // and whether this request opened it.
+    [
+      "issuePodUpdate",
+      "/legion/v1/issues/pod-update",
+      { grantId: "grant-208", issue: "LEGION-209" },
+      "issue-pod-update.json",
+    ],
     // The controller's pause and resume name no project: the daemon pauses its own. Each
     // answers the pause as the daemon's golden wrote it, the resume with how many held rows it
     // let out.
@@ -497,6 +537,23 @@ test("posts every Stage 3 workflow request through its matching route", async ()
         issue: "LEGION-208",
         artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
         version: 7,
+      },
+      "gate-register.json",
+    ],
+    // A registration on an ancestor's basis carries the ancestor's document id, its version and
+    // the architect's reason beside the root's own document (entry 20261125161152 (gate-basis)).
+    [
+      "gateRegister",
+      "/legion/v1/gates/register",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-208",
+        artifactId: "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+        version: 4,
+        step: "spec",
+        basisArtifactId: "6f4a2c8e-1b3d-4f5a-8c7e-9d0b1a2c3e4f",
+        basisVersion: 3,
+        reason: "LEGION-208's checks serve P2 of LEGION-100's approved spec.",
       },
       "gate-register.json",
     ],

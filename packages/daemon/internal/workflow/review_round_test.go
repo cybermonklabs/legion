@@ -142,7 +142,8 @@ func TestEachTaskOfTheReviewerInReviewingEndsNamingItsEntry(t *testing.T) {
 					if err != nil {
 						return err
 					}
-					return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
+					_, err = engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer, false)
+					return err
 				})
 				return pool, resume
 			},
@@ -528,8 +529,8 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		return WakeTask(kind, fmt.Sprintf("the backstop armed for LEGION-208's %s came due", role), StoppedByRelease)
 	}
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
-		released, found, err := engine.cfg.Pods.ReleasedClaimByToken(ctx, tx, token)
-		if err != nil || !found {
+		released, found, err := engine.cfg.Pods.ClaimByToken(ctx, tx, token)
+		if err != nil || !found || !released.Released() {
 			return fmt.Errorf("read the released %s claim: found %t, %v", role, found, err)
 		}
 		woken, err := engine.wakeReleased(ctx, tx, released, kind, "its detail", engine.now())

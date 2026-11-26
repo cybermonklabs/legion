@@ -377,13 +377,16 @@ type execer interface {
 // proof.SignLauncher proof presents, and exactly what AuthenticateLauncher's issuance-chain
 // re-verification checks against recordID's approved credential-request record. recordID may be
 // "" only for a credential with no backing record at all (test fixtures unrelated to the
-// machine-login flow); AuthenticateLauncher refuses such a credential outright.
+// machine-login flow); AuthenticateLauncher refuses such a credential outright. approver is the
+// account that approved it (migration 0047), which a revoke of that account, once it no longer
+// holds the operator's address, ends it by; the zero value records none, as an approval an
+// older Dispatch relayed carries none.
 //
 // It runs on db, which is the caller's own transaction — machine.Service.ApplyDecision's own
 // approval commit, so a crash between minting and recording its decision rolls back both together
 // instead of leaving an orphaned, unrecoverable credential — or, for a test fixture, the pool. It
 // refuses a key a live read token is bound to first (keyBindsReadToken).
-func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Querier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
+func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Querier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
 	if operator != nil {
 		operator = new(record.CanonicalLogin(*operator))
 	}
@@ -391,8 +394,9 @@ func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.Quer
 		return uuid.Nil, err
 	}
 	id := uuid.New()
-	_, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires)
+	_, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at, approver_issuer, approver_subject)
+		values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires, nullable(approver.Issuer), nullable(approver.Subject))
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -422,11 +426,11 @@ func keyBindsReadToken(ctx context.Context, db oauthstore.Querier, thumbprint st
 	return nil
 }
 
-// MintLauncherCredentialTx mints a person's launcher credential, operating operator's machine,
-// inside tx, joined to the caller's own transaction — machine.Service.ApplyDecision's own approval
-// commit.
-func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, operator, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
-	return s.mintLauncherCredential(ctx, tx, &operator, nil, host, thumbprint, jwk, recordID, expires)
+// MintLauncherCredentialTx mints a person's launcher credential, operating operator's machine and
+// approved by the account approver, inside tx, joined to the caller's own transaction —
+// machine.Service.ApplyDecision's own approval commit.
+func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, operator, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time, approver store.IssuerSubject) (uuid.UUID, error) {
+	return s.mintLauncherCredential(ctx, tx, &operator, nil, host, thumbprint, jwk, recordID, expires, approver)
 }
 
 // TokenLogin is one verified token login, as IssueTokenLogin records it: the identity the token
@@ -2501,23 +2505,30 @@ func signInCredential(subject *string) bool {
 	return exchange.ReadSubject(*subject).Kind == exchange.SubjectSignIn
 }
 
-// liveCredentials is LiveCredentials, every service's login among them only when services is set.
-// It gives the statement two arrays: the subjects that BROKER_POD_OPERATORS maps to person ($3),
-// and every subject that the setting maps ($4). So one statement holds the whole rule. A
-// credential with no subject matches neither array, and the rule of an unmapped credential
-// decides it.
-func (s *Service) liveCredentials(ctx context.Context, person string, services bool) ([]LiveCredential, error) {
-	person = record.CanonicalLogin(person)
-	if person == "" || person == record.AnyoneApprover {
-		return nil, nil
-	}
-	mine, mapped := []string{}, make([]string, 0, len(s.PodOperators))
+// podAccounts answers the subjects BROKER_POD_OPERATORS maps to person, a login as
+// record.CanonicalLogin spells it (mine), and every subject it maps (mapped).
+func (s *Service) podAccounts(person string) (mine, mapped []string) {
+	mine, mapped = []string{}, make([]string, 0, len(s.PodOperators))
 	for subject := range s.PodOperators {
 		mapped = append(mapped, subject)
 		if s.PodOperator(&subject) == person {
 			mine = append(mine, subject)
 		}
 	}
+	return mine, mapped
+}
+
+// liveCredentials is LiveCredentials, every service's login among them only when services is set.
+// It gives the statement two arrays: the subjects that BROKER_POD_OPERATORS maps to person ($3),
+// and every subject that the setting maps ($4) (podAccounts). So one statement holds the whole
+// rule. A credential with no subject matches neither array, and the rule of an unmapped credential
+// decides it.
+func (s *Service) liveCredentials(ctx context.Context, person string, services bool) ([]LiveCredential, error) {
+	person = record.CanonicalLogin(person)
+	if person == "" || person == record.AnyoneApprover {
+		return nil, nil
+	}
+	mine, mapped := s.podAccounts(person)
 	// c.subject = any(...) is null for a credential with no subject, and coalesce reads that
 	// null as "not mapped". So a login a person approved, which has no subject, keeps the rule of
 	// an unmapped credential.
@@ -2651,7 +2662,7 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 	if revokedAt != nil {
 		return nil
 	}
-	if err := endCredential(ctx, tx, id, host, service, actor, "its machine login was revoked"); err != nil {
+	if _, err := endCredential(ctx, tx, id, host, service, actor, "its machine login was revoked"); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -2725,7 +2736,8 @@ func RevokeReusedCredential(ctx context.Context, tx pgx.Tx, id string) error {
 	if err != nil {
 		return err
 	}
-	return endCredential(ctx, tx, id, host, service, ReuseActor, "its machine login's refresh token was reused")
+	_, err = endCredential(ctx, tx, id, host, service, ReuseActor, "its machine login's refresh token was reused")
+	return err
 }
 
 // RevokePersonSignIn ends the sign-in id of person — the sign-in `agent-secrets login` made on
@@ -2752,31 +2764,81 @@ func (s *Service) RevokePersonSignIn(ctx context.Context, id, person, actor stri
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-	thumbprint, ended, err := store.RevokePersonSignInTx(ctx, tx, id, person)
+	_, ended, err := endSignIn(ctx, tx, id, person, actor, "the person revoked this machine's sign-in")
 	if err != nil {
 		return 0, err
 	}
-	if thumbprint != "" {
-		var credential, host string
-		var service *string
-		err := tx.QueryRow(ctx, `select id, host, service from launcher_credentials
-			where key_thumbprint = $1 and revoked_at is null for no key update`, thumbprint).Scan(&credential, &host, &service)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-		case err != nil:
-			return 0, err
-		default:
-			if err := endCredential(ctx, tx, credential, host, service, actor, "the person revoked this machine's sign-in"); err != nil {
-				return 0, err
-			}
-		}
-	}
 	return ended, tx.Commit(ctx)
+}
+
+// endSignIn ends sign-in id of person in tx and everything it holds, as RevokePersonSignIn
+// describes, writing actor and reason on every row it writes. It answers whether this call
+// ended it (false for a sign-in already revoked, which changes nothing) and how many live access
+// tokens ended with it: those its trades minted, and any other naming the credential it held.
+// An id no sign-in of that person has is store.ErrNoSignIn.
+func endSignIn(ctx context.Context, tx pgx.Tx, id, person, actor, reason string) (bool, int, error) {
+	thumbprint, ended, err := store.RevokePersonSignInTx(ctx, tx, id, person)
+	if err != nil || thumbprint == "" {
+		return false, 0, err
+	}
+	more, err := endKeyCredential(ctx, tx, thumbprint, nil, actor, reason)
+	if err != nil {
+		return false, 0, err
+	}
+	return true, ended + more, nil
+}
+
+// NoAccountSignInActor is the actor RecordPersonSignIn records when a trade ends a sign-in that
+// recorded no account: the broker, which cannot tell whose that sign-in was.
+const NoAccountSignInActor = "broker:sign-in-recording-no-account"
+
+// RecordPersonSignIn records a person's trade in tx (store.RecordPersonSignIn), the exchange's own
+// transaction, and, when that trade ended a sign-in from before migration 0047, which records no
+// account and so might have been any account's, ends the launcher credential that sign-in held and
+// every session it enrolled (endCredential), as revoking the sign-in does. The sessions another
+// account enrolled there would otherwise go on reading that account's secrets on this box after a
+// revoke of that account, which ends the sign-ins recording it or none and so no longer finds a
+// row recording this trade's. The trade then mints the sign-in's credential afresh
+// (oauth.Provider.personCredential), so the box enrols its sessions again once. The credential is
+// found by the box key's thumbprint and by the subject that names this person's sign-in on this
+// machine with this key (exchange.PersonSubject), which is the credential the sign-in's own trades
+// minted and no other credential that came to hold the key. Every refusal is store's, unchanged.
+func RecordPersonSignIn(ctx context.Context, tx pgx.Tx, in store.SignInTrade) error {
+	ended, err := store.RecordPersonSignIn(ctx, tx, in)
+	if err != nil || !ended {
+		return err
+	}
+	subject := exchange.PersonSubject(in.Person, in.MachineAccount, in.Thumbprint)
+	_, err = endKeyCredential(ctx, tx, in.Thumbprint, &subject, NoAccountSignInActor,
+		"a trade ended the sign-in that held it, which recorded no account")
+	return err
+}
+
+// endKeyCredential ends, in tx, the live launcher credential that holds the box key thumbprint and
+// everything it holds (endCredential), writing actor and reason on every row it writes, and answers
+// how many live access tokens ended with it: 0 when no live credential holds the key. subject, when
+// not nil, ends only the credential that subject names, and leaves one of any other subject that
+// holds the key. The row is read `for no key update`, which is the hold endCredential asks of its
+// caller.
+func endKeyCredential(ctx context.Context, tx pgx.Tx, thumbprint string, subject *string, actor, reason string) (int, error) {
+	var credential, host string
+	var service *string
+	err := tx.QueryRow(ctx, `select id, host, service from launcher_credentials
+		where key_thumbprint = $1 and ($2::text is null or subject = $2) and revoked_at is null for no key update`,
+		thumbprint, subject).Scan(&credential, &host, &service)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, nil
+	case err != nil:
+		return 0, err
+	}
+	return endCredential(ctx, tx, credential, host, service, actor, reason)
 }
 
 // endCredential revokes launcher credential id in tx, whose row the caller holds: it sets
 // revoked_at, ends its OAuth tokens, ends every enrollment it made that has not ended
 // (endEnrollment, reason), and writes one launcher_credential.revoked audit row, each as actor.
+// It answers how many live access tokens it ended.
 //
 // A person revoking a machine login, or their sign-in on a box, means every secret that login
 // reached, so each of its enrollments ends terminally: the grants are revoked and the pending
@@ -2785,31 +2847,34 @@ func (s *Service) RevokePersonSignIn(ctx context.Context, id, person, actor stri
 // and still holds its session's grants, and leaving them would let the next enrollment of that
 // session name, on a box the person has not revoked, adopt a grant the person has just taken
 // back.
-func endCredential(ctx context.Context, tx pgx.Tx, id, host string, service *string, actor, reason string) error {
+func endCredential(ctx context.Context, tx pgx.Tx, id, host string, service *string, actor, reason string) (int, error) {
 	if _, err := tx.Exec(ctx, `update launcher_credentials set revoked_at=now() where id=$1`, id); err != nil {
-		return err
+		return 0, err
 	}
 	// A device login's tokens name the credential, so its next refresh is refused too.
-	if err := oauthstore.EndCredential(ctx, tx, id); err != nil {
-		return err
+	tokens, err := oauthstore.EndCredential(ctx, tx, id)
+	if err != nil {
+		return 0, err
 	}
 	rows, err := tx.Query(ctx, `select id from enrollments where launcher_credential_id=$1 and (revoked_at is null or dormant_since is not null) order by id for update`, id)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	ended, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return err
+		return 0, err
 	}
 	for _, enrollment := range ended {
 		if _, err := endEnrollment(ctx, tx, enrollment, actor, "enrollment.revoked", reason, endTerminal); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	_, err = tx.Exec(ctx, `insert into audit (kind, actor, detail) values ('launcher_credential.revoked',$1,
+	if _, err := tx.Exec(ctx, `insert into audit (kind, actor, detail) values ('launcher_credential.revoked',$1,
 		jsonb_strip_nulls(jsonb_build_object('credential_id',$2::text,'host',$3::text,'service',$4::text,'enrollments',coalesce(to_jsonb($5::text[]),'[]'::jsonb))))`,
-		actor, id, host, service, ended)
-	return err
+		actor, id, host, service, ended); err != nil {
+		return 0, err
+	}
+	return tokens, nil
 }
 
 // Lookup answers proof.Verifier's Lookup callback. id comes from an untrusted proof's eid claim,

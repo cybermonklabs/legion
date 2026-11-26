@@ -143,7 +143,8 @@ func TestATaskNamesItsWorkingCopyItsStepAndTheReportsBeforeIt(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer)
+		_, err = engine.StartPromotedWorker(ctx, tx, s, claim.RoleReviewer, false)
+		return err
 	})
 
 	resumed := daemonsLines(t, "resumed reviewer", withoutRoundsSentences(t, pool, lastStart(t, pool, root.Key, claim.RoleReviewer)), text)
@@ -342,7 +343,8 @@ func TestATaskOfAnIssueWithNoPlanRowsIsTodaysTextWithItsWorkingCopy(t *testing.T
 				if err != nil {
 					return err
 				}
-				return tc.engine.StartPromotedWorker(ctx, tx, s, claim.RoleTester)
+				_, err = tc.engine.StartPromotedWorker(ctx, tx, s, claim.RoleTester, false)
+				return err
 			})
 
 			if resumed, want := lastStart(t, pool, root.Key, claim.RoleTester), "Continue root. Issue: LEGION-208. Phase: testing."+tc.working+

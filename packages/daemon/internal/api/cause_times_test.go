@@ -292,14 +292,17 @@ func TestAnOlderContractIsServedNoCauseTimes(t *testing.T) {
 		})
 	}
 
+	// A caller below causeTimesContract is below dispatchCredentialContract too, the one frozen row
+	// above it, and below each entry's band, so it is told of each of those rows, in the table's
+	// order: this band's line, the Dispatch credential's, then the line of each entry's band that
+	// found its keys on the state (narrowingsExpected). The state carries the keys each entry adds
+	// (carriedState), so the bands of the deployment roles, stranded token and tasks entries write
+	// their lines.
 	below := causeTimesContract - 1
-	_, narrowings := stateNarrowedStating(t, carriedState(t), statePodAddr+":41000", podClaims(0), below)
+	golden := carriedState(t)
+	_, narrowings := stateNarrowedStating(t, golden, statePodAddr+":41000", podClaims(0), below)
 	const dropped = "the claim views' lastDeathAt and lastStartFailureAt"
-	if len(narrowings) < 2 || narrowings[0].Dropped != dropped || narrowings[1].Dropped != "dispatchCredential" {
-		t.Errorf("the daemon wrote the narrowing lines %+v for a caller stating %d, want the cause-times row dropping %q and the Dispatch credential row dropping %q first",
-			narrowings, below, dropped, "dispatchCredential")
-	}
-	want := narrowingsExpected(carriedState(t), below)
+	want := narrowingsExpected(golden, below)
 	if len(want) < 5 || want[0] != dropped || want[1] != "dispatchCredential" {
 		t.Fatalf("a caller at %d expects the lines %v, want cause times and Dispatch credential first, followed by the registered state bands", below, want)
 	}

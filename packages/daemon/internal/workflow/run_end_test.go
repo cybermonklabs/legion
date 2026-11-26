@@ -85,6 +85,59 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 	}
 }
 
+// A move whose start an open Dispatch child holds (dispatch://INFRA-3320 R9) ends the step it
+// leaves as the move it holds would: the tester's pass passed, a request for changes failed. The
+// parent's wait in awaiting_children follows the step, and it runs no step of its own. With the
+// move's end named after the guard instead of before it, every one of these steps ends stopped.
+func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
+	pool := migratedPool(t)
+	engine := stepEngine(nil)
+	held := 0
+	for i, row := range Table {
+		from, _, _, runs := placeOnWalk(todaysWalk(), row.From)
+		if !runs {
+			continue
+		}
+		name := fmt.Sprintf("%s --%s--> %s", row.From, row.Trigger, row.To)
+		key, child := fmt.Sprintf("LEGION-%d", 600+i), fmt.Sprintf("LEGION-%d", 900+i)
+		issue := record.Issue{Key: key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: key, Project: "LEGION",
+			Title: name, Phase: row.From, Generation: 1, Status: PhaseStatus(row.From), Rank: "U", LastDispatchSeq: 1}
+		seedIssue(t, pool, issue)
+		seedTreeLifecycle(t, pool, key)
+		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: "sjawhar/legion", Number: 600 + i,
+			Branch: "legion/" + key, HeadSHA: "head", Failing: []string{}})
+		seedMirrorChild(t, pool, child, "todo", key)
+		target := phase.Phase("")
+		if row.Trigger == TriggerBackward {
+			target = row.To
+		}
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			pr, err := engine.store.PullRequest(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			return engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, "the held move")
+		})
+		if issueRecord(t, pool, key).Phase != phase.AwaitingChildren {
+			continue
+		}
+		held++
+		want, _ := endOf(row.Trigger)
+		var ends []string
+		for _, w := range writesAt(stepWrites(t, pool, key), from.Kind, from.Place) {
+			if isEnd(w) {
+				ends = append(ends, resultOf(w))
+			}
+		}
+		if !slices.Equal(ends, []string{string(want)}) {
+			t.Errorf("%s, held by the open child %s, wrote the ends %v of the step it left, want one, %s", name, child, ends, want)
+		}
+	}
+	if held < 8 {
+		t.Fatalf("an open child held %d moves of the table out of a step, want every move into planning through accepting", held)
+	}
+}
+
 // A hand-over fence an earlier linger of the tree left can stand beside a member whose merge waits
 // in the tree's linger now (record.Handover outlives its linger). It is that earlier linger's, so
 // it hands the member to no readmit: the unmerged close of the member's pull request after this

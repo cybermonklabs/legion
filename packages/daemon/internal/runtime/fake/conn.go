@@ -132,7 +132,7 @@ func (c *Conn) AdoptWorkingCopy(_ context.Context, id runtime.GitIdentity, branc
 	return c.failures["AdoptWorkingCopy"]
 }
 
-// Compact answers the daemon asking Oh My Pi to compact the session, recording what it asked
+// Compact answers the daemon asking Oh My Pi to shorten the session, recording what it asked
 // for. A gate HoldCompact opened makes the answer wait for the test to open it, or for the
 // caller's context: that is a compaction that takes its time, which the caller must still get
 // the real answer of.
@@ -187,9 +187,9 @@ func (c *Conn) HoldCompact() func() {
 	return sync.OnceFunc(func() { close(gate) })
 }
 
-// RefuseCompact makes every later Compact Oh My Pi refusing the compaction with reason — a
-// session too small, one already compacted — as the stream's connection answers `success:
-// false`; RefuseCompact("") clears it.
+// RefuseCompact makes every later Compact Oh My Pi refusing the handoff with reason — one asked
+// for in a turn, a session with nothing to hand off — as the stream's connection answers
+// `success: false`; RefuseCompact("") clears it.
 func (c *Conn) RefuseCompact(reason string) {
 	if reason == "" {
 		c.fail("Compact", nil)

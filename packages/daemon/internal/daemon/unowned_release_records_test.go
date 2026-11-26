@@ -107,7 +107,7 @@ func saysNoRoleComesBack(t *testing.T, logs *syncBuffer, line, why string) {
 // suspended by the operator, holding no process, and backdated with the rest of the pod. It is
 // the one suspension no daemon rule undoes (supervise.Claim.RuleMayResume), and the operator's
 // resume brings that role back into this very pod, so the rule keeps the pod for it
-// (workflow.IdleHoldUnownedOperatorSuspended).
+// (workflow.IdleHoldUnownedSuspensionHolds).
 func (r *idleRig) suspendedByOperator(t *testing.T) {
 	t.Helper()
 	if _, err := r.pool.Exec(context.Background(), `update claims set state = $2, suspended_by = $3,
@@ -234,12 +234,12 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 	})
 
 	// One pass per hold this rule can reach on a pod that stands, and what each pass records.
-	// Three of them are a pod standing past the quiet period with 3 CPU and 19 GiB held by
-	// something that is not work, and each is recorded under its own name, so a deployment
-	// reading the records can tell which of the three it is paying for. The other three are no
-	// such pod — one whose Sandbox is already gone, one whose release is already running, and
-	// one that is simply not quiet yet — and a row for any of them would say a pod was kept
-	// where nothing was kept (recordableHold).
+	// Three of them are a pod standing past the quiet period with its reservation (2 CPU and
+	// 8 GiB at the defaults) held by something that is not work, and each is recorded under its
+	// own name, so a deployment reading the records can tell which of the three it is paying for.
+	// The other three are no such pod — one whose Sandbox is already gone, one whose release is
+	// already running, and one that is simply not quiet yet — and a row for any of them would say
+	// a pod was kept where nothing was kept (recordableHold).
 	//
 	// Every row reads the pass's own line as well, because the counts are where a hold the
 	// records do not carry is still readable: a pass that keeps a pod and records nothing is
@@ -258,7 +258,7 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 			},
 			{
 				name: "an operator's own suspension holds a claim of the pod",
-				hold: workflow.IdleHoldUnownedOperatorSuspended, recorded: true,
+				hold: workflow.IdleHoldUnownedSuspensionHolds, recorded: true,
 				seed: func(t *testing.T, rig *idleRig) { rig.suspendedByOperator(t) },
 			},
 			{

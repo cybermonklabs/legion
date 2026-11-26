@@ -38,6 +38,8 @@ func (c slowWrites) Write(b []byte) (int, error) {
 // as served, and a lone loop loses that period, the defect
 // TestExclusiveCountsALateTickInThePeriodItWasDueIn covers for a delay before the query.
 func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *testing.T) {
+	// Not parallel: its second, unstalled read must run before the boundary 50 ms after its due
+	// time; load could push it past that boundary and pass a gate that buckets by when the read ran.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const name = "suggestion-outcomes"
@@ -63,7 +65,7 @@ func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *test
 	due := beforeNextBoundary(t, period, early)
 	time.Sleep(time.Until(due))
 	slow.Store(true)
-	ran := duty.Exclusive(ctx, leases, name, due, period, func(context.Context) {})
+	ran := duty.Exclusive(ctx, nil, leases, name, due, period, func(context.Context) {})
 	slow.Store(false)
 	if !ran {
 		t.Fatal("the first tick did not run, so this row measures nothing")
@@ -71,7 +73,7 @@ func TestExclusiveCountsATickStalledAfterItsMeasureInThePeriodItWasDueIn(t *test
 	next := due.Add(period)
 	time.Sleep(time.Until(next))
 	ran = false
-	if !duty.Exclusive(ctx, leases, name, next, period, func(context.Context) { ran = true }) || !ran {
+	if !duty.Exclusive(ctx, nil, leases, name, next, period, func(context.Context) { ran = true }) || !ran {
 		t.Errorf("the tick due one period after a stalled one was refused (first due %v before a boundary, its writes stalled %v each); a lone loop lost that period",
 			early, delay)
 	}

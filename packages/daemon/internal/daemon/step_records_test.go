@@ -394,19 +394,23 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 
 // rollBackOwnersPlans runs the way back of the migration that adds the plan rows
 // (inFlightPlanMigration) as an operator runs it with the daemon stopped: the statements its
-// header gives from `begin;` to `commit;`, with <PROJECT> the run's project. A rollback of the
-// release whose owner's plan picks the steps to any release before it takes that way back too
-// (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the steps"), which drops
-// the plan's tables and columns, so the roll forward creates them again empty. Before it, newest
-// first, it takes the way back of each later migration that builds on the plan's tables
-// (buildsOnPlanTables), as a rollback past those releases does: the plan's way back drops the
-// tables they altered or read and leaves their version rows standing, so a roll forward would
-// apply none of them again and the plan's tables would come back without their columns. The name
-// of each step's agent (planStepAgentMigration) is one of them: it adds a column to plan_steps,
-// and left recorded, its version would keep the roll forward from adding the column to the
-// plan_steps it creates again, and every later write of a plan would fail. The pull requests by
-// task (20261122122826) is another: it alters no plan table, but its way back reads plan_tasks to
-// keep each issue's merge row, so it runs while that table stands.
+// header gives from `begin;` to `commit;` (headerWayBack), with <PROJECT> the run's project. Each
+// way back here is read so, and not by migrations.WayBack, which reads the last paragraph of a
+// header alone: the header of the name of each step's agent gives its way back before prose of its
+// own. A rollback of the release whose owner's plan picks the steps to any release before it takes
+// that way back too (docs/kubernetes.md, "Rolling back the release whose owner's plan picks the
+// steps"), which drops the plan's tables and columns, so the roll forward creates them again
+// empty. Before it, newest first, it takes the way back of each later migration that builds on the
+// plan's tables (buildsOnPlanTables), as a rollback past those releases does: the plan's way back
+// drops the tables they altered or read and leaves their version rows standing, so a roll forward
+// would apply none of them again and the plan's tables would come back without their columns. The
+// name of each step's agent (planStepAgentMigration) is one of them: it adds a column to
+// plan_steps, and left recorded, its version would keep the roll forward from adding the column to
+// the plan_steps it creates again, and every later write of a plan would fail. The givers of a plan
+// version (the migration whose name ends _plan_earlier_givers.up.sql) is another: it adds a column
+// to issue_plans, and the guide allows its way back before or after the plan's. The pull requests
+// by task (20261122122826) is a third: it alters no plan table, but its way back reads plan_tasks
+// to keep each issue's merge row, so it runs while that table stands.
 func (r *stepRecordsRig) rollBackOwnersPlans() {
 	r.t.Helper()
 	all, err := migrations.All()

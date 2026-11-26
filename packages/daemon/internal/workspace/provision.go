@@ -330,9 +330,9 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 // would case differently — is in no layout this inverts, and is refused rather than guessed at.
 //
 // It reads no file and is the one inverse of Location the daemon keeps: located asks it whether
-// the pair it was handed is a workspace Location names, and WorkspaceOf (gitworktree.go) asks it
-// for the clone of the directory a process stands in. A caller's own refusals — the derivation's
-// absolute path among them — stay with that caller.
+// the pair it was handed is a workspace Location names, and layoutWorkspace asks it for the clone
+// of a directory a process stands in. A caller's own refusals — the derivation's absolute path
+// among them — stay with that caller.
 func locationOf(dir string) (Workspace, error) {
 	stateDir := stateDirOf(dir)
 	owner, name := filepath.Base(filepath.Dir(filepath.Dir(dir))), filepath.Base(filepath.Dir(dir))
@@ -348,6 +348,23 @@ func locationOf(dir string) (Workspace, error) {
 		return Workspace{}, fmt.Errorf("the workspace of %s under %s lies at %s", repository, stateDir, want.Dir)
 	}
 	return want, nil
+}
+
+// layoutWorkspace is the workspace at dir, cleaned, with the clone its place in the layout derives
+// (locationOf), from dir's path and from nothing inside dir: the derivation that WorkspaceOf
+// (gitworktree.go) and GuardJJ (config.go) both make for a directory a process other than the
+// daemon's own runner stands in. A dir that is no absolute path, or that the layout does not
+// account for, is refused, naming it.
+func layoutWorkspace(dir string) (Workspace, error) {
+	dir = filepath.Clean(dir)
+	if !filepath.IsAbs(dir) {
+		return Workspace{}, fmt.Errorf("the workspace %s is no absolute path, so the clone it belongs to cannot be derived", dir)
+	}
+	workspace, err := locationOf(dir)
+	if err != nil {
+		return Workspace{}, fmt.Errorf("the workspace %s is in no state directory's workspace layout: %w", dir, err)
+	}
+	return workspace, nil
 }
 
 // located is whether workspace's directory and clone are the pair Location derives for the issue

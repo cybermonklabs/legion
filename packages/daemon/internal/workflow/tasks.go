@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -68,8 +67,9 @@ func tasksWaitingOn(stored *record.StoredPlan, task string) []string {
 //
 // A move into its first step does what any move into a step does (transition): a first step whose
 // role the deployment no longer defines starts no role, and the task stops where it stands
-// (stopLostRole); a first step of the owner's acceptance starts its step under the agent it names
-// (startNamedStep); and the merge forward follows the start (mergeForwardOnEntry). At the gate's
+// (stopLostRole); a first step of the owner's acceptance, whose role is the architect, starts its
+// step under the agent it names, which the start itself does (start, startStandingStep); and the
+// merge forward follows the start (mergeForwardOnEntry). At the gate's
 // opening (trigger TriggerGateOpened) the run's plan node is written after the first task's
 // status, so the rows read status, node, start for every plan, as the one task of a plan of one
 // always wrote them. The journal names the task only where the plan holds a choice of tasks
@@ -164,15 +164,8 @@ func (e *Engine) startReady(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		view := s.issue
 		if err := e.start(ctx, tx, s, role, readPull(pr), func(at Standing) string {
 			return task(view, at, record.PhaseRow{}, "")
-		}, false); err != nil {
+		}, from, false); err != nil {
 			return record.Issue{}, err
-		}
-		if steps[0] == phase.Accepting {
-			if step, ok := standingStep(s.walk, s.issue); ok {
-				if err := e.startNamedStep(ctx, tx, s, step); err != nil {
-					return record.Issue{}, err
-				}
-			}
 		}
 		if err := e.mergeForwardOnEntry(ctx, tx, s, pr); err != nil {
 			return record.Issue{}, err

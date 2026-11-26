@@ -93,6 +93,11 @@ type Config struct {
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
 	LeakCheckDir string
+	// Workspace is the issue workspace the launcher reads when the daemon asks (readWorkspace); ""
+	// is the launcher's own working directory, which the pod sets to the issue's workspace
+	// (internal/runtime/sandbox's rolesDirLauncher, WorkingDir). A test names a workspace of its
+	// own.
+	Workspace string
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -386,11 +391,12 @@ func (m *manager) logf(format string, args ...any) {
 }
 
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
-// state, then start, stop and leak-check commands until the connection ends. The hello
-// names the launcher's leak-check pin and whether this process has installed it, so the daemon
-// pushes the check only to a launcher that still needs it. It also says that this launcher looks a
-// session named by its id alone up in the session table (resumesBySession, which start's lookup
-// serves): the daemon names a session that way only to a launcher whose hello said so. The
+// state, then start, stop, leak-check and workspace-read commands until the connection ends. The
+// hello names the launcher's leak-check pin and whether this process has installed it, so the
+// daemon pushes the check only to a launcher that still needs it. It also says that this launcher
+// looks a session named by its id alone up in the session table (resumesBySession, which start's
+// lookup serves), and that it reads the issue workspace (readsWorkspace, readWorkspace): the
+// daemon names a session that way, or asks for the read, only of a launcher whose hello said so. The
 // acknowledgement is logged as one line, so a launcher the daemon accepted reads apart from one
 // still dialing. The memory guard settings it carries, or their absence, go to the pod's guard,
 // and what it carries decides whether the kill reports of this role's processes go on this
@@ -407,7 +413,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	writer := shimwire.NewWriter(conn)
 	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID, CredentialWait: true,
-		ResumesBySession: true,
+		ResumesBySession: true, ReadsWorkspace: true,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
 	if err := writer.WriteFrame(hello); err != nil {
@@ -476,6 +482,11 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			answer = m.stop(command)
 		case shimwire.LauncherLeakCheck:
 			answer = m.check.receive(ctx, command, m.logf)
+		case shimwire.WorkspaceWork:
+			// The read answers on this connection when it is done, from a goroutine of its own,
+			// so this role's starts and stops do not wait behind jj (readWorkspace).
+			go m.readWorkspace(ctx, writer, command)
+			continue
 		default:
 			return fmt.Errorf("command: got %T", frame)
 		}
@@ -1053,7 +1064,9 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
 // itself in the container's own namespaces, writing to the container's stdout and stderr
 // themselves (cfg.Stdout and cfg.Stderr, never the launcher's own writer, which is no file), so
-// the shim's descriptors are the container's files and no pipe through the launcher.
+// the shim's descriptors are the container's files and no pipe through the launcher. There the
+// shim is told to reap its own orphans (reapingShim); role-init's shim never is, since role-init
+// keeps that shim in role-init's own process group (runRoleShim).
 func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
@@ -1066,11 +1079,30 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 		process.output = []io.Writer{stdout, stderr}
 		return process, nil
 	}
-	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
+	argv := reapingShim(start.Argv)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = env
 	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, m.cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
+}
+
+// reapOrphansFlag is the flag that makes `legion worker-shim` the child subreaper of everything it
+// starts, reaping their orphans itself (internal/shim's Config.ReapOrphans).
+const reapOrphansFlag = "--" + shimwire.ReapOrphansFlag
+
+// reapingShim is argv with reapOrphansFlag after `legion worker-shim`, where argv runs the shim,
+// and argv as it is otherwise. The controller pod's single-role form starts the shim as this
+// process's own child, in a process group of the shim's own, and this process, the container's
+// PID 1, is in another: an orphan of the shim's group that PID 1 reaped would be reaped by a
+// parent outside that group, which under the cluster's gVisor takes one from the count that keeps
+// the group from reading as orphaned (internal/shim's Config.ReapOrphans says the whole of it).
+// With the flag such orphans come to the shim, in their own group, and the shim reaps them.
+func reapingShim(argv []string) []string {
+	if len(argv) < 2 || argv[1] != shimArgument {
+		return argv
+	}
+	return slices.Concat(argv[:2], []string{reapOrphansFlag}, argv[2:])
 }
 
 // wait reports the generation's exit once its process is gone. A role's exit is the shim's own:

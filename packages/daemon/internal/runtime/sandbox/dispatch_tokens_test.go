@@ -2,12 +2,14 @@ package sandbox
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The two counts a deployment under dispatch_token_broker reads before it removes
@@ -88,37 +90,36 @@ func adoptedAndObserved(t *testing.T, g *rig, r *Runtime, locs ...runtime.Locato
 	return observations
 }
 
-// replacedByItsRound ends loc's pod as its update round does (ReplacePod) and waits for the Gone
-// that pod's end is observed as, which lets loc's process go from the watch.
+// replacedByItsRound ends loc's pod as its update round does (ReplacePod) and waits, until the test
+// binary's deadline (testwait.Context), for the Gone that pod's end is observed as, which lets
+// loc's process go from the watch: beside the package's other parallel tests a loaded machine may
+// take the watch longer than any fixed span to see it.
 func replacedByItsRound(t *testing.T, g *rig, r *Runtime, observations <-chan runtime.Observation, loc runtime.Locator) {
 	t.Helper()
 	if err := r.ReplacePod(g.ctx, runtime.Known{Claim: loc.Claim, Locator: &loc}, stillDue); err != nil {
 		t.Fatalf("ReplacePod %s: %v", loc.Claim, err)
 	}
-	deadline := time.After(time.Second)
+	ended := testwait.Context(t)
 	for {
 		select {
 		case obs := <-observations:
 			if obs.Locator.Claim == loc.Claim && obs.Kind == runtime.Gone {
 				return
 			}
-		case <-deadline:
-			t.Fatalf("no Gone of %s within a second of its pod's replacement", loc.Claim)
+		case <-ended.Done():
+			t.Fatalf("no Gone of %s before the test binary's deadline after its pod's replacement", loc.Claim)
 		}
 	}
 }
 
-// liveLaunches waits a second for r's count of live launches carrying a Dispatch token to reach
-// want, failing the test with the count it last read.
+// liveLaunches waits, until the test binary's deadline (testwait.Eventually), for r's count of live
+// launches carrying a Dispatch token to reach want; a failure names the count the wait began at.
 func liveLaunches(t *testing.T, r *Runtime, want int, when string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for live := r.DispatchTokens().LiveLaunches; live != want; live = r.DispatchTokens().LiveLaunches {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s the live launches carrying a Dispatch token number %d, want %d", when, live, want)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	at := r.DispatchTokens().LiveLaunches
+	testwait.Eventually(t, fmt.Sprintf("%s the live launches carrying a Dispatch token to number %d (%d when the wait began)", when, want, at), func() bool {
+		return r.DispatchTokens().LiveLaunches == want
+	})
 }
 
 // logged is every record of logs written with msg, each decoded whole.
@@ -147,6 +148,7 @@ func logged(t *testing.T, logs *lockedLog, msg string) []map[string]any {
 // still run, and none of its own boot's transition launches; replacing one pod by its update round
 // lets its process go, and the count falls to 1, then, with the other, to 0.
 func TestTheDispatchTokenCountsFollowTheLaunches(t *testing.T) {
+	t.Parallel()
 	g, tester, implementer := beforeTheBroker(t)
 	logs := &lockedLog{}
 	r2 := restartedUnder(t, g, func(o *Options) {
@@ -231,6 +233,7 @@ func rewriteRecord(t *testing.T, g *rig, loc runtime.Locator, edit func(map[stri
 // which gave every launch the token while Dispatch was configured, so it counts; one recorded as
 // carrying none does not.
 func TestARestartCountsGenerationsAnEarlierDaemonStarted(t *testing.T) {
+	t.Parallel()
 	g, tester, implementer := beforeTheBroker(t)
 	rewriteRecord(t, g, tester, func(record map[string]any) { delete(record, "dispatchToken") })
 	rewriteRecord(t, g, implementer, func(record map[string]any) { record["dispatchToken"] = false })

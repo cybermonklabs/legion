@@ -281,8 +281,9 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 // under) and it holds no task its worker has not taken yet (holdsUntakenTask, the reconcile's other
 // guard). A claim the start reaches that holds such a task gets no start until a turn takes it, so
 // its news waits for that turn (workflow.NewsWaitsForTask). Otherwise by the next start of its
-// phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, or one
-// that retired, failed, or an operator suspended, since the start that revives it carries the news.
+// phase: a claim behind its phase's current entry, owed that entry's start, no claim at all, one
+// that retired or failed, or one a suspension that holds (the operator's or the controller's) is
+// over, since the start that brings its agent back carries the news.
 func holderTold(run record.RoleRun, entry int64) workflow.NewsState {
 	switch {
 	case !recordedClaimTakesNews(run.Claim, entry):
@@ -337,13 +338,14 @@ func holdsUntakenTask(held *record.RoleClaim) bool {
 // carries the news — a root's architect among them, whose start of an entry carries its summary
 // as a phase worker's carries its news (dispatch://INFRA-2614); it has not ended (claimEnded),
 // since a failed or retired claim is revived by its phase's own repair, whose start carries the
-// news; and no operator holds it suspended (operatorHolds). A claim an idle pod release suspended
-// takes the news, and the start that carries it wakes the claim as any start wakes one. Both
-// readers state it through this: the reconcile and the architect's summary over the claim the
-// record holds (recordedClaimTakesNews), and the start over the claim its machine holds
-// (newsOnlyRefusal).
-func newsClaimTakes(given, entry int64, state supervise.ClaimState, operatorHolds bool) bool {
-	return given == entry && !claimEnded(state) && !operatorHolds
+// news; and no suspension that holds is over its agent (suspensionHolds): the operator's or the
+// controller's (supervise.SuspendSource.Holds), which no start the daemon queues gets past. A
+// claim an idle pod release suspended takes the news, and the start that carries it
+// wakes the claim as any start wakes one. Both readers state it through this: the reconcile and
+// the architect's summary over the claim the record holds (recordedClaimTakesNews), and the start
+// over the claim its machine holds (newsOnlyRefusal).
+func newsClaimTakes(given, entry int64, state supervise.ClaimState, suspensionHolds bool) bool {
+	return given == entry && !claimEnded(state) && !suspensionHolds
 }
 
 // recordedClaimTakesNews is newsClaimTakes over a claim as the record holds it (record.RoleClaim),
@@ -352,8 +354,8 @@ func recordedClaimTakesNews(held *record.RoleClaim, entry int64) bool {
 	if held == nil {
 		return false
 	}
-	operator := held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByOperator
-	return newsClaimTakes(held.GivenEntry, entry, held.State, operator)
+	holds := held.State == supervise.StateSuspended && held.SuspendedBy.Holds()
+	return newsClaimTakes(held.GivenEntry, entry, held.State, holds)
 }
 
 // newsOnlyRefusal is why a news-only start reaches no claim, as the claim's machine holds it when
@@ -376,5 +378,5 @@ func newsOnlyRefusal(machine *supervise.Machine, found bool, entry int64) string
 	case claimEnded(held.State):
 		return fmt.Sprintf("the claim is %s, and the start that revives it carries the news", held.State)
 	}
-	return "an operator suspended the claim, and the start that resumes it carries the news"
+	return fmt.Sprintf("the %s's suspension holds the agent, and once a resume lifts it the start that resumes the agent carries the news", held.Holder())
 }

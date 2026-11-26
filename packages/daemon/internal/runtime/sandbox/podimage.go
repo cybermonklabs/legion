@@ -126,8 +126,10 @@ func releasedKept(u *unstructured.Unstructured) bool {
 // keep_volume, the issue's sandbox, the microVM block's storage class or issue_volume moves the
 // shape, and each of them is also a reason for the round itself. It reads the object as the
 // informer holds it, without a decode, as IssueSandbox does, and it decodes only the claim
-// templates, at the end, for the shape. The daemon asks it only at those three moments, never at
-// the idle pass's tick, so that decode is rare. Anything that leaves the Sandbox unread answers
+// templates, at the end, for the shape. The daemon asks it only at those three moments, and at the
+// release of a pod no claim owns only for a pod that release would otherwise take with a read of its
+// disk (internal/daemon's unowned pass, R6 of #5285), never at every tick of the
+// idle pass, so that decode is rare. Anything that leaves the Sandbox unread answers
 // false, and the issue of a round is then told what the issue of a pod on an ephemeral disk is
 // told: the work its roles did not push is lost.
 //

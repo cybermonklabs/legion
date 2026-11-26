@@ -55,7 +55,7 @@ func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 // before they write (transition and its hold before the retro, closeMerged, leave and
 // beginLinger), that write a task's copy (putScope: the retry of a hold and the hold of a stop,
 // whose copy stands where its task stands, so its write cannot disagree with it) or that refuse a
-// task elsewhere themselves (startHeldRetro, and claimFailed, whose failed role runs no step at the
+// task elsewhere themselves (StartHeldRetro, and claimFailed, whose failed role runs no step at the
 // issue's phase while its task stands elsewhere) write the phase the place gives, so no fixture
 // makes them disagree: claimFailed's refusal, which writes no hold and tells the architect, is the
 // last case.
