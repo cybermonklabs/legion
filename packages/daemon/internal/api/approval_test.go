@@ -32,19 +32,28 @@ import (
 // The trees of these tests are a neutral project's, ACME, as every example of this public
 // repository is. ownRoot is the root of F3 (dispatch-carried-approval.json), and ownDocument its
 // spec; otherRoot is a root whose tree a hand-over left, and carriedRoot and chainedRoot the roots
-// two hand-overs made of its work.
+// two hand-overs made of its work. otherVerification is otherRoot's Verification document,
+// carriedDocument carriedRoot's own spec, and approvalAncestor, with its primary document
+// ancestorDocument, the ancestor whose approval a step of otherRoot stood open on.
 const (
-	approvalProject = "ACME"
-	ownRoot         = "ACME-2694"
-	ownDocument     = "aec8fb48-fd46-458a-99a3-a1b199a46b38"
-	ownChild        = "ACME-2695"
-	secondRoot      = "ACME-2696"
-	secondDocument  = "0c6f1e2d-3a4b-4c5d-8e6f-7a8b9c0d1e2f"
-	otherRoot       = "ACME-900"
-	otherDocument   = "5b0f3c2e-7d14-4a9b-8e61-2c9a7f4d1b03"
-	carriedRoot     = "ACME-950"
-	chainedRoot     = "ACME-951"
+	approvalProject   = "ACME"
+	ownRoot           = "ACME-2694"
+	ownDocument       = "aec8fb48-fd46-458a-99a3-a1b199a46b38"
+	ownChild          = "ACME-2695"
+	secondRoot        = "ACME-2696"
+	secondDocument    = "0c6f1e2d-3a4b-4c5d-8e6f-7a8b9c0d1e2f"
+	otherRoot         = "ACME-900"
+	otherDocument     = "5b0f3c2e-7d14-4a9b-8e61-2c9a7f4d1b03"
+	otherVerification = "9d2e7a41-6b3c-4f58-a017-3e5c8b2d9f60"
+	carriedRoot       = "ACME-950"
+	carriedDocument   = "4e8a1c7b-2d5f-4a93-b6e0-8c1f3d7a5b29"
+	chainedRoot       = "ACME-951"
+	approvalAncestor  = "ACME-800"
+	ancestorDocument  = "7c3b9e05-1a4d-4f6e-9b28-5d0a6e4c1f87"
 )
+
+// criteriaAndSpec is a deployment that gates the criteria and the spec steps.
+var criteriaAndSpec = []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}
 
 // carriedApprovalFixture is F3: Dispatch's carried approval after an exact undo, as its events
 // route served it, scrubbed for this public repository.
@@ -391,6 +400,56 @@ func (r *approvalRig) carried(gate record.DesignGate) {
 	r.handOver(otherRoot, carriedRoot)
 }
 
+// carriedWithoutSpec is carriedRoot handed over out of otherRoot's tree under criteriaAndSpec, as
+// admission's carry makes it: otherRoot's criteria row, which a person approved, and its spec step,
+// which stood open on a person's approval of approvalAncestor's primary document, the ancestor
+// done in Dispatch by the hand-over. A basis is only on an ancestor that is not accepted, so the
+// carry brings the criteria row and no spec row (admit's carriedGate), and carriedRoot's architect
+// registers its own document for the spec step (registerCarriedSpec).
+func (r *approvalRig) carriedWithoutSpec() {
+	r.t.Helper()
+	r.lingering(otherRoot, "done")
+	approved, opened := r.next(), r.next()
+	r.write(func(tx pgx.Tx) error {
+		ctx := context.Background()
+		if err := r.records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: approvalAncestor, Project: approvalProject, Seq: 1,
+			Status: record.Carry(record.DoneStatus), Parent: record.Carry(""), Blockers: record.Carry([]string(nil))}); err != nil {
+			return err
+		}
+		if err := r.records.PutGate(ctx, tx, record.DesignGate{Issue: otherRoot, Step: record.DesignStepCriteria, ArtifactID: otherVerification,
+			LatestVersion: 2, ApprovedVersion: new(2), ApprovedMark: mark(approved)}); err != nil {
+			return err
+		}
+		return r.records.PutGate(ctx, tx, record.OpenOnBasis(
+			record.DesignGate{Issue: otherRoot, Step: record.DesignStepSpec, ArtifactID: otherDocument, LatestVersion: 12},
+			record.GateBasis{Issue: approvalAncestor, ArtifactID: ancestorDocument, Version: 5, Approval: mark(opened),
+				Approver: approvalPerson.Name(), RegisteredAt: mark(opened).At}))
+	})
+	r.handOver(otherRoot, carriedRoot)
+	r.read(func(tx pgx.Tx) error {
+		gates, err := r.records.GatesOf(context.Background(), tx, carriedRoot)
+		if err != nil {
+			return err
+		}
+		if spec, ok := gates[record.DesignStepSpec]; ok {
+			return fmt.Errorf("the carry brought %s the spec row %+v, want none: its basis is on an ancestor Dispatch shows done", carriedRoot, spec)
+		}
+		if criteria, ok := gates[record.DesignStepCriteria]; !ok || criteria.ArtifactID != otherVerification || !record.GateOpen(criteria) {
+			return fmt.Errorf("the carry brought %s the criteria row %+v, want %s's, open on the person's approval", carriedRoot, criteria, otherRoot)
+		}
+		return nil
+	})
+}
+
+// registerCarriedSpec is carriedRoot's architect's registration of version 2 of its own spec
+// document for the spec step the carry brought no row for (carriedWithoutSpec), as register_gate's
+// fact carries it with no review read.
+func (r *approvalRig) registerCarriedSpec() {
+	r.t.Helper()
+	r.apply(intake.GateRegistered{Issue: carriedRoot, Step: record.DesignStepSpec, ArtifactID: carriedDocument, Version: 2, DispatchVersion: 2,
+		Since: record.EventMark{Seq: r.seq}})
+}
+
 // handedOverRoot is the hand-over row of key.
 func (r *approvalRig) handedOverRoot(key string) *record.HandedOverRoot {
 	r.t.Helper()
@@ -625,6 +684,30 @@ func TestApprovalRouteAnswersTheStandingApproval(t *testing.T) {
 			r.carried(record.DesignGate{LatestVersion: 12})
 			r.wantNone(r.architect(carriedRoot))
 		})
+	})
+	// A carry that brings the other steps' rows and no spec row, as one does for a spec step whose
+	// basis is on an ancestor accepted since (admit's carriedGate), leaves the spec step to the
+	// carried root's own architect: the spec it registers is its own, and so is a person's approval
+	// of it, live and after the root's re-admission.
+	t.Run("A9f a carried root whose carry brought no spec row, after a person approved the spec it registered", func(t *testing.T) {
+		r := newApprovalRig(t, criteriaAndSpec)
+		r.carriedWithoutSpec()
+		architect := r.architect(carriedRoot)
+		r.registerCarriedSpec()
+		r.wantNone(architect)
+		r.review(carriedRoot, carriedDocument, intake.DispatchArtifactApproved, 2)
+		r.wantApproval(architect, "dispatch://ACME-950/spec", 2, ownWords(carriedRoot, 2))
+	})
+	t.Run("A9g A9f after the carried root's re-admission", func(t *testing.T) {
+		r := newApprovalRig(t, criteriaAndSpec)
+		r.carriedWithoutSpec()
+		r.registerCarriedSpec()
+		r.review(carriedRoot, carriedDocument, intake.DispatchArtifactApproved, 2)
+		approved := r.seq
+		r.lingering(carriedRoot, "done")
+		r.todo(carriedRoot)
+		r.wantRecord(record.ClearedSpecApproval{Issue: carriedRoot, ArtifactID: carriedDocument, Version: 2, LatestVersion: 2, Mark: mark(approved)})
+		r.wantApproval(r.architect(carriedRoot), "dispatch://ACME-950/spec", 2, ownWords(carriedRoot, 2))
 	})
 	t.Run("A10 a root approved at its latest version while out of the workflow, re-admitted, before its registration", func(t *testing.T) {
 		eachOutOfWorkflow(t, func(t *testing.T, status string) {
@@ -919,7 +1002,8 @@ func (r *approvalRig) wantRecord(want record.ClearedSpecApproval) {
 
 // A carry records the root whose gate it copied, and a carry out of a carried root records the
 // root that holds the document: the one its own row names, or none where that row names none. A
-// carry of no gate records no root.
+// carry that brings the other steps' rows and no spec row records the gate carried and the carried
+// root itself as the one that holds its spec. A carry of no gate records no root.
 func TestApprovalRouteCarryRecordsTheOtherRoot(t *testing.T) {
 	approved := record.DesignGate{LatestVersion: 12, ApprovedVersion: new(12), ApprovedMark: mark(500)}
 	t.Run("one carry", func(t *testing.T) {
@@ -941,6 +1025,11 @@ func TestApprovalRouteCarryRecordsTheOtherRoot(t *testing.T) {
 		r.lingering(carriedRoot, "done")
 		r.handOver(carriedRoot, chainedRoot)
 		r.wantHandedOver(chainedRoot, record.HandedOverRoot{Issue: chainedRoot, Generation: 2, GateCarried: true})
+	})
+	t.Run("a carry that brings no spec row", func(t *testing.T) {
+		r := newApprovalRig(t, criteriaAndSpec)
+		r.carriedWithoutSpec()
+		r.wantHandedOver(carriedRoot, record.HandedOverRoot{Issue: carriedRoot, Generation: 2, GateCarried: true, FromRoot: carriedRoot})
 	})
 	t.Run("a carry of no gate", func(t *testing.T) {
 		r := newApprovalRig(t, specGated)

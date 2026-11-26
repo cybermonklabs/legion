@@ -89,7 +89,7 @@ func (r *newsReconcileRig) recordOpening() *record.WorkHold {
 // the merger's told row first (settleHeldOpening), and the news carries no second opening.
 func TestWorkHoldOpeningStartOfAMergerWaitsForItsNews(t *testing.T) {
 	r := newNewsReconcileRig(t)
-	r.runner.hold = config.HoldWork
+	r.runner.gateHold = config.HoldWork
 	root := r.member(reconcileRoot, "", phase.Merging)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
 	hold := r.recordOpening()
@@ -145,7 +145,7 @@ func TestWorkHoldOpeningStartOfAMergerWaitsForItsNews(t *testing.T) {
 // change the outcome: the row reads the claim and the record when it runs, and keeps nothing.
 func TestWorkHoldOpeningStartOfAMergerANewerStartStartedLeavesTheOpeningOwed(t *testing.T) {
 	r := newNewsReconcileRig(t)
-	r.runner.hold = config.HoldWork
+	r.runner.gateHold = config.HoldWork
 	r.member(reconcileRoot, "", phase.Merging)
 	r.told(reconcileRoot, record.AudienceHolder, 4)
 	r.recordOpening()

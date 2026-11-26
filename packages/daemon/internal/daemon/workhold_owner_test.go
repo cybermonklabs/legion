@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -15,6 +17,7 @@ import (
 	planwords "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The hold over an owner's plan (t-17's rows on main's code): a plan whose first step is not
@@ -178,8 +181,8 @@ func (r *workHoldRig) noticesTo(role claim.Role) []record.Notice {
 	return notices
 }
 
-// noticesOfKind is the notices of kind among notices.
-func noticesOfKind(notices []record.Notice, kind record.NoticeKind) []record.Notice {
+// noticesAmong is the notices of kind among notices.
+func noticesAmong(notices []record.Notice, kind record.NoticeKind) []record.Notice {
 	var of []record.Notice
 	for _, notice := range notices {
 		if notice.Kind == kind {
@@ -445,10 +448,10 @@ func TestWorkHoldTellsNoArchitectOfItsOwnAcceptanceUntilTheOpening(t *testing.T)
 			r.enqueue(record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: ownersChild + " is todo; it runs again under LEGION-208"})
 			r.drain()
 			told := r.noticesTo(claim.RoleArchitect)
-			if got := noticesOfKind(told, "phase-finished"); len(got) != 0 {
+			if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
 				t.Fatalf("the architect was told %+v with the gate closed, want no phase-finished notice of its own acceptance", got)
 			}
-			if got := noticesOfKind(told, "child-status"); len(got) != 1 {
+			if got := noticesAmong(told, "child-status"); len(got) != 1 {
 				t.Fatalf("the architect was told %d child-status notices with the gate closed, want the later notice delivered", len(got))
 			}
 			for _, notice := range told {
@@ -460,7 +463,7 @@ func TestWorkHoldTellsNoArchitectOfItsOwnAcceptanceUntilTheOpening(t *testing.T)
 
 			r.approve(4, 12)
 			r.drain()
-			if got := noticesOfKind(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 || got[0].Role != claim.RoleReviewer ||
+			if got := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 || got[0].Role != claim.RoleReviewer ||
 				got[0].Phase != phase.Reviewing {
 				t.Fatalf("the architect was told the phase-finished notices %+v once the gate opened, want the reviewer's, once", got)
 			}
@@ -490,7 +493,7 @@ func TestWorkHoldTellsTheArchitectOfItsOwnAcceptanceAtTheOpening(t *testing.T) {
 			r := inReviewOfAnOwnersPlan(t, config.HoldWork, tc.steps)
 			r.reviewerCompletes()
 			r.drain()
-			if got := noticesOfKind(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 {
+			if got := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 {
 				t.Fatalf("the architect was told %d phase-finished notices with the gate open, want the reviewer's", len(got))
 			}
 			r.close(4)
@@ -498,7 +501,7 @@ func TestWorkHoldTellsTheArchitectOfItsOwnAcceptanceAtTheOpening(t *testing.T) {
 			r.architectRestarts()
 			r.architectReady()
 			r.drain()
-			catchUps := noticesOfKind(r.noticesTo(claim.RoleArchitect), "catch-up")
+			catchUps := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
 			if len(catchUps) != 1 {
 				t.Fatalf("the restarted architect was told %d catch-ups, want the one its ready queued", len(catchUps))
 			}
@@ -506,7 +509,7 @@ func TestWorkHoldTellsTheArchitectOfItsOwnAcceptanceAtTheOpening(t *testing.T) {
 
 			r.approve(4, 12)
 			r.drain()
-			told := noticesOfKind(r.noticesTo(claim.RoleArchitect), "phase-finished")
+			told := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished")
 			if len(told) != 2 || told[1].Role != claim.RoleReviewer || told[1].Phase != phase.Reviewing {
 				t.Fatalf("the architect was told the phase-finished notices %+v, want the reviewer's again once the gate opened", told)
 			}
@@ -529,7 +532,7 @@ func TestMergeHoldTellsTheArchitectOfItsOwnAcceptanceAtOnce(t *testing.T) {
 			r.runOnce()
 			r.reviewerCompletes()
 			r.drain()
-			if got := noticesOfKind(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 || got[0].Role != claim.RoleReviewer {
+			if got := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 || got[0].Role != claim.RoleReviewer {
 				t.Fatalf("under merge the architect was told the phase-finished notices %+v with the gate closed, want the reviewer's, once", got)
 			}
 		})
@@ -553,7 +556,7 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 		}
 		wantNoAcceptanceAsked(t, "the catch-up the ready built", built[0])
 		r.drain()
-		published := noticesOfKind(r.noticesTo(claim.RoleArchitect), "catch-up")
+		published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
 		if len(published) != 1 {
 			t.Fatalf("the architect was told %d catch-ups, want the one its ready queued", len(published))
 		}
@@ -571,7 +574,7 @@ func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
 		}
 		r.close(4)
 		r.drain()
-		published := noticesOfKind(r.noticesTo(claim.RoleArchitect), "catch-up")
+		published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
 		if len(published) != 1 {
 			t.Fatalf("the architect was told %d catch-ups, want the one its ready queued", len(published))
 		}
@@ -589,8 +592,91 @@ func TestMergeHoldCatchUpAsksForTheAcceptanceAsEver(t *testing.T) {
 	r.drain()
 	r.architectReady()
 	r.drain()
-	published := noticesOfKind(r.noticesTo(claim.RoleArchitect), "catch-up")
+	published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
 	if len(published) != 1 || !strings.HasSuffix(published[0].Reason, acceptanceAsked) {
 		t.Fatalf("under merge the architect was told the catch-ups %+v, want one asking for the acceptance: %q", published, acceptanceAsked)
+	}
+}
+
+// returnSignOff is the sentence of the notice of a return out of awaiting_children into accepting
+// that asks the architect for its sign_off (workflow.Engine.ReturnFromChildren). It is written out
+// here, never read from the code under test.
+const returnSignOff = "It waits on your sign_off, as an issue in accepting does."
+
+// Decision 21 beside #4592's return out of awaiting_children. The root stands in accepting, its
+// owner's place, and the gate closes under `work`. An open child then holds it, and the admission
+// pass's stop moves it into awaiting_children (workflow.Engine.StopForChildren): its architect is
+// told that move at once, as ever, since that notice asks for no acceptance. Once no child is open,
+// its pull request having merged during the wait, the pass's return takes it back to the accepting
+// it held (workflow.Engine.ReturnFromChildren), and the return's notice tells the architect that it
+// waits on its sign_off. While the gate is closed that notice waits, as the phase-finished notice
+// of an owner's acceptance waits, and a later notice of the architect passes it. At the opening it
+// goes, once, and the opening tells the architect of its acceptance no second time.
+func TestWorkHoldHoldsTheReturnFromChildrenIntoTheOwnersAcceptanceUntilTheOpening(t *testing.T) {
+	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.close(4)
+	r.drain()
+
+	accepting := r.issue()
+	r.asAFact(func(ctx context.Context, tx pgx.Tx) error {
+		moved, err := r.engine.StopForChildren(ctx, tx, accepting, []record.OpenChild{{Key: ownersChild, Status: "todo"}}, nil)
+		if err == nil && !moved {
+			err = fmt.Errorf("the admission pass's stop left %s in %s, want it moved into awaiting_children", accepting.Key, accepting.Phase)
+		}
+		return err
+	})
+	r.drain()
+	entered := noticesAmong(r.noticesTo(claim.RoleArchitect), workflow.AwaitingChildrenNoticeKind)
+	if len(entered) != 1 || entered[0].Phase != phase.Accepting ||
+		!strings.Contains(entered[0].Reason, "LEGION-208 is in awaiting_children, holding the start of accepting") {
+		t.Fatalf("the architect was told the awaiting-children notices %+v with the gate closed, want the one of the move into the wait, from accepting", entered)
+	}
+	if got := r.noticeRowsOf(workflow.AwaitingChildrenNoticeKind); got != 0 {
+		t.Fatalf("the outbox holds %d awaiting-children notices after the move into the wait, want none: the gate's close holds no such notice", got)
+	}
+
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: r.tree.key, Repo: "acme/widgets",
+			Number: 42, Branch: "legion/" + r.tree.key, HeadSHA: "head1", Failing: []string{}})
+	})
+	waiting := r.issue()
+	r.asAFact(func(ctx context.Context, tx pgx.Tx) error {
+		return r.engine.ReturnFromChildren(ctx, tx, waiting)
+	})
+	if got := r.issue(); got.Phase != phase.Accepting || got.ChildrenWait != nil {
+		t.Fatalf("the root after the return stands in %s holding %+v, want it back in accepting: its pull request merged during the wait", got.Phase, got.ChildrenWait)
+	}
+	r.enqueue(record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: ownersChild + " is done"})
+	r.drain()
+	told := r.noticesTo(claim.RoleArchitect)
+	for _, notice := range told {
+		if strings.Contains(notice.Reason, returnSignOff) {
+			t.Fatalf("the architect was told %+v with the gate closed, want no notice that asks for its sign_off", notice)
+		}
+	}
+	if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v with the gate closed, want no phase-finished notice of its own acceptance", got)
+	}
+	if got := noticesAmong(told, "child-status"); len(got) != 1 {
+		t.Fatalf("the architect was told %d child-status notices with the gate closed, want the later notice delivered", len(got))
+	}
+	if got := r.noticeRowsOf(workflow.AwaitingChildrenNoticeKind); got != 1 {
+		t.Fatalf("the outbox holds %d awaiting-children notices after the return with the gate closed, want the return's, waiting", got)
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	told = r.noticesTo(claim.RoleArchitect)
+	returned := noticesAmong(told, workflow.AwaitingChildrenNoticeKind)
+	if len(returned) != 2 || returned[1].Phase != phase.AwaitingChildren || !strings.HasSuffix(returned[1].Reason, returnSignOff) {
+		t.Fatalf("the architect was told the awaiting-children notices %+v once the gate opened, want the return's after the move's, asking for the sign_off: %q",
+			returned, returnSignOff)
+	}
+	if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v once the gate opened, want no phase-finished notice: the return's notice told the acceptance", got)
+	}
+	if got := r.noticeRowsOf(workflow.AwaitingChildrenNoticeKind) + r.noticeRowsOf("phase-finished"); got != 0 {
+		t.Fatalf("the outbox holds %d notices of the acceptance once the gate opened, want none", got)
 	}
 }

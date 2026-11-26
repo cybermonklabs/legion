@@ -136,6 +136,16 @@
       "jj": false
     },
     {
+      "script": "parent-waits.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "PARENT_WAITS_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/parent-waits.sh; CI's service is the PostgreSQL it needs, the lib installs the nats-server it needs with go install, and it starts no container and reaches no outside service; a measured run in a pod took 64 seconds, most of it building the driver",
+      "jj": true
+    },
+    {
       "script": "phase-entry-converge.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -163,6 +173,16 @@
       "evidence_variable": "PLAN_RATINGS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/plan-ratings.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes about a minute with a warm Go build cache and up to five minutes cold",
+      "jj": true
+    },
+    {
+      "script": "register-gate-basis.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "REGISTER_GATE_BASIS_EVIDENCE_DIR",
+      "timeout_minutes": 25,
+      "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/register-gate-basis.sh; CI's pgvector service is the server it needs, the rig builds and starts a scratch Dispatch and the daemon itself, the lib installs the nats-server it needs with go install, and it starts no container; a run takes one to five minutes, most of it building the driver and Dispatch",
       "jj": true
     },
     {
@@ -234,7 +254,7 @@
     },
     {
       "script": "approved-version-news.sh",
-      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which a GitHub-hosted runner has none of), the model gateway ANTHROPIC_BASE_URL names and its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, for part two's base arm and for part one's negative control (`--control`) a commit of this repository's own history to take the base from with `git archive` (`git merge-base HEAD origin/main`, or, for the control alone, the commit `--base-commit` names), which a shallow CI checkout carries none of, and the wall clock of both parts: part one about two minutes, and the twelve runs of real sessions that part two's driver plans for a full run, each bounded at eight minutes; APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick a partial run, a measurement whose last line reads MEASURED, never PASS"
+      "needs": "the pinned Oh My Pi every pane of its part two runs (LEGION_OMP_PATH, an executable, which a GitHub-hosted runner has none of), the model gateway ANTHROPIC_BASE_URL names and a key for it: its key file (APPROVED_VERSION_NEWS_MODEL_KEY_FILE, by default /var/run/model-gateway-key/key), or, where that file holds no key, the pod's own Google identity token for the audience APPROVED_VERSION_NEWS_GATEWAY_AUDIENCE names (model-gateway-gce), which curl mints from the GKE metadata server in a pod the gateway takes it from, such as a Job of the cluster's builds namespace labelled builds.theorem.dev/model-gateway=true, a loopback PostgreSQL with pgvector (LEGION_TEST_PG_DSN), go, git, jj 0.38 or later, tar, awk, python3 and bun with this repository's node_modules, for part two's base arm and for part one's negative control (`--control`) a commit of this repository's own history to take the base from with `git archive` (the parent of the first commit that adds a news mark to the prompts, or, for the control alone, the commit `--base-commit` names), which a shallow CI checkout carries none of, and the wall clock of both parts: part one about two minutes, and the twelve runs of real sessions that part two's driver plans for a full run, each bounded at eight minutes; APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and APPROVED_VERSION_NEWS_RUNS pick a partial run, a measurement whose last line reads MEASURED, never PASS"
     },
     {
       "script": "burstable-kind.sh",

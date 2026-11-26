@@ -44,7 +44,7 @@ import (
 const HoldStopGrace = 2 * time.Minute
 
 // The sentences of the hold's texts beside today's gate messages (gateClosedHead,
-// gateOpenedSentence). Every one is a reader's words and part of the contract.
+// gateOpenedMessage). Every one is a reader's words and part of the contract.
 var (
 	// workHoldSentence follows today's first sentence of the close under `work`, and every opening
 	// task repeats it. The time it names is HoldStopGrace.
@@ -186,17 +186,25 @@ func workHoldStands(ctx context.Context, tx pgx.Tx, store record.Store, issue re
 }
 
 // TellsOwnersAcceptance is whether notice, of issue as the record holds it now, tells issue's
-// architect that issue waits in its own acceptance, the owner's place: a phase-finished notice of
-// an issue that stands in accepting. In this release accepting is always the owner's place, the
-// step `acceptance:owner` of a plan and the accepting of today's line that an issue with no plan
-// rows walks (plan.Supported takes acceptance with the key owner alone), and the phase-finished
-// notice of the step before it is what tells the architect to accept (prompts/go/architect-common.md).
-// Under `work` the outbox holds such a notice while the tree's standing gate is closed, and lets
-// every later notice of the architect pass it (internal/daemon's deliverNotice and
-// earlierNoticeFor). The notice is read against the issue at each attempt, so one whose issue has
-// left accepting since, by the architect's own sign-off or move back, tells nothing of the kind.
+// architect that issue waits in its own acceptance, the owner's place, of an issue that stands in
+// accepting: a phase-finished notice, and the notice of a return out of awaiting_children into
+// accepting, which tells the architect that the issue waits on its sign_off in place of the
+// phase-finished notice the wait replaced (ReturnFromChildren). That return's notice is the one of
+// its kind that names awaiting_children as the phase the issue left (record.Notice.Phase); the
+// notice of a move into the wait names the phase the issue left for it, and tells no acceptance. In
+// this release accepting is always the owner's place, the step `acceptance:owner` of a plan and the
+// accepting of today's line that an issue with no plan rows walks (plan.Supported takes acceptance
+// with the key owner alone), and the phase-finished notice of the step before it is what tells the
+// architect to accept (prompts/go/architect-common.md). Under `work` the outbox holds such a notice
+// while the tree's standing gate is closed, and lets every later notice of the architect pass it
+// (internal/daemon's deliverNotice and earlierNoticeFor). The notice is read against the issue at
+// each attempt, so one whose issue has left accepting since, by the architect's own sign-off or move
+// back, tells nothing of the kind.
 func TellsOwnersAcceptance(issue record.Issue, notice record.Notice) bool {
-	return notice.Kind == "phase-finished" && issue.Phase == phase.Accepting
+	if issue.Phase != phase.Accepting {
+		return false
+	}
+	return notice.Kind == "phase-finished" || (notice.Kind == AwaitingChildrenNoticeKind && notice.Phase == phase.AwaitingChildren)
 }
 
 // holdReason is the reason a stop of the hold logs on the claim it stops.
@@ -412,13 +420,16 @@ func (e *Engine) workHoldClose(ctx context.Context, tx pgx.Tx, root record.Issue
 }
 
 // workHoldOpen is the work hold's end at the gate's move to open under `work`: a person's approval
-// of version of step's document, or Dispatch's carried approval after an exact undo. Each live
-// architect and phase worker of the tree is told today's open message, a worker whose stop the
-// outbox has not made among them, since that stop is not made now, as openingDelivery decides for
-// a holder; then the hold ends (tellAndEndWorkHold).
-func (e *Engine) workHoldOpen(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, document string, version int) error {
+// of version of step's document, Dispatch's carried approval after an exact undo, or a basis that
+// opened the last closed step on an ancestor's approval. Each live architect and phase worker of
+// the tree is told today's open message (gateOpenedMessage, which names each step of onBasis with
+// the ancestor's approval it stands on and never as a person's approval of the root's document),
+// a worker whose stop the outbox has not made among them, since that stop is not made now, as
+// openingDelivery decides for a holder; then the hold ends (tellAndEndWorkHold).
+func (e *Engine) workHoldOpen(ctx context.Context, tx pgx.Tx, root record.Issue, step record.DesignStep, document string, version int,
+	onBasis []record.DesignGate) error {
 	fallback := record.WorkHold{Project: root.Project, Tree: root.Tree, Step: step, ArtifactID: document, Version: version}
-	return e.tellAndEndWorkHold(ctx, tx, root, gateOpenedSentence(root.Tree, step, document, version), &gateOpening{step: step, version: version},
+	return e.tellAndEndWorkHold(ctx, tx, root, gateOpenedMessage(root.Tree, step, document, version, onBasis), &gateOpening{step: step, version: version},
 		fallback, "workflow: the design gate opened and the work hold ends", "tree", root.Tree, "step", step, "document", document, "version", version)
 }
 
@@ -507,9 +518,11 @@ func (e *Engine) tellAndEndWorkHold(ctx context.Context, tx pgx.Tx, root record.
 // which the outbox routes to the architect that owns the member now. While the hold stood, no
 // notice and no catch-up asked an architect for its own acceptance (TellsOwnersAcceptance,
 // QueueCatchUp), so an architect launched again during the hold with a session that lost what it
-// read before would otherwise learn of it from nothing. A member with a phase-finished notice
-// still waiting in the outbox is told by that notice, which goes once the gate is open, and gets
-// no second. An architect that knew already reads the notice again, which tells it nothing new.
+// read before would otherwise learn of it from nothing. A member with a notice of its own
+// acceptance still waiting in the outbox (TellsOwnersAcceptance: a phase-finished notice, or the
+// notice of its return out of awaiting_children into accepting) is told by that notice, which goes
+// once the gate is open, and gets no second. An architect that knew already reads the notice again,
+// which tells it nothing new.
 func (e *Engine) tellOwnersAcceptance(ctx context.Context, tx pgx.Tx, root record.Issue) error {
 	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
 	if err != nil {
@@ -554,11 +567,15 @@ func (e *Engine) tellOwnersAcceptance(ctx context.Context, tx pgx.Tx, root recor
 }
 
 // ownersAcceptanceNotice is the phase-finished notice that moved issue, standing in its owner's
-// acceptance, there: the notice of the step before the acceptance on its walk (acceptedRole, the
+// acceptance, there: the notice of the step before the acceptance on its walk (acceptedRoleOn, the
 // review on today's line), with the handoff that step's phases row keeps, as the move wrote it
 // (noticeFor).
 func (e *Engine) ownersAcceptanceNotice(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.Notice, error) {
-	role, err := e.acceptedRole(ctx, tx, issue)
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return record.Notice{}, err
+	}
+	role, err := acceptedRoleOn(issue, w)
 	if err != nil {
 		return record.Notice{}, err
 	}

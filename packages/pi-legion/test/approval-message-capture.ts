@@ -214,6 +214,7 @@ const ENTRY_FILES: readonly Entry[] = [
   { name: "notice-design-approved-after-an-exact-undo", path: 1, approval: own(46) },
   { name: "notice-design-approved-from-the-gate-seed", path: 1, approval: own(3) },
   { name: "notice-design-approved-from-gate-above-dispatch", path: 1, approval: own(4) },
+  { name: "notice-basis-ended-from-artifact-approved", path: 1, approval: own(3) },
   { name: "notice-carried-gate-opened", path: 2, approval: carried(12) },
   {
     name: "task-carried-gate-opened-kept-for-a-carried-root-in-backlog",

@@ -40,18 +40,27 @@ import (
 // The trees of these rows are a neutral project's, ACME, as every example of this public
 // repository is, and they are the trees api's approval_test.go names. ownRoot is the root of F3
 // (testdata/dispatch-carried-approval.json) and ownDocument its spec; ownChild is a Dispatch child
-// of it. otherRoot is a root whose tree a hand-over left, and carriedRoot the root that hand-over
-// made of its work, which carries a copy of otherRoot's gate. architectSession is the session of
-// ownRoot's architect, which a question its tree opens names.
+// of it, which runs as a root of its own on ownRoot's approval in the rows of the resting-root
+// notice, childDocument its own spec. otherRoot is a root whose tree a hand-over left, and
+// carriedRoot the root that hand-over made of its work, which carries a copy of otherRoot's gate.
+// architectSession is the session of ownRoot's architect, which a question its tree opens names.
+// basisAncestor is an ancestor of ownRoot whose primary document, basisDocument, a step of ownRoot
+// rests on: basisAsk is its open request for a person's approval of version basisVersion, distinct
+// from every version of ownRoot's spec the rows approve, so a row that took one for the other fails.
 const (
 	pathProject      = "ACME"
 	ownRoot          = "ACME-2694"
 	ownDocument      = "aec8fb48-fd46-458a-99a3-a1b199a46b38"
 	ownChild         = "ACME-2695"
+	childDocument    = "3d6a9c1e-5b2f-4e8d-a7c0-9f1b4e6d2a85"
 	otherRoot        = "ACME-900"
 	otherDocument    = "5b0f3c2e-7d14-4a9b-8e61-2c9a7f4d1b03"
 	carriedRoot      = "ACME-950"
 	architectSession = "ses-architect-2694"
+	basisAncestor    = "ACME-2600"
+	basisDocument    = "8b2e5f1a-4c7d-4a96-b3e8-1d5f9a2c7e40"
+	basisAsk         = "ask-2600"
+	basisVersion     = 7
 )
 
 var (
@@ -112,6 +121,24 @@ var approvalPaths = []approvalPath{
 			ApprovedVersion: 3, ApprovedMark: r.mark(approved), ReviewedBy: pathPerson, Since: record.EventMark{Seq: r.next()}})
 		r.wantOwn(ownRoot, ownDocument, 3)
 		return r.noticeEntry(ownRoot, "design-approved")
+	}},
+	// Path 1: a person's approval of the root's own spec while its step waits on an ancestor's
+	// open approval request opens the step on that approval and ends the wait (applyArtifact,
+	// ownDocumentEnded, tellPendingEnded): beside the design-approved notice of the opening, the
+	// basis-ended notice tells the architect that approval. Its reason names the approved version
+	// of the root's own spec, 3, which the route answers at the commit; its Version is the version
+	// of the ancestor's document the request asked a person to approve, basisVersion, which is no
+	// approval of the root's spec. The other acts that end such a wait tell none (silentPaths).
+	{name: "notice-basis-ended-from-artifact-approved", notice: "basis-ended", drive: func(r *pathRig) string {
+		r.pending(false)
+		r.review(ownRoot, ownDocument, intake.DispatchArtifactApproved, 3)
+		r.wantOwn(ownRoot, ownDocument, 3)
+		if _, ended := r.notice(ownRoot, "basis-ended"); ended.Version != basisVersion ||
+			!strings.Contains(ended.Reason, "approved version 3 of the primary document of "+ownRoot) {
+			r.t.Fatalf("the basis-ended notice = %+v, want the ancestor's version %d and a reason naming the person's approval of version 3 of %s's own spec",
+				ended, basisVersion, ownRoot)
+		}
+		return r.noticeEntry(ownRoot, "basis-ended")
 	}},
 	// Path 2: a person's approval of the other root's spec opens the copy a hand-over carried, and
 	// the notice names that other root's spec (applyArtifact, copyTakes).
@@ -381,29 +408,57 @@ func TestApprovalRouteAnswersAfterEveryPathThatTellsAnApproval(t *testing.T) {
 }
 
 // noticeClass is what noticeClasses says of one notice kind: whether a notice of it tells an
-// architect that a person approved a spec, and the rows of approvalPaths that drive it.
+// architect that a person approved a spec on some act, the rows of approvalPaths that drive each
+// act by which it does, and the cases of silentPaths that drive each act by which a notice of it
+// tells none.
 type noticeClass struct {
-	tells bool
-	rows  []string
+	tells  bool
+	rows   []string
+	silent []string
 }
 
 // noticeClasses names every notice kind an architect is told (record.NoticeKinds), with whether it
-// tells an approval and, where it does, the rows that cover it.
+// tells an approval and, where it does, the rows that cover it. A kind whose notice tells an
+// approval on one act and none on another is classified by act: its rows are the acts that tell
+// one, and its silent cases the acts that tell none.
 var noticeClasses = map[record.NoticeKind]noticeClass{
+	// A person's approval of the root's own document tells one; a basis opening, where an
+	// ancestor's approval opened the step and no person approved the root's version, tells none
+	// (openedNotice).
 	"design-approved": {tells: true, rows: []string{
 		"notice-design-approved-from-artifact-approved", "notice-design-approved-from-a-registration",
 		"notice-design-approved-after-an-exact-undo", "notice-design-approved-from-the-gate-seed",
 		"notice-design-approved-from-gate-above-dispatch",
+	}, silent: []string{
+		"design-approved-from-a-registration-on-an-ancestors-approval",
+		"design-approved-from-a-registration-on-an-ancestors-approval-beside-a-kept-approval",
+		"design-approved-from-the-opening-of-a-pending-basis",
+		"design-approved-from-the-opening-of-a-pending-basis-beside-a-kept-approval",
 	}},
 	"carried-gate-opened": {tells: true, rows: []string{"notice-carried-gate-opened"}},
 	// A catch-up states each step of the root's gate, the version a person approved among it.
 	"catch-up": {tells: true, rows: []string{"notice-catch-up-of-a-carried-root", "notice-catch-up-at-a-launch"}},
 	// A changes request ends the approval it answers, so it tells none.
 	"design-changes-requested": {},
+	// The end of a step's wait on an ancestor's request (tellPendingEnded) tells an approval at one
+	// act of the five that end it, a person's approval of the root's own document, and none at the
+	// other four.
+	"basis-ended": {tells: true, rows: []string{"notice-basis-ended-from-artifact-approved"}, silent: []string{
+		"basis-ended-from-a-changes-request-on-the-roots-spec", "basis-ended-from-a-newer-version-of-the-roots-spec",
+		"basis-ended-from-the-ancestors-move-into-merging", "basis-ended-from-the-pending-basis-seeds-read",
+	}},
+	// A changes request on the ancestor's version a step stands open on leaves the step open and
+	// tells no approval of the architect's own spec (workflow's tellBasisChanges).
+	"basis-changes-requested": {},
+	// The rest of another root on the ancestor's document tells the ancestor's architect which
+	// version that root rests on, and no approval (tellRegisteredBasis).
+	"resting-root": {silent: []string{
+		"resting-root-before-the-ancestors-own-approval-reaches-its-row", "resting-root-beside-the-ancestors-own-approval",
+	}},
 	// Every other kind is the machinery's, and says nothing of a spec's approval.
 	"phase-finished": {}, "worker-died": {}, "worker-stalled": {}, "worker-silent": {}, "worker-background-stalled": {}, "held": {},
 	"pr-blocked": {}, "pr-merged": {}, "pr-closed-unmerged": {}, "pull-request-missing": {}, "message-refused": {},
-	"child-closed": {}, "child-status": {}, "children-first": {}, "child-release-stalled": {}, "child-not-recorded": {},
+	"child-closed": {}, "child-status": {}, "children-first": {}, "awaiting-children": {}, "child-release-stalled": {}, "child-not-recorded": {},
 	"checks-red": {}, "review-stuck": {}, "status-reasserted": {}, record.VolumeNearFullNotice: {},
 	record.WorkspaceKeptNotice: {}, record.WorkspaceTakenNotice: {},
 	"session-lost": {}, "session-forgotten": {}, "session-store-fault": {},
@@ -413,7 +468,11 @@ var noticeClasses = map[record.NoticeKind]noticeClass{
 // Every notice kind the daemon tells an architect is classified as telling an approval or not, so
 // a kind added to the daemon's list reaches this inventory: one that tells an approval is covered
 // by a row of TestApprovalRouteAnswersAfterEveryPathThatTellsAnApproval whose entry is a notice of
-// that kind, and no row's entry is a notice of a kind that tells none.
+// that kind, and no row's entry is a notice of a kind that tells none. A kind classified by act
+// names each act that tells none as a case of silentPaths, which this test drives: each case's act
+// writes a notice of its kind, and the route answers, at that act's commit, what the root's own spec
+// row holds of a person's approval, so the classification is the act's and the route's, not the
+// notice's words.
 func TestApprovalRouteClassifiesEveryNoticeKind(t *testing.T) {
 	kinds := record.NoticeKinds()
 	for _, kind := range kinds {
@@ -436,12 +495,133 @@ func TestApprovalRouteClassifiesEveryNoticeKind(t *testing.T) {
 				t.Errorf("the row %q writes a notice of kind %q, which noticeClasses does not name as covered by it", path.name, kind)
 			}
 		}
+		for _, name := range class.silent {
+			i := slices.IndexFunc(silentPaths, func(path silentPath) bool { return path.name == name })
+			if i < 0 || silentPaths[i].notice != kind {
+				t.Errorf("notice kind %q names the case %q, which is no case of silentPaths whose act writes a notice of that kind", kind, name)
+			}
+		}
+		for _, path := range silentPaths {
+			if path.notice == kind && !slices.Contains(class.silent, path.name) {
+				t.Errorf("the case %q writes a notice of kind %q, which noticeClasses does not name as one that tells no approval", path.name, kind)
+			}
+		}
 	}
 	for kind := range noticeClasses {
 		if !slices.Contains(kinds, kind) {
 			t.Errorf("noticeClasses classifies %q, which is no notice kind the daemon tells an architect", kind)
 		}
 	}
+	for _, path := range silentPaths {
+		if !slices.Contains(kinds, path.notice) {
+			t.Errorf("the case %q writes a notice of %q, which is no notice kind the daemon tells an architect", path.name, path.notice)
+		}
+		t.Run(path.name, func(t *testing.T) {
+			if notice := path.drive(newPathRig(t)); notice.Kind != path.notice {
+				t.Fatalf("the act of %s answers a notice of %q, want %q", path.name, notice.Kind, path.notice)
+			}
+		})
+	}
+}
+
+// silentPath is one act that writes a notice and tells no approval by it: name is the subtest,
+// notice the kind of the notice the act writes, and drive drives the act, holds the route's answer
+// at the commit of the act's transaction, and answers the notice the act wrote.
+type silentPath struct {
+	name   string
+	notice record.NoticeKind
+	drive  func(r *pathRig) record.Notice
+}
+
+// silentPaths is every act that writes a notice of a kind some other act of which tells an
+// approval (design-approved, basis-ended), or of a kind a reader could take for one
+// (resting-root), and that tells none: at its commit the route answers what the root's own spec
+// row holds of a person's approval of that spec (record.DesignGate.ApprovedByPerson), the earlier
+// approval the row keeps, or none, and never a version an ancestor's approval names.
+var silentPaths = []silentPath{
+	// basis-ended at each act but a person's approval of the root's own spec that ends the step's
+	// wait on the ancestor's request (tellPendingEnded): the step stays closed on the root's own
+	// document. A changes request on that document ends the person's approval of version 2 the row
+	// kept, and every other act leaves it standing.
+	{name: "basis-ended-from-a-changes-request-on-the-roots-spec", notice: "basis-ended", drive: func(r *pathRig) record.Notice {
+		r.pending(true)
+		r.review(ownRoot, ownDocument, intake.DispatchArtifactChangesRequested, 3)
+		r.wantNone(ownRoot)
+		return r.basisEnded()
+	}},
+	{name: "basis-ended-from-a-newer-version-of-the-roots-spec", notice: "basis-ended", drive: func(r *pathRig) record.Notice {
+		r.pending(true)
+		r.review(ownRoot, ownDocument, intake.DispatchArtifactVersion, 4)
+		r.wantOwn(ownRoot, ownDocument, 2)
+		return r.basisEnded()
+	}},
+	{name: "basis-ended-from-the-ancestors-move-into-merging", notice: "basis-ended", drive: func(r *pathRig) record.Notice {
+		r.pending(true)
+		r.ancestorMerges()
+		r.wantOwn(ownRoot, ownDocument, 2)
+		return r.basisEnded()
+	}},
+	{name: "basis-ended-from-the-pending-basis-seeds-read", notice: "basis-ended", drive: func(r *pathRig) record.Notice {
+		r.pending(true)
+		r.readPending(dispatch.Approval{IssueKey: basisAncestor, State: "awaiting", LatestVersion: basisVersion + 1, AskID: basisAsk, WaitingOn: "agent"})
+		r.wantOwn(ownRoot, ownDocument, 2)
+		return r.basisEnded()
+	}},
+	// design-approved at a basis opening (openedNotice): an ancestor's approval opened the step, at
+	// the registration on it (gateRegistered) or at a person's approval of the version a pending
+	// step waited on (openPendingBasis). No person approved the root's own version, so the route
+	// answers none, or the person's approval of version 2 the step keeps apart (KeptPerson).
+	{name: "design-approved-from-a-registration-on-an-ancestors-approval", notice: "design-approved", drive: func(r *pathRig) record.Notice {
+		r.openOnBasis(false)
+		r.wantNone(ownRoot)
+		return r.basisOpened()
+	}},
+	{name: "design-approved-from-a-registration-on-an-ancestors-approval-beside-a-kept-approval", notice: "design-approved",
+		drive: func(r *pathRig) record.Notice {
+			r.openOnBasis(true)
+			r.wantOwn(ownRoot, ownDocument, 2)
+			return r.basisOpened()
+		}},
+	{name: "design-approved-from-the-opening-of-a-pending-basis", notice: "design-approved", drive: func(r *pathRig) record.Notice {
+		r.pending(false)
+		r.readPending(r.ancestorApproved(r.next()))
+		r.wantNone(ownRoot)
+		return r.basisOpened()
+	}},
+	{name: "design-approved-from-the-opening-of-a-pending-basis-beside-a-kept-approval", notice: "design-approved",
+		drive: func(r *pathRig) record.Notice {
+			r.pending(true)
+			r.readPending(r.ancestorApproved(r.next()))
+			r.wantOwn(ownRoot, ownDocument, 2)
+			return r.basisOpened()
+		}},
+	// resting-root at the registration of ownChild on a person's approval of version 3 of ownRoot's
+	// spec (tellRegisteredBasis), told to ownRoot's architect: it reports ownChild's rest on that
+	// version and tells no approval. register_gate reads the ancestor's approval from Dispatch (api's
+	// gate_basis.go, its read of the basis) and its fact carries that approval into the root's
+	// registration (workflow's gateRegistered, then tellRegisteredBasis), which does not wait for
+	// the approval's own event to reach the ancestor's spec row, so the notice can be queued while
+	// the route answers the ancestor's architect none: it makes no missing approval stand, and the
+	// route answers the approval once its own event reaches that row. Queued while the ancestor's
+	// own approval stands, it leaves that approval standing at its version.
+	{name: "resting-root-before-the-ancestors-own-approval-reaches-its-row", notice: "resting-root", drive: func(r *pathRig) record.Notice {
+		r.root(ownRoot, ownDocument, 3)
+		approved := r.next()
+		rested := r.restsOnOwnRoot(approved)
+		r.wantNone(ownRoot)
+		r.reviewAt(ownRoot, ownDocument, intake.DispatchArtifactApproved, 3, approved)
+		r.wantOwn(ownRoot, ownDocument, 3)
+		return rested
+	}},
+	{name: "resting-root-beside-the-ancestors-own-approval", notice: "resting-root", drive: func(r *pathRig) record.Notice {
+		r.root(ownRoot, ownDocument, 3)
+		r.review(ownRoot, ownDocument, intake.DispatchArtifactApproved, 3)
+		approved := r.seq
+		r.wantOwn(ownRoot, ownDocument, 3)
+		rested := r.restsOnOwnRoot(approved)
+		r.wantOwn(ownRoot, ownDocument, 3)
+		return rested
+	}},
 }
 
 // holdEntry holds the entry file of the row name to entry: `-update` writes it, and every other
@@ -648,14 +828,175 @@ func (r *pathRig) review(key, document string, kind intake.DispatchArtifactKind,
 	r.reviewAt(key, document, kind, version, r.next())
 }
 
-// reviewAt is review at seq.
+// reviewAt is review at seq. A review is the person's, and a changes request carries their reason.
 func (r *pathRig) reviewAt(key, document string, kind intake.DispatchArtifactKind, version int, seq int64) {
 	r.t.Helper()
 	fact := intake.DispatchArtifact{Key: key, ArtifactID: document, Kind: kind, Version: version, Mark: r.mark(seq)}
-	if kind == intake.DispatchArtifactApproved {
+	switch kind {
+	case intake.DispatchArtifactApproved:
 		fact.Actor = pathPerson
+	case intake.DispatchArtifactChangesRequested:
+		fact.Actor, fact.Reason = pathPerson, "split the migration out"
 	}
 	r.apply(fact)
+}
+
+// specRow is key's spec row as the record holds it.
+func (r *pathRig) specRow(key string) record.DesignGate {
+	r.t.Helper()
+	var row *record.DesignGate
+	r.read(func(tx pgx.Tx) error {
+		gates, err := r.records.GatesOf(r.ctx, tx, key)
+		row = record.SpecGate(gates)
+		return err
+	})
+	if row == nil {
+		r.t.Fatalf("%s holds no spec row", key)
+	}
+	return *row
+}
+
+// registerOnBasis records ownRoot as an admitted root of its own live tree whose architect
+// registered version 3 of its spec on basis, an approval or an open approval request of
+// basisAncestor's document as register_gate read it from Dispatch (gateRegistered). Where kept is
+// set, its architect registered version 2 first and a person approved it, so the row keeps that
+// approval beside the basis (record.DesignGate.ApprovedByPerson), and the route answers it.
+func (r *pathRig) registerOnBasis(kept bool, basis record.GateBasis) {
+	r.t.Helper()
+	r.recordIssue(rootIssue(ownRoot))
+	r.openTree(ownRoot)
+	if kept {
+		r.apply(intake.GateRegistered{Issue: ownRoot, Step: record.DesignStepSpec, ArtifactID: ownDocument, Version: 2, DispatchVersion: 2,
+			Since: record.EventMark{Seq: r.seq}})
+		r.review(ownRoot, ownDocument, intake.DispatchArtifactApproved, 2)
+	}
+	basis.Issue, basis.ArtifactID, basis.Version = basisAncestor, basisDocument, basisVersion
+	basis.Reason, basis.Session = ownRoot+" delivers part of the spec of "+basisAncestor+".", architectSession
+	r.apply(intake.GateRegistered{Issue: ownRoot, Step: record.DesignStepSpec, ArtifactID: ownDocument, Version: 3, DispatchVersion: 3,
+		Since: record.EventMark{Seq: r.seq}, Basis: &basis})
+	if kept {
+		r.wantOwn(ownRoot, ownDocument, 2)
+	} else {
+		r.wantNone(ownRoot)
+	}
+}
+
+// pending is registerOnBasis on basisAsk, the ancestor's open request for a person's approval of
+// version basisVersion: the step waits on it, closed (record.DesignGate.PendingOnBasis), and the
+// registration queues its pending-basis seed.
+func (r *pathRig) pending(kept bool) {
+	r.t.Helper()
+	r.registerOnBasis(kept, record.GateBasis{Pending: &record.PendingBasis{Ask: basisAsk}})
+	if gate := r.specRow(ownRoot); !gate.PendingOnBasis() || gate.Basis.Pending.Ask != basisAsk || record.GateOpen(gate) {
+		r.t.Fatalf("the spec step of %s after the pending registration = %+v, want it closed, waiting on %s", ownRoot, gate, basisAsk)
+	}
+}
+
+// openOnBasis is registerOnBasis on a person's approval of version basisVersion of the ancestor's
+// document: the step stands open on it (record.DesignGate.OnBasis), at the version registered.
+func (r *pathRig) openOnBasis(kept bool) {
+	r.t.Helper()
+	r.registerOnBasis(kept, record.GateBasis{Approval: r.mark(r.next()), Approver: pathPerson.Name()})
+	if gate := r.specRow(ownRoot); !gate.OnBasis() || !record.GateOpen(gate) {
+		r.t.Fatalf("the spec step of %s after the registration on the ancestor's approval = %+v, want it open on that basis", ownRoot, gate)
+	}
+}
+
+// ancestorApproved is Dispatch's approval of basisAncestor's document once a person approved
+// version basisVersion, its latest, at seq: the answer to the request a pending step waits on.
+func (r *pathRig) ancestorApproved(seq int64) dispatch.Approval {
+	mark := r.mark(seq)
+	return dispatch.Approval{IssueKey: basisAncestor, State: string(intake.DispatchArtifactApproved), LatestVersion: basisVersion,
+		Version: new(basisVersion), At: mark.At, Seq: mark.Seq, By: pathPerson}
+}
+
+// readPending is the pending-basis seed ownRoot's pending registration queued, as the outbox runs
+// it (internal/daemon's pendingBasisSeed): its read of Dispatch finds approval, Dispatch's approval
+// of the ancestor's document, with the ancestor at work, and the read is applied as a fact of its
+// own (intake.PendingBasisRead), which alone opens or ends the step's wait (pendingBasisRead).
+func (r *pathRig) readPending(approval dispatch.Approval) {
+	r.t.Helper()
+	row, payload, found := r.newestRow("kind = $1 and issue = $2", string(record.OutboxKindPendingBasisSeed), ownRoot)
+	if !found {
+		r.t.Fatalf("the pending registration of %s queued no pending-basis seed", ownRoot)
+	}
+	seed := payload.(record.PendingBasisSeed)
+	r.applyAs("outbox", fmt.Sprintf("pending-basis:%s:%d:%d", row.Issue, seed.Generation, row.ID), intake.PendingBasisRead{Issue: row.Issue,
+		Step: seed.Step, Generation: seed.Generation, RegisteredAt: seed.RegisteredAt, ArtifactID: seed.ArtifactID, BasisArtifactID: seed.BasisArtifactID,
+		BasisVersion: seed.BasisVersion, Ask: seed.Ask, Read: intake.BasisRead{Approval: approval, Ancestor: intake.AncestorRead{Status: "in_progress", HandedOver: true}}})
+}
+
+// ancestorMerges records basisAncestor as the root of a running tree of its own in retro, its
+// implementer's phases row standing, and applies that implementer's completion of the retro, which
+// moves the ancestor into merging (transition): the daemon's own move of the ancestor into merging
+// accepts it and ends every step's wait on a request of it (endPendingOn). A registration on an
+// ancestor already in retro records no basis (acceptedBasis), so the ancestor stands in retro only
+// once the waiting step is registered.
+func (r *pathRig) ancestorMerges() {
+	r.t.Helper()
+	ancestor := rootIssue(basisAncestor)
+	ancestor.Phase, ancestor.Status, ancestor.DispatchStatus = phase.Retro, "retro", "retro"
+	r.recordIssue(ancestor)
+	r.openTree(basisAncestor)
+	r.write(func(tx pgx.Tx) error {
+		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "retro-claim"})
+	})
+	r.apply(intake.HandoffComplete{Generation: 1, Issue: basisAncestor, Role: claim.RoleImplementer, Claim: "retro-claim", Commit: "retro"})
+	if got := r.issue(basisAncestor).Phase; got != phase.Merging {
+		r.t.Fatalf("%s after its retro's completion stands in %s, want merging", basisAncestor, got)
+	}
+}
+
+// basisEnded is the newest basis-ended notice on ownRoot, which an act that ends its step's wait
+// on the ancestor's request writes (tellPendingEnded): it names the version of the ancestor's
+// document the request asked a person to approve, and, where no person's approval of the root's
+// own spec ended the wait, names no approval.
+func (r *pathRig) basisEnded() record.Notice {
+	r.t.Helper()
+	_, ended := r.notice(ownRoot, "basis-ended")
+	if ended.Version != basisVersion || strings.Contains(ended.Reason, "approved") {
+		r.t.Fatalf("the basis-ended notice = %+v, want the ancestor's version %d and no approval named", ended, basisVersion)
+	}
+	return ended
+}
+
+// basisOpened is the newest design-approved notice on ownRoot, as a basis opening writes it
+// (openedNotice): it names the ancestor's document for the step and the version a person approved
+// of it, not the root's own spec.
+func (r *pathRig) basisOpened() record.Notice {
+	r.t.Helper()
+	_, opened := r.notice(ownRoot, "design-approved")
+	if opened.Version != basisVersion || opened.Ref != "dispatch://"+basisAncestor+"/spec" {
+		r.t.Fatalf("the design-approved notice = %+v, want the basis opening's, naming version %d of %s's spec", opened, basisVersion, basisAncestor)
+	}
+	return opened
+}
+
+// restsOnOwnRoot records ownChild as an admitted root of its own live tree whose architect
+// registered version 1 of its own spec, childDocument, on a person's approval of version 3 of
+// ownRoot's spec that Dispatch recorded at seq, as register_gate read it: the step stands open on
+// that basis, and the registration tells ownRoot's architect of ownChild's first rest on it
+// (tellRegisteredBasis). It answers that resting-root notice, which names ownChild, its step and
+// version 3 of ownRoot's spec, and speaks of no approval.
+func (r *pathRig) restsOnOwnRoot(seq int64) record.Notice {
+	r.t.Helper()
+	r.recordIssue(rootIssue(ownChild))
+	r.openTree(ownChild)
+	r.apply(intake.GateRegistered{Issue: ownChild, Step: record.DesignStepSpec, ArtifactID: childDocument, Version: 1, DispatchVersion: 1,
+		Since: record.EventMark{Seq: r.seq}, Basis: &record.GateBasis{Issue: ownRoot, ArtifactID: ownDocument, Version: 3, Approval: r.mark(seq),
+			Approver: pathPerson.Name(), Reason: ownChild + " delivers part of the spec of " + ownRoot + ".", Session: "ses-architect-2695"}})
+	if gate := r.specRow(ownChild); !gate.OnBasis() || gate.Basis.Issue != ownRoot {
+		r.t.Fatalf("the spec step of %s = %+v, want it open on version 3 of %s's spec", ownChild, gate, ownRoot)
+	}
+	_, rested := r.notice(ownRoot, "resting-root")
+	if rested.Version != 3 || rested.Ref != "dispatch://"+ownRoot+"/spec" || !strings.Contains(rested.Reason, ownChild) ||
+		!strings.Contains(rested.Reason, "version 3 of the primary document of "+ownRoot) {
+		r.t.Fatalf("the resting-root notice = %+v, want it to name %s and version 3 of %s's spec", rested, ownChild, ownRoot)
+	}
+	if strings.Contains(strings.ToLower(rested.Reason), "approv") {
+		r.t.Fatalf("the resting-root notice's reason %q speaks of an approval, want only the rest of %s on version 3 of %s's spec", rested.Reason, ownChild, ownRoot)
+	}
+	return rested
 }
 
 // lingering records key as a root whose tree left the workflow: its phase done, its linger armed,
@@ -946,6 +1287,21 @@ func (r *pathRig) wantOwn(key, document string, version int) {
 func (r *pathRig) wantCarried(key, from, document string, version int) {
 	r.t.Helper()
 	r.wantApproval(prompts.Approval{Tree: key, Spec: from, Document: document, Version: version, Carried: true})
+}
+
+// wantNone holds the route's answer for key's architect, read as wantApproval reads it once the
+// path's transaction has committed, to no approval: no person's approval of key's own spec stands.
+func (r *pathRig) wantNone(key string) {
+	r.t.Helper()
+	var got api.ClaimApprovalResponse
+	r.read(func(tx pgx.Tx) error {
+		var err error
+		got, err = api.ClaimApprovalOf(r.ctx, tx, r.records, pathSteps, key, claim.RoleArchitect)
+		return err
+	})
+	if got.Approval != nil {
+		r.t.Fatalf("the approval route answers %s %+v at the path's commit, want none", key, *got.Approval)
+	}
 }
 
 // wantApproval reads what the approval route answers the architect of want.Tree, in a read-only

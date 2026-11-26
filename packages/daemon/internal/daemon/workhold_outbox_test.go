@@ -203,7 +203,7 @@ func (r *workHoldRig) deploy(hold config.Hold) {
 		Hooks: []workflow.Hook{{Name: "back-to-implementing", On: workflow.HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer},
 			Prompt: "Read the tester's report before you write anything."}}}, quietLogger())
 	r.admission = admit.New(r.records, r.engine, 2, r.tree.project, quietLogger())
-	r.runner.handlers, r.runner.hold = []intake.Handler{r.engine, r.admission}, hold
+	r.runner.handlers, r.runner.gateHold = []intake.Handler{r.engine, r.admission}, hold
 }
 
 // supervise gives the rig a supervisor over the rig's store, on clock, as a daemon's boot builds
@@ -568,13 +568,14 @@ func (r *workHoldRig) inTx(write func(tx pgx.Tx) error) {
 // calls the engine's exported writers.
 func (r *workHoldRig) asAFact(write func(ctx context.Context, tx pgx.Tx) error) {
 	r.t.Helper()
-	ctx := r.engine.OpenFact(r.ctx)
-	r.inTx(func(tx pgx.Tx) error {
+	if err := store.Transact(r.engine.OpenFact(r.ctx), r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := write(ctx, tx); err != nil {
 			return err
 		}
 		return r.engine.SettleFact(ctx, tx)
-	})
+	}); err != nil {
+		r.t.Fatalf("write and settle the fact: %v", err)
+	}
 }
 
 // enqueue queues payload for the root, due now.
@@ -790,7 +791,8 @@ func TestWorkHoldHoldsEveryStartOfAPhaseWorker(t *testing.T) {
 		}, left: []record.OutboxKind{record.OutboxKindHookPrompt}},
 		{name: "StartPromotedWorker", starts: claim.RoleTester, act: func(r *workHoldRig) {
 			r.asAFact(func(ctx context.Context, tx pgx.Tx) error {
-				return r.engine.StartPromotedWorker(ctx, tx, r.issue(), claim.RoleTester)
+				_, err := r.engine.StartPromotedWorker(ctx, tx, r.issue(), claim.RoleTester, false)
+				return err
 			})
 		}},
 		{name: "SendOwedEntry", starts: claim.RoleTester, act: func(r *workHoldRig) {

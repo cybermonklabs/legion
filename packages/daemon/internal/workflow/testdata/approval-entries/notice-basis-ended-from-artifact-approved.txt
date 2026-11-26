@@ -1,0 +1,2 @@
+basis-ended on ACME-2694
+{"kind":"basis-ended","role":"architect","version":7,"reason":"user:person@example.com approved version 3 of the primary document of ACME-2694 (dispatch://ACME-2694/spec), the root's own document. That approval opened the spec step of ACME-2694 and ended its wait on the ancestor's request. The spec step of ACME-2694 no longer waits on approval request ask-2600 of version 7 of the primary document of ACME-2600 (dispatch://ACME-2600/spec).","actor":"user:person@example.com","ref":"dispatch://ACME-2600/spec"}

@@ -441,6 +441,31 @@ func TestTheRootArchitectsSummaryNamesAMemberOutOfTheWorkflowAsToldNothing(t *te
 	}
 }
 
+// A parent in awaiting_children is owed nothing while a Dispatch child of it is open
+// (record.UntoldAwaitingChildren), and the root architect's summary names it told nothing for that
+// reason: the admission pass's return brings it back, not a restart, as it does a member in held.
+func TestTheRootArchitectsSummaryNamesAParentAwaitingChildrenAsToldNothing(t *testing.T) {
+	r := newNewsRig(t)
+	r.inTx(func(tx pgx.Tx) error {
+		tested, err := r.records.Issue(r.ctx, tx, newsTested)
+		if err != nil {
+			return err
+		}
+		waited := time.Now().UTC().Add(-time.Minute)
+		tested.Phase, tested.ChildrenWaitedAt = phase.AwaitingChildren, &waited
+		tested.ChildrenWait = &record.ChildrenWait{Start: phase.Testing, Task: "Continue Workflow. Issue: LEGION-502. Phase: testing.",
+			Reason: "LEGION-504 is open under LEGION-502.", Since: waited}
+		return r.records.PutIssue(r.ctx, tx, *tested)
+	})
+
+	task, _ := r.sendAlone(newsRoot, claim.RoleArchitect, rootSummary())
+	want := "- LEGION-502, in awaiting_children: told nothing while it waits on its open children: the return that moves it back into " +
+		"its phase once no child of it is open carries what it is owed then."
+	if !strings.Contains(task, want) {
+		t.Fatalf("summary = %q, want it to say %q", task, want)
+	}
+}
+
 // A member whose owed news is decision blocks alone is told nothing, and the summary says so: the
 // reconcile raises what its holder took and sends nothing. A member whose holder row also owes the
 // opening is sent a task with it, which says nothing its issue holds changed, so the summary names

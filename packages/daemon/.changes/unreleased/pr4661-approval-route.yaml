@@ -10,5 +10,15 @@ body: |-
   a deployment that gates no `spec` step get `approval: null`. A root's re-admission now records
   the approved `spec` row that it deletes, and the carry of a gate records the root whose document
   the gate holds, so the route answers for both. Its daemon API entry is `20261125163006`.
+  The route answers only a person's approval of the root's own spec. A `spec` step that stands open
+  on an ancestor's approval answers the person's approval of an earlier version of the root's own
+  spec that the step keeps, or `approval: null`, and never the version the ancestor's approval
+  opened. A carry that brings no `spec` row, as for a step whose basis is on an ancestor accepted
+  since, leaves the `spec` step to the carried root: the spec its architect registers there, and a
+  person's approval of it, are the root's own, before and after its re-admission. No `resting-root`
+  notice, start task or catch-up of an ancestor's architect says that a person approved the
+  ancestor's spec. Each names the root that rests on the ancestor, its step and the ancestor's
+  document for that step, and the version that the root's registration read from Dispatch where the
+  daemon knows it; the ancestor's architect hears of its own approval on its own path.
   A rollback to a build without this entry follows the instructions in the header of
   `20261120210115_approval_route_records.up.sql` (docs/kubernetes.md).

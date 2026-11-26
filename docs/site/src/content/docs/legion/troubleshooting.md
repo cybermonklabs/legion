@@ -389,7 +389,10 @@ Check, in order:
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for.
+   is in `blocked`, with each child it waits for. So is a parent in phase `awaiting_children`, whose
+   phases had started: it holds no slot, `held` names it `awaiting_children`, and it goes on by
+   itself once no child under it is open
+   ([Concepts](/legion/legion/concepts/#trees-and-the-architect)).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `priority`, the priority
    that placed it, its own, else its tree root's (0 for P0 to 3 for P3, or null for one that waits
@@ -508,8 +511,18 @@ until someone approves the latest version from the document's header or the Inbo
 earlier version does not count: the spec changed since.
 Before the tree starts, the gate holds its start.
 After the start, a new version of an approved document closes the gate again: it then holds the merge and the first phase of each issue that has not started, and under `gates.hold: work` every phase worker of the tree as well ([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)).
-`gatedSteps` carries one entry for each step that holds the tree, each with its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`, `approved` or `changes_requested`): one per step `gates.design` lists, then `criteria` where the deployment's list names `spec` and not `criteria` and the root registered its Verification document.
-The tree waits until every entry reads `approved`, and `designGate` beside it is the `spec` step's record alone.
+`gatedSteps` carries one entry for each step that holds the tree, each with its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or `pending_on_basis`): one per step `gates.design` lists, then `criteria` where the deployment's list names `spec` and not `criteria` and the root registered its Verification document.
+The tree waits until every entry reads `approved` or `open_on_basis`, and `designGate` beside it is the `spec` step's record alone.
+
+A root whose architect wrote its spec as a view on an ancestor can register the step on that
+ancestor's approval. Then the step reads `open_on_basis`: it is open, and no person approved the
+root's own version. `basis` names the ancestor `issue`, its `artifactId`, the approved `version`,
+the `approver` and `approvedAt`, and `approvedVersion` is the root's version that its architect
+registered. A step that reads `pending_on_basis` is closed until a person approves the ancestor's
+version that `basis` names; `basis.askId` is the open approval request, so read that request on the
+ancestor, not an approval request on the root. On a root, `treeRuns` says whether its tree runs:
+`false` on a root that lingers, or that waits in the line for its tree to open after a
+re-admission, whatever its architect's claim reads.
 
 ## A tree's work stopped after its spec changed
 
@@ -528,7 +541,8 @@ the hold took it over at once. The architects go on, and their close message end
 
 While the gate is closed, the daemon tells no architect to start its own acceptance.
 The notice that an issue waits in `accepting` for that acceptance waits, and a catch-up names no such issue.
-Every other notice to the architect goes.
+That includes the `awaiting-children` notice of an issue that comes back to `accepting` once no child under it is open, which asks for the architect's `sign_off`.
+Every other notice to the architect goes, the `awaiting-children` notice of a move into the wait among them.
 The daemon records an architect's sign-off or move back, and the start that it makes waits for the opening.
 
 - `legion state --json` shows `why.state` `held` on each issue at a phase worker's phase, and
@@ -557,11 +571,15 @@ While the work hold keeps that round open, the daemon tells the controller once 
 Set `dispatch_token_transition_file` to permit launches into the old pod, or end the work hold to let the round proceed.
 See [The disk dies with its pod](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#the-disk-dies-with-its-pod).
 
-The work starts again when a person approves that version, or when Dispatch carries the approval
-after an exact undo. The daemon then starts each claim it stopped with one task. The task names the
-version that closed the gate, carries the open message, and tells the worker to check what its turn
-already did, since a tool call may not have finished. An exact undo opens the gate only when the
-undo is written, so the edit stops the work until then.
+The work starts again when every gated step stands open again: when a person approves that version,
+when Dispatch carries the approval after an exact undo, or when the last closed step opens on an
+ancestor's approval. A registration of the step on an approved ancestor opens it that way, and so
+does a person's approval of the ancestor's version that a pending step waits on. The daemon then
+starts each claim it stopped with one task. The task names the version that closed the gate,
+carries the open message, and tells the worker to check what its turn already did, since a tool
+call may not have finished. For a step that opened on an ancestor's approval, the open message names
+that approval and says that no person approved the root's own version. An exact undo opens the gate
+only when the undo is written, so the edit stops the work until then.
 The task also carries the news of the approved version that the worker is owed, after its work.
 Each architect then gets the notice of each issue that waits in `accepting` for its acceptance.
 A merger that the hold stopped starts again only after the daemon records what changed in the approved version, which can take a few attempts to read Dispatch.
@@ -882,7 +900,8 @@ claim's `state` is `failed` with its `failure` beside it. A phase worker held fo
 its architect's to retry or escalate, and `holdReason: "escalated"` means it went to the
 controller. A hold whose `holdReason` is `task-stopped` (its owner stopped its task, or a step
 failed with no earlier step of the type implementation to take its work back, which stops the
-task) or `children` (a parent waits, before its retro, for the issues beneath it) is no failure,
+task) or `children` (a parent waits, before its retro, for the issues beneath it, the roots that
+rest on its approval or its open Dispatch children, and the refusal names which) is no failure,
 and a retry of it is refused with `TASK_STOPPED` or `HELD_FOR_CHILDREN`. A root's
 architect that failed (`architect.state` is `failed` on the root) leaves nobody to act on the
 notices that come to it, and the controller is woken. Unless the root's `phase` is `done`, it

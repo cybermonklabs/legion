@@ -3,7 +3,8 @@ custom:
   Issue: pr4661
 body: |-
   `gates.hold` in `legion.yaml` says what a new version of an approved document of a gated step
-  holds until a person approves that version. `merge`, the default, is the hold the gate had
+  holds until every gated step stands open again: a person approves that version, or the step
+  opens on an ancestor's approval. `merge`, the default, is the hold the gate had
   before: the merger's start and the first phase of each issue that has not started wait, and
   every running phase goes on. `work` also holds the tree's running work. No phase of the tree
   starts, and each phase worker of the tree is told to end its turn and is stopped, with its session
@@ -29,7 +30,10 @@ body: |-
   the round does not replace the pod until a role runs in it again or the hold ends. An issue at a
   phase worker's phase of a held tree reads `why.state` `held`, with
   the version that closed the gate. A caller below the contract for entry `20261125163006` is
-  served such an issue with no `why`. When the gate opens again, the daemon starts each
+  served such an issue with no `why`. While the hold stands, no architect is told to start its own
+  acceptance: the notice that an issue waits in `accepting` waits for the opening, the
+  `awaiting-children` notice of an issue that comes back to `accepting` from its wait on its
+  children among them, and every other notice goes. When the gate opens again, the daemon starts each
   claim it stopped with one task, which names the version that closed the gate and tells the worker
   to check what its turn already did. The daemon builds that task when the start runs, so a start
   that waits through a second close and opening names the later version and the later approval.
