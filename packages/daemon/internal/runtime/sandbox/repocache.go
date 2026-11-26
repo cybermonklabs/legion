@@ -46,8 +46,8 @@ import (
 // holds is kept before the sweep deletes it, the one container's reservation, and the Cloud Storage
 // bucket each cache keeps its packs in with the ServiceAccount the cache pods alone run as, the one
 // holding the bucket's grant. Bucket and ServiceAccount are set together or not at all: both "" is
-// off, and a cache pod then runs as Options.Pod.ServiceAccount, as every other pod does
-// (cachePodAccount).
+// off, and a cache pod then runs as Options.Pod.ServiceAccount, as every issue pod does, and the
+// controller's pod too where Options.Pod.ControllerServiceAccount is unset (cachePodAccount).
 type RepositoryCache struct {
 	Volume         resource.Quantity
 	Refresh        time.Duration
@@ -83,7 +83,7 @@ func (c RepositoryCache) check(pod Pod) error {
 }
 
 // cachePodAccount is the ServiceAccount a cache pod runs as: the cache's own
-// (RepositoryCache.ServiceAccount) while its bucket is on, else the one every other pod runs as
+// (RepositoryCache.ServiceAccount) while its bucket is on, else the one every issue pod runs as
 // (runtime.kubernetes.pod.service_account), "" for the namespace's default. It is the one reading of
 // that choice: the pod template is written with it (cachePodTemplate) and a cache pod is held to it
 // (reconcileCachePod), so a cache pod the template makes is never drifted.
