@@ -141,8 +141,8 @@ func TestEveryContainerOfEveryPodIsGuaranteed(t *testing.T) {
 		want       corev1.ResourceRequirements
 		containers int
 	}{
-		"root":       {podOf(t, r, rootSpec(t)), want.Issue, 3},
-		"worker":     {podOf(t, r, workerSpec(t)), want.Issue, 3},
+		"root":       {podOf(t, r, rootSpec(t)), want.Issue, 2},
+		"worker":     {podOf(t, r, workerSpec(t)), want.Issue, 2},
 		"controller": {podOf(t, r, controllerSpec(t)), want.Controller, 1},
 		"probe":      {probe.Spec.PodTemplate.Spec, probeReservation(), 1},
 	} {

@@ -478,7 +478,7 @@ func (r *liveRig) checkWorkerSharesIssuePod() error {
 	}) {
 		return fmt.Errorf("starting %s reran issue-pod init containers: before %+v, after %+v", worker.role, init, pod.Status.InitContainerStatuses)
 	}
-	note("runtime", "worker role %s started in root issue pod %s (uid %s), container %s; both init-container identities stayed unchanged", worker.token, pod.Name, pod.UID, worker.loc.Sandbox.Container)
+	note("runtime", "worker role %s started in root issue pod %s (uid %s), container %s; the init container's identity stayed unchanged", worker.token, pod.Name, pod.UID, worker.loc.Sandbox.Container)
 	return nil
 }
 
