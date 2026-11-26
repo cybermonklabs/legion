@@ -315,7 +315,8 @@ func joinSnapshots(pending, incoming []CIStateSnapshot) []CIStateSnapshot {
 	byCheck := map[string]CIStateSnapshot{}
 	for _, snapshot := range slices.Concat(pending, incoming) {
 		held, ok := byCheck[snapshot.Check]
-		if !ok || snapshot.Seq > held.Seq {
+		// Control: the join keeps the older snapshot of a check.
+		if !ok || snapshot.Seq < held.Seq {
 			byCheck[snapshot.Check] = snapshot
 		}
 	}
