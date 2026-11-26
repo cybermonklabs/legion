@@ -1861,7 +1861,16 @@ func TestCensusRefusesALockHolderWithItsDiagnosis(t *testing.T) {
 				t.Fatalf("census %d: refusal lacks %q:\n%s", reads, want, got[0])
 			}
 		}
-		return got[0], strings.Contains(got[0], ", wait_event Client/ClientRead, ")
+		switch {
+		case strings.Contains(got[0], ", wait_event Client/ClientRead, "):
+			return got[0], true
+		case strings.Contains(got[0], ", wait_event none, "):
+			// A wake took the holder out of its wait: the one case taken again.
+			return got[0], false
+		default:
+			t.Fatalf("census %d: refusal names a wait that is neither the holder's wait for its client nor none:\n%s", reads, got[0])
+			return "", false
+		}
 	})
 	if want := ", backend_xid none, wait_event Client/ClientRead, query \"select count(*) from things where kind = ?\"; its locks: "; !strings.Contains(refusal, want) {
 		t.Errorf("refusal lacks %q:\n%s", want, refusal)
