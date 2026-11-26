@@ -9339,7 +9339,7 @@ The boot then starts each claim the release stopped, once, at the daemon's wake 
 
 - every other claim, an architect's, a sub-architect's, one of an earlier phase's role or a role of a parent waiting in `awaiting_children`, starts with no new task;
 
-- the project's controller is resumed by the daemon's controller keeper.
+- the project's controller is resumed by the daemon's controller keeper, in a fresh session where the keeper replaces its session: one older than `controller_session_max_age_hours`, or one whose second end in a row came before a finished turn.
 
 Those starts go through each new issue pod's start gate as starts no request raised ([One session load at a time in an issue pod](#one-session-load-at-a-time-in-an-issue-pod)): the first to reach the pod starts at once, whatever its role, and of those that wait behind a load the role working the issue's phase goes first.
 A claim that admission's pass or the cutover's repair starts at the same boot gets no second start.
@@ -9466,7 +9466,7 @@ Then move the pods in this order:
    It refuses, as the boot would, a pod the other cluster would not admit, mount or start.
 
 3. Restart the daemon on that configuration.
-   Its boot ends the release and starts each claim the release stopped in the other cluster, each on its own session (the controller's excepted where `controller_session_max_age_hours` replaces an older session), in a pod whose workspace is built from the issue's pushed branch.
+   Its boot ends the release and starts each claim the release stopped in the other cluster, each on its own session (the controller's in a fresh session where the controller keeper replaces its session), in a pod whose workspace is built from the issue's pushed branch.
 
 No role of the project runs between the release and the restart.
 The move back is the same three steps, with the first cluster's configuration in the last two.

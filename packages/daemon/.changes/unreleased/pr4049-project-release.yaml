@@ -20,8 +20,10 @@ body: |-
   report since its last turn, is asked and waited for as a role in a turn is, as an update round
   reads that report, and the ask tells each role so.
   From the release's start the daemon starts nothing of the project. The daemon's next boot ends
-  the release and starts each claim the release stopped, once, on the session it had, in the
-  cluster the daemon's configuration then names, and charges it no launch failure and no death.
+  the release and starts each claim the release stopped, once, on the session it had (the
+  controller's in a fresh session where the controller keeper replaces its session, as for one
+  older than `controller_session_max_age_hours`), in the cluster the daemon's configuration then
+  names, and charges it no launch failure and no death.
   Those starts reach each new issue pod's start gate as starts no request raised: the first starts
   at once, and of those that wait behind its load the role working the issue's phase loads its
   session first.

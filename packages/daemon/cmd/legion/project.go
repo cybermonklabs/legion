@@ -15,12 +15,14 @@ import (
 )
 
 // newProjectCommand is the operator's hand on the daemon's project as a whole, one command per
-// operator project route (internal/api/pause.go, internal/api/project_release.go and
-// internal/api/p0_bound.go). pause stops every role of the project but the controller and holds
-// every launch, task and admission until resume lets the held work out through the wake pacing
-// (dispatch://INFRA-3759); release is the project release of dispatch://INFRA-3583; set-p0-bound
-// and clear-p0-bound change how many P0 issues may hold a slot outside the admission cap while the
-// daemon runs (dispatch://INFRA-5636). The daemon acts on its own project, so none names one.
+// operator project route (internal/api/pause.go and internal/api/p0_bound.go), but release, which
+// starts the project release and reads it through its two routes
+// (internal/api/project_release.go). pause stops every role of the project but the controller and
+// holds every launch, task and admission until resume lets the held work out through the wake
+// pacing (dispatch://INFRA-3759); release is the project release of dispatch://INFRA-3583;
+// set-p0-bound and clear-p0-bound change how many P0 issues may hold a slot outside the admission
+// cap while the daemon runs (dispatch://INFRA-5636). The daemon acts on its own project, so none
+// names one.
 func newProjectCommand(stdout, stderr io.Writer) *cobra.Command {
 	return group(&cobra.Command{Use: "project", Short: "pause or resume the daemon's project, release every pod of it for a move to another cluster, or change its P0 bound"},
 		projectCommand("pause", "pause the project: stop every role but the controller and hold their work", projectPause, stdout, stderr),
