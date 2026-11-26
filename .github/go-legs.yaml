@@ -10,12 +10,15 @@
 # each run in a mode of their own (a plain leg and a race leg) is named under the module's `twice`,
 # with why, and is then in the legs of exactly those two jobs, once in each. Every module names
 # under `unlisted` its plain job, whose last leg runs each package `go list ./...` prints and no
-# place here names, with a warning in every leg: a pull request that adds a package and no line
-# here runs it in that leg, once, and the warning says to give it the leg its time fits.
+# place here names, with a warning in every leg, so a pull request that adds a package and no line
+# here neither fails the merge group nor runs the package nowhere; list every package all the same,
+# in the same change that adds it (docs/testing.md), and a package under a tree of envoy's race lane
+# must be listed in its race leg, which ci_job_reads.py's hold_envoy_legs holds.
 # .github/scripts/go_legs.py, which each leg's go test step runs, holds all of that before the
 # leg's tests run; which readings are errors that stop a leg and which are warnings it works
-# through is written once, in
-# .github/ci-notes/ci-job-daemon-go.md#why-internaldaemons-tests-run-in-three-legs. A leg sees
+# through is written in .github/ci-notes/ci-job-daemon-go.md#why-the-daemons-tests-run-in-legs
+# (a package in no place or two, the legs and the matrix, `unlisted`) and
+# #why-internaldaemons-tests-run-in-three-legs (the groups of a split package's tests). A leg sees
 # only its own job, so .github/scripts/ci_job_reads.py's hold_daemon_legs and hold_envoy_legs,
 # which the changes job imports, hold each module's job keys to the jobs whose legs run
 # (daemon-go and daemon-go-race; envoy-go and envoy-go-race) beside `elsewhere`, `unlisted` and
@@ -270,6 +273,7 @@ packages/envoy:
       - internal/dispatch/outbox/copyrule       # 2 s
       - internal/dispatch/itemblocks
       - internal/dispatch/auth
+      - internal/dispatch/specgraph/specgraphtest
     # Dispatch's heavier packages.
     4:
       - internal/dispatch/outbox                # 320 s

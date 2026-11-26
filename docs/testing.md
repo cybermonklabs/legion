@@ -680,14 +680,19 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 
 Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
 `.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
-its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it).
+its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it). A
+package the module's `twice` names, as envoy's `internal/cipher/natscallout` is, runs once in a
+leg of each of two jobs, a plain one and a race one, each in a mode of its own.
 When you add, remove, rename or move a package of either module, change its line there in the same
 change. A package `go list ./...` prints and the file does not name still runs, in exactly one
 leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go), and every leg
-of the module warns, naming it, until the file does. A line that names a directory that is no
-package, or a package in two places, fails every leg of the module. Put a new package in the leg
-its measured time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` and
-`.github/ci-notes/ci.md`, "Why envoy's Go tests run in legs", say how the legs are balanced.
+of the module warns, naming it, until the file does. A package under one of envoy's race trees
+(`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) must be listed in
+the race leg of its tree: the changes job refuses it unlisted, since the last plain leg would run
+it without the race detector. A line that names a directory that is no package, or a package in
+two places (but the two legs of a package `twice` names), fails every leg of the module. Put a new
+package in the leg its measured time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md`
+and `.github/ci-notes/ci.md`, "Why envoy's Go tests run in legs", say how the legs are balanced.
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
 under the race detector, once per run, split by test name over the three race legs

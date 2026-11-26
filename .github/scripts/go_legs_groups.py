@@ -5,11 +5,14 @@ tests' measured times.
     go_legs_groups.py <module> <package> <groups> <parallel> <list> <source> <run>...
 
 <list> is the output of `go test -list . <the leg's build flags> ./<package>/` in <module>, every
-top-level test the legs must run; each <test2json> is a `go test -json` run of the package, from
-which each test's time is its `Elapsed` (the most of all the runs given) and whether it ran beside
-others (a `pause` event, t.Parallel) or alone. <source> is the line the file's header gives as
-where the times came from (the run and the job). Measure on the runner the legs run on: the
-groups are only as even as the times are the legs' own.
+top-level test the legs must run; each <run> is a `go test -json` run of the package, or the
+verbose lines of one where a wrapper printed them. A test's time is the greatest `Elapsed` of the
+top-level test and of its subtests, across all the runs given: Go stops a test's clock when its
+function returns, before the parallel subtests it started run, so a test whose work is in
+parallel subtests reads close to 0 s by its own clock. Whether it ran beside others is read from
+its `pause` event (t.Parallel). <source> is the line the file's header gives as where the times
+came from (the run and the job). Measure on the runner the legs run on: the groups are only as
+even as the times are the legs' own.
 
 <parallel> is the package's own -parallel, which its TestMain sets (internal/daemon 4, the
 Dispatch API's 8): a leg's time is modelled as its serial tests' sum plus its parallel tests' sum
