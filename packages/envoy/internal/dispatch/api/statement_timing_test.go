@@ -560,16 +560,20 @@ const keyedMemberWalkQuery = `with recursive members_seed as (
 // events_backlog_moves in its measuring transaction, which every reading rolls back, so it reads as
 // on the schema of main, and the after side reads through the index. Each pair is gated on its top
 // plan node's shared buffers under the plan made for its values and under the generic plan
-// (benchtime.Runner.PairBuffers): the gain is the events the lateral no longer reads. The second
-// fault is timed as a pair whose after side must be faster (benchtime.Runner.Pair). The listing is
-// timed within the bound of benchtime.Runner.PairWithin instead: the lateral is a small part of the
-// listing's work, a page of every row of a project, so its gain can sit inside the run-to-run
-// spread of the rest of the statement, and a slower listing is still a regression. Neither walk
-// has a before side. Each is timed alone (benchtime.Runner.After), and its top node's shared
-// buffers under each plan are logged (benchtime.Runner.AfterBuffers), which are its buffer reads
-// for each call. The two walks are read over the same arguments, under the same two plans and by
-// the same timing, so each reading compares with the other directly; nothing here bounds either.
-// Each text is logged with its sha256.
+// (benchtime.Runner.PairBuffers): the gain is the events the lateral no longer reads. Each is
+// timed within the bound of benchtime.Runner.PairWithin, and not as a pair whose after side must
+// be faster: the lateral is a small part of each statement's work, so its gain can sit inside the
+// run-to-run spread of the rest of the statement, and a slower statement is still a regression.
+// The second fault runs the lateral once for each issue it lists, after the walk that finds them:
+// on a database seeded at --scale 1 that was 442 probes, 8 ms of a 540 ms statement without the
+// index and 3 ms with it, and the two medians were 540.5 ms and 541.8 ms. The listing runs it for
+// a page of every row of a project.
+//
+// Neither walk has a before side. Each is timed alone (benchtime.Runner.After), and its top node's
+// shared buffers under each plan are logged (benchtime.Runner.AfterBuffers), which are its buffer
+// reads for each call. The two walks are read over the same arguments, under the same two plans
+// and by the same timing, so each reading compares with the other directly; nothing here bounds
+// either. Each text is logged with its sha256.
 func measureBacklogMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, keys, priorities []string) {
 	t.Helper()
 	t.Run(backlogMoveTiming, func(t *testing.T) {
@@ -592,7 +596,7 @@ func measureBacklogMoveAndMemberWalk(t *testing.T, runner *benchtime.Runner, key
 		fault := []any{keys, priorities, []string{}}
 		faultBefore := benchtime.Statement{SQL: backlogQuery, Args: fault, Setup: withoutIndex}
 		faultAfter := benchtime.Statement{SQL: backlogQuery, Args: fault}
-		runner.Pair(t, backlogFaultTiming, faultBefore, faultAfter)
+		runner.PairWithin(t, backlogFaultTiming, []benchtime.Statement{faultBefore}, []benchtime.Statement{faultAfter})
 		pairBuffers(backlogFaultTiming, faultBefore, faultAfter)
 		listing := projectListingArguments(project, true)
 		listingBefore := benchtime.Statement{SQL: listIssuesQuery, Args: listing, Setup: withoutIndex}
