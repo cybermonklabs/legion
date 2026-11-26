@@ -1279,7 +1279,7 @@
 #      bare curls, on every run of its hosted row in .github/workflows/e2e.yaml. Those two calls
 #      are bare registry reads of this repository's own package, not an inventory of the proof's
 #      image pulls. This check reads no script under scripts/e2e, so EXEMPTIONS names neither,
-#      and this text is the one place that names them (dispatch://INFRA-1545, round 68 and 69).
+#      and this is the one place in this check that names them (dispatch://INFRA-1545, rounds 68–70).
 #      Main's two actionlint steps make two more, each a `docker run` of the pinned actionlint
 #      copy, ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5…, which pulls it where the runner
 #      does not hold it: 'Check every workflow file with actionlint' in
@@ -1598,15 +1598,10 @@ HARNESS_LIBRARY = "-test-lib.sh"
 # dispatch://INFRA-1545, round 38). A match is an occurrence and not yet a call: call_of below
 # reads where on its line it is written, and only a path in a recognised call's place is charged
 # (dispatch://INFRA-1545, round 37). WHAT THIS DOES NOT CLAIM IS COVERAGE OF EVERY SCRIPT CI RUNS:
-# CI jobs also run scripts outside `.github/scripts/` that call `retry_fetch` — whatever
-# `git grep -l retry_fetch` finds outside `.github/scripts/` (no hand-kept count or list here, so
-# a new script outside that directory cannot make this comment stale; dispatch://INFRA-1545,
-# round 69). A call of any script outside `.github/scripts/` is a name SCRIPTS does not hold, so
-# this reader does not follow it and the step that runs it is priced by the step's own text. That
-# reach is the one this file's header describes, and widening it is dispatch://INFRA-2899's
-# question rather than a claim to be made here (review of dispatch://INFRA-1545 caught this
-# sentence claiming the whole). A `.test.sh` harness matches nothing here, since the name this
-# reads holds no dot.
+# `git grep -l retry_fetch -- ':!.github/'` finds the uses outside `.github/`. This check does not
+# follow a call to a script outside `.github/scripts/`. The step that runs that script states its
+# own budget. Extending the scan is dispatch://INFRA-2899's work.
+# A `.test.sh` harness does not match here, since the name this reads holds no dot.
 SCRIPT_CALL = re.compile(r"/([a-z0-9-]+\.sh)")
 # The three things an occurrence of a script's path can be, and the two kinds of the first
 # (dispatch://INFRA-1545, round 37). A RUN is charged once for every time the body runs it; a
