@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // A file that names `hooks:` runs the hooks it names and no default beside them, read whole and
@@ -105,6 +106,44 @@ func TestAHookNamesAMoveOfAnyOrder(t *testing.T) {
 	want := `hooks[0].moves names "testing-testing", which is no move the daemon counts: a move is written "<from>-<to>", two workflow phases, which differ but in step-step`
 	if err == nil || err.Error() != want {
 		t.Fatalf("Load(moves: [testing-testing]) error = %v, want %q", err, want)
+	}
+}
+
+// A task can name one role at two steps, and its line then makes a move back from implementing:
+// `implementer reviewer implementer` goes back from its second implementer step to its reviewer
+// step, implementing-reviewing, and the engine counts that move (workflow's Walk.MovesBack), so a
+// hook that names it fires and the loader takes it. So do the tester and the owner's acceptance
+// between two implementer steps. Each row's steps are held to the plan's checks first
+// (plan.Supported and plan.Validate take them, and plan.Line puts the move's to before its from),
+// so the premise is theirs and not this file's.
+func TestAHookNamingAMoveBackOfARoleAtTwoStepsLoads(t *testing.T) {
+	d := plan.Deployment{Roles: plan.BuiltinRoles()}
+	for _, tc := range []struct{ move, steps string }{
+		{"implementing-testing", "implementer tester implementer"},
+		{"implementing-reviewing", "implementer reviewer implementer"},
+		{"implementing-accepting", "implementer acceptance:owner implementer"},
+	} {
+		steps, err := plan.ParseSteps(tc.steps)
+		if err != nil {
+			t.Fatalf("ParseSteps(%q): %v", tc.steps, err)
+		}
+		p := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
+		if refused := append(plan.Supported(p, d), plan.Validate(p, d)...); len(refused) != 0 {
+			t.Fatalf("the plan %q is refused %+v, want it taken: the row's premise", tc.steps, refused)
+		}
+		from, to, _ := phase.ParsePair(tc.move)
+		line := plan.Line(steps)
+		if at := slices.Index(line, to); at < 0 || !slices.Contains(line[at+1:], from) {
+			t.Fatalf("the line %v of %q makes no move back %s, want %s before a later %s: the row's premise", line, tc.steps, tc.move, to, from)
+		}
+		cfg, err := Load(writeConfigFile(t, aHook("{name: stuck, on: work_back, every: 1, moves: ["+tc.move+"], roles: [implementer], prompt: Words.}")), noEnv)
+		if err != nil {
+			t.Errorf("Load(moves: [%s]), the move back of %q: %v, want it loaded", tc.move, tc.steps, err)
+			continue
+		}
+		if len(cfg.Hooks) != 1 || !reflect.DeepEqual(cfg.Hooks[0].Moves, []string{tc.move}) {
+			t.Errorf("Hooks of moves: [%s] = %+v, want the one move", tc.move, cfg.Hooks)
+		}
 	}
 }
 
