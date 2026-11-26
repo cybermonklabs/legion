@@ -9,13 +9,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// TestARefusedCallerIsNeitherReadOnlyNorApproveOnly holds the one read of the caller the two token
-// gates share (resolvedCredential) to a caller that resolved. A decision that carries a refusal
-// (resolvedCaller.err) gives neither gate a credential, though the actor beside it holds one; the
-// same decision with no refusal gives each gate its credential; and a request no layer decided
-// gives neither. Every layer that carries a refusal today carries the zero actor beside it
-// (brokerTokenActor, optionalActor), so no request through the server can tell the error check
-// from its absence, and this reads the decision on the context directly.
+// TestARefusedCallerIsNeitherReadOnlyNorApproveOnly holds the one read of the caller the
+// limited-token gate's checks share (resolvedCredential, refuseLimitedToken) to a caller that
+// resolved. A decision that carries a refusal (resolvedCaller.err) gives neither check a
+// credential, though the actor beside it holds one; the same decision with no refusal gives each
+// check its credential; and a request no layer decided gives neither. Every layer that carries a
+// refusal today carries the zero actor beside it (brokerTokenActor, optionalActor), so no request
+// through the server can tell the error check from its absence, and this reads the decision on
+// the context directly.
 func TestARefusedCallerIsNeitherReadOnlyNorApproveOnly(t *testing.T) {
 	readOnly := &model.Credential{ReadOnly: true}
 	approveOnly := &model.Credential{ApproveOnly: true}

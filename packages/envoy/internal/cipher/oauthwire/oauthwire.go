@@ -1,7 +1,7 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
 // callers it answers share: the clients they present, the scope a machine login asks for, the
 // ones a read token, a result entry's token, a Legion daemon's token and an approve-only token
-// (ScopeApprove) hold, the names the token exchange knows a subject token by, the header of a
+// hold (ScopeApprove), the names the token exchange knows a subject token by, the header of a
 // read trade's holder proof, the fields the broker adds to a token answer, the run a result
 // entry's token carries and how that run's workflow and principal are read from it, the session
 // prefix a Legion daemon's own entry fixes, and the one grammar of a token's list of projects. It
@@ -177,19 +177,18 @@ const (
 	MembershipHeld = "membership_held"
 )
 
-// The token exchange's answers to a trade the broker grants a capability it mints and holds
-// (requests.MintedKind), never an access token: a placeholder bound to a grant the broker keeps,
-// which the broker's proxy swaps the grant's token in for on each request the kind's dpop entry
-// allows. A result entry's run asks for an airlock placeholder under TokenTypeAirlockPlaceholder,
-// and the proxy swaps the run's results token in on each write the proxy block of the profile
-// AirlockResultsName allows; a person's sign-in traded for the approve capability asks for a
-// proxy placeholder under TokenTypeProxyPlaceholder.
+// The token exchange's answer to a trade the broker grants a capability it mints and holds
+// (requests.MintedKind): a placeholder of Cipher's proxy bound to a grant the broker keeps, never
+// an access token. The caller asks for it under TokenTypeProxyPlaceholder, and the broker's proxy
+// swaps the grant's token in for the placeholder on each request the kind's dpop entry allows. A
+// result entry's run is one such caller: its grant is a result grant, and its writes carry the
+// placeholder of the profile AirlockResultsName.
 const (
-	// TokenTypeAirlockPlaceholder is the requested_token_type a result entry's run asks for and
-	// the issued_token_type it is answered: the placeholder its writes carry through the airlock.
+	// TokenTypeProxyPlaceholder is the requested_token_type such a caller asks for and the
+	// issued_token_type it is answered: the placeholder its requests carry through the proxy.
 	// RFC 8693 Section 2.2.1 lets the issued token be other than an access token; the broker
-	// defines this name, as it defines SubjectTokenTypeGitHub.
-	TokenTypeAirlockPlaceholder = "urn:envoy:params:oauth:token-type:airlock-placeholder"
+	// defines this name, as it defines its subject token types.
+	TokenTypeProxyPlaceholder = "urn:envoy:params:oauth:token-type:proxy-placeholder"
 	// AirlockResultsName is the one airlock name a result grant holds: the profile whose proxy
 	// block, of kind dpop, binds Dispatch's public host, and the variable the command finds the
 	// placeholder in.
@@ -198,28 +197,19 @@ const (
 	// grant's placeholder opens with placeholder.MintedPrefix of it, and the id it is named by on
 	// the wire and in the proxy's lines is it, a colon and the grant's uuid.
 	AirlockResultsWord = "result"
-	// TokenTypeProxyPlaceholder is the requested_token_type a person's approve trade asks for and
-	// the issued_token_type it is answered: the placeholder its requests carry through the proxy.
-	// RFC 8693 Section 2.2.1 lets the issued token be other than an access token; the broker
-	// defines this name, as it defines its subject token types.
-	TokenTypeProxyPlaceholder = "urn:envoy:params:oauth:token-type:proxy-placeholder"
-	// ExtraGrantID is the placeholder answer's field naming the grant: its kind's word
-	// (AirlockResultsWord for a result grant), a colon and its uuid.
+	// ExtraGrantID is the placeholder answer's field naming the grant: its kind's word, a colon
+	// and its uuid.
 	ExtraGrantID = "grant_id"
-	// ExtraAirlock is the field of a result entry's placeholder answer holding the grant's
-	// AirlockRelease.
-	ExtraAirlock = "airlock"
-	// ExtraProxy is the field of an approve trade's placeholder answer holding the grant's
-	// AirlockRelease: how the session reaches the proxy that holds the grant's token.
+	// ExtraProxy is the placeholder answer's field holding the grant's AirlockRelease: how the
+	// session reaches the proxy that holds the grant's token.
 	ExtraProxy = "proxy"
 )
 
 // AirlockRelease is how a command reaches the values the airlock holds back: the proxy it sends
 // their requests through, the certificate authority that proxy's certificates are signed by, the
 // password every connection to it opens with, and one entry per name held back. A release of
-// secrets answers it under "airlock" (POST /v1/grants/{id}/values), and so does the token
-// exchange's answer to a result entry's run (ExtraAirlock); its answer to an approve trade carries
-// it under ExtraProxy.
+// secrets answers it under "airlock" (POST /v1/grants/{id}/values), and the token exchange's
+// placeholder answer under ExtraProxy.
 type AirlockRelease struct {
 	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
 	ProxyURL string `json:"proxy_url"`
@@ -557,10 +547,10 @@ type Introspection struct {
 	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
 	// exchanged token holds ScopeRead when a read entry minted it or its trade asked for it, and
 	// then ScopePerson beside it ("read person") for a ProjectScopeReadPerson token that names
-	// its person; it holds ScopeResults when a result entry minted it, and ScopeLegionStatus when
-	// a Legion daemon's own entry minted it and its trade did not ask for ScopeRead. The token the
-	// broker mints for a person's approve grant holds ScopeApprove alone. Every other exchanged
-	// token holds no scope, and a machine login's own token holds Scope.
+	// its person; ScopeResults when a result entry minted it; ScopeLegionStatus when a Legion
+	// daemon's own entry minted it and its trade did not ask for ScopeRead. The token the broker
+	// mints for a person's approve grant holds ScopeApprove alone. Every other exchanged token
+	// holds no scope, and a machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// CI is the run a result entry's token was minted for. It is set exactly beside
 	// ProjectScopeResults, and absent from every other token.

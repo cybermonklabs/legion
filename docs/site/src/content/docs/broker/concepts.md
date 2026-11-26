@@ -1788,9 +1788,10 @@ Each grant records a digest of its block and the destination, and a broker whose
 serves none of it. The policy never serves a dpop profile as a secret, whatever the store holds,
 and a stored secret of its name is not served through it, so nothing of it can be requested or
 approved; it is no refusal either, so it writes no refused line and counts in no unservable series. A grant of the capability is made by the broker
-itself, for a kind it names in code. This release names two, the results capability and the approve capability, below.
-
-The results capability is `DISPATCH_RESULTS_TOKEN`, whose grant a CI run of a result entry is answered.
+itself, for a kind it names in code. This release names two: the results capability,
+`DISPATCH_RESULTS_TOKEN`, whose grant a CI run of a result entry is answered, and the approve
+capability, below. Both are asked for with the one placeholder type,
+`urn:envoy:params:oauth:token-type:proxy-placeholder`, and answered under `proxy`.
 
 The approve capability is a person's approvals in Dispatch from a box they signed in on. A dpop
 block named `DISPATCH_APPROVE_TOKEN`, binding Dispatch's host, turns it on, and the broker logs it

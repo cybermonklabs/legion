@@ -145,7 +145,7 @@ func (e *resultsEnvironment) grant(t *testing.T, b *resultsBroker, run string) r
 	status, body := postTokenAt(t, b.Addr, "http://"+b.Addr, askedForThePlaceholder(runForm(mintRunToken(t, e.github, e.githubKey, resultsWorkflow, resultsBranch, run), "")))
 	held, _ := body["access_token"].(string)
 	grantID, _ := body[oauthwire.ExtraGrantID].(string)
-	airlock, _ := body[oauthwire.ExtraAirlock].(map[string]any)
+	airlock, _ := body[oauthwire.ExtraProxy].(map[string]any)
 	caPEM, _ := airlock["ca_certificate"].(string)
 	if status != http.StatusOK || !strings.HasPrefix(held, placeholder.MintedPrefix(oauthwire.AirlockResultsWord)) || grantID == "" || caPEM == "" {
 		t.Fatalf("run %s's placeholder exchange = %d %v, want 200 with a result placeholder, its grant and the airlock's certificate", run, status, body)

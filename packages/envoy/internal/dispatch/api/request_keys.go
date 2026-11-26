@@ -351,7 +351,8 @@ type resolvedCaller struct {
 // resolvedCredential is the credential of the caller ctx carries (resolvedCallerKey) where that
 // caller resolved, and nil otherwise: for a context that carries no caller, for a caller whose
 // credential did not resolve (resolvedCaller.err), and for a caller with no credential. It is the
-// one read of the caller the two token gates share: readOnlyCredential and approveOnlyRequest.
+// one read of the caller the limited-token gate's three checks share (refuseLimitedToken):
+// readOnlyCredential, approveOnlyRequest and the results-only check.
 func resolvedCredential(ctx context.Context) *model.Credential {
 	caller, _ := ctx.Value(resolvedCallerKey{}).(resolvedCaller)
 	if caller.err != nil {

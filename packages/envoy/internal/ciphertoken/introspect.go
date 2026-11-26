@@ -138,16 +138,15 @@ func cutOf(answer Introspection) (time.Time, error) {
 // needs the scope itself and not only the list, and a narrowed token's projects mean what its
 // base word's do; a results answer names its one project. The service is carried as the broker
 // answered it, which is set exactly where the person is not (sessionCaller refuses an answer
-// naming neither). ReadOnly and ResultsOnly are shapeOf's verdict on the answer, which
-// sessionCaller reached and hands over as shape, and cut is the answer's cut, which sessionCaller
-// read (cutOf): callerOf runs only on an answer sessionCaller accepted, and sessionCaller lets a
-// read-only or a results answer through only with its switch set, which only a verifier that
-// serves one sets, so a Caller marked either way is one such a verifier accepted. The run of a
-// results answer is copied, so a reader of the Caller shares nothing with the answer the cache
-// keeps for the next request.
-// LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
-// shapeOf reads it and with no slice built, since this too runs on every request a verifier
-// decides.
+// naming neither). ReadOnly, ResultsOnly and ApproveOnly are shapeOf's verdict on the answer,
+// which sessionCaller reached and hands over as shape, and cut is the answer's cut, which
+// sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller accepted, and
+// sessionCaller lets a read-only, a results or an approve-only answer through only with its switch
+// set, which only a verifier that serves one sets, so a Caller marked any of those ways is one
+// such a verifier accepted. The run of a results answer is copied, so a reader of the Caller
+// shares nothing with the answer the cache keeps for the next request. LegionStatus is whether
+// Scope holds the word ScopeLegionStatus, read one word at a time as shapeOf reads it and with no
+// slice built, since this too runs on every request a verifier decides.
 func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
 	caller := Caller{
 		Session:      answer.Session,

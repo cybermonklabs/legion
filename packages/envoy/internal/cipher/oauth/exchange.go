@@ -294,16 +294,14 @@ type PersonSignIns func(ctx context.Context, in PersonSignIn) error
 
 // subjectTokenTypes is every type in types a caller may present as a subject token, sorted: all
 // of them but the machine's actor token type, which the exchange registers beside the person's
-// own so that a person's trade can carry it, and which is no subject of its own, and the two
-// placeholders, the airlock's, which a result entry's run is answered, and the proxy's, which a
-// person's approve trade is answered, which nobody presents. It is read off the registered types
-// rather than built from the configuration a second time, so what the metadata document names is
-// exactly what the library will accept.
+// own so that a person's trade can carry it, and which is no subject of its own, and the airlock
+// placeholder, which a result entry's run is answered and nobody presents. It is read off the
+// registered types rather than built from the configuration a second time, so what the metadata
+// document names is exactly what the library will accept.
 func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 	names := make([]string, 0, len(types))
 	for name := range types {
-		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeAirlockPlaceholder &&
-			name != oauthwire.TokenTypeProxyPlaceholder {
+		if name != oauthwire.ActorTokenTypeMachine && name != oauthwire.TokenTypeProxyPlaceholder {
 			names = append(names, name)
 		}
 	}
@@ -324,11 +322,10 @@ func subjectTokenTypes(types map[string]oauth2.RFC8693TokenType) []string {
 // library rather than by a half-built handler.
 func (c ExchangeConfig) tokenTypes() map[string]oauth2.RFC8693TokenType {
 	types := map[string]oauth2.RFC8693TokenType{
-		tokenTypeAccessToken:                  &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
-		oauthwire.TokenTypeAirlockPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeAirlockPlaceholder},
-		// The proxy placeholder, the other type a caller may ask for beside these two: a person's
-		// sign-in traded for the approve capability (exchangeGrant, grantApprove). It is no
-		// subject type.
+		tokenTypeAccessToken: &rfc8693.DefaultTokenType{Name: tokenTypeAccessToken},
+		// The proxy placeholder, the one other type a caller may ask for: a result entry's run
+		// (grantResult) and a person's sign-in traded for the approve capability (grantApprove)
+		// ask for it, and exchangeGrant answers it. It is no subject type.
 		oauthwire.TokenTypeProxyPlaceholder: &rfc8693.DefaultTokenType{Name: oauthwire.TokenTypeProxyPlaceholder},
 	}
 	if c.Kubernetes.configured() {
@@ -441,8 +438,9 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 
 // exchangeGrant is the token endpoint's RFC 8693 branch: a caller's platform identity for a
 // Dispatch access token, bound to the key its DPoP proof names, or, for a read trade that sends a
-// holder proof, to the key that proof names (holderKey); or, for a result entry's run, for an
-// airlock placeholder and a result grant (grantPlaceholder) in place of any token.
+// holder proof, to the key that proof names (holderKey); or, for a result entry's run and a
+// person's approve trade, for a proxy placeholder and a grant (grantResult, grantApprove) in place
+// of any token.
 //
 // It runs in two halves. The first reads the request outside any transaction: the library
 // validates it, which writes nothing the token depends on — the DPoP proof's and a GitHub token's
@@ -472,11 +470,7 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // those, and for every type, the registration a pod's session name needs is read before the
 // library builds anything (registeredPodSession). The claim on the session name is made for every
 // type once the library has built the answer, because that is when the issued token's expiry is
-// set, and the claim must not end before the token it is made for. A request for the airlock
-// placeholder, which decide grants a result entry's run alone, leaves the library after
-// NewAccessRequest, which has spent the run token's jti: the library mints nothing, and
-// grantPlaceholder writes the grant and claims the session name until the grant's end, in the
-// same transaction.
+// set, and the claim must not end before the token it is made for.
 //
 // A read trade, one that asks for oauthwire.ScopeRead, makes, moves and extends no launcher
 // credential: it asks for none (launcherCredentialAsked), and a person's read trade proves its
@@ -488,12 +482,15 @@ func keyFunc(keys KeySource) jwt.Keyfunc {
 // all follow the holder's key. Its expiry is bounded by its subject's (subjectBound), and its
 // answer names no credential.
 //
-// A trade that asks for the approve capability's proxy placeholder (placeholderTrade) is answered
-// no token. It may not ask for oauthwire.ScopeRead, and one that does is refused before the
-// transaction, since a trade narrowed to reading approves nothing. The library builds nothing for
-// it: the approve grant is written in the transaction instead (grantApprove), and sets the expiry
-// the session name is claimed until. Both answers end the same way, with the claim, the commit and
-// the warning for a name the claim took (logSessionTaken), and then the answer is written.
+// A trade that asks for the proxy placeholder (placeholderTrade) is answered no token: a result
+// entry's run, which decide holds to it (placeholderDecision), gets a result grant (grantResult),
+// and every other such trade is the approve capability's (grantApprove), which only a person's
+// sign-in is granted. It may not ask for oauthwire.ScopeRead, and one that does is refused before
+// the transaction, since a trade narrowed to reading writes nothing. The library builds nothing
+// for it once NewAccessRequest has spent its subject token's single-use marker: the grant is
+// written in the transaction instead, and sets the expiry the session name is claimed until.
+// Both answers end the same way, with the claim, the commit and the warning for a name the claim
+// took (logSessionTaken), and then the answer is written.
 //
 // trade is TokenHooks.Trade: on the trade of one of the broker's own access tokens it runs once
 // the library has validated the request, before the exchange decides anything, and a *Refusal it
@@ -617,21 +614,19 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request, trade f
 		p.writeError(ctx, w, request, err)
 		return
 	}
-	if asksForPlaceholder(request.GetRequestForm()) {
-		// A result entry's run, the one decision decide grants the airlock placeholder:
-		// NewAccessRequest has spent its run token's jti, and the library mints nothing for it. The
-		// grant is written, and its session name claimed, in this transaction, and the answer is
-		// C8's.
-		p.grantPlaceholder(ctx, txCtx, w, request, session, &committed)
-		return
-	}
 	var placeholderAnswer map[string]any
 	var resp oauth2.AccessResponder
-	if placeholderTrade {
+	switch {
+	case placeholderTrade && resultTrade(session):
+		// A result entry's run, the one decision decide holds to the placeholder:
+		// NewAccessRequest has spent its run token's jti, and the library mints nothing for it.
+		// The result grant is written in this transaction.
+		placeholderAnswer, err = p.grantResult(txCtx, request, session)
+	case placeholderTrade:
 		// A person's sign-in alone, on a broker that serves the capability: the grant is written
 		// in this transaction, and the library mints nothing.
 		placeholderAnswer, err = p.grantApprove(txCtx, session, subjectTokenType, credentialID)
-	} else {
+	default:
 		if holder != "" {
 			// The token is the holder's: the library stores the session as it stands, answers its
 			// token type from this binding, and an introspection answers it as the token's jkt.

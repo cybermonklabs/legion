@@ -824,13 +824,13 @@ func main() {
 		fatal(err)
 		slog.Info("broker: the proxy's DPoP key", "thumbprint", podThumbprint)
 		reqMachine.MintedTokens, reqMachine.MintedKey = provider, podThumbprint
-		// The capabilities this pod mints and holds: the results capability, its grants read from
-		// result_grants, served only under the results entry the token endpoint records in each
-		// grant (requests.MintedKind.EntryDigest).
-		reqMachine.Minted = []requests.MintedKind{{
+		// The capabilities this pod mints and holds, beside the approve capability's above: the
+		// results capability, its grants read from result_grants, served only under the results
+		// entry the token endpoint records in each grant (requests.MintedKind.EntryDigest).
+		reqMachine.Minted = append(reqMachine.Minted, requests.MintedKind{
 			Name: oauthwire.AirlockResultsName, Word: oauthwire.AirlockResultsWord,
 			Grants: oauthStore.ResultGrants(), EntryDigest: entryDigest,
-		}}
+		})
 		proxyServer = proxy.New(proxy.Options{
 			Grants:  reqMachine,
 			DPoPKey: podKey,

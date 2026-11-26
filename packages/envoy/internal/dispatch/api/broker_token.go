@@ -134,17 +134,9 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // person and holds the scope read alone, or a token narrowed to reading because its trade asked
 // for read, which names the person or the service, and the projects, that the same trade would
 // have named without read: an account entry's naming no person among them, narrowed, names its
-// account and writes nothing, as every read-only token does. Its credential is marked read-only
-// (model.Credential.ReadOnly), with the token's cut (model.Credential.Cut), and
-// refuseLimitedToken answers it 403 READ_ONLY_TOKEN on every route outside the read class
-// (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
-// entry's write as its account and everything else the route does. While no build answers a read
-// at a past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
-// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
-// does.
 // account and writes nothing, as every read-only token does. The broker narrows no job's token.
 // Its credential is marked read-only (model.Credential.ReadOnly), with the token's cut
-// (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route
+// (model.Credential.Cut), and refuseLimitedToken answers it 403 READ_ONLY_TOKEN on every route
 // outside the read class (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in
 // check, an account entry's write as its account and everything else the route does. While no
 // build answers a read at a past time, it answers one that carries a cut 403
@@ -172,14 +164,13 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 //     session's credential this verifier serves: every case ciphertoken.ErrNotASession lists,
 //     the one list of them. Among them: it names no session, it names neither a person nor a
 //     service, it was issued to a client other than the exchange a session's token comes from,
-//     or its project scope and its scope are a shape no broker mints - the scope read or
-//     results, a cut, or a run, beside a project scope that writes, the project scope none,
-//     results or a narrowed one in any shape but its own token's, a job's shapes broken (public
-//     beside a person or a scope, named beside no person and a scope), or the scope approve in
-//     any shape but an approve-only token's. A machine login's own access token is one of these,
-//     and Dispatch records every write under the session its credential proved, so it acts on
-//     none of them rather than letting a request body name a session for a credential that names
-//     none.
+//     or its project scope and its scope are a shape no broker mints - the scope read or results,
+//     a cut, or a run beside a project scope that writes, the project scope none, results or a
+//     narrowed one in any shape but its own token's, a job's shapes broken (public beside a person
+//     or a scope, named beside no person and a scope), or the scope approve in any shape but an
+//     approve-only token's. A machine login's own access token is one of these, and Dispatch
+//     records every write under the session its credential proved, so it acts on none of them
+//     rather than letting a request body name a session for a credential that names none.
 //   - 429 BROKER_TOKEN_RATE_LIMITED — this source address has no introspection left in its
 //     bucket; nothing was asked of the broker. It carries the wait in Retry-After as well as in
 //     its prose, as the broker's own 429s do.
@@ -230,7 +221,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// one broker-issued token no machine holds: an approve-only token (ciphertoken.Caller.
 	// ApproveOnly), which the secrets broker mints for a person's approve grant, binds to its own
 	// pod's key and spends through its proxy without ever releasing it. That token holds both of
-	// the person's scopes and is marked approve-only, so refuseApproveOnlyToken holds it to the
+	// the person's scopes and is marked approve-only, so refuseLimitedToken holds it to the
 	// approve list (approveScopeRoutes) before any route runs. A token scoped to a project gets no
 	// person scope, because the deployment mapped that token to a project and not to the person: it
 	// proves a session, not that any person stands behind the request. A token that names a
@@ -272,13 +263,13 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		ID:   caller.Session,
 		// The broker proved this session, so the credential already names the agent behind the
 		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, with the cut it reads at, and a results token is marked as such with its
-		// run, which are what refuseLimitedToken reads and the results route holds the result to;
-		// an approve-only token is marked as one, which is all refuseApproveOnlyToken reads; and
-		// the project scope and the list are carried as the broker answered them, the scope as its
-		// base word (ciphertoken.Caller.ProjectScope), which is what writeNeedsASignedInPerson
-		// reads of a caller naming a service and no person: a job's token and an account entry's
-		// token naming no person write, and a machine's nobody signed in on does not.
+		// is marked as one, with the cut it reads at, a results token as such with its run, and an
+		// approve-only token as one, which are what refuseLimitedToken reads and the results route
+		// holds the result to; the project scope and the list are carried as the broker answered
+		// them, the scope as its base word (ciphertoken.Caller.ProjectScope), which is what
+		// writeNeedsASignedInPerson reads of a caller naming a service and no person: a job's token
+		// and an account entry's token naming no person write, and a machine's nobody signed in on
+		// does not.
 		Credential: &model.Credential{
 			Scopes:       scopes,
 			Session:      caller.Session,

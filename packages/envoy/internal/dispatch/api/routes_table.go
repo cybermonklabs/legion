@@ -593,7 +593,7 @@ var resultsScopeRoutes = []string{"POST /api/v1/projects/{key}/results", "POST /
 // token the secrets broker mints for a person's approve grant, binds to its own pod's key and spends
 // through its proxy, never released (model.Credential.ApproveOnly). It acts as its person with both
 // of the person's scopes, and every other row of the table, and GET /ws/live beside it, answers it
-// 403 APPROVE_ONLY_TOKEN before anything else the route does (refuseApproveOnlyToken), so a route
+// 403 APPROVE_ONLY_TOKEN before anything else the route does (refuseLimitedToken), so a route
 // added later stays closed to it until it is listed here.
 //
 // The list is the rows routeScopes gives approve, the routes that settle what a person settles,
@@ -663,12 +663,11 @@ type routeRow struct {
 // serves. Every mutating row carries a Scope, and a GET row carries none (project_scope.go);
 // OAuthScopes is empty on every row any authenticated caller may reach; Read is the GET row's
 // entry of readClasses, and the zero entry, which classes nothing, on every other row, so no row
-// but a GET row is ever a read; ResultsScope is true on the rows the results list names and on no
-// other, and ApproveOnly on the rows the approve list names and on no other. Only the
-// limited-token gate reads Read and ResultsScope (refuseLimitedToken), and only the approve-only
-// gate ApproveOnly (refuseApproveOnlyToken); none of them reaches the route index or the OpenAPI
-// document. The row's own five columns are read through it by promotion. What the route takes and
-// answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
+// but a GET row is ever a read; ResultsScope is true on the rows the results list names and
+// ApproveOnly on the rows the approve list names, and on no other. Only the limited-token gate
+// reads Read, ResultsScope and ApproveOnly (refuseLimitedToken), never the route index or the
+// OpenAPI document. The row's own five columns are read through it by promotion. What the route
+// takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope        writeScope

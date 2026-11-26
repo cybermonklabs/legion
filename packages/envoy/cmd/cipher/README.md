@@ -343,8 +343,8 @@ the job the same way, with `dispatch result --issue KEY --check c1 --verdict pas
 "$GITHUB_SHA"`; the rule entry `DISPATCH_RESULTS_TOKEN` then allows `POST` under
 `/api/v1/issues/` beside `/api/v1/projects/`.
 
-`result-grant` trades the job's GitHub identity at the broker's token endpoint for the airlock
-placeholder of a result grant (`requested_token_type=urn:envoy:params:oauth:token-type:airlock-placeholder`),
+`result-grant` trades the job's GitHub identity at the broker's token endpoint for the proxy
+placeholder of a result grant (`requested_token_type=urn:envoy:params:oauth:token-type:proxy-placeholder`),
 proving the trade with a key it makes in memory and never writes. It needs
 `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` (or a run's token in
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`), and runs nothing when the broker refuses the trade, and

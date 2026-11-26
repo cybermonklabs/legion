@@ -121,7 +121,7 @@ type Credential struct {
 	// mints for a person's approve grant, binds to its own pod's key and spends through its proxy,
 	// never released. It acts as its person with both of the person's scopes, and Dispatch serves
 	// it on the routes its approve list names (approveScopeRoutes) alone, answering it 403
-	// APPROVE_ONLY_TOKEN on every other (refuseApproveOnlyToken), before anything else the route
+	// APPROVE_ONLY_TOKEN on every other (refuseLimitedToken), before anything else the route
 	// does. False for every other credential.
 	ApproveOnly bool
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and

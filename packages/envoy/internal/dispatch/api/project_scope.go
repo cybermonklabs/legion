@@ -52,7 +52,7 @@ package api
 //     reading, which may name the project it reads as, or an account it would have written as):
 //     the read-only gate register puts outside it answers every such credential 403
 //     READ_ONLY_TOKEN on every route outside the read class, every write among them
-//     (refuseReadOnlyToken, readClasses). A job's `named` token is no such credential: it carries
+//     (refuseLimitedToken, readClasses). A job's `named` token is no such credential: it carries
 //     the one project its entry names, and the check below judges it as it judges a person's
 //     named token for that project. That is the rule and not a transitional measure: every caller
 //     that exists today writes exactly what it wrote before, which is what lets this deploy before

@@ -65,11 +65,12 @@ type Config struct {
 	// identities, and the issuers whose tokens it accepts as a subject token.
 	Exchange ExchangeConfig
 	// Airlock is what a result entry's run is handed beside its placeholder (AirlockSettings), nil
-	// for a broker whose airlock binds no DISPATCH_RESULTS_TOKEN: such a broker answers no run a
+	// for a broker whose proxy binds no DISPATCH_RESULTS_TOKEN: such a broker answers no run a
 	// placeholder, and config.Load refuses a start that lists a result entry without one.
 	Airlock *AirlockSettings
 	// Approve is the approve capability a person's sign-in is traded for (ApproveSettings), nil for
-	// a broker that serves none: such a broker refuses every trade that asks for a placeholder.
+	// a broker that serves none: such a broker refuses every approve trade that asks for a
+	// placeholder.
 	Approve *ApproveSettings
 }
 
@@ -81,9 +82,9 @@ type Provider struct {
 	strategy *codeStrategy
 	// exchange is Config.Exchange, which the exchange's own step decides by.
 	exchange ExchangeConfig
-	// airlock is Config.Airlock, approve Config.Approve, and accessLifetime Config.AccessLifetime,
-	// which a result grant's and an approve grant's lifetimes are bounded by (resultGrantLifetime,
-	// approveGrantLifetime).
+	// airlock is Config.Airlock and approve Config.Approve, and accessLifetime
+	// Config.AccessLifetime, which a result grant's and an approve grant's lifetimes are bounded by
+	// (resultGrantLifetime, approveGrantLifetime).
 	airlock        *AirlockSettings
 	approve        *ApproveSettings
 	accessLifetime time.Duration

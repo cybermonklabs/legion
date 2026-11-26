@@ -788,19 +788,19 @@ type AirlockGrant struct {
 	Release              oauthwire.AirlockRelease
 }
 
-// placeholderAnswer is the token endpoint's answer to a run asking for the airlock placeholder,
-// as this client reads it.
+// placeholderAnswer is the token endpoint's answer to a run asking for the proxy placeholder,
+// as this client reads it: the release under oauthwire.ExtraProxy.
 type placeholderAnswer struct {
 	AccessToken     string                    `json:"access_token"`
 	IssuedTokenType string                    `json:"issued_token_type"`
 	ExpiresIn       json.Number               `json:"expires_in"`
 	GrantID         string                    `json:"grant_id"`
-	Airlock         *oauthwire.AirlockRelease `json:"airlock"`
+	Proxy           *oauthwire.AirlockRelease `json:"proxy"`
 }
 
 // AirlockPlaceholder trades a GitHub workflow run's token at the broker's token endpoint for the
-// airlock placeholder of a result grant (requested_token_type
-// oauthwire.TokenTypeAirlockPlaceholder), with a DPoP proof of this client's key, and never for
+// proxy placeholder of a result grant (requested_token_type
+// oauthwire.TokenTypeProxyPlaceholder), with a DPoP proof of this client's key, and never for
 // an access token: the broker keeps the grant and its proxy holds the run's results token. It
 // declines the launcher credential when Config.NoLauncherCredential says to. A refusal the
 // broker answered with an OAuth error is a RefusedError; an answer that is no placeholder of a
@@ -815,7 +815,7 @@ func (c *Client) AirlockPlaceholder(ctx context.Context) (*AirlockGrant, error) 
 		"client_id":            {oauthwire.ExchangeClientID},
 		"subject_token":        {subject},
 		"subject_token_type":   {subjectType},
-		"requested_token_type": {oauthwire.TokenTypeAirlockPlaceholder},
+		"requested_token_type": {oauthwire.TokenTypeProxyPlaceholder},
 	}
 	if c.noLauncherCredential {
 		form.Set(oauthwire.FormLauncherCredential, oauthwire.FormLauncherCredentialDeclined)
@@ -830,16 +830,16 @@ func (c *Client) AirlockPlaceholder(ctx context.Context) (*AirlockGrant, error) 
 	}
 	seconds, secondsErr := answer.ExpiresIn.Int64()
 	switch {
-	case answer.IssuedTokenType != oauthwire.TokenTypeAirlockPlaceholder:
-		return nil, fmt.Errorf("the broker at %s answered issued_token_type %s, not the airlock placeholder", shown, c.brokerURL.Words(strconv.Quote(answer.IssuedTokenType)))
-	case answer.AccessToken == "" || answer.GrantID == "" || answer.Airlock == nil || answer.Airlock.ProxyPassword != answer.AccessToken ||
-		answer.Airlock.Names[oauthwire.AirlockResultsName].Value != answer.AccessToken:
-		return nil, fmt.Errorf("the broker at %s answered no placeholder of a result grant with its airlock release", shown)
+	case answer.IssuedTokenType != oauthwire.TokenTypeProxyPlaceholder:
+		return nil, fmt.Errorf("the broker at %s answered issued_token_type %s, not the proxy placeholder", shown, c.brokerURL.Words(strconv.Quote(answer.IssuedTokenType)))
+	case answer.AccessToken == "" || answer.GrantID == "" || answer.Proxy == nil || answer.Proxy.ProxyPassword != answer.AccessToken ||
+		answer.Proxy.Names[oauthwire.AirlockResultsName].Value != answer.AccessToken:
+		return nil, fmt.Errorf("the broker at %s answered no placeholder of a result grant with its proxy release", shown)
 	case secondsErr != nil || seconds <= 0:
 		return nil, fmt.Errorf("the broker at %s answered no usable expires_in (%s)", shown, c.brokerURL.Words(strconv.Quote(answer.ExpiresIn.String())))
 	}
-	c.logf(ctx, "traded a workflow run's identity for an airlock placeholder", "grant", answer.GrantID)
-	return &AirlockGrant{Placeholder: answer.AccessToken, GrantID: answer.GrantID, ExpiresAt: c.now().Add(time.Duration(seconds) * time.Second), Release: *answer.Airlock}, nil
+	c.logf(ctx, "traded a workflow run's identity for a proxy placeholder", "grant", answer.GrantID)
+	return &AirlockGrant{Placeholder: answer.AccessToken, GrantID: answer.GrantID, ExpiresAt: c.now().Add(time.Duration(seconds) * time.Second), Release: *answer.Proxy}, nil
 }
 
 // read is the answer as a Token, refusing one that is not this grant's: no access token, a token
