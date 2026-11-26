@@ -27,7 +27,7 @@ import { useFocusedNode } from "./focused-node";
 import { MenuMark } from "./IssuePresets";
 import { isCheck, isStatement, lineWordsRaw, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
+import { type LineNames, oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import {
   CONTENTS_MARK_WORDS,
@@ -149,8 +149,9 @@ const MARK_TEXT_REM = 0.75;
  * The Contents list (R14, the prototype's `#left`): its heading with the Focus branch toggle,
  * and one row per entry, each its node's first line by R1's rule, cut from its first block's
  * words with each bare address as written (`lineWordsRaw`) at a word to the row's width, with
- * each reference in it named once the line is cut (`referenceStandIns`): by the page's name for
- * it, and by its short form only where the page knows none; a node with no words is named by its
+ * each reference in it named once the line is cut (`referenceStandIns`), as the node's row in the
+ * outline names it, from the names the page published: an issue by its key and its title, and a
+ * reference the page has no name for as its author wrote it; a node with no words is named by its
  * kind's word. `slots/contents.tsx` draws it under the issue's three sentences, in the Contents
  * pane from 1024 px up and in its Outline sheet below that (`contents-frame.tsx`). It is one tab
  * stop, as the outline is: the arrow keys move inside it, the right and left arrows unfold and
@@ -160,7 +161,7 @@ const MARK_TEXT_REM = 0.75;
  */
 export function ContentsList({
   focusBranch,
-  nameOf,
+  lineNames,
   onFocusBranch,
   onGo,
   producing,
@@ -168,8 +169,8 @@ export function ContentsList({
 }: {
   /** Whether the outline draws one branch at a time, the current one. */
   focusBranch: boolean;
-  /** How a reference an entry's words cite is named (`useReferenceNames`). */
-  nameOf: (reference: string) => string | undefined;
+  /** What a reference an entry's words cite is named by (`useIssueNames`). */
+  lineNames: LineNames;
   /** Turns Focus branch on or off, around the entry the reader is in. */
   onFocusBranch: (current: string | undefined) => void;
   /** Goes to the node in the outline. */
@@ -238,8 +239,8 @@ export function ContentsList({
         const { node } = entry;
         const isCurrent = node.id === current;
         // The line is cut with each reference it cites unnamed and measured with each named, so
-        // no cut falls inside a name (`referenceStandIns`).
-        const references = referenceStandIns(nameOf);
+        // no cut falls inside a word of a name (`referenceStandIns`).
+        const references = referenceStandIns(lineNames);
         const held = references.standIn(lineWordsRaw(node));
         const unnamed = held.trim() === "";
         const words = unnamed ? NODE_TYPE_NAMES[node.type] : held;
@@ -281,7 +282,7 @@ export function ContentsList({
         const drawnWords = references.named(drawnLine(line));
         return { drawnWords, indent, isCurrent, line, marks, unnamed };
       }),
-    [box, current, nameOf, rows]
+    [box, current, lineNames, rows]
   );
   // The list's one tab stop, always on a drawn row, so Tab never skips the list: the row the
   // reader last moved to, else the nearest drawn entry at or above the entry they are in - a

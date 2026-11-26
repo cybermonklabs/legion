@@ -312,24 +312,24 @@ export function SpecFilterBody({
       stands: counted[at].stands,
     }))
     .filter(({ stands }) => stands);
-  // How a reference a plain line cites is named - in the three sentences, a quote, a question,
-  // a group's heading - read once over the whole tree (`referenceStandIns`), and how this issue
-  // addresses a node, which is the one rule the tree was built with, so a `shaped` tie resolves
-  // to the node it names (`tree-drafts.ts`).
-  const { nameOf, nodeIdOf } = useIssueNames(issue, root);
+  // What a reference a plain line cites is named by - in the three sentences, a quote, a
+  // question, a group's heading - the names the page published, as a row of the outline names it
+  // (`referenceStandIns`), and how this issue addresses a node, which is the one rule the tree was
+  // built with, so a `shaped` tie resolves to the node it names (`tree-drafts.ts`).
+  const { lineNames, nodeIdOf } = useIssueNames(issue);
   const { groups, others } = useMemo(
     () =>
       specDecidedBy({
         asksHeld,
         checks: resultsRead.data?.checks ?? [],
         decisions: decisionsRead.data,
-        nameOf,
+        lineNames,
         nodeIdOf,
         reader,
         root,
         view,
       }),
-    [asksHeld, decisionsRead.data, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
+    [asksHeld, decisionsRead.data, lineNames, nodeIdOf, reader, resultsRead.data, root, view]
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
@@ -694,8 +694,8 @@ export function SpecFilterBody({
         <IssueThreeThings
           counts={counts}
           issueKey={issue.key}
+          lineNames={lineNames}
           look="spec"
-          nameOf={nameOf}
           // The sentences come with the batched names read, which waits until no read of the
           // tree is still out (`slots/contents.tsx`).
           summary={summary}

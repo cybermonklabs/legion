@@ -2,7 +2,7 @@ import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -26,7 +26,7 @@ import { briefCounts, IssueThreeThings } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import { presetPath } from "./issue-address";
 import { buildIssueTree, type TreeNode } from "./issue-tree";
-import { useIssueNames } from "./one-line";
+import { type LineNames, useIssueNames } from "./one-line";
 import * as outlineReads from "./outline-reads";
 import {
   type CheckState,
@@ -108,10 +108,22 @@ function checkNode(n: number, state: CheckState, text = `Check ${n}`): TreeNode 
   return treeNode(`verification#b-c${n}`, "check", { state, text });
 }
 
-/** The head as a slot draws it: what the summary cites named once over `root`, the whole tree
- *  the summary is a node of (`slots/contents.tsx`), and the two rows counted over that tree under
- *  the words `query` as the slot counts them, once the reads the tree is built from hold
- *  (`held`). */
+/** What the slot names the summary's references by (`useIssueNames`), handed to `onNames` as it
+ *  is read and each time it changes. */
+function SlotNames({ onNames }: { onNames: (lineNames: LineNames) => void }): ReactNode {
+  const issue = useMemo(() => issueDetails(), []);
+  const { lineNames } = useIssueNames(issue);
+  useLayoutEffect(() => onNames(lineNames), [lineNames, onNames]);
+  return null;
+}
+
+/** The head as a slot draws it: what the summary cites named by the names the page published
+ *  (`slots/contents.tsx`, `useIssueNames`), and the two rows counted over `root`, the whole tree
+ *  the summary is a node of, under the words `query` as the slot counts them, once the reads the
+ *  tree is built from hold (`held`). The names are read beside the head, under a query client of
+ *  their own that holds nothing - the page's rule for an author reads the agent registry's cache
+ *  (`useAgentText`) - and the head is drawn with no `QueryClientProvider` around it, so a request
+ *  of its own would throw (R20). */
 function Head({
   held = true,
   look,
@@ -125,20 +137,29 @@ function Head({
   root: TreeNode;
   summary: TreeNode | undefined;
 }): ReactNode {
-  const issue = useMemo(() => issueDetails(), []);
-  const { nameOf } = useIssueNames(issue, root);
+  const [client] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  );
+  const [lineNames, setLineNames] = useState<LineNames | undefined>(undefined);
   const counts = useMemo(
     () => briefCounts({ namesHeld: held, readsHeld: held, root }, query),
     [held, query, root]
   );
   return (
-    <IssueThreeThings
-      counts={counts}
-      issueKey={KEY}
-      look={look}
-      nameOf={nameOf}
-      summary={summary}
-    />
+    <>
+      <QueryClientProvider client={client}>
+        <SlotNames onNames={setLineNames} />
+      </QueryClientProvider>
+      {lineNames === undefined ? null : (
+        <IssueThreeThings
+          counts={counts}
+          issueKey={KEY}
+          lineNames={lineNames}
+          look={look}
+          summary={summary}
+        />
+      )}
+    </>
   );
 }
 
@@ -154,7 +175,7 @@ function bullets(
   }: { held?: boolean; look?: "contents" | "spec"; root?: TreeNode } = {}
 ): { labels: string[]; lines: string[]; unmount: () => void } {
   // The page publishes its chips' names to the names store, which the sentences name a cited
-  // reference by (`useReferenceNames`).
+  // reference by (`useIssueNames`).
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <ReferenceNamesProvider>
@@ -719,9 +740,9 @@ test("a summary sentence that cites a block draws the block's name, not its addr
 });
 
 // R1: each sentence whole as its author wrote it, after its own label. A cited statement is
-// named by its own first words (`useReferenceNames`), which in a spec that numbers its
-// statements open with a label ("R1."), so a sentence end read after the naming splits the
-// author's first sentence at the name and moves "Why it matters:" onto its second half.
+// named by its own first words (`useIssueNames`), which in a spec that numbers its statements
+// open with a label ("R1."), so a sentence end read after the naming splits the author's first
+// sentence at the name and moves "Why it matters:" onto its second half.
 test("a summary sentence that cites a labelled statement stays one sentence under its own label", () => {
   const cited = `dispatch://${KEY}/spec#b-r1`;
   const summary = summaryNode(

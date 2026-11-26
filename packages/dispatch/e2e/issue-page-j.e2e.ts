@@ -30,6 +30,7 @@ import {
   editArtifact,
   getArtifact,
   getAsk,
+  getIssue,
   getIssueCoverage,
   getIssueDecisions,
   listComments,
@@ -91,6 +92,7 @@ import {
   onScreen,
   openPreset,
   rowGaps,
+  rowReference,
 } from "./issue-page-i";
 import {
   becauseLines,
@@ -456,6 +458,53 @@ test("a Contents entry draws a node's first line, cut at a word", async ({ brows
         `the entry ${entry.id} is cut inside a word: "${entry.line}"`
       ).toBe(true);
     }
+  });
+});
+
+// c-tree with R1, R14 and R16: a Contents entry is a plain line, and names each reference its
+// words cite as the node's row in the outline names it, by the one rule and from the same names
+// the page published: another issue by its key and then its title. The entry drew the key alone
+// where the row drew the key and the title. The entry's line may be cut at a word to its box, so
+// it is read to the title's first words; the row draws the reference whole.
+// SLOW(>=2s): two seeded issues with their specs, a question on the child, and a load of the page
+// read until the cited issue's name is drawn in both places.
+test("a Contents entry names an issue its words cite by key and title, as its outline row does", async ({
+  browser,
+}) => {
+  const seed = async () => {
+    const seeded = await seedChildWithSpec();
+    const cited = await getIssue(seeded.parent.key);
+    const question = await createAsk(seeded.child.key, {
+      question: `dispatch://${cited.key} sets the release day: do the notes ship on that day too?`,
+    });
+    return { child: seeded.child.key, cited, question: question.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.child}`);
+    await expectIssuePageDrawn(page);
+    const reference = `dispatch://${seeded.cited.key}`;
+    const named = `${seeded.cited.key} ${seeded.cited.title}`;
+    const opening = `${seeded.cited.key} ${seeded.cited.title.split(" ").slice(0, 2).join(" ")}`;
+    const entry = contentsPane(page).locator(
+      `[data-contents-entry="${seeded.question}"] [data-contents-line]`
+    );
+    await expect(entry, "the Contents list does not list the question").toBeVisible();
+    await expect
+      .poll(async () => ((await entry.textContent()) ?? "").trim().slice(0, opening.length), {
+        message: "the Contents entry does not open with the cited issue's key and title",
+      })
+      .toBe(opening);
+    await expect(entry, "the Contents entry draws the reference's address").not.toContainText(
+      "dispatch://"
+    );
+    const row = nodeRow(page, seeded.question).first();
+    await expect(
+      rowReference(row, reference),
+      "the outline row does not name the cited issue by its key and title"
+    ).toHaveText(named);
+    await expect(rowWords(row), "the outline row draws the reference's address").not.toContainText(
+      "dispatch://"
+    );
   });
 });
 

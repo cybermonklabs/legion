@@ -14,7 +14,7 @@ import { drawnLine, firstLineOf, firstSentenceLength, LEADING_LABEL } from "./fi
 import { presetPath } from "./issue-address";
 import { isCheck, type TreeNode } from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
-import { referenceStandIns } from "./one-line";
+import { type LineNames, referenceStandIns } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import {
   type CheckState,
@@ -123,9 +123,9 @@ export function briefCounts(
  * nowhere a cut fell. The tree the page already draws carries it (`specSummary`), so the head
  * reads no document and costs no request of its own (R20). It draws at most the three sentences
  * the requirement names, and an author who wrote two gets two, with nothing drawn in the place
- * of a third (`summarySentences`). A reference the sentences cite is named in plain words, by
- * the one name the page gives it everywhere (`referenceStandIns`, with the `nameOf` its slot
- * makes once over the whole tree), once the sentences are split. Who wrote the sentences and
+ * of a third (`summarySentences`). A reference the sentences cite is named in plain words, as the
+ * node's row in the outline names it, from the names the page published (`referenceStandIns`,
+ * with the `lineNames` its slot reads), once the sentences are split. Who wrote the sentences and
  * when ("from your comment of 5 Nov" in the pictures) waits on a read that holds them, and the
  * model holds neither for any issue, so the head draws no author.
  *
@@ -144,8 +144,8 @@ export function briefCounts(
 export function IssueThreeThings({
   counts,
   issueKey,
+  lineNames,
   look,
-  nameOf,
   summary,
 }: {
   /** What the two rows count, or undefined while the tree may not be counted yet
@@ -153,18 +153,18 @@ export function IssueThreeThings({
   counts: BriefCounts | undefined;
   /** The issue the two rows turn a filter on for. */
   issueKey: string;
+  /** What a reference the sentences cite is named by (`useIssueNames`). */
+  lineNames: LineNames;
   /** Where it is drawn: the Contents slot, which the pane and the Outline sheet draw alike, or
    *  the Spec view's first group. */
   look: "contents" | "spec";
-  /** The page's name for a reference the sentences cite (`useReferenceNames`). */
-  nameOf: (reference: string) => string | undefined;
   /** The spec's summary node, or undefined for a spec that carries none. */
   summary: TreeNode | undefined;
 }): ReactNode {
   const tree = summary?.tree;
   const sentences = useMemo(
-    () => (tree === undefined ? [] : summarySentences(tree, nameOf)),
-    [nameOf, tree]
+    () => (tree === undefined ? [] : summarySentences(tree, lineNames)),
+    [lineNames, tree]
   );
   const spec = look === "spec";
   return (
@@ -372,11 +372,8 @@ function sentencesOf(words: string): string[] {
  * its first line, by the one-line rule every place that draws one line for a node keeps
  * (`firstLineOf`, `drawnLine`, read past its leading label), is its one sentence.
  */
-function summarySentences(
-  tree: DisplayTree,
-  nameOf: (reference: string) => string | undefined
-): readonly string[] {
-  const references = referenceStandIns(nameOf);
+function summarySentences(tree: DisplayTree, lineNames: LineNames): readonly string[] {
+  const references = referenceStandIns(lineNames);
   const runs: { readonly item: boolean; readonly words: string }[] = [];
   const walk = (node: DisplayTree, inList: boolean): void => {
     const item = inList && node.type === "list_item";

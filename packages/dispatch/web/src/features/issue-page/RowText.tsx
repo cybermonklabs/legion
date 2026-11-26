@@ -16,7 +16,6 @@ import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
-import { deletedLineText } from "../refs/post-marks";
 import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
@@ -27,6 +26,7 @@ import { CONTROL_LABELS } from "./page-words";
 import {
   knownIssueKeys,
   linkRowReferences,
+  rowReferenceNames,
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
@@ -217,22 +217,18 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
   const { names: named, reads } = useReferenceNames(addresses, issue);
   // A post the page read as deleted is named by its deleted line, the actor named by the page's
   // rule for an author, in place of the published name, which names the actor as no registry
-  // knows it.
-  const names = useMemo(() => {
-    const byReference = new Map<string, string>();
-    for (const one of found) {
-      const deletion = deletions.get(one.reference);
-      const name =
-        deletion !== undefined
-          ? deletedLineText(deletion, { label: author })
-          : (lines.get(one.reference) ??
-            (documentWord(one.route, issue) === undefined
-              ? named.get(one.reference)?.name
-              : undefined));
-      if (name !== undefined) byReference.set(one.reference, name);
-    }
-    return byReference;
-  }, [author, deletions, found, issue, lines, named]);
+  // knows it (`rowReferenceNames`).
+  const names = useMemo(
+    () =>
+      rowReferenceNames(
+        found,
+        { deleted: deletions, lines },
+        (reference) => named.get(reference)?.name,
+        issue,
+        author
+      ),
+    [author, deletions, found, issue, lines, named]
+  );
   const deleted = useMemo(
     () => new Set(found.map((one) => one.reference).filter((one) => deletions.has(one))),
     [deletions, found]

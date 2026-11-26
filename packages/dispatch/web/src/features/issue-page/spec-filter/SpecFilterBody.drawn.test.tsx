@@ -769,8 +769,8 @@ test("an agent's decision draws its words with each reference named, in its cell
     issueTree([
       statement("r4", { text: `**R4.** ${name}.` }),
       // The tree names the statement a decision shaped by a chip on the decision, from the
-      // batched read (`tree-drafts.ts`), which is the name the page gives it
-      // (`referenceStandIns`).
+      // batched read (`tree-drafts.ts`), whose name the page publishes, which a plain line names
+      // it by (`referenceStandIns`).
       decisionNode("d1", {
         chips: [{ answered: true, gone: false, reading: { words: name }, ref: cited }],
         text: words,
@@ -3786,7 +3786,7 @@ test("the body drawn again after its reads' answers have aged past 30 s sends no
 test("an option label that cites a statement is drawn by the statement's name, never its address", () => {
   const label = `Keep ${statementRef("r2")} as written`;
   const named = "Keep R2. Every address as written";
-  // The page names the statement by the words of the first chip naming it (`useReferenceNames`).
+  // The page names the statement by the name it published for it (`useIssueNames`).
   const made = decisionNode("d1", {
     chips: [
       {

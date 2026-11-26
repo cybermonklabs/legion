@@ -12,7 +12,7 @@ import { askIdOf, isReading } from "../decisions-filter/decisions-parts";
 import { drawnLine, firstLineOf, firstSentenceLength } from "../first-line";
 import { firstBlockWordsRaw, isStatement, lineWordsRaw, type TreeNode } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
-import { referenceStandIns } from "../one-line";
+import { type LineNames, referenceStandIns } from "../one-line";
 import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
 import { storedReading } from "../stored-reading";
 import { nodesInOrder } from "../tree-keys";
@@ -61,8 +61,9 @@ import { statementStandings } from "../verification-filter/statement-state";
  * how sure it was (`Decision.unsure`).
  *
  * Every line and quote here is read with each bare address as its author wrote it
- * (`lineWordsRaw` and `firstBlockWordsRaw`), so that `referenceStandIns` names it by the page's
- * name wherever the page knows one, and by its short form only where it does not.
+ * (`lineWordsRaw` and `firstBlockWordsRaw`), so that `referenceStandIns` names it as a row of
+ * the outline names it, from the names the page published (`lineNames`): an issue by its key
+ * and its title, and a reference the page has no name for as its author wrote it.
  *
  * Whether a statement's words changed after the tie that names the decision heading its run is
  * read from today's decisions read, as R5 says until the model holds a tie's own word for it:
@@ -216,15 +217,15 @@ export interface SpecReading {
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
  * `nodeIdOf` is how this issue addresses a node, which is the one rule the tree is built with
  * (`tree-drafts.ts`'s `treeContext`), so a tie resolves to the node it names however its
- * address is written. `nameOf` is how the page names a reference a plain line cites
- * (`one-line.ts`'s `useReferenceNames`). `checks` is the issue's results read, which each
+ * address is written. `lineNames` is what a reference a plain line cites is named by
+ * (`one-line.ts`'s `useIssueNames`). `checks` is the issue's results read, which each
  * statement's mark is read from as the Verification filter reads it (`statement-state.ts`).
  */
 export function specDecidedBy({
   asksHeld,
   checks,
   decisions,
-  nameOf,
+  lineNames,
   nodeIdOf,
   reader,
   root,
@@ -237,7 +238,7 @@ export function specDecidedBy({
   readonly asksHeld: boolean;
   readonly checks: readonly CheckBlock[];
   readonly decisions: IssueDecisions | undefined;
-  readonly nameOf: (reference: string) => string | undefined;
+  readonly lineNames: LineNames;
   readonly nodeIdOf: (reference: string) => string | undefined;
   /** Who is reading, so a decision of theirs reads as their own words (R34). */
   readonly reader: string | undefined;
@@ -257,7 +258,7 @@ export function specDecidedBy({
     asks,
     asksHeld,
     decisions,
-    nameOf,
+    lineNames,
     nodeIdOf,
     nodes,
     reader,
@@ -273,8 +274,8 @@ export function specDecidedBy({
   // A statement is a requirement of the issue's own spec (`isStatement`).
   const rows = nodesInOrder(view).slice(1);
   for (const node of rows.filter(isStatement)) {
-    const parent = parentOf(node, nodes, nameOf);
-    const under = answerUnder(parent, nodes, reader, nameOf);
+    const parent = parentOf(node, nodes, lineNames);
+    const under = answerUnder(parent, nodes, reader, lineNames);
     // The answered question the statement hangs under first, then each tie, each decision once.
     // The first heads the statement's run and every other is named after "informed by". A
     // person's decision that waits on the asks read keeps its place: where it is first it heads
@@ -369,7 +370,7 @@ function shapedBy({
   asks,
   asksHeld,
   decisions,
-  nameOf,
+  lineNames,
   nodeIdOf,
   nodes,
   reader,
@@ -378,7 +379,7 @@ function shapedBy({
   asks: ReadonlyMap<string, TreeNode>;
   asksHeld: boolean;
   decisions: IssueDecisions | undefined;
-  nameOf: (reference: string) => string | undefined;
+  lineNames: LineNames;
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
@@ -393,7 +394,7 @@ function shapedBy({
     const made: Tie =
       decision.kind === "person" && !asksHeld
         ? { key: decision.ref }
-        : tieOf(decisionOf(decision, { answered, asks, nameOf, nodeIdOf, nodes, reader }));
+        : tieOf(decisionOf(decision, { answered, asks, lineNames, nodeIdOf, nodes, reader }));
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
@@ -437,7 +438,7 @@ function decisionOf(
   {
     answered,
     asks,
-    nameOf,
+    lineNames,
     nodeIdOf,
     nodes,
     reader,
@@ -445,7 +446,7 @@ function decisionOf(
     /** The ids of the asks the tree holds an answer for. */
     answered: ReadonlySet<string>;
     asks: ReadonlyMap<string, TreeNode>;
-    nameOf: (reference: string) => string | undefined;
+    lineNames: LineNames;
     nodeIdOf: (reference: string) => string | undefined;
     nodes: ReadonlyMap<string, TreeNode>;
     reader: string | undefined;
@@ -462,7 +463,7 @@ function decisionOf(
       .find((one) => one?.answer !== undefined);
     if (ask?.answer !== undefined) {
       return {
-        ...answerDecision(ask, ask.answer, reader, nameOf),
+        ...answerDecision(ask, ask.answer, reader, lineNames),
         ...(node === undefined ? {} : { node: node.id }),
       };
     }
@@ -478,8 +479,8 @@ function decisionOf(
   // node for is read from its own text and its reading in the same way.
   const words = lineWordsRaw(node ?? { text: decision.text, tree: decision.text_tree });
   // The quote and the name a line gives it among others are cut from the one stood-in line, each
-  // before its references are named, so no cut falls inside a name.
-  const references = referenceStandIns(nameOf);
+  // before its references are named, so no cut falls inside a word of a name.
+  const references = referenceStandIns(lineNames);
   const line = drawnLine(firstLineOf(references.standIn(words)));
   return {
     ...(at === undefined ? {} : { at }),
@@ -510,7 +511,7 @@ function answerDecision(
   ask: TreeNode,
   answer: NonNullable<TreeNode["answer"]>,
   reader: string | undefined,
-  nameOf: (reference: string) => string | undefined
+  lineNames: LineNames
 ): SpecDecision {
   // The quote reads the words the answer opens with (`firstBlockWordsRaw`), as the Contents entry
   // reads a comment's. A link the person wrote reads as its words and a mark as nothing, so the
@@ -518,7 +519,7 @@ function answerDecision(
   // after the sentence is cut, so a name that opens with a label ("R2.") ends none of it. The
   // answer holds its stored text's reading, so a redraw reads it again from memory rather than
   // from a second parse.
-  const references = referenceStandIns(nameOf);
+  const references = referenceStandIns(lineNames);
   const words = firstBlockWordsRaw(storedReading(answer.text, answer));
   const written = firstSentenceOf(references.standIn(words));
   // An option's label is a plain line too, so each reference it cites is named as the quote
@@ -535,7 +536,7 @@ function answerDecision(
     chip: references.named(chipWords(line)),
     chose: labels.map((label) => references.named(label)),
     id: ask.id,
-    question: namedFirstSentence(lineWordsRaw(ask), nameOf),
+    question: namedFirstSentence(lineWordsRaw(ask), lineNames),
     quote,
     ...(ask.reference === undefined ? {} : { reference: ask.reference }),
     said: isReader(answer.by, reader) ? "you" : "person",
@@ -553,12 +554,12 @@ function answerUnder(
   parent: SpecParent | undefined,
   nodes: ReadonlyMap<string, TreeNode>,
   reader: string | undefined,
-  nameOf: (reference: string) => string | undefined
+  lineNames: LineNames
 ): SpecDecision | undefined {
   if (parent === undefined) return undefined;
   const node = nodes.get(parent.id);
   if (node === undefined || node.type !== "ask" || node.answer === undefined) return undefined;
-  return answerDecision(node, node.answer, reader, nameOf);
+  return answerDecision(node, node.answer, reader, lineNames);
 }
 
 /** The node a statement hangs under, where the filter draws it as no row (R2), with who made it
@@ -566,15 +567,15 @@ function answerUnder(
 function parentOf(
   node: TreeNode,
   nodes: ReadonlyMap<string, TreeNode>,
-  nameOf: (reference: string) => string | undefined
+  lineNames: LineNames
 ): SpecParent | undefined {
   const line = node.parentLine;
   if (line === undefined) return undefined;
   const parent = nodes.get(line.id);
   // Read from the node and not from `line`, which the row projects as every one line of a node
-  // is drawn (`issue-tree.ts`'s `lineReading`): the heading names each reference by the page's
-  // name wherever it knows one, and counts it against the line's limit as the name it draws.
-  const words = parent === undefined ? "" : namedFirstLine(lineWordsRaw(parent), nameOf);
+  // is drawn (`issue-tree.ts`'s `lineReading`): the heading names each reference as a row of the
+  // outline names it, and counts it against the line's limit as the name it draws.
+  const words = parent === undefined ? "" : namedFirstLine(lineWordsRaw(parent), lineNames);
   return {
     ...(parent?.at === undefined ? {} : { at: parent.at }),
     ...(parent?.author === undefined ? {} : { by: parent.author }),
@@ -586,8 +587,8 @@ function parentOf(
 
 /** `words`' first line as a one-line place draws it (R1: `firstLineOf`, `drawnLine`), cut with
  *  each reference it cites unnamed and each named after the cut (`referenceStandIns`). */
-function namedFirstLine(words: string, nameOf: (reference: string) => string | undefined): string {
-  const references = referenceStandIns(nameOf);
+function namedFirstLine(words: string, lineNames: LineNames): string {
+  const references = referenceStandIns(lineNames);
   return references.named(drawnLine(firstLineOf(references.standIn(words))));
 }
 
@@ -595,10 +596,7 @@ function namedFirstLine(words: string, nameOf: (reference: string) => string | u
  *  of characters, cut with each reference it cites unnamed and each named after the cut
  *  (`referenceStandIns`), so a name that opens with a label ("R2.") ends none of it: how the cell
  *  and the line under each statement give the question an answer answers (R5). */
-function namedFirstSentence(
-  words: string,
-  nameOf: (reference: string) => string | undefined
-): string {
-  const references = referenceStandIns(nameOf);
+function namedFirstSentence(words: string, lineNames: LineNames): string {
+  const references = referenceStandIns(lineNames);
   return references.named(firstSentenceOf(references.standIn(words)));
 }

@@ -1,5 +1,7 @@
+import type { AgentText } from "../refs/AgentName";
 import { isPartyRoute } from "../refs/party-references";
-import { editedName } from "../refs/post-marks";
+import { deletedLineText, editedName } from "../refs/post-marks";
+import type { KnownReferences } from "../refs/reference-names";
 import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
 import { chipName } from "./first-line";
@@ -231,8 +233,40 @@ export function rowReferences(
 }
 
 /**
+ * The name each reference of `found` is drawn by (`rowReferenceWords`), by the one rule a row
+ * and every plain line of the page name one by: a post the page read as deleted by its deleted
+ * line, its actor named by `label`, the page's rule for an author (`AgentText.author`), in place
+ * of the published name, which names the actor as no registry knows it; else the line the page's
+ * store projects beside the name (`KnownReferences.lines`), a block's first block of words and a
+ * whole document's word; else, for anything but a whole document, whose own name no chip draws,
+ * the name `named` gives it. A reference with no name is left out, so it reads as the words its
+ * author wrote. `issue` is the issue the words belong to, by which a whole document is told
+ * (`documentWord`). A row's `named` is the page's published name or a party's own read
+ * (`RowText.tsx`); a plain line's is the published name alone (`one-line.ts`).
+ */
+export function rowReferenceNames(
+  found: readonly Pick<RowReference, "reference" | "route">[],
+  { deleted, lines }: Pick<KnownReferences, "deleted" | "lines">,
+  named: (reference: string) => string | undefined,
+  issue: string | undefined,
+  label: AgentText["author"]
+): ReadonlyMap<string, string> {
+  const names = new Map<string, string>();
+  for (const one of found) {
+    const deletion = deleted.get(one.reference);
+    const name =
+      deletion !== undefined
+        ? deletedLineText(deletion, { label })
+        : (lines.get(one.reference) ??
+          (documentWord(one.route, issue) === undefined ? named(one.reference) : undefined));
+    if (name !== undefined) names.set(one.reference, name);
+  }
+  return names;
+}
+
+/**
  * What a row draws a reference as, from `names`, the name each reference has as a link reads it
- * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
+ * (`rowReferenceNames`): a whole document by the page's word for it,
  * which a chip draws in place of its name (decision 39) and which `names` holds for it instead -
  * the line the page's store projects beside its name (`KnownReferences.lines`, from
  * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
