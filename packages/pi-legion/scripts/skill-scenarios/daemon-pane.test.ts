@@ -3,9 +3,11 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { spawnWithin } from "@legion/test-fixtures/row-clock";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { composeRolePrompt, DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
 import { RIG_OWNER, RIG_WORLD } from "./rig-world";
+import { rowLimit, SCRIPT_RUN } from "./test-limit";
 
 // Every row below asks the daemon's own functions for a pane environment or a role's prompt, which
 // `go run` compiles and runs, so a host with no go runs none of them.
@@ -263,4 +265,47 @@ test.skipIf(skip)(
     for (const prompt of [root, child, reviewer]) expect(prompt).toContain(repository);
   },
   600_000
+);
+
+// Catches: a daemon build as wide as the host. A batch starts six runs at once, each `go run`s the
+// daemon on a cold build cache, and at the host's width (one compile a CPU, each go and compile with
+// up to about 80 threads, on a 288-CPU box) the batch's runs could not fork under a task cap of
+// 4096. The rig builds with four jobs and four threads whatever GOMAXPROCS it inherits. A stand-in
+// go prints the command line it was given and its GOMAXPROCS, so the row needs no go; the rig runs
+// in a bun of its own, which finds the stand-in first on the PATH it starts with.
+const BUILD_WAIT = { ...SCRIPT_RUN, part: "daemon-pane.ts in a bun of its own" };
+test(
+  "builds the daemon with four jobs and GOMAXPROCS=4, whatever GOMAXPROCS the caller holds",
+  () => {
+    const bin = path.join(rig, "standin-go-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(
+      path.join(bin, "go"),
+      '#!/bin/sh\nprintf "%s\\n" "GOMAXPROCS=${GOMAXPROCS-unset}" "$@"\n',
+      { mode: 0o700 }
+    );
+    const script = [
+      `import { DAEMON_MODULE, runDaemonPane } from ${JSON.stringify(path.join(import.meta.dir, "daemon-pane.ts"))};`,
+      'process.stdout.write(runDaemonPane(DAEMON_MODULE, ["phase", "tester"]));',
+    ].join("\n");
+    const result = spawnWithin(BUILD_WAIT, ["bun", "-e", script], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, GOMAXPROCS: "288" },
+    });
+    expect({ code: result.exitCode, stderr: result.stderr.toString() }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    expect(result.stdout.toString().trimEnd().split("\n")).toEqual([
+      "GOMAXPROCS=4",
+      "run",
+      "-p",
+      "4",
+      "-overlay",
+      expect.stringMatching(/\/overlay\.json$/),
+      "./cmd/daemon-pane",
+      "phase",
+      "tester",
+    ]);
+  },
+  rowLimit(BUILD_WAIT)
 );
