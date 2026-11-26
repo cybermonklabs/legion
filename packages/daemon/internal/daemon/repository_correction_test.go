@@ -333,7 +333,7 @@ func TestRepositoryCorrectionFollowsTheBootListing(t *testing.T) {
 // reaches the record through the move's live event (the engine's dispatchIssue), which follows
 // Dispatch's resolution before admission re-admits in the same fact, or, where the boot's listing
 // is the first read of the move, through the follow after that boot. dispatch://INFRA-2865
-// measured the absence: a park and a re-admission gave a new generation on the old repository,
+// measured the absence: a move to the backlog and a re-admission gave a new generation on the old repository,
 // because nothing re-resolved the repository, and the new run cloned the repository the issue had
 // left.
 func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
@@ -350,13 +350,13 @@ func TestRepositoryCorrectionFollowsAReadmission(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newCorrectionRig(t)
-			// A person parks the running root, which takes its tree out of the workflow: the
+			// A person moves the running root to the backlog, which takes its tree out of the workflow: the
 			// issue is recorded on acme/widgets still, which is what Dispatch resolved it to then.
 			r.move(2, "backlog", "acme/widgets")
-			if parked := r.issue(); !parked.Lingers() || parked.Repo != "acme/widgets" {
-				t.Fatalf("the parked root = %#v, want its tree lingering out of the workflow on acme/widgets", parked)
+			if backlogged := r.issue(); !backlogged.Lingers() || backlogged.Repo != "acme/widgets" {
+				t.Fatalf("the root in the backlog = %#v, want its tree lingering out of the workflow on acme/widgets", backlogged)
 			}
-			// The repository is corrected in Dispatch while the issue is parked, and the move back
+			// The repository is corrected in Dispatch while the issue is in the backlog, and the move back
 			// to todo is the first thing the daemon reads of either change.
 			tc.readmit(r)
 

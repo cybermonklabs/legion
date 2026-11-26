@@ -366,7 +366,7 @@ func TestAChangesRequestRelayedToTheControllerIsNotToldOnceApproved(t *testing.T
 				t.Fatalf("logged %q, want one line that the gate no longer holds the approval (%t), naming version 3 and no approved version",
 					unheld, tc.cleared)
 			}
-			dropped := textLines(logged.String(), `msg="outbox parked changes request finished without publishing`)
+			dropped := textLines(logged.String(), `msg="outbox relayed changes request finished without publishing`)
 			if !tc.superseded {
 				if len(dropped) != 0 {
 					t.Fatalf("logged %q, want no relayed changes request finished without publishing", dropped)
@@ -509,7 +509,7 @@ func TestAQueuedChangesRequestAClearFindsApprovedIsToldToNobody(t *testing.T) {
 				if told := controllerDecisions(publisher); len(told) != 0 {
 					t.Fatalf("the leased run told the controller %v, want nothing", told)
 				}
-				gone := textLines(logged.String(), `msg="outbox parked changes request finished `+
+				gone := textLines(logged.String(), `msg="outbox relayed changes request finished `+
 					`without publishing: its row was deleted under its lease"`)
 				if want := fmt.Sprintf("row=%d issue=LEGION-1", held.ID); len(gone) != 1 ||
 					!strings.Contains(gone[0], want) {

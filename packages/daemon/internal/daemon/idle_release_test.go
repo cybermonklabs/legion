@@ -890,12 +890,12 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 // tokens and its `gh` credentials — with it.
 //
 // The sequence is the one the lane runs. The release's workspace check and role stop have run,
-// so the implementer is suspended as `released`; the root is parked under the teardown's pod
+// so the implementer is suspended as `released`; the root leaves the workflow under the teardown's pod
 // lock, so the linger's own rows — the role suspends and the issue_suspend that deletes the
 // Sandbox — are queued above the release's; the teardown then reads the issue as no longer the
 // workflow's and cancels. A resume queued for the claim the release suspended would land above
 // the close's rows and supersede them: store.IssueSuspension would read a start newer than its
-// own row, finish the close without acting, and leave the roles of a parked issue running in a
+// own row, finish the close without acting, and leave the roles of an issue out of the workflow running in a
 // Sandbox nothing deletes.
 func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *testing.T) {
 	t.Parallel()

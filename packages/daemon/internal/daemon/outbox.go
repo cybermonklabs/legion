@@ -2506,7 +2506,7 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 // approved version. A request a clear found standing keeps its row while the clear deletes its
 // gates, so that row is asked of the gates as they stand when it runs. One window is left, as in
 // deliverNotice: an approval that commits between that read and the publish, which reaches the
-// controller after the request it answered. Every other notice, a parked decision of any other
+// controller after the request it answered. Every other notice, a kept decision of any other
 // kind among them, is published as it is, with no read.
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
@@ -2522,11 +2522,11 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 		var superseded changesSuperseded
 		switch {
 		case errors.Is(err, errNoticeRowGone):
-			r.log.Info("outbox parked changes request finished without publishing: "+
+			r.log.Info("outbox relayed changes request finished without publishing: "+
 				"its row was deleted under its lease", args...)
 			return nil
 		case errors.As(err, &superseded):
-			r.log.Info("outbox parked changes request finished without publishing: "+
+			r.log.Info("outbox relayed changes request finished without publishing: "+
 				"the person's approval followed it", append(args, "approved", superseded.approved)...)
 			return nil
 		case err != nil:

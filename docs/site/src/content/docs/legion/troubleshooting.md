@@ -527,7 +527,7 @@ JSON log names the issue and the root on each of these lines but one, which the 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the daemon queued the decision for the controller, which receives
   it once a session holds the controller's claim. A changes request's publish first asks again
-  whether the person's approval followed it; when it did, the row ends with `outbox parked changes
+  whether the person's approval followed it; when it did, the row ends with `outbox relayed changes
   request finished without publishing: the person's approval followed it`, which names the
   approved version, and the controller is not told. When that approval sets the root back to
   `todo` before the row runs, the re-admission's clear of the tree's generation ends the row
@@ -1830,7 +1830,7 @@ Dispatch at one sequence cannot be ordered (a hand-over, or an event that arrive
 pass over the listing):
 the daemon owes that issue the same read of Dispatch's listing and GitHub, and the record ends on
 what Dispatch resolves then.
-The move parks nothing, reruns nothing and starts no new generation, so the issue keeps its phase
+The move sends nothing to the backlog, reruns nothing and starts no new generation, so the issue keeps its phase
 and whatever runs for it.
 
 A repository a role App is not installed on, or one GitHub does not have, is the one case the

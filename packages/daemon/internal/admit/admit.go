@@ -1146,7 +1146,7 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 		// the workflow, or ReenterChild for a live tree's child moved back to todo — exactly as
 		// that event would. Engine.dispatchIssue already makes this same newer-or-not decision on
 		// its own sequence fence (record.Issue.Outdates, as of an event); pre-filtering by status
-		// here to OutOfWorkflow alone left a parked child's own re-entry unreached, stranding it
+		// here to OutOfWorkflow alone left the re-entry of a child out of the workflow unreached, stranding it
 		// recorded todo at phase done under a live tree. Left to recordObservation alone, the
 		// record would move to the snapshot's status with no suspend and no linger, and the
 		// record's LastDispatchSeq would reach the snapshot's own sequence, so the real event, once
