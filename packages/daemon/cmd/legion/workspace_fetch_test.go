@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,10 +16,15 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/repocache"
+	"github.com/sjawhar/legion/daemon/internal/repocache/fakegcs"
+	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -540,7 +547,8 @@ type cacheFault struct {
 // cacheTarServer serves, as the repository cache's GET /healthz and GET /tar, a ready cache and the
 // history and refs of a bare clone of the volume's remote as it is now, with fault, and returns its
 // address and the tar's length. The clone runs over git's transport, so its history is one pack,
-// as the cache's is.
+// as the cache's is. Any other path, /packs among them, is the mux's plain 404 naming no
+// repository, as a cache with no bucket answers it.
 func (v *issueVolume) cacheTarServer(t *testing.T, fault cacheFault) (string, int) {
 	t.Helper()
 	scratch := t.TempDir()
@@ -632,6 +640,7 @@ func (v *issueVolume) cacheTarServer(t *testing.T, fault cacheFault) (string, in
 				}
 			}
 		default:
+			w.Header().Del(workspace.CacheRepositoryHeader)
 			http.NotFound(w, r)
 			return
 		}
@@ -661,8 +670,9 @@ func (v *issueVolume) linkToDevFull(entry string) error {
 // With a ready repository cache — LEGION_REPOSITORY_CACHE_URL and its token's file, which the
 // runtime sets on every issue pod's fetch container — `fetch` unpacks the cache's tar into the feed
 // and fetches from GitHub, with the provisioning token, only what the remote gained since: one line
-// says both, with each source's bytes. A relaunch, whose feed on the issue volume holds the
-// repository already, fetches the delta alone and says so.
+// says both, with each source's bytes, after the line that says /tar was the source because this
+// cache serves no /packs. A relaunch, whose feed on the issue volume holds the repository already,
+// fetches the delta alone and says so, and names no source.
 func TestWorkspaceInitFetchStreamsTheRepositoryCache(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
 	cache, length := v.cacheTarServer(t, cacheFault{})
@@ -676,10 +686,10 @@ func TestWorkspaceInitFetchStreamsTheRepositoryCache(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
 	}
-	line := regexp.MustCompile(`^workspace-init fetch: ([0-9,]+) bytes from the repository cache ` + regexp.QuoteMeta(cache) + ` in [0-9.]+(?:µs|ms|s), its history verified in [0-9.]+(?:µs|ms|s); ([0-9,]+) bytes from GitHub for the delta \(1 ref\)\n$`)
+	line := regexp.MustCompile(`^` + regexp.QuoteMeta(notServedLine) + tarSummaryLine(cache, "1 ref") + `$`)
 	match := line.FindStringSubmatch(stdout)
 	if match == nil {
-		t.Fatalf("stdout %q, want the cache's stream and GitHub's delta", stdout)
+		t.Fatalf("stdout %q, want /tar as the source, then the cache's stream and GitHub's delta", stdout)
 	}
 	if printed := printedBytes(t, match[1]); printed != int64(length) {
 		t.Fatalf("the line counts %d bytes from the cache, want the tar's %d", printed, length)
@@ -868,4 +878,259 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			}
 		})
 	}
+}
+
+// notServedLine is the line `fetch` says /tar filled a fresh feed with because the cache serves no
+// /packs: a cache with no bucket, or of a release before the bucket.
+const notServedLine = "workspace-init fetch: source=/tar reason=/packs is not served\n"
+
+// tarSummaryLine is the pattern of the line `fetch` ends a fresh feed filled from a cache's tar
+// with, byte for byte as before the bucket: the tar's bytes from the cache at cache, how long it
+// streamed and how long its history took to verify, then the delta's bytes from GitHub and its
+// refs, refs as `fetch` counts them. Its two groups are the two byte counts.
+func tarSummaryLine(cache, refs string) string {
+	return `workspace-init fetch: ([0-9,]+) bytes from the repository cache ` + regexp.QuoteMeta(cache) +
+		` in [0-9.]+(?:µs|ms|s), its history verified in [0-9.]+(?:µs|ms|s); ([0-9,]+) bytes from GitHub for the delta \(` + regexp.QuoteMeta(refs) + `\)\n`
+}
+
+// bucketSummaryLine is the line `fetch` ends a fresh feed filled from the cache's bucket with: the
+// bytes of every object it downloaded and verified, how long the manifest and the downloads took
+// and how long the history took to verify, then the delta's bytes from GitHub and its refs.
+var bucketSummaryLine = regexp.MustCompile(`^workspace-init fetch: ([0-9,]+) bytes from the repository cache http://[^ ]+ \(bucket\) in [0-9.]+(?:µs|ms|s), its history verified in [0-9.]+(?:µs|ms|s); ([0-9,]+) bytes from GitHub for the delta \(1 ref\)$`)
+
+// packsCacheRun is a `workspace-init cache` a test runs in-process on its volume's root, beside a
+// double of Cloud Storage and IAM (fakegcs) on a loopback address of its own that
+// STORAGE_EMULATOR_HOST names, as the real-binary harness runs it: the cache's address, the
+// double, and how far the double's clock runs ahead of the test's, which a signed download's expiry
+// reads.
+type packsCacheRun struct {
+	base   string
+	double *fakegcs.Server
+	skew   atomic.Int64
+}
+
+// startPacksCache plants a branch on the volume's remote, whose commit it answers, packs the remote
+// so the cache's clone holds a pack and its index, and runs the cache, its bucket set when bucket
+// is, its token cmdCacheToken, until the test ends. It returns once the cache answers a manifest on
+// /packs with the bucket set, or ready on /healthz without. The volume's environment stays set
+// for the fetch the test runs next.
+func (v *issueVolume) startPacksCache(t *testing.T, bucket bool) (*packsCacheRun, string) {
+	t.Helper()
+	remote := v.env["WINIT_REMOTE"]
+	v.commitAddingAFile(t, remote, "refs/heads/main", "refs/heads/planted", "planted.txt", "planted\n")
+	planted := v.git(t, "--git-dir="+remote, "rev-parse", "refs/heads/planted")
+	v.git(t, "--git-dir="+remote, "repack", "-a", "-d", "--quiet")
+	cache := &packsCacheRun{}
+	double, err := fakegcs.New(fakegcs.Options{Root: t.TempDir(), Email: repocache.EmulatorEmail, Now: func() time.Time { return time.Now().Add(time.Duration(cache.skew.Load())) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := testnats.ListenLoopback()
+	if err != nil {
+		t.Fatalf("listen for the double: %v", err)
+	}
+	running := double.Serve(listener)
+	t.Cleanup(func() { _ = running.Close() })
+	cache.double = double
+	v.setenv(t)
+	t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
+	t.Setenv("LEGION_REPOSITORY_CACHE_TOKEN_FILE", writeCacheToken(t, cmdCacheToken+"\n"))
+	t.Setenv("STORAGE_EMULATOR_HOST", running.Addr())
+	if bucket {
+		t.Setenv(repocache.BucketEnv, cmdTestBucket)
+	} else {
+		fixtureenv.Unset(t, repocache.BucketEnv)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var stdout, stderr lockedBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		if code := testwait.Receive(t, "the cache to stop with its context", exited); code != 0 {
+			t.Errorf("cache exited %d once stopped, stderr %q", code, stderr.String())
+		}
+	})
+	// Each wait, and each request within it, ends when what is left of the test binary's deadline
+	// less 30 s has passed, so a cache that never answers fails the row by name.
+	wait := testwait.Bounded(t, 1<<60, 30*time.Second)
+	bounded, boundedCancel := context.WithTimeout(context.Background(), wait)
+	t.Cleanup(boundedCancel)
+	address := ""
+	if !testwait.Holds(wait, 10*time.Millisecond, func() bool {
+		for _, line := range strings.Split(stdout.String(), "\n") {
+			if found, ok := strings.CutPrefix(line, "workspace-init cache: serving acme/widgets on "); ok {
+				address = found
+			}
+		}
+		return address != ""
+	}) {
+		t.Fatalf("cache never said where it serves: stdout %q, stderr %q", stdout.String(), stderr.String())
+	}
+	cache.base = "http://" + address
+	path, bearer := "/healthz", ""
+	if bucket {
+		path, bearer = "/packs", cmdCacheToken
+	}
+	var status int
+	var body []byte
+	if !testwait.Holds(wait, 20*time.Millisecond, func() bool {
+		status, _, body = cacheGet(t, bounded, cache.base+path, bearer)
+		return status == http.StatusOK && (bucket || bytes.Contains(body, []byte(`"ready":true`)))
+	}) {
+		t.Fatalf("%s never answered 200: last %d %s; stdout %q, stderr %q", path, status, body, stdout.String(), stderr.String())
+	}
+	return cache, planted
+}
+
+// cacheObjectLines is the line `fetch` prints for each pack and index of the volume's cache clone
+// when it downloaded and verified it from the bucket: its object name under the repository's
+// lower-case prefix, its size and the SHA-256 of the clone's own file, sorted.
+func (v *issueVolume) cacheObjectLines(t *testing.T) ([]string, int64) {
+	t.Helper()
+	packs := filepath.Join(v.root, "acme", "widgets.git", "objects", "pack")
+	entries, err := os.ReadDir(packs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	var size int64
+	for _, entry := range entries {
+		if !workspace.FeedEntry("objects/pack/"+entry.Name(), false) {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(packs, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(content)
+		lines = append(lines, fmt.Sprintf("workspace-init fetch: bucket object=acme/widgets/objects/pack/%s size=%d sha256=%s", entry.Name(), len(content), hex.EncodeToString(sum[:])))
+		size += int64(len(content))
+	}
+	if len(lines) != 2 {
+		t.Fatalf("the cache's clone holds %q, not one pack and its index", lines)
+	}
+	slices.Sort(lines)
+	return lines, size
+}
+
+// requirePrintsNoSecret fails the test unless stdout and stderr hold none of what a fetch from the
+// cache must never print: the cache's bearer, the provisioning token, a V4 parameter, the query
+// and the signature of each signed download the double received, and the planted ref's contents.
+func requirePrintsNoSecret(t *testing.T, cache *packsCacheRun, planted, stdout, stderr string) {
+	t.Helper()
+	secrets := []string{cmdCacheToken, "ghs_test", "X-Goog-", planted}
+	for _, request := range cache.double.Requests() {
+		if request.Route == fakegcs.RouteDownload {
+			secrets = append(secrets, request.URL.RawQuery, request.URL.Query().Get("X-Goog-Signature"))
+		}
+	}
+	for _, secret := range secrets {
+		if secret != "" && strings.Contains(stdout+stderr, secret) {
+			t.Errorf("the fetch printed %q: stdout %q, stderr %q", secret, stdout, stderr)
+		}
+	}
+}
+
+// `fetch` says where a fresh feed's history came from, before its last line, against the real
+// cache command and a double of Cloud Storage. From a bucket whose every object holds it prints
+// `source=bucket`, one `bucket object=` line for each pack and index with the object's name, exact
+// size and the SHA-256 of the cache's own file, which it verified, and a last line of the bucket's
+// bytes and times and the delta's; its downloads carry no Authorization; and a relaunch onto the
+// feed it filled prints the kept feed's line alone, as before. A signed download the bucket refuses
+// (an address past its expiry) has it print `source=/tar` with the failed download's reason, then
+// /tar's line as before; a cache with no bucket has it print that /packs is not served, then /tar's
+// line. A fetch with no cache named prints the line it did before the bucket alone. No fetch
+// prints the cache's bearer, the provisioning token, a signed address's query or signature, or the
+// contents of a ref the cache's manifest carries, a planted branch's.
+func TestWorkspaceInitFetchReportsPackSource(t *testing.T) {
+	t.Run("a bucket whose every object holds fills the feed", func(t *testing.T) {
+		v := newIssueVolume(t).withRemote(t, "main")
+		cache, planted := v.startPacksCache(t, true)
+		head := v.advanceRemote(t)
+		t.Setenv("LEGION_REPOSITORY_CACHE_URL", cache.base)
+		code, stdout, stderr := workspaceInitAnswered(t, "workspace-init fetch from the bucket", v.fetchArgs())
+		t.Logf("the fetch printed %q", stdout)
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
+		}
+		objects, size := v.cacheObjectLines(t)
+		lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+		if len(lines) != len(objects)+2 || lines[0] != "workspace-init fetch: source=bucket" {
+			t.Fatalf("stdout %q, want the bucket as the source, a line for each of its %d objects, and the summary", stdout, len(objects))
+		}
+		if got := slices.Sorted(slices.Values(lines[1 : len(lines)-1])); !slices.Equal(got, objects) {
+			t.Errorf("the fetch printed the objects %q, want %q", got, objects)
+		}
+		match := bucketSummaryLine.FindStringSubmatch(lines[len(lines)-1])
+		if match == nil {
+			t.Fatalf("the last line %q is not the bucket's bytes and times and the delta's", lines[len(lines)-1])
+		}
+		if printed := printedBytes(t, match[1]); printed != size {
+			t.Errorf("the line counts %d bytes from the bucket, want its objects' %d", printed, size)
+		}
+		if got := cache.double.Count(fakegcs.RouteDownload); got.Requests != len(objects) || got.WithAuthorization != 0 {
+			t.Errorf("the double served %d downloads, %d with an Authorization header, want %d with none", got.Requests, got.WithAuthorization, len(objects))
+		}
+		feed := filepath.Join(v.feed, "acme", "widgets.git")
+		if main := v.git(t, "--git-dir="+feed, "rev-parse", "refs/heads/main"); main != head {
+			t.Errorf("the feed's main is %s, want the remote's %s", main, head)
+		}
+		requirePrintsNoSecret(t, cache, planted, stdout, stderr)
+
+		code, stdout, stderr = workspaceInitAnswered(t, "workspace-init fetch onto the kept feed", v.fetchArgs())
+		if code != 0 || !regexp.MustCompile(`^workspace-init fetch: the feed holds acme/widgets already: ([0-9,]+) bytes from GitHub for the delta \(0 refs\)\n$`).MatchString(stdout) {
+			t.Fatalf("relaunch: exit %d, stdout %q, stderr %q; want the kept feed's delta alone", code, stdout, stderr)
+		}
+	})
+
+	t.Run("a signed download the bucket refuses falls back to /tar", func(t *testing.T) {
+		v := newIssueVolume(t).withRemote(t, "main")
+		cache, planted := v.startPacksCache(t, true)
+		v.advanceRemote(t)
+		cache.skew.Store(int64(workspace.BucketFetchTimeout + time.Minute))
+		t.Setenv("LEGION_REPOSITORY_CACHE_URL", cache.base)
+		code, stdout, stderr := workspaceInitAnswered(t, "workspace-init fetch past the addresses' expiry", v.fetchArgs())
+		t.Logf("the fetch printed %q", stdout)
+		if code != 0 {
+			t.Fatalf("exit %d, stderr %q, stdout %q", code, stderr, stdout)
+		}
+		reason := regexp.QuoteMeta("workspace-init fetch: source=/tar reason=failed download: acme/widgets/objects/pack/") +
+			`pack-[0-9a-f]{40}\.(?:pack|idx)` + regexp.QuoteMeta(": the bucket answered 403 Forbidden (ExpiredToken)\n")
+		if !regexp.MustCompile(`^` + reason + tarSummaryLine(cache.base, "1 ref") + `$`).MatchString(stdout) {
+			t.Fatalf("stdout %q, want /tar as the source for the refused download, then /tar's line", stdout)
+		}
+		if got := cache.double.Count(fakegcs.RouteDownload); got.Requests == 0 || got.WithAuthorization != 0 {
+			t.Errorf("the double served %d downloads, %d with an Authorization header, want some with none", got.Requests, got.WithAuthorization)
+		}
+		requirePrintsNoSecret(t, cache, planted, stdout, stderr)
+	})
+
+	t.Run("a cache with no bucket serves no /packs", func(t *testing.T) {
+		v := newIssueVolume(t).withRemote(t, "main")
+		cache, planted := v.startPacksCache(t, false)
+		v.advanceRemote(t)
+		t.Setenv("LEGION_REPOSITORY_CACHE_URL", cache.base)
+		code, stdout, stderr := workspaceInitAnswered(t, "workspace-init fetch from a cache with no bucket", v.fetchArgs())
+		t.Logf("the fetch printed %q", stdout)
+		if code != 0 || !regexp.MustCompile(`^`+regexp.QuoteMeta(notServedLine)+tarSummaryLine(cache.base, "1 ref")+`$`).MatchString(stdout) {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want /tar as the source, /packs not served, then /tar's line", code, stdout, stderr)
+		}
+		if requests := cache.double.Requests(); len(requests) != 0 {
+			t.Errorf("a cache and a fetch with no bucket sent the double %d requests", len(requests))
+		}
+		requirePrintsNoSecret(t, cache, planted, stdout, stderr)
+	})
+
+	t.Run("a fetch with no cache named clones from GitHub", func(t *testing.T) {
+		v := newIssueVolume(t).withRemote(t, "main")
+		v.setenv(t)
+		t.Setenv("LEGION_PROVISION_TOKEN_FILE", v.token)
+		code, stdout, stderr := workspaceInitAnswered(t, "workspace-init fetch with no cache", v.fetchArgs())
+		if code != 0 || !noCacheLine.MatchString(stdout) {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want the clone from GitHub's line alone", code, stdout, stderr)
+		}
+	})
 }

@@ -326,9 +326,10 @@ func checkSupervision(opts Options) error {
 // defaults, touching no cluster. A runtime it builds alone runs the image probe and nothing else
 // (newProber); configure adds supervision's requirements to it.
 func configureProber(opts Options) (*Runtime, error) {
-	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget,
-	// which its stream from the repository cache runs outside of, the shared clone's own, and the
-	// issue's own checkout's.
+	// The three provisioning phases' bounds together (ProvisionBound): the fetch's clocked budget
+	// (workspace.FetchBudget: the cache wait, the bucket attempt, /tar's verification and the
+	// delta), which its stream from the repository cache runs outside of, the shared clone's own,
+	// and the issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
 	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
 	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block

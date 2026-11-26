@@ -1800,8 +1800,9 @@ func (r *Runtime) initEnvironment(launch) []corev1.EnvVar {
 // ProvisionBound satisfies runtime.Runtime: workspace.FetchBudget plus workspace.CloneTimeout plus
 // workspace.CheckoutTimeout. Each term is the real bound of one step whose duration follows the
 // repository's size, and the three run one after the other: workspace-fetch's whole budget (its
-// wait for the repository cache, then one FetchTimeout for the verification of what the cache
-// streamed, then one of its own for the delta from GitHub), workspace-init's shared clone of
+// wait for the repository cache, then one BucketFetchTimeout for its attempt on the cache's
+// bucket, then one FetchTimeout for the verification of what the cache's /tar streamed when that
+// attempt failed, then one of its own for the delta from GitHub), workspace-init's shared clone of
 // the feed, whose size-following steps share one CloneTimeout, and the issue's own checkout, the
 // one command that writes the whole working copy (`jj sparse reset`, workspace.Provision), under
 // CheckoutTimeout. It is how much longer than the boot timeout a launch may wait for its pod's

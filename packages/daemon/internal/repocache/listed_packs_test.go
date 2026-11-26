@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache/fakegcs"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -1186,4 +1188,110 @@ func testPacksSwitchWhileSigning(t *testing.T) {
 		t.Errorf("the cache counted %d /tar streams while /packs signed, not 0", got.inFlight)
 	}
 	requireListing(t, listingOf(t, r.requirePacks(t)), cloneListing(t, r.c.dir), "at the answer after the switch,")
+}
+
+// TestSignedPackFetchMatchesTar holds the two ends of /packs together (R3): an issue pod's
+// workspace.Fetch against the real cache, which keeps its packs in the double and has a branch
+// GitHub has since deleted and a main GitHub has since moved, fills one fresh feed from the
+// bucket, its downloads carrying no Authorization, and, once /packs cannot sign (503), another
+// from /tar of the same cache, saying why. The two feeds hold the same ref files, byte for byte,
+// and the same packs and indexes, the cache's own, each of the same size and SHA-256, so of the
+// same checksums git wrote into them. After the step that filled each from the cache, the fetch
+// ran the same git commands, as the runner recorded them: the object format the pack and index
+// checks read, the connectivity check, the delta's reads of GitHub, the prune of the deleted
+// branch, the delta, and the feed's settled configuration; and neither ran `git index-pack`.
+func TestSignedPackFetchMatchesTar(t *testing.T) {
+	r := newPacksRig(t)
+	git(t, r.remote, "--git-dir="+r.remote, "branch", "gone/soon", "main")
+	r.refresh(t)
+	listed := cloneListing(t, r.c.dir)
+	requireListing(t, listingOf(t, r.requirePacks(t)), listed, "before the fetches,")
+	git(t, r.remote, "--git-dir="+r.remote, "branch", "-D", "gone/soon")
+	moved := advance(t, r.remote, "moved")
+	type fetched struct {
+		report workspace.FetchReport
+		steps  []string
+	}
+	fetch := func(what string) fetched {
+		root := filepath.Join(t.TempDir(), "feed")
+		r.run.mu.Lock()
+		before := len(r.run.argv)
+		r.run.mu.Unlock()
+		report, err := workspace.Fetch(testwait.Context(t), r.run, workspace.FetchRequest{
+			Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: root,
+			Log: func(line string) { t.Logf("the fetch %s logged: %s", what, line) }, Clock: clock.Real(), CacheURL: r.url, CacheToken: testCacheToken,
+		})
+		if err != nil {
+			t.Fatalf("the fetch %s: %v", what, err)
+		}
+		r.run.mu.Lock()
+		argv := slices.Clone(r.run.argv[before:])
+		r.run.mu.Unlock()
+		return fetched{report, feedSteps(argv, root)}
+	}
+	bucket := fetch("through the bucket")
+	if bucket.report.Source != workspace.SourceBucket || bucket.report.CacheBytes != 0 || len(bucket.report.Objects) != len(listed.objects) {
+		t.Fatalf("the first fetch reported %+v, want the bucket's %d objects and no tar", bucket.report, len(listed.objects))
+	}
+	if got := r.double.Count(fakegcs.RouteDownload); got.Requests != len(listed.objects) || got.WithAuthorization != 0 {
+		t.Errorf("the double served %d downloads, %d of them with an Authorization header, want %d with none", got.Requests, got.WithAuthorization, len(listed.objects))
+	}
+	r.double.RefuseSigning(true)
+	tar := fetch("through /tar")
+	if tar.report.Source != workspace.SourceTar || !strings.HasPrefix(tar.report.TarReason, "unavailable manifest: ") || tar.report.CacheBytes <= 0 || len(tar.report.Objects) != 0 {
+		t.Fatalf("the second fetch reported %+v, want /tar's, the manifest unavailable", tar.report)
+	}
+	fromBucket, fromTar := cloneListing(t, bucket.report.Feed), cloneListing(t, tar.report.Feed)
+	if !maps.Equal(fromBucket.refs, fromTar.refs) {
+		t.Errorf("the feed from the bucket holds the ref files %q, the feed from /tar %q", fromBucket.refs, fromTar.refs)
+	}
+	if !maps.Equal(fromBucket.objects, fromTar.objects) || !maps.Equal(fromBucket.objects, listed.objects) {
+		t.Errorf("the feed from the bucket holds the packs and indexes %v, the feed from /tar %v, the cache %v", fromBucket.objects, fromTar.objects, listed.objects)
+	}
+	for _, feed := range []string{bucket.report.Feed, tar.report.Feed} {
+		if got := git(t, feed, "--git-dir="+feed, "rev-parse", "refs/heads/main"); got != moved {
+			t.Errorf("the feed %s's main is %s, want GitHub's %s", feed, got, moved)
+		}
+		if refs := git(t, feed, "--git-dir="+feed, "for-each-ref", "--format=%(refname)"); strings.Contains(refs, "gone/soon") {
+			t.Errorf("the feed %s holds the branch GitHub deleted: %q", feed, refs)
+		}
+	}
+	t.Logf("after the cache, the fetch through the bucket ran %q", bucket.steps)
+	if !slices.Equal(bucket.steps, tar.steps) {
+		t.Errorf("after the cache, the fetch through the bucket ran %q, the fetch through /tar %q", bucket.steps, tar.steps)
+	}
+	for _, want := range []string{"init", "rev-parse --show-object-format", "fsck --connectivity-only", "ls-remote --symref", "update-ref --no-deref", "fetch --prune", "config"} {
+		if !slices.Contains(bucket.steps, want) {
+			t.Errorf("the fetch through the bucket ran %q, nothing of it %q", bucket.steps, want)
+		}
+	}
+	if slices.Contains(bucket.steps, "index-pack") || slices.Contains(tar.steps, "index-pack") {
+		t.Errorf("a fetch indexed a pack the cache gave its index with: through the bucket %q, through /tar %q", bucket.steps, tar.steps)
+	}
+}
+
+// feedSteps is each git command of argvs that names a path under root, the feed a fetch fills, as
+// its subcommand and the first flag after it: git's `-c` pairs and --git-dir set aside, so the
+// steps of two fetches into two feeds compare.
+func feedSteps(argvs [][]string, root string) []string {
+	var steps []string
+	for _, argv := range argvs {
+		if len(argv) == 0 || argv[0] != "git" || !slices.ContainsFunc(argv, func(arg string) bool { return strings.Contains(arg, root) }) {
+			continue
+		}
+		args := argv[1:]
+		for len(args) > 1 && args[0] == "-c" {
+			args = args[2:]
+		}
+		args = slices.DeleteFunc(slices.Clone(args), func(arg string) bool { return strings.HasPrefix(arg, "--git-dir=") })
+		if len(args) == 0 {
+			continue
+		}
+		step := args[0]
+		if len(args) > 1 && strings.HasPrefix(args[1], "--") && args[1] != "--bare" {
+			step += " " + args[1]
+		}
+		steps = append(steps, step)
+	}
+	return steps
 }
