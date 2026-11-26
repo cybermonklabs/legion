@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 
 import type { GoingPlanAnswer } from "../../api/types";
 import { goingState } from "./going-store";
-import { BoxFrame, BoxRow, boxHint, ConversationHeader } from "./RunControls";
+import { BoxFrame, BoxRow, boxHint, boxWords, ConversationHeader } from "./RunControls";
 
 // The mode control (design v3, state 12): a small text button at the left of the box that names
 // the mode the next run takes, and its menu of the three modes, each with one line on what it is
@@ -143,13 +143,26 @@ test("the mode button keeps one width, and the menu's focused mode wears the pag
   }
 });
 
+/** A plan that waits, read with no rows; `withdrawn` is a read that says Dispatch withdrew it. */
+const readPlan: GoingPlanAnswer = {
+  mode: "ask",
+  plan: 1,
+  rows: [],
+  run: "r-1",
+  state: "waiting",
+  summary: "Page the on-call.",
+  version: "v1",
+};
+const withdrawnPlan: GoingPlanAnswer = { ...readPlan, withdrawn: true };
+
 // While a plan waits, the hint under the box says what Enter does (design v3, Keys; review N1):
 // in the empty box it approves, which the hint says wherever the card's Approve has scrolled to,
 // and with words in the box it sends them instead; before the plan is read it does nothing yet,
-// and once that read failed the hint says why, as the card does, not that it is being read. A
-// plan read that waits for nobody, a withdrawn run's, has no hint while the run's frames still
-// say it waits: the card above shows the plan.
-test("the hint under the box says Enter approves a plan that waits, and sends words instead of approving", () => {
+// and once that read failed the hint says why, as the card does, not that it is being read. While
+// the run's record still says it waits on a plan whose read says Dispatch withdrew it, Enter does
+// nothing, with words in the box or none, and the hint says so; once the record says the run
+// ended, there is no hint.
+test("the hint under the box says Enter approves a plan that waits, sends words instead of approving, and does nothing on a plan Dispatch withdrew", () => {
   const read = { answering: { plan: undefined, unreadable: undefined } };
   const waits = { ...read, planWaits: true, runWaits: true };
   expect(boxHint(waits, "")).toBe("↵ Approve");
@@ -171,19 +184,40 @@ test("the hint under the box says Enter approves a plan that waits, and sends wo
     "The run's plan could not be read."
   );
   expect(boxHint({ ...failed, planWaits: false, runWaits: false }, "")).toBeUndefined();
-  const withdrawn: GoingPlanAnswer = {
-    mode: "ask",
-    plan: 1,
-    rows: [],
-    run: "r-1",
-    state: "waiting",
-    summary: "Page the on-call.",
-    version: "v1",
-    withdrawn: true,
-  };
-  const shown = { answering: { plan: withdrawn, unreadable: undefined } };
-  expect(boxHint({ ...shown, planWaits: false, runWaits: true }, "")).toBeUndefined();
-  expect(boxHint({ ...shown, planWaits: false, runWaits: true }, "keep it")).toBeUndefined();
+  const shown = { answering: { plan: withdrawnPlan, unreadable: undefined } };
+  expect(boxHint({ ...shown, planWaits: false, runWaits: true }, "")).toBe(
+    "↵ does nothing: Dispatch withdrew this plan"
+  );
+  expect(boxHint({ ...shown, planWaits: false, runWaits: true }, "keep it")).toBe(
+    "↵ does nothing: Dispatch withdrew this plan"
+  );
+  expect(boxHint({ ...shown, planWaits: false, runWaits: false }, "")).toBeUndefined();
+});
+
+// What the box says it does now (design v2, rule 5): before a conversation is open, to search or
+// ask; while the run's record says it waits on its plan - read and waiting, or not read yet - to
+// say what to change; while that record says it waits on a plan whose read says Dispatch withdrew
+// it, that Dispatch withdrew it, as Enter then does nothing; and once the run's record says it
+// ended, to answer the agent's question or to ask a follow-up.
+test("the box says what Enter does now, and that Dispatch withdrew a plan the run's record still waits on", () => {
+  const words = (
+    plan: GoingPlanAnswer | undefined,
+    { asked = false, open = true, planWaits = false, runWaits = false, search = true } = {}
+  ) =>
+    boxWords({
+      asked,
+      asking: { answering: { plan, unreadable: undefined }, planWaits, runWaits },
+      open,
+      search,
+    });
+  expect(words(undefined, { open: false })).toBe("Search or ask…");
+  expect(words(undefined, { open: false, search: false })).toBe("Ask…");
+  expect(words(readPlan, { planWaits: true, runWaits: true })).toBe("Say what to change…");
+  expect(words(undefined, { runWaits: true })).toBe("Say what to change…");
+  expect(words(withdrawnPlan, { runWaits: true })).toBe("Dispatch withdrew this plan");
+  expect(words(withdrawnPlan)).toBe("Ask a follow-up…");
+  expect(words(withdrawnPlan, { asked: true })).toBe("Answer…");
+  expect(words(undefined)).toBe("Ask a follow-up…");
 });
 
 // The hint stands under the box, from the box's left edge (design v3, Keys: "the hint under the

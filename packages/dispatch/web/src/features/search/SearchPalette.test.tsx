@@ -2582,6 +2582,46 @@ test("while a plan waits the box reads Say what to change…, the hint under it 
   }
 });
 
+// A plan of a withdrawn run waits for nobody (`planWaits`), and its read can come before the
+// run's record says the run is withdrawn. While the record still says it waits, Enter in the box
+// neither approves the plan nor sends the words in the box: the box reads Dispatch withdrew this
+// plan, the hint under it says Enter does nothing, and Enter keeps the words in the box.
+test("while the run waits on a plan Dispatch withdrew, the box and the hint under it say so, and Enter keeps the words", async () => {
+  const user = userOnFakeClock();
+  const bar = answerTheBar();
+  const read = spyOn(api, "goingPlan").mockResolvedValue({ ...waitingPlan(), withdrawn: true });
+  const revise = answerRoute<(run: string, body: unknown) => Promise<GoingPlanAnswer>>(
+    "POST",
+    "/api/v1/going/runs/*/plan/revise"
+  );
+  const view = openTheBar();
+  try {
+    await enterInTheBar(user, WORDS);
+    await waitFor(() => expect(screen.getByTestId("going-run")).toBeInTheDocument());
+    bar.send("r-1", "plan", { plan: 1, state: "waiting" });
+    bar.send("r-1", "end", { offers: [], reason: "", state: "waiting" });
+    await waitFor(() => expect(screen.getByTestId("going-plan")).toBeInTheDocument());
+
+    const box = talkBox();
+    await waitFor(() => expect(box).toHaveAttribute("placeholder", "Dispatch withdrew this plan"));
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ does nothing: Dispatch withdrew this plan"
+    );
+    await user.type(box, "keep it{Enter}");
+    expect(box).toHaveValue("keep it");
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ does nothing: Dispatch withdrew this plan"
+    );
+    expect(revise).not.toHaveBeenCalled();
+    expect(bar.start).toHaveBeenCalledTimes(1);
+  } finally {
+    read.mockRestore();
+    bar.restore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("an answer whose frame says it waits for the person makes the box read Answer…, and the answer end Waits for your answer", async () => {
   const user = userOnFakeClock();
   const bar = answerTheBar();

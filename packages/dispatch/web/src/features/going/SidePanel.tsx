@@ -153,8 +153,8 @@ export function SidePanel(): ReactNode {
   // What the box says it does now (design v2, rule 5).
   const placeholder = boxWords({
     asked: asksPerson(going),
+    asking,
     open: going.conversation !== undefined || going.starting !== undefined,
-    planWaits: asking.planWaits || asking.runWaits,
     search: false,
   });
   return (

@@ -342,10 +342,10 @@ function openWaitingRun(read: () => Promise<GoingPlanAnswer>): () => void {
 
 // A plan of a withdrawn run waits for nobody (`planWaits`): Dispatch approves and revises it for
 // nobody. Its read can come before the run's record says the run is withdrawn, on the delete that
-// withdrew it. The box then offers no Approve, its hint does not say the plan is being read, as
-// the card above shows it, and Enter with words keeps them in the box, where a revision of the
-// plan would have taken them from the box and sent them nowhere.
-test("a plan read withdrawn offers no Approve, and Enter keeps the person's words in the box", async () => {
+// withdrew it. The box then offers no Approve; its words and the hint under it say that Dispatch
+// withdrew the plan and that Enter does nothing; and Enter with words keeps them in the box, where
+// a revision of the plan would have taken them from the box and sent them nowhere.
+test("a plan read withdrawn offers no Approve, the box says Enter does nothing, and Enter keeps the person's words in the box", async () => {
   const user = userEvent.setup();
   const start = spyOn(api, "createGoingRun");
   const revise = answerRoute<(run: string, body: unknown) => Promise<GoingPlanAnswer>>(
@@ -357,13 +357,14 @@ test("a plan read withdrawn offers no Approve, and Enter keeps the person's word
     await screen.findByTestId("going-plan");
     expect(screen.queryByTestId("going-plan-approve")).toBeNull();
     const box = screen.getByRole("textbox", { name: "Ask the command bar" });
-    expect(screen.queryByTestId("going-box-hint")?.textContent ?? "").not.toMatch(
-      /Approve|approving|Reading the plan/u
+    await waitFor(() => expect(box).toHaveAttribute("placeholder", "Dispatch withdrew this plan"));
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ does nothing: Dispatch withdrew this plan"
     );
     await user.type(box, "page the night shift too{Enter}");
     expect(box).toHaveValue("page the night shift too");
-    expect(screen.queryByTestId("going-box-hint")?.textContent ?? "").not.toMatch(
-      /Approve|approving|Reading the plan/u
+    expect(screen.getByTestId("going-box-hint")).toHaveTextContent(
+      "↵ does nothing: Dispatch withdrew this plan"
     );
     expect(revise).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();

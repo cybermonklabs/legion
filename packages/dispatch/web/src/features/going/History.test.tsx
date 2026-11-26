@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the keys of an IME composition below, which user-event has no form for
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -650,6 +651,40 @@ test("typing filters History by every question of a conversation, and the arrows
     expect(opened).toBe(2);
     expect(goingState().conversation).toEqual(["r-2"]);
     expect(goingState().place).toBe("over");
+  } finally {
+    read.mockRestore();
+    stream.mockRestore();
+  }
+});
+
+// An Enter that confirms an input method's conversion in History's box is the input method's:
+// Chromium and Firefox mark it `isComposing`, and Safari sends it after the composition's end,
+// unmarked, with keyCode 229. It opens no conversation; a plain Enter after it opens the first row.
+test("an Enter that confirms an input method's conversion in History's box opens nothing, and a plain Enter opens the first row", async () => {
+  const user = userEvent.setup();
+  const read = listConversations();
+  // Each opened run's frames are read again from its stream; the stream answers nothing here.
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation(
+    () => new Promise<void>(() => {})
+  );
+  let opened = 0;
+  try {
+    renderHistory(() => {
+      opened += 1;
+    });
+    await screen.findAllByTestId("going-history-conversation");
+    const filter = screen.getByRole("searchbox", { name: "Filter history" });
+    await user.type(filter, "split");
+    // user-event has no form for this: it cannot mark a key as an IME composition.
+    fireEvent.keyDown(filter, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(filter, { isComposing: false, key: "Enter", keyCode: 229 });
+    expect(opened).toBe(0);
+    expect(goingState().conversation).toBeUndefined();
+    expect(filter).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    expect(opened).toBe(1);
+    expect(goingState().conversation).toEqual(["r-3", "r-4"]);
   } finally {
     read.mockRestore();
     stream.mockRestore();

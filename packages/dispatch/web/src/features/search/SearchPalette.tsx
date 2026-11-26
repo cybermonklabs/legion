@@ -1291,9 +1291,9 @@ function PaletteDialog({
   // card that waits; Esc in the empty box while the run works stops the run, and any other Esc
   // is the dialog's, which closes the bar while a run goes on; Enter answers the plan that waits
   // (approves it from the empty box, revises it with words), does nothing before the plan is
-  // read, holds words sent while the run works until it ends, and otherwise asks the next turn. A
-  // key of an input method's composition is the input method's: the Enter that confirms a
-  // conversion sends nothing.
+  // read or while its read says Dispatch withdrew it, holds words sent while the run works until
+  // it ends, and otherwise asks the next turn. A key of an input method's composition is the
+  // input method's: the Enter that confirms a conversion sends nothing.
   const handleTalkKey = (event: KeyboardEvent<HTMLInputElement>) => {
     if (inputMethodKey(event.nativeEvent)) return;
     if (cardKeys(event)) {
@@ -1316,8 +1316,8 @@ function PaletteDialog({
   // What the box says it does now (design v2, rule 5).
   const placeholder = boxWords({
     asked: asksBack,
+    asking,
     open: talking,
-    planWaits: asking.planWaits || asking.runWaits,
     search: true,
   });
   // The box, one element in every state of the bar, so the person's focus and words stay in it as

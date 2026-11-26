@@ -359,29 +359,42 @@ export function ConversationHeader({
   );
 }
 
+/** How the open conversation's newest run waits on its plan, as the box's words and its hint
+ *  read it (`useAsk`). */
+type PlanWaiting = Pick<Asking, "planWaits" | "runWaits"> & {
+  readonly answering: Pick<PlanAnswering, "plan" | "unreadable">;
+};
+
 /**
  * What the conversation's box says it does now (design v2, rule 5): "Search or ask…" in the bar
  * before Enter ("Ask…" in the panel, which has no search), then "Ask a follow-up…", "Say what to
- * change…" while a plan waits, and "Answer…" once the agent asked the person a question (R8).
+ * change…" while a plan waits, before its read and after a failed one too, "Dispatch withdrew
+ * this plan" while the run's record still says it waits on a plan whose read says Dispatch
+ * withdrew it, and "Answer…" once the agent asked the person a question (R8).
  */
 export function boxWords({
   asked,
+  asking,
   open,
-  planWaits,
   search,
 }: {
   /** Whether the newest run's answer asks the person a question (`asksPerson`). */
   readonly asked: boolean;
+  /** How the newest run waits on its plan, read or not yet read. */
+  readonly asking: PlanWaiting;
   /** Whether a conversation is open, or its first run's start is out. */
   readonly open: boolean;
-  /** Whether the newest run waits on its plan, read or not yet read. */
-  readonly planWaits: boolean;
   /** Whether Enter in this box searches before a conversation is open: the bar's, not the
    *  panel's. */
   readonly search: boolean;
 }): string {
   if (!open) return search ? "Search or ask…" : "Ask…";
-  if (planWaits) return "Say what to change…";
+  // Enter does nothing here: the run's record still says it waits, and its plan's read says
+  // Dispatch withdrew it (`useAsk`).
+  if (asking.runWaits && asking.answering.plan?.withdrawn === true) {
+    return "Dispatch withdrew this plan";
+  }
+  if (asking.planWaits || asking.runWaits) return "Say what to change…";
   return asked ? "Answer…" : "Ask a follow-up…";
 }
 
@@ -389,16 +402,15 @@ export function boxWords({
  *  while a plan waits, Enter in the empty box approves it, which the hint says so the card's
  *  Approve need not be in view, and with words in the box it sends them instead of approving;
  *  before the plan is read, Enter does nothing yet, and once its read failed the hint says why,
- *  as the card does above its Retry, rather than that the plan is still being read. A plan read
- *  that waits for nobody, as a withdrawn run's does, has no hint: the card above shows it. */
-export function boxHint(
-  asking: Pick<Asking, "planWaits" | "runWaits"> & {
-    readonly answering: Pick<PlanAnswering, "plan" | "unreadable">;
-  },
-  words: string
-): string | undefined {
+ *  as the card does above its Retry, rather than that the plan is still being read. While the
+ *  run's record still says it waits on a plan whose read says Dispatch withdrew it, Enter does
+ *  nothing and keeps the words in the box, and the hint says so. */
+export function boxHint(asking: PlanWaiting, words: string): string | undefined {
   if (asking.planWaits) {
     return words.trim() === "" ? "↵ Approve" : "↵ sends your words instead of approving";
+  }
+  if (asking.runWaits && asking.answering.plan?.withdrawn === true) {
+    return "↵ does nothing: Dispatch withdrew this plan";
   }
   if (!asking.runWaits || asking.answering.plan !== undefined) {
     return undefined;

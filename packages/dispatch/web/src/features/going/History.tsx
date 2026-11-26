@@ -4,6 +4,7 @@ import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState 
 import { goingConversationsQuery } from "../../api/queries";
 import type { GoingConversation } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { inputMethodKey } from "../../lib/input-method-key";
 import {
   inputClasses,
   surfaceMutedBg,
@@ -94,7 +95,8 @@ interface Listed {
  * every question of a conversation. While the focus is in it, the first row is drawn selected,
  * as Enter in it opens that row; Down and Up move the focus through the rows, Up from the first
  * going back to the box, Enter opens the row the focus is on, and typing on a row goes on in the
- * box. The surface draws no box of its own beside this one while History shows.
+ * box. The Enter that confirms an input method's conversion in the box opens nothing. The surface
+ * draws no box of its own beside this one while History shows.
  */
 export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode {
   const conversations = useQuery(goingConversationsQuery());
@@ -301,6 +303,9 @@ export function History({ onOpen }: { readonly onOpen: () => void }): ReactNode 
         onChange={(event) => setFilter(event.target.value)}
         onFocus={() => setInBox(true)}
         onKeyDown={(event) => {
+          // A key of an input method's composition is the input method's (`inputMethodKey`): the
+          // Enter that confirms a conversion opens no conversation.
+          if (inputMethodKey(event.nativeEvent)) return;
           if (event.key === "ArrowDown") {
             event.preventDefault();
             list.current?.querySelector<HTMLElement>("[data-history-row]")?.focus();
