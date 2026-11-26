@@ -1,4 +1,5 @@
 name: CI
+# A throwaway comment: this run times the merge base's jobs in the pull-request lane.
 
 # why: .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs
 
