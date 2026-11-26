@@ -36,11 +36,10 @@ const specWriterGuardPkg = "api"
 // words"). KeepAskBlockInStep is the write of a closed ask's block, which took the place of
 // SetBlockAttributes once a person's answer lives on the ask's node. A call names one through the
 // interface the handlers hold (docs.API) or through the service itself (docs.Service), and either
-// is a call of the sink. DrainOwedQueries is no sink: the version it appends once a check result
-// is recorded or retracted re-renders the issue's query documents for that result, and a result
-// is no requirement, criterion or check node, nor is its tuple to its check a relation out of
-// one, so the version writes nothing the check guards; specWriterRevisions names the routes that
-// reach it, each with that reason.
+// is a call of the sink. DrainOwedQueries is no sink: the version it appends re-renders from the
+// store each query document of an issue whose record a write moved and marked owed, and writes no
+// node and no relation of its own; specWriterRevisions names the routes that reach it, each with
+// the reason the version writes nothing the check guards.
 var specWriterSinks = []string{
 	"AcceptSuggestion", "ApplyOps", "KeepAskBlockInStep", "NamedVersion", "RebuildDocument", "RejectSuggestion",
 	"ReplaceText", "SeedText", "SetAskBlockText", "SnapshotVersion", "WriteIssueAskStates",
@@ -88,6 +87,28 @@ const nodeDeleteRevisionExemption = "a node delete checks its writer before it t
 	"DrainOwedQueries then appends re-renders each query document whose record the delete changed from the store, and " +
 	"writes no node and no relation beyond the delete the check admitted"
 
+// nodeStateRevisionExemption is why specWriterRevisions leaves the versions the state route's and
+// the settle's drain appends unchecked.
+const nodeStateRevisionExemption = "the state route and the settle check the writer before they write (writeNodeState " +
+	"is one of specWriterNodeSinks, which this test holds to the check): a requirement, criterion or check changes state " +
+	"only for a person or an architect of the issue's tree; the version DrainOwedQueries then appends re-renders each " +
+	"query document whose record the state changed from the store, and writes no node and no relation beyond the state " +
+	"the check admitted"
+
+// askFollowRevisionExemption is why specWriterRevisions leaves the versions the follow and the
+// unfollow of a question append unchecked.
+const askFollowRevisionExemption = "a follow or an unfollow of a question states one followed_by relation out of the ask " +
+	"(changeAskFollower, ask_followers.go), and the version DrainOwedQueries appends re-renders the issue's decisions " +
+	"query from the store, which takes asks and decisions and no requirement, criterion or check node: it writes no " +
+	"such node and no value or relation out of one"
+
+// keepRevisionExemption is why specWriterRevisions leaves the version a person's Keep of an
+// agent's decision appends unchecked.
+const keepRevisionExemption = "a Keep states kept_by and kept_text_sum on an agent's decision node (keepDecisionNode, " +
+	"decisions.go), which is no requirement, criterion or check node, and the version DrainOwedQueries appends " +
+	"re-renders the issue's decisions query from the store, which takes no such node: it writes no such node and no " +
+	"value or relation out of one"
+
 // specWriterRevisions names every route whose path reaches specWriterRevision, with the reason
 // the version it appends there is left unchecked. TestEveryRouteThatWritesADocumentChecksItsWriter
 // holds the table to it both ways (unheldQueryRevisions): a route that reaches the revision and is
@@ -102,10 +123,15 @@ const nodeDeleteRevisionExemption = "a node delete checks its writer before it t
 // (requestActor, docs/socket_admission.go), or through a route whose own path this test holds to
 // the check, and every other mark is left by one of the routes specWriterRevisions names.
 var specWriterRevisions = map[string]string{
-	"POST /api/v1/issues/{key}/results":      resultRevisionExemption,
-	"POST /api/v1/results/{id}/retract":      resultRevisionExemption,
-	"PATCH /api/v1/issues/{key}/nodes/{id}":  nodeMoveRevisionExemption,
-	"DELETE /api/v1/issues/{key}/nodes/{id}": nodeDeleteRevisionExemption,
+	"POST /api/v1/issues/{key}/results":                  resultRevisionExemption,
+	"POST /api/v1/results/{id}/retract":                  resultRevisionExemption,
+	"PATCH /api/v1/issues/{key}/nodes/{id}":              nodeMoveRevisionExemption,
+	"DELETE /api/v1/issues/{key}/nodes/{id}":             nodeDeleteRevisionExemption,
+	"POST /api/v1/issues/{key}/nodes/{id}/state":         nodeStateRevisionExemption,
+	"POST /api/v1/issues/{key}/nodes/{id}/settle":        nodeStateRevisionExemption,
+	"PUT /api/v1/asks/{id}/followers/{session_id}":       askFollowRevisionExemption,
+	"DELETE /api/v1/asks/{id}/followers/{session_id}":    askFollowRevisionExemption,
+	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep": keepRevisionExemption,
 }
 
 // anchoredWriteExemption is why specWriterExempt leaves the four anchored comment and ask routes

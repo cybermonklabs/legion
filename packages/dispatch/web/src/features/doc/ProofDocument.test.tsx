@@ -1196,7 +1196,9 @@ function watchedRequests(): { answered(): Promise<string[]>; restore(): void } {
   return {
     async answered() {
       const statuses = await Promise.all(
-        fetches.mock.results.map(async (result) => (await result.value).status)
+        fetches.mock.results.map(
+          async (result) => (await (result.value as Promise<Response>)).status
+        )
       );
       return fetches.mock.calls.map(([input], index) => {
         const url = new URL(String(input), window.location.href);
