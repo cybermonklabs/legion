@@ -577,11 +577,18 @@ func personalTokenOwnedBy(t *testing.T, database *store.Store, owner string, sco
 // row that names `approve`, a token of that person holding `person` alone, which is refused.
 // That last probe is what holds the gate to the table: without it a row the table declares
 // `approve` whose gate asked only for `person` would pass every test here.
+//
+// A token holding `person`, `approve` and `p0`, the widest set a person's token may hold, keeps
+// every route the others reach (G4 of dispatch://INFRA-5637): it is admitted on every row that
+// admits the token holding `person` and `approve`, and on every `any` row that names no scope,
+// where the shared token is admitted. No probe body names a priority (routeProbeBody), so no
+// probe meets the check a priority of 0 makes.
 func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	personal := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove)
 	personOnly := personalTokenHolding(t, database, model.ScopePerson)
+	withP0 := personalTokenHolding(t, database, model.ScopePerson, model.ScopeApprove, model.ScopeP0)
 	// A probe ends on its route's answer, waited for through the shared wait, whose one bound is
 	// the test binary's deadline: a fixed deadline on the request ended a probe whose token read a
 	// loaded machine held past it, and the route then answered 5xx where it would have refused.
@@ -643,9 +650,11 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 						expectScopeRefusal(t, route, personOnly)
 					}
 					expectAdmitted(t, route, personal)
+					expectAdmitted(t, route, withP0)
 					return
 				}
 				expectAdmitted(t, route, "bearer")
+				expectAdmitted(t, route, withP0)
 			case authBearer:
 				expectRefused(t, route, "anonymous")
 				expectRefused(t, route, "cookie")

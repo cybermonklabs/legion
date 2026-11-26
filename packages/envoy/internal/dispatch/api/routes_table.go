@@ -217,11 +217,15 @@ type routeDecl struct {
 	// INFRA-1017, and two scopes decide them now: `person`, "this credential acts as its
 	// person", which every one of them needs, and `approve`, the right to settle what a person
 	// settles, which the routes that decide a credential, a sign-in, a review, a decision's
-	// Keep or a token need as well. A person's browser holds both, and their personal tokens
-	// hold the set each token's row names. A broker-issued token that acts for its person holds
-	// `person` alone, never `approve` (brokerTokenActor). The shared token, a pod's
-	// service-account token, a project-scoped session's token and a broker-issued token that
-	// names a service and no person hold neither.
+	// Keep or a token need as well. A person's browser holds both and `p0` besides, which no
+	// route needs: the one value of a field that needs it, a priority of 0 on an issue write, is
+	// checked in the write itself (refuseP0WithoutScope), since a route's declaration names a
+	// route and not what a request writes. Their personal tokens hold the set each token's row
+	// names. A broker-issued token that acts for its person holds `person` alone
+	// (brokerTokenActor), except an approve-only token, which holds `person` and `approve` and
+	// calls only the routes that state ApproveOnly; no broker-issued token holds `p0`. The shared
+	// token, a pod's service-account token, a project-scoped session's token and a broker-issued
+	// token that names a service and no person hold none of them.
 	//
 	// The scope `read` a read-only token holds is never one of these: a scope here is one the
 	// caller must hold, and no person holds that one. The routes such a credential may call are
@@ -253,8 +257,9 @@ type routeDecl struct {
 
 	// ApproveOnly is a route an approve-only token may call: the token the secrets broker mints
 	// for a person's approve grant, binds to its own pod's key and spends through its proxy, never
-	// released (model.Credential.ApproveOnly). It acts as its person with both of the person's
-	// scopes, and every route that does not state ApproveOnly, and GET /ws/live beside them,
+	// released (model.Credential.ApproveOnly). It acts as its person with the scopes person and
+	// approve (brokerApproveOnlyScopes), and every route that does not state ApproveOnly, and GET
+	// /ws/live beside them,
 	// answers it 403 APPROVE_ONLY_TOKEN before anything else the route does
 	// (refuseApproveOnlyToken), so a route added later stays closed to it until its file states
 	// it.
