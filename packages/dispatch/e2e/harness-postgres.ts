@@ -216,8 +216,10 @@ export interface StackPostgres {
  *  the binaries provider's own `pg_ctl` says so at once, but the image provider's server binds
  *  the path inside its container, where nothing this process reads says why, so the run would
  *  otherwise spend `ready`'s {@link readyMs} on a server that can never answer and then show
- *  psql's "too long" from the host side. */
-function socketUrl(user: string, database: string, socketDirectory: string): string {
+ *  psql's "too long" from the host side. Exported for `__tests__/harness-postgres-darwin.test.ts`,
+ *  which holds both refusals: a start would reach this only after `go` has printed the connection
+ *  limit and docker has pulled, which is minutes of work this says nothing about. */
+export function socketUrl(user: string, database: string, socketDirectory: string): string {
   if (socketDirectory.includes(",")) {
     throw new Error(
       `The Dispatch e2e harness cannot start: the stack's socket directory ${socketDirectory} ` +
