@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
+import { editorBlockSchema } from "../../doc/schema";
 import { ANSWER_LINES } from "../page-words";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { fixture } from "./graph-edit-fixtures";
@@ -13,6 +14,7 @@ import {
   RETYPE_KINDS,
   type Verdict,
 } from "./placement";
+import { retypeKinds } from "./room-writes";
 
 /**
  * Which entry of the node menu is grey, and the body of each write that is not: `graph-edit/placement.ts`
@@ -649,14 +651,16 @@ test("retype keeps the node's place in its parent and serves attributes and grey
 
 test("retype offers the kinds the editor's schema lets it make, so a view offers no statement", () => {
   // The kinds the editor of a child that is a view of its ancestor's spec lets it make: the
-  // schema in which `requirement` may not be made.
+  // schema in which `requirement` may not be made (`viewBlockSchema`, decision 359).
   expect(child.view_of, "the fixture's child is a view").toBe("<issue>");
-  const onView = RETYPE_KINDS.filter((kind) => kind !== "statement");
+  const onView = retypeKinds(editorBlockSchema(child.view_of));
+  expect(onView).toEqual(RETYPE_KINDS.filter((kind) => kind !== "statement"));
   const view = place("<prose-under-criterion>", { kinds: onView }).retype;
   if (view.kind !== "retype") throw new Error("Retype is not offered on the paragraph");
   expect(Object.keys(view.kinds)).toEqual(["criterion", "check", "plan_task"]);
   expect(view.kinds.criterion).toEqual(grey("grey_criterion_parent"));
-  // Every kind where the editor makes them all.
+  // Every kind where the editor makes them all: the compiled schema, an issue that is no view.
+  expect(retypeKinds(editorBlockSchema(converted.view_of))).toEqual([...RETYPE_KINDS]);
   const all = place("<prose-under-criterion>").retype;
   if (all.kind !== "retype") throw new Error("Retype is not offered on the paragraph");
   expect(Object.keys(all.kinds)).toEqual([...RETYPE_KINDS]);

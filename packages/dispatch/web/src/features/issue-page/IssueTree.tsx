@@ -593,7 +593,8 @@ export function IssueTree({
   // new parent, and the row a refusal's line names (`graph-edit/row-reveal.ts`).
   const rowReveal = useRowReveal({ body, reach, root, unfoldPath });
   // In Graph, the room editor the node menu and the editor's keys are given, which makes a new
-  // row and starts its editing in the render that draws it (`graph-edit/new-row-editing.ts`).
+  // row and starts its editing in the render that draws it, and retypes a prose block in the
+  // editing it opens on the block's row (`graph-edit/new-row-editing.ts`).
   const rowEditor = useNewRowEditing({
     body,
     bridge: moveKeys,
@@ -606,6 +607,7 @@ export function IssueTree({
     reveal: rowReveal,
     root,
     rows,
+    stopEditing,
     unfoldPath,
   });
   // In Graph, the keys of the moves with the caret in a block R2 admits, and the editing kept on

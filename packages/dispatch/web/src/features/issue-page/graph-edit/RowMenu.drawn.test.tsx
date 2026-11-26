@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import type { BlockSchemaRead, LensKindRead } from "@legion/contracts";
-import type { EditorView } from "@milkdown/kit/prose/view";
+import type { Transaction } from "@milkdown/kit/prose/state";
+import { EditorView } from "@milkdown/kit/prose/view";
 import {
   hashKey,
   notifyManager,
@@ -60,6 +61,7 @@ import { treeReferences } from "../useIssueTree";
 import type { OnEditing, OnEditor } from "../useNodeEditing";
 import { fixture } from "./graph-edit-fixtures";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
+import { GRAPH_EDIT_META } from "./room-writes";
 
 /**
  * The node menu of Graph's focused row, drawn in the outline as Graph draws it (`RowMenu.tsx`;
@@ -2481,4 +2483,184 @@ test("Enter in the middle of a block's text keeps today's behaviour", async () =
   expect(unread().length, "Enter in the middle made a new row").toBe(drawnBefore);
   expect(caretPlace(), "the caret left the statement").toEqual([`s3|${words}|5`, `s3|${words}|5`]);
   expect(sent.patches).toEqual([]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Retype (R5; plan task t15): the kinds the editor's schema for the issue lets it make, and a pick
+// of one from a row with no caret, which opens the row's editing in the issue's room, retypes the
+// block there with this part's meta key, which the edit hold admits, reads the outline reads once
+// (R7), sends no request of its own (R12), and leaves the focus on the row.
+// ---------------------------------------------------------------------------------------------
+
+/** The paragraph of the issue's own fragment under the criterion, which Retype is offered on. */
+const PROSE = nodeOf(converted, "<prose-under-criterion>");
+const PROSE_BLOCK = PROSE.block_id ?? "";
+const PROSE_WORDS = wordsOfNode(PROSE);
+
+/** The address a statement under the criterion serves (`placement.ts`' `serves`). */
+const SERVES = `dispatch://${KEY}/spec#b-${CRITERION.block_id}`;
+
+/** The room of the issue's own fragment, holding the paragraph under the criterion by the block id
+ *  the read gives its node, before its editor is made. */
+function proseRoom(live: LiveOutline): LiveRoom {
+  const room = live.rooms.get(TREE_ID);
+  if (room === undefined) throw new Error("the outline holds no room of the tree artifact");
+  room.server
+    .getXmlFragment("prosemirror")
+    .insert(0, [roomBlock(paragraphOf(PROSE_WORDS, PROSE_BLOCK))]);
+  return room;
+}
+
+/** Opens the menu of the row of `node` by a press, and Retype's submenu by a press on Retype, and
+ *  answers the submenu's entries once it is drawn. */
+async function retypeKindsOn(
+  live: LiveOutline,
+  user: UserEvent,
+  node: TreeAnswerNode
+): Promise<HTMLElement[]> {
+  await pickOn(live, user, node, CONTROL_LABELS.edit_retype);
+  return waitFor(() => {
+    const submenu = live.view.container.querySelectorAll<HTMLElement>('[role="menu"]')[1];
+    if (submenu === undefined) throw new Error("Retype opened no submenu");
+    return [...submenu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  });
+}
+
+/** The kind of Retype's submenu on the row of `node` that reads `word`, picked by a press. */
+async function retypeTo(
+  live: LiveOutline,
+  user: UserEvent,
+  node: TreeAnswerNode,
+  word: string
+): Promise<void> {
+  const kinds = await retypeKindsOn(live, user, node);
+  const kind = kinds.find((each) => (each.textContent ?? "").startsWith(word));
+  if (kind === undefined) throw new Error(`Retype's submenu offers no ${word}`);
+  await user.click(kind);
+}
+
+/** Whether the document `transaction` leaves holds the paragraph's block as a statement. */
+function retypedIn(transaction: Transaction): boolean {
+  let found = false;
+  transaction.doc.descendants((node) => {
+    found ||= node.type.name === "requirement" && node.attrs.blockId === PROSE_BLOCK;
+    return !found;
+  });
+  return found;
+}
+
+// R5 and decision 359: Retype's submenu lists the kinds the editor's schema for the issue lets it
+// make, as Graph's read answers `view_of`: on the issue, a statement serving the criterion among
+// them; on a child that is a view of its ancestor's spec, whose editor's schema makes no
+// requirement, no statement, and a criterion grey, since that child's agent writes its spec.
+test("retype offers the kinds the editor's schema lets it make, so a view offers no statement", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  answerNodeRoutes({ deletes: [deleted.dry_run, deleted.dry_run] });
+  const live = drawLive();
+  const drawn = (kinds: readonly HTMLElement[]) =>
+    kinds.map((kind) => [isGrey(kind), kind.textContent]);
+  expect(drawn(await retypeKindsOn(live, user, PROSE)), "the issue's kinds").toEqual([
+    [true, `${CONTROL_LABELS.retype_criterion}${ANSWER_LINES.grey_criterion_parent}`],
+    [false, CONTROL_LABELS.retype_statement],
+    [true, `${CONTROL_LABELS.retype_check}${ANSWER_LINES.grey_check_parent}`],
+    [true, `${CONTROL_LABELS.retype_plan_task}${ANSWER_LINES.grey_plan_task_parent}`],
+  ]);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(menuOf(live.view)).toBeNull());
+
+  act(() =>
+    live.client.setQueryData(outlineQuery(KEY, "graph").queryKey, {
+      ...converted,
+      view_of: "CORE-0",
+    })
+  );
+  expect(drawn(await retypeKindsOn(live, user, PROSE)), "the view's kinds").toEqual([
+    [true, `${CONTROL_LABELS.retype_criterion}${ANSWER_LINES.grey_view_criterion}`],
+    [true, `${CONTROL_LABELS.retype_check}${ANSWER_LINES.grey_check_parent}`],
+    [true, `${CONTROL_LABELS.retype_plan_task}${ANSWER_LINES.grey_plan_task_parent}`],
+  ]);
+});
+
+// R5: the retype is a transaction of the editor's own, made with the editor's typed-block
+// commands in the row's editing, which carries this part's meta key, so the row's edit hold, which
+// refuses every other change of the block's type, admits it: the handle's own retype, which carries
+// none, is refused with the caret in the block, and the menu's pick from the row writes the
+// statement in the issue's room, its id kept and its serves naming the criterion.
+test("retype dispatches with this part's meta key and the edit hold admits it", async () => {
+  const user = userEvent.setup();
+  holdTreeReads();
+  answerNodeRoutes({ deletes: [deleted.dry_run] });
+  const live = drawLive();
+  const room = proseRoom(live);
+  const dispatched: Transaction[] = [];
+  const dispatch = EditorView.prototype.dispatch;
+  EditorView.prototype.dispatch = function (this: EditorView, transaction: Transaction) {
+    dispatched.push(transaction);
+    dispatch.call(this, transaction);
+  };
+  try {
+    const { editable } = await editRow(live, user, PROSE, TREE_ID);
+    const before = fragmentOf(room);
+    expect(before).toEqual([`paragraph ${PROSE_BLOCK}: ${PROSE_WORDS}`]);
+    act(() => {
+      room.editor?.retypeBlock(PROSE_BLOCK, "requirement", { serves: [SERVES] });
+    });
+    expect(fragmentOf(room), "the hold admitted a retype with no meta key").toEqual(before);
+    pressIn(editable, "Escape");
+    await waitFor(() => expect(live.edited.at(-1), "Escape left the editing").toBeUndefined());
+
+    await retypeTo(live, user, PROSE, CONTROL_LABELS.retype_statement);
+    await waitFor(
+      () =>
+        expect(fragmentOf(room), "the pick wrote no statement in the room").toEqual([
+          `requirement ${PROSE_BLOCK}: ${PROSE_WORDS}`,
+        ]),
+      { timeout: 10_000 }
+    );
+    const statement = room.server.getXmlFragment("prosemirror").get(0);
+    // The room keeps a pointer attribute as the list it holds, whatever Yjs' typing says of it.
+    const serves: unknown =
+      statement instanceof Y.XmlElement ? statement.getAttribute("serves") : undefined;
+    expect(serves).toEqual([SERVES]);
+    expect(
+      dispatched
+        .filter((transaction) => transaction.docChanged && retypedIn(transaction))
+        .map((transaction) => transaction.getMeta(GRAPH_EDIT_META)),
+      "the handle's retype and the menu's, in that order"
+    ).toEqual([undefined, true]);
+  } finally {
+    EditorView.prototype.dispatch = dispatch;
+  }
+});
+
+// R7 and R12: once the room's editor has taken the retype, the page reads the outline read it
+// holds again once, whether or not an event came, and sends no request of its own: the menu's
+// opening sent its dry run, and nothing else goes. The editing the pick opened ends, the focus on
+// the row.
+test("a taken retype reads the outline reads once", async () => {
+  const user = userEvent.setup();
+  const reads = answerTreeReads(converted, NEVER);
+  const sent = answerNodeRoutes({ deletes: [deleted.dry_run] });
+  const live = drawLive();
+  const room = proseRoom(live);
+  await letRequestsSettle();
+  const before = reads.outline();
+  await retypeTo(live, user, PROSE, CONTROL_LABELS.retype_statement);
+  await waitFor(
+    () =>
+      expect(fragmentOf(room), "the pick wrote no statement in the room").toEqual([
+        `requirement ${PROSE_BLOCK}: ${PROSE_WORDS}`,
+      ]),
+    { timeout: 10_000 }
+  );
+  await waitFor(() => expect(live.edited.at(-1), "the editing did not end").toBeUndefined());
+  await letRequestsSettle();
+  expect(reads.outline() - before, "the outline was not read again once").toBe(1);
+  expect(sent.patches, "the retype sent a PATCH").toEqual([]);
+  expect(
+    sent.deletes.map((each) => each.dryRun),
+    "the retype sent a DELETE"
+  ).toEqual([true]);
+  expect(document.activeElement, "the row lost the focus").toBe(liveRowOf(live.view, PROSE));
 });

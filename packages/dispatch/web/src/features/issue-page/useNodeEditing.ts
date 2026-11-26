@@ -79,8 +79,10 @@ export interface NodeEditing {
  * (`graph-edit/new-row-editing.ts`, R3): `fresh`, whether `row` is a new row, whose block the
  * document may not hold yet - its caret goes in the editor with none drawn, the box shut, and once
  * the block is drawn where the reader's typing left it - and `write`, which writes that block with
- * the reader's first character `words` in the editor `view`, and answers whether it did. Outside
- * Graph nothing sets `take`, `fresh` or `write`.
+ * the reader's first character `words` in the editor `view`, and answers whether it did. And
+ * Graph's (R5): `caretIn`, told as the caret goes into the block `blockId` of the edited row
+ * `row`, the editor's hold on, with the editor's `view`, which a retype the node menu asked for
+ * writes in. Outside Graph nothing sets `take`, `fresh`, `write` or `caretIn`.
  */
 export interface MoveKeyBridge {
   take?: (row: string, move: MoveKey | EndKey) => boolean;
@@ -88,6 +90,7 @@ export interface MoveKeyBridge {
   restore?: () => void;
   fresh?: (row: string) => boolean;
   write?: (row: string, words: string, view: EditorView) => boolean;
+  caretIn?: (row: string, blockId: string, view: EditorView) => void;
 }
 
 /** A reader's own acts, any of which ends the page's own placing of the focus - the tree's
@@ -786,6 +789,9 @@ export function useNodeEditing({
       document.addEventListener("selectionchange", changed, { signal: acts.signal });
       document.addEventListener("selectionchange", confine, { signal: confining.signal });
       box.addEventListener("focusin", cameBack, { capture: true, signal: confining.signal });
+      // Graph's retype waits for this caret, and writes in the editor that holds it (R5).
+      const view = editorView.current;
+      if (view !== undefined) bridge.current?.caretIn?.(rowKey, blockId, view);
       return acts.signal.aborted;
     };
     const changed = () => {

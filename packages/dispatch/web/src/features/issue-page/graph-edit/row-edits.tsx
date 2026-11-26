@@ -86,8 +86,9 @@ export interface RowEditor {
     place: NewPlace,
     line: PlaceLine | undefined
   ) => void;
-  /** Gives the block of read id `node` the kind `kind`, with the attributes that keep it where it
-   *  stands (R5). */
+  /** Gives the block of read id `node` the kind `kind` in the room, with the attributes that keep
+   *  it where it stands, in the editing of the node's own row, which it opens where no caret is
+   *  in the node (R5). */
   readonly retype?: (node: string, kind: RetypeKind, attributes: RetypeAttributes) => void;
 }
 

@@ -2,7 +2,9 @@ import type * as ProseMirrorState from "@milkdown/kit/prose/state";
 import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from "react";
 
-import type { Actor } from "../../../api/types";
+import type { Actor, BlockSchema } from "../../../api/types";
+import { editorBlockSchema } from "../../doc/schema";
+import { importWhenOnline } from "../../shell/DeploymentResilience";
 import { focusOnDocument } from "../../shell/roving";
 import type { TreeNode } from "../issue-tree";
 import { loadEditsHold } from "../node-caret";
@@ -10,7 +12,12 @@ import { rowSelectorOf } from "../tree-focus";
 import { type DrawnRow, placesAlong } from "../tree-fold";
 import { rowKeyOf } from "../tree-keys";
 import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
-import type { EditedRow, MoveKeyBridge, NodeEditing } from "../useNodeEditing";
+import {
+  abortOnReaderAct,
+  type EditedRow,
+  type MoveKeyBridge,
+  type NodeEditing,
+} from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   drawNewRow,
@@ -24,17 +31,18 @@ import {
   subscribeRefusedPlacings,
   typeNewRow,
 } from "./new-rows";
-import type { NewEntry } from "./node-writes";
-import type { NewPlace, PlaceLine } from "./placement";
-import { writeNewBlock } from "./room-writes";
+import { type NewEntry, readAfterRoomWrite } from "./node-writes";
+import type { NewPlace, PlaceLine, RetypeAttributes, RetypeKind } from "./placement";
+import { retypeKinds, writeNewBlock, writeRetype } from "./room-writes";
 import type { RowEditor, RowReveal } from "./row-edits";
 import { ownPathTo } from "./row-reveal";
 
 /**
- * How Graph's outline makes and edits a new row (INFRA-5705's R3), with the tree's own editing
- * (`useNodeEditing.ts`) and the issue's one room: the room editor the node menu and the editor's
- * keys are given (`row-edits.tsx`' `RowEditor`), and the editing's way of putting the caret in a
- * row whose block the room does not hold yet (`MoveKeyBridge`'s `fresh` and `write`).
+ * How Graph's outline makes and edits a new row (INFRA-5705's R3), and retypes a prose block (R5),
+ * with the tree's own editing (`useNodeEditing.ts`) and the issue's one room: the room editor the
+ * node menu and the editor's keys are given (`row-edits.tsx`' `RowEditor`), the editing's way of
+ * putting the caret in a row whose block the room does not hold yet (`MoveKeyBridge`'s `fresh`
+ * and `write`), and what it tells of a caret it has put in (`MoveKeyBridge.caretIn`).
  *
  * A pick of New row below or New row under, or Enter at the end of a block R2 admits, draws a new
  * row at the place `placement.ts` gave it (`new-rows.ts`' `withNewRows`, which `IssueTree.tsx`
@@ -52,6 +60,17 @@ import { ownPathTo } from "./row-reveal";
  * A placing `PATCH` that is not taken leaves the node where the server keeps it: the focus the
  * reader held on the row goes with it (`RowReveal.kept`), and where the row keeps its key but is
  * drawn elsewhere among its siblings, the focus the move dropped comes back to it.
+ *
+ * A pick of a kind in Retype's submenu (R5) - the kinds the editor's schema for the issue lets it
+ * make, the schema the page gives that editor (`doc/schema.ts`' `editorBlockSchema`: a child that
+ * is a view of its ancestor's spec makes no statement, decision 359) - asks the tree's own editing
+ * for the caret in the node's own row, as Enter does (part Y's first Enter, one read and one
+ * socket where none is open), and once the caret is in the node's block, retypes the block there
+ * with the editor's typed-block commands, made for this page's meta key (`room-writes.ts`'
+ * `writeRetype`). It sends no request of its own. Once the editor has taken it, the outline reads
+ * are read again once (R7, `node-writes.ts`' `readAfterRoomWrite`), and the editing it opened
+ * ends with the focus on the row, as Escape leaves it, which draws the new kind once a read
+ * answers it. A reader who acts before the retype is written has moved on, and it is not written.
  */
 
 /** One new row this outline made: the key of the row the focus was on as it was made, and how
@@ -63,6 +82,18 @@ interface Made {
   phase: "asked" | "edited" | "starting";
   key?: string;
   unfolded?: true;
+}
+
+/** A retype the node menu asked for (R5), until the caret its editing asked for goes into the row
+ *  of key `key`: the node's read id, the kind and the attributes `placement.ts` gave, the schema
+ *  the page gives the editor, and what the reader's first act since aborts. */
+interface Retyping {
+  readonly acts: AbortController;
+  readonly attributes: RetypeAttributes;
+  readonly key: string;
+  readonly kind: RetypeKind;
+  readonly node: string;
+  readonly schema: BlockSchema;
 }
 
 /** The ProseMirror state module the editor's hold is built of (`loadEditsHold`), once loaded: the
@@ -95,11 +126,11 @@ function ownPathOfRead(node: TreeNode, readId: string): TreeNode[] | undefined {
 }
 
 /**
- * Graph's new rows for the outline of `issue` (Graph's alone: undefined anywhere else, where
- * nothing is set): sets `bridge`'s `fresh` and `write`, starts the editing of each row the menu
- * or a key made once it is drawn, and drops each such row left before its first character.
- * Answers the room editor the node menu and the editor's keys take, over `newRows`, the issue's
- * new rows as the tree drew them (`useNewRows`).
+ * Graph's new rows and retypes for the outline of `issue` (Graph's alone: undefined anywhere else,
+ * where nothing is set): sets `bridge`'s `fresh`, `write` and `caretIn`, starts the editing of each
+ * row the menu or a key made once it is drawn, and drops each such row left before its first
+ * character. Answers the room editor the node menu and the editor's keys take, over `newRows`, the
+ * issue's new rows as the tree drew them (`useNewRows`).
  */
 export function useNewRowEditing({
   body,
@@ -113,6 +144,7 @@ export function useNewRowEditing({
   reveal,
   root,
   rows,
+  stopEditing,
   unfoldPath,
 }: {
   /** The tree's own box, which the rows are found inside. */
@@ -130,6 +162,7 @@ export function useNewRowEditing({
   /** The tree the outline draws, its new rows among it. */
   readonly root: TreeNode;
   readonly rows: readonly DrawnRow[];
+  readonly stopEditing: NodeEditing["stopEditing"];
   readonly unfoldPath: (above: readonly string[]) => void;
 }): RowEditor | undefined {
   const client = useQueryClient();
@@ -137,6 +170,18 @@ export function useNewRowEditing({
   // The key of the row a refused placing left the focus on, for the render that draws its node
   // where the server keeps it.
   const kept = useRef<string | undefined>(undefined);
+  // The retype waiting for its caret, and what it reads as the editing goes on: the rows drawn,
+  // the tree's own editing and the row it edits.
+  const retyping = useRef<Retyping | undefined>(undefined);
+  const latest = useRef({ edit, editing, rows, stopEditing });
+  latest.current = { edit, editing, rows, stopEditing };
+  // The schema the page gives the editor of the issue's documents, from what Graph's read
+  // answers as `view_of` (decision 359).
+  const schema = editorBlockSchema(
+    issue === undefined
+      ? undefined
+      : client.getQueryData<TreeAnswer>(outlineQuery(issue, "graph").queryKey)?.view_of
+  );
 
   bridge.fresh =
     issue === undefined
@@ -155,6 +200,57 @@ export function useNewRowEditing({
           typeNewRow(client, issue, at.blockId, words);
           return true;
         };
+  bridge.caretIn =
+    issue === undefined
+      ? undefined
+      : (row, blockId, view) => {
+          const asked = retyping.current;
+          if (asked?.key !== row) return;
+          retyping.current = undefined;
+          // The editor library's typed-block commands sit behind the editor's own `import()`
+          // (`doc/editor.ts`), loaded already where a row's editor has been made of it.
+          const commands = importWhenOnline(() => import("@legion/proof-editor"));
+          void Promise.all([loadEditsHold(), commands]).then(
+            ([[state], { createTypedBlockCommands: create }]) => {
+              // A reader who acted since the retype was asked has moved on from it.
+              const movedOn = asked.acts.signal.aborted;
+              asked.acts.abort();
+              if (movedOn) return;
+              const { attributes, kind, node, schema: given } = asked;
+              if (writeRetype(view, state, create, given, blockId, kind, attributes)) {
+                readAfterRoomWrite(client, issue, node);
+              }
+              // The editing the retype opened ends with the focus on the row, as Escape leaves it.
+              if (latest.current.editing?.row !== row) return;
+              const drawn = body.current?.querySelector<HTMLElement>(rowSelectorOf(row));
+              if (drawn?.contains(document.activeElement) === true) {
+                (document.activeElement as HTMLElement | null)?.blur();
+                drawn.focus();
+              }
+              latest.current.stopEditing();
+            },
+            () => asked.acts.abort()
+          );
+        };
+
+  const retype = useCallback(
+    (node: string, kind: RetypeKind, attributes: RetypeAttributes) => {
+      // The node's own row, never a second row under another node: by the read id the read gives
+      // it, or by the block id of a new row the read holds none of (`RowEditor.readIdOf`).
+      const row = latest.current.rows.find(
+        (each): each is Extract<DrawnRow, { kind: "node" }> =>
+          each.kind === "node" &&
+          !each.node.transcluded &&
+          (each.node.readId ?? each.node.id) === node
+      );
+      if (row === undefined) return;
+      const key = rowKeyOf(row);
+      retyping.current?.acts.abort();
+      retyping.current = { acts: abortOnReaderAct(), attributes, key, kind, node, schema };
+      latest.current.edit(key, row.node);
+    },
+    [schema]
+  );
 
   const newRow = useCallback(
     (node: string, entry: NewEntry, place: NewPlace, line: PlaceLine | undefined) => {
@@ -275,14 +371,18 @@ export function useNewRowEditing({
       }
     };
   }, [client, issue]);
+  // The outline going takes with it a retype still waiting for its caret.
+  useEffect(() => () => retyping.current?.acts.abort(), []);
 
   return useMemo(() => {
     if (issue === undefined) return undefined;
     const editor: RowEditor = {
       held: (answer) => heldWithNewRows(answer, newRows),
+      kinds: retypeKinds(schema),
       lineOf: (node) => newRowLine(newRows, node.id),
       newRow,
       readIdOf: (id) => (newRows.some((row) => row.blockId === id) ? id : undefined),
+      retype,
       unplaced: (node) =>
         newRowUnplaced(
           newRows,
@@ -291,5 +391,5 @@ export function useNewRowEditing({
         ),
     };
     return editor;
-  }, [client, issue, newRow, newRows]);
+  }, [client, issue, newRow, newRows, retype, schema]);
 }

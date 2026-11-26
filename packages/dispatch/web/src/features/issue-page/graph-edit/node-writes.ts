@@ -63,8 +63,9 @@ import {
  * Once a node's chain is empty after a taken act, or after a refusal that says the page read a
  * stale tree or a node that is gone (412, `409 NODE_GONE`, 404), the page reads each outline read
  * it holds again, once, its loaded pages included (`readOutlinesAgain`). After any other refusal
- * it reads nothing. No word of this file is a literal: each is `ANSWER_LINES`' or
- * `CONTROL_LABELS`', from `page-words-r.ts`.
+ * it reads nothing. A retype, a write of the room that sends no request, has them read again once
+ * it is taken, or once its node's chain is empty where one waits (`readAfterRoomWrite`). No word
+ * of this file is a literal: each is `ANSWER_LINES`' or `CONTROL_LABELS`', from `page-words-r.ts`.
  */
 
 /** The route of a node's move and of its delete (dispatch://INFRA-1253 R7). */
@@ -400,6 +401,18 @@ export function readOutlinesAgain(
     if (query.isActive()) refreshQueries(client, [{ exact: true, queryKey }]);
     else if (!query.isDisabled()) void client.fetchQuery(options).catch(() => undefined);
   }
+}
+
+/**
+ * R7's re-read after a write of the room that was taken (R5's retype of the node of read id
+ * `node`), which sent no request and so ends no chain: each outline read of `issue` is read again
+ * once (`readOutlinesAgain`), now where no act of the node waits in its chain, else once that
+ * chain is empty, as its own taken acts are.
+ */
+export function readAfterRoomWrite(client: QueryClient, issue: string, node: string): void {
+  const chain = stateOf(client).chains.get(hashKey([issue, node]));
+  if (chain === undefined) readOutlinesAgain(client, issue);
+  else chain.reads = true;
 }
 
 /** Whether `address`, a node as the node routes answer it (a block by its read id, any other node
