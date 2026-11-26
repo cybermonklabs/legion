@@ -558,6 +558,14 @@ func (c *issueConversion) run(ctx context.Context, gate ConvertGate, result *Con
 }
 
 // checkConversion reads only this issue's moves and projections. A difference rolls them back.
+// The reference projections it holds to the moves are the rows movePointers rewrote: a document's
+// refs row citing a moved block, and a block_refs row of another document's block. The room's own
+// references, which the room's pass writes from its text (indexTheRoom) - the tree's refs rows and
+// the mentions its blocks hold - name each block at the address the text writes it at, which may
+// be a moved block's old one: such a row is the room's mention as written, which a read resolves
+// through the block's moved_to (refs.Outgoing, refs.ResolvedBlockSQL), and every later pass of the
+// room writes it again, so it is no pointer the move left behind. A pointer of the room's blocks
+// (a `block[]` value) is resolved to the node by the pass (refs' resolvePointerPairs) and is held.
 func (c *issueConversion) checkConversion(ctx context.Context) (*conversionStop, error) {
 	var old, fresh, documents, blocks, bodies []string
 	var versions []int32
@@ -611,9 +619,11 @@ func (c *issueConversion) checkConversion(ctx context.Context) (*conversionStop,
 			union all
 			select 'reference projections', r.to_id from refs r
 			where r.from_kind = 'artifact' and r.to_kind = 'block' and r.to_id = any($4::text[])
+			  and r.from_id <> $2::uuid::text
 			union all
 			select 'block reference projections', r.to_id from block_refs r
 			where r.to_kind = 'block' and r.to_id = any($4::text[])
+			  and not (r.artifact_id = $2 and r.kind = 'mentions')
 			union all
 			select 'ask block projections', k.id::text from asks k where k.block_artifact_id = any($3::uuid[])
 			union all
@@ -1362,12 +1372,24 @@ func (c *issueConversion) moveAsks(ctx context.Context) error {
 // rows and reconciles the document's own references to none (indexRenderedVersion), so no walk
 // reaches a block at both its old address and its node in the room. What each pass states is
 // caused with that document's version (finish).
+//
+// The pass keeps that version's number, which the document's block index stands at, and is dated
+// at the conversion's own time (c.at), the time of its moved_to tuples and of the version it
+// writes of the document, not at the time that latest version was written: the blocks leave their
+// old addresses now. A read as of a time (refs.TreeCut's Dated: a version's render, RenderAt, and
+// the decisions query's) takes of each node the newest state by its date, so a gone dated at the
+// old version's time loses to any state the old node holds that is dated after it - the live
+// state of a node the backfill made, dated its row's created_at, which is after the version's
+// time wherever the reconciliation indexed that version; a state a node route wrote since - and
+// the old node then reads present beside its node in the room at every time after the conversion:
+// every render of the document from the tree prints the block twice, and the drain of the
+// issue's queries (planRevisions) writes that rendering as a version.
 func (c *issueConversion) retireDocuments(ctx context.Context) error {
 	for _, document := range c.documents {
 		if document.latest.number == 0 {
 			continue
 		}
-		versions := refs.OneVersion(document.id, document.latest.number, document.latest.at)
+		versions := refs.OneVersion(document.id, document.latest.number, c.at)
 		_, retired, err := c.s.indexRenderedVersion(ctx, c.tx, document.id, versions, nil, false, "", nil, &pmdoc.Node{Type: "doc"}, nil)
 		if err != nil {
 			return fmt.Errorf("retire the block index of %s: %w", document.slug, err)

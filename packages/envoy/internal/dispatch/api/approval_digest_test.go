@@ -1384,6 +1384,10 @@ func digestStepRowAndColumns(t *testing.T, rig *digestRig) {
 		returning id::text`, issue.Key, spec.id).Scan(&ask); err != nil {
 		t.Fatalf("insert an approval row in the shape the release before writes: %v", err)
 	}
+	// The release before appended the row's ask.opened event with it, as every release does; a
+	// row no event opened is no state any release leaves, and every read of the ask after this one -
+	// the approval's review below, an inbox read of a later step - fails on it (applyOpenedEventIDs).
+	seedAskOpenedEvent(t, rig.database, issue.Key, ask)
 	var documents int
 	var first string
 	if err := rig.database.Pool.QueryRow(ctx, `

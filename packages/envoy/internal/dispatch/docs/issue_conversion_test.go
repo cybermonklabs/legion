@@ -33,6 +33,17 @@ type unconvertedIssue struct {
 // indexed in one transaction, as a document written before its issue's conversion is.
 func createUnconvertedIssue(t *testing.T, database *store.Store, service *Service, number int, parent, spec, verification, plan string) unconvertedIssue {
 	t.Helper()
+	issue := insertUnconvertedIssue(t, database, number, parent)
+	issue.spec = writeUnconvertedDocument(t, database, service, &issue, "spec", "spec.md", true, "", spec)
+	issue.verification = writeUnconvertedDocument(t, database, service, &issue, "verification-md", "verification.md", false, "verification", verification)
+	issue.plan = writeUnconvertedDocument(t, database, service, &issue, "plan-md", "plan.md", false, "plan", plan)
+	return issue
+}
+
+// insertUnconvertedIssue writes the row of the issue DOC-<number> under parent ("" for none), and
+// its project's, and answers the issue with no document yet.
+func insertUnconvertedIssue(t *testing.T, database *store.Store, number int, parent string) unconvertedIssue {
+	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('DOC', 'Documents', 'alice')
@@ -47,15 +58,22 @@ func createUnconvertedIssue(t *testing.T, database *store.Store, service *Servic
 	`, issue.key, number, parent); err != nil {
 		t.Fatalf("create %s: %v", issue.key, err)
 	}
-	issue.spec = writeUnconvertedDocument(t, database, service, &issue, "spec", "spec.md", true, "", spec)
-	issue.verification = writeUnconvertedDocument(t, database, service, &issue, "verification-md", "verification.md", false, "verification", verification)
-	issue.plan = writeUnconvertedDocument(t, database, service, &issue, "plan-md", "plan.md", false, "plan", plan)
 	return issue
 }
 
 // writeUnconvertedDocument writes one document of issue: its row, its room's first text, its
 // version 1 and that version's index, and records the text it stores.
 func writeUnconvertedDocument(t *testing.T, database *store.Store, service *Service, issue *unconvertedIssue, slug, name string, primary bool, role, markdown string) string {
+	t.Helper()
+	return writeStoredDocument(t, database, service, issue, slug, name, primary, role, func(ctx context.Context, id string) (string, error) {
+		return service.SeedText(ctx, id, markdown, model.Actor{Kind: "user", ID: "alice"})
+	})
+}
+
+// writeStoredDocument is writeUnconvertedDocument with the room's first text written by seed, in
+// the document's creating transaction: seed stores the room's first update of document id and
+// answers the markdown it renders as, which the version stores.
+func writeStoredDocument(t *testing.T, database *store.Store, service *Service, issue *unconvertedIssue, slug, name string, primary bool, role string, seed func(ctx context.Context, id string) (string, error)) string {
 	t.Helper()
 	var id string
 	if err := database.Pool.QueryRow(context.Background(), `
@@ -66,7 +84,7 @@ func writeUnconvertedDocument(t *testing.T, database *store.Store, service *Serv
 		t.Fatalf("create %s of %s: %v", slug, issue.key, err)
 	}
 	if err := joinedWrite(service, func(ctx context.Context) error {
-		written, err := service.SeedText(ctx, id, markdown, model.Actor{Kind: "user", ID: "alice"})
+		written, err := seed(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -87,6 +105,29 @@ func writeUnconvertedDocument(t *testing.T, database *store.Store, service *Serv
 		t.Fatalf("write %s of %s: %v", slug, issue.key, err)
 	}
 	return id
+}
+
+// seedStoredTree is a seed of writeStoredDocument that stores tree, as a release before this one
+// stored it, as the room's first update and its rendering as the version's markdown, by the steps
+// SeedText takes after its parse: none of today's writes of markdown takes a tree whose typed
+// blocks repeat an id (pmdoc.RepeatedBlockID), which a release before that refusal stored.
+func seedStoredTree(service *Service, tree *pmdoc.Node) func(ctx context.Context, id string) (string, error) {
+	return func(ctx context.Context, id string) (string, error) {
+		tx, _ := txFromContext(ctx)
+		markdown, offsets, err := renderTreeWithOffsets(tree)
+		if err != nil {
+			return "", err
+		}
+		update, err := encodeFragmentTree(tree, nil, fragmentName)
+		if err != nil {
+			return "", err
+		}
+		if _, err := service.persistence.AppendUpdateTx(ctx, tx, id, update, true); err != nil {
+			return "", err
+		}
+		ledgerFrom(ctx).seeded(id, id, renderedTree{tree: tree, markdown: markdown, offsets: offsets}, model.Actor{Kind: "user", ID: "alice"})
+		return markdown, nil
+	}
 }
 
 // conversionCount is one count of the test store, failing t where the read fails.
@@ -231,6 +272,46 @@ func TestTheConversionConvertsAnIssueWholeOrNotAtAll(t *testing.T) {
 	}
 }
 
+// The room's own text keeps its citations of its moved blocks as written (R13): a paragraph of the
+// verification-md that cites the spec's requirement in prose, and the check that serves it, keep
+// their bytes in the room, so the room's pass writes the tree's refs row and the paragraph's
+// block_refs mention at the requirement's old address, which a read resolves through its moved_to.
+// Those rows are no pointer the move left behind, and the conversion's census, which holds the
+// moves to the pointers the move rewrites, converts the issue.
+func TestTheConversionKeepsTheRoomsOwnCitationsOfItsMovedBlocks(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	database := storetest.Open(t)
+	service := newTestServiceOn(t, database)
+	issue := createUnconvertedIssue(t, database, service, 1, "",
+		":::requirement{#r1}\nThe requirement.\n:::\n",
+		"The paragraph that cites dispatch://DOC-1/spec#b-r1 in prose.\n\n:::check{#c1 serves=\"dispatch://DOC-1/spec#b-r1\"}\nThe check.\n:::\n",
+		"The plan.\n")
+	result, err := service.ConvertIssue(ctx, issue.key, IssueRoomGate, false)
+	if err != nil || result.Outcome != IssueConverted {
+		t.Fatalf("the conversion of %s, whose text cites its own requirement, answered %+v, %v, want it converted", issue.key, result, err)
+	}
+	tree, treeRef := treeOfIssue(t, database, issue.key)
+	old := refs.BlockAddress(graphstore.ArtifactRefKey(issue.key, "DOC", "", "spec"), "r1")
+	if cited := conversionCount(t, database, "the room's references at the requirement's old address", `
+		select count(*)::int from refs where from_kind = 'artifact' and from_id = $1 and to_kind = 'block' and to_id = $2
+	`, tree, old); cited != 1 {
+		t.Errorf("the tree of %s holds %d refs rows at %s, want the one its text writes", issue.key, cited, old)
+	}
+	if mentioned := conversionCount(t, database, "the room's block mentions at the requirement's old address", `
+		select count(*)::int from block_refs where artifact_id = $1::uuid and kind = 'mentions' and to_kind = 'block' and to_id = $2
+	`, tree, old); mentioned != 1 {
+		t.Errorf("the blocks of the room of %s hold %d mentions at %s, want the paragraph's one as its text writes it", issue.key, mentioned, old)
+	}
+	moved, ok, err := graphstore.MovedTo(ctx, database.Pool, old)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", old, err)
+	}
+	if want := refs.BlockAddress(treeRef, "r1"); !ok || moved.Address != want {
+		t.Errorf("the old address %s resolves to %+v (%t), want the requirement's node in the room, %s", old, moved, ok, want)
+	}
+}
+
 // A done issue converts not at all (R22), and an issue one of whose documents still owes its block
 // index is deferred, naming that document (R6): neither leaves anything written.
 func TestTheConversionPassesOverADoneIssueAndDefersOneThatOwesItsBlockIndex(t *testing.T) {
@@ -351,14 +432,17 @@ func TestTheIssueRoomStepConvertsOnlyWhileEveryLiveProcessListsTheIssueRoom(t *t
 	})
 
 	t.Run("a process joins between issues", func(t *testing.T) {
-		_, database, issue, exec, step, tick, logged := issueRoomStepFixture(t)
+		ctx, database, issue, exec, step, tick, logged := issueRoomStepFixture(t)
 		first, second := issue(1), issue(2)
 		var instance string
-		step.gate = func(ctx context.Context, tx pgx.Tx) error {
-			if err := IssueRoomGate(ctx, tx); err != nil {
+		step.gate = func(gated context.Context, tx pgx.Tx) error {
+			if err := IssueRoomGate(gated, tx); err != nil {
 				return err
 			}
 			if instance == "" {
+				// The process joins on the test's own context: the gate's holds the connection of
+				// the conversion's transaction, and the pool refuses that caller a second one
+				// (store.ErrNestedAcquire).
 				instance = issueRoomOldProcess(ctx, database)
 				if instance == "" {
 					return fmt.Errorf("insert the earlier process")
@@ -414,7 +498,9 @@ func TestTheIssueRoomStepConvertsOnlyWhileEveryLiveProcessListsTheIssueRoom(t *t
 		if lines := logged.Lines("deferred an issue"); strings.Count(lines, "\n") != 1 || !strings.Contains(lines, deferred.plan) {
 			t.Fatalf("the step did not log the exact waiting document once: %s", logged.String())
 		}
-		exec(`update document_block_versions set store_owed_at = null, store_owed_rule = null where artifact_id = $1`, deferred.plan)
+		// The mark cleared as a pass that drains it clears it: store_owed_at alone, the rule left as
+		// it was (migration 20261120122600 makes the rule not null).
+		exec(`update document_block_versions set store_owed_at = null where artifact_id = $1`, deferred.plan)
 		tick(step)
 		treeOfIssue(t, database, deferred.key)
 		requireUnconverted(t, database, unrelated)
@@ -554,7 +640,10 @@ func TestTheConversionWritesEachCarriedApprovalBeforeItsVersion(t *testing.T) {
 		":::requirement{#shared}\nKeep the requirement's words.\n:::\n",
 		":::check{#shared}\nKeep the check's words.\n:::\n", "The plan.\n")
 	approveStoredVersion(t, database, issue.spec, 1, "alice")
-	// The previous row shape predates the pin-on-insert trigger.
+	// The previous row shape predates the pin-on-insert trigger. The review-sequence constraint
+	// trigger (artifact_reviews_event_seq, migration 0120) is deferred, and the insert leaves its
+	// event pending: it is drained before the insert trigger is put back, as the fill's own test
+	// drains it, since Postgres alters no table whose trigger events are pending.
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -564,6 +653,7 @@ func TestTheConversionWritesEachCarriedApprovalBeforeItsVersion(t *testing.T) {
 		`alter table artifact_reviews disable trigger artifact_reviews_content_sha256_insert`,
 		`insert into artifact_reviews (artifact_id, version, state, actor)
 		 values ('` + issue.verification + `', 1, 'approved', '{"kind":"user","id":"bob"}')`,
+		`set constraints all immediate`,
 		`alter table artifact_reviews enable trigger artifact_reviews_content_sha256_insert`,
 	} {
 		if _, err := tx.Exec(ctx, statement); err != nil {
@@ -609,6 +699,15 @@ func TestTheConversionPassesOverUnreadableOrRewordedDocuments(t *testing.T) {
 			database := storetest.Open(t)
 			service := newTestServiceOn(t, database)
 			issue := createUnconvertedIssue(t, database, service, 1, "", original, "Verification.\n", "Plan.\n")
+			// The room's seed left its settlement owed (Ledger.recordSettlementCredit), which a
+			// settlement of the room clears once it finds its text versioned. A room that owes one
+			// is deferred whatever its stored version reads (readHeads): the settlement versions
+			// the room's last edits. The subject here is a stored version that reads otherwise
+			// while nothing is owed, so the room stands settled, as a document of a release before
+			// the issue room stands once its settlement ran.
+			if _, err := database.Pool.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, issue.spec); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := database.Pool.Exec(ctx, `update artifact_versions set markdown = $2 where artifact_id = $1`, issue.spec, tc.stored); err != nil {
 				t.Fatal(err)
 			}
@@ -654,9 +753,24 @@ func TestTheConversionKeepsRepeatedTypedBlockIDs(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
 	service := newTestServiceOn(t, database)
-	issue := createUnconvertedIssue(t, database, service, 1, "",
-		":::requirement{#same}\nFirst requirement words.\n:::\n\n:::requirement{#same}\nOther requirement words.\n:::\n",
-		"Verification.\n", "Plan.\n")
+	// A release before the refusal of a repeated block id (pmdoc.RepeatedBlockID) stored a spec
+	// whose two typed blocks share one: its room's first update and its version are planted as that
+	// release left them (seedStoredTree), since no write of markdown today takes it.
+	repeated := &pmdoc.Node{Type: "doc"}
+	for _, block := range []string{
+		":::requirement{#same}\nFirst requirement words.\n:::\n",
+		":::requirement{#same}\nOther requirement words.\n:::\n",
+	} {
+		parsed, err := pmdoc.Parse(block)
+		if err != nil {
+			t.Fatalf("parse %q: %v", block, err)
+		}
+		repeated.Children = append(repeated.Children, parsed.Children...)
+	}
+	issue := insertUnconvertedIssue(t, database, 1, "")
+	issue.spec = writeStoredDocument(t, database, service, &issue, "spec", "spec.md", true, "", seedStoredTree(service, repeated))
+	issue.verification = writeUnconvertedDocument(t, database, service, &issue, "verification-md", "verification.md", false, "verification", "Verification.\n")
+	issue.plan = writeUnconvertedDocument(t, database, service, &issue, "plan-md", "plan.md", false, "plan", "Plan.\n")
 	if strings.Count(issue.markdown[issue.spec], "#same") != 2 {
 		t.Fatal("the old room must contain two typed blocks with the same ID")
 	}

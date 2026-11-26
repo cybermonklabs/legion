@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 func TestAConvertedNodeKeepsItsAuthor(t *testing.T) {
@@ -123,12 +124,23 @@ func TestAConvertedNodeKeepsItsAuthor(t *testing.T) {
 		t.Fatalf("read the original decision's decider: %q, %v", oldDecider, err)
 	}
 
-	readRef := func(address string) model.GraphNode {
+	// blockRef is the reference to block of the issue's document slug as every writer writes one
+	// (text.FormatBlockRef): `dispatch://KEY/spec#b-<id>` for the spec and
+	// `dispatch://KEY/artifact/<slug>#b-<id>` for any other document.
+	blockRef := func(slug, block string) string {
 		t.Helper()
-		ref := "/api/v1/references?to=" + url.QueryEscape("dispatch://"+address)
+		written, ok := text.FormatBlockRef(text.Ref{Kind: "block", IssueKey: key, ID: slug, Block: block})
+		if !ok {
+			t.Fatalf("no reference names block %s of %s's document %s", block, key, slug)
+		}
+		return written
+	}
+	readRef := func(reference string) model.GraphNode {
+		t.Helper()
+		ref := "/api/v1/references?to=" + url.QueryEscape(reference)
 		answer := dispatchRequest(t, handler, http.MethodGet, ref, nil, "alice")
 		if answer.Code != http.StatusOK {
-			t.Fatalf("read %s: %d %s", address, answer.Code, answer.Body.String())
+			t.Fatalf("read %s: %d %s", reference, answer.Code, answer.Body.String())
 		}
 		return decodeBody[struct{ Node model.GraphNode }](t, answer).Node
 	}
@@ -146,7 +158,7 @@ func TestAConvertedNodeKeepsItsAuthor(t *testing.T) {
 		return known
 	}
 	for _, fixture := range fixtures {
-		node := readRef(spec + "#b-" + fixture.block)
+		node := readRef(blockRef("spec", fixture.block))
 		checkMaker("old reference", fixture.block, node.MadeBy, fixture.who, node.MadeAt, wantTime(fixture.block, fixture.at))
 	}
 	// An upload is not a role document. Compare the complete reference node before and after.
@@ -156,7 +168,7 @@ func TestAConvertedNodeKeepsItsAuthor(t *testing.T) {
 	if otherBlock == "" {
 		t.Fatal("the upload did not index its paragraph")
 	}
-	otherRef := key + "/notes-md#b-" + otherBlock
+	otherRef := blockRef(other.Slug, otherBlock)
 	before := readRef(otherRef)
 	result, err := service.ConvertIssue(ctx, key, docs.IssueRoomGate, false)
 	if err != nil || result.Outcome != docs.IssueConverted {
@@ -179,7 +191,7 @@ func TestAConvertedNodeKeepsItsAuthor(t *testing.T) {
 	head := treeRead(t, handler, key, "?view=spec", "alice", false)
 	headDecisions := treeRead(t, handler, key, "?view=decisions", "alice", false)
 	for _, fixture := range fixtures {
-		redirected := readRef(spec + "#b-" + fixture.block)
+		redirected := readRef(blockRef("spec", fixture.block))
 		if redirected.ID == refs.BlockAddress(spec, fixture.block) {
 			t.Errorf("the old address of %s did not move", fixture.block)
 		}
@@ -234,7 +246,7 @@ func TestAConvertedNodeKeepsItsAuthor(t *testing.T) {
 	if len(authors) != 1 || authors[0].ID != person.ID {
 		t.Fatalf("the new room version has authors %+v, want the person who wrote it", authors)
 	}
-	node := readRef(spec + "#b-new")
+	node := readRef(blockRef("spec", "new"))
 	checkMaker("new room block reference", "new", node.MadeBy, authors, node.MadeAt, at)
 	if _, marked, err := refs.HeadRows(ctx, database.Pool, person, key, nil); err != nil || !marked {
 		t.Fatalf("the edit left no head projection: marked=%t, %v", marked, err)

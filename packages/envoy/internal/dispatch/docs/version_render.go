@@ -2423,19 +2423,19 @@ func renameBlockIDs(tree *pmdoc.Node, renamed map[string]string) {
 // which its room's fragments hold, and its decisions query node, which no room holds - where the
 // issue has converted, an issue_trees row holding its tree, and nothing for any other issue: each
 // one's id, the query of its node, its name, its newest version's number and markdown with the
-// digest that version's version_renders row records, null where it holds no row or holds none yet,
-// whether that row owes its digest, whether the document's block index stands at that version:
-// its document_block_versions row at that number, holding no mark of this build's
+// digest and render time that version's version_renders row records, null where it holds no row or
+// holds none yet, whether that row owes its digest, whether the document's block index stands at
+// that version: its document_block_versions row at that number, holding no mark of this build's
 // (store_owed_at), which of its two rows of the whole-grammar re-index queue stand
 // (refs_grammar_owed, by their primary key): its own text's, kind artifact, and its scope's, and
-// whether its row of the forms re-index queue stands (refs_forms_owed, kind artifact). They come
-// in id order.
+// whether its artifact rows of the live reference forms queues stand. They come in id order.
 var revisedDocumentsStatement = `
-	select d.id::text, n.attributes->>'` + graphstore.AttributeQuery + `', d.name, v.number, coalesce(v.markdown, ''), r.record_sha256,
+	select d.id::text, n.attributes->>'` + graphstore.AttributeQuery + `', d.name, v.number, coalesce(v.markdown, ''), r.record_sha256, r.at,
 	       coalesce(r.digest_owed, false), coalesce(b.version = v.number and b.store_owed_at is null, false),
 	       exists (select 1 from refs_grammar_owed o where o.kind = 'artifact' and o.id = d.id),
 	       exists (select 1 from refs_grammar_owed o where o.kind = 'scope' and o.id = d.id),
-	       exists (select 1 from refs_forms_owed o where o.kind = 'artifact' and o.id = d.id)
+	       exists (select 1 from refs_forms_owed o where o.kind = 'artifact' and o.id = d.id),
+	       exists (select 1 from refs_decisions_forms_owed o where o.kind = 'artifact' and o.id = d.id)
 	from issue_trees t
 	join artifacts d on d.issue_key = t.issue_key and d.kind = 'doc' and d.retired_at is null
 	join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = d.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'
@@ -2472,17 +2472,19 @@ func LockQueryRooms(ctx context.Context, tx pgx.Tx, issueKey string) error {
 
 // queryDocument is one query document of a converted issue as revisedDocumentsStatement reads it:
 // its id, the query whose record covers it, its name, its newest version's number and markdown
-// with the digest that version's version_renders row records, whether that row owes it, whether
-// its block index stands at that version, and whether the re-index queues hold its own text's row
-// (textQueued), its scope's (scopeQueued) and its forms row (formsQueued) before the drain writes
-// anything.
+// with the digest and render time that version's version_renders row records, whether that row
+// owes it, whether its block index stands at that version, and whether the re-index queues hold
+// its own text's row (textQueued), its scope's (scopeQueued), and each live forms row before the
+// drain writes anything.
 type queryDocument struct {
 	id, query, name, markdown            string
 	number                               int
 	digest                               *string
+	renderedAt                           *time.Time
 	owed                                 bool
 	indexed                              bool
 	textQueued, scopeQueued, formsQueued bool
+	decisionsFormsQueued                 bool
 }
 
 // queryRevision is a version a query document is owed (planRevisions): the document as its newest
@@ -2510,8 +2512,15 @@ type queryRevision struct {
 // may not hold it (a deferred pass), and the pass that states it records its digest, or it is no
 // query version this build's version write made (madeQueryVersion), which no row ever covers and
 // which answers its stored bytes for good. A document whose record digests to its newest version's
-// digest and whose render is that version's markdown is left too. Each other one is owed a version
-// whose markdown is the render. It writes nothing.
+// digest and whose rendering did not move since that version is left too: where the cut's render
+// differs from that version's stored markdown, it compares the cut's render with the render as of
+// that version's own row's time (document.renderedAt), so a version whose render already differed
+// from its stored bytes - a document holding a top-level block whose id is past
+// text.MaxBlockIDBytes, which is no node of the store and prints in no member's text (R1, R15) -
+// is not rewritten as a lossy version when nothing in the tree moved; and when its record alone
+// moved, the version the drain writes of a room document keeps the stored bytes of the version
+// before it so its block index stands. Each other one is owed a version whose markdown is the
+// render. It writes nothing.
 func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevision, error) {
 	rows, err := tx.Query(ctx, revisedDocumentsStatement, issueKey)
 	if err != nil {
@@ -2521,8 +2530,8 @@ func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevi
 	owed := false
 	for rows.Next() {
 		var document queryDocument
-		if err := rows.Scan(&document.id, &document.query, &document.name, &document.number, &document.markdown, &document.digest, &document.owed, &document.indexed,
-			&document.textQueued, &document.scopeQueued, &document.formsQueued); err != nil {
+		if err := rows.Scan(&document.id, &document.query, &document.name, &document.number, &document.markdown, &document.digest, &document.renderedAt, &document.owed, &document.indexed,
+			&document.textQueued, &document.scopeQueued, &document.formsQueued, &document.decisionsFormsQueued); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the query documents of %s: %w", issueKey, err)
 		}
@@ -2555,9 +2564,23 @@ func planRevisions(ctx context.Context, tx pgx.Tx, issueKey string) ([]queryRevi
 		if err != nil {
 			return nil, err
 		}
-		if record.Digest != *document.digest || rendering.Markdown != document.markdown {
-			revisions = append(revisions, queryRevision{document: document, markdown: rendering.Markdown, record: record})
+		recordMoved := record.Digest != *document.digest
+		renderMoved := rendering.Markdown != document.markdown
+		if renderMoved && document.renderedAt != nil {
+			previous, err := RenderAt(ctx, tx, model.ServerReader, document.id, *document.renderedAt)
+			if err != nil {
+				return nil, err
+			}
+			renderMoved = rendering.Markdown != previous.Markdown
 		}
+		if !recordMoved && !renderMoved {
+			continue
+		}
+		markdown := rendering.Markdown
+		if !renderMoved && document.query != graphstore.QueryDecisions {
+			markdown = document.markdown
+		}
+		revisions = append(revisions, queryRevision{document: document, markdown: markdown, record: record})
 	}
 	return revisions, nil
 }
@@ -2646,12 +2669,9 @@ func queueRevisionStand(b *store.WriteBatch, artifactID string, number, rule int
 // is owed (queueRevisionStand), the delete of the re-index queue rows that the version's insert
 // made for document.
 //
-// A decisions query node holds no fragment of a room and no block, so no block pass states its
-// versions, the tree holds no member of it (R15), and no source's text belongs to it: it owes
-// neither re-index queue anything, ever. Whatever stood before the insert, every row of it is
-// deleted from refs_grammar_owed (both artifact and scope) and from refs_forms_owed (its artifact
-// row, owed by trigger artifact_versions_refs_forms_owed, migration 20261117025904), through
-// queueSettleDecisionsQueryQueues.
+// A decisions query node holds no fragment of a room and no block, and no source's text belongs
+// to it (R15). queueSettleDecisionsQueryQueues clears all its re-index debt, even if it stood
+// before the version insert.
 //
 // For every other query document, only the rows of refs_grammar_owed and refs_forms_owed that the
 // version's insert made and that did not stand before it are deleted: of the two rows every
@@ -2663,6 +2683,9 @@ func queueRevisionStand(b *store.WriteBatch, artifactID string, number, rule int
 // drain's read phase (queryDocument's textQueued, scopeQueued and formsQueued). A row that stood
 // is left: the insert's trigger only moved its enqueued_at, and it is still owed for the reason it
 // was owed (for refs_forms_owed, a real debt of an older build's write).
+// Deleting an insert-only forms row fires the Decisions relay (migration 20261126040100).
+// In a separate statement, remove the live row it made only if no live row already stood. The
+// relay does not update a standing row. Nothing here owes or settles the Decisions seed queue.
 //
 // Left in either queue, a row the insert made owes the document its block index again at the next
 // tick, after the stand: the block-index tick's text pass drains refs_grammar_owed's artifact row
@@ -2723,17 +2746,22 @@ func restoreReindexQueue(b *store.WriteBatch, document queryDocument) {
 		b.Queue(fmt.Sprintf("put the forms re-index queue of %s back as it stood before its version", document.id),
 			`delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`, document.id)
 	}
+	if !document.formsQueued && !document.decisionsFormsQueued {
+		b.Queue(fmt.Sprintf("clear the Decisions forms debt relayed by restoring %s's queue", document.id),
+			`delete from refs_decisions_forms_owed where id = $1::uuid and kind = 'artifact'`, document.id)
+	}
 }
 
-// settleDecisionsQueryQueuesStatement deletes every row of the two re-index queues that names a
-// decisions query node $1: its artifact and scope rows of refs_grammar_owed (migration
-// 20261103205041's trigger) and its artifact row of refs_forms_owed (migration 20261117025904's).
-// A decisions query node holds no fragment of a room and no block (R15), its versions are never
-// indexed over their stored text, and no source's text belongs to it, so it owes neither queue a
-// row, ever.
+// settleDecisionsQueryQueuesStatement clears the grammar and older forms queue rows of a
+// Decisions query node. Its second statement also removes the live and seed Decisions forms
+// rows, including any row the first statement relayed. The query node holds no indexable text.
 const settleDecisionsQueryQueuesStatement = `
 	with grammar as (delete from refs_grammar_owed where id = $1::uuid and kind in ('artifact', 'scope'))
 	delete from refs_forms_owed where id = $1::uuid and kind = 'artifact'`
+
+const settleDecisionsQueryFormsStatement = `
+	with seed as (delete from refs_decisions_forms_seed_owed where id = $1::uuid and kind = 'artifact')
+	delete from refs_decisions_forms_owed where id = $1::uuid and kind = 'artifact'`
 
 // queueSettleDecisionsQueryQueues queues on b the delete of every re-index queue row naming the
 // decisions query node artifactID (settleDecisionsQueryQueuesStatement), after its version insert
@@ -2741,16 +2769,18 @@ const settleDecisionsQueryQueuesStatement = `
 func queueSettleDecisionsQueryQueues(b *store.WriteBatch, artifactID string) {
 	b.Queue(fmt.Sprintf("clear the re-index queues of the decisions query %s", artifactID),
 		settleDecisionsQueryQueuesStatement, artifactID)
+	b.Queue(fmt.Sprintf("clear the Decisions forms queues of the decisions query %s", artifactID),
+		settleDecisionsQueryFormsStatement, artifactID)
 }
 
-// SettleDecisionsQueryQueues clears, in tx (through write, so it joins ctx's ledger after the
-// version insert and its index), every row of refs_grammar_owed and refs_forms_owed naming the
-// decisions query node artifactID (settleDecisionsQueryQueuesStatement). Version 1's writers
-// (api's queueDecisionsFirstVersion and conversion's writeDecisionsQuery) call it after indexing
-// version 1, which settles the artifact rows and leaves the scope row the insert's trigger made.
+// SettleDecisionsQueryQueues clears all re-index rows naming the Decisions query node. Its first
+// version's writers (queueDecisionsFirstVersion and writeDecisionsQuery) call it after indexing
+// version 1, which leaves the scope row the version insert's trigger made.
 func SettleDecisionsQueryQueues(ctx context.Context, tx pgx.Tx, artifactID string) error {
-	return writeExec(ctx, tx, fmt.Sprintf("clear the re-index queues of the decisions query %s", artifactID),
-		settleDecisionsQueryQueuesStatement, artifactID)
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		queueSettleDecisionsQueryQueues(b, artifactID)
+		return nil
+	})
 }
 
 // versionRenderAt renders the document artifactID as of at for the census of the rendered
