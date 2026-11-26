@@ -251,6 +251,7 @@ test("stepVariant names the experiment and the variant the newest run's records 
       issue: "CORE-1",
       tasks: [
         {
+          needs: null,
           steps: [
             record({ experiment: "planning", id: "older", variant: "a" }),
             record({ generation: 2, id: "newest-unnamed" }),
@@ -265,7 +266,9 @@ test("stepVariant names the experiment and the variant the newest run's records 
   delete older.experiment;
   delete older.variant;
   for (const steps of [[record({ id: "none" })], [older as StepRecord]]) {
-    expect(stepVariant({ issue: "CORE-1", tasks: [{ steps, task: "default" }] })).toBeNull();
+    expect(
+      stepVariant({ issue: "CORE-1", tasks: [{ needs: null, steps, task: "default" }] })
+    ).toBeNull();
   }
   expect(stepVariant({ issue: "CORE-1", tasks: [] })).toBeNull();
 });
