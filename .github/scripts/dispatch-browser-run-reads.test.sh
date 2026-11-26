@@ -937,7 +937,10 @@ echo "case: RATE_LIMITED, a reset already past: one more read at once, and no wa
 # later), so it runs the read once more with no pause and fails by name when that read is refused
 # too, and gh_read, with a limit set, stops there. A wait of its own for such a reset would ask
 # again once a second until a cap; the stand-in refuses more reads than the two, so a read that
-# spun on the past reset would read a third time and ask sleep for a second.
+# spun on the past reset would read a third time and ask sleep for a second. A paginated read
+# leaves gh_wait_reset no answer of its own, so it reads the rate_limit route after each refused
+# read that exits 1 (`.github/scripts/gh-read.sh#_gh_read_refusal`): once for the refusal that
+# names the past reset, and once for the read after it, which finds the budget still spent.
 fixture 9 "$rate_limited"
 reset=$(($(date +%s) - 60))
 echo "$reset" > "$work/reset"
@@ -945,7 +948,7 @@ drive_limited JOB_TIMEOUT_MINUTES=10 -- jobs "$work/out.json" "$caller"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "calls the jobs route twice: the refusal, then once more at once" "$(is "$(calls)" 2)"
-check "reads the reset from the rate_limit route once" "$(is "$(rate_calls)" 1)"
+check "reads the rate_limit route once for each refused read" "$(is "$(rate_calls)" 2)"
 check "asks sleep for nothing" "$(is "$(sleeps)" '')"
 check "names the budget still spent after its reset" \
   "$(contains "$out" "^::error::the API budget is still spent after the wait for its reset at $(utc "$reset")")"
