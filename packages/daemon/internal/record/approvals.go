@@ -101,8 +101,10 @@ func (s *Postgres) KeepAskEvent(ctx context.Context, tx pgx.Tx, project string, 
 
 // putApprovalAsks writes asks over the kept rows of their ids where a kept row's sequence stands in
 // relation to the ask's as guard says: "<" for an event, which must be newer than what the row
-// holds, "<=" for the boot's read, which may restate the event its sequence is. One statement
-// writes them all, so no id may repeat among them.
+// holds, "<=" for the boot's read, which may restate the event its sequence is. A row that holds
+// the ask as given is left alone, so a read that restates what the store holds writes nothing. One
+// statement writes them all, so no id may repeat among them. An ask it writes is a write admission
+// reads (RecordsWritten), so the fact's pass counts it.
 func (s *Postgres) putApprovalAsks(ctx context.Context, tx pgx.Tx, project string, asks []ApprovalAsk, guard string) error {
 	if len(asks) == 0 {
 		return nil
@@ -112,14 +114,18 @@ func (s *Postgres) putApprovalAsks(ctx context.Context, tx pgx.Tx, project strin
 	for i, ask := range asks {
 		ids[i], issues[i], open[i], human[i], askedOf[i], seqs[i] = ask.ID, ask.Issue, ask.Open, ask.Human, ask.AskedOf, ask.Seq
 	}
-	if _, err := tx.Exec(ctx, `insert into approval_asks (project, ask, issue, open, human, asked_of, seq)
+	tag, err := tx.Exec(ctx, `insert into approval_asks (project, ask, issue, open, human, asked_of, seq)
 		select $1, * from unnest($2::text[], $3::text[], $4::boolean[], $5::boolean[], $6::text[], $7::bigint[])
 		on conflict (project, ask) do update set issue = excluded.issue, open = excluded.open, human = excluded.human,
 			asked_of = excluded.asked_of, seq = excluded.seq
-		where approval_asks.seq `+guard+` excluded.seq`,
-		project, ids, issues, open, human, askedOf, seqs); err != nil {
+		where approval_asks.seq `+guard+` excluded.seq
+			and (approval_asks.issue, approval_asks.open, approval_asks.human, approval_asks.asked_of, approval_asks.seq)
+				is distinct from (excluded.issue, excluded.open, excluded.human, excluded.asked_of, excluded.seq)`,
+		project, ids, issues, open, human, askedOf, seqs)
+	if err != nil {
 		return fmt.Errorf("keep %d asks of %s: %w", len(asks), project, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -132,7 +138,8 @@ func (s *Postgres) KeepIssueAssignee(ctx context.Context, tx pgx.Tx, project str
 // putIssueAssignees writes assignees over the kept rows of their issues under guard, as
 // putApprovalAsks. A row that holds the same assignee at the same sequence is left alone, so the
 // boot's read of every issue the project lists writes the rows that moved and no other. One
-// statement writes them all, so no issue may repeat among them.
+// statement writes them all, so no issue may repeat among them. An assignee it writes is a write
+// admission reads (RecordsWritten).
 func (s *Postgres) putIssueAssignees(ctx context.Context, tx pgx.Tx, project string, assignees []IssueAssignee, guard string) error {
 	if len(assignees) == 0 {
 		return nil
@@ -144,14 +151,16 @@ func (s *Postgres) putIssueAssignees(ctx context.Context, tx pgx.Tx, project str
 		}
 		issues[i], people[i], seqs[i] = assignee.Issue, assignee.Assignee, assignee.Seq
 	}
-	if _, err := tx.Exec(ctx, `insert into approval_assignees (project, issue, assignee, seq)
+	tag, err := tx.Exec(ctx, `insert into approval_assignees (project, issue, assignee, seq)
 		select $1, * from unnest($2::text[], $3::text[], $4::bigint[])
 		on conflict (project, issue) do update set assignee = excluded.assignee, seq = excluded.seq
 		where approval_assignees.seq `+guard+` excluded.seq
 			and (approval_assignees.assignee, approval_assignees.seq) is distinct from (excluded.assignee, excluded.seq)`,
-		project, issues, people, seqs); err != nil {
+		project, issues, people, seqs)
+	if err != nil {
 		return fmt.Errorf("keep the assignees of %d issues of %s: %w", len(assignees), project, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -160,17 +169,20 @@ func (s *Postgres) putIssueAssignees(ctx context.Context, tx pgx.Tx, project str
 // it, where no newer such event was kept. A default only the boot's read gave holds sequence 0, so
 // the first event after it is kept whatever its sequence: a read carries no sequence of the
 // project's log, and an event older than the read it follows is one of those the stream delivers
-// before the newest, so the newest it ends on is the one Dispatch holds.
+// before the newest, so the newest it ends on is the one Dispatch holds. A default it writes is a
+// write admission reads (RecordsWritten).
 func (s *Postgres) KeepDefaultAssignee(ctx context.Context, tx pgx.Tx, project, assignee string, seq int64, at time.Time) error {
 	if assignee == "" || seq < 1 {
 		return fmt.Errorf("keep the default assignee of %s: it needs an assignee and a positive sequence", project)
 	}
-	if _, err := tx.Exec(ctx, `insert into approval_default_assignees (project, assignee, seq, at) values ($1, $2, $3, $4)
+	tag, err := tx.Exec(ctx, `insert into approval_default_assignees (project, assignee, seq, at) values ($1, $2, $3, $4)
 		on conflict (project) do update set assignee = excluded.assignee, seq = excluded.seq, at = excluded.at
 		where approval_default_assignees.seq < excluded.seq`,
-		project, assignee, seq, at.UTC()); err != nil {
+		project, assignee, seq, at.UTC())
+	if err != nil {
 		return fmt.Errorf("keep the default assignee of %s at %d: %w", project, seq, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -179,7 +191,9 @@ func (s *Postgres) KeepDefaultAssignee(ctx context.Context, tx pgx.Tx, project, 
 // while the read ran, already kept, stands), and the default assignee, where Dispatch answered
 // one, where no settings event was kept since the read began (read.DefaultSeq): such an event is
 // newer than, or the same as, what the read gives. The read's default keeps the sequence of the
-// newest settings event kept, so an older one delivered after it changes nothing.
+// newest settings event kept, so an older one delivered after it changes nothing, and a default
+// the store holds already keeps the moment it was first kept, so a read that restates every row
+// the store holds writes none.
 func (s *Postgres) KeepApprovalsRead(ctx context.Context, tx pgx.Tx, project string, read ApprovalsRead) error {
 	asks := newestEach(read.Asks, func(a ApprovalAsk) (string, int64) { return a.ID, a.Seq })
 	for _, ask := range asks {
@@ -197,12 +211,14 @@ func (s *Postgres) KeepApprovalsRead(ctx context.Context, tx pgx.Tx, project str
 	if read.DefaultAssignee == "" {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `insert into approval_default_assignees (project, assignee, seq, at) values ($1, $2, 0, $3)
+	tag, err := tx.Exec(ctx, `insert into approval_default_assignees (project, assignee, seq, at) values ($1, $2, 0, $3)
 		on conflict (project) do update set assignee = excluded.assignee, at = excluded.at
-		where approval_default_assignees.seq <= $4`,
-		project, read.DefaultAssignee, read.DefaultAt.UTC(), read.DefaultSeq); err != nil {
+		where approval_default_assignees.seq <= $4 and approval_default_assignees.assignee <> excluded.assignee`,
+		project, read.DefaultAssignee, read.DefaultAt.UTC(), read.DefaultSeq)
+	if err != nil {
 		return fmt.Errorf("keep the default assignee of %s the boot read: %w", project, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

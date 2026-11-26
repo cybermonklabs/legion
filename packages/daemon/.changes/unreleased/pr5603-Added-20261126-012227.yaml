@@ -69,6 +69,32 @@ body: |-
   attempt classed by its text under the two patterns, compiled as `regexp.Compile("(?s)" +
   pattern)`. A request is reported within 15 seconds of its end while the turn goes on, and what is
   left at each `result` at once; the turn-outcome report is unchanged.
+
+  Each admission pass now reads the six series of admission by signals from what the daemon
+  keeps, with the replay's one definition of each: the idle share of the slot holders, the merge
+  queue's wait, the provider's headroom and refusals, the kills and the approvals. A series counted
+  over a span reads as not recorded, with its reason, until its span is whole after the first boot
+  that kept its input, and the refusals read as not recorded where a minute of their hour was not
+  wholly reported. While a project's settings turn admission by signals on, an issue below P0
+  starts only while every series that has a limit reads under it and the cap has room; a P0 issue,
+  every other hold and every holder's slot stand as with it off, and the tick starts no issue below
+  P0. Each start a signal held is logged once its fact commits as `admission: a signal held a
+  start`, with the issue, the signal and part, its value and its limit. Until a person sets them,
+  every project is off with no limit.
+
+  Each fact that keeps an input runs the pass only where it changed a row, so the same input
+  brought again runs none. A report of model requests and the start or end of a slot holder's turn
+  (a new supervision fact, `TurnEdge`) run the pass only where a series' hold moved against the last
+  committed pass's, or a series but the headroom moved by its step against the last value a pass
+  recorded. Each project has one timer: after each pass, report and turn edge, the earliest moment a
+  series with a limit would cross it with no new event is written under a rising fence and armed
+  once the fact commits, and the daemon arms it again from the store at each boot and stops it at
+  its stop. Its firing applies `SignalDeadline` with the fence, and a firing that is not the
+  committed deadline's, or comes early, runs no pass. A migration adds `signal_deadlines` and
+  `signal_pass_marks`; its header carries the way back.
+
+  The replay's kill matcher reads the daemon's line of a kill of a process of no role as its record
+  of the launcher's kill of role `none`.
 time: 2026-11-26T01:22:27Z
 custom:
     Issue: pr5603

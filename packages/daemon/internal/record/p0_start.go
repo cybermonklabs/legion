@@ -38,6 +38,13 @@ func (r SlotRule) StartsOutsideCap(issue Issue) bool {
 	return r.OrMain().P0AboveCap && decidingPriority(issue) == P0
 }
 
+// BelowP0 says whether issue is below P0 by the priority that decides P0 (decidingPriority): the
+// entries admission by signals decides (SignalsLet), so a P0 issue the cap counts, under a rule
+// that starts none outside it, starts as it does with admission by signals off (S4).
+func BelowP0(issue Issue) bool {
+	return decidingPriority(issue) != P0
+}
+
 // decidingPriority is the priority that decides whether issue is P0 for R10, the one place the
 // seam reads a priority (StartsOutsideCap, and through it HoldersOf and AddHolder): the issue's
 // own Dispatch priority (Issue.Priority), never the one PriorityOf gives it for its place in the

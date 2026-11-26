@@ -658,19 +658,43 @@ func (ProjectResumed) namedIssue() (string, bool) { return "", false }
 
 // SignalDeadline is the moment a signal that admission by signals reads would cross its limit with
 // no event, applied as a synthetic fact and never decoded from an event: the one admission pass
-// that a project's one timer asks for at the next such moment. At is that moment. Admission
-// promotes on it as on every fact that is not a Dispatch issue, as a pass of kind deadline
+// that a project's one timer asks for at the next such moment. At is that moment, and Fence the
+// fence of the committed deadline the timer was armed for (record.SignalDeadline), which rises at
+// each change of the deadline. Admission promotes on it as a pass of kind deadline
 // (signals.PassDeadline), which starts below P0 where a tick's pass does not; the workflow engine
-// and the blockers mirror do nothing for it. It carries nothing else, since the pass reads the
-// whole project and the signals as its caller supplies them (admit.Admission.UseSignals).
-//
-// No live code emits it: the daemon registers no timer in this version, and a replay of a recorded
-// window emits none until it supplies the signals to the pass.
+// and the blockers mirror do nothing for it. Where the daemon keeps the deadline
+// (admit.Admission.UseLiveSignals), a firing whose fence and moment are not the committed
+// deadline's is stale, and one before its moment early, and neither runs a pass; the daemon
+// applies it under an event id that names the project and the fence (daemon's
+// signalDeadlineEventID), so each deadline fires once. A replay of a recorded window emits none
+// until it supplies the signals to the pass.
 type SignalDeadline struct {
-	At time.Time
+	At    time.Time
+	Fence int64
 }
 
 func (SignalDeadline) namedIssue() (string, bool) { return "", false }
+
+// TurnEdge is the start or the end of a turn of a claim on an issue of the project, which the
+// supervisor applies once the claim's machine has written it (the claim's last turn start or end):
+// the idle signal of admission by signals reads each slot holder's claims, and a holder idle since
+// its last turn's end counts from that moment, so its edge is an input of the signal that reaches
+// no other fact. It is never decoded from an event. Issue is the claim's issue, At the edge's
+// moment, as the claim records it, and the event id names the claim, the edge and that moment
+// (daemon's turnEdgeEventID), so one edge is one fact.
+//
+// Admission keeps nothing of it, since the claim is the record, and, where the claim's issue holds
+// a slot, runs its pass only where the architect's rule finds a series moved against the last
+// committed pass (admit's signalsMoved), setting the project's deadline again either way. The
+// workflow does nothing with it.
+type TurnEdge struct {
+	Claim claim.Token
+	Issue string
+	Start bool
+	At    time.Time
+}
+
+func (TurnEdge) namedIssue() (string, bool) { return "", false }
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {

@@ -3,6 +3,7 @@ package admit
 import (
 	"context"
 	"regexp"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -62,7 +63,15 @@ import (
 //     too (record.Store.KeepTokenLimit), which each minute from then on is read against.
 //   - intake.ModelRequests: one report of a host's model requests, each kept once by the claim,
 //     its launch generation and the request's own id, marked counted where the configured model
-//     selector takes its model (record.Store.KeepModelRequests).
+//     selector takes its model (record.Store.KeepModelRequests), with no mark of a write of its
+//     own: the architect's rule decides whether the report runs the pass (signalFactMoved), and
+//     the deadline is set again from it either way.
+//   - intake.TurnEdge: the start or end of a turn of a claim, which the claim itself records, so
+//     nothing is kept; where the claim's issue holds a slot, the architect's rule decides whether
+//     it runs the pass, as for a report. A claim of an issue that holds none moves no series.
+//
+// Every other keep marks its write where its statement changed a row, so the fact runs the pass
+// by the pass rule (Apply), and a duplicate, which changes none, runs none.
 func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
 	if turn, seq, ok := intake.AskTurnOf(fact); ok {
 		return a.store.KeepAskEvent(ctx, tx, a.project, turn, seq)
@@ -97,7 +106,19 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		}
 		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Approvals, fact.ReadError, a.now())
 	case intake.ModelRequests:
-		return a.store.KeepModelRequests(ctx, tx, a.project, fact.Claim, fact.Generation, fact.Requests, a.countsTokens, a.now())
+		if err := a.store.KeepModelRequests(ctx, tx, a.project, fact.Claim, fact.Generation, fact.Requests, a.countsTokens, a.now()); err != nil {
+			return err
+		}
+		return a.signalFactMoved(ctx, tx)
+	case intake.TurnEdge:
+		slots, err := a.store.Slots(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == fact.Issue }) {
+			return nil
+		}
+		return a.signalFactMoved(ctx, tx)
 	case intake.DaemonBooted:
 		for _, input := range []string{signals.Kills, signals.Queue, signals.Provider} {
 			if err := a.store.BeginSignalInput(ctx, tx, a.project, input, a.now()); err != nil {
@@ -126,18 +147,6 @@ func (a *Admission) UseModelRequests(limit int64, models *regexp.Regexp) {
 // model where no selector is configured.
 func (a *Admission) countsTokens(model string) bool {
 	return a.tokenModels == nil || a.tokenModels.MatchString(model)
-}
-
-// signalFactRunsPass is whether fact, once its signal inputs are kept (keepSignalFacts), runs the
-// admission pass: the one function the architect's rule for a report of model requests is
-// decided by (design "The pass triggers", option (a)). A report always keeps its requests, and
-// runs the pass only where one of the six series changed its hold against the hold the last
-// committed pass recorded, or one of the five other than the provider's headroom qualifies for a
-// value entry against its last written value. The rule's inputs — the live readings, the last
-// committed holds and the last written values — are not kept yet, so no report can be shown to
-// change nothing, and every report runs the pass, as every other fact does.
-func (a *Admission) signalFactRunsPass(ctx context.Context, tx pgx.Tx, fact intake.Fact) (bool, error) {
-	return true, nil
 }
 
 // beginApprovals records, at the first boot of the release that keeps the approvals' inputs, that

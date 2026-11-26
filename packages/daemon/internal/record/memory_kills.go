@@ -24,12 +24,17 @@ import (
 // moment before now, so no read counts those again, and the rows a read meets stay bounded by the
 // kills of an hour rather than by the project's whole history. A report older than that is so
 // deleted as it is kept.
+//
+// A kill it keeps is a write admission reads (RecordsWritten), so the fact's pass counts it; a
+// kill kept already, and the deletion of kills no read counts, change nothing a pass reads.
 func (s *Postgres) KeepMemoryKill(ctx context.Context, tx pgx.Tx, project string, report shimwire.LauncherMemoryKill, now time.Time) error {
-	if _, err := tx.Exec(ctx, `insert into memory_kills (project, guard, sequence, at, cause, no_role) values ($1, $2, $3, $4, $5, $6)
+	tag, err := tx.Exec(ctx, `insert into memory_kills (project, guard, sequence, at, cause, no_role) values ($1, $2, $3, $4, $5, $6)
 		on conflict (project, guard, sequence) do nothing`,
-		project, report.Guard, int64(report.Sequence), report.At, string(report.Cause), report.NoRole); err != nil {
+		project, report.Guard, int64(report.Sequence), report.At, string(report.Cause), report.NoRole)
+	if err != nil {
 		return fmt.Errorf("keep the memory kill %s:%d of %s: %w", report.Guard, report.Sequence, project, err)
 	}
+	noteRowsWritten(ctx, tag)
 	if _, err := tx.Exec(ctx, "delete from memory_kills where project = $1 and at <= $2", project, now.Add(-signals.KillSpan)); err != nil {
 		return fmt.Errorf("forget the memory kills of %s an hour before %s: %w", project, now, err)
 	}
@@ -59,12 +64,15 @@ func (s *Postgres) MemoryKillsAfter(ctx context.Context, tx pgx.Tx, project stri
 // BeginSignalInput records at as the moment the daemon began keeping input, one input of a signal
 // (a name of signals.Names()), for project, where no moment is recorded yet: a later call leaves
 // the first moment as it stands, so each boot of a release that keeps the input may call it and
-// the first one's moment is the one that stays.
+// the first one's moment is the one that stays. The moment it records is a write admission reads
+// (RecordsWritten): it begins the span over which the signal is recorded.
 func (s *Postgres) BeginSignalInput(ctx context.Context, tx pgx.Tx, project, input string, at time.Time) error {
-	if _, err := tx.Exec(ctx, `insert into signal_inputs (project, input, kept_since) values ($1, $2, $3)
-		on conflict (project, input) do nothing`, project, input, at); err != nil {
+	tag, err := tx.Exec(ctx, `insert into signal_inputs (project, input, kept_since) values ($1, $2, $3)
+		on conflict (project, input) do nothing`, project, input, at)
+	if err != nil {
 		return fmt.Errorf("record that %s keeps %s from %s: %w", project, input, at, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

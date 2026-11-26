@@ -265,8 +265,11 @@ var FactSources = map[string]FactSource{
 	"TaskStopped": {Way: FactUnrecorded, From: "the API act stop_task, an owner's stop of a task " +
 		"(cybermonklabs/legion#4611), which arrived after every window this tool has recorded, so no record holds a line of it"},
 	"SignalDeadline": {Way: FactUnrecorded, From: "the moment a signal that a rule admits by would cross its limit with no event " +
-		"(intake.SignalDeadline, admission's own timer fact): no daemon release emits it and no recorded window holds a line of it, " +
+		"(intake.SignalDeadline, the daemon's one timer of the project from this release on): no recorded window holds a line of it, " +
 		"so the replay injects none until it supplies the signals to the pass and emits the fact at each deadline of a signal rule"},
+	"TurnEdge": {Way: FactUnrecorded, From: "the start or end of a turn of a claim on an issue (intake.TurnEdge, which supervision applies " +
+		"from this release on for the idle signal): the replay reads each turn's start and end from the record's supervise lines into its " +
+		"own idle signal (SignalRecord's holders), and injects none until it supplies the signals to the pass"},
 	"DispatchDefaultAssignee": {Way: FactUnrecorded, From: "each move of the project's default assignee (Dispatch's settings.project_default_assignee.updated, " +
 		"which the Dispatch durable hears from this release on): the replay reads a window's settings events into its own approvals signal " +
 		"(SignalRecord's readAsks), and injects none until it supplies the signals to the pass"},

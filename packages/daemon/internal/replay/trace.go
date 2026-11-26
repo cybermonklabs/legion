@@ -530,15 +530,19 @@ type StartFailure struct {
 // guardKillToldLine and guardKillUnrecordedLine are the msgs of the daemon's lines of a kill of a
 // process of an issue pod's role that its launcher reported (workflow's memoryGuardKill): the
 // line of the memory guard's kill, whose role is told why, and the line of a kill of any cause
-// that names an issue the daemon does not record, which tells nobody.
+// that names an issue the daemon does not record, which tells nobody. guardKillNoRoleLine is the
+// line of a kill of a process of no role, which the launcher reports on the connection of one
+// role of its pod and which tells no role.
 const (
 	guardKillToldLine       = "workflow: the role whose process the memory guard ended is told why"
 	guardKillUnrecordedLine = "workflow: a memory guard kill names an issue the daemon does not record, so no role is told"
+	guardKillNoRoleLine     = "workflow: a memory kill of a process of no role is told to no role"
 )
 
 // GuardKillLine is one of the daemon's lines of a kill an issue pod's launcher reported
-// (guardKillToldLine, guardKillUnrecordedLine): the issue, the claim of the role whose process
-// was ended, that process's pid, and the kill's cause, "" for the memory guard's own
+// (guardKillToldLine, guardKillUnrecordedLine, guardKillNoRoleLine): the issue, the claim of the
+// role whose process was ended, its role none for a process of no role (readNoRoleKill), that
+// process's pid, and the kill's cause, "" for the memory guard's own
 // (shimwire.MemoryKillCauseGuard). The launcher's own line of the kill is the kill signal's
 // record, and this line is read beside it by the kill matcher alone (MatchKills): the trace
 // builder reads nothing of it, so a window that holds it is traced as one that does not.
@@ -1003,6 +1007,7 @@ var lineReaders = map[string]func(LineHead, *lineAttrs) LogLine{
 	},
 	guardKillToldLine:       readGuardKill,
 	guardKillUnrecordedLine: readGuardKill,
+	guardKillNoRoleLine:     readNoRoleKill,
 }
 
 // readProcessStart reads one of the lines a daemon process starts with (ProcessStart), which
@@ -1017,6 +1022,20 @@ func readStartFailure(h LineHead, a *lineAttrs) LogLine {
 // cause is absent from a release that predates the member, as the guard's own.
 func readGuardKill(h LineHead, a *lineAttrs) LogLine {
 	return GuardKillLine{LineHead: h, Issue: a.str("issue"), Claim: a.claim("role"), PID: a.count("pid"), Cause: a.optionalStr("cause")}
+}
+
+// noRoleKill is the role the memory guard's line names a process of no role by, as the launcher's
+// line `launcher: memory guard: ended` writes it (memoryguard's process outside every role).
+const noRoleKill claim.Role = "none"
+
+// readNoRoleKill reads the daemon's line of a kill of a process of no role (guardKillNoRoleLine)
+// as its record of the kill the launcher's line names of role none (GuardKillLine): the launcher
+// reports such a kill on the connection of one role of its pod, so the connection's claim names
+// the pod, and the kill's role is none, whichever role's connection carried it.
+func readNoRoleKill(h LineHead, a *lineAttrs) LogLine {
+	connection := a.claim("connection")
+	connection.Role = noRoleKill
+	return GuardKillLine{LineHead: h, Issue: a.str("issue"), Claim: connection, PID: a.count("pid"), Cause: a.optionalStr("cause")}
 }
 
 // lineReaderOf is the reader of the lines of msg (lineReaders, the process's start lines and the

@@ -40,12 +40,14 @@ func (s *Postgres) KeepQueueEvents(ctx context.Context, tx pgx.Tx, project strin
 		if e.ID <= 0 || e.Repo == "" || e.PullRequest <= 0 {
 			return fmt.Errorf("keep queue event %+v of %s: it needs a positive event id, a repository and a pull request", e, project)
 		}
-		if _, err := tx.Exec(ctx, `insert into queue_events (project, event_id, repo, pull_request, at, enters, position)
+		tag, err := tx.Exec(ctx, `insert into queue_events (project, event_id, repo, pull_request, at, enters, position)
 			values ($1, $2, $3, $4, $5, $6, $7)
 			on conflict (project, event_id) do update set repo = excluded.repo where queue_events.repo <> excluded.repo`,
-			project, e.ID, e.Repo, e.PullRequest, e.At.UTC(), e.Enters, i); err != nil {
+			project, e.ID, e.Repo, e.PullRequest, e.At.UTC(), e.Enters, i)
+		if err != nil {
 			return fmt.Errorf("keep queue event %d (%s#%d) of %s: %w", e.ID, e.Repo, e.PullRequest, project, err)
 		}
+		noteRowsWritten(ctx, tag)
 	}
 	if _, err := tx.Exec(ctx, `delete from queue_events
 		where project = $1 and (repo, pull_request) in (
@@ -182,12 +184,15 @@ func (s *Postgres) QueueProgressOf(ctx context.Context, tx pgx.Tx, project strin
 // before any boot recorded the input writes the row at at, so the reason is never lost, and a
 // later call moves the reason alone, never the moment the input began.
 func (s *Postgres) SetSignalInputReadError(ctx context.Context, tx pgx.Tx, project, input, readError string, at time.Time) error {
-	if _, err := tx.Exec(ctx, `insert into signal_inputs (project, input, kept_since, read_error)
+	tag, err := tx.Exec(ctx, `insert into signal_inputs (project, input, kept_since, read_error)
 		values ($1, $2, $3, $4)
-		on conflict (project, input) do update set read_error = excluded.read_error`,
-		project, input, at.UTC(), readError); err != nil {
+		on conflict (project, input) do update set read_error = excluded.read_error
+		where signal_inputs.read_error <> excluded.read_error`,
+		project, input, at.UTC(), readError)
+	if err != nil {
 		return fmt.Errorf("record why the read of %s for %s failed: %w", input, project, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

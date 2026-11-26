@@ -2890,6 +2890,19 @@ type Store interface {
 	// ModelRequestsHeld is each of ids the store holds a request of for claim's launch at
 	// generation of project, which a report's answer names kept.
 	ModelRequestsHeld(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, ids []string) ([]string, error)
+	// ProviderMinutes is project's provider record of each whole minute that begins in [from,
+	// to), each held only where every request of it is known to have been reported by a host of a
+	// plugin contract at or above reporting: what the provider's headroom and refusals read.
+	ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (ProviderMinutes, error)
+	// SignalDeadline is project's one deadline of admission by signals as committed, and
+	// PutSignalDeadline writes it, in the transaction of the fact whose pass computed it (admit's
+	// commitDeadline).
+	SignalDeadline(ctx context.Context, tx pgx.Tx, project string) (SignalDeadline, error)
+	PutSignalDeadline(ctx context.Context, tx pgx.Tx, project string, deadline SignalDeadline) error
+	// SignalPassMarks is what the last committed pass recorded of each series of project, and
+	// KeepSignalPassMarks writes the marks a pass changed (admit's keepPassMarks).
+	SignalPassMarks(ctx context.Context, tx pgx.Tx, project string) (map[string]SignalPassMark, error)
+	KeepSignalPassMarks(ctx context.Context, tx pgx.Tx, project string, marks map[string]SignalPassMark) error
 }
 
 // RoleRunKey identifies one role's run of an issue generation.

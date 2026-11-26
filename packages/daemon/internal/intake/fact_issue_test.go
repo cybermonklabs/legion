@@ -71,6 +71,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"DispatchDefaultAssignee":     DispatchDefaultAssignee{},
 		"ApprovalsBootRead":           ApprovalsBootRead{},
 		"ModelRequests":               ModelRequests{},
+		"TurnEdge":                    TurnEdge{},
 		"PullRequestReviewRequests":   PullRequestReviewRequests{},
 		"PullRequestMergeStateUnread": PullRequestMergeStateUnread{},
 		"Push":                        Push{},

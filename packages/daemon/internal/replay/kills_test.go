@@ -75,3 +75,39 @@ func TestTheKillMatcherNamesEachKillOneRecordLacks(t *testing.T) {
 		t.Errorf("the daemon's kill lines move the window's scorecard: %+v, without them %+v", scored, without)
 	}
 }
+
+// guardKillOfNoRole is the daemon's line at at of a kill of process pid of no role in key's pod,
+// which the pod's launcher reported on the connection of key's role (workflow's memoryGuardKill)
+// and which tells no role, the cause being the memory guard's own where cause is "".
+func guardKillOfNoRole(b *windowBuilder, at time.Time, key string, connection claim.Role, pid int, cause string) {
+	b.t.Helper()
+	b.info(at, guardKillNoRoleLine, "issue", key, "connection", string(b.token(key, connection)), "pod", "00000000-0000-4000-8000-0000000000bb",
+		"guard", "guard-2", "sequence", pid, "pid", pid, "cause", cause, "sizeBytes", 9000000000, "limitBytes", 8589934592)
+}
+
+// An issue pod's launcher reports the kill of a process of no role too, on the connection of one of
+// the pod's roles, and the daemon's line of it names that connection and tells no role. The
+// launcher's line names the role none, so the matcher reads the daemon's line as its record of a
+// kill of role none in the connection's pod. The window's launcher records the memory guard's kill
+// of pid 500 of no role in ACME-1's pod at 10:30, which the daemon's line names two seconds later on
+// the implementer's connection, and the pod kernel's kill of pid 501 of no role at 10:45, whose line
+// is no kill of the memory guard's. The matcher must count the guard's kill once, held by both,
+// and name no kill one record lacks.
+func TestTheKillMatcherReadsTheDaemonsLineOfAKillOfNoRole(t *testing.T) {
+	t.Parallel()
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.boot(clock(9, 0))
+	promotedRoot(b, clock(9, 5), "ACME-1", "a1")
+	b.window.Launcher = []LauncherLine{
+		{Time: clock(10, 30), Pod: "legion-acme-acme-1", Text: guardKillText(500, "none")},
+	}
+	guardKillOfNoRole(b, clock(10, 30).Add(2*time.Second), "ACME-1", claim.RoleImplementer, 500, "")
+	guardKillOfNoRole(b, clock(10, 45), "ACME-1", claim.RoleImplementer, 501, "kernel")
+	match, err := MatchKills(b.build())
+	if err != nil {
+		t.Fatalf("MatchKills: %v", err)
+	}
+	if want := (KillMatch{Both: 1}); !reflect.DeepEqual(match, want) {
+		t.Errorf("MatchKills = %+v, want %+v: the daemon's line of the kill of no role is its record of the launcher's kill of role none", match, want)
+	}
+}

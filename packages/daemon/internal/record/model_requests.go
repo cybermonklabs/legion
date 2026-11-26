@@ -24,6 +24,11 @@ import (
 // later reaches (modelRequestsReach), so the rows a read meets stay bounded by an hour of
 // requests rather than the project's whole history, and every limit of the project no such minute
 // reads.
+//
+// It keeps no mark of a write admission reads (RecordsWritten), whatever it keeps: a report comes
+// every few seconds from every session, and most change no hold and no value a pass would record,
+// so admission decides by the architect's rule whether the report runs the pass (admit's
+// signalsMoved, NoteSignalsMoved).
 func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, requests []claim.ModelRequest, counts func(model string) bool, now time.Time) error {
 	batch := &pgx.Batch{}
 	for _, request := range requests {
@@ -80,18 +85,20 @@ func modelRequestsReach(now time.Time) time.Time {
 // begins at or after at, where it differs from the limit in force at at: each boot of the daemon
 // calls it with its configuration's limit (admit's keepSignalFacts on intake.DaemonBooted), so a
 // minute is read against the limit configured when it began and a changed limit reads no earlier
-// minute again.
+// minute again. A limit it records is a write admission reads (RecordsWritten).
 func (s *Postgres) KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string, limit int64, at time.Time) error {
 	var kept *int64
 	if limit > 0 {
 		kept = &limit
 	}
-	if _, err := tx.Exec(ctx, `insert into signal_token_limits (project, since, token_limit)
+	tag, err := tx.Exec(ctx, `insert into signal_token_limits (project, since, token_limit)
 		select $1, $2, $3::bigint
 		where (select token_limit from signal_token_limits where project = $1 and since <= $2 order by since desc limit 1) is distinct from $3::bigint
-		on conflict (project, since) do update set token_limit = excluded.token_limit`, project, at, kept); err != nil {
+		on conflict (project, since) do update set token_limit = excluded.token_limit`, project, at, kept)
+	if err != nil {
 		return fmt.Errorf("record %s's token limit from %s: %w", project, at, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 

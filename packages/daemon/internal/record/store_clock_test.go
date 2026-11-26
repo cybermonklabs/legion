@@ -136,6 +136,7 @@ func clockRows() []clockRow {
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimActivity"}, check: checkClaimActivity},
 		{statement: nowStatement{"internal/store/claims.go", "(*Store).PutClaimStep"}, check: checkClaimStep},
 		{statement: nowStatement{"internal/store/claims.go", "upsertClaim"}, check: checkClaimWrite},
+		{statement: nowStatement{"internal/store/claims.go", "keepClaimTurn"}, check: checkClaimTurnClosed},
 		{statement: nowStatement{"internal/treelifecycle/lifecycle.go", "open"}, check: checkTreeOpened},
 		{statement: nowStatement{"internal/store/idle.go", "(*Store).ReleaseIdleIssue"}, check: checkReleaseMark},
 		{statement: nowStatement{"internal/store/idle.go", "insertOutboxRow"}, check: checkPauseRows},
@@ -373,6 +374,30 @@ func checkClaimWrite(t *testing.T) {
 	must(t, st.PutClaim(context.Background(), clockClaim()))
 	updated, _ := claimTimes(t, st, clockClaim().Token)
 	wantClock(t, "the claim's updated_at", updated)
+}
+
+// A claim that stops in a turn, with no turn end it can close the turn at, closes the turn's row
+// at the store's clock (keepClaimTurn).
+func checkClaimTurnClosed(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	st.UseClock(clockAt)
+	working := clockClaim()
+	working.State, working.LastTurnStart = supervise.StateWorking, clockTime.Add(-10*time.Minute)
+	must(t, st.PutClaim(ctx, working))
+	stopped := working
+	stopped.State = supervise.StateRetired
+	must(t, st.PutClaim(ctx, stopped))
+	var ended *time.Time
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `select ended_at from claim_turns where claim = $1`, string(working.Token)).Scan(&ended)
+	}); err != nil {
+		t.Fatalf("read the turn of %s: %v", working.Token, err)
+	}
+	if ended == nil {
+		t.Fatal("the turn of the claim that stopped in it is still open")
+	}
+	wantClock(t, "the turn's ended_at", *ended)
 }
 
 // A session's activity report is bounded by the store's clock and stamps the claim with it: a
