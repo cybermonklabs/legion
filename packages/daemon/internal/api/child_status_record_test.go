@@ -171,18 +171,19 @@ func TestTheRemovedChildRouteAnswersWithTheStatusWrite(t *testing.T) {
 }
 
 // No child route stands but the one that refuses an older plugin (cybermonklabs/legion#4573,
-// spec v12 of dispatch://INFRA-4730). park_child's route answers 410 ROUTE_REMOVED with the rules
-// for ending a child (record.EndChildRule), whatever body its caller sends: the architect's
-// request of contract 205 and before, the status and children a later park_child would have sent,
-// none, and one that does not decode. The daemon serves no close_child route: its path answers
-// the router's no-route 404. And neither the legion tool's operations
+// spec v13 of dispatch://INFRA-4730). The removed child operation stays only as a route that
+// answers 410 ROUTE_REMOVED with the rules for ending a child (record.EndChildRule), whatever
+// body its caller sends: the architect's request of contract 205 and before, the status and
+// children a later plugin would have sent, none, and one that does not decode. Its path stays the
+// one main serves until main renames it. The daemon serves no route for the other removed child
+// operation: its path answers the router's no-route 404. And neither the legion tool's operations
 // (packages/pi-legion/src/tools.ts) nor @legion/pi-shared's daemon client
 // (packages/pi-shared/src/daemon-client.ts) names either operation or its route, so no agent is
 // offered a call that cannot work.
 //
 // Negative control, run when this was written: with removedChildRoute answering 404 in place of
-// 410, the park rows fail.
-func TestNoCloseChildAndParkChildAnswersGone(t *testing.T) {
+// 410, the removed child route's rows fail.
+func TestTheRemovedChildOperationsAnswerGone(t *testing.T) {
 	h, _, statuses := statusHarness(t)
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	grant := architect.grant(t)
@@ -190,14 +191,14 @@ func TestNoCloseChildAndParkChildAnswersGone(t *testing.T) {
 		name string
 		body any
 	}{
-		{name: "an architect's park of its running child", body: map[string]any{"grantId": grant, "issue": statusChild}},
-		{name: "a park with a status and a children argument", body: map[string]any{"grantId": grant, "issue": statusChild, "status": "icebox", "children": "include"}},
+		{name: "an architect's backlog of its running child", body: map[string]any{"grantId": grant, "issue": statusChild}},
+		{name: "a request with a status and a children argument", body: map[string]any{"grantId": grant, "issue": statusChild, "status": "icebox", "children": "include"}},
 		{name: "no body"},
 		{name: "a body that does not decode", body: `{"grantId":`},
 	} {
-		t.Run("park_child: "+tc.name, func(t *testing.T) {
+		t.Run("removed child route: "+tc.name, func(t *testing.T) {
 			if reason := refused(t, h.request(http.MethodPost, "/legion/v1/children/park", tc.body, nil), http.StatusGone, "ROUTE_REMOVED"); !strings.HasSuffix(reason, record.EndChildRule) {
-				t.Fatalf("the park refusal says %q, want it to end with the rules for ending a child", reason)
+				t.Fatalf("the removed child route's refusal says %q, want it to end with the rules for ending a child", reason)
 			}
 		})
 	}
