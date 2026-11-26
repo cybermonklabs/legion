@@ -25,14 +25,16 @@ const ReasonHistoryTooLarge = "HISTORY_TOO_LARGE: the last 8 model turns of this
 const noteLimit = 500
 
 // modelBody is the body of a saved model step: the reply's prose and the tool calls it asked
-// for, the output tokens the call wrote, and whether the reply is one in prose that the guard
-// held back (saveNoPlan): the turn went on past it, and conversation tells the model after it
-// that nothing changed (noPlanTold).
+// for, the output tokens the call wrote, whether the reply is one in prose that the guard held
+// back (saveNoPlan): the turn went on past it, and conversation tells the model after it that
+// nothing changed (noPlanTold); and, for a reply held back as long (saveLong), how many words the
+// bar draws of it, which conversation tells the model after it (longTold), 0 for every other.
 type modelBody struct {
-	Text   string     `json:"text"`
-	Calls  []toolCall `json:"calls"`
-	Output int        `json:"output_tokens"`
-	NoPlan bool       `json:"no_plan,omitempty"`
+	Text      string     `json:"text"`
+	Calls     []toolCall `json:"calls"`
+	Output    int        `json:"output_tokens"`
+	NoPlan    bool       `json:"no_plan,omitempty"`
+	LongWords int        `json:"long_words,omitempty"`
 }
 
 // toolCall is one tool call a model step asked for: the provider's id for it, the tool and its
@@ -152,8 +154,9 @@ const nowLayout = "2006-01-02 15:04 UTC"
 // and the notes of the run's older steps; then each whole step, a model step as the reply it was
 // and its tool steps as that reply's results. The person's answer to a plan, Auto-review's and
 // each row of the plan that ran are told the model as the person's next message, and so is the
-// note after a reply in prose that the guard held back (noPlanTold): nothing changed. A tool call
-// whose result was not saved is answered as unsaved, so each call has its result, as the providers
+// note after a reply in prose that the guard held back (noPlanTold): nothing changed, and after a
+// reply held back as long (longTold): how many words the person would read. A tool call whose
+// result was not saved is answered as unsaved, so each call has its result, as the providers
 // require; a tool step whose model step is only a note is told as a note. The result of each
 // step withheld names, its note's too, is told as withheld (withheldHistory). Each result the
 // model is told gives each priority and time it holds also as the issue page shows it, a time
@@ -238,6 +241,9 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, with
 			steps = append(steps, reply)
 			if body.NoPlan {
 				told(noPlanTold(run.Kind))
+			}
+			if body.LongWords > 0 {
+				told(longTold(body.LongWords))
 			}
 		case agentwire.StepTool:
 			var body toolBody

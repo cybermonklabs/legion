@@ -488,7 +488,8 @@ func TestTheRosterReadNamesEverySessionThatHoldsAClaim(t *testing.T) {
 			t.Fatalf("the run ended %s with %q, want done", ended.state, ended.reason)
 		}
 		results := rig.toolResults(t, run)
-		_, body, read := strings.Cut(strings.Join(results, ""), ": status 200\n")
+		// The list's total stands before its body, in the label's noun (the agent's resultCount).
+		_, body, read := strings.Cut(strings.Join(results, ""), ": status 200\n[Total: 3 sessions in the list below.]\n")
 		var told []map[string]any
 		if len(results) != 1 || !read || json.Unmarshal([]byte(body), &told) != nil {
 			t.Fatalf("the run saved the tool results %q, want the roster read whole", results)

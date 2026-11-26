@@ -211,7 +211,7 @@ func jsonString(text string) string {
 // holds no call's answer, or no such value, is given as it was saved. The saved step keeps the
 // result as the server answered it, which draw_block and ReadSavedResult read.
 func shownResult(result string, now time.Time) string {
-	saved, answered := parseResult(result)
+	saved, start, answered := readResult(result)
 	if !answered {
 		return result
 	}
@@ -219,8 +219,6 @@ func shownResult(result string, now time.Time) string {
 	if len(members) == 0 {
 		return result
 	}
-	head, _, _ := strings.Cut(strings.TrimPrefix(result, storedDataNote+"\n"), "\n")
-	start := len(storedDataNote) + 1 + len(head) + 1
 	body := saved.Body
 	tail := result[start+len(body):]
 	var out strings.Builder

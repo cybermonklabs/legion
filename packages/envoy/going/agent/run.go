@@ -105,15 +105,17 @@ type toolFrame struct {
 // the run withheld from the model (withhold), which the bar says under the answer, and whether its
 // answer is a question the run needs the person to answer before it can go on (ask_person), false
 // on every other reply. A reply in prose that the guard held back (saveNoPlan) carries no prose and
-// NoPlan: the bar adds a reply of no prose to no answer (web features/going/run-frames.ts), so the
-// person never reads it. It says where the model call's time went too (modelCall): the
-// milliseconds from its request to its last token and to its first token of prose, left out for a
-// reply of tool calls alone, how long the agent's pacer held it, the tokens of its prompt, those of
-// the provider's cache included, of its reply, its reasoning among them, and of that reasoning,
-// the tokens the pacer reserved for it before it was made, and the tokens the pacer charged it in
-// the end. A reply in prose that the guard checked before it could end the turn (checkProse), held
-// back or not, also says what the check took: its milliseconds and its tokens; one it did not
-// check because Jev read the turn's words as Ask says so; and each says what Jev read them as.
+// NoPlan, and one held back as long (saveLong) no prose and HeldLong: the bar adds a reply of no
+// prose to no answer (web features/going/run-frames.ts), so the person never reads it. It says
+// where the model call's time went too (modelCall): the milliseconds from its request to its last
+// token and to its first token of prose, left out for a reply of tool calls alone, how long the
+// agent's pacer held it, the tokens of its prompt, those of the provider's cache included, of its
+// reply, its reasoning among them, and of that reasoning, the tokens the pacer reserved for it
+// before it was made, and the tokens the pacer charged it in the end. A reply in prose that the
+// guard checked before it could end the turn (checkProse), held back or not, also says what the
+// check took: its milliseconds and its tokens; one it did not check because Jev read the turn's
+// words as Ask says so; each says what Jev read them as; and one that would end the turn done says
+// how many words the bar draws of it.
 type replyFrame struct {
 	Step           int      `json:"step"`
 	Text           string   `json:"text"`
@@ -159,6 +161,13 @@ type replyFrame struct {
 	// checkSkippedJevAsk, the decision model Jev read the turn's words as Ask, so the reply adds
 	// no check's time to its turn. It is left out on every other reply.
 	CheckSkipped string `json:"check_skipped,omitempty"`
+	// DrawnWords is how many words the bar draws of the reply's prose as the run's answer, as the
+	// server counted them (holdLong): each link as its item's chip, an issue's with its key, its
+	// status and its title. endProse sets it, 0 included, on a reply in prose it would end the
+	// turn done with, held back as long or not; every other reply leaves it out, as does one whose
+	// count failed. HeldLong marks a reply held back as long (saveLong), which carries no prose.
+	DrawnWords *int `json:"drawn_words,omitempty"`
+	HeldLong   bool `json:"held_long,omitempty"`
 	// JevLine is what Jev read the turn's words as when endProse decided on the reply (jevLine):
 	// ask, do or file, none for no line, late for a line call still out. It is left out where the
 	// guard asks Jev nothing (asksJev): a run started from Do or File, a turn the person's answer
@@ -410,8 +419,9 @@ func (w *worker) readPage() {
 
 // settled reports whether the run's saved steps already end its turn: a last step that answered
 // with no tool call, or that proposed a plan, which waits for its person. A reply in prose that
-// the guard held back (saveNoPlan) ends no turn: a worker that starts from it makes the next step,
-// whose model is told that nothing changed.
+// the guard held back (saveNoPlan), or that was held back as long (saveLong), ends no turn: a
+// worker that starts from it makes the next step, whose model is told that nothing changed, or
+// how many words the person would have read.
 func (w *worker) settled() (bool, string, string) {
 	if len(w.history) == 0 {
 		return false, "", ""
@@ -423,7 +433,7 @@ func (w *worker) settled() (bool, string, string) {
 	switch last.Kind {
 	case agentwire.StepModel:
 		var body modelBody
-		if json.Unmarshal(last.Body, &body) == nil && len(body.Calls) == 0 && !body.NoPlan {
+		if json.Unmarshal(last.Body, &body) == nil && len(body.Calls) == 0 && !body.NoPlan && body.LongWords == 0 {
 			return true, agentwire.StateDone, ""
 		}
 	case agentwire.StepTool:
@@ -752,7 +762,7 @@ func (w *worker) saveReply(base int, step agentloop.Step, call *modelCall) (bool
 		reply.Tools, reply.Labels = []string{}, []string{}
 	}
 	if !asked && len(tools) == 0 && step.Finish != finishLength {
-		if planned, _ := w.turnSoFar(); !planned {
+		if planned, _, _ := w.turnSoFar(); !planned {
 			return true, &proseReply{body: body, frame: reply}
 		}
 	}

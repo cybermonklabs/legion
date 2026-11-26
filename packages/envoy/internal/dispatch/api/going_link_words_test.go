@@ -1,13 +1,17 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/going/agent"
+	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
 )
 
@@ -118,6 +122,71 @@ func TestAnAnswerIsStoredWithTheBareKeysItsReadsReturnedLinked(t *testing.T) {
 	want["text"] = "[" + read + "](dispatch://" + read + ") is a P3 backlog feature with no assignee, and " + unread +
 		" waits on it. It asks for a SHA-256 digest and UTF-8."
 	requireStoredReplies(t, rig, run, want)
+}
+
+// TestAnAnswerIsStoredWithoutTheBlocksItsRunDrew: in 1 of 10 tries of "Chart the DEMO project's
+// issues by status." at 9fc43c69 the answer wrote the block draw_block drew, its JSON in a code
+// block whose info string was draw, and the bar drew it as a box of code above the chart itself.
+// The server stores the answer of a run without each fenced code block that holds a block the run
+// drew, its spacing aside, or whose info string is draw; every other code block, JSON or not,
+// stays as it came, byte for byte. The words call counts the answer as it is stored, both blocks
+// left out, which the answer's frame says.
+func TestAnAnswerIsStoredWithoutTheBlocksItsRunDrew(t *testing.T) {
+	t.Parallel()
+	rig := newGoingAgentRig(t, nil)
+	loop := newGoingLoop(t, rig)
+	const words = "chart how many issues DEMO holds, and show the query"
+	const kept = "```json\n{\"status\": \"todo\"}\n```\n\nThe query:\n\n```sql\nselect count(*) from issues;\n```\nThat is all."
+	loop.script.set(words, func(n int) agenttest.Reply {
+		switch n {
+		case 1:
+			return toolCall("call_tool", map[string]any{"tool": "dispatch_issues", "arguments": map[string]any{"project": "DEMO"}})
+		case 2:
+			return toolCall("call_tool", map[string]any{"tool": "draw_block", "arguments": map[string]any{
+				"kind": "metric", "title": "The issues of DEMO", "steps": []map[string]any{{"step": 2, "call": 1}},
+				"chain": []map[string]any{{"op": "count"}}, "field": "count",
+			}})
+		}
+		// The answer writes the block step 4 drew again, indented, and a block for the bar to
+		// draw, before a JSON block and a block of code of its own.
+		var body []byte
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select s.body from going_run_steps s join going_runs r on r.id = s.run_id where r.words = $1 and s.step = 4
+		`, words).Scan(&body); err != nil {
+			t.Errorf("read the block step: %v", err)
+		}
+		block, drew := agent.DrawnBlock(body)
+		var indented bytes.Buffer
+		if !drew || json.Indent(&indented, block, "", "  ") != nil {
+			t.Errorf("step 4 holds no block the run drew: %s", body)
+		}
+		return answered("DEMO's issues:\n\n```json\n" + indented.String() + "\n```\n\n```draw\n{\"kind\":\"metric\",\"title\":\"The issues of DEMO\"}\n```\n\n" + kept)
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+	}
+	var data []byte
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select data from going_run_events where run_id = $1::uuid and name = $2 order by sequence desc limit 1
+	`, run, goingReplyFrame).Scan(&data); err != nil {
+		t.Fatalf("read the answer's frame: %v", err)
+	}
+	var answer struct {
+		Text  string `json:"text"`
+		Drawn *int   `json:"drawn_words"`
+	}
+	if err := json.Unmarshal(data, &answer); err != nil {
+		t.Fatal(err)
+	}
+	if want := "DEMO's issues:\n\n\n\n" + kept; answer.Text != want {
+		t.Errorf("the answer is stored as\n%q\nwant\n%q", answer.Text, want)
+	}
+	// DEMO's issues: ```json {"status": "todo"} The query: ```sql select count(*) from issues; That
+	// is all. The fences alone, ``` and ```, are no words.
+	if answer.Drawn == nil || *answer.Drawn != 15 {
+		t.Errorf("the answer's frame says %v drawn words, want the 15 of the answer as stored", answer.Drawn)
+	}
 }
 
 // storeReply saves step of run, a model step, with its one reply frame, reply.

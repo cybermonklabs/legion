@@ -522,14 +522,20 @@ func appendItems(items []string, more ...string) []string {
 	return items
 }
 
-// resultList is the list a call's answer holds, the rows its label counts by noun: the answer
-// itself where it is a list, else the list under the noun's plural, or under results, rows or
-// items, at its top or one object below it (a read's tables), else its one list.
+// resultList is the list a call's answer holds, the rows its label counts by noun (answerList).
 func resultList(body []byte, noun string) ([]any, bool) {
 	var answer any
 	if json.Unmarshal(body, &answer) != nil {
 		return nil, false
 	}
+	return answerList(answer, noun)
+}
+
+// answerList is the list answer, a call's answer as its JSON decodes, holds, the rows its label
+// counts by noun: the answer itself where it is a list, else the list under the noun's plural, or
+// under results, rows or items, at its top or one object below it (a read's tables), else its one
+// list.
+func answerList(answer any, noun string) ([]any, bool) {
 	if list, isList := answer.([]any); isList {
 		return list, true
 	}

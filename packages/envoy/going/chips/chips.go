@@ -2,11 +2,13 @@
 // chips (the web's MarkdownBody with chips, ItemChip and RefLink): each link to an item shows the
 // item, read from Dispatch, in place of the words the model gave the link. RewriteLinks finds the
 // links of an answer's markdown, ParseTarget reads the item a link names, and Target.Words is what
-// the bar draws for it; going/eval's RenderAnswer writes an answer as the judge reads it with them.
-// LinkBareKeys writes an answer so that each issue key it names bare, which a read of its run
-// returned, is a link the bar draws as the issue's chip, and KeepLinkWords so that the words of a
-// link that say more than its chip draws stand beside the chip; the server does both to each
-// answer of a run as it stores it (internal/dispatch/api's going_link_words.go).
+// the bar draws for it; RenderAnswer writes an answer as the eval's judge reads it with them, and
+// DrawnWords counts the words the bar draws of it. LinkBareKeys writes an answer so that each
+// issue key it names bare, which a read of its run returned, is a link the bar draws as the
+// issue's chip, KeepLinkWords so that the words of a link that say more than its chip draws stand
+// beside the chip, and DropCodeBlocks takes out the code blocks that hold a block the bar draws
+// itself; the server does each to each answer of a run as it stores it (internal/dispatch/api's
+// going_link_words.go).
 package chips
 
 import (

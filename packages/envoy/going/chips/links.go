@@ -77,6 +77,47 @@ func closesFence(line, fence string) bool {
 	return match != nil && match[1][0] == fence[0] && len(match[1]) >= len(fence) && strings.TrimSpace(line[len(match[0]):]) == ""
 }
 
+// DropCodeBlocks is markdown with each fenced code block that drop reports true for taken out,
+// its fence lines with it. drop is given the block's info string, the words after its opening
+// fence, and its body, the lines between its fences. Every other block, and all other text, stays
+// byte for byte. A block whose fence closes nowhere runs to the end of markdown, as CommonMark
+// reads one.
+func DropCodeBlocks(markdown string, drop func(info, body string) bool) string {
+	var out strings.Builder
+	// written is where the markdown not yet written to out starts; opened is where the line that
+	// opened the block in hand starts, and body where its body does.
+	fence, info, written, opened, body := "", "", 0, 0, 0
+	for at := 0; at < len(markdown); {
+		end := strings.IndexByte(markdown[at:], '\n') + 1
+		if end == 0 {
+			end = len(markdown) - at
+		}
+		line := markdown[at : at+end]
+		switch {
+		case fence == "":
+			if fence = codeFence(line); fence != "" {
+				info, opened, body = strings.TrimSpace(line[len(fenceLine.FindString(line)):]), at, at+end
+			}
+		case closesFence(line, fence):
+			if drop(info, markdown[body:at]) {
+				out.WriteString(markdown[written:opened])
+				written = at + end
+			}
+			fence = ""
+		}
+		at += end
+	}
+	if fence != "" && drop(info, markdown[body:]) {
+		out.WriteString(markdown[written:opened])
+		written = len(markdown)
+	}
+	if written == 0 {
+		return markdown
+	}
+	out.WriteString(markdown[written:])
+	return out.String()
+}
+
 // rewriteInline writes markdown text that holds no fenced code block, each link in it as link
 // writes it and each run of plain text between them as text writes it: code spans and escaped
 // characters as written, and a picture whole.

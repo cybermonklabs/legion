@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -774,10 +775,13 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 
 // What resultText writes around a call's answer, which ReadSavedResult reads back: the line that
 // names the call by its step and its number within the step, which a block names it by
-// (draw_block), with its status; and the notes after a body the model was given only the first
-// bytes of, or that the server cut. callServer may write a mendNote after them.
+// (draw_block), with its status; the line that gives a list's total before its body
+// (resultCount); and the notes after a body the model was given only the first bytes of, or that
+// the server cut. callServer may write a mendNote after them.
 const (
 	resultHead      = "step %d, call %d: status %d\n"
+	listTotal       = "[Total: %d %s in the list below.]\n"
+	pageTotal       = "[Total: %d matching %s; the list below holds %d of them.]\n"
 	shortenedPrefix = "\n[This answer holds "
 	shortenedNote   = shortenedPrefix + "%d bytes and you were given the first %d: read the rest with another call, a narrower one or one with an offset or a limit, or do without it.]"
 )
@@ -786,10 +790,12 @@ const (
 var serverCutNote = fmt.Sprintf("\n[The server cut this answer at %d bytes: what it holds past them is not here.]", agentwire.CallBodyLimit)
 
 // resultText is what the model is told of call's answer: that it is data, the call and its
-// status, and at most modelResultLimit bytes of its body, with a note that names the rest.
+// status, how many items it lists where it is a list (resultCount), and at most modelResultLimit
+// bytes of its body, with a note that names the rest.
 func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "%s\n"+resultHead, storedDataNote, call.Step, call.Call, answer.Status)
+	out.WriteString(resultCount(call, answer))
 	body := answer.Body
 	if len(body) > modelResultLimit {
 		cut := modelResultLimit
@@ -807,10 +813,58 @@ func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string 
 	return out.String()
 }
 
-// resultHeadLine and shortenedStart read back resultHead and the start of shortenedNote.
+// resultCount is the line resultText writes between an answer's head line and its body where the
+// body is a list: a list itself, as GET /api/v1/issues answers all of a project's issues, or an
+// object whose list the label of call's tool counts its rows in (answerList by the label's noun).
+// It gives how many items the list holds (listTotal), and, where the object also gives a whole
+// total, as a page does (model.IssueSummaryPage), how many items match and how many of them the
+// list holds (pageTotal), in the label's noun, "item" for a tool whose label counts none. A model
+// that counted the rows of a list it was given miscounted them (at 8a3e562b a chart answer said
+// 41 issues of a list of 42, given whole), and a list past modelResultLimit reaches the model as
+// its first bytes alone, so the total stands before the body, where no cut reaches it. Any other
+// body has no such line, nor does an answer the server cut, whose body does not parse.
+func resultCount(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
+	// Only a list, or an object of a tool whose label counts a list, is decoded.
+	noun := namedLabel(call.Tool).Count
+	trimmed := bytes.TrimLeft(answer.Body, " \t\r\n")
+	if answer.Cut || len(trimmed) == 0 || trimmed[0] != '[' && (trimmed[0] != '{' || noun == "") {
+		return ""
+	}
+	var decoded any
+	if json.Unmarshal(answer.Body, &decoded) != nil {
+		return ""
+	}
+	list, _ := decoded.([]any)
+	if object, isObject := decoded.(map[string]any); isObject {
+		var listed bool
+		if list, listed = answerList(object, noun); !listed {
+			return ""
+		}
+		if total, numeric := object["total"].(float64); numeric && total >= 0 && total == float64(int(total)) {
+			return fmt.Sprintf(pageTotal, int(total), countNoun(int(total), noun), len(list))
+		}
+	}
+	return fmt.Sprintf(listTotal, len(list), countNoun(len(list), noun))
+}
+
+// countNoun is noun as a count of n writes it: singular for one, plural for any other, and item
+// for no noun.
+func countNoun(n int, noun string) string {
+	if noun == "" {
+		noun = "item"
+	}
+	if n == 1 {
+		return noun
+	}
+	return plural(noun)
+}
+
+// resultHeadLine, resultTotalLine and shortenedStart read back resultHead, the line of listTotal
+// or pageTotal, and the start of shortenedNote.
 var (
-	resultHeadLine = regexp.MustCompile(`^step (\d+), call (\d+): status (\d+)$`)
-	shortenedStart = regexp.MustCompile(`^` + regexp.QuoteMeta(shortenedPrefix) + `(\d+) bytes and you were given the first (\d+):`)
+	resultHeadLine  = regexp.MustCompile(`^step (\d+), call (\d+): status (\d+)$`)
+	resultTotalLine = regexp.MustCompile(`^\[Total: \d+ (?:matching )?[a-z ]+(?: in the list below|; the list below holds \d+ of them)\.\]$`)
+	shortenedStart  = regexp.MustCompile(`^` + regexp.QuoteMeta(shortenedPrefix) + `(\d+) bytes and you were given the first (\d+):`)
 )
 
 // cutShortened is rest without the shortenedNote that ends it, and whether it held one.
@@ -875,16 +929,42 @@ func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
 	return saved, nil
 }
 
+// DrawnBlock is the block a saved tool step's body holds where its call was a draw_block that
+// the server drew: the block call's answer whole, a going.BlockData as its JSON, which the step
+// showed as its block frame. It is false for every other step: another tool's, a block the server
+// refused, and a block saved only as its first bytes.
+func DrawnBlock(body json.RawMessage) (json.RawMessage, bool) {
+	saved, err := ReadSavedResult(body)
+	if err != nil || saved.Tool != toolDrawBlock || saved.Status/100 != 2 || saved.Shortened || saved.Cut || !json.Valid(saved.Body) {
+		return nil, false
+	}
+	return saved.Body, true
+}
+
 // parseResult reads what resultText wrote of a call's answer: the call's number within its step,
 // its status and its body, and whether that body is whole. It reports false where result holds no
 // call's answer: a refusal, or a tool's own words, such as find_tools'.
 func parseResult(result string) (SavedResult, bool) {
+	saved, _, answered := readResult(result)
+	return saved, answered
+}
+
+// readResult is parseResult's reading of result, with where its body starts in it: after the
+// data note, the head line, and the line of the list's total where resultText wrote one
+// (resultCount), which a step saved before it wrote none does not hold.
+func readResult(result string) (SavedResult, int, bool) {
 	text, answered := strings.CutPrefix(result, storedDataNote+"\n")
 	head, rest, _ := strings.Cut(text, "\n")
 	numbers := resultHeadLine.FindStringSubmatch(head)
 	if !answered || numbers == nil {
-		return SavedResult{}, false
+		return SavedResult{}, 0, false
 	}
+	if strings.HasPrefix(rest, "[Total: ") {
+		if total, body, lined := strings.Cut(rest, "\n"); lined && resultTotalLine.MatchString(total) {
+			rest = body
+		}
+	}
+	start := len(result) - len(rest)
 	var saved SavedResult
 	saved.Call, _ = strconv.Atoi(numbers[2])
 	saved.Status, _ = strconv.Atoi(numbers[3])
@@ -892,7 +972,7 @@ func parseResult(result string) (SavedResult, bool) {
 	rest, saved.Cut = strings.CutSuffix(rest, serverCutNote)
 	rest, saved.Shortened = cutShortened(rest)
 	saved.Body = []byte(rest)
-	return saved, true
+	return saved, start, true
 }
 
 // schemaOf is the JSON schema of a tool's arguments, as the model is given it.

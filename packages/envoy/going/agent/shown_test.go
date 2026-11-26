@@ -115,6 +115,10 @@ func TestTheWordsStayWithinTheBoundOfAResult(t *testing.T) {
 	given := func(t *testing.T, result string) (body string, raw int, total int) {
 		t.Helper()
 		_, rest, _ := strings.Cut(strings.TrimPrefix(result, storedDataNote+"\n"), "\n")
+		// The list's total stands on a line of its own before the body (resultCount).
+		if line, after, lined := strings.Cut(rest, "\n"); lined && resultTotalLine.MatchString(line) {
+			rest = after
+		}
 		body, note, shortened := strings.Cut(rest, shortenedPrefix)
 		if len(body) > modelResultLimit {
 			t.Fatalf("the model is given %d bytes of the body, past the bound of %d", len(body), modelResultLimit)

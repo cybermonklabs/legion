@@ -62,8 +62,7 @@ func writeLink(out *strings.Builder, written, _, _ string) {
 	out.WriteString(written)
 }
 
-// issueKey is an issue's key as Dispatch writes one (going/eval's timeLinkKey), wherever it
-// stands.
+// issueKey is an issue's key as Dispatch writes one (timeLinkKey), wherever it stands.
 var issueKey = regexp.MustCompile(`[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*`)
 
 // wholeKey reports whether the key that stands from start to end of text is a whole token: no
