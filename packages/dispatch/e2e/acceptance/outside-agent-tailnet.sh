@@ -285,7 +285,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-tailnet.XXXXXX") || work=''
 tools="$work/tools"
-[ -z "$work" ] || real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper
+# A program real_tools could not link holds every row from the pins on, as a missing scratch
+# directory does: the helper, the probe and the peer all start under that PATH.
+tools_problem=''
+[ -z "$work" ] || tools_problem=$(real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper)
 
 emit "row${tab}want${tab}got${tab}verdict"
 
@@ -342,6 +345,7 @@ want_pins="the broker's pin holds ${commit:-<OUTSIDE_ENROLL_REFUSAL_COMMIT>}; Di
 problem=$(lacking OUTSIDE_PINS OUTSIDE_ENROLL_REFUSAL_COMMIT OUTSIDE_DISPATCH_COMMITS OUTSIDE_TAILNET_DISPATCH_URL)
 [ -n "$project" ] || problem="${problem:+$problem; }the project key (\$1) is not given"
 [ -n "$work" ] || problem="${problem:+$problem; }mktemp -d made no scratch directory"
+[ -z "$tools_problem" ] || problem="${problem:+$problem; }$tools_problem"
 if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
   problem="OUTSIDE_PINS names $OUTSIDE_PINS, which cannot be read"
 fi

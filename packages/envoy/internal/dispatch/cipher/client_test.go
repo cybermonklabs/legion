@@ -320,16 +320,24 @@ func TestARewrittenTokenFileReachesTheBrokerOnceTheCacheLapses(t *testing.T) {
 	}
 }
 
-// A token file Dispatch cannot read, or that holds nothing, fails the call naming the file and
-// sends the broker nothing: an empty bearer would be refused there as an unauthenticated caller,
-// hiding Dispatch's own misconfiguration behind the broker's verdict.
-func TestAMissingOrEmptyTokenFileFailsNamingItAndSendsNothing(t *testing.T) {
+// A token file Dispatch cannot read, or that holds nothing, fails the call naming the setting that
+// holds the file and why, and sends the broker nothing: an empty bearer would be refused there as
+// an unauthenticated caller, hiding Dispatch's own misconfiguration behind the broker's verdict.
+// The path is never printed: each row's is a made-up token, as one pasted where the path goes is.
+func TestAMissingOrEmptyTokenFileFailsNamingItsSettingAndSendsNothing(t *testing.T) {
+	const pasted = "madeUpAccountTokenPath0123456789"
 	for _, tc := range []struct {
-		name string
-		path func(t *testing.T) string
+		name, want string
+		path       func(t *testing.T) string
 	}{
-		{"missing", func(t *testing.T) string { return filepath.Join(t.TempDir(), "nothing-here") }},
-		{"empty", func(t *testing.T) string { return tokenFile(t, "  \n") }},
+		{"missing", "its file cannot be read: it does not exist", func(t *testing.T) string { return filepath.Join(t.TempDir(), pasted) }},
+		{"empty", "the file is empty", func(t *testing.T) string {
+			path := filepath.Join(t.TempDir(), pasted)
+			if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return path
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, captured := serveCapturing(t, http.StatusOK, `{"requests":[]}`)
@@ -337,8 +345,8 @@ func TestAMissingOrEmptyTokenFileFailsNamingItAndSendsNothing(t *testing.T) {
 			path := tc.path(t)
 
 			_, err := New(server.URL, path).Pending(context.Background(), "sjawhar")
-			if err == nil || !strings.Contains(err.Error(), path) {
-				t.Fatalf("Pending with a %s token file: err = %v, want a refusal naming %s", tc.name, err, path)
+			if want := TokenFileSetting + " names: " + tc.want; err == nil || !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), pasted[:10]) {
+				t.Fatalf("Pending with a %s token file: err = %v, want a refusal naming %q and not the path", tc.name, err, want)
 			}
 			var brokerErr *Error
 			if errors.As(err, &brokerErr) {
