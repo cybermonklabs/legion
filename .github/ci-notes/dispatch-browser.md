@@ -410,9 +410,9 @@ successful merge-group run of ci.yaml created between 19:15Z and 21:00Z that day
 window starting where the sample's envoy-go stops being one job of 1,772 to 1,921 s and starts
 running as legs whose longest is 689 s (run 45882255410 is the first of the sample that shows
 them). Three of the ten selected this lane, and in all three the shard job ended the
-run - 862 s in 45894990792, 736 s in 45891327626, 839 s in 45886859589, each ending 7.6 to 11.8
-minutes after the next job that is not this lane's. So a leg's wall clock is the merge group's,
-and the two costs that decide the count are these:
+run - 862 s in 45894990792, 736 s in 45891327626, 839 s in 45886859589, each leg phase ending
+283 to 712 s after the next job that is not this lane's. So a leg's wall clock is the merge
+group's, and the two costs that decide the count are these:
 
 - WHAT A LEG COSTS BEFORE ITS FIRST ROW: 113 s at the median over the twelve legs of those
   three runs (98 to 130 s), the job's steps outside the browser step - the container pull, the
@@ -438,6 +438,20 @@ legs the pull-request lane's legs ran 179 to 327 s (runs 45897567095, 4589706119
 ran 51 to 92 s against the same fixed cost - already more machine than rows. Six legs leave the
 pull-request lane about 220 s a leg and buy the references lane some 20 s for two more
 machines; a count read from the full lane alone would take that trade further for nothing.
+
+WHAT SIX LEGS MEASURED. Two full lanes at the commit that raised the count: run 45906816199,
+dispatched, and run 45907841842, this change's own pull request with the lane's label on it.
+Their legs ran 562, 577, 598, 521, 517 and 507 s, and 552, 457, 575, 574, 498 and 503 s: the
+heaviest 598 and 575 s, 1.093 and 1.092 times its run's mean, against 862, 736 and 839 s and
+1.24, 1.16 and 1.21 in the three merge groups above. Their browser steps ran 380 to 482 s and
+355 to 463 s where the arithmetic above gives 374 to 391 s; with no row retried in either run,
+what is left is the runner spread the guard's 1.75 stands for. The leg phase - the first leg's
+start to the last leg's end - was 698 and 665 s against 942, 802 and 849 s. Both runs waited
+144 to 488 s for a runner on each job of the lane, where the merge groups above waited 2 to
+334 s; the binaries job, which no leg count touches, waited 351 and 343 s against 7 to 334 s,
+so that wait is the load on the runners at that hour and not the two legs more. Each merge job
+read the legs' lists and reported that "the 6 shard legs read one selection of" 2,124 and
+2,125 rows "and ran each of them on exactly one leg".
 
 ## What the shard job downloads in place of a Go build
 
