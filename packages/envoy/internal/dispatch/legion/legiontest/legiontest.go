@@ -108,13 +108,14 @@ type Spec struct {
 	// IssueOffset is how many of the project's issue numbers another history took already: the
 	// issues are numbered from IssueOffset+1, so this history can be written beside that one.
 	IssueOffset int
-	// Parked has a finished child of every tree sit parked partway through its work, each park
-	// both a Dispatch status and what the daemon observes: in an even tree the implemented child
-	// sits in `icebox` for the two hours between its implementer's handoff and its tester, put
-	// there by a person, and in an odd tree the reviewed child is parked in `backlog` for three
-	// hours of its implementing by its tree's architect, as the daemon's parkChild moves a child.
-	// The sampler records phase `held` over each park, and the phase it returns to after it.
-	Parked bool
+	// InBacklogOrIcebox has one finished child of every tree spend part of its work in `icebox`
+	// or `backlog`, each move both a Dispatch status and what the daemon observes. In an even
+	// tree a person puts the implemented child in `icebox` for the two hours between its
+	// implementer's handoff and its tester. In an odd tree the root's architect moves the reviewed
+	// child to `backlog` for three hours of its implementing, then back. The sampler records phase
+	// `held` over each, then the phase the child goes to next: testing for the implemented child,
+	// implementing again for the reviewed one.
+	InBacklogOrIcebox bool
 	// Merged gives each issue the merger closes (each root and its implemented and reviewed
 	// children) a merged pull request naming it, merged an hour before its close, so the facts
 	// read its merge (metrics' Issue.MergedAt) and store it.
@@ -384,9 +385,9 @@ func (s *seeding) tree(index int) {
 	s.handOver(implemented, SessionActor("architect", root), at(3))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
-	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
-	// handoff to its tester, a person's park.
-	icebox := s.spec.Parked && index%2 == 0
+	// Under Spec.InBacklogOrIcebox a person puts an even tree's implemented child in `icebox`
+	// between its implementer's handoff and its tester.
+	icebox := s.spec.InBacklogOrIcebox && index%2 == 0
 	if icebox {
 		s.event(implemented, "issue.updated", person, `{"status":"icebox"}`, at(12))
 		s.event(implemented, "issue.updated", person, `{"status":"in_progress"}`, at(14))
@@ -418,9 +419,9 @@ func (s *seeding) tree(index int) {
 	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
 	s.handOver(reviewed, SessionActor("architect", root), at(6))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
-	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
-	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
-	backlog := s.spec.Parked && index%2 == 1
+	// Under Spec.InBacklogOrIcebox the root's architect moves an odd tree's reviewed child to
+	// `backlog` for three hours of its implementing, then back to `in_progress`.
+	backlog := s.spec.InBacklogOrIcebox && index%2 == 1
 	if backlog {
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"backlog"}`, at(16))
 		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"in_progress"}`, at(19))
