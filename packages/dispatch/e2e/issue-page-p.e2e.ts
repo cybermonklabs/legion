@@ -16,6 +16,7 @@ import {
   reviewArtifact,
   setGatedSteps,
 } from "./api";
+import { nextFrames } from "./frames";
 import { closeDetails, gotoIssue, phase } from "./issue-page";
 import { expectOpeningLanded, focusThePage } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
@@ -1616,6 +1617,7 @@ async function openScrollingPage(page: Page, key: string, width: number): Promis
     if (page instanceof HTMLElement) page.style.minHeight = "2000px";
     window.scrollTo(0, 0);
   });
+  await nextFrames(page);
 }
 
 // Row (9): the band, which holds the identity and the title, stays when the page scrolls. On
