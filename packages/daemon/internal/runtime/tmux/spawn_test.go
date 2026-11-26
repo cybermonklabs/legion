@@ -463,7 +463,9 @@ func TestNewRefusesAProviderDispatchTokenOnlyWhenDispatchIsConfigured(t *testing
 // told the key. A name added to
 // the pairs and in neither set is one a spec could override; a name left in runtimeOwned that
 // the pairs no longer set is one a spec is refused for nothing. A controller pane is told the same
-// gh pairs as any other, so the sets are equal.
+// gh pairs as any other, so the sets are equal. The folder's root is the one name beyond a plain
+// launch: the spec here carries an arm's folder of texts, and the inputs the root and settings
+// layer PrepareTexts built, and a launch that runs no folder is told that name less.
 //
 // PUBLIC_LEAK_CHECK is the one pair the runtime sets that is deliberately not owned, so it is
 // left out of the inputs here and read on its own below: an operator's pane variable and a
@@ -481,6 +483,10 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 		GHOwnersDir: "/state/secrets/legion-omp-legion-43-tester-gh", GHDefault: "acme", GH: "/usr/bin/gh",
 		LeakCheckManifestSHA256: strings.Repeat("5e", 32),
 	}
+	spec.Variants = []runtime.Variant{{Experiment: "shorter-prompts", Name: "texts", Texts: "/etc/legion/texts/shorter"}}
+	spec.Texts = &runtime.Texts{Folder: "/etc/legion/texts/shorter", Copy: "/state/texts/legion-omp-legion-43-tester/2/folder",
+		Experiment: "shorter-prompts", Variant: "texts"}
+	in.Texts = TextsLaunch{Root: "/state/texts/legion-omp-legion-43-tester/2/root", SettingsLayer: "/state/texts/legion-omp-legion-43-tester/2/root/texts-settings.yml"}
 	owned := maps.Clone(runtimeOwned)
 	maps.Copy(owned, composed)
 	told := map[string]bool{}
@@ -491,6 +497,19 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 	}
 	if !reflect.DeepEqual(told, owned) {
 		t.Errorf("a pane is told %v by the runtime, and runtimeOwned with the composed names is %v", slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(owned)))
+	}
+	plain := in
+	plain.Texts = TextsLaunch{}
+	withoutFolder := map[string]bool{}
+	pairs = panePairs(spec, plain, secretFiles("/state", spec))
+	for i := 1; i < len(pairs); i += 2 {
+		name, _, _ := strings.Cut(pairs[i], "=")
+		withoutFolder[name] = true
+	}
+	wantPlain := maps.Clone(owned)
+	delete(wantPlain, "LEGION_TEXTS_ROOT")
+	if !reflect.DeepEqual(withoutFolder, wantPlain) {
+		t.Errorf("a pane that runs no folder is told %v, want the owned names less LEGION_TEXTS_ROOT", slices.Sorted(maps.Keys(withoutFolder)))
 	}
 	// The resolved check is the one name beyond that set, and it joins neither owned set.
 	in.LeakCheck = "/opt/machine/public-leak-check.sh"

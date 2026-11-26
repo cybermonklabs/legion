@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -30,10 +31,15 @@ type Launcher interface {
 	SessionsDir(spec runtime.SpawnSpec, host Host, env map[string]string, workDir string) (string, error)
 }
 
-// Host is what a launch's command names of the daemon's host: its state directory and the `legion`
-// binary every pane runs.
+// Host is what a launch's command names of the daemon's host: its state directory, the `legion`
+// binary every pane runs, and, for a launch of an arm's folder of texts, the roots of the
+// installed @sjawhar/pi-envoy and @sjawhar/pi-legion plugins its texts are checked against
+// (EnvoyPlugin, LegionPlugin; the profile's own under the pane's environment when empty,
+// PrepareTexts) and the extension root the launch already built (TextsRoot).
 type Host struct {
-	StateDir, Legion string
+	StateDir, Legion          string
+	EnvoyPlugin, LegionPlugin string
+	TextsRoot                 string
 }
 
 // NewOmpLauncher is Oh My Pi's launch: the configured omp_launch_prefix and the invocation boot
@@ -47,17 +53,41 @@ type ompLauncher struct {
 	invocation string
 }
 
-// Launch is innerCommand on promptFile. An Oh My Pi pane carries one pair of its own, and only when
+// Launch is innerCommand on promptFile, with the extension root of a launch that runs an arm's
+// folder of texts named ahead of `--model`: host.TextsRoot, which the caller built with
+// PrepareTexts, or, for a spec that carries a folder and a host that names no root, the root
+// built here (checkTexts, build), where a folder that fails a check is an error, since the
+// control's launch is the caller's to compose before it composes the prompt. An Oh My Pi pane
+// carries one pair of its own, and only when
 // it resumes a recorded session: runtime.SessionExclusiveVariable set to 1, so a resume of a
 // session another live process still holds ends the pane's Oh My Pi rather than moving it onto a
 // session id the daemon never recorded. The pair comes after the operator's pane variables, which
 // may not name it (runtime.PaneVariableRefusal). A fresh launch carries no pairs.
-func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host, promptFile string) (string, []string, error) {
+func (l ompLauncher) Launch(spec runtime.SpawnSpec, host Host, promptFile string) (string, []string, error) {
 	var pairs []string
 	if spec.ResumeSessionFile != "" {
 		pairs = []string{"-e", runtime.SessionExclusiveVariable + "=" + runtime.SessionExclusiveValue}
 	}
-	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile), pairs, nil
+	root := host.TextsRoot
+	if root == "" && spec.Texts != nil {
+		checked, fallback, err := checkTexts(spec, host, nil, "", nil)
+		if err != nil {
+			return "", nil, err
+		}
+		if fallback != nil {
+			return "", nil, fmt.Errorf("spawn %s: %w", spec.Claim, fallback.report.Fault)
+		}
+		built, err := checked.build()
+		if err != nil {
+			return "", nil, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+		}
+		root = built.Root
+	}
+	var roots []string
+	if root != "" {
+		roots = []string{root}
+	}
+	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile, roots...), pairs, nil
 }
 
 // Marker is "omp", which the invocation in an Oh My Pi pane's command line names.

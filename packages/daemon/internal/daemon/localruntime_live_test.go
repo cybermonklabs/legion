@@ -29,6 +29,13 @@
 //   - The inner Oh My Pi command is an argv rather than a shell fragment. It names the claim's
 //     prompt file as a pane's does: the prompt composed (runtime.ComposePrompt) and written to
 //     runtime.WriteSystemPrompt under the claim's name, and that path as the one `--append-system-prompt` value.
+//   - A launch of an arm's folder of texts goes through the tmux runtime's own preparation
+//     (tmux.PrepareTexts): the check of the folder's agents and skills against the plugins the
+//     profile has installed, the extension root and its settings layer, and, where a check fails,
+//     the fallback launch of no arm of that experiment. The root comes first in Oh My Pi's argv
+//     (tmux.TextsLaunch.Args), and the pane is told it and the layer, and each arm's overlays,
+//     by the same PaneInputs (Texts, Variants). So a proof of the folder drives the production
+//     code, as the tmux runtime's own launch does.
 //   - No GitHub credential is minted and no `gh` bundle is written: the pane of this proof pushes
 //     nothing, so its spec carries no repository and PaneInputs names no owners directory, which
 //     is the same pane a runtime with no GitHubCredential function opens.
@@ -119,6 +126,10 @@ type localRuntime struct {
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
+	// textsFellBack is told of each launch whose arm's folder of texts failed the check against
+	// the plugins the profile has installed (tmux.PrepareTexts), as the daemon's own runtimes are
+	// told; nil tells no one.
+	textsFellBack runtime.TextsFellBack
 
 	mu      sync.Mutex
 	panes   map[claim.Token]*localPane
@@ -333,6 +344,20 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if err := runtime.WriteSecretFiles(r.stateDir, []runtime.SecretFile{bootToken}); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
+	// The arm's folder of texts is prepared as the tmux runtime prepares it, before the prompt is
+	// composed, since a fallback is the control's launch: the plugins are the profile's, under the
+	// environment this runtime starts Oh My Pi in.
+	in := tmux.PaneInputs{
+		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL,
+		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchTokenFile,
+		NATSURLs: r.natsURLs, RoleConfigFiles: r.overlays(spec.Claim), Variants: spec.Variants,
+	}
+	profileEnv := tmux.PaneEnvironment([]string{"HOME=" + r.home, "OMP_PROFILE=" + r.profile}, r.stateDir)
+	spec, built, err := tmux.PrepareTexts(spec, tmux.Host{StateDir: r.stateDir, Legion: r.legion}, profileEnv, workDir, in.ConfigLayers(), r.textsFellBack)
+	if err != nil {
+		return runtime.Locator{}, err
+	}
+	in.Texts, in.Variants = built, spec.Variants
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
@@ -341,11 +366,7 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
-	variables, err := tmux.PaneVariables(spec, tmux.PaneInputs{
-		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL,
-		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchTokenFile,
-		NATSURLs: r.natsURLs, RoleConfigFiles: r.overlays(spec.Claim),
-	}, []runtime.SecretFile{bootToken})
+	variables, err := tmux.PaneVariables(spec, in, []runtime.SecretFile{bootToken})
 	if err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
@@ -354,8 +375,10 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 		r.legion, "worker-shim",
 		"--connect", r.stream,
 		"--boot-token-file", bootToken.Path,
-		"--", r.omp, "--mode", "rpc", "--append-system-prompt", promptFile,
+		"--", r.omp,
 	}
+	argv = append(argv, in.Texts.Args()...)
+	argv = append(argv, "--mode", "rpc", "--append-system-prompt", promptFile)
 	if spec.ResumeSessionFile != "" {
 		argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
 	}

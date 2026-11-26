@@ -1,14 +1,18 @@
 package tmux
 
 import (
+	"strings"
+
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
-// innerCommand is the OMP command the shim runs: the launch prefix and invocation, `--model
-// @default`, `--resume` on the recorded session file when resuming, RPC mode
-// (runtime-tmux.ts:414-431), and `--append-system-prompt` on promptFile, which Oh My Pi reads and
-// appends to its own system prompt.
+// innerCommand is the OMP command the shim runs: the launch prefix and invocation, one `--extension
+// <root>` for each of extensionRoots (an experiment arm's extension root, which Oh My Pi loads
+// ahead of the plugins a pane has installed, so it comes before `--model`), `--model @default`,
+// `--resume` on the recorded session file when resuming, RPC mode (runtime-tmux.ts:414-431), and
+// `--append-system-prompt` on promptFile, which Oh My Pi reads and appends to its own system
+// prompt. A launch of no arm's folder names no root, and its command is what it always was.
 //
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
 // for the `default` model role, which the settings of the profile the pane launches under set -
@@ -20,12 +24,16 @@ import (
 // wrote it, so it stands in for no later launch's flag. A settings set with no `default` role is
 // not refused here: Oh My Pi launches silently on a built-in model instead
 // (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
-func innerCommand(prefix []string, invocation, resumeSessionFile, promptFile string) string {
+func innerCommand(prefix []string, invocation, resumeSessionFile, promptFile string, extensionRoots ...string) string {
+	var extensions strings.Builder
+	for _, root := range extensionRoots {
+		extensions.WriteString(" --extension " + shellprefix.Word(root))
+	}
 	resume := ""
 	if resumeSessionFile != "" {
 		resume = " --resume=" + shellprefix.Word(resumeSessionFile)
 	}
-	return omplaunch.WithPrefix(prefix, invocation) + " --model @default" + resume + " --mode rpc " + omplaunch.SystemPromptArgument(promptFile)
+	return omplaunch.WithPrefix(prefix, invocation) + extensions.String() + " --model @default" + resume + " --mode rpc " + omplaunch.SystemPromptArgument(promptFile)
 }
 
 // shimShellCommand is the pane's shell command: PATH exported first, then the workspace, then

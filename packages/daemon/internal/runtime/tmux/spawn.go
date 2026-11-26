@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -58,10 +58,11 @@ func windowKey(spec runtime.SpawnSpec) string {
 
 // runtimeOwned are the variables every pane gets from the runtime itself, the whole of each
 // value: with the composed names (composed), whose value the operator begins and the runtime
-// finishes, it is exactly what panePairs sets for a tree pane
+// finishes, it is exactly what panePairs sets for a tree pane that runs an arm's folder of texts
 // (TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime), which the shared validator refuses in a
-// spec's Env and as a secret's pointer. A controller pane is told controllerOwned in place of the
-// tree, the issue, the issue key it stamps and the workspace.
+// spec's Env and as a secret's pointer. LEGION_TEXTS_ROOT is told to that pane alone
+// (PaneInputs.Texts). A controller pane is told controllerOwned in place of the tree, the issue,
+// the issue key it stamps, the workspace and the folder's root.
 var runtimeOwned = map[string]bool{
 	"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_ROLE": true,
 	"LEGION_GENERATION": true, "LEGION_PROJECT": true, "LEGION_DAEMON_URL": true,
@@ -71,6 +72,7 @@ var runtimeOwned = map[string]bool{
 	"GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "GH_HOST": true,
 	"LEGION_GH_OWNERS_DIR": true, "LEGION_GH_PATH": true,
 	"PI_SHELL_PREFIX": true, "PI_CONFIG_FILES": true,
+	texts.RootVariable: true,
 	// The deployment's manifest digest (Options.LeakCheckManifestSHA256), told where the deployment names a shared
 	// leak check: the daemon's setting alone, so no operator's pane variable and no spec moves it.
 	leakguard.CheckerVar: true,
@@ -250,11 +252,15 @@ type PaneInputs struct {
 	// RoleConfigFiles the ones this pane's role alone names (role_config_files), and Variants the
 	// arms of the project's declared experiments this pane's unit was drawn into
 	// (runtime.SpawnSpec.Variants), whose own overlays the pane names last, in the order the
-	// project's file declares the experiments; nil for none.
+	// project's file declares the experiments; nil for none. Texts is the extension root and
+	// settings layer of a launch of an arm's folder of texts (PrepareTexts): the pane is told the
+	// root (LEGION_TEXTS_ROOT) and names the layer last, after every overlay above; the zero
+	// value is a launch of no folder, which is told neither.
 	OperatorEnv     map[string]string
 	PiConfigFiles   []string
 	RoleConfigFiles []string
 	Variants        []runtime.Variant
+	Texts           TextsLaunch
 	// LeakCheck is the shared public leak check the daemon resolved on its own machine
 	// (resolveLeakCheck), the pane's PUBLIC_LEAK_CHECK; "" where the machine carries none, and
 	// the pane is then told no such variable. LeakCheckManifestSHA256 is the deployment's checker
@@ -279,8 +285,9 @@ type PaneInputs struct {
 // (its legion, its gh and, where workerbin.Install writes one, its git); PI_CONFIG_FILES, the
 // operator's overlays, then the role's own, then the
 // overlays of each arm this pane's unit was drawn into, in the order the project's file declares
-// the experiments, and nothing of Legion's own, which names no
-// settings overlay at all — empty where none of the three names one), the
+// the experiments, then the settings layer of an arm's folder of texts where the launch runs one
+// (and, after it, LEGION_TEXTS_ROOT, which is told to no other pane), and nothing of Legion's
+// own, which names no settings overlay at all — empty where none of these names one), the
 // four XDG base directories under `<state_dir>/home`, PUBLIC_LEAK_CHECK where the daemon
 // resolved a shared public leak check on its own machine (LeakCheck) and nothing where it
 // resolved none, the deployment's manifest digest where it names one (LeakCheckManifestSHA256), the operator's
@@ -343,7 +350,14 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("LEGION_GH_PATH", in.GH)
 	}
 	add("PI_SHELL_PREFIX", shellprefix.For(workerbin.LauncherDir(in.StateDir)))
-	add("PI_CONFIG_FILES", strings.Join(slices.Concat(in.PiConfigFiles, in.RoleConfigFiles, runtime.VariantOverlays(in.Variants)), ":"))
+	layers := in.ConfigLayers()
+	if in.Texts.SettingsLayer != "" {
+		layers = append(layers, in.Texts.SettingsLayer)
+	}
+	add("PI_CONFIG_FILES", strings.Join(layers, ":"))
+	if in.Texts.Root != "" {
+		add(texts.RootVariable, in.Texts.Root)
+	}
 	add("GIT_TERMINAL_PROMPT", "0")
 	for _, dir := range xdgDirectories(in.StateDir) {
 		add(dir[0], dir[1])
@@ -539,6 +553,13 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // writes, so a refused launch rewrites none of the files the live process reads. The prompt's
 // file is written before the pane opens (runtime.WriteSystemPrompt says why).
 //
+// A spec that carries an arm's folder of texts is checked before the prompt is composed
+// (checkArmTexts), since a folder that fails its check against the plugins this pane loads is the
+// control's launch, whose prompt holds Legion's own parts: the spec becomes its fallback
+// (runtime.SpawnSpec.FallBack) and the daemon is told (Options.TextsFellBack) once the refusal of a
+// live claim has passed. The extension root and its settings layer are built under the launch
+// lock, after that refusal, so a refused launch rewrites no root a live process reads.
+//
 // A resume finds the file it continues before the pane's home and files are written: the recorded
 // file where the spec names one (ResumeSessionFile, sessionFileOf), and where it names the session
 // by its id alone (ResumeSession), the newest file of that id one folder below the pane's sessions
@@ -561,6 +582,10 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // skipped any, whatever it found, the launch names each one it skipped, with why, in one warning.
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
+		return runtime.Locator{}, err
+	}
+	checked, fellBack, spec, err := r.checkArmTexts(spec)
+	if err != nil {
 		return runtime.Locator{}, err
 	}
 	prompt, err := runtime.ComposePrompt(spec.Prompt)
@@ -643,6 +668,15 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := r.refuseLiveIncarnation(ctx, spec.Claim); err != nil {
 		return runtime.Locator{}, err
 	}
+	var armTexts TextsLaunch
+	if checked != nil {
+		if armTexts, err = checked.build(); err != nil {
+			return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+		}
+	}
+	if fellBack != nil && r.textsFellBack != nil {
+		r.textsFellBack(*fellBack)
+	}
 	files := secretFiles(r.stateDir, spec)
 	if err := runtime.WriteSecretFiles(r.stateDir, files); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
@@ -660,7 +694,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		path = spec.Env["PATH"]
 	}
 	path = workerbin.Path(path, r.stateDir)
-	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion}, promptFile)
+	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion, TextsRoot: armTexts.Root}, promptFile)
 	if err != nil {
 		return runtime.Locator{}, err
 	}
@@ -691,7 +725,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		StateDir: r.stateDir, Workspace: workDir, DaemonURL: r.daemonURL, EnvoyURL: r.envoyURL, NATSURLs: r.natsURLs,
 		DispatchURL: r.dispatchURL, DispatchTokenFile: r.dispatchToken, GHOwnersDir: credential.root, GHDefault: ghDefault, GH: r.gh,
 		OperatorEnv: r.operatorEnv, PiConfigFiles: r.piConfigFiles, RoleConfigFiles: r.roleConfigFiles[spec.Role],
-		Variants: spec.Variants, LeakCheck: leakCheck, LeakCheckManifestSHA256: r.leakCheckManifestSHA256,
+		Variants: spec.Variants, Texts: armTexts, LeakCheck: leakCheck, LeakCheckManifestSHA256: r.leakCheckManifestSHA256,
 	}, files)
 	return r.openPane(ctx, spec, ghDefault, paneCommand(append(pairs, backendPairs...), command))
 }

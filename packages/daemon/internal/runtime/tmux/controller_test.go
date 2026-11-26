@@ -36,8 +36,10 @@ func controllerSpec(t *testing.T, project string) runtime.SpawnSpec {
 // A controller pane is told the controller's marker in place of a tree pane's tree, issue and the
 // issue key a tree pane stamps its commits with, and the empty Slack channel list the plugin
 // requires of a daemon-launched controller in place of the workspace: exactly the runtime's own
-// names for a tree pane, less those four, plus the controller's two (controllerOwned) and the
-// composed ones, which every pane carries (composed), so a spec can override none of them.
+// names for a tree pane, less those four and less LEGION_TEXTS_ROOT, which only a launch of an
+// arm's folder of texts is told and the controller runs none, plus the controller's two
+// (controllerOwned) and the composed ones, which every pane carries (composed), so a spec can
+// override none of them.
 func TestAControllerPaneIsToldTheControllerMarkerInPlaceOfATree(t *testing.T) {
 	spec := controllerSpec(t, "omp")
 	spec.Env = nil
@@ -62,7 +64,7 @@ func TestAControllerPaneIsToldTheControllerMarkerInPlaceOfATree(t *testing.T) {
 	}
 	want := map[string]bool{}
 	for name := range runtimeOwned {
-		if name != "LEGION_TREE" && name != "LEGION_ISSUE" && name != "LEGION_ISSUE_TRAILER" && name != "LEGION_WORKSPACE" {
+		if name != "LEGION_TREE" && name != "LEGION_ISSUE" && name != "LEGION_ISSUE_TRAILER" && name != "LEGION_WORKSPACE" && name != "LEGION_TEXTS_ROOT" {
 			want[name] = true
 		}
 	}

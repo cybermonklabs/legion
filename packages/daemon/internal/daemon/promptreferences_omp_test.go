@@ -206,6 +206,11 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 	t.Run("TestTheProbeListOnTheRealOhMyPi", func(t *testing.T) {
 		theProbeListOnTheRealOhMyPi(t, omp, envoy, legion)
 	})
+	// The extension root a launch of a folder builds loads ahead of the same packs
+	// (texts_omp_test.go).
+	t.Run("TestATextsRootOnTheRealOhMyPi", func(t *testing.T) {
+		aTextsRootOnTheRealOhMyPi(t, omp, envoy, legion)
+	})
 }
 
 // packedPlugin packs the plugin under packages/<name> as its release is packed — the committed

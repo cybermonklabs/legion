@@ -239,6 +239,9 @@ type Runtime struct {
 	takeOver string
 	// leakCheckManifestSHA256 is Options.LeakCheckManifestSHA256, the digest every pane is told.
 	leakCheckManifestSHA256 string
+	// textsFellBack is Options.TextsFellBack: told of each launch whose arm's folder of texts
+	// failed the check against the pane's installed plugins (launch). nil tells no one.
+	textsFellBack runtime.TextsFellBack
 
 	// run executes one tmux argv. A field so an in-package test can record every argv the
 	// runtime hands tmux; New sets it to runTmux.
@@ -394,6 +397,7 @@ func New(opts Options) (*Runtime, error) {
 		roleConfigFiles:         opts.RoleConfigFiles,
 		takeOver:                takeOver,
 		leakCheckManifestSHA256: opts.LeakCheckManifestSHA256,
+		textsFellBack:           opts.TextsFellBack,
 		readProc:                os.ReadFile,
 		tracked:                 map[string]*trackedProcess{},
 		displaced:               map[claim.Token]runtime.Locator{},
