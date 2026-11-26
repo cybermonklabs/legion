@@ -437,6 +437,18 @@ func TestHealthzIsUnavailableUntilTheFirstCloneFinishes(t *testing.T) {
 	if health.Bytes <= 0 || health.LastFetchAt.Before(before) || health.LastFetchAt.After(time.Now()) {
 		t.Errorf("/healthz = %+v, want the clone's bytes and the time it finished", health)
 	}
+	if !health.DefaultBranchOnly {
+		t.Errorf("/healthz = %+v, want defaultBranchOnly true", health)
+	}
+	if _, err := os.Stat(filepath.Join(c.opts.Root, defaultBranchOnlyFile)); err != nil {
+		t.Errorf("the first clone has no default-branch-only marker: %v", err)
+	}
+	if got := run.repacks(); got != 0 {
+		t.Errorf("the first default-only clone ran %d repacks, want none", got)
+	}
+	if logged(c.log.all(), "narrowed "+c.dir()+" ") {
+		t.Errorf("the first default-only clone logged a narrowing: %q", c.log.all())
+	}
 	if transfers := run.transfers(); len(transfers) != 1 || transfers[0] != "clone --bare" {
 		t.Errorf("the cache ran %q, want one clone", transfers)
 	}
@@ -506,8 +518,6 @@ func indexed(t *testing.T, dir string) {
 	git(t, dir, "--git-dir="+dir, "fsck", "--connectivity-only")
 }
 
-// Every fetch the cache makes keeps what it brings as a pack: its clone never holds a loose
-// object, which its tar would leave out of every issue's feed.
 func TestTheCachesClonesHistoryStaysPacked(t *testing.T) {
 	remote := newRemote(t)
 	opts := testOptions(t, newTestRunner(t, remote))
@@ -853,13 +863,6 @@ func TestACacheRestartedAfterAnInterruptedFetchClearsItsLocks(t *testing.T) {
 	}
 }
 
-// The cache's clone is borrowed by no clone, since an issue pod takes a tar of it, so a clone on
-// the cache's volume that its fetch did not write is removed, logged naming why, and cloned afresh
-// from GitHub by the cache's own fetch (cache.fetch's workspace.FetchRequest.ReplaceForeign),
-// where an issue pod's feed is kept and fails its fetch (workspace's
-// TestAForeignFeedFailsTheFetchAndIsKept). Restarted on a volume whose clone holds a planted
-// info/grafts, the cache serves what its clone afresh brought. A cache fetch without the flag
-// fails on that clone, and the cache serves the clone as the volume holds it, at its old head.
 func TestARestartedCacheReplacesACloneItsFetchDidNotWrite(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
@@ -1029,38 +1032,29 @@ func TestServeRefusesIncompleteOptions(t *testing.T) {
 	}
 }
 
-// What an issue pod's fetch container does with a running cache: workspace.Fetch, given the
-// cache's address, unpacks its tar into a feed every entry of which it accepts, then fetches from
-// GitHub only what the remote gained since the cache's last fetch, and clones nothing.
-func TestAnIssuePodsFetchFillsItsFeedFromTheCache(t *testing.T) {
+func TestAnIssuePodsWorkspaceInitStreamsItsCloneFromTheCache(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	c := start(t, testOptions(t, run))
 	c.ready(t)
-	moved := advance(t, remote, "moved")
-	var logged []string
-	report, err := workspace.Fetch(context.Background(), run, workspace.FetchRequest{
-		Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-		Log: func(line string) { logged = append(logged, line) }, Clock: clock.Real(), CacheURL: c.url, CacheToken: testCacheToken,
-	})
+	gitDir := filepath.Join(t.TempDir(), "widgets.git")
+	report, err := workspace.StreamCache(context.Background(), run, workspace.CacheStream{
+		Repo: ghrepo.MustParse("acme/widgets"), URL: c.url, Token: testCacheToken,
+		Log: func(string) {}, Clock: clock.Real(), Bound: workspace.FetchTimeout,
+	}, gitDir)
 	if err != nil {
-		t.Fatalf("Fetch from the cache: %v", err)
+		t.Fatalf("StreamCache from the cache: %v", err)
 	}
-	if report.Cloned || report.CacheBytes <= 0 || report.Refs != 1 || len(logged) != 0 {
-		t.Fatalf("Fetch reported %+v and logged %q, want the cache's tar then one ref from GitHub", report, logged)
+	if report.Bytes <= 0 {
+		t.Fatalf("StreamCache reported %+v, want bytes from the cache", report)
 	}
-	if got := git(t, report.Feed, "--git-dir="+report.Feed, "rev-parse", "refs/heads/main"); got != moved {
-		t.Errorf("the feed's main is %s, want the remote's %s", got, moved)
+	if got, want := git(t, gitDir, "--git-dir="+gitDir, "rev-parse", "refs/heads/main"), git(t, remote, "--git-dir="+remote, "rev-parse", "main"); got != want {
+		t.Errorf("the streamed clone's main is %s, want the cache's %s", got, want)
 	}
-	git(t, report.Feed, "--git-dir="+report.Feed, "fsck", "--connectivity-only")
-	if transfers := run.transfers(); !slices.ContainsFunc(transfers, func(transfer string) bool {
-		return strings.HasPrefix(transfer, "--git-dir="+report.Feed+".clone-") && strings.HasSuffix(transfer, " fetch")
-	}) {
-		t.Errorf("the pod's transfers were %q, wanted a fetch of the delta into the feed it filled", transfers)
-	}
+	git(t, gitDir, "--git-dir="+gitDir, "fsck", "--connectivity-only")
 	for _, transfer := range run.transfers()[1:] {
-		if strings.HasPrefix(transfer, "clone ") {
-			t.Errorf("the pod cloned from GitHub: %q", transfer)
+		if strings.HasPrefix(transfer, "clone ") || strings.HasSuffix(transfer, " fetch") {
+			t.Errorf("workspace-init fetched from GitHub after streaming the cache: %q", transfer)
 		}
 	}
 }
@@ -1112,11 +1106,6 @@ func TestOnlyTheTarNeedsTheCachesToken(t *testing.T) {
 	}
 }
 
-// Two caches of two repositories, each with its own token: an issue pod of acme/widgets that is
-// handed acme/gadgets's cache — a cache pod replaced and its address reused — takes nothing from
-// it, whichever token it holds. The cache's health already names another repository, so the fetch
-// is refused before it asks for the tar or presents a token: no ref, tag or object of acme/gadgets
-// reaches its feed. Its own cache fills the feed.
 func TestAnIssuePodTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 	widgets, gadgets := newRemote(t), newRemote(t)
 	tagged := advance(t, gadgets, "gadgets-only")
@@ -1127,13 +1116,13 @@ func TestAnIssuePodTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 	otherCache := start(t, repoOptions(t, run, "acme/gadgets", "cache-token-of-acme-gadgets"))
 	ownCache.ready(t)
 	otherCache.ready(t)
-	fetch := func(cache *running, bearer string) (workspace.FetchReport, string, error) {
-		request := workspace.FetchRequest{
-			Repo: ghrepo.MustParse("acme/widgets"), Token: func() (string, error) { return "ghs_pod", nil }, CredentialDir: t.TempDir(), Feed: filepath.Join(t.TempDir(), "feed"),
-			Log: func(string) {}, Clock: clock.Real(), CacheURL: cache.url, CacheToken: bearer,
-		}
-		report, err := workspace.Fetch(context.Background(), run, request)
-		return report, request.Feed, err
+	stream := func(cache *running, bearer string) (workspace.StreamReport, string, error) {
+		gitDir := filepath.Join(t.TempDir(), "widgets.git")
+		report, err := workspace.StreamCache(context.Background(), run, workspace.CacheStream{
+			Repo: ghrepo.MustParse("acme/widgets"), URL: cache.url, Token: bearer,
+			Log: func(string) {}, Clock: clock.Real(), Bound: workspace.FetchTimeout,
+		}, gitDir)
+		return report, gitDir, err
 	}
 	for _, tc := range []struct {
 		bearer, says string
@@ -1141,36 +1130,33 @@ func TestAnIssuePodTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 		{testCacheToken, "is the repository cache of acme/gadgets, not of acme/widgets"},
 		{"cache-token-of-acme-gadgets", "is the repository cache of acme/gadgets, not of acme/widgets"},
 	} {
-		_, feed, err := fetch(otherCache, tc.bearer)
+		_, _, err := stream(otherCache, tc.bearer)
 		if err == nil || !strings.Contains(err.Error(), tc.says) {
-			t.Fatalf("Fetch of acme/widgets from acme/gadgets's cache with %q = %v, want a refusal naming %q", tc.bearer, err, tc.says)
-		}
-		if entries, err := os.ReadDir(filepath.Join(feed, "acme")); err == nil && len(entries) != 0 {
-			t.Errorf("the refused fetch left %d entries in the feed", len(entries))
+			t.Fatalf("StreamCache of acme/widgets from acme/gadgets's cache with %q = %v, want a refusal naming %q", tc.bearer, err, tc.says)
 		}
 	}
-	report, _, err := fetch(ownCache, testCacheToken)
+	report, gitDir, err := stream(ownCache, testCacheToken)
 	if err != nil {
-		t.Fatalf("Fetch from its own cache: %v", err)
+		t.Fatalf("StreamCache from its own cache: %v", err)
 	}
-	if tags := git(t, report.Feed, "--git-dir="+report.Feed, "tag", "--list"); tags != "" {
-		t.Errorf("the feed holds tags %q", tags)
+	if report.Bytes <= 0 {
+		t.Fatalf("StreamCache reported %+v, want bytes from its cache", report)
 	}
-	// This probe expects git to fail, so it runs outside the fixture helper above, which fatals.
-	// It carries that helper's environment all the same: fixtureenv.Isolated, so the only reason
-	// it can fail is the object the feed does not hold.
-	held := exec.Command("git", "--git-dir="+report.Feed, "cat-file", "-e", tagged)
-	held.Dir = report.Feed
+	if tags := git(t, gitDir, "--git-dir="+gitDir, "tag", "--list"); tags != "" {
+		t.Errorf("the streamed clone holds tags %q", tags)
+	}
+	held := exec.Command("git", "--git-dir="+gitDir, "cat-file", "-e", tagged)
+	held.Dir = gitDir
 	held.Env = fixtureenv.Isolated(t.TempDir())
 	if err := held.Run(); err == nil {
-		t.Errorf("the feed holds acme/gadgets's commit %s", tagged)
+		t.Errorf("the streamed clone holds acme/gadgets's commit %s", tagged)
 	}
 }
 
 // A due repack runs outside the lock a tar takes: a tar asked for while the repack runs is served
 // at once, and the repack then completes. It runs within repackTimeout, and each of repackMemory's
-// pairs comes after feedGit's pair of the same key, where feedGit has one: git takes the last value
-// of a key, so the repack reads its own.
+// pairs comes after CacheGit's pack-window pair of the same key, where there is one: git takes the
+// last value of a key, so the repack reads its own.
 func TestATarIsServedWhileARepackRuns(t *testing.T) {
 	saved := repackEvery
 	repackEvery = 0
@@ -1235,9 +1221,9 @@ func TestATarIsServedWhileARepackRuns(t *testing.T) {
 			last[strings.ToLower(key)] = i
 		}
 	}
-	feed := map[string]string{}
+	pack := map[string]string{}
 	for _, pair := range workspace.PackWindowConfig() {
-		feed[strings.ToLower(pair[0])] = pair[0] + "=" + pair[1]
+		pack[strings.ToLower(pair[0])] = pair[0] + "=" + pair[1]
 	}
 	for i := 1; i < len(repackMemory); i += 2 {
 		setting := repackMemory[i]
@@ -1247,9 +1233,9 @@ func TestATarIsServedWhileARepackRuns(t *testing.T) {
 			t.Errorf("the repack ran %q, want its memory bounded by %s, the last value of %s", argv, setting, key)
 			continue
 		}
-		if pair, ok := feed[strings.ToLower(key)]; ok {
-			if feedAt := slices.Index(argv, pair); feedAt < 0 || feedAt >= at {
-				t.Errorf("the repack ran %q, want %s after feedGit's %s", argv, setting, pair)
+		if pair, ok := pack[strings.ToLower(key)]; ok {
+			if packAt := slices.Index(argv, pair); packAt < 0 || packAt >= at {
+				t.Errorf("the repack ran %q, want %s after CacheGit's %s", argv, setting, pair)
 			}
 		}
 	}
@@ -1296,15 +1282,6 @@ func TestAFailedRepackLeavesNoPartialPack(t *testing.T) {
 		return workspace.Result{ExitCode: 128, Stderr: "fatal: killed\n"}, nil
 	})
 	advance(t, remote, "moved")
-	// removePartialPacks removes the partial files one after another, in os.ReadDir's name order
-	// (.tmp-123-pack-0a1b.pack, tmp_pack_Ab12Cd, tmp_rev_Ef34Gh), and logs each removal once it is
-	// done, so one file's line says nothing of the files after it: on #4457's CI run the stat read
-	// tmp_rev_Ef34Gh in the moment after tmp_pack_Ab12Cd's line. The wait is for what the test
-	// checks, every partial file gone and its removal logged. A file gone is not enough alone: the
-	// next tick's fetch removes every tmp_ file the repack left (workspace.RemoveStaleFeedLocks),
-	// logging it another way. The wait's one bound is the test binary's deadline less testTimeout,
-	// the time start's cleanup gives Serve to end: a loaded machine is slow, not wrong, and a file
-	// the removal leaves fails by name below.
 	partials := append([]string{partial}, others...)
 	removal := func(path string) string {
 		return "removed the partial pack " + filepath.Base(path) + ", which a killed git left"
@@ -1318,12 +1295,6 @@ func TestAFailedRepackLeavesNoPartialPack(t *testing.T) {
 		}
 		return true
 	})
-	// A removal line is no proof by itself that the file went: the next tick's fetch removes every
-	// tmp_ file left in objects/pack before it transfers anything (workspace.RemoveStaleFeedLocks),
-	// so a file the repack logged and left is gone by the time the wait above holds. The log is
-	// therefore read with the next tick's fetch held at its transfer, after its sweep: a sweep
-	// that found one of the repack's files has named it by then. A wait that did not hold has a
-	// file to name already, and no time left to hold anything.
 	lines := c.log.all()
 	if settled {
 		started, release := run.hold()
@@ -1428,6 +1399,7 @@ func TestASnapshotTakesThePacksARepackLeft(t *testing.T) {
 	advance(t, remote, "second pack")
 	git(t, clone, "--git-dir="+clone, "fetch", "--quiet", remote, "+refs/heads/*:refs/heads/*")
 	c := newCache(Options{Log: func(string) {}}, clone)
+	c.narrowed = true
 	calls := 0
 	snapshotWalked = func() {
 		calls++
@@ -2160,3 +2132,581 @@ func TestTheCacheReadsItsVolume(t *testing.T) {
 // from one of the free bytes: an issue pod's volume held 16 MiB back on 2026-11-21 (stat -f: 4,096
 // blocks of 4,096 bytes).
 const readMargin = 4 << 20
+
+func TestCacheNarrowsAnOldFullVolumeBeforeServing(t *testing.T) {
+	remote := fullRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	oldCache(t, opts, remote)
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packs, err := filepath.Glob(filepath.Join(dir, "objects", "pack", "pack-*.pack"))
+	if err != nil || len(packs) == 0 {
+		t.Fatalf("the old cache's packs are %q (%v), want at least one", packs, err)
+	}
+	keep := strings.TrimSuffix(packs[0], ".pack") + ".keep"
+	if err := os.WriteFile(keep, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := start(t, opts)
+	health := c.ready(t)
+	if !health.DefaultBranchOnly {
+		t.Errorf("/healthz = %+v, want defaultBranchOnly true", health)
+	}
+	assertDefaultBranchOnly(t, c.dir())
+	if _, err := os.Stat(keep); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the old cache's kept pack survived narrowing (%v)", err)
+	}
+	before, after := narrowedBytes(t, c.log.all(), c.dir())
+	if before <= after {
+		t.Errorf("narrowed %s from %d to %d bytes, want fewer bytes after the repack", c.dir(), before, after)
+	}
+	assertTarObjectsAreOnMain(t, c)
+}
+
+func TestCacheDeletesSymbolicRefsWithoutDereferencingThem(t *testing.T) {
+	remote := fullRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	oldCache(t, opts, remote)
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git(t, dir, "--git-dir="+dir, "symbolic-ref", "refs/heads/main-alias", "refs/heads/main")
+	if err := os.RemoveAll(remote); err != nil {
+		t.Fatal(err)
+	}
+
+	c := start(t, opts)
+	c.ready(t)
+	assertDefaultBranchOnly(t, c.dir())
+}
+
+func TestCacheDoesNotServeAnOldFullVolumeBeforeNarrowing(t *testing.T) {
+	remote := fullRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	oldCache(t, opts, remote)
+	started, release := holdRepack(t, run)
+	defer release()
+
+	c := start(t, opts)
+	testwait.Receive(t, "the narrowing repack", started)
+	for _, path := range []string{"/readyz", "/tar"} {
+		response := c.get(t, path, c.bearer(t))
+		response.Body.Close()
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("%s while narrowing answers %d, want 503", path, response.StatusCode)
+		}
+	}
+	release()
+	if health := c.ready(t); !health.DefaultBranchOnly {
+		t.Errorf("/healthz after narrowing = %+v, want defaultBranchOnly true", health)
+	}
+}
+
+func TestCacheNarrowsAnOldVolumeAfterAFailedRefreshBeforeFallback(t *testing.T) {
+	remote := fullRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	oldCache(t, opts, remote)
+	if err := os.RemoveAll(remote); err != nil {
+		t.Fatal(err)
+	}
+
+	c := start(t, opts)
+	health := c.ready(t)
+	if !health.DefaultBranchOnly {
+		t.Errorf("/healthz after a failed refresh = %+v, want defaultBranchOnly true", health)
+	}
+	assertDefaultBranchOnly(t, c.dir())
+	narrowedBytes(t, c.log.all(), c.dir())
+	assertTarObjectsAreOnMain(t, c)
+}
+
+func TestCacheKeepsANarrowedVolumeWithoutAnotherRepack(t *testing.T) {
+	remote := fullRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	oldCache(t, opts, remote)
+	first := start(t, opts)
+	first.ready(t)
+	assertDefaultBranchOnly(t, first.dir())
+	packs := packNames(t, first.dir())
+	first.cancel()
+	if err := <-first.done; err != nil {
+		t.Fatalf("the first Serve ended with %v", err)
+	}
+	first.done <- nil
+
+	log := &syncLog{}
+	opts.Log = log.log
+	c := cacheOn(t, opts)
+	beforeRepacks := run.repacks()
+	run.instead("fetch", func(context.Context, workspace.Command) (workspace.Result, error) {
+		return workspace.Result{}, nil
+	})
+	if err := c.refresh(context.Background()); err != nil {
+		t.Fatalf("refreshing the narrowed volume: %v", err)
+	}
+	assertDefaultBranchOnly(t, first.dir())
+	if got := packNames(t, first.dir()); !slices.Equal(got, packs) {
+		t.Errorf("the narrowed volume's packs after a no-op refresh are %q, want %q", got, packs)
+	}
+	if got := run.repacks(); got != beforeRepacks {
+		t.Errorf("the narrowed volume ran %d more repacks, want none", got-beforeRepacks)
+	}
+	if logged(log.all(), "narrowed "+first.dir()+" ") {
+		t.Errorf("a no-op refresh logged another narrowing: %q", log.all())
+	}
+	if slices.Contains(run.transfers(), "clone --bare") {
+		t.Errorf("the cache cloned after the old volume was laid down, want none: %q", run.transfers())
+	}
+}
+
+func TestCacheRepacksAnUnmarkedDefaultBranchVolume(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, filepath.Dir(dir), "clone", "--bare", "--single-branch", "--quiet", remote, dir)
+	assertDefaultBranchOnly(t, dir)
+
+	log := &syncLog{}
+	opts.Log = log.log
+	c := cacheOn(t, opts)
+	if err := c.refresh(context.Background()); err != nil {
+		t.Fatalf("refreshing the unmarked default-branch volume: %v", err)
+	}
+	if got := run.repacks(); got != 1 {
+		t.Errorf("the unmarked default-branch volume ran %d repacks, want one", got)
+	}
+	if _, err := os.Stat(filepath.Join(opts.Root, defaultBranchOnlyFile)); err != nil {
+		t.Errorf("the narrowed volume has no marker: %v", err)
+	}
+	narrowedBytes(t, log.all(), dir)
+	status, health, fields := healthzOf(t, c)
+	if status != http.StatusOK || !fields["defaultBranchOnly"] || !health.DefaultBranchOnly {
+		t.Errorf("/healthz after narrowing the unmarked volume answers %d %+v with fields %v, want ready and defaultBranchOnly", status, health, fields)
+	}
+}
+
+func TestCacheRefusesToMarkACloneWhoseHeadRefIsMissing(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	c := cacheOn(t, opts)
+	if err := c.refresh(context.Background()); err != nil {
+		t.Fatalf("making the cache clone: %v", err)
+	}
+	if err := os.Remove(filepath.Join(opts.Root, defaultBranchOnlyFile)); err != nil {
+		t.Fatal(err)
+	}
+	git(t, c.dir, "--git-dir="+c.dir, "update-ref", "-d", "refs/heads/main")
+
+	err := c.narrow(context.Background(), false, false)
+	if !errors.Is(err, errCacheHeadMissing) {
+		t.Fatalf("narrowing a clone whose HEAD ref is gone = %v, want the missing-head refusal", err)
+	}
+	if _, err := os.Stat(filepath.Join(opts.Root, defaultBranchOnlyFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the missing-HEAD clone left a marker (%v), want none", err)
+	}
+}
+
+func TestCacheFetchRepairsACloneWhoseHeadRefIsMissing(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, filepath.Dir(dir), "clone", "--bare", "--quiet", remote, dir)
+	git(t, dir, "--git-dir="+dir, "update-ref", "-d", "refs/heads/main")
+
+	c := cacheOn(t, opts)
+	if err := c.refresh(context.Background()); err != nil {
+		t.Fatalf("fetching into the clone whose HEAD ref is missing: %v", err)
+	}
+	if status, health, _ := healthzOf(t, c); status != http.StatusOK || !health.DefaultBranchOnly {
+		t.Errorf("/healthz after repairing the missing HEAD ref answers %d %+v, want ready and defaultBranchOnly", status, health)
+	}
+	assertDefaultBranchOnly(t, dir)
+}
+
+func TestCachePreservesAUnicodeWhitespaceDefaultBranch(t *testing.T) {
+	remote := newRemote(t)
+	branch := "release/stable "
+	git(t, remote, "--git-dir="+remote, "branch", "-m", "main", branch)
+	c := start(t, testOptions(t, newTestRunner(t, remote)))
+	c.ready(t)
+	if got, want := cacheRefs(t, c.dir()), []string{"refs/heads/" + branch}; !slices.Equal(got, want) {
+		t.Errorf("the cache's refs are %q, want %q", got, want)
+	}
+}
+
+func TestCacheRepacksAfterTheDefaultBranchHistoryIsRewritten(t *testing.T) {
+	remote := newRemote(t)
+	old := advance(t, remote, "old")
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	opts.Refresh = 50 * time.Millisecond
+	c := start(t, opts)
+	if health := c.ready(t); health.Head != old {
+		t.Fatalf("the cache serves %s, want %s before rewriting the default branch", health.Head, old)
+	}
+	work := filepath.Join(t.TempDir(), "work")
+	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
+	git(t, work, "reset", "--hard", "HEAD~1")
+	if err := os.WriteFile(filepath.Join(work, "rewritten.txt"), []byte("rewritten\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "add", ".")
+	git(t, work, "commit", "--quiet", "-m", "rewritten")
+	git(t, work, "push", "--quiet", "--force", "origin", "HEAD:main")
+	rewritten := git(t, work, "rev-parse", "HEAD")
+
+	c.waitFor(t, "at the rewritten default branch", func(_ int, health Health) bool { return health.Head == rewritten })
+	narrowedBytes(t, c.log.all(), c.dir())
+	assertTarObjectsAreOnMain(t, c)
+}
+
+func TestCacheRepacksAnInterruptedDefaultBranchFetch(t *testing.T) {
+	remote := newRemote(t)
+	advance(t, remote, "old")
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	first := start(t, opts)
+	first.ready(t)
+	first.cancel()
+	if err := <-first.done; err != nil {
+		t.Fatalf("the first Serve ended with %v", err)
+	}
+	first.done <- nil
+
+	work := filepath.Join(t.TempDir(), "work")
+	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
+	git(t, work, "reset", "--hard", "HEAD~1")
+	if err := os.WriteFile(filepath.Join(work, "rewritten.txt"), []byte("rewritten\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "add", ".")
+	git(t, work, "commit", "--quiet", "-m", "rewritten")
+	git(t, work, "push", "--quiet", "--force", "origin", "HEAD:main")
+	git(t, first.dir(), "--git-dir="+first.dir(), "fetch", "--quiet", "--no-tags", "file://"+remote, "+refs/heads/main:refs/heads/main")
+	if err := cacheOn(t, opts).mark(defaultBranchFetchFile); err != nil {
+		t.Fatal(err)
+	}
+
+	again := start(t, opts)
+	again.ready(t)
+	if _, err := os.Stat(filepath.Join(opts.Root, defaultBranchFetchFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the recovered cache kept the interrupted-fetch marker (%v)", err)
+	}
+	if got := run.repacks(); got != 1 {
+		t.Errorf("the interrupted fetch recovery ran %d repacks, want one", got)
+	}
+	narrowedBytes(t, again.log.all(), again.dir())
+	assertTarObjectsAreOnMain(t, again)
+}
+
+func TestCacheDoesNotPublishAMarkerBeforeValidatingTheClone(t *testing.T) {
+	remote := newRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	opts.Log = func(string) {}
+	if err := cacheOn(t, opts).refresh(context.Background()); err != nil {
+		t.Fatalf("making the cache clone: %v", err)
+	}
+	run.mu.Lock()
+	before := len(run.argv)
+	run.mu.Unlock()
+
+	restarted := cacheOn(t, opts)
+	if err := restarted.publish(context.Background(), time.Time{}); !errors.Is(err, errDefaultBranchOnly) {
+		t.Errorf("publishing before ownership and narrowing checks = %v, want an unavailable cache", err)
+	}
+	if status, health, _ := healthzOf(t, restarted); status != http.StatusServiceUnavailable || health.Ready {
+		t.Errorf("/healthz before validation answers %d %+v, want 503 and not ready", status, health)
+	}
+	run.mu.Lock()
+	after := len(run.argv)
+	run.mu.Unlock()
+	if after != before {
+		t.Errorf("publication ran %d git commands before validating ownership, want none", after-before)
+	}
+}
+
+func TestCacheInvalidatesItsMarkerWhenRenarrowingFails(t *testing.T) {
+	remote := fullRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	opts.Log = func(string) {}
+	c := cacheOn(t, opts)
+	if err := c.refresh(context.Background()); err != nil {
+		t.Fatalf("making the cache clone: %v", err)
+	}
+	// A default-branch change can leave both the old and new branch until narrowing finishes.
+	git(t, c.dir, "--git-dir="+c.dir, "fetch", "--no-tags", "file://"+remote, "+refs/heads/cold/x:refs/heads/cold/x")
+	c.streams = make(chan struct{}, 1)
+	c.streams <- struct{}{}
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	request := httptest.NewRequest(http.MethodGet, "/tar", nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer "+testCacheToken)
+	queued := make(chan int, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		c.handler().ServeHTTP(recorder, request)
+		queued <- recorder.Code
+	}()
+	if !testwait.Holds(testTimeout, testwait.Poll, func() bool { return c.inFlight.Load() == 1 }) {
+		t.Fatal("the tar request never queued behind the stream bound")
+	}
+	run.instead("repack", func(context.Context, workspace.Command) (workspace.Result, error) {
+		return workspace.Result{ExitCode: 128, Stderr: "fatal: the narrowing repack failed\n"}, nil
+	})
+	refreshErr := c.refresh(context.Background())
+	<-c.streams
+	if refreshErr == nil || !strings.Contains(refreshErr.Error(), "repack the narrowed cache") {
+		t.Fatalf("renarrowing the cache = %v, want the repack failure", refreshErr)
+	}
+	select {
+	case status := <-queued:
+		if status != http.StatusServiceUnavailable {
+			t.Errorf("the tar queued before failed narrowing answers %d, want 503", status)
+		}
+	case <-ctx.Done():
+		t.Fatal("the queued tar did not finish after failed narrowing")
+	}
+	if _, err := os.Lstat(filepath.Join(opts.Root, defaultBranchOnlyFile)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the failed narrowing left its old marker (%v), want none", err)
+	}
+	if err := c.publish(context.Background(), time.Time{}); !errors.Is(err, errDefaultBranchOnly) {
+		t.Errorf("fallback publication after failed narrowing = %v, want an unavailable cache", err)
+	}
+	if status, health, fields := healthzOf(t, c); status != http.StatusServiceUnavailable || health.Ready || fields["defaultBranchOnly"] {
+		t.Errorf("/healthz after failed narrowing answers %d %+v with fields %v, want 503 without defaultBranchOnly", status, health, fields)
+	}
+	restarted := cacheOn(t, opts)
+	if err := restarted.refresh(context.Background()); err != nil {
+		t.Fatalf("retrying narrowing after a restart: %v", err)
+	}
+	if got := run.repacks(); got != 2 {
+		t.Errorf("the failed narrowing and its retry ran %d repacks, want two", got)
+	}
+	if status, health, _ := healthzOf(t, restarted); status != http.StatusOK || !health.DefaultBranchOnly {
+		t.Errorf("/healthz after retrying narrowing answers %d %+v, want ready and defaultBranchOnly", status, health)
+	}
+}
+
+func TestCacheKeepsAnUnnarrowableOldVolumeUnavailable(t *testing.T) {
+	remote := fullRemote(t)
+	run := newTestRunner(t, remote)
+	opts := testOptions(t, run)
+	oldCache(t, opts, remote)
+	repack := make(chan struct{})
+	run.instead("repack", func(context.Context, workspace.Command) (workspace.Result, error) {
+		close(repack)
+		return workspace.Result{ExitCode: 128, Stderr: "fatal: the narrowing repack failed\n"}, nil
+	})
+
+	c := start(t, opts)
+	testwait.Receive(t, "the failed narrowing repack", repack)
+	if !testwait.Holds(testwait.Bounded(t, 1<<60, testTimeout), testwait.Poll, func() bool {
+		return logged(c.log.all(), "cache remains unavailable: ")
+	}) {
+		t.Fatalf("the failed narrowing did not name why the cache stayed unavailable: %q", c.log.all())
+	}
+	status, health := c.health(t)
+	if status != http.StatusServiceUnavailable || health.Ready {
+		t.Errorf("/healthz after a failed narrowing answers %d %+v, want 503 and not ready", status, health)
+	}
+	for _, path := range []string{"/readyz", "/tar"} {
+		response := c.get(t, path, c.bearer(t))
+		response.Body.Close()
+		if response.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("%s after a failed narrowing answers %d, want 503", path, response.StatusCode)
+		}
+	}
+}
+
+func fullRemote(t *testing.T) string {
+	t.Helper()
+	remote := newRemote(t)
+	branchCommit(t, remote, "legion/K", "issue", []byte("the issue branch\n"))
+	cold := make([]byte, 2<<20)
+	if _, err := rand.Read(cold); err != nil {
+		t.Fatal(err)
+	}
+	coldCommit := branchCommit(t, remote, "cold/x", "cold", cold)
+	git(t, remote, "--git-dir="+remote, "tag", "cold-tag", coldCommit)
+	return remote
+}
+
+func branchCommit(t *testing.T, remote, branch, name string, body []byte) string {
+	t.Helper()
+	work := filepath.Join(t.TempDir(), "work")
+	git(t, filepath.Dir(work), "clone", "--quiet", remote, work)
+	git(t, work, "checkout", "--quiet", "-b", branch)
+	if err := os.WriteFile(filepath.Join(work, name+".bin"), body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	git(t, work, "add", ".")
+	git(t, work, "commit", "--quiet", "-m", name)
+	git(t, work, "push", "--quiet", "origin", "HEAD:"+branch)
+	return git(t, work, "rev-parse", "HEAD")
+}
+
+func oldCache(t *testing.T, opts Options, remote string) {
+	t.Helper()
+	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	git(t, remote, "--git-dir="+remote, "repack", "-a", "-d", "--quiet")
+	git(t, filepath.Dir(dir), "clone", "--bare", "--quiet", remote, dir)
+	if got, want := cacheRefs(t, dir), []string{"refs/heads/cold/x", "refs/heads/legion/K", "refs/heads/main", "refs/tags/cold-tag"}; !slices.Equal(got, want) {
+		t.Fatalf("the old cache's refs are %q, want %q", got, want)
+	}
+}
+
+func cacheRefs(t *testing.T, dir string) []string {
+	t.Helper()
+	return strings.Fields(git(t, dir, "--git-dir="+dir, "for-each-ref", "--format=%(refname)"))
+}
+
+func assertDefaultBranchOnly(t *testing.T, dir string) {
+	t.Helper()
+	if got, want := cacheRefs(t, dir), []string{"refs/heads/main"}; !slices.Equal(got, want) {
+		t.Fatalf("the cache's refs are %q, want %q", got, want)
+	}
+	if got := strings.TrimSpace(string(mustReadFile(t, filepath.Join(dir, "HEAD")))); got != "ref: refs/heads/main" {
+		t.Fatalf("the cache's HEAD is %q, want refs/heads/main", got)
+	}
+}
+
+func narrowedBytes(t *testing.T, lines []string, dir string) (int64, int64) {
+	t.Helper()
+	prefix := "narrowed " + dir + " "
+	var found []string
+	for _, line := range lines {
+		if strings.HasPrefix(line, prefix) {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("the cache logged %d narrowing lines for %s, want one: %q", len(found), dir, lines)
+	}
+	fields := strings.Fields(found[0])
+	if len(fields) != 4 {
+		t.Fatalf("the cache logged %q, want narrowed <dir> <bytes before> <bytes after>", found[0])
+	}
+	before, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil {
+		t.Fatalf("the cache logged %q, whose before size is not a byte count: %v", found[0], err)
+	}
+	after, err := strconv.ParseInt(fields[3], 10, 64)
+	if err != nil {
+		t.Fatalf("the cache logged %q, whose after size is not a byte count: %v", found[0], err)
+	}
+	return before, after
+}
+
+func assertTarObjectsAreOnMain(t *testing.T, c *running) {
+	t.Helper()
+	status, body := c.getTar(t)
+	if status != http.StatusOK {
+		t.Fatalf("/tar answers %d, want 200", status)
+	}
+	unpacked, _ := unpack(t, bytes.NewReader(body))
+	objects := map[string]bool{}
+	for _, line := range strings.Split(git(t, unpacked, "--git-dir="+unpacked, "rev-list", "--objects", "main"), "\n") {
+		if fields := strings.Fields(line); len(fields) != 0 {
+			objects[fields[0]] = true
+		}
+	}
+	indexes, err := filepath.Glob(filepath.Join(unpacked, "objects", "pack", "pack-*.idx"))
+	if err != nil || len(indexes) == 0 {
+		t.Fatalf("the tar holds indexes %q (%v), want at least one", indexes, err)
+	}
+	for _, index := range indexes {
+		file, err := os.Open(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command("git", "show-index")
+		command.Dir, command.Env, command.Stdin = unpacked, fixtureenv.Isolated(t.TempDir()), file
+		out, err := command.Output()
+		closeErr := file.Close()
+		if err != nil {
+			t.Fatalf("git show-index %s: %v", index, err)
+		}
+		if closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				t.Fatalf("git show-index %s printed %q, want offset and object id", index, line)
+			}
+			if !objects[fields[1]] {
+				t.Errorf("the streamed index %s holds %s, which main does not reach", filepath.Base(index), fields[1])
+			}
+		}
+	}
+}
+
+func packNames(t *testing.T, dir string) []string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "objects", "pack", "pack-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(paths))
+	for _, path := range paths {
+		names = append(names, filepath.Base(path))
+	}
+	return names
+}
+
+func holdRepack(t *testing.T, run *testRunner) (<-chan struct{}, func()) {
+	t.Helper()
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	run.instead("repack", func(ctx context.Context, command workspace.Command) (workspace.Result, error) {
+		close(started)
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return workspace.Result{}, ctx.Err()
+		}
+		return run.runner.Run(ctx, command)
+	})
+	return started, func() { once.Do(func() { close(release) }) }
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}

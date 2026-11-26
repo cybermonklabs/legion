@@ -28,7 +28,7 @@ import (
 // GitHub, under FetchTimeout (the repository cache's own first clone under CacheFetchTimeout
 // instead), the stream from the repository cache, under the low-speed bound and no clock at all
 // (CacheStreamLowSpeedBytes), the shared clone's own clone, under CloneTimeout, the issue's
-// checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through FeedGitWithin).
+// checkout, under CheckoutTimeout (all below), and the cache's repack (repocache.repackTimeout, through CacheGitWithin).
 const CommandTimeout = 5 * time.Minute
 
 // FetchTimeout bounds each clocked size-following transfer stage. For an issue-pod fill,
@@ -67,14 +67,16 @@ const CheckoutTimeout = time.Hour
 // Command is one process the provisioner runs, each bounded independently of every other: most
 // hold the runner's own slow-command budget (RunChecked), each of the fetch's transfers and checks
 // holds what remains of its request's bound instead (Fetch, FetchRequest.Bound), a command run with
-// FeedGitWithin holds the timeout it is given, each size-following step of the shared
+// CacheGitWithin holds the timeout it is given, each size-following step of the shared
 // clone's clone holds what remains of CloneTimeout (ensureRepoClone), and the issue's checkout
 // holds CheckoutTimeout (Provision, Request.CheckoutBound) — never a budget shared
-// across the whole provisioning sequence.
+// across the whole provisioning sequence. Stdin is the whole of what the process reads on its
+// standard input (CacheGitStdin); "" leaves it the null device's empty input.
 type Command struct {
 	Argv    []string
 	Env     []string
 	Dir     string
+	Stdin   string
 	Timeout time.Duration
 	// Clone is the shared clone whose workspace Dir is, for a jj command run in a workspace's own
 	// directory (RunCheckedIn, which also names Dir with -R): the runner refuses one whose `.jj`
@@ -305,6 +307,9 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 		return Result{}, err
 	}
 	child.Env = env
+	if command.Stdin != "" {
+		child.Stdin = strings.NewReader(command.Stdin)
+	}
 	// A command that reaches a remote over https can have git spawn git-remote-https, a helper
 	// holding the same stdout/stderr pipes: exec.CommandContext alone only kills the direct child
 	// when bounded expires, and that helper, now reparented, can keep the pipe open forever,
@@ -714,7 +719,7 @@ func runCommand(ctx context.Context, run Runner, argv []string, env []string, di
 // runCommandTimeout is runCommand, but for timeout instead of the runner's own slow-command
 // budget: runCommand itself calls it with run.Timeout(); Fetch calls it with what remains of its
 // request's bound (FetchRequest.Bound, FetchTimeout by default) for each of its transfers and
-// checks; FeedGitWithin with the timeout its caller gives it (the repository cache's repack); and
+// checks; CacheGitWithin with the timeout its caller gives it (the repository cache's repack); and
 // ensureRepoClone with CloneTimeout.
 func runCommandTimeout(ctx context.Context, run Runner, argv []string, env []string, dir string, timeout time.Duration) (Result, error) {
 	if run == nil {
@@ -1016,7 +1021,7 @@ func configureIssueCloneMaintenance(ctx context.Context, run Runner, cloneDir st
 // a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile), for
 // provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
 // configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
-// of Fetch, FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig).
+// of Fetch, CacheGit, CacheGitWithin and CacheGitStdin (feedGit), which reads no system file (isolatedGitConfig).
 // The Dockerfile cannot read this list, so it writes the four values out twice: its `git config
 // --system` writes, and the smoke list its build holds /etc/gitconfig to. What holds both copies to
 // this list in CI is TestTheWorkerImageWritesPackWindowConfig (sharedclone_test.go), which reads
