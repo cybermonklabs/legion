@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
+	"github.com/sjawhar/legion/daemon/internal/testparallel"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -52,15 +53,17 @@ const testMainEnv = "LEGION_CMD_TEST_MAIN"
 const testCurlEnv = "LEGION_CMD_TEST_CURL"
 
 // cmdTestParallelism is how many of this package's tests run at once when the command line names
-// no -parallel. Every test calls t.Parallel but those that change something the whole process
-// shares, hold code to a wall-clock bound that tests beside them could use up, or rewrite a
-// fixture parallel tests read (each says which in a `Not parallel:` comment); those run first, one
-// at a time. The tests wait far more than they compute — on the git, jj and gh they start, on this
-// binary run again as `legion`, and on the wall-clock bounds some of them prove — so one at a time
-// the package kept about half of one of CI's four CPUs busy, and go test's default of GOMAXPROCS
-// would leave most of that idle. A -parallel on the command line still wins only because TestMain
-// sets this default before testBinaryDeadline parses the command line (flag.Parse): the set must
-// stay above that call, or this default would replace a -parallel the command line names.
+// no -parallel. Every test calls t.Parallel as its first statement but those that change something
+// the whole process shares, hold code to a wall-clock bound that tests beside them could use up,
+// or rewrite a fixture parallel tests read (each says which in a `Not parallel:` comment on its
+// first line); those run first, one at a time. TestEveryTestCallsParallelOrSaysWhyNot fails a test
+// that does neither. The tests wait far more than they compute — on the git, jj and gh they
+// start, on this binary run again as `legion`, and on the wall-clock bounds some of them prove —
+// so one at a time the package kept about half of one of CI's four CPUs busy, and go test's
+// default of GOMAXPROCS would leave most of that idle. A -parallel on the command line still wins
+// only because TestMain sets this default before testBinaryDeadline parses the command line
+// (flag.Parse): the set must stay above that call, or this default would replace a -parallel the
+// command line names.
 const cmdTestParallelism = 8
 
 // testJJWordBoundEnv names, to this package's test binary run as `legion` (TestMain), the bound
@@ -199,6 +202,13 @@ func TestAProcessStartedAsLegionStartsNoCopy(t *testing.T) {
 	if err := legionCopyRefusal(); err == nil || !strings.Contains(err.Error(), testMainEnv+"=1") {
 		t.Fatalf("with %s=1: %v, want a refusal that names it", testMainEnv, err)
 	}
+}
+
+// Every test of this package calls t.Parallel() as its first statement or says why not
+// (cmdTestParallelism, testparallel.Require).
+func TestEveryTestCallsParallelOrSaysWhyNot(t *testing.T) {
+	t.Parallel()
+	testparallel.Require(t, ".")
 }
 
 // runWithoutTheOperatorsJJConfig runs the package's tests with a jj configuration directory of
@@ -1636,6 +1646,7 @@ func TestConfigCheckReportsTheConfigurationsCapabilityGaps(t *testing.T) {
 // (TestConfigCheckReportsTheConfigurationsCapabilityGaps): its controller runs as
 // runtime.kubernetes.pod.service_account.
 func TestConfigCheckNamesTheControllersOwnServiceAccount(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"

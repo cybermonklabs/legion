@@ -26,6 +26,7 @@ var endedByTheWait = record.PhaseEnded{Role: claim.RoleTester, From: phase.Testi
 // the message would meet the no-holder answer and the row would end with it kept nowhere, and the
 // stopped worker would go on with the phase the wait ended.
 func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T) {
+	t.Parallel()
 	keptAcrossTheWake(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
@@ -35,6 +36,7 @@ func TestAPhaseEndedMessageForAReleasedPodIsKeptForItsWokenSession(t *testing.T)
 // publishes nothing while the park holds, and the attempt after the turn has launched the resume
 // publishes the message with keep, once, and ends the row.
 func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
+	t.Parallel()
 	keptAfterTheParkedWake(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
@@ -44,6 +46,7 @@ func TestAPhaseEndedMessageWaitsOutTheParkedWakeOfItsReleasedPod(t *testing.T) {
 // message with keep, once, at its next attempt, and ends, as a hook prompt does
 // (TestAHookPromptFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound).
 func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound(t *testing.T) {
+	t.Parallel()
 	keptAfterAnOperatorsResume(t, endedByTheWait, claim.RoleTester, endedByTheWait.Message("LEGION-208"))
 }
 
@@ -52,6 +55,7 @@ func TestAPhaseEndedMessageFollowsAnOperatorsResumeOfItsParkedWakeWithinTheBound
 // session can take a publish now, so the row's first attempt publishes the message to the
 // stopped worker's topic and ends.
 func TestAPhaseEndedMessageToARelaunchParkedOverALiveProcessPublishesAtOnce(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	publisher := &holderPublisher{}
 	runner, sup, pool := hookRunner(t, publisher)
@@ -78,6 +82,7 @@ func TestAPhaseEndedMessageToARelaunchParkedOverALiveProcessPublishesAtOnce(t *t
 // forward the listener's own NATS grant denies goes through once an operator changes that grant.
 // Only a role with no live holder ends the row.
 func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	row := mustOutboxRow(t, "LEGION-208", endedByTheWait, time.Now())
 	row.ID = 61
