@@ -7,6 +7,7 @@ import { whoAmIQuery } from "../../../api/queries";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
+import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
@@ -68,6 +69,11 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
   // What the Contents list asks of the outline, which the view takes as the outline does.
   const request = useOutlineRequest();
+  // The document a row of the view is being edited in, and that document's one editor, which the
+  // view draws for the row to take onto its own stage: `IssuePresetPanels.tsx`'s
+  // `useOutlineEditing`, as the outline's body and the Plan view read it. Its panels are drawn
+  // after the body.
+  const { onEditing, panels } = useOutlineEditing(issue);
   return (
     <NoTooltips>
       <DecisionsFilterBody
@@ -80,6 +86,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         isClosed={issue.closed_at !== null}
         issue={issue}
         namesLine={names}
+        onEditing={onEditing}
         {...(tells ? { onRevealDrawn: onAddressDrawn } : {})}
         published={published}
         reader={viewer}
@@ -91,6 +98,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         // entry (part P): each press goes to the next thing that waits (the tester's F12).
         waitingPress={waitingPressOf(state)}
       />
+      {panels}
     </NoTooltips>
   );
 }

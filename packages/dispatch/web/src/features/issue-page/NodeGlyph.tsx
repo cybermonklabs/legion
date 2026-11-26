@@ -44,8 +44,8 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   message: "M1 4 h14 v8 h-14 Z M1 4 l7 5 l7 -5",
   "plan-task": "M2 2 h12 v12 h-12 Z M5 8 h6",
   prose: "M3 4 h10 M3 8 h10 M3 12 h6",
-  /** A reading, an agent's reading of a person's answer: an open book. */
-  reading: "M1 3 h5 l2 2 l2 -2 h5 v10 h-5 l-2 2 l-2 -2 h-5 Z M8 5 v10",
+  /** A reading, an agent's reading of a person's answer: an eye with its pupil. */
+  reading: "M1 8 q7 -7 14 0 q-7 7 -14 0 Z M8 6.5 a1.5 1.5 0 1 0 0.01 0 Z",
   requirement: "M3 1 h10 v14 l-5 -4 l-5 4 Z",
   result: "M8 2 l2 4 l4 1 l-3 3 l1 4 l-4 -2 l-4 2 l1 -4 l-3 -3 l4 -1 Z",
   risk: "M8 2 L15 14 H1 Z",

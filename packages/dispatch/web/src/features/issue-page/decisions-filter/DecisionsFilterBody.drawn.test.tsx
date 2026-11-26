@@ -1,8 +1,8 @@
-import { beforeAll, expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, mock, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
@@ -27,6 +27,7 @@ import { actorLabelText } from "../../refs/AgentName";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { PublishedReferences } from "../../refs/reference-names";
 import { useKeymapScope } from "../../shell/keymap";
+import { DocumentStage, DocumentStages } from "../document-stage";
 import type { OutlineRequest } from "../IssueTree";
 import { artifactsBySlug } from "../issue-artifacts";
 import { type TreeNode, targetNaming } from "../issue-tree";
@@ -48,9 +49,11 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { blockReads, Publisher, publishedNames } from "../projection-fixture";
+import { EditorBox } from "../StagedDocument";
 import { ViewStage } from "../slots/stage";
 import { AppProviders } from "../slots/stage-fixtures";
 import { decisionBehind, nodesInOrder } from "../tree-keys";
+import type { OnEditing } from "../useNodeEditing";
 import { overflowing, wordsScrollSheet } from "../words-scroll-fixtures";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
@@ -115,6 +118,50 @@ const READING = node({
   text: "The reader wants the rail kept.",
   type: "reading",
 });
+/** The page's side of editing a row in place (`IssuePresetPanels.tsx`'s `useOutlineEditing`): a
+ *  spy for the body's `onEditing`, which notes each document a row asks for, and hands the call
+ *  on (`held`) to `EditorStand`, so the document asked for is drawn on its stage as a plain
+ *  element standing in for its editor. */
+interface EditingPage {
+  readonly asked: Mock<OnEditing>;
+  readonly held: { set?: OnEditing };
+}
+
+function editingPage(): EditingPage {
+  const held: EditingPage["held"] = {};
+  return {
+    asked: mock<OnEditing>((artifactId, onEditor) => held.set?.(artifactId, onEditor)),
+    held,
+  };
+}
+
+/** What a body is given as its `onEditing` where a case reads none: it asks the page for
+ *  nothing. */
+const NO_EDITING: OnEditing = () => {};
+
+/** Each document the page was asked for, in order, of the calls `page` noted: the asks that end
+ *  an editing (`undefined`) left out. */
+function askedDocuments(page: EditingPage): string[] {
+  return page.asked.mock.calls.flatMap(([artifactId]) =>
+    artifactId === undefined ? [] : [artifactId]
+  );
+}
+
+/** The page's one editor of the document a row is being edited in, as `IssuePresetPanels` draws
+ *  it for the row to take onto its stage: a plain editable element (`data-editor-stand`) in the
+ *  box the page draws an editor in, on the stage of the document `held.set` was last given, and
+ *  nothing while none is. */
+function EditorStand({ held }: { held: EditingPage["held"] }): ReactNode {
+  const [edited, setEdited] = useState<string | undefined>(undefined);
+  held.set = (artifactId) => setEdited(artifactId);
+  return edited === undefined ? null : (
+    <DocumentStage artifactId={edited}>
+      <EditorBox>
+        <div contentEditable data-editor-stand="" suppressContentEditableWarning />
+      </EditorBox>
+    </DocumentStage>
+  );
+}
 
 /** One issue that holds an entry of every part: an open question, two decisions a statement
  *  rests on that wait, one the reader kept, an answered ask, which is the reader's decision,
@@ -305,6 +352,7 @@ function renderBody(
   props: BodyProps = {},
   {
     answeredAgo,
+    editing,
     main = false,
     requests = false,
     stage = false,
@@ -312,6 +360,9 @@ function renderBody(
     /** How many milliseconds ago the cached reads answered, under the app's own `staleTime` of
      *  30 s (`main.tsx`) in place of the default here, where no answer ever goes stale. */
     answeredAgo?: number;
+    /** The page's side of editing a row in place, where a case reads it: the body is given its
+     *  `asked` as its `onEditing`, and an editor's stand-in is drawn beside it. */
+    editing?: EditingPage;
     /** Whether the body is drawn in the app's main element, which takes the focus as the body
      *  mounts, after the body's own first effects, as on a page opened by a link inside the app
      *  (`PageChangeMain`). */
@@ -377,6 +428,7 @@ function renderBody(
         isClosed={isClosed}
         issue={issue}
         namesLine={NO_FAILED_READS}
+        onEditing={editing?.asked ?? NO_EDITING}
         published={published}
         reader={READER}
         {...(request === undefined ? {} : { request })}
@@ -391,21 +443,24 @@ function renderBody(
     return (
       <MemoryRouter>
         <AppProviders client={client}>
-          <Publisher published={published} />
-          <IssueScope />
-          <Where />
-          {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
-              page names one. */}
-          <NoTooltips>
-            {requests ? (
-              <OutlineRequestProvider>
-                <button type="button">Elsewhere</button>
-                {held}
-              </OutlineRequestProvider>
-            ) : (
-              held
-            )}
-          </NoTooltips>
+          <DocumentStages>
+            <Publisher published={published} />
+            <IssueScope />
+            <Where />
+            {/* Inside `NoTooltips`, as the view's slot draws it, so an author is named as the
+                page names one. */}
+            <NoTooltips>
+              {requests ? (
+                <OutlineRequestProvider>
+                  <button type="button">Elsewhere</button>
+                  {held}
+                </OutlineRequestProvider>
+              ) : (
+                held
+              )}
+            </NoTooltips>
+            {editing === undefined ? null : <EditorStand held={editing.held} />}
+          </DocumentStages>
         </AppProviders>
       </MemoryRouter>
     );
@@ -1790,14 +1845,15 @@ test("a decision's row waits on the page's read for a reference the page asks fo
   }
 });
 
-// R9: the list is one tab stop and the outline's own keys work it: `j` and `k` move through
-// the parts in the order they are drawn, and so does `q` through the open questions, Shift+K
-// presses Keep, Enter goes to the entry's node in the conversation, and the key that cycles how
+// The list is one tab stop and the outline's own keys work it: `j` and `k` move through the
+// parts in the order they are drawn, and so does `q` through the open questions, Shift+K
+// presses Keep, Enter asks for the editor of the node a row draws, and the key that cycles how
 // much is drawn unfolds the foot.
 test("the outline's keys move through the parts and work a row's controls", async () => {
   const user = userEvent.setup();
   const kept = spyOn(api, "keepDecision").mockReturnValue(Promise.withResolvers<never>().promise);
-  const view = renderBody(wholeIssue());
+  const page = editingPage();
+  const view = renderBody(wholeIssue(), {}, { editing: page });
   try {
     const stops = () => [...view.container.querySelectorAll('[tabindex="0"]')];
     expect(stops().map((stop) => stop.getAttribute("data-node-id"))).toEqual(["q-open"]);
@@ -1828,10 +1884,12 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     await user.keyboard("z");
     expect(rowsOfPart(view, "agents")).toEqual([]);
 
-    // Enter on a row goes to its node in the conversation.
+    // Enter on a row puts the caret in its node's text, in place. The open question is a plain
+    // ask, no block of a document, so no editor is asked for and the row says why.
     await user.keyboard("{Enter}");
-    await waitFor(() =>
-      expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}/asks/q-open`)
+    expect(askedDocuments(page)).toEqual([]);
+    expect(words(rowOf(view, "q-open").querySelector("[data-row-report]"))).toBe(
+      KEY_REPORTS.no_text
     );
 
     // A fold with the focus on one of the foot's rows puts it on the foot's control, which
@@ -1852,6 +1910,15 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     expect(document.activeElement).toBe(rowOf(view, "q-open"));
     expect(rowOf(view, "q-open").querySelector("[data-node-body]")).not.toBeNull();
     expect(rowOf(view, D("kept")).querySelector("[data-node-body]")).toBeNull();
+
+    // A decision is a block of the spec, where the model writes decisions: Enter on its row asks
+    // for that document's editor, which the row draws in its words' place.
+    await act(async () => rowOf(view, D("kept")).focus());
+    await user.keyboard("{Enter}");
+    expect(askedDocuments(page)).toEqual([SPEC_DOCUMENT.id]);
+    expect(
+      rowOf(view, D("kept")).querySelector("[data-node-words] [data-editor-stand]")
+    ).not.toBeNull();
     view.unmount();
 
     // `q` walks the open questions in the order the list draws them, the one that waits on the
@@ -1873,6 +1940,102 @@ test("the outline's keys move through the parts and work a row's controls", asyn
   } finally {
     kept.mockRestore();
   }
+});
+
+// Enter on a row, and a press on its words, put the caret in the text of the node it draws, in
+// the document that text is written in: the page is asked for that document's editor, and the
+// row draws it on its stage in place of its words while it is the row edited. A reading is a
+// block of the spec, as the decision it reads is, and the list draws one the tree holds under a
+// decision as a row before its parts, with no address naming it. An answered question is a plain
+// ask, no block of any document: Enter on it says it has no text, and a press on its words only
+// gives its row the focus. A press on a link of a row is that link's own, and Escape leaves the
+// caret for the row.
+test("Enter on a reading edits it in its document's room, and on an answered question says it has no text", async () => {
+  const user = userEvent.setup();
+  const page = editingPage();
+  const asked = "7c0f4f4e-2f0a-4c52-9a53-5d1c4e0a9b11";
+  const reading = decisionNode("note", {
+    text: "The agent reads it as a wish for the rail.",
+    type: "reading",
+  });
+  const view = renderBody(
+    {
+      children: [
+        statement("s1"),
+        decisionNode("first", { children: [reading] }),
+        answeredAsk(
+          asked,
+          { at: "2026-11-14T09:00:00Z", text: STORED },
+          { text: "Does the built page work for you?" }
+        ),
+      ],
+      made: [decision("first", { links: [shaped(specRef("s1"))] })],
+    },
+    {},
+    { editing: page }
+  );
+  /** The key each row carries, which the editing finds it by: its node under the view. */
+  const keyOf = (id: string) => `${KEY}>${id}`;
+  /** The key of the row each editor stands in, as the page's stages hold them. */
+  const stood = () =>
+    [...view.container.querySelectorAll("[data-editor-stand]")].map((stand) =>
+      stand.closest("[data-row-key]")?.getAttribute("data-row-key")
+    );
+  const wordsOf = (id: string) => rowOf(view, id).querySelector<HTMLElement>("[data-node-words]");
+  expect(rowOf(view, reading.id).dataset.rowKey).toBe(keyOf(reading.id));
+  expect(rowOf(view, D("first")).dataset.rowKey).toBe(keyOf(D("first")));
+  expect(stood()).toEqual([]);
+
+  // Enter on the reading asks for the spec's editor, and the reading's row holds
+  // its stage where its words stood. The row draws its body, so its words are not cut.
+  await act(async () => rowOf(view, reading.id).focus());
+  await user.keyboard("{Enter}");
+  expect(askedDocuments(page)).toEqual([SPEC_DOCUMENT.id]);
+  expect(stood()).toEqual([keyOf(reading.id)]);
+  expect(wordsOf(reading.id)?.querySelector("[data-editor-stand]")).not.toBeNull();
+  expect(words(wordsOf(reading.id))).not.toContain(reading.text);
+  expect(rowOf(view, reading.id).querySelector("[data-node-body]")).not.toBeNull();
+  expect(wordsOf(reading.id)?.className).not.toContain("overflow-clip");
+
+  // A press on the words of a row that takes no caret gives it the focus and says nothing.
+  await user.click(wordsOf(asked) as Element);
+  expect(focusedRow(view)).toBe(asked);
+  expect(askedDocuments(page)).toEqual([SPEC_DOCUMENT.id]);
+  expect(stood()).toEqual([]);
+  expect(view.container.querySelector("[data-row-report]")).toBeNull();
+
+  // Enter on the answered question asks for no editor, and its row says it has no text.
+  await user.keyboard("{Enter}");
+  expect(askedDocuments(page)).toEqual([SPEC_DOCUMENT.id]);
+  expect(words(rowOf(view, asked).querySelector("[data-row-report]"))).toBe(KEY_REPORTS.no_text);
+  expect(view.container.querySelectorAll("[data-row-report]").length).toBe(1);
+  expect(stood()).toEqual([]);
+
+  // A press on the row's link to its node in the conversation is the link's own: it goes there
+  // and asks for no editor.
+  await user.click(rowOf(view, asked).querySelector("[data-entry-link]") as Element);
+  await waitFor(() =>
+    expect(view.getByTestId("where").textContent).toBe(`/issues/${KEY}/asks/${asked}`)
+  );
+  expect(askedDocuments(page)).toEqual([SPEC_DOCUMENT.id]);
+
+  // A press on a decision's words asks for the same document's editor, and the decision's row
+  // holds its stage; the report the question's row made is gone with the focus.
+  await user.click(wordsOf(D("first")) as Element);
+  expect(askedDocuments(page)).toEqual([SPEC_DOCUMENT.id, SPEC_DOCUMENT.id]);
+  expect(stood()).toEqual([keyOf(D("first"))]);
+  expect(wordsOf(D("first"))?.querySelector("[data-editor-stand]")).not.toBeNull();
+  expect(view.container.querySelector("[data-row-report]")).toBeNull();
+
+  // Escape in the editor leaves the caret for the row: the editor leaves its stage and the row
+  // has its words and the focus back.
+  const stand = view.container.querySelector<HTMLElement>("[data-editor-stand]");
+  await act(async () => stand?.focus());
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(stood()).toEqual([]));
+  expect(page.asked.mock.calls.at(-1)?.[0]).toBeUndefined();
+  await waitFor(() => expect(document.activeElement).toBe(rowOf(view, D("first"))));
+  expect(words(wordsOf(D("first")))).toContain("The decision first.");
 });
 
 // R14, R19: the Contents pane's list, which asks the outline to go to a node, and an address

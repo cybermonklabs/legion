@@ -30,7 +30,7 @@ import { StageSlot } from "../slots/stage";
 import { AppProviders, stubReads } from "../slots/stage-fixtures";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { treeReferences } from "../useIssueTree";
-import fixture from "./__fixtures__/graph-edit.json";
+import { fixture } from "./graph-edit-fixtures";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
 
 /**

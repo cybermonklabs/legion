@@ -14,7 +14,31 @@
 import type { PartWords } from "./page-words-parts";
 
 export default {
-  add: {},
+  add: {
+    VERIFICATION_WORDS: {
+      /** A check's own control, which opens its facts where they are shut and shuts them where
+       *  they are open, and keeps them so once the focus leaves the check. */
+      facts: "Facts",
+    },
+    ANSWER_LINES: {
+      /** What the box's criterion line says when Dispatch refused its write. */
+      criterion_not_written: "Could not write the criterion.",
+      /** What it says when the row the criterion is written under is gone, a 404. */
+      criterion_gone: "This is no longer here.",
+    },
+    CONTROL_LABELS: {
+      /** What the box's criterion line says of the row it writes under, before that row's
+       *  author and the page's word for its kind. */
+      criterion_target: "Criterion under:",
+      /** What the box's criterion line says while it is empty. */
+      criterion_placeholder: "What should a person be able to do?  (Enter sends)",
+      /** What the box's criterion line says while it is empty, at 760 px and below. */
+      criterion_placeholder_phone: "What should a person be able to do?",
+      /** The act of a focused question, comment or message that aims the box's criterion
+       *  line. */
+      write_criterion: "Write a criterion",
+    },
+  },
   unasked: [],
   answers: [],
 } as const satisfies PartWords;

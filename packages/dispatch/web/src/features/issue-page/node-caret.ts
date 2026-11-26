@@ -4,6 +4,7 @@ import type { EditorState, Plugin, Transaction } from "@milkdown/kit/prose/state
 import type { EditorView } from "@milkdown/kit/prose/view";
 import type * as YProseMirror from "y-prosemirror";
 
+import type { DisplayTree } from "../../api/types";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { refocusWhenSettled } from "../doc/refocus-when-settled";
 import { scrollElementToTop } from "../doc/scroll-block";
@@ -450,17 +451,42 @@ const BLOCK_ID_PROPERTY = "blockId";
  * (`sync-plugin.js`'s `_forceRerender`), as read in both libraries' sources. The tree lets go of
  * its hold as it goes (`useNodeEditing.ts`), on an editor the page is about to destroy, where
  * taking the plugin off drew the whole document - a spec of some 160 rows - again for nothing.
+ *
+ * A change of the document an edit of the reader's makes is reported once the editor has taken
+ * it (`onOwnEdit`), with the held block as the edit left it, as `Node.toJSON` writes it. An edit
+ * of the reader's is their typing, a paste, an undo, what the editor appends to one of them
+ * (ProseMirror's `appendedTransaction`), such as a block id stamped on a block the edit made, and
+ * a transaction kept out of the undo history (`addToHistory: false`) that starts from a document
+ * such an edit made. Milkdown writes a heading's `id` that way, in a transaction of its own after
+ * a change of the heading's words that moves its `id` (`syncHeadingIdPlugin`), dispatched from its
+ * plugin's view before this plugin's view hears of the change, so the document the editor has
+ * taken by then is the one with the `id`: such an edit of a heading, a decision's `## ` heading
+ * among them, is reported through it. An edit that leaves the `id` as it was - of the words' case
+ * alone, or of the spaces at their ends - writes none, and is reported itself. A transaction
+ * the collaboration brings is not the reader's, nor one appended to it, nor the `id` Milkdown
+ * writes after it, which starts from the collaboration's document. The hold notes each document
+ * such an edit makes, and its plugin's view reports the document the editor takes where it is
+ * one of them: a plugin's state may be worked out for a state the editor never takes, which
+ * leaves a note nobody reads. The report goes through this plugin, as a plugin of its own would
+ * change the editor's plugins (above). A hold let go reports nothing.
  */
 export function holdEditsToBlock(
   view: EditorView,
   heldBlock: () => string | undefined,
   parts: Promise<HoldParts>,
-  onHeld: () => void
+  onHeld: () => void,
+  onOwnEdit?: (block: DisplayTree) => void
 ): () => void {
   let letGo = false;
   void parts.then(
     ([state, sync]) => {
       if (letGo || view.isDestroyed) return;
+      // Each document an edit of the reader's made (above).
+      const edited = new WeakSet<ProseMirrorNode>();
+      // The last document reported: Milkdown's dispatch of a heading's `id` from its plugin's
+      // view runs the plugins' views again inside the update that brought the edit, so both
+      // updates find the editor holding the same document.
+      let reported: ProseMirrorNode | undefined;
       const plugin: Plugin<number | undefined> = new state.Plugin<number | undefined>({
         filterTransaction: (transaction, editorState) =>
           letGo ||
@@ -471,6 +497,15 @@ export function holdEditsToBlock(
         state: {
           apply: (transaction, start, _, { doc }) => {
             if (letGo) return undefined;
+            // A transaction appended to another is read as that one.
+            const root: Transaction = transaction.getMeta("appendedTransaction") ?? transaction;
+            if (
+              root.docChanged &&
+              root.getMeta(sync.ySyncPluginKey) === undefined &&
+              (root.getMeta("addToHistory") !== false || edited.has(root.before))
+            ) {
+              edited.add(doc);
+            }
             if (!transaction.docChanged) return start;
             return blockStart(
               doc,
@@ -480,6 +515,18 @@ export function holdEditsToBlock(
           },
           init: (_, { doc }) => blockStart(doc, heldBlock(), undefined),
         },
+        view: () => ({
+          update: (editor, before) => {
+            const { doc } = editor.state;
+            if (letGo || doc === before.doc || doc === reported || !edited.has(doc)) return;
+            // The held block, where the plugin's state last found it.
+            const start = plugin.getState(editor.state);
+            const block = start === undefined ? null : doc.nodeAt(start);
+            if (block === null) return;
+            reported = doc;
+            onOwnEdit?.(block.toJSON());
+          },
+        }),
       });
       view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, plugin] }));
       onHeld();

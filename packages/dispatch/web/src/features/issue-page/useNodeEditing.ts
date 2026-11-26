@@ -1,12 +1,15 @@
 import type { EditorView } from "@milkdown/kit/prose/view";
+import type { MouseEvent } from "react";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, DisplayTree } from "../../api/types";
 import { inputMethodKey } from "../../lib/input-method-key";
 import { focusOnDocument } from "../shell/roving";
 import type { DocumentAdmissions } from "./document-admission";
+import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode, type NodeDocument } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
+import { roomTarget, takesCaret, useRoomFacts } from "./model-rows/room-target";
 import {
   caretInBlock,
   caretOutOfBlock,
@@ -21,6 +24,7 @@ import {
   selectionIntoBlock,
   tabStopsFrom,
 } from "./node-caret";
+import { useOutlineWriter } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import { trackPress } from "./press-focus";
 import { rowSelectorOf } from "./tree-focus";
@@ -100,6 +104,68 @@ export function nodeEditable(
   admissions: DocumentAdmissions
 ): boolean {
   return !isClosed && place !== undefined && admissions.get(place.artifact.id) !== true;
+}
+
+/** What takes a pointer's press inside a row's words as its own rather than the words': each
+ *  control a drawn text can hold - a link in the words, a code block's copy control, the link of
+ *  a parent line - a disclosure's summary, which a drawn diagram carries for its source, a label,
+ *  and an element that plays a button. It is `RowText.tsx`'s `FOCUSABLE` with `summary`, `label`
+ *  and `[role="button"]` added, which take a press of their own, and without its `[tabindex]`:
+ *  `RowText` gives each element of the words that scrolls, a wide code block or a table's wrapper,
+ *  a tab index of its own (`useOutOfTabOrder`), and such an element acts on no press, so a press
+ *  on its text is the words'. */
+const OWN_PRESS =
+  'a[href], area[href], button, input, select, textarea, iframe, summary, label, [role="button"]';
+
+/** Whether a pointer's click on a row's words asks for the caret in them, as Enter on the row
+ *  does, given the document the row's text is being edited in while it is the row edited
+ *  (`editing`). While the row is edited no click on its words asks: the editor is drawn in their
+ *  place, and its own presses never reach the words' handler, since React sends a portal's events
+ *  up the portal's own parents, so a click the handler hears then is on what stands beside the
+ *  editor. A click on a control inside the element that heard it (`OWN_PRESS`) is that control's
+ *  own. A click that ends a selection the reader made - a drag over the words, which leaves the
+ *  window's selection not collapsed - asks for nothing, nor does the second click of a double
+ *  click or a later one, which selects a word or a line: the editor drawn in the words' place
+ *  would drop that selection and put the caret at the start. The Verification and Decisions views
+ *  read it, and ask for the caret where the row takes one (`useWordsPress`). */
+export function pressAsksCaret(
+  event: MouseEvent<HTMLElement>,
+  editing: string | undefined
+): boolean {
+  if (editing !== undefined || event.detail > 1 || window.getSelection()?.isCollapsed === false) {
+    return false;
+  }
+  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
+  return owner === null || !event.currentTarget.contains(owner);
+}
+
+/** A pointer's press on a row's words, as the Verification and Decisions views take it once it
+ *  asks for the caret (`pressAsksCaret`): the caret asked for in the node of the row with this key
+ *  (`edit`, `useNodeEditing`'s), as Enter asks for it, and what a key reported before let go
+ *  (`onReport`, with no line), but only where the row takes a caret, by the outline's one rule
+ *  (`room-target.ts`'s `takesCaret`): over the room of the issue the page's writer is of, read as
+ *  Enter reads it (`useNodeEditing`), and what each document's room admitted the page to
+ *  (`document-admission.tsx`), given each artifact of the issue by its slug (`artifacts`) and
+ *  whether the issue is closed (`isClosed`). A row that takes none keeps the focus the press gave
+ *  it, and nothing is said: Enter is what says why. */
+export function useWordsPress({
+  artifacts,
+  edit,
+  isClosed,
+  onReport,
+}: {
+  artifacts: ReadonlyMap<string, Artifact>;
+  edit: NodeEditing["edit"];
+  isClosed: boolean;
+  onReport: (report: string) => void;
+}): (row: string, node: TreeNode) => void {
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  const admissions = useDocumentAdmissions();
+  return (row, node) => {
+    if (!takesCaret(node, artifacts, room, isClosed, admissions)) return;
+    onReport("");
+    edit(row, node);
+  };
 }
 
 /**
@@ -186,6 +252,7 @@ export function useNodeEditing({
   artifacts,
   container,
   onEditing,
+  onOwnEdit,
   onReport,
 }: {
   /** Each artifact of the issue by its slug (`issue-artifacts.ts`). */
@@ -195,6 +262,12 @@ export function useNodeEditing({
   /** Tells the page which document a row is editing, so it draws that document's one editor and
    *  hands it to the row. */
   onEditing: OnEditing;
+  /** Called at each edit of the row's editor's own that changes the document - the reader's
+   *  typing in a heading as in a paragraph, never a collaborator's (`holdEditsToBlock`'s
+   *  `onOwnEdit`) - with the key of the row being edited and the row's block as the edit left
+   *  it, so the tree reads a read that drops the row while its note of the edit lasts as the
+   *  reader's (`IssueTree.tsx`'s `ownAct`). */
+  onOwnEdit: (row: string, block: DisplayTree) => void;
   /** What a key reports when the node it was pressed on has no text to put a caret in, or its
    *  editor could not open. */
   onReport: (report: string) => void;
@@ -202,9 +275,30 @@ export function useNodeEditing({
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
   // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
+  // The room of the issue's tree read, read through a ref so `edit` keeps its dependencies, by
+  // the issue the page's writer is of (`OutlineWriter.issueKey`); with no writer there is none,
+  // and a row is edited as it is without a room.
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
+  const roomNow = useRef(room);
+  roomNow.current = room;
 
   const edit = useCallback(
     (row: string, node: TreeNode) => {
+      // An issue whose tree read the cache holds is edited in its room: a node of another issue,
+      // and on a converted issue the conversation, take no caret there.
+      const facts = roomNow.current;
+      if (facts !== undefined) {
+        const target = roomTarget(node, artifacts, facts);
+        if ("report" in target) {
+          onReport(KEY_REPORTS[target.report]);
+          return;
+        }
+        // Enter on the row already edited before the editor's hold is on leaves the first Enter's
+        // look for the caret under way, as it does on an issue with no room (below).
+        if (editing?.row === row && hold.current !== "on") return;
+        setEditing({ artifactId: target.artifactId, blockId: target.blockId, row });
+        return;
+      }
       const place = documentOfNode(node.id, artifacts);
       if (place === undefined) {
         onReport(KEY_REPORTS.no_text);
@@ -251,6 +345,10 @@ export function useNodeEditing({
   const letGo = useRef<(() => void) | undefined>(undefined);
   // The view of the editor the page handed over last, while the page holds it.
   const editorView = useRef<EditorView | undefined>(undefined);
+  // The row each edit of the editor's own is reported for, and what hears of it (`onOwnEdit`),
+  // read as each edit is made.
+  const ownEdit = useRef({ onOwnEdit, row: editingRow });
+  ownEdit.current = { onOwnEdit, row: editingRow };
   const onEditor = useCallback((editor: RowEditor | undefined) => {
     letGo.current?.();
     letGo.current = undefined;
@@ -266,6 +364,10 @@ export function useNodeEditing({
       () => {
         hold.current = "on";
         holdChanged.current?.();
+      },
+      (block) => {
+        const { onOwnEdit: heard, row } = ownEdit.current;
+        if (row !== undefined) heard(row, block);
       }
     );
   }, []);

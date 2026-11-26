@@ -7,7 +7,9 @@ import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock } from "../../../api/types";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
+import { useOutlineEditing } from "../IssuePresetPanels";
 import { issueAddress } from "../issue-address";
+import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
 import { blocksKey, useOutlineReads } from "../outline-reads";
 import { presetView } from "../presets";
@@ -81,15 +83,24 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
     onAddressDrawn
   );
   const addressed = useMemo(() => ({ named, tell: onAddressDrawn }), [named, onAddressDrawn]);
+  // The document a row of the view is being edited in, and that document's one editor, which the
+  // view draws for the row to take onto its own stage: `IssuePresetPanels.tsx`'s
+  // `useOutlineEditing`, as the outline's body and the Plan view read it. A row's node is edited
+  // in the document its id names among the issue's artifacts, by their slugs.
+  const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
+  const { onEditing, panels } = useOutlineEditing(issue);
   return (
     <NoTooltips>
       {/* The stage's column, which the body draws its own measure in. */}
       <div className="flex w-full min-w-0 flex-col">
         <VerificationFilterBody
           {...(tells ? { addressed } : {})}
+          artifacts={artifacts}
           checks={checks}
           context={view.context}
+          isClosed={issue.closed_at !== null}
           namesLine={names}
+          onEditing={onEditing}
           published={published}
           reads={reads}
           view={view.root}
@@ -98,6 +109,7 @@ export function ViewVerificationSlot({ issue, onAddressDrawn, route }: ViewSlotP
         {/* While the view read answers a next page, the control that reads it (R15). */}
         <NextViewPage filter="verification" issueKey={issue.key} />
       </div>
+      {panels}
     </NoTooltips>
   );
 }

@@ -217,6 +217,16 @@ test("Spec draws the requirements as rows, the issue as none, and the ask above 
   });
 });
 
+// A criterion is a row of Spec with the statements, and in its control's count; a statement
+// written under a criterion stands under it.
+test("Spec counts criteria", () => {
+  const root = node("CORE-1", "issue", [
+    node("comment-1", "comment", [node("criterion-1", "criterion", [statement("spec#b-r1")])]),
+  ]);
+  expect(drawn(root, "spec")).toEqual(["criterion-1", "spec#b-r1"]);
+  expect(filterSignals(root, "").spec.count).toBe(2);
+});
+
 test("Verification draws each requirement as context with its checks under it and their results", () => {
   const root = issue();
   const view = presetView(root, "verification", "");
@@ -502,6 +512,46 @@ test("the Decisions count holds an agent's decision under an answered question a
     node("decision-3", "decision"),
   ]);
   expect(filterSignals(root, "").decisions).toEqual({ count: 5 });
+});
+
+// Under Decisions an answered question draws no reading, since the question already draws the
+// person's answer.
+test("Decisions draws no reading of an answered ask", () => {
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [node("reading-1", "reading")], { state: "answered" }),
+  ]);
+  expect(drawn(root, "decisions")).toEqual(["ask-1"]);
+  expect(filterSignals(root, "").decisions).toEqual({ count: 1 });
+});
+
+// A reading of an answered question the address names is drawn under Decisions all the same, as
+// every filter draws a node the address names.
+test("Decisions draws a reading the address names", () => {
+  const root = node("CORE-1", "issue", [
+    node("ask-1", "ask", [node("reading-1", "reading")], { state: "answered" }),
+  ]);
+  const view = presetView(root, "decisions", "", new Set(["reading-1"]));
+  expect(idsOf(treeRows(view.root)).slice(1)).toEqual(["ask-1", "reading-1"]);
+});
+
+// Under Decisions an agent decision's readings are rows under it, and no reading is in the count,
+// which holds the asks and the decisions alone.
+test("Decisions draws an agent decision's reading under it", () => {
+  const planner = { id: "planner", kind: "session" as const };
+  const root = node("CORE-1", "issue", [
+    node("comment-1", "comment", [
+      node("decision-1", "decision", [node("reading-1", "reading", [], { author: planner })], {
+        author: planner,
+        state: "waiting_review",
+      }),
+    ]),
+  ]);
+  const view = presetView(root, "decisions", "");
+  expect(drawn(root, "decisions")).toEqual(["decision-1", "reading-1"]);
+  expect(view.root.children.map((row) => row.children.map((child) => child.id))).toEqual([
+    ["reading-1"],
+  ]);
+  expect(view.matches).toBe(1);
 });
 
 // R26, R18: the parent a filter draws as no row is one line on its child's row, and carries the

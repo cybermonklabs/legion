@@ -31,7 +31,7 @@ import { nodesInOrder } from "../tree-keys";
 import { wholeTreeOnly } from "../tree-read/tree-fixtures";
 import type { TreeAnswer } from "../tree-read/tree-read";
 import { treeReferences } from "../useIssueTree";
-import fixture from "./__fixtures__/graph-edit.json";
+import { fixture } from "./graph-edit-fixtures";
 import { lastHeldPath } from "./last-held";
 import { targetLastHeld } from "./last-held-chips";
 import { usePublishLastHeldReferences } from "./last-held-store";

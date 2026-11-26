@@ -82,9 +82,9 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  * row reads as it read when the outline was built from the page's other reads; an `ask` block's
  * are its question as the asks read holds it (`draftAsk`).
  *
- * Each kind the page draws is one step of `treeDraftSteps`. A node of any other kind - a
- * criterion, a lens and its kind, a finding, a risk, a constraint, an interaction - reaches no
- * step of this part's, makes no draft and stays in the answer, which the page keeps whole (R7);
+ * Each kind the page draws is one step of `treeDraftSteps`. A node of any other kind - a lens and
+ * its kind, a finding, a risk, a constraint, an interaction - reaches no step of this part's,
+ * makes no draft and stays in the answer, which the page keeps whole (R7);
  * a later part draws a kind of its own with one line in that list, and adds a member to another
  * step's draft with one line in `treeDraftMarks`. A check or a plan task of an issue under this
  * one is out of this part's scope and makes no draft either.
@@ -209,13 +209,14 @@ export type TreeDraftMark = (
  * The steps that draft the answer's nodes, each node offered to them in this order and drafted by
  * the first that answers one. These steps draw the kinds the outline draws, a fixed list read
  * from each node's supertag and not from the page's names for kinds (`NODE_TYPE_NAMES`), which
- * later parts widen: a requirement, a check and a plan task, a result, a decision, an ask, a
- * comment and a message, a callout and an image, a paragraph and every other plain block
- * (`isPlainBlock`), a reading, and a child issue.
+ * later parts widen: a requirement, a criterion, a check and a plan task, a result, a decision,
+ * an ask, a comment and a message, a callout and an image, a paragraph and every other plain
+ * block (`isPlainBlock`), a reading, and a child issue.
  */
 export const treeDraftSteps: readonly TreeDraftStep[] = [
   lensDrafts,
   draftRequirement,
+  draftCriterion,
   draftServing,
   draftResult,
   draftDecision,
@@ -506,6 +507,24 @@ function draftRequirement(
     const others = draft.gaps.filter((gap) => gap !== "no_check");
     draft.gaps = served === 0 ? [...others, "no_check"] : others;
   }
+  return draft;
+}
+
+/** A criterion of this issue: what a person wants to be able to do, written under the ask, the
+ *  comment or the message that asked for it, drawn by its kind, its words and who wrote it, as the
+ *  outline draws a turn's. It stands under the parent the read gives it, as every draft whose step
+ *  names no parent does (`placeOf`): the row of that ask, comment or message, an ask's the row of
+ *  the block it was indexed from where the asks read names one (`treeIdOfNode`). A criterion the
+ *  read marks as another issue's is a block of that issue's text, which this issue's conversation
+ *  never wrote, and makes no draft. */
+function draftCriterion(
+  node: TreeAnswerNode,
+  _answer: TreeAnswer,
+  context: TreeDraftContext
+): Draft | undefined {
+  if (node.supertag !== "criterion" || isForeign(node, context.key)) return undefined;
+  const draft = draftOf(node, "criterion", context);
+  madeBy(draft, node);
   return draft;
 }
 
@@ -984,10 +1003,10 @@ function pointersOf(node: TreeAnswerNode, name: string): readonly string[] {
 }
 
 /** When the node was made and who made it, as the read answers them: what the outline draws for
- *  an ask, a comment, a message and a result, and for no document block, decision or child
- *  issue. The read lists every author of the node's first version, whoever made it first ahead
- *  of the rest, and a row draws one name: the first, and none where the list is empty or null;
- *  and no time where the store records none. */
+ *  an ask, a comment, a message, a criterion and a result, and for no other document block, nor a
+ *  decision or a child issue. The read lists every author of the node's first version, whoever
+ *  made it first ahead of the rest, and a row draws one name: the first, and none where the list
+ *  is empty or null; and no time where the store records none. */
 function madeBy(draft: Draft, node: TreeAnswerNode): void {
   if (node.made_at !== null) draft.at = node.made_at;
   const author = node.author?.[0];

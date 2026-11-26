@@ -1596,6 +1596,55 @@ test("an ask drawn in its block's row names what the ask shaped there", () => {
   });
 });
 
+// Part Y's R1 on the tree read: a criterion of this issue is a row of its own, by its kind, its
+// words and who wrote it and when, under the node the read hangs it from - an ask, drawn in the
+// row of the spec's block the asks read says it was indexed from, a comment, or the issue - and
+// what the read hangs under the criterion stands under its row. A criterion the read marks as
+// another issue's is a block of that issue's text, and makes no draft.
+test("a criterion of this issue is drawn under the ask, the comment or the issue the read hangs it from", () => {
+  const person = { id: "alice", kind: "user" };
+  const tree = answer(
+    [
+      block("q-block", "ask", KEY, SPEC, 0),
+      node("ask-1", "ask", KEY),
+      node("k1", "criterion", "ask-1", { author: [person], made_at: "2026-11-07T00:00:00Z" }),
+      node("p1", "block", "k1"),
+      personsComment("c1", KEY, "2026-11-06T00:00:00Z"),
+      node("k2", "criterion", "c1"),
+      node("k3", "criterion", KEY),
+      node("k9", "criterion", "CORE-0", { issue: "CORE-0" }),
+    ],
+    [],
+    { documents: { plan: null, spec: SPEC.id, verification: null } }
+  );
+  const reads: IssueTreeReads = {
+    asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q-block" })],
+    issue: issueDetails(),
+  };
+  const { drafts, root } = drawn(tree, reads);
+  const askRow = blockNodeId("spec", "q-block");
+
+  expect(nodeOf(root, askRow)?.children.map((child) => child.id)).toEqual(["k1"]);
+  const k1 = nodeOf(root, "k1");
+  expect({
+    at: k1?.at,
+    author: k1?.author,
+    children: k1?.children.map((child) => [child.id, child.type]),
+    reference: k1?.reference,
+    type: k1?.type,
+  }).toEqual({
+    at: "2026-11-07T00:00:00Z",
+    author: person,
+    children: [["p1", "prose"]],
+    reference: undefined,
+    type: "criterion",
+  });
+  expect(nodeOf(root, "c1")?.children.map((child) => child.id)).toEqual(["k2"]);
+  expect(placementsOf(root, "k3").map((one) => one.parent)).toEqual([KEY]);
+  expect(drafts.has("k9"), "another issue's criterion was drafted").toBe(false);
+  expect(nodeOf(root, "k9")).toBeUndefined();
+});
+
 // R1, root R4: a plan task's `needs` is a chip for each task its attribute names, as the outline
 // drew one for every pointer. The read answers a tuple only where it holds the far end, so a
 // pointer at a task a write removed has none: its chip is named by the batched reference read,

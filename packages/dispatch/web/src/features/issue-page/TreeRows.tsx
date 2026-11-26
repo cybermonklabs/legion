@@ -6,13 +6,16 @@ import type { Artifact } from "../../api/types";
 import { pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
+import type { PointMark } from "./current-point";
 import { useDocumentAdmissions } from "./document-admission";
 import { type RowReveal, useRowEdits } from "./graph-edit/row-edits";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { LensActContext, useLensAct } from "./lenses/LensMenu";
+import { takesCaret, useRoomFacts } from "./model-rows/room-target";
 import { IndentGuides, NodeRow } from "./NodeRow";
 import type { ThreadMark } from "./outline-thread-read";
+import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { authorKind, CONTROL_LABELS, isReader } from "./page-words";
 import { type DrawnRow, indentOf, type PageRow } from "./tree-fold";
@@ -41,6 +44,7 @@ export function TreeRows({
   onOlder,
   onPage,
   onToggle,
+  points,
   report,
   rowReveal,
   rows,
@@ -75,6 +79,9 @@ export function TreeRows({
   /** Draws the next page of a node's children, which the row that pages them does. */
   onPage: (row: PageRow) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
+  /** Each row that carries the conversation's current point, by its key (`current-point.ts`'s
+   *  `pointMarks`, R12): a row it holds no key of is not marked. */
+  points: ReadonlyMap<string, PointMark>;
   /** What a key reported when it had nowhere to go, and the key of the row it was pressed on,
    *  which draws it (`NodeRow`'s `report`). */
   report?: { readonly line: string; readonly row: string | undefined };
@@ -111,6 +118,9 @@ export function TreeRows({
   // Graph's node menu (`graph-edit/RowMenu.tsx`): each row's, and the delete's confirm while one
   // is open, which outlives the row's focus. Nothing outside Graph.
   const edits = useRowEdits({ act: lensAct, isClosed, reveal: rowReveal, rows, zoomRoot });
+  // The room of the issue's tree read, read once for every row as Enter reads it
+  // (`useNodeEditing.ts`), by the issue the page's writer is of; with no writer there is none.
+  const room = useRoomFacts(useOutlineWriter()?.issueKey);
   return (
     <>
       {onOlder === undefined ? null : (
@@ -136,6 +146,7 @@ export function TreeRows({
           }
           const place = documentOfNode(row.node.id, artifacts);
           const mark = threads.get(row.node.id);
+          const current = points.get(key);
           const edit = edits.editOf(row);
           return (
             <NodeRow
@@ -148,9 +159,17 @@ export function TreeRows({
                 reader: isReader(row.node.author, reader),
               }}
               context={context.has(row.node.id)}
+              {...(current === undefined ? {} : { current })}
               {...(place === undefined ? {} : { document: place.artifact })}
               {...(edit === undefined ? {} : { edit })}
-              editable={nodeEditable(place, isClosed, admissions)}
+              // Where the room is read, the row carries the typing cue wherever Enter puts a
+              // caret, a criterion's row among them: a node written into the issue, such as a
+              // criterion, takes its place from the room rather than from a document.
+              editable={
+                room === undefined
+                  ? nodeEditable(place, isClosed, admissions)
+                  : takesCaret(row.node, artifacts, room, isClosed, admissions)
+              }
               {...(editing?.row === key ? { editing: editing.artifactId } : {})}
               expanded={row.expanded}
               focused={focused === key}

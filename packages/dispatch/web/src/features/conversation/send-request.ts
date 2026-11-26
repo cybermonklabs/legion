@@ -12,6 +12,7 @@ import { newSendKey } from "../../lib/send-key";
 import { draftParties } from "../refs/party-references";
 import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { carriedBlocks, type FollowedBlocks } from "./block-spans";
+import type { SeededMention } from "./composer-draft";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
 
 /** A send's own copy of the draft, taken when it starts: what the request is built from, and
@@ -39,6 +40,35 @@ export type SaveCommentEdit = (
  *  reload saves through (`held-sends.ts`): the comment's new body with the ids it carries. */
 export const saveCommentEdit: SaveCommentEdit = (id, body, carried, bounds) =>
   api.editComment(id, { body, ...carried }, bounds);
+
+/**
+ * A statement of the issue's spec (one of its `requirement` blocks) that a comment is on, as the
+ * issue page's box writes it: the document (its id or slug) and the statement's whole words, with
+ * no occurrence and no mark, and the statement's row on the page. The server finds those words in
+ * the document and anchors the comment to the lowest block that holds them, which for a statement
+ * of one paragraph is that paragraph, and refuses words the document holds twice. No composer
+ * holds it as its own anchor (`ComposerAnchor`): the host names it, and the send carries it beside
+ * the composer's anchor (`SentRequest.statement`).
+ */
+export interface StatementAnchor {
+  readonly artifact: string;
+  readonly quote: string;
+  /** The statement's row in the issue page's outline, its node id `<slug>#b-<block id>`: the row
+   *  the comment lands under once it is sent (`Landing.under`). A held send keeps it with the
+   *  rest, so a box that mounts again over the send - after a reload, or after the reader left
+   *  the issue - lands there too. It is the page's own: the anchor the server is sent names the
+   *  document and the words alone (`attempt`). */
+  readonly row: string;
+}
+
+/** Whether two sends or drafts are on the same statement - the same document and the same words,
+ *  which are what the server places a comment by - or both on none. */
+export function sameStatement(
+  a: StatementAnchor | undefined,
+  b: StatementAnchor | undefined
+): boolean {
+  return a?.artifact === b?.artifact && a?.quote === b?.quote;
+}
 
 /**
  * A send, whole, as it stood when Send started it: where it goes (the owner, the reply it answers,
@@ -85,10 +115,32 @@ export interface SentRequest {
    *  live view sends a session its commands verbatim. */
   readonly pickedDelivery?: DeliveryCapability;
   readonly replyTo: ReplyTarget | null;
+  /** The mentions the issue page's box wrote in front of the draft for the reply it answers and
+   *  that still open it as the reader left it (`openingSeeds`), each the party and the link
+   *  written for it (`partyMention`); absent where none do, and from every other send. What the
+   *  reader writes over a refusal keeps them as the box then holds them (`HeldSends.keep`), and
+   *  the reader's own move off the reply carries the send with none (`HeldSends.carry`). A box
+   *  that mounts again over the held send - after a reload, or after the reader left the issue -
+   *  takes these back out when the reply ends or moves, as the box that wrote them would, and
+   *  never a link the reader wrote. They are the page's own: no request carries them
+   *  (`attempt`). */
+  readonly seeds?: readonly SeededMention[];
   /** The key that names this send to Dispatch (`Idempotency-Key`), so that every attempt of it,
    *  and a reload's, is that one write there. Minted when Send builds the request, and kept by a
    *  Retry of a send that ended without Dispatch's verdict (`requestFor`). */
   readonly sendKey: string;
+  /** The statement a comment with no reply is on, where the issue page's box aims at one
+   *  (`StatementAnchor`); absent from every other send. A send that carries one carries no
+   *  `anchor` of its own. */
+  readonly statement?: StatementAnchor;
+}
+
+/** The mentions the issue page's box wrote for the reply `request` answers (`SentRequest.seeds`),
+ *  which a box over that held send takes out when the reply ends or moves; none where it holds no
+ *  send. One the box let go of answers no reply and holds none, its mentions taken out of the
+ *  draft as it went (`HeldSends.carry`). */
+export function heldSeeds(request: SentRequest | undefined): readonly SeededMention[] {
+  return request?.seeds ?? [];
 }
 
 /** The command, at the start of a body, that sends it in a mode other than the plain one (Send,
@@ -181,15 +233,17 @@ function sameOwner(a: ComposerOwner, b: ComposerOwner): boolean {
   }
 }
 
-/** Where a send goes: its owner, the mark it is anchored to, the reply it answers, and, for an
- *  edit, the comment it saves - a send's, or a composer's as its props name it. */
-export type Address = Pick<SentRequest, "anchor" | "owner" | "replyTo"> & {
+/** Where a send goes: its owner, the mark it is anchored to, the statement it is on, the reply it
+ *  answers, and, for an edit, the comment it saves - a send's, or a composer's as its props name
+ *  it. */
+export type Address = Pick<SentRequest, "anchor" | "owner" | "replyTo" | "statement"> & {
   readonly edit: { readonly id: string } | undefined;
 };
 
-/** The part of a send's address a move of the reader's own changes: its owner and the reply it
- *  answers (Cancel reply, an Agents row's issue pick; `HeldSends.carry`). */
-export type CarriedAddress = Pick<SentRequest, "owner" | "replyTo">;
+/** The part of a send's address a move of the reader's own changes: its owner, the reply it
+ *  answers and the statement it is on (Cancel reply, an Agents row's issue pick, the issue page's
+ *  box's own end of its target; `HeldSends.carry`). */
+export type CarriedAddress = Pick<SentRequest, "owner" | "replyTo" | "statement">;
 
 /** Whether `next` goes where `sent` went. A refused send's draft lives at that address: a press
  *  from a composer its host has moved to another is not its Retry (`HeldSends.send`), and only a
@@ -200,6 +254,7 @@ export function sameAddress(sent: Address, next: Address): boolean {
     sameOwner(sent.owner, next.owner) &&
     sent.anchor?.artifact === next.anchor?.artifact &&
     sent.anchor?.mark_id === next.anchor?.mark_id &&
+    sameStatement(sent.statement, next.statement) &&
     sent.replyTo?.id === next.replyTo?.id &&
     sent.edit?.id === next.edit?.id
   );
@@ -313,13 +368,16 @@ function attempt(
   sent: SentRequest & { readonly owner: Exclude<ComposerOwner, { kind: "session" }> },
   bounds: WriteBounds
 ): Promise<unknown> {
-  const { anchor, ask, draft, kind, owner, plainDelivery, replyTo } = sent;
+  const { anchor, ask, draft, kind, owner, plainDelivery, replyTo, statement } = sent;
   const { body, replacement } = draft;
   // A provisional mark is named by its id; a quote anchor (a closed issue's document) by its text
-  // and occurrence, where the server writes the mark.
+  // and occurrence, where the server writes the mark; a statement by its words alone, which the
+  // server finds in the document, and never by its row, the page's own (`StatementAnchor`).
   const selection: AnchorInput | undefined =
     anchor === undefined
-      ? undefined
+      ? statement === undefined
+        ? undefined
+        : { artifact: statement.artifact, quote: statement.quote }
       : anchor.mark_id === undefined
         ? { artifact: anchor.artifact, occurrence: anchor.occurrence, quote: anchor.quote }
         : { artifact: anchor.artifact, mark_id: anchor.mark_id };

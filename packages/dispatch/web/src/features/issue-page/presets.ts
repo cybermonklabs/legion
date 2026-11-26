@@ -78,9 +78,9 @@ export function isFilter(preset: Preset): preset is Filter {
 
 /** The kinds each filter draws as rows of its own (R2). */
 const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
-  decisions: ["ask", "decision"],
+  decisions: ["ask", "decision", "reading"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check", "result"],
 };
 
@@ -99,7 +99,7 @@ const CONTEXT_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
 const COUNTED_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   decisions: ["ask", "decision"],
   plan: ["plan_task"],
-  spec: ["requirement"],
+  spec: ["requirement", "criterion"],
   verification: ["check"],
 };
 
@@ -372,15 +372,18 @@ interface Lifted {
  * The rows `node`'s branch gives a filter at the place `node` stands in the tree, in the tree's
  * order: the row `rowOf` draws `node` as, given what each of its children gave, or, where it
  * draws none, the rows of the branch at `node`'s place (`liftPast`). A transclusion gives a
- * filter nothing unless the filter draws every placement.
+ * filter nothing unless the filter draws every placement. The children lifted are those
+ * `childrenOf` keeps of each node, where the filter passes it, and else every child.
  */
 function lift(
   node: TreeNode,
   everyPlacement: boolean,
-  rowOf: (node: TreeNode, parts: readonly Lifted[]) => TreeNode | undefined
+  rowOf: (node: TreeNode, parts: readonly Lifted[]) => TreeNode | undefined,
+  childrenOf?: (node: TreeNode) => readonly TreeNode[]
 ): Lifted {
   if (!everyPlacement && node.transcluded) return { drawn: false, rows: [] };
-  const parts = node.children.map((child) => lift(child, everyPlacement, rowOf));
+  const children = childrenOf === undefined ? node.children : childrenOf(node);
+  const parts = children.map((child) => lift(child, everyPlacement, rowOf, childrenOf));
   const row = rowOf(node, parts);
   return row === undefined
     ? { drawn: false, rows: liftPast(node, parts) }
@@ -411,6 +414,17 @@ function filterView(
   const counted = COUNTED_KINDS[filter];
   const context = new Set<string>();
   const matched = new Set<string>();
+  // Whether Decisions leaves `child` out where it stands under a question: a reading the address
+  // does not name.
+  const hiddenReading = (child: TreeNode): boolean =>
+    child.type === "reading" && !named.has(child.id);
+  // Decisions draws an agent decision's readings under it, and none of any question's but one the
+  // address names, which every filter draws: the question is lifted without the others. A reading
+  // stands only under an answered question, since the schema refuses one in an ask with no answer.
+  const childrenOf = (node: TreeNode): readonly TreeNode[] =>
+    node.type === "ask" && node.children.some(hiddenReading)
+      ? node.children.filter((child) => !hiddenReading(child))
+      : node.children;
   // The row `node` is, with the rows of its branch under it, where the filter draws it.
   const rowOf = (node: TreeNode, parts: readonly Lifted[]): TreeNode | undefined => {
     // A `requirement` or `check` block of a document that does not play that part is of no
@@ -431,8 +445,9 @@ function filterView(
     return { ...node, children: below, held: heldBy(below) };
   };
   const everyPlacement = drawsEveryPlacement(filter);
+  const kept = filter === "decisions" ? childrenOf : undefined;
   // The issue is no row of a filter, and no row's parent line: the page is the issue.
-  const top = root.children.flatMap((child) => lift(child, everyPlacement, rowOf).rows);
+  const top = root.children.flatMap((child) => lift(child, everyPlacement, rowOf, kept).rows);
   return {
     context,
     lines: NO_LINES,

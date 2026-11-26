@@ -165,9 +165,11 @@ func TestReferenceTargetsNameTheVersionThatLastHeldABlockAnEditRemoved(t *testin
 		lastHeldWant{lastHeldBlockRef(key, "spec", "kept"), 0, false},
 		lastHeldWant{"dispatch://" + lens, 0, true},
 	)
-	fields := schemasOfGeneratedModule(t, readRepositoryFile(t, repositoryRoot(t), contractsGenerated))["ReferenceTarget"]
+	// The contracts module is rendered from the committed OpenAPI document and never committed
+	// itself, so the document is what declares the field (`schemaFields`).
+	fields := schemaFields(committedDocument(t, repositoryRoot(t)))["ReferenceTarget"]
 	if !slices.Contains(fields, "last_held") {
-		t.Errorf("%s ReferenceTarget properties = %v, want last_held (regenerate from the route table)", contractsGenerated, fields)
+		t.Errorf("%s ReferenceTarget properties = %v, want last_held (regenerate from the route table)", OpenAPIDocumentPath, fields)
 	}
 }
 

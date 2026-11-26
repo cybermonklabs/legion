@@ -22,7 +22,7 @@ import { newSendKey } from "../../../lib/send-key";
 import { plainWrite, Writes } from "../../writes/write-store";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import { outlineQuery, readNextTreePage, type TreeAnswer } from "../tree-read/tree-read";
-import fixture from "./__fixtures__/graph-edit.json";
+import { fixture } from "./graph-edit-fixtures";
 import { type NodeWrites, refusalLine, useNodeWrites } from "./node-writes";
 
 /**

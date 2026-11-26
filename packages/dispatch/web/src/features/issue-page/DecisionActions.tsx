@@ -41,6 +41,7 @@ import {
   changeAnchor,
   decisionBlockId,
 } from "./decision-review";
+import { useNoteOwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
@@ -191,6 +192,7 @@ function DecisionControls({
   tabStops: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
+  const noteOwnAct = useNoteOwnAct();
   const tones = TONES[useTooltips() ? "main" : "page"];
   const drafts = useContext(ChangeDrafts);
   // A Change the reader left open on this decision opens again with the body.
@@ -225,6 +227,8 @@ function DecisionControls({
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
     write: (id: string, bounds) => api.keepDecision(id, blockId, decision.text_sha256, bounds),
     onSuccess: (kept) => {
+      // The tree notes the node before the answer is drawn (`own-act.ts`).
+      noteOwnAct(decision.ref);
       if (kept === null) {
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
         return;

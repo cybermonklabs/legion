@@ -3,6 +3,7 @@ import { createPortal, flushSync } from "react-dom";
 
 import { ConfirmDialog } from "../../project/ConfirmDialog";
 import type { LensAct } from "../lenses/LensMenu";
+import { useNoteOwnAct } from "../own-act";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { DrawnRow } from "../tree-fold";
 import { type NodeWritesIssue, useNodeWrites } from "./node-writes";
@@ -184,9 +185,11 @@ export function useRowEdits({
  *
  * It is closed in the task of its answer (`flushSync`), so the focus it took goes back to the row
  * at once (`useDialog`), before a read of the tree the taken delete starts can draw the tree
- * without that row: the row then leaves the tree with the focus, and the outline's drop rule gives
- * the focus to the nearest row (`IssueTree.tsx`, `moveToRow`). Closed in a later task, it could
- * give the focus back to a row a read had already taken away, which leaves it on the page's body.
+ * without that row: the row then leaves the tree with the focus. A taken delete is the reader's
+ * own act on the node, noted by its read id (`own-act.ts`), so the outline's drop rule gives the
+ * focus to the nearest row (`IssueTree.tsx`, `moveToRow`) rather than to the page's body, as it
+ * does for a read of another session's. Closed in a later task, it could give the focus back to a
+ * row a read had already taken away, which leaves it on the page's body.
  */
 function DeleteConfirm({
   ask,
@@ -200,6 +203,7 @@ function DeleteConfirm({
   reveal: RowReveal | undefined;
 }): ReactNode {
   const writes = useNodeWrites(issue);
+  const noteOwnAct = useNoteOwnAct();
   const [count, setCount] = useState(ask.count);
   const sending = useRef(false);
   const close = () => onDone(ask);
@@ -212,6 +216,7 @@ function DeleteConfirm({
         setCount(outcome.count);
         return;
       }
+      if (outcome.status === "taken") noteOwnAct(ask.node);
       flushSync(close);
       if (outcome.status === "dropped" || (outcome.status === "refused" && outcome.line.reads)) {
         reveal?.kept(ask.node);

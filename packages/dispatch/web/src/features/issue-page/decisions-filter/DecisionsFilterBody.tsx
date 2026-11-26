@@ -50,6 +50,7 @@ import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
 import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
+import { type OnEditing, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
@@ -94,8 +95,8 @@ const NOTHING = (): void => {};
  * its box, a wide code block or table, which keeps a tab stop of its own so that a reader on the
  * keyboard can scroll it, as on the outline's rows (`RowText.tsx`). The keys are the outline's
  * own (`useTreeKeymap.ts`): the arrows and `j`/`k` move, `Shift+K` and `Shift+C` press Keep and
- * Change, `a` and `r` answer and reply, `f` steps through a row's links, Enter goes to the
- * entry's node in the conversation, and the key that cycles how much is drawn unfolds the foot.
+ * Change, `a` and `r` answer and reply, `f` steps through a row's links, Enter puts the caret in
+ * the entry's own text (below), and the key that cycles how much is drawn unfolds the foot.
  * `q` and `w` walk the entries in the order the list draws them and then the rest of the issue,
  * so a question or a decision the words filter left out is still found, and opens in the
  * conversation, as an entry's link does. The foot's own control is a plain button in the tab
@@ -114,6 +115,16 @@ const NOTHING = (): void => {};
  * row's parent in the outline. Until the reads that say which questions and decisions there are
  * hold their answers, `q` and `w` with nowhere to go say nothing: no question or decision to go
  * to may mean only that they have not arrived (`decisions-entries.ts`).
+ *
+ * A row is edited in place: Enter on it, or a press on its words, puts the caret in the text of
+ * the node it draws, in the document that text is written in, through the editing the
+ * outline's rows use (`useNodeEditing.ts`). The page draws that document's one editor
+ * (`onEditing`), and the row draws it on its stage in place of its words while it is the row
+ * edited; Escape leaves the caret for the row. A press on a link or a control inside a row is
+ * that control's own, and a press on its words puts the caret in only where the row takes one
+ * (`takesCaret`), where it else only gives the row the focus. Where a node has no text to put a
+ * caret in - an ask, a comment, a message or a result, or a node of another issue - Enter says
+ * why at the row.
  *
  * A read that says which entries there are and stands refused - the decisions, the asks - draws
  * the page's one line for a failed read over the list (`slots/failed-read-line.tsx`), with a
@@ -142,6 +153,7 @@ export function DecisionsFilterBody({
   isClosed,
   issue,
   namesLine,
+  onEditing,
   onRevealDrawn,
   published,
   reader,
@@ -171,6 +183,11 @@ export function DecisionsFilterBody({
    *  The body draws it over the list after the lines of its own reads, as the outline draws it
    *  after the lines of the reads its rows come from. */
   namesLine: OutlineReads["names"];
+  /** Tells the page which document a row is being edited in, so it draws that document's one
+   *  editor and hands it to the row (`useNodeEditing.ts`): `IssuePresetPanels.tsx`'s
+   *  `useOutlineEditing`, whose panels the slot draws after the body
+   *  (`slots/view-decisions.tsx`). */
+  onEditing: OnEditing;
   /** Told whether the list draws the node the address names (`reveal`), where the page draws
    *  the outline in the view's place if it does not (`slots/view-decisions.tsx`): given only
    *  while every read the tree is built from holds its answer. The body tells it as soon as it
@@ -278,10 +295,10 @@ export function DecisionsFilterBody({
   // on a row of the parts finds no row above it and says so, as on a top-level row of the
   // outline. Left on a row of the foot is the body's own, taken before the keys read it
   // (`footRowLeft`).
-  const rows = useMemo<DrawnRow[]>(() => {
-    const trail = [view.id];
-    return drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail }));
-  }, [drawn, view.id]);
+  const rows = useMemo<DrawnRow[]>(
+    () => drawn.map((entry) => drawnRowOf(entry, view.id)),
+    [drawn, view.id]
+  );
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
   // of Keep or a send of Change arms it, and only these let it go: a move to another row, the
@@ -323,18 +340,42 @@ export function DecisionsFilterBody({
     takeFocus,
     (entry) => rowOf(body.current, entry.node.id)?.contains(document.activeElement) === true
   );
+  // A row's node is edited in place, in the document its text is written in, by the outline's
+  // own editing (`useNodeEditing.ts`): Enter on a row (`onEdit` of the keys below) and a press
+  // on a row's words (`pressWords`) ask for it, the page draws that document's one editor
+  // (`onEditing`), and the row whose key `editing` holds draws it on its stage in place of its
+  // words. The editing finds the row by its key (`data-row-key`) inside the list's own element,
+  // which holds the foot's rows too, since they stand outside the tree element. Where a node
+  // holds no text to put a caret in, Enter says why at the row (`reportHere`). The list keeps no
+  // note of the reader's own edit (`onOwnEdit`): the outline keeps one to tell a read that drops
+  // the edited row from another person's, while here an entry a read takes out of the list
+  // passes its focus on by the rule for one that leaves the page (the effect on `partOf`
+  // below), whoever wrote the words.
+  const { edit, editing, stopEditing } = useNodeEditing({
+    artifacts,
+    container: body,
+    onEditing,
+    onOwnEdit: () => {},
+    onReport: reportHere,
+  });
+  // A press on a row's words asks for the caret where the row takes one, by the outline's one
+  // rule (`takesCaret`): over the room of the issue the page's writer is of, and what each
+  // document's room admitted the page to. A row that does not is only given the focus by the
+  // press, as every row is, and nothing is said: Enter is what says why.
+  const pressWords = useWordsPress({ artifacts, edit, isClosed, onReport: reportHere });
   // The focus leaving the list with no press under way, by Tab or a script, lets go at once of
   // what the row opened, what a key reported and the reader's own review. A press on another
   // control of the page keeps them until that press has ended and its click has landed, or until
   // Escape, so nothing moves under the pointer (`useReleaseFocus`, decision 105 as amended). The
   // panel goes back to the issue's own facts as the focus leaves, unless it went to Details,
-  // where a reader reads the node's. No row of the list is edited in place.
+  // where a reader reads the node's. A row being edited keeps them, as the outline's does, until
+  // the editing ends.
   const leave = useCallback(() => {
     setFocused(undefined);
     setReport(undefined);
     ownReview.current = undefined;
   }, []);
-  const releaseFocus = useReleaseFocus({ editing: false, onLeave: leave });
+  const releaseFocus = useReleaseFocus({ editing: editing !== undefined, onLeave: leave });
   // The foot's control is inside the list, so the focus going to it from a row, by Tab or a
   // press, never leaves the list and `releaseFocus` does not act. The focus is off every row
   // all the same, so it does what the list's leave does, and the panel goes back to the issue's
@@ -696,9 +737,8 @@ export function DecisionsFilterBody({
 
   useTreeKeymap({
     container: body,
-    // The view edits no row: Enter opens the node in the conversation (`onEdit`), so no row's
-    // caret is ever held for the editing to end.
-    editing: false,
+    // Escape in the editor of the row being edited leaves the caret for the row (`onEditEnd`).
+    editing: editing !== undefined,
     holdsEscape,
     onCycle: () => {
       // Folding the foot takes its rows away, and a focus on one of them would drop to the
@@ -708,13 +748,10 @@ export function DecisionsFilterBody({
       setEverything(!everything);
       setFootShown(!everything);
     },
-    // Enter on a row goes to its node in the conversation, where the node is edited: this
-    // filter draws each entry and edits none (the prototype's `openDecItem`).
-    onEdit: (_row, node) => {
-      const path = conversationPath(node);
-      if (path !== undefined) navigate(path);
-    },
-    onEditEnd: NOTHING,
+    // Enter on a row puts the caret in its node's text, in place, where that text is written
+    // (`edit`); the entry's node in the conversation is its own link's to go to.
+    onEdit: edit,
+    onEditEnd: stopEditing,
     onFold: NOTHING,
     // `o` names the row by its key (`rowKeyOf`), the view's id before the node's, and the list
     // pins a row by its node's id, as the row's own control does.
@@ -740,10 +777,12 @@ export function DecisionsFilterBody({
     const id = node.id;
     const place = documentOfNode(id, artifacts);
     const mark = threads.get(id);
+    const key = rowKeyOf(drawnRowOf(entry, view.id));
     return (
       <DecisionsRow
         body={focused === id || pinned.has(id) || everything}
         {...(place === undefined ? {} : { document: place.artifact })}
+        {...(editing?.row === key ? { editing: editing.artifactId } : {})}
         entry={entry}
         focused={focused === id}
         isClosed={isClosed}
@@ -751,6 +790,7 @@ export function DecisionsFilterBody({
         level={part === "agents" ? 2 : 1}
         onFocus={() => press.focus(entry)}
         onPin={() => pin(id)}
+        onPressWords={() => pressWords(key, node)}
         // A Keep pressed or a Change sent is the press over: its click has landed, so the row
         // takes the focus at once rather than once the press's end comes, which the write's
         // answer can come before, and the decision would leave the review list from a row the
@@ -763,6 +803,7 @@ export function DecisionsFilterBody({
         reader={reader}
         {...(report !== undefined && (report.row ?? tabStop) === id ? { report: report.line } : {})}
         review={part === "review"}
+        rowKey={key}
         statementNames={statementNames}
         tabStop={tabStop === id}
         {...(mark === undefined ? {} : { threadRead: mark })}
@@ -979,6 +1020,12 @@ function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
     container?.querySelector<HTMLElement>(`[data-node-row][data-node-id="${CSS.escape(id)}"]`) ??
     null
   );
+}
+
+/** The row the outline's keys read for `entry`: at the list's one level, under the view, which is
+ *  the key (`rowKeyOf`) the row's own `data-row-key` carries and the editing finds the row by. */
+function drawnRowOf(entry: DecisionsEntry | NamedEntry, viewId: string): DrawnRow {
+  return { kind: "node", level: 1, node: entry.node, trail: [viewId] };
 }
 
 /** The entry that stood after `id` in `part` as `before` drew the list, else the one before

@@ -1,14 +1,17 @@
 import {
+  createContext,
   type KeyboardEvent,
-  type MouseEvent,
   type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 
-import type { Actor, CheckBlock } from "../../../api/types";
+import type { Actor, Artifact, CheckBlock } from "../../../api/types";
 import {
   focusVisibleRing,
   pageFailedText,
@@ -39,7 +42,7 @@ import {
 import { parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
-import { CutWords } from "../CutWords";
+import { useDocumentStage } from "../document-stage";
 import { chipName, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
@@ -62,8 +65,10 @@ import {
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
+import { type Press, trackPress } from "../press-focus";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
+import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
   type CheckReading,
@@ -161,16 +166,29 @@ export function queryTyped(query: string): boolean {
  *
  * A check's four attributes and what its result recorded are its node's facts
  * (`check-facts.ts`), drawn in the body that opens while the reader's focus is anywhere in the
- * check's row and while the reader has pressed it open, as the outline opens a focused node's
- * body: a `run` as a command with its own copy control, a screenshot as a picture, `when` as
- * words. A statement no check serves carries its gap in full, where the picture draws "No check
- * proves this".
+ * check's row and while the reader keeps it open by the check's Facts control or by `o`, as the
+ * outline opens a focused node's body: a `run` as a command with its own copy control, a
+ * screenshot as a picture, `when` as words. A statement is drawn whole, and one no check serves
+ * carries its gap in full, where the picture draws "No check proves this".
+ *
+ * A row's node is edited in place, in this view, as a row of the outline is
+ * (`useNodeEditing.ts`): Enter on a statement's row, a check's row or another row of the table,
+ * or on a check's words, puts the caret at the start of that node's text, in the document the
+ * text lives in, and the row says why where none goes in; a pointer's press on the words of any
+ * of those rows does the same where the row takes a caret (`takesCaret`), and else only gives the
+ * row the focus, and a press on a control inside them, or one that ends a selection made in them,
+ * is not the words' (`pressAsksCaret`). The page draws that document's one editor (`onEditing`),
+ * and the row draws it on its stage in place of its words while it is the row edited; Escape
+ * gives the row back the focus and its words.
  */
 export function VerificationFilterBody({
   addressed,
+  artifacts,
   checks,
   context,
+  isClosed,
   namesLine,
+  onEditing,
   published,
   reads,
   view,
@@ -180,12 +198,18 @@ export function VerificationFilterBody({
    *  of it with the reader's chip applied (`tell`), before the browser paints and again as what
    *  it draws changes, once all three reads have answered (`slots/view-verification.tsx`). */
   addressed?: { readonly named: ReadonlySet<string>; readonly tell: (drawn: boolean) => void };
+  /** Each artifact of the issue by its slug (`issue-artifacts.ts`), which a row's node is edited
+   *  in: the document its text lives in. */
+  artifacts: ReadonlyMap<string, Artifact>;
   /** The issue's checks with the results recorded against them, as the results read answers
    *  them (`GET /api/v1/issues/{key}/results`), which the page has already read for its tree. */
   checks: readonly CheckBlock[];
   /** The ids of the rows the filter draws as context, which under Verification is every
    *  statement (`presets.ts`). */
   context: ReadonlySet<string>;
+  /** Whether the issue is closed: its documents take no typing, so no press on a row's words
+   *  puts a caret in them (`takesCaret`). */
+  isClosed: boolean;
   /** The names' line while the page's names reads stand failed (`outline-reads.ts`'s
    *  `useOutlineReads`), the outline's own: its words and a Retry that asks those reads again, and
    *  none while they do not stand failed. Every reference the rows and the parent lines draw
@@ -194,6 +218,9 @@ export function VerificationFilterBody({
    *  its own reads' lines, as the outline draws it after the lines of the reads its rows come
    *  from. */
   namesLine: OutlineReads["names"];
+  /** Tells the page which document a row is being edited in, so it draws that document's one
+   *  editor for the row to take onto its stage (`IssuePresetPanels.tsx`'s `useOutlineEditing`). */
+  onEditing: OnEditing;
   /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
    *  which the body hands every row it draws in the render that draws it
    *  (`PublishedReferenceNames`), as the outline does (`IssueTree`'s `published`): a reference
@@ -274,13 +301,20 @@ export function VerificationFilterBody({
     }),
     ...namesLine,
   ];
+  // Each node the body draws a row of: each statement, the checks under it, each check that
+  // serves no statement, and each other row.
+  const drawnNodes = useMemo<readonly TreeNode[]>(
+    () =>
+      [...shown.flatMap((statement) => [statement, ...statement.checks]), ...loose]
+        .map((reading) => reading.node)
+        .concat(others),
+    [loose, others, shown]
+  );
   // Whether a row of the address's node is drawn: a statement, a check, or another row.
   useLayoutEffect(() => {
     if (!answered || addressed === undefined) return;
-    const readings = [...shown, ...shown.flatMap((statement) => statement.checks), ...loose];
-    const nodes = [...readings.map(({ node }) => node), ...others];
-    addressed.tell(nodes.some(({ id }) => addressed.named.has(id)));
-  }, [addressed, answered, loose, others, shown]);
+    addressed.tell(drawnNodes.some(({ id }) => addressed.named.has(id)));
+  }, [addressed, answered, drawnNodes]);
   // Each statement of the issue by its address, named as every chip of the page names a block
   // (`chipName`): by the line the names store projects beside its name from the reading the page
   // published for it, its first block that holds words (`KnownReferences.lines`), which "Also
@@ -308,8 +342,8 @@ export function VerificationFilterBody({
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
-  // the focus alone decides. It is held here rather than in each check so the tree's keys and a
-  // press on a statement's words press a check as its own words do. A row that is no longer
+  // the focus alone decides. It is held here rather than in each check so `o` on a statement's
+  // row presses each of its checks as their own Facts controls do. A row that is no longer
   // drawn forgets its press, as an unmounted row forgets its state.
   const [presses, setPresses] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   if (presses.size > 0 && [...presses.keys()].some((id) => !rows.includes(id))) {
@@ -324,42 +358,76 @@ export function VerificationFilterBody({
       return next;
     });
   };
-  /** Each check row a press on `row` reaches, by its id in `rows`, and whether its facts are
-   *  drawn, by the focus or by a press, as its row says (`aria-expanded`): a check's own row,
-   *  or each check of a statement. Each row element carries its own id
-   *  (`data-verification-row`), so no id is read from where its row stands among the others. */
-  const checksOf = (row: HTMLElement): { drawn: boolean; id: string }[] => {
+  /** Each check row `o` on `row` reaches, by its id in `rows`: a check's own row, or each check
+   *  of a statement. Each row element carries its own id (`data-verification-row`), so no id is
+   *  read from where its row stands among the others. */
+  const checksOf = (row: HTMLElement): string[] => {
     const reached = row.matches(CHECK_ROW)
       ? [row]
       : row.matches(STATEMENT_ROW)
         ? [...row.querySelectorAll<HTMLElement>(CHECK_ROW)]
         : [];
-    return reached.flatMap((check) => {
-      const id = check.dataset.verificationRow;
-      return id === undefined
-        ? []
-        : [{ drawn: check.getAttribute("aria-expanded") === "true", id }];
-    });
-  };
-  /** Enter on a check's row or a statement's, and a pointer's press on a statement's words: each
-   *  check's facts opened, or each shut where all of them are drawn. On a check's row that is the
-   *  press its words take, the opposite of what is drawn. The answer is whether the row reached a
-   *  check. */
-  const pressChecks = (row: HTMLElement): boolean => {
-    const reached = checksOf(row);
-    const open = !reached.every((check) => check.drawn);
-    for (const check of reached) press(check.id, open);
-    return reached.length > 0;
+    return reached.flatMap((check) => check.dataset.verificationRow ?? []);
   };
   /** `o`, on a row or on a control inside it: the facts of each check it reaches kept drawn once
    *  the focus leaves, or let go where the reader kept them, as the outline's `o` keeps a row's
    *  body open. The answer is whether the row reached a check. */
   const keepChecks = (row: HTMLElement): boolean => {
     const reached = checksOf(row);
-    for (const check of reached) {
-      press(check.id, presses.get(check.id) === true ? undefined : true);
+    for (const id of reached) {
+      press(id, presses.get(id) === true ? undefined : true);
     }
     return reached.length > 0;
+  };
+  // The tree's own element, inside which the editing finds the row it edits by the row's key
+  // (`data-row-key`, which is the row's id in `rows`).
+  const tree = useRef<HTMLDivElement | null>(null);
+  // What a key reported where it put no caret, and the row it was pressed on, read from the focus
+  // as the Decisions view reads it (`DecisionsFilterBody`'s `reportHere`), which draws it at its
+  // end until the focus moves to another row or leaves the view, as an outline's row draws one
+  // (`NodeRow`'s `report`). A report made with the focus on no row is drawn at the tab stop.
+  const [report, setReport] = useState<{ readonly line: string; readonly row?: string }>();
+  const reportHere = useCallback((line: string) => {
+    const row = document.activeElement?.closest<HTMLElement>(TREE_ROW)?.dataset.verificationRow;
+    setReport(line === "" ? undefined : { line, ...(row === undefined ? {} : { row }) });
+  }, []);
+  const reportFor = (id: string): string | undefined =>
+    report !== undefined && (report.row ?? rovingId) === id ? report.line : undefined;
+  // A row's node is edited in the document its text lives in by the outline's own editing,
+  // which asks the page for that document's one editor (`onEditing`) and finds the row by its
+  // key. An edit of the reader's own needs no note of the view's: the view keys its rows by
+  // their nodes' ids, so a read that draws a row again keeps it, and its editor with it.
+  const { edit, editing } = useNodeEditing({
+    artifacts,
+    container: tree,
+    onEditing,
+    onOwnEdit: () => {},
+    onReport: reportHere,
+  });
+  /** The document the row with this id is being edited in, while it is the row edited. */
+  const editingFor = (id: string): string | undefined =>
+    editing?.row === id ? editing.artifactId : undefined;
+  /** Enter on a row, or on a check's words: the caret asked for in the node of the row with this
+   *  id (`useNodeEditing`'s `edit`), which says why where no caret goes in. What a key reported
+   *  before goes as it asks. */
+  const editRow = (row: string, node: TreeNode) => {
+    reportHere("");
+    edit(row, node);
+  };
+  // A pointer's press on a row's words, which asks for the caret as Enter does only where the row
+  // takes one, by the outline's one rule (`takesCaret`), and else leaves the row the focus the
+  // press gave it with nothing said.
+  const pressWords = useWordsPress({ artifacts, edit, isClosed, onReport: reportHere });
+  /** Enter on a row itself: the caret asked for in the node it draws (`editRow`), found by the
+   *  row's own `data-node-id` among the statements, the checks under them or of the table's own,
+   *  and the other rows. The answer is whether the row draws one: the issue's row holds no text,
+   *  and Enter there is left to the page. */
+  const enterRow = (row: HTMLElement): boolean => {
+    const id = row.dataset.verificationRow;
+    const node = drawnNodes.find((drawn) => drawn.id === row.dataset.nodeId);
+    if (id === undefined || node === undefined) return false;
+    editRow(id, node);
+    return true;
   };
   // The tree's keys, which are the outline's. The page's keymap listens on `window` and leaves a
   // key a handler held back, so this handler holds back each key it acts on, and only those:
@@ -372,8 +440,8 @@ export function VerificationFilterBody({
     if (appKeymap.pending() !== "") return;
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
-    // A key typed into a field or into text the reader edits is typing. The view draws
-    // neither; a field a row draws keeps its keys.
+    // A key typed into a field or into text the reader edits is typing. The view draws no field
+    // of its own, and the editor of a row it edits is drawn in that row; each keeps its keys.
     if (target.isContentEditable || target.matches("input, select, textarea")) return;
     // A key the tree does nothing with reaches the keymap before the rows are read.
     const key = event.key;
@@ -399,9 +467,11 @@ export function VerificationFilterBody({
     // Enter is the row's only on the row itself: on a control inside it, a chip, a link or a
     // check's words, it is that control's own.
     const acted =
-      key === "Enter" ? target === row && pressChecks(row) : key === "o" && keepChecks(row);
+      key === "Enter" ? target === row && enterRow(row) : key === "o" && keepChecks(row);
     if (acted) event.preventDefault();
   };
+  // The press under way anywhere on the page, followed once for every check row drawn.
+  const viewPress = useViewPress();
   const drawnBody = (
     <div className={BODY} data-verification-body="">
       {/* Each line, the page's one line for a failed read (`FailedReadLine`): its words and a
@@ -429,7 +499,18 @@ export function VerificationFilterBody({
       <div
         aria-label={CONTROL_LABELS.tree}
         className="flex min-w-0 flex-col"
+        // The focus moving to another row, or out of the view, is the reader going on from what
+        // a key reported at a row.
+        onBlur={(event) => {
+          const to = event.relatedTarget;
+          if (!(to instanceof Node && event.currentTarget.contains(to))) setReport(undefined);
+        }}
+        onFocus={(event) => {
+          const at = event.target.closest<HTMLElement>(TREE_ROW)?.dataset.verificationRow;
+          setReport((held) => (held?.row === at ? held : undefined));
+        }}
         onKeyDown={keyDown}
+        ref={tree}
         role="tree"
         tabIndex={-1}
       >
@@ -462,10 +543,13 @@ export function VerificationFilterBody({
               {shown.map((statement) => (
                 <Statement
                   context={context.has(statement.node.id)}
+                  editingFor={editingFor}
                   key={statement.node.id}
+                  onEdit={editRow}
                   onPress={press}
-                  onPressChecks={pressChecks}
+                  onPressWords={pressWords}
                   presses={presses}
+                  reportFor={reportFor}
                   statement={statement}
                   statementNames={statementNames}
                   tabIndexFor={tabIndexFor}
@@ -490,18 +574,29 @@ export function VerificationFilterBody({
               {loose.map((check) => (
                 <Check
                   check={check}
+                  editing={editingFor(check.node.id)}
                   kept={table.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
                   key={check.node.id}
                   loose={true}
+                  onEdit={() => editRow(check.node.id, check.node)}
                   onPress={press}
+                  onPressWords={() => pressWords(check.node.id, check.node)}
                   pressed={presses.get(check.node.id)}
+                  report={reportFor(check.node.id)}
                   row={check.node.id}
                   statementNames={statementNames}
                   tabIndex={tabIndexFor(check.node.id)}
                 />
               ))}
               {others.map((node) => (
-                <OtherRow key={node.id} node={node} tabIndex={tabIndexFor(node.id)} />
+                <OtherRow
+                  editing={editingFor(node.id)}
+                  key={node.id}
+                  node={node}
+                  onPressWords={() => pressWords(node.id, node)}
+                  report={reportFor(node.id)}
+                  tabIndex={tabIndexFor(node.id)}
+                />
               ))}
             </div>
           </>
@@ -509,7 +604,11 @@ export function VerificationFilterBody({
       </div>
     </div>
   );
-  return <PublishedReferenceNames published={published}>{drawnBody}</PublishedReferenceNames>;
+  return (
+    <PublishedReferenceNames published={published}>
+      <ViewPressContext.Provider value={viewPress}>{drawnBody}</ViewPressContext.Provider>
+    </PublishedReferenceNames>
+  );
 }
 
 /** What one part of the body draws of its checks, a statement's or the table's own after its
@@ -758,19 +857,9 @@ const CELL = "min-w-0 px-3 py-[11px]";
  *  (`NodeFacts.tsx`'s two columns). */
 const RESULT_FACTS = "mt-1 min-w-0 [&_dl]:grid-cols-[fit-content(50%)_minmax(0,1fr)]";
 
-/** What a pointer's press inside a check's words, its latest result's cell or a statement's
- *  words belongs to rather than to the row: a link or a button, whose press is its own (a link
- *  in the words, the link of a statement's parent line, a statement's "more" control, the copy
- *  control, the line of earlier results), and the drawn facts, where a reader reads and selects
- *  as in the facts beside the words. */
-const OWN_PRESS = "a, button, [data-node-body]";
-
-/** Whether a pointer's press belongs to a link, a button or the drawn facts inside the element
- *  that heard it (`OWN_PRESS`) rather than to that element. */
-function pressIsOwn(event: MouseEvent<HTMLElement>): boolean {
-  const owner = event.target instanceof Element ? event.target.closest(OWN_PRESS) : null;
-  return owner !== null && event.currentTarget.contains(owner);
-}
+/** A check's small controls under its words and its latest result, its Facts control and the
+ *  line of its earlier results: quiet words, underlined as a link of the page is. */
+const QUIET_CONTROL = `dispatch-inline-link mt-1 text-xs leading-5 font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`;
 
 /** Every row of the tree, which it draws in the order `treeRows` names them, each carrying its
  *  id there as `data-verification-row`; a check's row, in its statement's group or of the
@@ -780,7 +869,7 @@ const CHECK_ROW = "[data-verification-check]";
 const STATEMENT_ROW = "[data-verification-card]";
 
 /** The keys the tree's handler acts on, the outline's: `j`, `k`, the arrows, Home and End move,
- *  Enter presses and `o` keeps. Every other key is the page keymap's. */
+ *  Enter edits and `o` keeps. Every other key is the page keymap's. */
 const TREE_KEYS: ReadonlySet<string> = new Set([
   "j",
   "k",
@@ -1043,16 +1132,19 @@ function Headings(): ReactNode {
 
 /**
  * One statement with the checks that serve it (the prototype's `.vt tr`, and its `.vcard` at
- * 760 px and below): how it stands at the commit the page names, its words, the node its words
- * came from as one line, and its gap where no check serves it. Its words are cut as an agent's
- * are on every row: a twenty-line statement opened this view on a wall of text.
+ * 760 px and below): how it stands at the commit the page names, its words, drawn whole, the
+ * node its words came from as one line, and its gap where no check serves it.
  *
  * It is a row of the tree, and its checks are one group of rows under it, drawn open; a
  * statement no check of this issue serves holds no group and so says nothing of being open. A
- * pointer's press on its words cell does what Enter on its row does: it opens the facts of each
- * of its checks, or shuts them where all of them are drawn; a press on its "more" control, on a
- * link in its words or on its parent line's link is that control's own. The control and the
- * links are tab stops, as every control of the view is. As a card its left edge is the
+ * pointer's press on its words cell puts the caret in its words where the row takes one, as
+ * Enter on its row does, and the row draws its document's one editor on its stage in place of
+ * the words while it is the row edited; a press on a control in the cell - a link in its words,
+ * its parent line's link, a drawn diagram's summary - is that control's own, and a click that
+ * ends a selection made in the words asks for nothing (`pressAsksCaret`). The links are tab
+ * stops, as every control of the view is. What a key reported at the row, where Enter put no
+ * caret, is drawn at the end of the statement's own cell, before the rows of its checks, which
+ * say their own. As a card its left edge is the
  * statement's teal, or the failed red where it reads Not met or no check serves it, so the card
  * says so before its words are read. How it stands is the issue's reading of it, whatever a
  * words query left of its checks.
@@ -1064,21 +1156,33 @@ function Headings(): ReactNode {
  */
 function Statement({
   context,
+  editingFor,
+  onEdit,
   onPress,
-  onPressChecks,
+  onPressWords,
   presses,
+  reportFor,
   statement,
   statementNames,
   tabIndexFor,
 }: {
   context: boolean;
+  /** The document the row with this id is being edited in, while it is the row edited (the
+   *  body's `editingFor`). */
+  editingFor: (id: string) => string | undefined;
+  /** Asks for the caret in the node of the row with this id by Enter, as on a check's words (the
+   *  body's `editRow`). */
+  onEdit: (row: string, node: TreeNode) => void;
   /** Sets the press of the check row with this id (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
-  /** Presses the facts of the checks of this statement's row, as Enter on it does (the body's
-   *  `pressChecks`). */
-  onPressChecks: (row: HTMLElement) => void;
+  /** Asks for the caret in the node of the row with this id by a pointer's press on its words,
+   *  where the row takes one (the body's `pressWords`). */
+  onPressWords: (row: string, node: TreeNode) => void;
   /** Each drawn check's press, by its row's id. */
   presses: ReadonlyMap<string, boolean>;
+  /** What a key reported at the row with this id, where it put no caret (the body's
+   *  `reportFor`). */
+  reportFor: (id: string) => string | undefined;
   statement: DrawnStatement;
   /** Each statement of the issue by its address, named by its first words (`AlsoUnder`). */
   statementNames: ReadonlyMap<string, string>;
@@ -1087,6 +1191,7 @@ function Statement({
 }): ReactNode {
   const node = statement.node;
   const failing = statement.state === "not_met" || node.gaps.includes("no_check");
+  const editing = editingFor(node.id);
   return (
     <div
       aria-expanded={statement.checks.length === 0 ? undefined : true}
@@ -1096,6 +1201,7 @@ function Statement({
       data-node-id={node.id}
       data-node-row=""
       data-node-type={node.type}
+      data-row-key={node.id}
       data-statement-state={statement.state}
       data-verification-card=""
       data-verification-row={node.id}
@@ -1108,9 +1214,7 @@ function Statement({
       <div
         className={`flex min-w-0 flex-col ${CELL}`}
         onClick={(event) => {
-          if (pressIsOwn(event)) return;
-          const row = event.currentTarget.closest<HTMLElement>(TREE_ROW);
-          if (row !== null) onPressChecks(row);
+          if (pressAsksCaret(event, editing)) onPressWords(node.id, node);
         }}
       >
         <p
@@ -1124,17 +1228,17 @@ function Statement({
             {VERIFICATION_WORDS.states[statement.state]}
           </span>
         </p>
-        <CutWords
-          className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`}
-          tabStops
-          whole={false}
+        <div
+          className={`relative min-w-0 text-[15px] leading-6 ${pageWordsText}`}
+          data-node-words=""
         >
-          <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
-        </CutWords>
+          <RowWords editing={editing} node={node} />
+        </div>
         {node.parentLine === undefined ? null : (
           <NodeParentLine line={node.parentLine} spaced tabStops />
         )}
         <Gaps node={node} />
+        <RowReport className="mt-1" line={reportFor(node.id)} />
       </div>
       <div className="flex min-w-0 flex-col">
         {statement.checks.length === 0 ? null : (
@@ -1146,15 +1250,19 @@ function Statement({
               // recorded or withdrawn while the reader is in the view draws the same row again,
               // so the focus on its words, a link in them or its facts stays where it is, and
               // so do the earlier results the reader opened. The row's id tells this placement
-              // of the check from its others for presses.
+              // of the check from its others, for presses and for the row edited.
               return (
                 <Check
                   check={check}
+                  editing={editingFor(row)}
                   kept={statement.kept.get(check.node.id) ?? NO_KEPT_RESULTS}
                   key={check.node.id}
                   loose={false}
+                  onEdit={() => onEdit(row, check.node)}
                   onPress={onPress}
+                  onPressWords={() => onPressWords(row, check.node)}
                   pressed={presses.get(row)}
+                  report={reportFor(row)}
                   row={row}
                   statementNames={statementNames}
                   tabIndex={tabIndexFor(row)}
@@ -1182,6 +1290,48 @@ function Statement({
   );
 }
 
+/** The press under way anywhere on the page, followed once for every check row the body draws
+ *  (`trackPress`, from the `mousedown` whose default moves the focus): whether one is held, from
+ *  its start until the task after it ends, and `afterPress`, which has `decide` called once the
+ *  press under way has ended (`Check`). A row drawn with no body around it sees no press. */
+interface ViewPress {
+  readonly afterPress: (decide: () => void) => void;
+  readonly pressing: boolean;
+}
+
+const ViewPressContext = createContext<ViewPress>({ afterPress: () => {}, pressing: false });
+
+/** The body's `ViewPress`: one `trackPress` for the whole view, whose end calls each `decide`
+ *  queued while it was held, once, and forgets them. */
+function useViewPress(): ViewPress {
+  const press = useRef<Press | undefined>(undefined);
+  const queued = useRef<(() => void)[]>([]);
+  useEffect(() => {
+    const listening = new AbortController();
+    press.current = trackPress({
+      onEnd: () => {
+        const decides = queued.current;
+        queued.current = [];
+        for (const decide of decides) decide();
+      },
+      signal: listening.signal,
+      starts: ["mousedown"],
+    });
+    return () => listening.abort();
+  }, []);
+  return useMemo(
+    () => ({
+      afterPress: (decide: () => void) => {
+        queued.current.push(decide);
+      },
+      get pressing() {
+        return press.current?.pressing === true;
+      },
+    }),
+    []
+  );
+}
+
 /**
  * One check beside its latest result (the prototype's `.vc` and `.vres`): how it stands, by a
  * word and a shape, its own words, and the four attributes its body draws. Its earlier results
@@ -1194,46 +1344,72 @@ function Statement({
  * opened; the line opens them all, each drawn once.
  *
  * The facts of the check and of its results are drawn while the reader's focus is anywhere in
- * the row - its words, a link in them, its facts, its results, the line of earlier results or
- * the row itself - and while the reader has pressed them open, which is the rule the outline
- * draws a focused node's body by. A pointer's press on the words or on the latest result's cell,
- * or Enter or Space on the words, opens them where they are shut and shuts them where they are
- * open, the focus inside or not, so the row says what it does (`aria-expanded`) and does it; a
- * press on a link or a button of the row is that control's own. The words are a tab stop with
- * no role: their links are tab stops too, and no control holds another. So a reader reaches
+ * the row - its words, the editor drawn in their place, a link in them, its Facts control, its
+ * facts, its results, the line of earlier results or the row itself - and while the reader keeps
+ * them open, which is the rule the outline draws a focused node's body by. Two acts alone keep
+ * them drawn or shut them: `o` on the row, and the check's own Facts control, a button in its
+ * words' cell before the facts it opens, whose press opens them where they are shut and shuts
+ * them where they are open, the focus inside or not, and which says which it does as a
+ * disclosure button does (`aria-expanded`, the row's own value). The words are a tab stop with no
+ * role: their links are tab stops too, and no control holds another. Enter on them, and a
+ * pointer's press on them where the row takes a caret, puts the caret in the check's own text,
+ * which the row edits in place, drawing its document's one editor on its stage in place of the
+ * words while it is the row edited; a press on a control in the words - a link, a drawn diagram's
+ * summary - or on a button of the row is that control's own, and a click that ends a selection
+ * made in the words asks for nothing (`pressAsksCaret`); a press on the latest result's cell only
+ * gives the row the focus. So a reader reaches
  * every fact of a check and of its results by the keyboard alone, and the table stays the table
  * the picture draws.
+ *
+ * The row hears where the focus is by the browser's own focus events on its element (`focusin`,
+ * `focusout`), not by React's: the editor is drawn into the words through a portal, and React
+ * sends a portal's focus events up the portal's own parents, not up the elements it stands in, so
+ * a React handler on the row never hears the focus leave the editor, for another row or for
+ * anything out of the view.
  *
  * It is a row of the tree, across its words and its latest result: a row of the group under
  * its statement, or, for a check that serves no statement, a row of the table of its own
  * (`loose`). From 761 px up such a row stands in the statement grid with its first cell empty,
  * so its words stand under "Checks" and its result under "Latest result", as a statement's
  * checks do; at 760 px and below it is a card of its own. The row says whether its facts are
- * drawn, which is what the tree's keys read: Enter on the row itself presses it as its words do,
- * Enter on its statement's row opens or shuts it with the statement's other checks, and `o` keeps
- * it open or lets it go (the body's `pressChecks` and `keepChecks`).
+ * drawn (`aria-expanded`), which is what `o` reads (the body's `keepChecks`); Enter on the row
+ * itself puts the caret in the check's text as Enter on its words does, and where a key put none
+ * the row says why at its end (`report`).
  */
 function Check({
   check,
+  editing,
   kept,
   loose,
+  onEdit,
   onPress,
+  onPressWords,
   pressed,
+  report,
   row,
   statementNames,
   tabIndex,
 }: {
   check: CheckReading;
+  /** The document the check's text is being edited in, while this is the row edited. */
+  editing: string | undefined;
   /** The ids of its earlier results a words query kept, which it draws under its latest result
    *  while its line of earlier results is shut (`keptChecks`); empty with no query, and for a
    *  check the query kept no earlier result of. */
   kept: ReadonlySet<string>;
   /** Whether the check serves no statement, and so stands as a row of the table itself. */
   loose: boolean;
+  /** Asks for the caret in the check's text by Enter on its words (the body's `editRow`). */
+  onEdit: () => void;
   /** Sets this row's press (the body's `press`). */
   onPress: (row: string, pressed: boolean | undefined) => void;
+  /** Asks for the caret in the check's text by a pointer's press on its words, where the row
+   *  takes one (the body's `pressWords`). */
+  onPressWords: () => void;
   /** The reader's own press: open, shut, or neither, in which case the focus decides. */
   pressed: boolean | undefined;
+  /** What a key reported at the row, where it put no caret. */
+  report: string | undefined;
   /** The row's id in the tree: a check drawn under two statements is two rows. */
   row: string;
   /** Each statement of the issue by its address, named by its first words (`AlsoUnder`). */
@@ -1246,13 +1422,73 @@ function Check({
   // Whether the facts were drawn when the pointer went down: the focus its press puts in the row
   // draws them before the click, and the click must shut only what was drawn before it.
   const drawnAtPress = useRef<boolean | undefined>(undefined);
+  // The row's element, whose focus events say whether the focus is inside it, and the press, its
+  // setter and the editing as last drawn, which its listener reads as the focus leaves.
+  const viewPress = useContext(ViewPressContext);
+  const rowElement = useRef<HTMLDivElement>(null);
+  const pressedNow = useRef(pressed);
+  pressedNow.current = pressed;
+  const onPressNow = useRef(onPress);
+  onPressNow.current = onPress;
+  const editingNow = useRef(editing);
+  editingNow.current = editing;
+  const leave = useCallback(() => {
+    setFocusInside(false);
+    // A shut the reader pressed lasts while the focus stays; the next visit opens again.
+    if (pressedNow.current === false) onPressNow.current(row, undefined);
+  }, [row]);
+  // A `focusout` that names an element outside the row is the focus leaving it. One that names
+  // none is told by what dropped the focus. A press under way is the reader's act - one on blank
+  // space drops the focus to the page's body - and the press ending decides whether the focus is
+  // in the row then, edited or not. With no press, while the row is edited, the drop is the
+  // editing's own: Escape in the editor blurs it before it focuses the row, and the editor's
+  // redraw drops the focus to the page and puts it back on the block a microtask or a frame later
+  // (`useNodeEditing.ts`), neither of which leaves the row, so the facts the reader shut stay
+  // shut; the editing ending decides once whether the focus is in the row then (the effect
+  // below). With no press on a row not edited, the drop is decided a microtask later, by whether
+  // the focus is in the row then, as the body's box decides whether it holds the focus
+  // (`slots/body.tsx`'s `useFocusHeld`). Nothing is decided after the effect's cleanup - the row
+  // gone, or its id changed.
+  useLayoutEffect(() => {
+    const element = rowElement.current;
+    if (element === null) return;
+    const listening = new AbortController();
+    // Leaves the row where the focus has settled outside it, and does nothing after the cleanup.
+    const decide = () => {
+      if (!listening.signal.aborted && !element.contains(document.activeElement)) leave();
+    };
+    element.addEventListener("focusin", () => setFocusInside(true), { signal: listening.signal });
+    element.addEventListener(
+      "focusout",
+      (event) => {
+        const to = event.relatedTarget;
+        if (to instanceof Node) {
+          if (!element.contains(to)) leave();
+          return;
+        }
+        if (viewPress.pressing) viewPress.afterPress(decide);
+        else if (editingNow.current === undefined) queueMicrotask(decide);
+      },
+      { signal: listening.signal }
+    );
+    return () => listening.abort();
+  }, [leave, viewPress]);
+  const editedBefore = useRef(editing);
+  useLayoutEffect(() => {
+    const ended = editedBefore.current !== undefined && editing === undefined;
+    editedBefore.current = editing;
+    const element = rowElement.current;
+    if (ended && element !== null && !element.contains(document.activeElement)) leave();
+  }, [editing, leave]);
   const node = check.node;
   const surface = node.facts.find((fact) => fact.name === "surface")?.value ?? "";
   const opened = pressed ?? focusInside;
-  const pointerPress = (event: MouseEvent<HTMLElement>) => {
+  // The Facts control's press: the facts opened where they are shut and shut where they are
+  // open, by what was drawn as the pointer went down (`markPress`), and on the keyboard, which
+  // marks nothing, by what is drawn now.
+  const pressFacts = () => {
     const drawn = drawnAtPress.current ?? opened;
     drawnAtPress.current = undefined;
-    if (pressIsOwn(event)) return;
     onPress(row, !drawn);
   };
   const markPress = () => {
@@ -1273,22 +1509,23 @@ function Check({
     <>
       <div className={CELL}>
         {/* biome-ignore lint/a11y/noStaticElementInteractions: the words hold links that are tab
-            stops of their own, so no role may make them a control that holds controls; the row's
-            `aria-expanded` says what a press does. */}
+            stops of their own, so no role may make them a control that holds controls; a press
+            on them puts the caret in them, as Enter on them does. */}
         <div
           className={`flex min-w-0 items-baseline gap-2 text-sm leading-5 ${pageWordsText} ${focusVisibleRing}`}
           data-verification-check-words=""
-          onClick={pointerPress}
-          onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
-            // A key on a link in the words is the link's own.
-            if (event.target !== event.currentTarget) return;
-            if (event.key !== "Enter" && event.key !== " ") return;
-            if (event.altKey || event.ctrlKey || event.metaKey) return;
-            // Space presses the words and does not scroll the page.
-            event.preventDefault();
-            onPress(row, !opened);
+          onClick={(event) => {
+            if (pressAsksCaret(event, editing)) onPressWords();
           }}
-          onMouseDown={markPress}
+          onKeyDown={(event: KeyboardEvent<HTMLElement>) => {
+            // A key on a link in the words, or typed into the editor drawn in their place, is
+            // that one's own.
+            if (event.target !== event.currentTarget) return;
+            if (event.key !== "Enter") return;
+            if (event.altKey || event.ctrlKey || event.metaKey) return;
+            event.preventDefault();
+            onEdit();
+          }}
           // biome-ignore lint/a11y/noNoninteractiveTabindex: a check's words are a tab stop of the view.
           tabIndex={0}
         >
@@ -1297,7 +1534,7 @@ function Check({
             className={`mt-1.5 block size-[7px] shrink-0 rounded-full ${pageKindBullet.check}`}
           />
           <div className="min-w-0 break-words" data-node-words="">
-            <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+            <RowWords editing={editing} node={node} />
           </div>
         </div>
         {surface === "" ? null : (
@@ -1311,16 +1548,24 @@ function Check({
         )}
         <AlsoUnder chips={node.alsoUnder} names={statementNames} />
         <Gaps node={node} />
+        <button
+          aria-expanded={opened}
+          className={QUIET_CONTROL}
+          data-verification-facts=""
+          onClick={pressFacts}
+          onMouseDown={markPress}
+          type="button"
+          {...pageChrome}
+        >
+          {VERIFICATION_WORDS.facts}
+        </button>
         {opened ? (
           <div className="mt-1 min-w-0" data-node-body="">
             <NodeFacts facts={node.facts} tabStops />
           </div>
         ) : null}
       </div>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
-          pointer's way to the press the check's words take by Enter or Space; the cell is no
-          control of its own. */}
-      <div className={CELL} onClick={pointerPress} onMouseDown={markPress}>
+      <div className={CELL}>
         {check.state === undefined ? null : (
           <p
             className={`flex items-center gap-1.5 text-xs leading-5 font-semibold ${checkTone(check.state)}`}
@@ -1342,13 +1587,13 @@ function Check({
           />
         )}
         {check.earlier.length === 0 ? null : (
-          // The press leaves the focus where it is, as the "more" control's does (`CutWords`):
+          // The press leaves the focus where it is, as a cut text's "more" control's does:
           // the focus a pointer's press puts in the row draws the latest result's facts above
           // this line, which moves it from under the pointer before the press ends, and the
-          // click then opens the facts and not the earlier results this line opens in place.
+          // click then lands on what moved there and not on this line.
           <button
             aria-expanded={earlierShown}
-            className={`dispatch-inline-link mt-1 text-xs leading-5 font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
+            className={QUIET_CONTROL}
             data-verification-earlier=""
             onClick={() => setEarlierShown(!earlierShown)}
             onMouseDown={(event) => event.preventDefault()}
@@ -1370,6 +1615,7 @@ function Check({
           />
         ))}
       </div>
+      <RowReport className="col-span-full px-3 pb-[11px]" line={report} />
     </>
   );
   return (
@@ -1385,17 +1631,11 @@ function Check({
       data-node-row=""
       data-node-state={check.state}
       data-node-type={node.type}
+      data-row-key={row}
       data-verification-check=""
       data-verification-loose={loose ? "" : undefined}
       data-verification-row={row}
-      onBlur={(event) => {
-        const to = event.relatedTarget;
-        if (to instanceof Node && event.currentTarget.contains(to)) return;
-        setFocusInside(false);
-        // A shut the reader pressed lasts while the focus stays; the next visit opens again.
-        if (pressed === false) onPress(row, undefined);
-      }}
-      onFocus={() => setFocusInside(true)}
+      ref={rowElement}
       role="treeitem"
       tabIndex={tabIndex}
     >
@@ -1569,6 +1809,10 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
 /** A row the filter kept that is neither a statement nor a check: a node an address named,
  *  which outranks the filter. It is drawn by its kind and its words, so nothing the filter drew
  *  is lost. It is a row of the tree and of the table, as a check that serves no statement is.
+ *  Enter on it asks for the caret in its node's text, as on every row of the table, and the row
+ *  says why where none goes in; a pointer's press on its words asks for it too where the row
+ *  takes a caret (`takesCaret`), as on a statement's words or a check's, and else only gives the
+ *  row the focus.
  *  The links in its words are tab stops, as every control of the view is: the tree's keys move
  *  between rows and reach no link inside one. A comment or a message its author corrected
  *  carries its mark as the outline's row does (INFRA-1523, R2 and R3): a deleted one draws the
@@ -1576,7 +1820,23 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
  *  which names the actor as no registry knows it and the time as stored; an edited one says
  *  ` · edited` after its kind (`EditedMark`), outside its words, as the outline's row says it in
  *  its margin. */
-function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): ReactNode {
+function OtherRow({
+  editing,
+  node,
+  onPressWords,
+  report,
+  tabIndex,
+}: {
+  /** The document its node's text is being edited in, while this is the row edited. */
+  editing: string | undefined;
+  node: TreeNode;
+  /** Asks for the caret in its node's text by a pointer's press on its words, where the row takes
+   *  one (the body's `pressWords`). */
+  onPressWords: () => void;
+  /** What a key reported at the row, where it put no caret. */
+  report: string | undefined;
+  tabIndex: 0 | -1;
+}): ReactNode {
   const deleted = postDeletion({ deleted_at: node.deletedAt, deleted_by: node.deletedBy });
   return (
     <div
@@ -1585,6 +1845,7 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
       data-node-id={node.id}
       data-node-row=""
       data-node-type={node.type}
+      data-row-key={node.id}
       data-verification-other=""
       data-verification-row={node.id}
       role="treeitem"
@@ -1594,9 +1855,17 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
         <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
         <EditedMark at={node.editedAt} marks={NODE_EDITED_MARKS} />
       </p>
-      <div className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`} data-node-words="">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: a
+          pointer's way to what Enter on the row does; the words are no control of their own. */}
+      <div
+        className={`min-w-0 text-[15px] leading-6 ${pageWordsText}`}
+        data-node-words=""
+        onClick={(event) => {
+          if (pressAsksCaret(event, editing)) onPressWords();
+        }}
+      >
         {deleted === null ? (
-          <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+          <RowWords editing={editing} node={node} />
         ) : (
           <p className="break-words" {...authorText}>
             <DeletedLine deleted={deleted} />
@@ -1606,6 +1875,43 @@ function OtherRow({ node, tabIndex }: { node: TreeNode; tabIndex: 0 | -1 }): Rea
       {node.parentLine === undefined ? null : (
         <NodeParentLine line={node.parentLine} spaced tabStops />
       )}
+      <RowReport className="mt-1" line={report} />
     </div>
+  );
+}
+
+/** A row's words, or while the row is the one edited (`editing`, the document its node's text
+ *  is being edited in) the stage that document's one editor is drawn on in their place
+ *  (`useDocumentStage`), as a statement, a check and another row of the table each draw them. */
+function RowWords({ editing, node }: { editing: string | undefined; node: TreeNode }): ReactNode {
+  const stage = useDocumentStage(editing);
+  return editing === undefined ? (
+    <RowText markdown={node.text} source={node.source} tabStops tree={node.tree} />
+  ) : (
+    <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+  );
+}
+
+/** What a key pressed on a row reported where it put no caret (`useNodeEditing`'s `onReport`),
+ *  in the outline's own words for it (`KEY_REPORTS`), drawn at the end of the row's own content
+ *  as an outline's row draws one (`NodeRow`'s `report`): a status line, so it is said once drawn.
+ *  Nothing is drawn where the row holds no report. */
+function RowReport({
+  className,
+  line,
+}: {
+  className: string;
+  line: string | undefined;
+}): ReactNode {
+  if (line === undefined) return null;
+  return (
+    <p
+      className={`${className} text-xs leading-5 ${pageMutedText}`}
+      data-row-report=""
+      role="status"
+      {...pageChrome}
+    >
+      {line}
+    </p>
   );
 }

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { ANSWER_LINES } from "../page-words";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
-import fixture from "./__fixtures__/graph-edit.json";
+import { fixture } from "./graph-edit-fixtures";
 import {
   ENTRIES,
   type Entry,
