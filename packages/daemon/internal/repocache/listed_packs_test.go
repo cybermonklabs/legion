@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -368,6 +369,7 @@ func TestCachePublishesCompletePackSets(t *testing.T) {
 		{"an upload that fails leaves the old set listed, /tar and /healthz answering, and the next refresh lists the new one", testUploadFailureKeepsTheSet},
 		{"a pack without its index and an index without its pack are left out, and the rest of the clone is listed", testLoneFilesLeftOut},
 		{"a bucket that cannot be opened leaves /tar and /healthz answering, and the next refresh opens it", testBucketOpenTriedAgain},
+		{"a restarted cache whose bucket holds every pack already uploads none, and its log counts none uploaded", testRestartCountsNoUpload},
 	} {
 		t.Run(row.name, row.run)
 	}
@@ -588,6 +590,43 @@ func testBucketOpenTriedAgain(t *testing.T) {
 	t.Setenv(emulatorHostEnv, r.running.Addr())
 	r.refresh(t)
 	requireListing(t, listingOf(t, r.requirePacks(t)), cloneListing(t, r.c.dir), "at the refresh after the bucket could not be opened,")
+}
+
+// uploadedCount is the count of objects a sync's log line says it uploaded: the number just before
+// "uploaded" ("2 of them uploaded now", "0 uploaded").
+var uploadedCount = regexp.MustCompile(`\b(\d+) (?:of them )?uploaded\b`)
+
+// testRestartCountsNoUpload: a new process's cache on the same volume, whose bucket already holds
+// every pack and index of the clone, lists them all at its first sync and sends Cloud Storage no
+// upload (put reuses each object); the line that says what the sync listed counts as uploaded what
+// Cloud Storage was sent, none, so a reader of the cache's log after a restart, a daemon roll or an
+// autoscaler move is not told the cache wrote its whole clone to the bucket again.
+func testRestartCountsNoUpload(t *testing.T) {
+	r := newPacksRig(t)
+	r.refresh(t)
+	want := cloneListing(t, r.c.dir)
+	uploads := r.double.Count(fakegcs.RouteUpload).Requests
+	r.restart(t, clocktest.New(packsStart.Add(time.Minute)))
+	before := len(r.log.all())
+	r.refresh(t)
+	requireListing(t, listingOf(t, r.requirePacks(t)), want, "after the restart,")
+	if sent := r.double.Count(fakegcs.RouteUpload).Requests - uploads; sent != 0 {
+		t.Fatalf("the restarted cache sent %d uploads for objects the bucket held already", sent)
+	}
+	lines, counted := r.log.all()[before:], false
+	for _, line := range lines {
+		m := uploadedCount.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		counted = true
+		if m[1] != "0" {
+			t.Errorf("the restarted cache sent Cloud Storage no upload, and logged %q", line)
+		}
+	}
+	if !counted {
+		t.Errorf("the restarted cache's first sync logged no count of what it uploaded: %q", lines)
+	}
 }
 
 // TestCacheRetiresOnlyUnlistedPacks holds the cache's retirement of objects no set names (R2): an
