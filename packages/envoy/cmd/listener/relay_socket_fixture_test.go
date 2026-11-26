@@ -538,7 +538,7 @@ func (f relayFrameRead) data(t *testing.T) []byte {
 func (rig *relaySocketRig) openSocket(t *testing.T, session string) *relaySocket {
 	t.Helper()
 	var found *relaySocket
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
 		rig.sockets.mu.Lock()
 		defer rig.sockets.mu.Unlock()
 		for socket := range rig.sockets.open[session] {
@@ -559,7 +559,7 @@ func (rig *relaySocketRig) openSocket(t *testing.T, session string) *relaySocket
 func (socket *relaySocket) awaitSubscription(t *testing.T) *natsgo.Subscription {
 	t.Helper()
 	var held *natsgo.Subscription
-	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
 		socket.subsMu.Lock()
 		defer socket.subsMu.Unlock()
 		for _, sub := range socket.subs {
@@ -757,7 +757,7 @@ func flood(t *testing.T, url, session string, n int) {
 // client, failing the test when it never does within 10 s.
 func awaitBlockedWrite(t *testing.T, socket *relaySocket) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 10*time.Millisecond, func() bool {
 		frames, _ := socket.held()
 		return frames > 1
 	}) {

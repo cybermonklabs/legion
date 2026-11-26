@@ -87,16 +87,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -142,7 +138,6 @@ const ladderTolerance = 45 * time.Second
 // each pane, the daemon's own log as this driver reads it back, and the three issues it drives.
 type providerErrorLive struct {
 	liveAgentProof
-	built *built
 	clock *ladderClock
 	// ladder, refused and failing are the three issues, each in the phase its one worker works.
 	ladder, refused, failing string
@@ -185,8 +180,8 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	proof := newLiveProof(t, "scripts/e2e/provider-error-retry.sh")
 	r := &providerErrorLive{
 		liveAgentProof: liveAgentProof{liveProof: proof, omp: omp},
-		built:          &built{}, clock: &ladderClock{},
-		ladder: proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
+		clock:          &ladderClock{},
+		ladder:         proof.cfg.Project + "-1", refused: proof.cfg.Project + "-2", failing: proof.cfg.Project + "-3",
 		stands: map[string]*providerStandin{},
 	}
 	r.seeded = []seededIssue{
@@ -259,22 +254,12 @@ func (r *providerErrorLive) registerController() {
 	r.note("the project's controller is registered as %s, so a notice for it is published rather than dropped", session)
 }
 
-// overrides is the daemon this proof boots: the local runtime over the real worker stream, the
-// ladder's clock, the API listener the fixture holds, and the workflow's App tokens stood in for.
+// overrides is the daemon this proof boots: the local runtime's own wiring (daemonOverrides), the
+// ladder's clock, and the workflow's App tokens stood in for.
 func (r *providerErrorLive) overrides() overrides {
-	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, _ appauth.Source,
-			_ func(context.Context, string) (ghrepo.Repository, string, error), _ *store.Store, _ func() []ghrepo.Repository) (runtime.Runtime, error) {
-			r.built.mu.Lock()
-			defer r.built.mu.Unlock()
-			r.built.conns, r.built.address = listener, address
-			r.rt.conns, r.rt.stream = listener, address
-			return r.rt, nil
-		},
-		clock:          r.clock,
-		listen:         heldListen,
-		workflowTokens: &workflowTokenRecorder{},
-	}
+	o := r.rt.daemonOverrides(r.rt)
+	o.clock, o.workflowTokens = r.clock, &workflowTokenRecorder{}
+	return o
 }
 
 // seed records the three issues as the daemon would hold them at the moment each one's worker

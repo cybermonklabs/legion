@@ -111,7 +111,7 @@ func (rig *recipientRig) storeSessionEntryOf(t *testing.T, sessionID, topic stri
 		t.Fatalf("register %s's interest: %v", sessionID, err)
 	}
 	storeSessionHeartbeat(t, rig.harness.client, sessionID, heartbeat)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		if _, state := rig.harness.sessions.Lookup(sessionID); state == want {
 			break
@@ -199,7 +199,7 @@ func (rig *recipientRig) watchCopiesOn(t *testing.T, clock *listenerClock) map[s
 // awaitCopiesServable waits until every one of copies can be served.
 func awaitCopiesServable(t *testing.T, copies map[string]countedCopy, what string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, what, func() bool {
+	waitFor(t, what, func() bool {
 		for _, cache := range copies {
 			if cache.Servable() != nil {
 				return false

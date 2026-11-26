@@ -10276,7 +10276,7 @@ each issue's pod (every role of it alike) and the image probe's.
   or `broker: the token exchange took a session name from the account paired with its own` where the pod's own token exchange took the name before the pod enrolled, and the enrollment then logs no take of its own.
   So before changing `service_account`, give the broker both settings and redeploy it:
   the new account's `legion-daemon=` entry in `BROKER_SERVICES` (above), without which the broker refuses each pod of that account `403 POD_NOT_LAUNCHED`, and the pair, which its start line then names, `session account pairs state=on pairs=<pairs>`.
-  Where `runtime.kubernetes.agent_secrets.exchange_audience` is set (below), the new account also needs an entry of its own in `BROKER_EXCHANGE_ACCOUNTS`, without which the broker refuses the daemon's registration of each of its pods' sessions `403 POD_ACCOUNT_NOT_LISTED`, and refuses each token those pods trade.
+  Where `runtime.kubernetes.agent_secrets.exchange_audience` is set (below), the new account also needs an entry of its own in `BROKER_EXCHANGE_ACCOUNTS`, or in `BROKER_EXCHANGE_JOB_ACCOUNTS` where its pods write as a job and for no person, without which the broker refuses the daemon's registration of each of its pods' sessions `403 POD_ACCOUNT_NOT_LISTED`, and refuses each token those pods trade.
   A pair works both ways, so moving the pods back needs no change of the setting.
   A pair added after a role's enrollment was refused takes effect at that role's next enrollment, which the daemon makes at the shim's next hello, on a redial of its connection or at the claim's next generation (above):
   the old enrollment's grants and pending requests come across while the broker still keeps them, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default) after that enrollment ended, and its withheld secrets come across at that next enrollment whenever it comes.
@@ -10402,17 +10402,18 @@ An issued token carries these claims and no others:
 - `person` — the person the session acts for.
 
 - `service` — the service a token that names no person is, and nothing for a token that names one.
-  That service is a machine's fleet, the service a read entry names, or the account of a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<account>==`), which that token acts as and Dispatch records its writes under.
+  That service is a machine's fleet, the service a read entry names, the account of a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<account>==`), which that token acts as and Dispatch records its writes under, or, for a job's token, the identity its job entry lists: a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's `<repository>/<workflow path>@<ref>`, or a Google account's address.
 
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named`, `person` or `none`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of one of them: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
+- `project_scope` — `named`, `person`, `none` or `public`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of one of them: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
   Only a read entry's token carries `none`, and that token writes nothing.
   A token carrying a narrowed word writes nothing either.
+  Only a job's token carries `public`: it reaches every public project, which no list names, and the private projects `projects` lists.
 
-- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
-  A token whose trade named none, and a token that names a service and no person, a read entry's `none` token among them, carry none.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a job's token, its job entry's whole list, whatever its trade named: the one project of a `named` token, or the 0 to 16 private projects of a `public` one.
+  A `person` token whose trade named none, a machine's token that names a service and no person, and a read entry's `none` token carry none.
 
 - `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
@@ -10449,7 +10450,17 @@ A driver that renews a copy's read token keeps the sign-in trading ordinarily as
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.
-A request under an entry may name that entry's project or nothing, and is refused when it names any other; a token that names no person is refused any project.
+A request under an entry that names a person may name that entry's project or nothing, and is refused when it names any other; a machine's token that names no person is refused any project.
+A job entry gives each of those three kinds a job's list in place of a person and a project (`exchange.JobProjects`):
+`BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod (`<service account>=<projects>[=<session>]`), `BROKER_EXCHANGE_JOB_WORKFLOWS` for a workflow run (`<repository>=<workflow path>=<ref>=<projects>[=<session>]`) and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine (`<service account email>=<projects>[=<session>]`, of an account `BROKER_VM_SERVICES` lists).
+`<projects>` is one project key, or `public` followed by `,<key>` for each of at most 16 private projects; `public` counts toward none.
+The token a job entry mints names the listed identity as its service and no person, holds no OAuth scope, and carries the entry's project scope and whole list, whatever the request names: `named` and its one project, or `public` and its private projects.
+A request under a job entry may name no project or only projects of the list, and is refused when it names any other, a public project's key under a `public` entry included, since the broker cannot tell a public project's key from a key no project holds.
+The broker asks Dispatch nothing for a job's token: the operator's entry chose the list, and it names no person whose sight of a project there is to check.
+A job entry that fixes no session takes the session the trade names, and the broker refuses a trade that names none; a job pod's entry that fixes no session takes a registration as a person's pod entry does, and one that fixes its session refuses a registration `409 SESSION_FIXED`.
+The launcher credential a machine's job trade mints still records the account's `BROKER_VM_SERVICES` service.
+Every machine of a `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` account trades for a job's token and writes to Dispatch as the job, for no person, so list an account there only when every machine that runs as it is the job's.
+The broker refuses to start on an identity that a job setting and the setting of its kind that names a person both list, and on an account that `BROKER_EXCHANGE_JOB_ACCOUNTS` and `BROKER_EXCHANGE_READ_ACCOUNTS` both list, because one identity has one answer.
 A machine login's token needs no entry at all: the person is the login's approver and the scope is `person` (`Set.Machine`).
 A person's own Google identity token needs the machine's own as the actor token, of an account an entry lists (`Set.Person`):
 the person's `hd` claim must name the Workspace domain `BROKER_SIGNIN_DOMAIN` gives, the scope is `person`, and the token names that person and that machine.
@@ -10482,15 +10493,16 @@ It authenticates with its own Kubernetes service-account token, or, on a machine
 The answer carries `active` and, for a live token, those claims, `exp`, `client_id` and `jkt` (`Introspection`, `packages/envoy/internal/cipher/oauth/introspect.go`).
 
 A broker that sets none of `BROKER_EXCHANGE_K8S_AUDIENCE`, `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_GOOGLE_OIDC_AUDIENCE` accepts no pod's token, no workflow run's token and no machine's identity token, and says so at boot with the log line `token exchange state=unconfigured`.
-With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`) and machine entries included (`packages/envoy/cmd/cipherd/main.go`).
+With any one of them set it logs `token exchange state=on`, naming which issuers it accepts and how many entries it holds, read entries (`read_accounts`), machine entries (`machines`) and job entries (`job_accounts`, `job_workflows`, and `job_machines`, which `machines` counts too) included (`packages/envoy/cmd/cipherd/main.go`).
 A machine login's access token is exchanged in both cases, because its subject type is always registered (`ExchangeConfig.tokenTypes`, `packages/envoy/internal/cipher/oauth/exchange.go`).
-For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/cipher/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its section "Exchange a pod's token".
+For the settings themselves, read the broker's generated configuration reference, which `docs/site/generators/broker-reference.sh` writes from the doc comments in `packages/envoy/internal/cipher/config/config.go`, and the walk-through in `docs/site/src/content/docs/broker/guides/run-locally.md`, its sections "Exchange a pod's token" and "Exchange a job's token".
 
 Of what Legion runs, the operator-launched controller can present such a token, and under `dispatch_token_broker: true` so can the daemon and each role it starts in a pod that carries the exchange identity ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 Without that setting, a pod, the daemon and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes, and a tmux pane always does, since a tmux daemon is refused the setting.
 An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
 Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names, and holds a `named` token's writes to the one project it names, where its entry names one (`packages/envoy/internal/dispatch/api/broker_token.go`, `packages/envoy/cmd/dispatch/README.md`).
-A `person` token's list of projects limits no Dispatch write at this release.
+A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
+Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
 It serves a read-only token, one that holds `read`, on the reads of its read class (`readClasses` in `packages/envoy/internal/dispatch/api/read_classes.go`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
