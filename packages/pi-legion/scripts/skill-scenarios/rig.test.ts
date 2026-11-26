@@ -3436,6 +3436,14 @@ esac
     );
   });
 
+  // Catches: an owner-walk Job on the scripted model, which plays the calls of a forward world's
+  // script that no owner-walk run writes.
+  test("scored-job.sh refuses SKILL_SCENARIOS_MODEL=standin-report for owner-walk, whose runs write no script", () => {
+    const refused = plantedJob().run({ ...pod, SKILL_SCENARIOS_MODEL: "standin-report" });
+    expect({ code: refused.code, calls: refused.calls }).toEqual({ code: 2, calls: "" });
+    expect(refused.stderr).toContain("standin-report is the path check's model, and owner-walk has none");
+  });
+
   // Catches: a Job with no stand-in that runs on whatever route the pod gives, or with no gateway
   // it was told of. Its control: the same line without the variable names the gateway's block.
   test("scored-job.sh without the model stand-in takes the gateway's block of its family, and refuses to start without the gateway's root", () => {
@@ -3689,7 +3697,9 @@ batch-scored)
   printf 'world=%s check=%s control=%s model=%s\n' "$SKILL_SCENARIOS_FORWARD_WORLD" "${"${SKILL_SCENARIOS_PATH_CHECK:-}"}" \
     "${"${SKILL_SCENARIOS_PATH_CONTROL:-}"}" "${"${SKILL_SCENARIOS_MODEL:-}"}" >>"$work/rig-env"
   mkdir -p "$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1"
-  echo '{"outcome":"scored"}' >"$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1/row.json"
+  outcome=scored
+  [ -z "${"${PLANT_RIG_ERROR:-}"}" ] || outcome=rig-error
+  echo "{\"outcome\":\"$outcome\"}" >"$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1/row.json"
   ;;
 forward-cell) echo "CONTROL BIT: $3 $4 1/5, 4 failed runs noticed" && echo "head Job of $4: may start" ;;
 esac
@@ -3986,7 +3996,13 @@ describe("a world with daemon: label", () => {
       );
       return { ...result, paneDaemon: result.code === 0 ? JSON.parse(result.stdout).paneDaemon : null };
     };
-    expect(request({ SKILL_SCENARIOS_PATH_CONTROL: "intercept" })).toMatchObject({ code: 0, paneDaemon: "intercept-report" });
+    expect(
+      request({ SKILL_SCENARIOS_PATH_CONTROL: "intercept", SKILL_SCENARIOS_PATH_CHECK: "1" })
+    ).toMatchObject({ code: 0, paneDaemon: "intercept-report" });
+    // The control of the path check alone: a scored run never gets the intercepting proxy.
+    const unchecked = request({ SKILL_SCENARIOS_PATH_CONTROL: "intercept" });
+    expect(unchecked.code).toBe(1);
+    expect(unchecked.stderr).toContain("intercept is the path check's control: it needs SKILL_SCENARIOS_PATH_CHECK=1");
     expect(request({})).toMatchObject({ code: 0, paneDaemon: "label" });
     const other = request({ SKILL_SCENARIOS_PATH_CONTROL: "proxy" });
     expect(other.code).toBe(1);
@@ -4020,6 +4036,73 @@ describe("a world with daemon: label", () => {
     expect(run.code).toBe(1);
     expect(run.stderr).toContain('the task\'s text holds the defect anchor "src/config.ts", in spec.md');
     expect({ calls: run.calls, argv: run.read("stub-argv") }).toEqual({ calls: "", argv: "" });
+  });
+
+  // Catches: a check whose block names no `when`, which Dispatch serves as before_merge
+  // (CheckBlockOf), left out of the refusal, so the retro's gate could return the task for it.
+  test("a forward-only run does not launch while a check with no when, a before_merge check to Dispatch, has no pass", () => {
+    const run = labelRun(
+      "label-unpassed-no-when",
+      { statuses: [{ afterMs: 500, status: ended }] },
+      {
+        world: {
+          "verification.md":
+            '# Verification\n\n:::check{#c-list-rows surface="cli" run="bun test" when="before_merge"}\nThe list test passes.\n:::\n\n:::check{#c-page-size surface="cli" run="bun test"}\nThe page size holds.\n:::\n',
+        },
+      }
+    );
+    expect(run.code).toBe(1);
+    expect(run.stderr).toContain(
+      "verification.md holds the before_merge check c-page-size, which world.json's passes does not name"
+    );
+    expect({ calls: run.calls, argv: run.read("stub-argv") }).toEqual({ calls: "", argv: "" });
+  });
+
+  // Catches: a path check that prints row 1's line for a run the rig failed, which reads as the
+  // label daemon's failure when the rig's own launch failed.
+  test("--path-check names a run the rig failed as a rig error, and prints no path line for it", () => {
+    const job = plantedForwardJob().run(["forward-only", "head", "--world", "retro-defect", "--count", "1", "--path-check"], {
+      SKILL_SCENARIOS_MODEL: "standin-report",
+      PLANT_RIG_ERROR: "1",
+    });
+    expect({ code: job.code, stderr: job.stderr }).toEqual({ code: 0, stderr: "" });
+    expect(job.stdout).not.toContain("PATH OK");
+    expect(job.stdout.split("\n")).toContain(
+      "scored-job: path check of forward-only-retro-defect-head-1: the rig failed the run, so it has no path to check"
+    );
+  });
+
+  // Catches: a batch whose build step calls `label-texts.sh build` for a path check (or `build
+  // --compile` for a scored batch), which a test of build_label_texts alone cannot see.
+  test("--path-check's batch builds with build --compile at cmd_batch_scored, and a scored batch with build", () => {
+    const worlds = freshDir("batch-build-worlds");
+    mkdirSync(path.join(worlds, "forward-only/retro-defect"), { recursive: true });
+    writeFileSync(path.join(worlds, "forward-only/retro-defect/world.json"), madeWorld()["world.json"] ?? "");
+    const batch = (env: Record<string, string>) => {
+      const calls = path.join(freshDir("batch-build"), "calls");
+      const result = bash(
+        [
+          defs("fail", "note", "forward_world_name", "build_label_texts", "cmd_batch_scored"),
+          "forward_worlds=$1 calls=$2",
+          'load_label() { co=/rig/label P=/rig/profiles/$1; }',
+          "require_label_texts() { :; }",
+          "lock_services() { :; }",
+          "on_exit() { :; }",
+          "services_up() { :; }",
+          'batch_scored_cell() { printf "cell %s\\n" "$*" >>"$calls"; }',
+          'label_texts() { printf "label_texts %s\\n" "$*" >>"$calls"; }',
+          "cmd_batch_scored forward-only 1 head",
+        ].join("\n"),
+        [worlds, calls],
+        { SKILL_SCENARIOS_FORWARD_WORLD: "retro-defect", ...env }
+      );
+      return { ...result, calls: existsSync(calls) ? readFileSync(calls, "utf8") : "" };
+    };
+    expect(batch({ SKILL_SCENARIOS_PATH_CHECK: "1" })).toMatchObject({
+      code: 0,
+      calls: "label_texts build --compile\ncell forward-only head retro-defect 1\n",
+    });
+    expect(batch({})).toMatchObject({ code: 0, calls: "label_texts build\ncell forward-only head retro-defect 1\n" });
   });
 
   // Catches: a world whose retro gate would return the task for a check that has no pass, a cause

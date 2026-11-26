@@ -126,6 +126,20 @@ test("a reply on a review thread, over GraphQL and over REST, and its resolution
   ]);
 });
 
+// GitHub also takes a thread's reply as a new review comment that names the thread's first comment
+// in `in_reply_to`: the record names that comment as the thread.
+test("a reply sent as a new review comment with in_reply_to is recorded with its thread", () => {
+  const run = runWith([{ match: "pulls/41/comments", stdout: { id: 4301 } }]);
+  expect(
+    gh(run, "api", "repos/acme/widgets/pulls/41/comments", "-f", "body=Reported as defect d-7.", "-F", "in_reply_to=4242").code
+  ).toBe(0);
+  expect(gh(run, "api", "repos/acme/widgets/pulls/41/comments", "-f", "body=A new comment.").code).toBe(0);
+  expect(recorded(run).map((line) => line.reply ?? null)).toEqual([
+    { thread: "4242", body: "Reported as defect d-7." },
+    null,
+  ]);
+});
+
 // A forward world's pull request is at the head the label's test builds, which no fixture can know:
 // a route names it `{{HEAD}}`, and the stand-in fills it from the run's ready.json.
 test("a route that holds {{HEAD}} answers the head of ready.json, and fails while there is none", () => {
