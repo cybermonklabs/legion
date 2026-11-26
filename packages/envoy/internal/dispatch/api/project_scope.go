@@ -579,23 +579,6 @@ func (s *server) sessionHiddenFromReader(ctx context.Context, id string) (bool, 
 	return s.sessionHiddenFrom(ctx, reader, id)
 }
 
-// personHiddenFromReader reports, through q, whether the request's reader may not see the person
-// login names (access.PersonClause), as sessionHiddenFromReader does for a session: a context with
-// no reader is answered hidden, and a reader with no viewer reads as the closed viewer it binds
-// (refs.VisibilityArg). An open reader sees every person and costs no read.
-func personHiddenFromReader(ctx context.Context, q queryer, login string) (bool, error) {
-	reader, ok := readerFromContext(ctx)
-	if !ok {
-		return true, nil
-	}
-	if reader.Viewer != nil && reader.Viewer.Open {
-		return false, nil
-	}
-	var sees bool
-	err := q.QueryRow(ctx, `select `+access.PersonClause("$1::text", "$2"), model.CanonicalLogin(login), refs.VisibilityArg(reader)).Scan(&sees)
-	return !sees, err
-}
-
 // addressesOneSession answers whether route is a write to the rows of the one session its path
 // names: the scopeSession rows whose pattern carries {session_id}. The other scopeSession rows
 // address no session of their own — the `me` token rows are the calling person's, and the two
