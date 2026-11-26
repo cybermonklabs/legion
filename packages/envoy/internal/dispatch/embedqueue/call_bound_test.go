@@ -20,6 +20,7 @@ import (
 // call does. Both the paced call cmd/dispatch makes and an unpaced one are bounded. The rows run on
 // a synctest fake clock, where the call's minute takes no real time.
 func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		deps func(embed.Embedder) Deps
@@ -63,6 +64,7 @@ func TestACallThatCouldOutliveItsClaimRenewsItFirst(t *testing.T) {
 // Bedrock answers nothing until the row ends. callBound is shrunk to 300 ms, and the caller gives
 // the call 5 s: unbounded, the call ends with the caller's own deadline, which is no outage.
 func TestABedrockCallPastTheBoundEndsWithTheDeadline(t *testing.T) {
+	// Not parallel: it shortens callBound (shortenForTest), which every Embed call the queue makes reads.
 	shortenForTest(t, &callBound, 300*time.Millisecond)
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

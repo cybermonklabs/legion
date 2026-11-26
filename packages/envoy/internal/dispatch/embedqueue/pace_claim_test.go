@@ -24,6 +24,7 @@ import (
 // under that: with the wait's first renewal a whole slice after the wait began, a wait that began
 // 44.9 s after a renewal renewed first 104.9 s after it.
 func TestAClaimIsRenewedThroughThePacesWaitAtItsSlowest(t *testing.T) {
+	t.Parallel()
 	for _, late := range []time.Duration{0, renewClaimInterval / 2, latestWait} {
 		t.Run(fmt.Sprintf("the wait starts %v after the last renewal", late), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -52,6 +53,7 @@ var latestWait = claimWindow - callBound - callSlack - 100*time.Millisecond
 // old, past claimWindow less callBound less callSlack, and a call run to callBound ended with it
 // 119.9 s old.
 func TestACallThePaceHeldRenewsItsClaimAsItGoesOut(t *testing.T) {
+	t.Parallel()
 	needed := claimWindow - callBound - callSlack
 	end := renewClaimInterval - 100*time.Millisecond
 	steps := embed.NewRateLimitedEmbedder(&fakeEmbedder{})
@@ -68,6 +70,7 @@ func TestACallThePaceHeldRenewsItsClaimAsItGoesOut(t *testing.T) {
 // call, and the pace stays in force: the wait renews the claim, and a canary that meets an outage
 // backs the pace off.
 func TestAWrappedEmbedderIsStillPaced(t *testing.T) {
+	t.Parallel()
 	paced := func(inner embed.Embedder) (Deps, *passThrough) {
 		wrapper := &passThrough{Embedder: inner}
 		return Deps{Embedder: wrapper}.Paced(), wrapper
@@ -161,6 +164,7 @@ func backOffPace(t *testing.T, deps Deps, interval time.Duration) {
 // renewal before it has ended or renewClaimInterval after that one began, whichever is later: one
 // held back longer lets the claim run out between them.
 func TestAWaitWhoseRenewalsAreSlowStillEnds(t *testing.T) {
+	t.Parallel()
 	for _, took := range []time.Duration{renewClaimInterval + time.Second, renewClaimInterval - time.Second} {
 		t.Run(fmt.Sprintf("each renewal takes %v", took), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
