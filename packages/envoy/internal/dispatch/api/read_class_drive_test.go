@@ -535,12 +535,12 @@ var proofInsert = statementOf(`^\s*insert\s+into\s+dpop_proofs\b`)
 // about 4.5 s a row, and so runs in a Job and in CI rather than in a shared pod. The calibration
 // and the pre-check run either way.
 func TestEveryReadRowWritesOnlyItsProofAndCachesAndAnswersAsItsWriter(t *testing.T) {
-	// Not parallel with the package's other tests: it holds every window and every personal pair
-	// to a wall-clock bound (driveWindowLimit, agentTokenUse's minute), and run among this
-	// package's parallel tests on CI's runner it took 592 s, while
-	// TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince missed its 3 s beside it
-	// (envoy-go-race-api job 137929719893). Its rows run at once among themselves, each world
-	// on its own, while the package's parallel tests wait for the serial ones to end.
+	// Not parallel: it holds every window and every personal pair to a wall-clock bound
+	// (driveWindowLimit, agentTokenUse's minute), and run among this package's parallel tests on
+	// CI's runner it took 592 s, while TestTheEventFeedDoesNotResendAnEventAtOrBelowItsSince
+	// missed its 3 s beside it (envoy-go-race-api job 137929719893). Its rows run at once among
+	// themselves, each world on its own, while the package's parallel tests wait for the serial
+	// ones to end.
 	rows, drives := drivenRows(t, readWritesNothing)
 	worlds := driveWorldsFor(len(rows))
 	// The worlds run inside one subtest, which ends only once every world has: go test stops a
