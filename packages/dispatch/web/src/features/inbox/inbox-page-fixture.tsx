@@ -7,11 +7,12 @@ import { spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { type ComponentProps, type ReactNode, useState } from "react";
-import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 
 import type { Commits } from "../../__tests__/commits";
 import { api } from "../../api/client";
 import type { InboxRow, Issue, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
+import { useHistoryEntry, usePageAddress } from "../../lib/page-address";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -72,12 +73,12 @@ export function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
 
 /** The address the Inbox is on, and a way back through the history it has written. */
 export function RouteProbe() {
-  const location = useLocation();
-  const navigate = useNavigate();
+  const { pathname, search } = usePageAddress();
+  const { back } = useHistoryEntry();
   return (
     <>
-      <output data-testid="location">{`${location.pathname}${location.search}`}</output>
-      <button onClick={() => navigate(-1)} type="button">
+      <output data-testid="location">{`${pathname}${search}`}</output>
+      <button onClick={back} type="button">
         History back
       </button>
     </>
@@ -91,7 +92,7 @@ type InitialEntry = NonNullable<ComponentProps<typeof MemoryRouter>["initialEntr
  *  itself, starting from the address the test opens on and never written back to it, every
  *  narrowing reported to that host, and the keys on the dialog's scope. */
 function DrawerHostedInbox(): ReactNode {
-  const { search } = useLocation();
+  const { search } = usePageAddress();
   const [filter, setFilter] = useState<InboxRoute>(() => parseInboxSearch(search));
   return (
     <Inbox filter={filter} keymapScope={DIALOG_SCOPE} onFilterChange={setFilter} pane={false} />

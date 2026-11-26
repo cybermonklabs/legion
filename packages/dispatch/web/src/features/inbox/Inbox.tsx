@@ -10,7 +10,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { useLocation } from "react-router-dom";
 
 import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
@@ -31,7 +30,12 @@ import { SearchBox } from "../../components/SearchBox";
 import { focusListStop, SelectionBar, useLastMarkedPlace } from "../../components/SelectionBar";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useNestedPanels } from "../../components/useNestedPanels";
-import { capSearchQuery, useAddressNavigate } from "../../lib/page-address";
+import {
+  capSearchQuery,
+  loadWholePage,
+  useAddressNavigate,
+  useNavigationState,
+} from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -1025,7 +1029,7 @@ function InboxBody({
   scroller,
 }: InboxProps): ReactNode {
   const [addressRoute, goToRoute] = useInboxRoute();
-  const { state: entryState } = useLocation();
+  const entryState = useNavigationState();
   const navigate = useAddressNavigate();
   const filter = filterOverride ?? addressRoute;
   // The reading column stands beside the list from 1280 px, on the page alone (`columns`).
@@ -1847,7 +1851,7 @@ function InboxBody({
         // click (`ThreadTitle`'s `onOpen`), and a script's click is one. `o` is the way to the
         // thread's own page, as it is beside the column, so it follows the link itself.
         if (mode === "list" && handRow()?.kind !== "ask" && owner instanceof HTMLAnchorElement) {
-          window.location.assign(owner.href);
+          loadWholePage(owner.href);
           return;
         }
         owner?.click();

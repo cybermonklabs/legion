@@ -1,7 +1,6 @@
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 
-import { useAddressNavigate } from "../../lib/page-address";
+import { useAddressNavigate, useHistoryEntry } from "../../lib/page-address";
 import { answerDraft } from "./answer-drafts";
 import { buildInboxPath, type InboxRoute } from "./inbox-route";
 import { ROW_ATTRIBUTE } from "./inbox-row";
@@ -153,11 +152,9 @@ export function usePaneSelection({
   rowsReady,
   snoozing,
 }: PaneSelectionOptions): PaneSelection {
-  const navigate = useNavigate();
   const go = useAddressNavigate();
-  const location = useLocation();
-  const navigationType = useNavigationType();
-  const entry = inboxEntryState(location.state);
+  const historyEntry = useHistoryEntry();
+  const entry = inboxEntryState(historyEntry.state);
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const selectedNow = useRef<string | undefined>(undefined);
   selectedNow.current = selectedId;
@@ -244,9 +241,9 @@ export function usePaneSelection({
       select(undefined);
       return;
     }
-    if (leaving.current !== location.key) {
-      leaving.current = location.key;
-      navigate(-1);
+    if (leaving.current !== historyEntry.key) {
+      leaving.current = historyEntry.key;
+      historyEntry.back();
     }
   };
 
@@ -388,7 +385,7 @@ export function usePaneSelection({
     if (
       address === "unlisted" &&
       filter.item === undefined &&
-      navigationType === "POP" &&
+      historyEntry.navigationType === "POP" &&
       top !== undefined
     ) {
       select(rowId(top.row), "column-default");
@@ -478,7 +475,7 @@ export function usePaneSelection({
     // A back step `leaveView` started is under way: the address still names the row it is
     // leaving, and is read again once the step lands.
     if (leaving.current !== undefined) {
-      if (leaving.current === location.key) return;
+      if (leaving.current === historyEntry.key) return;
       leaving.current = undefined;
     }
     if (columns) settleBesideList();
