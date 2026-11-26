@@ -981,3 +981,44 @@ test("an answered question whose ask is overtaken counts nothing under it", () =
     true,
   ]);
 });
+
+/** The decisions view read of `tree` in the view's own shape: the node of each ask that is no
+ *  block of a document, and each decision, each under the parent `tree` names it by, which the
+ *  view names by its line alone where it holds no node of it; never the block a question is
+ *  written as, nor any other node. */
+function decisionsViewOf(tree: TreeAnswer): TreeAnswer {
+  return {
+    ...tree,
+    nodes: (tree.nodes ?? []).filter((node) =>
+      node.supertag === "ask" ? node.document === undefined : node.supertag === "decision"
+    ),
+    view: "decisions",
+  };
+}
+
+// Decision 447 with the decisions view read the page holds, which the count reads its decisions
+// and its questions from. That read holds the question by its ask's own node, each open question
+// and each decision, and never the block of the spec the question is written as: the open
+// question and the decision waiting for review the reads hang under that block stand there under
+// its parent line alone. The count closes nodes over Conversation's read and the view read
+// together, so it counts what it counts from Conversation's read alone: with the question's ask's
+// node overtaken, neither waits on the reader; with it live, both do.
+test("an answered question whose ask the decisions view holds overtaken counts nothing under its block", () => {
+  const underBlock = (ask: Partial<TreeAnswerNode>) =>
+    answerOf([
+      statement,
+      askBlock(),
+      inSpecAsk(ask),
+      ...mine({ parent: parentNamed("q1") }),
+      { ...decisionNode("under", ["r1"]), parent: parentNamed("q1") },
+    ]);
+  const counted = (tree: TreeAnswer, decisions?: TreeAnswer) =>
+    waitingOnReader(issue, "alice", isCoverageStatement, { asksRead: [answered], decisions, tree });
+
+  const live = underBlock({});
+  expect(counted(live, decisionsViewOf(live))).toEqual(counted(live));
+  expect(counted(live)).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
+  const overtaken = underBlock({ state: "overtaken" });
+  expect(counted(overtaken, decisionsViewOf(overtaken))).toEqual(counted(overtaken));
+  expect(counted(overtaken)).toEqual({ approvals: [spec.id], asks: 0, decisions: 0, total: 1 });
+});

@@ -53,22 +53,23 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * on nobody (`draftDecision`). Who decided it is the answer's `decided_by` tuple, so the
  * decisions read with no asks say it too.
  *
- * Nothing at or under an overtaken node of the read the decisions are counted from (the
- * decisions view read where the page holds it, else Conversation's read) waits on anybody: a
- * later node took its place, and the tree draws none of them in the waiting tone. A node is
- * under another where the read's `parent` chain reaches it, so an open ask or a decision there
- * is not counted. A proposed one still is: no node took its place yet. A
- * question written as a block of a document is overtaken where its ask's node is, and never by a
- * state its block's node holds (`ownStatesOf`), as the tree draws it: the tree draws the block
- * and its ask as one row, which takes the ask's state, so where the ask's node is overtaken the
- * block is closed too, and every node under it. Which block a question is written as is read as
- * the tree reads it, through the page's one pairing rule (`decision-nodes.ts`' `askOfNode`) over
- * the issue's open asks and the asks read (`asksRead`, the page's), so a question closes its
- * block with its ask's node whether it is open or answered (`node-states.ts`' `closedReadIds`),
- * and an open ask is not counted where its ask's node or its block is closed. The Changes are
- * read from Conversation's read as it answers them, as the outline reads them
- * (`decisionNodeChanges`): a Change under a closed decision moves no count, since that decision
- * is not counted.
+ * Nothing at or under an overtaken node waits on anybody: a later node took its place, and the
+ * tree draws none of them in the waiting tone. The nodes are read from Conversation's read and
+ * the decisions view read together, the view's node where both hold one id (`joinedReads`): the
+ * view holds each question by its ask's own node, each decision and each reading, and never the
+ * block a question is written as, which Conversation's read holds. A node is under another where
+ * its `parent` chain reaches it, so an open ask or a decision there is not counted. A proposed
+ * one still is: no node took its place yet. A question written as a block of a document is
+ * overtaken where its ask's node is, and never by a state its block's node holds (`ownStatesOf`),
+ * as the tree draws it: the tree draws the block and its ask as one row, which takes the ask's
+ * state, so where the ask's node is overtaken the block is closed too, and every node either read
+ * hangs under it. Which block a question is written as is read as the tree reads it, through the
+ * page's one pairing rule (`decision-nodes.ts`' `askOfNode`) over the issue's open asks and the
+ * asks read (`asksRead`, the page's), so a question closes its block with its ask's node whether
+ * it is open or answered (`node-states.ts`' `closedReadIds`), and an open ask is not counted
+ * where its ask's node or its block is closed. The Changes are read from Conversation's read as
+ * it answers them, as the outline reads them (`decisionNodeChanges`): a Change under a closed
+ * decision moves no count, since that decision is not counted.
  *
  * A count read from a read that names a next page counts the nodes loaded (R15), so it says so
  * (`WaitingOnReader.more`), and the header draws it with "+", as the view row draws each count
@@ -117,10 +118,12 @@ export function waitingOnReader(
   // The decisions and the questions are the decisions view's where the page holds it, and the
   // tree read's until then; the Changes are the tree read's, which hangs each under its decision.
   let counted = decisions ?? tree;
-  // Each open ask and node of that read at or under an overtaken node taken out, the decisions
-  // among those nodes with them, and the count made of what is left.
+  // Each open ask and node at or under an overtaken node taken out, the decisions among those
+  // nodes with them, and the count made of what is left. The nodes are closed over both reads
+  // (`joinedReads`), so a question's block, which only the tree read holds, closes with its ask's
+  // node, and so does each node the decisions view hangs under that block.
   const { askIds: closedAsks, readIds: closed } = closedReadIds(
-    viewer === undefined ? undefined : counted,
+    viewer === undefined ? undefined : joinedReads(tree, decisions),
     { asks: asksRead, issue }
   );
   if (counted !== undefined && closed.size > 0) {
@@ -166,6 +169,23 @@ export function waitingOnReader(
     decisions: reviewing,
     ...(more ? { more: true as const } : {}),
     total: asks + reviewing + approvals.length,
+  };
+}
+
+/** The nodes of Conversation's read `tree` and of the decisions view read `decisions` as one
+ *  read, the view's node where both hold one id, which the header's count closes nodes and asks
+ *  over (`closedReadIds`): either read alone where the page holds only that one, and none while
+ *  it holds neither. */
+function joinedReads(
+  tree: TreeAnswer | undefined,
+  decisions: TreeAnswer | undefined
+): TreeAnswer | undefined {
+  if (tree === undefined || decisions === undefined) return decisions ?? tree;
+  const viewNodes = decisions.nodes ?? [];
+  const held = new Set(viewNodes.map((node) => node.id));
+  return {
+    ...decisions,
+    nodes: [...(tree.nodes ?? []).filter((node) => !held.has(node.id)), ...viewNodes],
   };
 }
 

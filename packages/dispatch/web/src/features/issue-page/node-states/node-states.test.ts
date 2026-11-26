@@ -2604,6 +2604,43 @@ test("a view's row under an overtaken question drawn from a block and its ask is
   expect(live.row === undefined ? true : outOfCounts(live.row)).toBe(false);
 });
 
+// No count reads a statement at or under an overtaken node (R3). A question written as an
+// `:::ask` block is overtaken by its ask's node, which stands in no statement's walk, so the
+// coverage read leaves the row of a statement under that question unproven and not closed
+// (`coverageRows`), though the page closes that statement with its question. The Verification
+// summary's covered count leaves that row out: the statement is neither covered nor one of the
+// statements "N of M covered" is out of.
+test("the Verification summary leaves a statement under an overtaken question out of its covered count", () => {
+  const passed = checkThat("c-one", true);
+  const serving = checkThat("c-two", true);
+  const first = statementNode("r1", "The page draws the checks.", [checkNode(passed)]);
+  const asked = statementNode("r2", "A later question took this one's place.", [
+    checkNode(serving),
+  ]);
+  // The question's row, drawn from block `q1` of the spec, which takes the state of its ask's
+  // node, so the page closes it and the statement under it with that node.
+  const question = node("spec#b-q1", "ask", [asked], {
+    readId: blockReadId("spec", "q1"),
+    source: { id: BLOCK_ASK, issue: KEY, kind: "ask" },
+  });
+  const root = stamped(node(KEY, "issue", [first, question]), {
+    [BLOCK_ASK]: { life: "overtaken" },
+  });
+  expect(coverageRows(root).map((row) => [row.ref, row.checks, row.coverage])).toEqual([
+    [first.reference, 1, "unproven"],
+    [asked.reference, 1, "unproven"],
+  ]);
+
+  const view = drawVerification(root, [passed, serving]);
+  try {
+    expect(textOf(view.container, "[data-verification-covered]")).toBe(
+      `1 ${VERIFICATION_WORDS.of} 1 ${VERIFICATION_WORDS.covered}`
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The marks drawn under `element`, by their tokens, in the order they are drawn. */
 function marksIn(element: Element | null | undefined): (string | undefined)[] {
   return [...(element?.querySelectorAll<HTMLElement>("[data-node-mark]") ?? [])].map(
