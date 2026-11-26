@@ -37,10 +37,9 @@ const keepProjectStandingSQL = `insert into project_standing (person, project, v
 	on conflict (person, project) do update set visibility = excluded.visibility, visible = excluded.visible, asked_at = excluded.asked_at
 	where project_standing.asked_at < excluded.asked_at`
 
-// KeepProjectStanding writes Dispatch's answer for person and project, asked at askedAt, unless the
-// row already holds an answer asked later: visibility as Dispatch answered it, "public" or
-// "private", and whether person may see the project; or, for visibility "", that Dispatch holds no
-// such project, which is written for no person (the empty person), since it is the same answer for
+// KeepProjectStanding writes standing, Dispatch's answer for person and project, unless the row
+// already holds an answer asked later. An answer whose Visibility is "" says Dispatch holds no
+// such project, and is written for no person (the empty person), since it is the same answer for
 // everyone. person is a login as record.CanonicalLogin spells it, or empty for a question naming
 // no person.
 //
@@ -54,19 +53,19 @@ const keepProjectStandingSQL = `insert into project_standing (person, project, v
 // of its project asked before it is kept, which only a slower process's write after it leaves:
 // it is what hides that answer. Every no-project write takes one transaction lock
 // (keepMissingProjectLock) before it locks a row, so no two wait on each other's rows.
-func (s *Store) KeepProjectStanding(ctx context.Context, person, project, visibility string, visible bool, askedAt time.Time) error {
-	if visibility != "" {
-		_, err := s.Pool.Exec(ctx, keepProjectStandingSQL, person, project, visibility, visible, askedAt)
+func (s *Store) KeepProjectStanding(ctx context.Context, person, project string, standing ProjectStanding) error {
+	if standing.Visibility != "" {
+		_, err := s.Pool.Exec(ctx, keepProjectStandingSQL, person, project, standing.Visibility, standing.Visible, standing.AskedAt)
 		return err
 	}
 	return pgx.BeginFunc(ctx, s.Pool, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended($1, 0))`, keepMissingProjectLock); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, keepProjectStandingSQL, "", project, "", false, askedAt); err != nil {
+		if _, err := tx.Exec(ctx, keepProjectStandingSQL, "", project, "", false, standing.AskedAt); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `delete from project_standing where project = $1 and person <> '' and asked_at < $2`, project, askedAt); err != nil {
+		if _, err := tx.Exec(ctx, `delete from project_standing where project = $1 and person <> '' and asked_at < $2`, project, standing.AskedAt); err != nil {
 			return err
 		}
 		// beyond is read once (materialized): planned as a subquery, a table with no statistics

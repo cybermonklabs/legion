@@ -284,24 +284,23 @@ func (g *Gate) answered(person string, answer projectaccess.PersonAnswer) (time.
 // fresh one is, and under RequireDeadline a person of whom no answer is kept is not served.
 func (g *Gate) unasked(ctx context.Context, person string, cause error) (time.Time, error) {
 	kept, found, readErr := g.access.KeptHold(ctx, person)
-	held, answeredAt, keptUntil := kept.Held, kept.AsOf, kept.NotHeldUntil
 	switch {
 	case kept.Unkept != nil:
 		return time.Time{}, heldUnwritten(person, errors.Join(kept.Unkept, fmt.Errorf("Dispatch could not be asked: %w", cause)))
 	case readErr != nil:
 		return time.Time{}, fmt.Errorf("%w: %s: Dispatch could not be asked (%w), and its last answer could not be read: %w", ErrUncheckable, person, cause, readErr)
-	case found && held:
-		return time.Time{}, fmt.Errorf("%w: %s, by Dispatch's last answer, as of %s", ErrHeld, person, answeredAt.UTC().Format(time.RFC3339Nano))
+	case found && kept.Held:
+		return time.Time{}, fmt.Errorf("%w: %s, by Dispatch's last answer, as of %s", ErrHeld, person, kept.AsOf.UTC().Format(time.RFC3339Nano))
 	case !found && g.requireDeadline:
 		return time.Time{}, fmt.Errorf("%w: %s: Dispatch could not be asked (%w): %w", ErrUncheckable, person, cause, errNoAnswer)
 	}
 	var until time.Time
-	if found && keptUntil != nil {
-		until = *keptUntil
+	if found && kept.NotHeldUntil != nil {
+		until = *kept.NotHeldUntil
 	}
 	if found {
 		var err error
-		if until, err = g.notHeld(person, until, answeredAt); err != nil {
+		if until, err = g.notHeld(person, until, kept.AsOf); err != nil {
 			return time.Time{}, fmt.Errorf("%w, by Dispatch's last answer while it could not be asked (%w)", err, cause)
 		}
 	}

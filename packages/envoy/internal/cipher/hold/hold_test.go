@@ -722,9 +722,9 @@ func TestTheHoldGatesAnswerLeavesItsKeptKindServed(t *testing.T) {
 		t.Fatalf("Check(%s) answered full, not held = %v, want nil", ada, err)
 	}
 	_, heldAsOf, found := standing(t, st, ada)
-	kind, kindAsOf, kept, err := st.KeptMemberKind(ctx, ada)
-	if !found || err != nil || !kept || kind != projectaccess.MemberFull || !kindAsOf.Equal(heldAsOf) {
-		t.Fatalf("after the gate checked ada: hold kept %t as of %v; kind %q kept %t as of %v, %v; want both kept, full, at one as_of", found, heldAsOf, kind, kept, kindAsOf, err)
+	member, kept, err := st.KeptMemberKind(ctx, ada)
+	if !found || err != nil || !kept || member.Kind != projectaccess.MemberFull || !member.AsOf.Equal(heldAsOf) {
+		t.Fatalf("after the gate checked ada: hold kept %t as of %v; member kind %+v kept %t, %v; want both kept, full, at one as_of", found, heldAsOf, member, kept, err)
 	}
 	dispatch.SetDown(true)
 	r.clock.advance(projectaccess.CacheTTL)

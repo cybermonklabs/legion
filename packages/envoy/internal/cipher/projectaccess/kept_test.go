@@ -134,11 +134,11 @@ func (r *keptRig) refused(t *testing.T, person, when string) {
 // keptKind fails t unless st keeps kind for person; it answers the as_of the kept answer rests on.
 func keptKind(t *testing.T, st *store.Store, person, kind, after string) time.Time {
 	t.Helper()
-	got, asOf, found, err := st.KeptMemberKind(t.Context(), person)
-	if err != nil || !found || got != kind {
-		t.Fatalf("KeptMemberKind(%s) after %s = %q (found %t), %v; want %q", person, after, got, found, err, kind)
+	member, found, err := st.KeptMemberKind(t.Context(), person)
+	if err != nil || !found || member.Kind != kind {
+		t.Fatalf("KeptMemberKind(%s) after %s = %+v (found %t), %v; want kind %q", person, after, member, found, err, kind)
 	}
-	return asOf
+	return member.AsOf
 }
 
 // openStore is a second pool on the schema url names, closed when t ends: a second broker
@@ -220,6 +220,33 @@ func TestAMemberKindReadDispatchDoesNotAnswerIsAnsweredFromTheKeptKind(t *testin
 	unreadable.refused(t, keptDave, "while Dispatch is down and the store is closed")
 	if got := unreadable.unchecked(t, "unreadable"); got != 1 {
 		t.Fatalf(`broker_member_kind_unchecked_total{kept="unreadable"} with the store closed = %d; want 1`, got)
+	}
+}
+
+// TestAFullKeptAnswerExpiresWhileDispatchIsDown: while Dispatch is down, a kept full answer
+// serves until KeptAnswerTTL and not at it. At the bound, the broker refuses rather than serving a
+// person as full on an answer old enough to have missed a demotion before the outage.
+//
+// The fault: serving a kept full answer however old; ada is still full at KeptAnswerTTL, and the
+// test fails naming that read.
+func TestAFullKeptAnswerExpiresWhileDispatchIsDown(t *testing.T) {
+	st := storetest.Open(t)
+	dispatch := projectaccesstest.NewServer(t, nil, keptKinds())
+	r := keepingClientOf(dispatch, st)
+	r.kindOf(t, keptAda, projectaccess.MemberFull, "while Dispatch answers")
+	asOf := keptKind(t, st, keptAda, projectaccess.MemberFull, "the full answer")
+	dispatch.SetDown(true)
+
+	r.clock.advance(asOf.Sub(r.clock.read()) + projectaccess.KeptAnswerTTL - time.Nanosecond)
+	r.kindOf(t, keptAda, projectaccess.MemberFull, "a nanosecond before the kept-answer bound")
+	if got := r.unchecked(t, projectaccess.MemberFull); got != 1 {
+		t.Fatalf(`broker_member_kind_unchecked_total{kept="full"} before the bound = %d, want 1`, got)
+	}
+
+	r.clock.advance(time.Nanosecond)
+	r.refused(t, keptAda, "at the kept-answer bound")
+	if got := r.unchecked(t, projectaccess.MemberFull); got != 1 {
+		t.Fatalf(`broker_member_kind_unchecked_total{kept="full"} at the bound = %d, want 1: the expired answer is not served`, got)
 	}
 }
 

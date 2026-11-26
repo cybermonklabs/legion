@@ -49,7 +49,7 @@ func TestProjectStandingKeepsTheLaterAnswer(t *testing.T) {
 		{bob, "", false, t3, []read{{ada, "", false, t3}, {bob, "", false, t3}}, "no such project as of t3, asked for bob"},
 		{ada, "public", true, t4, []read{{ada, "public", true, t4}, {bob, "", false, time.Time{}}}, "PRIV made again public, ada's answer as of t4"},
 	} {
-		if err := st.KeepProjectStanding(ctx, step.person, "PRIV", step.visibility, step.visible, step.asked); err != nil {
+		if err := st.KeepProjectStanding(ctx, step.person, "PRIV", store.ProjectStanding{Visibility: step.visibility, Visible: step.visible, AskedAt: step.asked}); err != nil {
 			t.Fatalf("KeepProjectStanding for %s: %v", step.write, err)
 		}
 		for _, want := range step.want {
@@ -107,7 +107,7 @@ func TestProjectStandingNoSuchProjectEndsAtAnAnswerThatItExists(t *testing.T) {
 			{bob, "", false, time.Time{}}, {"", "", false, time.Time{}}}, "ACME made private, ada on its list as of t2"},
 		{carol, "", false, t3, []read{{ada, "", false, t3}, {carol, "", false, t3}, {dave, "", false, t3}}, "no such project again as of t3, asked for carol"},
 	} {
-		if err := st.KeepProjectStanding(ctx, step.person, "ACME", step.visibility, step.visible, step.asked); err != nil {
+		if err := st.KeepProjectStanding(ctx, step.person, "ACME", store.ProjectStanding{Visibility: step.visibility, Visible: step.visible, AskedAt: step.asked}); err != nil {
 			t.Fatalf("KeepProjectStanding for %s: %v", step.write, err)
 		}
 		for _, want := range step.want {
@@ -140,7 +140,7 @@ func TestProjectStandingKeepsANoPersonAnswerForNoPersonAlone(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := t.Context()
 	asked := time.Date(2026, 11, 22, 0, 0, 1, 0, time.UTC)
-	if err := st.KeepProjectStanding(ctx, "", "PUB", "public", true, asked); err != nil {
+	if err := st.KeepProjectStanding(ctx, "", "PUB", store.ProjectStanding{Visibility: "public", Visible: true, AskedAt: asked}); err != nil {
 		t.Fatal(err)
 	}
 	if got, found, err := st.KeptProjectStanding(ctx, "", "PUB"); err != nil || !found || got.Visibility != "public" || !got.Visible || !got.AskedAt.Equal(asked) {
@@ -193,7 +193,7 @@ func TestProjectStandingPublicEndsAtAnAnswerThatItIsPrivate(t *testing.T) {
 		{"", "private", false, t4, []read{{carol, "", false, time.Time{}}, {ada, "private", true, t2}, {"", "private", false, t4}},
 			"PUBP made private again, the no-person answer as of t4"},
 	} {
-		if err := st.KeepProjectStanding(ctx, step.person, "PUBP", step.visibility, step.visible, step.asked); err != nil {
+		if err := st.KeepProjectStanding(ctx, step.person, "PUBP", store.ProjectStanding{Visibility: step.visibility, Visible: step.visible, AskedAt: step.asked}); err != nil {
 			t.Fatalf("KeepProjectStanding for %s: %v", step.write, err)
 		}
 		for _, want := range step.want {
@@ -241,7 +241,7 @@ func TestANoSuchProjectAnswerDeletesEveryEarlierAnswerOfItsProject(t *testing.T)
 		{carol, "private", true, t3},
 		{bob, "", false, t2},
 	} {
-		if err := st.KeepProjectStanding(ctx, step.person, "PRIV", step.visibility, step.visible, step.asked); err != nil {
+		if err := st.KeepProjectStanding(ctx, step.person, "PRIV", store.ProjectStanding{Visibility: step.visibility, Visible: step.visible, AskedAt: step.asked}); err != nil {
 			t.Fatalf("KeepProjectStanding(%q, PRIV, %q) as of %v: %v", step.person, step.visibility, step.asked, err)
 		}
 	}
@@ -256,7 +256,7 @@ func TestANoSuchProjectAnswerDeletesEveryEarlierAnswerOfItsProject(t *testing.T)
 	if !slices.Equal(people, []string{"", carol}) {
 		t.Errorf("PRIV's rows after the no-project answer as of t2 are for %q; want the no-project answer (\"\") and carol's, asked after it", people)
 	}
-	if err := st.KeepProjectStanding(ctx, "", "PRIV", "private", false, t4); err != nil {
+	if err := st.KeepProjectStanding(ctx, "", "PRIV", store.ProjectStanding{Visibility: "private", AskedAt: t4}); err != nil {
 		t.Fatal(err)
 	}
 	if got, found, err := st.KeptProjectStanding(ctx, ada, "PRIV"); err != nil || found {
@@ -291,7 +291,7 @@ func TestTheBrokerKeepsAtMostMaxKeptMissingProjectsNoSuchProjectAnswers(t *testi
 		t.Fatal(err)
 	}
 	newest := t0.Add(time.Duration(store.MaxKeptMissingProjects+1) * time.Second)
-	if err := st.KeepProjectStanding(ctx, carol, "NEWEST", "", false, newest); err != nil {
+	if err := st.KeepProjectStanding(ctx, carol, "NEWEST", store.ProjectStanding{AskedAt: newest}); err != nil {
 		t.Fatal(err)
 	}
 	var kept int

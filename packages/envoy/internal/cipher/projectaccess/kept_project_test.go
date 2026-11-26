@@ -140,6 +140,60 @@ func TestAProjectReadUnderOrKeptIsAnsweredFromTheKeptAnswer(t *testing.T) {
 	}
 }
 
+// TestAVisibleKeptProjectAnswerExpiresWhileDispatchIsDown: while Dispatch is down, a private
+// project kept visible to ada serves until KeptAnswerTTL and not at it. At the bound, the broker
+// refuses rather than showing a project whose list may have removed her before the outage.
+//
+// The fault: serving a kept visible project however old; PRIV is still shown at KeptAnswerTTL, and
+// the test fails naming that read.
+func TestAVisibleKeptProjectAnswerExpiresWhileDispatchIsDown(t *testing.T) {
+	st := storetest.Open(t)
+	dispatch := projectaccesstest.NewServer(t, keptProjects(), keptKinds())
+	r := keepingClientOf(dispatch, st)
+	r.readAll(t, map[string][]string{keptAda: {"PRIV"}})
+	dispatch.SetDown(true)
+
+	r.clock.advance(projectaccess.CacheTTL)
+	r.clock.advance(projectaccess.KeptAnswerTTL - projectaccess.CacheTTL - time.Nanosecond)
+	r.shown(t, "PRIV", keptAda, projectaccess.VisibilityPrivate, "a nanosecond before the kept-answer bound")
+	if got := r.projectUnchecked(t, "visible"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="visible"} before the bound = %d, want 1`, got)
+	}
+
+	r.clock.advance(time.Nanosecond)
+	r.hidden(t, "PRIV", keptAda, "at the kept-answer bound")
+	if got := r.projectUnchecked(t, "visible"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="visible"} at the bound = %d, want 1: the expired answer is not served`, got)
+	}
+}
+
+// TestAPublicKeptProjectAnswerExpiresWhileDispatchIsDown: while Dispatch is down, a public project
+// kept visible to ada serves until KeptAnswerTTL and not at it. At the bound, the broker refuses
+// rather than showing a project whose owner may have made it private before the outage.
+//
+// The fault: applying the bound only to private visible answers; PUB is still shown at
+// KeptAnswerTTL, and the test fails naming that read.
+func TestAPublicKeptProjectAnswerExpiresWhileDispatchIsDown(t *testing.T) {
+	st := storetest.Open(t)
+	dispatch := projectaccesstest.NewServer(t, keptProjects(), keptKinds())
+	r := keepingClientOf(dispatch, st)
+	r.readAll(t, map[string][]string{keptAda: {"PUB"}})
+	dispatch.SetDown(true)
+
+	r.clock.advance(projectaccess.CacheTTL)
+	r.clock.advance(projectaccess.KeptAnswerTTL - projectaccess.CacheTTL - time.Nanosecond)
+	r.shown(t, "PUB", keptAda, projectaccess.VisibilityPublic, "a nanosecond before the kept-answer bound")
+	if got := r.projectUnchecked(t, "public"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="public"} before the bound = %d, want 1`, got)
+	}
+
+	r.clock.advance(time.Nanosecond)
+	r.hidden(t, "PUB", keptAda, "at the kept-answer bound")
+	if got := r.projectUnchecked(t, "public"); got != 1 {
+		t.Fatalf(`broker_project_visibility_unchecked_total{kept="public"} at the bound = %d, want 1: the expired answer is not served`, got)
+	}
+}
+
 // TestTheKeptProjectAnswerSurvivesARestart: a client of a second broker process over the same
 // database, or of this one restarted, whose Dispatch is down from its start, answers as the
 // first: ada's PUB and PRIV shown, SHA no project, bob's PRIV refused.
@@ -268,10 +322,10 @@ func TestAKeptNoSuchProjectIsNotServedBesideALaterAnswerThatItExists(t *testing.
 	st := storetest.Open(t)
 	t0 := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
 	t2 := t0.Add(time.Hour)
-	if err := st.KeepProjectStanding(t.Context(), "", "NEWP", "", false, t0); err != nil {
+	if err := st.KeepProjectStanding(t.Context(), "", "NEWP", store.ProjectStanding{AskedAt: t0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.KeepProjectStanding(t.Context(), keptAda, "NEWP", "private", true, t2); err != nil {
+	if err := st.KeepProjectStanding(t.Context(), keptAda, "NEWP", store.ProjectStanding{Visibility: "private", Visible: true, AskedAt: t2}); err != nil {
 		t.Fatal(err)
 	}
 	down := projectaccesstest.NewServer(t, nil, nil)
@@ -293,7 +347,7 @@ func TestAKeptNoSuchProjectIsNotServedBesideALaterAnswerThatItExists(t *testing.
 // one Dispatch did not answer (Unanswered); each read is served PUB public.
 func TestARefusalIsNotAnsweredFromTheKeptProjectAnswer(t *testing.T) {
 	st := storetest.Open(t)
-	if err := st.KeepProjectStanding(t.Context(), keptAda, "PUB", "public", true, time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)); err != nil {
+	if err := st.KeepProjectStanding(t.Context(), keptAda, "PUB", store.ProjectStanding{Visibility: "public", Visible: true, AskedAt: time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)}); err != nil {
 		t.Fatal(err)
 	}
 	for _, refusal := range []struct {
@@ -369,10 +423,10 @@ func TestAKeptPublicIsNotServedBesideALaterAnswerThatItIsPrivate(t *testing.T) {
 			st := storetest.Open(t)
 			t1 := time.Date(2026, 11, 22, 1, 0, 0, 0, time.UTC)
 			t2 := t1.Add(time.Hour)
-			if err := st.KeepProjectStanding(t.Context(), keptBob, "PUBP", "public", true, t1); err != nil {
+			if err := st.KeepProjectStanding(t.Context(), keptBob, "PUBP", store.ProjectStanding{Visibility: "public", Visible: true, AskedAt: t1}); err != nil {
 				t.Fatal(err)
 			}
-			if err := st.KeepProjectStanding(t.Context(), later.person, "PUBP", "private", later.visible, t2); err != nil {
+			if err := st.KeepProjectStanding(t.Context(), later.person, "PUBP", store.ProjectStanding{Visibility: "private", Visible: later.visible, AskedAt: t2}); err != nil {
 				t.Fatal(err)
 			}
 			down := projectaccesstest.NewServer(t, nil, nil)

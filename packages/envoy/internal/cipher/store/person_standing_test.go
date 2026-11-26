@@ -114,8 +114,8 @@ func TestMemberKindKeepsTheLaterAnswer(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := t.Context()
 	const ada = "ada@example.com"
-	if kind, at, found, err := st.KeptMemberKind(ctx, ada); err != nil || found || kind != "" || !at.IsZero() {
-		t.Fatalf("KeptMemberKind(ada) with nothing kept = %q, %v, %t, %v; want not found", kind, at, found, err)
+	if member, found, err := st.KeptMemberKind(ctx, ada); err != nil || found || member != (store.MemberKind{}) {
+		t.Fatalf("KeptMemberKind(ada) with nothing kept = %+v, %t, %v; want not found", member, found, err)
 	}
 	t1 := time.Date(2026, 11, 22, 0, 0, 1, 0, time.UTC)
 	t2, t3, t4, t5 := t1.Add(time.Second), t1.Add(2*time.Second), t1.Add(3*time.Second), t1.Add(4*time.Second)
@@ -137,9 +137,9 @@ func TestMemberKindKeepsTheLaterAnswer(t *testing.T) {
 		if err := st.KeepPersonAnswer(ctx, ada, step.kind, step.held, step.asOf, nil); err != nil {
 			t.Fatalf("KeepPersonAnswer for %s: %v", step.write, err)
 		}
-		kind, at, found, err := st.KeptMemberKind(ctx, ada)
-		if err != nil || !found || kind != step.wantKind || !at.Equal(step.wantAsOf) {
-			t.Fatalf("KeptMemberKind(ada) after %s = %q as of %v (found %t, %v); want %q as of %v", step.write, kind, at, found, err, step.wantKind, step.wantAsOf)
+		member, found, err := st.KeptMemberKind(ctx, ada)
+		if err != nil || !found || member.Kind != step.wantKind || !member.AsOf.Equal(step.wantAsOf) {
+			t.Fatalf("KeptMemberKind(ada) after %s = %+v (found %t, %v); want kind %q as of %v", step.write, member, found, err, step.wantKind, step.wantAsOf)
 		}
 	}
 	for _, spelled := range []string{"Ada@example.com", " ada@example.com", "ada@example.com ", ""} {
@@ -167,13 +167,12 @@ func TestKeepPersonAnswerWritesBothRowsOrNeither(t *testing.T) {
 	t2, t3 := t1.Add(time.Second), t1.Add(2*time.Second)
 	rows := func(wantKind string, wantKindAsOf time.Time, wantHeld bool, wantHeldAsOf time.Time, after string) {
 		t.Helper()
-		kind, kindAsOf, kindFound, kindErr := st.KeptMemberKind(ctx, ada)
+		member, kindFound, kindErr := st.KeptMemberKind(ctx, ada)
 		standing, heldFound, heldErr := st.PersonStanding(ctx, ada)
-		held, heldAsOf := standing.Held, standing.AsOf
-		if kindErr != nil || heldErr != nil || !kindFound || !heldFound || kind != wantKind || !kindAsOf.Equal(wantKindAsOf) ||
-			held != wantHeld || !heldAsOf.Equal(wantHeldAsOf) {
-			t.Fatalf("after %s: kind %q as of %v (found %t, %v), held %t as of %v (found %t, %v); want kind %q as of %v, held %t as of %v",
-				after, kind, kindAsOf, kindFound, kindErr, held, heldAsOf, heldFound, heldErr, wantKind, wantKindAsOf, wantHeld, wantHeldAsOf)
+		if kindErr != nil || heldErr != nil || !kindFound || !heldFound || member.Kind != wantKind || !member.AsOf.Equal(wantKindAsOf) ||
+			standing.Held != wantHeld || !standing.AsOf.Equal(wantHeldAsOf) {
+			t.Fatalf("after %s: kind %+v (found %t, %v), standing %+v (found %t, %v); want kind %q as of %v, held %t as of %v",
+				after, member, kindFound, kindErr, standing, heldFound, heldErr, wantKind, wantKindAsOf, wantHeld, wantHeldAsOf)
 		}
 	}
 	if err := st.KeepPersonAnswer(ctx, ada, "full", answerNotHeld, t1, nil); err != nil {
