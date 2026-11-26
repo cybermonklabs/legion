@@ -11,6 +11,7 @@ import type {
   TargetCandidate,
   WriteAdvice,
 } from "./dispatch-api.generated";
+import type { DisplayTree } from "./dispatch-api-core";
 import type { DispatchEvent } from "./dispatch-api-events";
 
 /**
@@ -103,10 +104,12 @@ export const ID_AMBIGUOUS = "ID_AMBIGUOUS";
  * document of an agent's conversation). At most one of `issue_key` and `document` names its
  * owner: the issue that owns it, or the reference of the project document it is written on.
  * `first_line` is the head of what tells two candidates apart, absent for a direct message a
- * caller may not read. `edited_at` is the time a comment's or a message's author last edited it,
- * and `deleted_at` with `deleted_by` the mark of one its author deleted, whose `first_line` the
- * cleared body leaves absent; each is absent on a post that stands unedited, on every other kind,
- * and from a Dispatch older than the fields.
+ * caller may not read. `first_line_tree` is that line's display tree, sent only to a caller that
+ * sends `Dispatch-Trees: 1` and absent wherever `first_line` is; a document's first line is its
+ * file's name, drawn as the characters it is, and never has one. `edited_at` is the time a
+ * comment's or a message's author last edited it, and `deleted_at` with `deleted_by` the mark of
+ * one its author deleted, whose `first_line` the cleared body leaves absent; each is absent on a
+ * post that stands unedited, on every other kind, and from a Dispatch older than the fields.
  */
 export interface IDCandidate {
   readonly kind: "ask" | "comment" | "message" | "artifact" | "block";
@@ -115,6 +118,7 @@ export interface IDCandidate {
   readonly issue_key?: string;
   readonly document?: string;
   readonly first_line?: string;
+  readonly first_line_tree?: DisplayTree;
   readonly edited_at?: string;
   readonly deleted_at?: string;
   readonly deleted_by?: Actor;
@@ -126,6 +130,10 @@ export interface DispatchServiceErrorShape {
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
+  /** Where to look next, which Dispatch adds to one refusal only: its answer to a path no route
+   *  serves (`404 NOT_FOUND`, "no route for …", the router's `staticHandler`), which says that
+   *  `GET /api/v1` lists every route. */
+  readonly hint?: string;
   /** On a `409 PARENT_STATUS_CONFLICT`: each issue whose status the write would leave out of line
    *  with its parent's or its children's, with its status and whether it is the parent or a child. */
   readonly issues?: ParentStatusConflictIssue[] | null;

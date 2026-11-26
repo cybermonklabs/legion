@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+    The daemon's token login waits the short schedule, 2 s doubling to 10 s, after the secrets
+    broker, or a proxy before it, answers 408 or 429, as it waits after a 5xx: such an answer is a
+    broker that could not take the login now, and its log line names the class
+    `broker-unavailable`. After a 429 it waits at least as long as the answer's `Retry-After`
+    asks, in seconds or as a date, and at most 5 min: the broker's token login route names the time
+    its rate limit takes the login again (by default 30 s per address, a minute per account).
+    Before, a 408 or a 429 was a refusal on the long schedule, 30 s doubling to 5 min, which every
+    pod enrollment waited behind.
+time: 2026-11-23T11:54:23Z
+custom:
+    Issue: pr5212

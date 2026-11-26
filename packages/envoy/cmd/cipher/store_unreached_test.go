@@ -136,6 +136,7 @@ func zeroAddressesUnreached() unreachedTarget {
 // not printed. Control: Secret Manager's own Unavailable, with a made-up secret in its message,
 // prints as its answer.
 func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useLentGCPAccessToken, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useLentGCPAccessToken, gcpUserinfo set at secret_gcp_test.go:551).
 	planted := "hunter2pw-" + "unavailable-" + "6d2c"
 	forbidden := []string{planted, "connection error", "transport:", "desc =", "127.0.0.1", "resolver error", "zero addresses"}
 	for _, row := range []struct {
@@ -205,6 +206,7 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 // ends the call (its context is cancelled once that attempt returns), so a retry is counted, not
 // timed, and a row ends as soon as it has its answer.
 func TestGaxStillStopsRetryingACertificateNoRootHereTrusts(t *testing.T) {
+	t.Parallel()
 	attempts := func(t *testing.T, to unreachedTarget) (int32, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()

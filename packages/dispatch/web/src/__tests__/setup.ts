@@ -7,6 +7,7 @@ import { configure } from "@testing-library/react";
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
+import { resetPageGoing } from "../api/client";
 import { resetReachability } from "../api/reachability";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetDraftStorage } from "../features/inbox/draft-store";
@@ -185,6 +186,9 @@ afterEach(resetPinState);
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
+// So is whether the page went: a row that tells the page it goes (`pagehide`) ends no page, and
+// the next row's writes would else all be sent as the page goes (`api/client.ts`'s `pageGoing`).
+afterEach(resetPageGoing);
 // Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
 // tick a row did not start must not land in another row as an update outside act. One armed on a
 // fake clock the row put back never fires and would leave the tick marked as armed, so no later

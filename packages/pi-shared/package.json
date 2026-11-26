@@ -155,7 +155,7 @@
     "test, its second command: jj-attribution.test.ts runs alone at --timeout 540000, the pi-shared job's room for one hang: its timeout-minutes 10 less its 45 s at 06d187e7 (CI run 45437325102), 555 s. Six times its slowest row is past that room, so the room decides: the templates row, 336 481 ms over 20 runs of the command at the 240 rung (Job infra-1580-r31psj-p27px, 340 busy loops for the 240 rung, row A 36.3 s, at 339a24dd), and 442 299 ms at 06d187e7 (Job infra-1580-t27-j3-99kcl)."
   ],
   "scripts": {
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
     "test": "bun test --timeout 160000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/jj-attribution.test.ts' && bun test --timeout 540000 --preload @legion/test-fixtures/row-deadline src/jj-attribution.test.ts",
     "lint": "bunx biome check src/ test/"
   },

@@ -78,6 +78,7 @@ func oneStartRowsOf(t *testing.T, pool *pgxpool.Pool, issue string, now time.Tim
 // with no slot for the issue, the task-less row of the pair was claimable, so the implementer's
 // process started, and its whole first turn could run with no task to do (INFRA-1573).
 func TestAStartIsOneRowThatCarriesItsTask(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: oneStartIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: oneStartIssue, Project: "LEGION", Title: "root", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "U"})

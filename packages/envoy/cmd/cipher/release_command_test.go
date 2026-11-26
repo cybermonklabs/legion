@@ -199,6 +199,7 @@ func (b *commandBroker) takeRequests() (calls int, bodies []map[string]any, obje
 // after --, in the release's body, beside the --reason its own call gave, so the broker can log
 // what the grant was spent on and why this call spent it; the command then runs with the value.
 func TestExecSendsItsCommandWithTheRelease(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)
@@ -229,6 +230,7 @@ func TestExecSendsItsCommandWithTheRelease(t *testing.T) {
 // command and the reason, and the command runs. Any other INVALID_NARROWING is the broker's answer
 // to the release itself: it is not sent again, and nothing runs.
 func TestExecReleasesFromAnOlderBrokerWithoutTheCommand(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	keyDir := newKeyDir(t)
 	const command = `"command":["sh","-c","echo \"ran $APP\""]`
@@ -273,6 +275,7 @@ func TestExecReleasesFromAnOlderBrokerWithoutTheCommand(t *testing.T) {
 // boundary, which is all the broker records, so the body never reaches the broker's 1 MiB cap.
 // The command itself gets every argument.
 func TestExecReleasesACommandOverTheBodyCap(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)
@@ -307,6 +310,7 @@ func TestExecReleasesACommandOverTheBodyCap(t *testing.T) {
 // installations exactly as it came, and no line on stderr holds any part of its token. A release
 // that leaves nothing out writes no such line.
 func TestLeftOutPermissionsAreNamedOnStderr(t *testing.T) {
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	b := newCommandBroker(t, knowsEveryField)
 	keyDir := newKeyDir(t)
