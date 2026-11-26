@@ -36,12 +36,13 @@ type Reference struct {
 	Dir string
 }
 
-// OpenReference is the directory SURVIVAL_REF_DIR names. It fails t, naming the variable, where
-// the variable is unset or names a directory in which a step of prepare.sh has not finished: a
-// reference test never passes over a directory it cannot read.
-func OpenReference(t testing.TB) Reference {
+// OpenReference is the directory dir, which a reference test reads from SURVIVAL_REF_DIR in its
+// own test file, since Dispatch's non-test files read no environment outside the settings table
+// (textcheck's TestNoReaderBypassesTheSettingsTable). It fails t, naming the variable, where dir
+// is empty or names a directory in which a step of prepare.sh has not finished: a reference test
+// never passes over a directory it cannot read.
+func OpenReference(t testing.TB, dir string) Reference {
 	t.Helper()
-	dir := os.Getenv(ReferenceDirEnv)
 	if dir == "" {
 		t.Fatalf("%s is unset: set it to the directory testdata/reference/prepare.sh <dir> wrote (testdata/reference/README.md)", ReferenceDirEnv)
 	}

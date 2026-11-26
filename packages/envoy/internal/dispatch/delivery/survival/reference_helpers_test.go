@@ -64,7 +64,7 @@ var refCache struct {
 // refLegionChain is the reference's chain of cybermonklabs/legion, read once.
 func refLegionChain(t *testing.T) *refLegion {
 	t.Helper()
-	ref := survivaltest.OpenReference(t)
+	ref := survivaltest.OpenReference(t, os.Getenv(survivaltest.ReferenceDirEnv))
 	refCache.Lock()
 	defer refCache.Unlock()
 	if refCache.legion != nil {

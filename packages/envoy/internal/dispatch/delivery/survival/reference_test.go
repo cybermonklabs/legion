@@ -126,7 +126,7 @@ func TestReferenceLegionGroups(t *testing.T) {
 // none (no commit message was read) and one they leave unattributed is the one refused read of
 // its commit messages, which IssueOf answers as no issue.
 func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
-	ref := survivaltest.OpenReference(t)
+	ref := survivaltest.OpenReference(t, os.Getenv(survivaltest.ReferenceDirEnv))
 	if os.Getenv(storetest.DatabaseURLEnv) == "" {
 		t.Fatalf("%s is unset: this test loads step 3's issues into a database of its own on that server", storetest.DatabaseURLEnv)
 	}
@@ -419,7 +419,7 @@ func TestReferenceBatchedRunsEqualOnePass(t *testing.T) {
 // ai/r_git_* by the 15 lines of 1,497,629 over 23 commits measured there, and at the pairs the
 // archive's ai/compare_git_diff.json counts.
 func TestReferenceSecondRepositoryPerCommit(t *testing.T) {
-	ref := survivaltest.OpenReference(t)
+	ref := survivaltest.OpenReference(t, os.Getenv(survivaltest.ReferenceDirEnv))
 	ai := append(slices.Clone(refSecondRepo), "ai")
 	path := ref.Path(append(slices.Clone(ai), "commits.tsv")...)
 	rows := refRows(t, path)

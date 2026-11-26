@@ -166,7 +166,7 @@ func TestLiveMeasurementOfTwentyEightDays(t *testing.T) {
 // liveMeasurement is the body of TestLiveMeasurementOfTwentyEightDays against upstream, GitHub's
 // API, read under authorization through the proxy at most pace reads a second (no bound for 0).
 func liveMeasurement(t *testing.T, upstream, authorization string, pace int) {
-	ref := survivaltest.OpenReference(t)
+	ref := survivaltest.OpenReference(t, os.Getenv(survivaltest.ReferenceDirEnv))
 	r := newRig(t)
 	proxy := newLiveProxy(t, upstream, authorization, pace)
 	proxy.capture = true
