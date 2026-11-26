@@ -30,6 +30,11 @@
 //     The one line of the cell of <case> under <label> (scored-runs.ts caseCell), which rig.sh cell
 //     prints: a case form's at <count>, and a control form's the control's own over every owner,
 //     with the verdict cells gives it. Exit 2 for a count that is no whole number above 0.
+//   score.ts forward-world <world dir>
+//     Each reason the rig refuses the world (forward-world.ts forwardWorldProblems), one a line;
+//     exit 1 when there is one.
+//   score.ts path-check <run dir>
+//     The one line of a path check (pathCheck): `PATH OK <defect>`, or its first failure line.
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
@@ -42,6 +47,7 @@ import { z } from "zod";
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { FORWARD_SCENARIOS, forwardWorldProblems } from "./forward-world";
 import {
   CheckableFile,
   CheckableOutput,
@@ -66,7 +72,7 @@ import {
   SCORED_SCENARIOS,
   transcriptModels,
 } from "./scored-runs";
-import { RunRow, runPass } from "./scored-runs-contracts";
+import { RigDaemonReady, RigDaemonRecord, RunRow, runPass } from "./scored-runs-contracts";
 import {
   CREATED,
   SessionEntry,
@@ -3163,7 +3169,10 @@ function unscored(
     return "the agent got no model turn: no transcript, or one with no assistant message";
   const failed = modelFailure(entries);
   if (failed !== undefined) return `a turn of the agent ended on a model error: ${failed}`;
-  if (SCORED_SCENARIOS.includes(scenario)) {
+  if (
+    SCORED_SCENARIOS.includes(scenario) ||
+    (FORWARD_SCENARIOS as readonly string[]).includes(scenario)
+  ) {
     const problem = modelProblem(runDir, entries);
     if (problem !== undefined) return problem;
   }
@@ -3639,6 +3648,127 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   );
 }
 
+// ---- forward-only and forward-owner: a world's agent as a real pane of the label's daemon ----
+
+/** The routes of the label daemon's HTTP API that a forward run's record is read for. */
+const ROUTES = {
+  register: "/legion/v1/claims/register",
+  ready: "/legion/v1/claims/ready",
+  report: "/legion/v1/defects/report",
+  complete: "/legion/v1/handoff/complete",
+  backward: "/legion/v1/phase/backward",
+} as const;
+type DaemonCall = RigDaemonRecord["calls"][number];
+/** Whether a recorded call is a POST of `route`, its query left out. */
+const isCall = (call: DaemonCall, route: string) =>
+  call.method === "POST" && call.path.split("?")[0] === route;
+/** A string field of a recorded body or answer, or "" when it has none. */
+const text = (value: unknown, name: string): string => {
+  const found = field(value, name);
+  return typeof found === "string" ? found : "";
+};
+/** Whether `body` holds every anchor: an empty list is never held. */
+const holdsAll = (body: string, anchors: readonly string[] | undefined) =>
+  anchors !== undefined && anchors.length > 0 && anchors.every((anchor) => body.includes(anchor));
+
+/** The calls of the real pane: each call of the record after the label daemon answered 204 to
+ * the pane's claims/ready (ready.session), in the order the record holds them, or undefined when
+ * the record holds no such ready. The fake claimants' calls of the earlier steps come before it. */
+function paneCalls(record: RigDaemonRecord, ready: RigDaemonReady): DaemonCall[] | undefined {
+  const at = record.calls.findIndex(
+    (call) =>
+      isCall(call, ROUTES.ready) &&
+      call.status === 204 &&
+      text(call.body, "sessionId") === ready.session
+  );
+  return at < 0 ? undefined : record.calls.slice(at + 1);
+}
+
+/** The result of a path check (C4's `pathCheck`): `PATH OK <defect>`, or the first failure line. */
+export interface PathCheck {
+  ok: boolean;
+  defect: string | null;
+  failure: string | null;
+}
+/** Each failure line of a path check, in the order of C4's table. */
+export const PATH_FAILURES = {
+  ready: "PATH FAIL: the new session never became ready at the label daemon",
+  noCall: "PATH FAIL: the label daemon recorded no call of the plugin",
+  status: (status: number) => `PATH FAIL: the plugin's call got ${status} from the label daemon`,
+  result: "PATH FAIL: the tool result is not the label daemon's answer",
+  stored: "PATH FAIL: the stored defect is not the reported one",
+  completion: "PATH FAIL: the completion never reached the label daemon",
+  daemon: "PATH FAIL: the run's pane did not point at the label daemon",
+} as const;
+/** The fields of the request (daemon-request.json) a path check reads. */
+const PathRequest = z.looseObject({ role: z.string(), paneDaemon: z.string() });
+/** A line of the model stand-in's log: in the mode standin-report, `toolResult` is the text of the
+ * newest tool result of a scripted call that the turn's request carried back. */
+const StandinLine = z.looseObject({ toolResult: z.string().nullable().optional() });
+/** The defect text standin-script.json's first call reports. */
+const ScriptedReport = z.looseObject({
+  calls: z.array(z.looseObject({ input: z.looseObject({ defect: z.string() }) })).min(1),
+});
+
+/** pathCheck: whether the scripted model's two calls of a run (SKILL_SCENARIOS_MODEL=standin-report)
+ * reached the label's daemon through the real pane, its plugin and its `legion` tool. It reads
+ * ready.json, record.json, daemon-request.json, standin-script.json and model-standin.jsonl, and
+ * takes the first failure of C4's table: the pane's new session registered (200) and became ready
+ * (204) at the label daemon, and is not the session it replaced; the record holds a report after
+ * that ready; the report got 200; the stand-in's first logged tool result holds the answer's id
+ * with the state `recorded`; the record's defects hold that id with the scripted text and the
+ * request's role; a completion after the report got 200; and the request's paneDaemon is `label`.
+ * A run with no ready.json or no record.json fails the first. */
+export function pathCheck(runDir: string): PathCheck {
+  const failed = (failure: string): PathCheck => ({ ok: false, defect: null, failure });
+  const readyFile = path.join(runDir, "ready.json");
+  const recordFile = path.join(runDir, "record.json");
+  if (!existsSync(readyFile) || !existsSync(recordFile)) return failed(PATH_FAILURES.ready);
+  const ready = json(readyFile, RigDaemonReady);
+  const record = json(recordFile, RigDaemonRecord);
+  const request = json(path.join(runDir, "daemon-request.json"), PathRequest);
+  const registered = record.calls.some(
+    (call) =>
+      isCall(call, ROUTES.register) &&
+      call.status === 200 &&
+      text(call.body, "sessionId") === ready.session
+  );
+  const after = paneCalls(record, ready);
+  if (!registered || after === undefined || ready.session === ready.replaced)
+    return failed(PATH_FAILURES.ready);
+  const report = after.findIndex((call) => isCall(call, ROUTES.report));
+  const call = after[report];
+  if (call === undefined) return failed(PATH_FAILURES.noCall);
+  if (call.status !== 200) return failed(PATH_FAILURES.status(call.status));
+  const id = text(call.answer, "defect");
+  const result = parsed(path.join(runDir, "model-standin.jsonl"), StandinLine).find(
+    (line) => typeof line.toolResult === "string"
+  )?.toolResult;
+  if (id === "" || result == null || !result.includes(id) || !result.includes("recorded"))
+    return failed(PATH_FAILURES.result);
+  const scripted = json(path.join(runDir, "standin-script.json"), ScriptedReport).calls[0]?.input
+    .defect;
+  if (
+    !record.defects.some(
+      (defect) => defect.id === id && defect.text === scripted && defect.role === request.role
+    )
+  )
+    return failed(PATH_FAILURES.stored);
+  if (
+    !after
+      .slice(report + 1)
+      .some((later) => isCall(later, ROUTES.complete) && later.status === 200)
+  )
+    return failed(PATH_FAILURES.completion);
+  if (request.paneDaemon !== "label") return failed(PATH_FAILURES.daemon);
+  return { ok: true, defect: id, failure: null };
+}
+
+/** The one line a path check prints: `PATH OK <defect>`, or its failure line. */
+export function pathLine(check: PathCheck): string {
+  return check.ok ? `PATH OK ${check.defect}` : (check.failure ?? PATH_FAILURES.ready);
+}
+
 // judge.ts imports sharedRuns from this file: the command line runs only when bun runs score.ts.
 if (import.meta.main) {
   const [command, ...rest] = Bun.argv.slice(2);
@@ -3663,9 +3793,20 @@ if (import.meta.main) {
       console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
       process.exit(1);
     }
+  } else if (command === "forward-world" && rest.length === 1) {
+    const problems = forwardWorldProblems(rest[0] ?? "");
+    for (const problem of problems) console.log(problem);
+    if (problems.length > 0) process.exit(1);
+  } else if (command === "path-check" && rest.length === 1) {
+    try {
+      console.log(pathLine(pathCheck(rest[0] ?? "")));
+    } catch (error) {
+      console.error(`score.ts: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
   } else {
     console.error(
-      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count>"
+      "usage: score.ts live-read <run dir> <skills dir> <omp logs dir> | runs <runs dir> [<scenario>] | runs <runs dir> --run <name> | cells <runs dir> <scenario> | cell <runs dir> <scenario> <stage> <label> <case> <count> | forward-world <world dir> | path-check <run dir>"
     );
     process.exit(2);
   }
