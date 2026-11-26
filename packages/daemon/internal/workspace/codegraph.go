@@ -508,10 +508,11 @@ func nextCodegraphStep(dirExists, lockLive bool, statusExitCode int, statusStdou
 // with `initialized` already true and `builtWithVersion` null. A complete index is not enough: the
 // worker image's CLI moved from 1.5.0 to 1.6.4, and 1.5.0 reads only the root go.mod, so its index
 // misses every Go call from another package of a nested module. 1.6.4 opening an index 1.5.0 built
-// reports `"version":"1.6.4"` and `"index":{"state":"complete","builtWithVersion":"1.5.0",
-// "reindexRecommended":false,...}` (measured 2026-11-26), so neither the state nor CodeGraph's own
-// reindexRecommended would ever have a kept volume's blind index rebuilt; 1.6.4's status of an
-// index it built itself reports `"version":"1.6.4"` and `"builtWithVersion":"1.6.4"`. A missing
+// reports `"version":"1.6.4"` and `"index":{"state":"complete","builtWithVersion":"1.5.0",...}`
+// (measured 2026-11-26), so the state alone would never have a kept volume's blind index rebuilt.
+// CodeGraph's own `reindexRecommended` is no substitute: it read false on one such index and true
+// on another, and this warm-up does not read it. 1.6.4's status of an index it built itself
+// reports `"version":"1.6.4"` and `"builtWithVersion":"1.6.4"`. A missing
 // or null field decodes as "": a complete index whose status names neither version still reads as
 // current, and one whose builtWithVersion is null beside a set version does not.
 func codegraphStatus(stdout string) (initialized, current bool) {
