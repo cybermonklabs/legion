@@ -600,14 +600,21 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 // answered before that, and must neither be retried for it nor wait for it. Attempts is capped at
 // 1 so a reintroduced regression (treating the lingering child as a transient non-answer) fails
 // fast with this test's own message, instead of retrying until go test's own timeout ends the run;
-// and the child must still be running when the gate returns, so a gate that waited for it to close
-// the pipe fails here too. With one attempt, a budget kill fails the test, which gateUnder's budget
-// (answerBudget, 20 s) keeps out of reach of the fake's own exit on a loaded box. The child stays
-// in the probe's process group, so this row holds the in-group side of a budget far away. An exit
-// inside the budget whose pipe is held past it is
-// TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
+// and the gate must give its pass back within passWithin of the probe's exit, with the child still
+// running. The exit is read from the fake's last act before it (lingering.pid, fakeOmp.markedAt).
+// The child is held, so it never ends on a timer of its own, and a gate that held its pass for the
+// child's pipe long past the probe's exit, a WaitDelay far past procgroup.WaitDelay, would still
+// find it running: the bound fails that gate. A gate that waited for the child to close the pipe
+// would not return while the child is held, and fails at the test binary's deadline. With one
+// attempt, a budget kill fails the test, which gateUnder's budget (answerBudget, 20 s) keeps out
+// of reach of the fake's own exit on a loaded box. The child stays in the probe's process group,
+// so this row holds the in-group side of a budget far away. An exit inside the budget whose pipe
+// is held past it is TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
 	t.Parallel()
+	// passWithin is half a minute: the probe's exit, then procgroup.WaitDelay for the child's
+	// pipe, then the run's return, on a loaded machine.
+	const passWithin = 30 * time.Second
 	f := newFakeOmp(t, "yes-then-linger")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.retry.Attempts = 1
@@ -616,6 +623,7 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 	if err := gate.verify(context.Background()); err != nil {
 		t.Fatalf("the gate refused a plugin that answered yes before a lingering child outlived it: %v", err)
 	}
+	returned := time.Now()
 
 	if n := f.attempts(t); n != 1 {
 		t.Fatalf("Oh My Pi ran %d times, want once: a lingering descendant is not a reason to retry an answer already given", n)
@@ -626,6 +634,9 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 	}
 	if err := syscall.Kill(pid, 0); err != nil {
 		t.Errorf("the lingering child (PID %d) was gone when the gate returned (%v): the gate waited for it to close the probe's output pipe", pid, err)
+	}
+	if waited := returned.Sub(f.markedAt(t, "lingering.pid")); waited > passWithin {
+		t.Errorf("the gate gave its pass back %s after the probe exited, past %s: it held the pass for the lingering child's pipe long after the probe answered", waited, passWithin)
 	}
 }
 
