@@ -4095,29 +4095,6 @@ function forwardClauses(
       ];
       break;
     }
-    case "defect-notice":
-      clauses = [clause("b", backward.length === 0, `${backward.length} request_backward_move calls`), m];
-      break;
-    case "child-held": {
-      const parent = backward.filter((call) => (text(call.body, "issue") || world.issue) === world.issue);
-      clauses = [m, clause("b", parent.length === 0, `${parent.length} request_backward_move calls of ${world.issue}`)];
-      break;
-    }
-    case "request-after-signoff": {
-      const captured = json(path.join(runDir, "forward-captured.json"), ForwardCaptured);
-      const version = captured.spec.versions.find(
-        (each) => each.version > captured.spec.seeded && holdsAll(each.markdown, world.anchors.request)
-      );
-      const asked =
-        version !== undefined &&
-        captured.approvals.some((approval) => approval.version >= version.version);
-      clauses = [
-        clause("s", version !== undefined, `the spec's versions ${captured.spec.versions.map((each) => each.version).join(", ")}, seeded at ${captured.spec.seeded}; the request's version ${version?.version ?? "none"}`),
-        clause("r", asked, `approval requests at versions ${captured.approvals.map((approval) => approval.version).join(", ") || "none"}`),
-        m,
-      ];
-      break;
-    }
     default:
       throw new Error(`${world.world} is no world forwardOnly scores`);
   }
