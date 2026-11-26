@@ -239,7 +239,7 @@ func TestALaunchRecordsTheRepositoryItsProcessWorks(t *testing.T) {
 		wantWorking(t, h, nil)
 
 		h.specs.names(zeta)
-		h.must(RequestResume{Claim: h.token})
+		h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 		h.wantState(StateLaunching)
 		wantWorking(t, h, &zeta)
 	})

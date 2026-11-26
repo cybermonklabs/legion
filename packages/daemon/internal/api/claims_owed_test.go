@@ -409,7 +409,7 @@ func TestClaimOwedNamesTheArchitectThatOwnsTheClaim(t *testing.T) {
 	if !ok {
 		t.Fatalf("no machine for %s", childArchitect.token)
 	}
-	if err := machine.Handle(h.ctx, supervise.RequestStop{Claim: childArchitect.token}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.RequestStop{Claim: childArchitect.token, By: supervise.SuspendedByOperator}); err != nil {
 		t.Fatalf("stop %s: %v", childArchitect.token, err)
 	}
 	if state := h.stored(childArchitect.token).State; state != supervise.StateRetired {

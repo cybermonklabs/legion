@@ -65,6 +65,29 @@ export interface LegionControllerToolSession {
 
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
+/** The controller's actions on one agent of its project, each naming the agent by `issue` and
+ * `role`: the two recoveries and the four the operator runs as `legion claims` commands, which the
+ * daemon serves the controller alone, on routes of their own. Declared before every other list of
+ * the tool's operations, which take them from here: an agent action added to this list is offered
+ * to the controller, takes the agent's two fields, and reaches its own branch of `execute`, so
+ * none can fall through into another operation's. */
+const AGENT_ACTIONS = [
+  "fresh_session",
+  "compact",
+  "stop",
+  "retry",
+  "suspend",
+  "resume_agent",
+] as const;
+
+type AgentAction = (typeof AGENT_ACTIONS)[number];
+
+const isAgentAction = (operation: string): operation is AgentAction =>
+  (AGENT_ACTIONS as readonly string[]).includes(operation);
+
+/** The fields every agent action takes: the agent, by its issue and its role. */
+const AGENT_FIELDS = ["issue", "role"] as const;
+
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
  * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and `read_build` is every
  * session's: the controller holds a claim like any other role and reads its own build the same
@@ -98,8 +121,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_build",
     "read_state",
     "set_status",
-    "fresh_session",
-    "compact",
+    "replace_pod",
+    ...AGENT_ACTIONS,
     "pause",
     "resume",
     "replay_give_up",
@@ -123,8 +146,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
-  fresh_session: ["issue", "role"],
-  compact: ["issue", "role"],
+  replace_pod: ["issue"],
+  ...Object.fromEntries(AGENT_ACTIONS.map((operation) => [operation, AGENT_FIELDS])),
   pause: ["reason"],
   resume: [],
   replay_give_up: ["giveUp", "consumer", "throughSeq"],
@@ -135,6 +158,36 @@ const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 
 const jsonSuccess = (details: Readonly<Record<string, unknown>>): ToolResult =>
   toolSuccess(JSON.stringify(details), details);
+
+/** Posts one agent action, its grant minted, and answers the daemon's answer whole. */
+async function agentAction(
+  client: LegionDaemonClient,
+  operation: AgentAction,
+  request: { readonly grantId: string; readonly issue: string; readonly role: LegionRole }
+): Promise<ToolResult> {
+  switch (operation) {
+    case "compact":
+      // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so and
+      // names why, and the agent is back whatever it says.
+      return jsonSuccess(await client.compact(request));
+    case "fresh_session":
+      // The daemon's answer again: empty for an agent whose phase was restarted or needed no
+      // restart, and naming the refusal where the agent came back owing no task and the workflow
+      // refused the restart that would have handed it one.
+      return jsonSuccess(await client.freshSession(request));
+    // Four of the six agent actions (stop, retry, suspend, resume_agent) answer the claim's state
+    // after the action, with who holds a suspension over the agent, so the caller reads whether its
+    // own resume_agent lifts it.
+    case "stop":
+      return jsonSuccess(await client.stopAgent(request));
+    case "retry":
+      return jsonSuccess(await client.retryAgent(request));
+    case "suspend":
+      return jsonSuccess(await client.suspendAgent(request));
+    case "resume_agent":
+      return jsonSuccess(await client.resumeAgent(request));
+  }
+}
 
 /** `read_state`'s filters, each naming the full records it answers with, in the order the schema
  * declares them. Naming none answers the summary. */
@@ -254,7 +307,10 @@ const SUMMARY_LEGEND =
   "intake give-ups <consumer> open <count> newest seq <stream sequence>, one line for each " +
   "consumer with messages the daemon's intake gave up on and no replay or discard has closed, " +
   "or intake give-ups (none); " +
-  "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
+  "capability <name> <status> [detail] [config <legion.yaml line>]; " +
+  "repository <repo> [(served as <name>)]: <why>, as `legion state` prints it, for each " +
+  "repository the live records name that GitHub's last read did not name or a role App is not " +
+  "installed on; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> (for a spec step on an " +
   "ancestor's basis, gate <current> open_on_basis|pending_on_basis <ancestor> <version>: open on " +
@@ -265,8 +321,9 @@ const SUMMARY_LEGEND =
 /**
  * The whole state as the controller reads it between its filtered reads: the project, its pause
  * or its last pause, the admission lists, the wakes the pacing holds, each consumer's open
- * give-ups, each capability's status, one line per recorded issue, and under each issue Legion
- * still runs its slot, its hold, its gate and its claims.
+ * give-ups, each capability's status, each repository the live records name that GitHub's last
+ * read did not name or a role App is not installed on, and why, one line per recorded issue, and
+ * under each issue Legion still runs its slot, its hold, its gate and its claims.
  *
  * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
@@ -317,6 +374,33 @@ function stateSummary(state: LegionState): string {
     const config = capability.configLine === undefined ? "" : ` config ${capability.configLine}`;
     lines.push(`capability ${capability.name} ${capability.status}${detail}${config}`);
   }
+  for (const liveRepository of state.repositories?.live ?? []) {
+    // The controller files a clear defect only on a repository both role Apps are installed on
+    // (finding-asks.md), and no filter answers for repositories, so the summary prints the lines
+    // an operator's `legion state` prints for them, in the same words (cmd/legion's
+    // repositoryLines, main.go:1431): one line for each repository GitHub's last read did not name
+    // (`readError`) or GitHub answered a role App is not installed on, with both reasons where
+    // both hold, and none for a repository GitHub has not answered both reads of yet. A live
+    // entry carries no verdict word of the daemon's (api's LiveRepositoryView, state.go:237, holds
+    // only `repo`, `servedAs`, `apps`, `readError` and `cache`), so the reason is built here from
+    // `apps` as the daemon's own NotInstalled (state.go:250) builds it. Every field of an entry is
+    // optional (LEGION_ANSWER_READS), so an entry with no repository is left out.
+    if (liveRepository.repo === undefined) continue;
+    const served = liveRepository.servedAs ?? liveRepository.repo;
+    // A local name for the entry's `apps`, so a reader of the consumer sources ties
+    // `apps.implement` and `apps.review` in appsNotInstalled to `repositories.live[].apps`
+    // (pi-shared's declared-read test binds a name one `const` deep).
+    const apps = liveRepository.apps;
+    const why = [liveRepository.readError, appsNotInstalled(apps, served)].filter(
+      (reason): reason is string => reason !== undefined && reason !== ""
+    );
+    if (why.length === 0) continue;
+    const name =
+      liveRepository.servedAs === undefined
+        ? liveRepository.repo
+        : `${liveRepository.repo} (served as ${liveRepository.servedAs})`;
+    lines.push(`repository ${name}: ${why.join("; ")}`);
+  }
   const keys = Object.keys(state.issues).sort();
   lines.push(`issues ${keys.length}`);
   for (const key of keys) {
@@ -361,6 +445,25 @@ function stateSummary(state: LegionState): string {
     }
   }
   return lines.join("\n");
+}
+
+/** The sentence naming each role App GitHub answered is not installed on `repo`, in the words the
+ * daemon refuses an admission with (`appauth.NotInstalledOn`): "the review App is not installed on
+ * acme/gadgets", or "the implement and review Apps are not installed on acme/gadgets" for both.
+ * Undefined while GitHub has not answered both reads (no `apps`), and where it answered both
+ * installed. */
+function appsNotInstalled(
+  apps: { readonly implement?: boolean; readonly review?: boolean } | undefined,
+  repo: string
+): string | undefined {
+  if (apps === undefined) return undefined;
+  const missing = [
+    ...(apps.implement === true ? [] : ["implement"]),
+    ...(apps.review === true ? [] : ["review"]),
+  ];
+  if (missing.length === 0) return undefined;
+  const subject = missing.length === 1 ? "App is" : "Apps are";
+  return `the ${missing.join(" and ")} ${subject} not installed on ${repo}`;
 }
 
 /** `read_state`'s answer: the summary when the call names no filter, and the full records the one
@@ -842,50 +945,111 @@ export function createLegionTool(deps: {
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, how " +
         "many give-ups each intake consumer has open and the newest stream sequence among them, each " +
-        "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
-        "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
+        "capability, each repository whose last GitHub read failed or that a role App is not installed on, with why " +
+        "(none for one GitHub has not answered yet), one line per recorded issue, and under each issue " +
+        "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
+        "phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +
         "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
-        "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-        "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+        "The controller's replace_pod (issue) asks the daemon to replace the pod that runs the roles of an issue of its " +
+        "own project. The daemon opens its update round over that pod, also where an earlier round kept the pod. It " +
+        "asks each role in the pod to push its work and answer ready_for_update. The round ends once each role has " +
+        "answered, no turn runs and each role's report since its last turn names no running background work, or at " +
+        "the round's bound whatever the roles said. Then the daemon reads the workspace of the pod. It replaces the " +
+        "pod only if that read finds nothing that no branch or tag on origin holds. If the read finds such work, or " +
+        "if the read fails, the round keeps the pod and ends with no replacement, and the daemon tells the open " +
+        "phase's worker or the issue's architect. So a round that ended did not always replace the pod. Before you " +
+        "tell a person that the pod was replaced, read the pod uid on the issue's claims (read_state, " +
+        "locator.sandbox.podUid): the same uid as before the request means that the round kept the pod. A " +
+        "suspension by the operator or the controller over a role the round asks keeps the " +
+        "pod past the bound, until a resume of that role lifts it. The controller's own suspension counts too, so a controller that " +
+        "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +
+        "replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
+        "answer names the round, its reasons, and opened, which is false when a round was already open over the pod. " +
+        "The daemon refuses it for an issue of another project and for an issue with no claim that it supervises " +
+        "(NO_CLAIM), for an issue whose claims run no worker in a pod (NO_POD), for an issue whose pod it replaces " +
+        "already (POD_CHANGING), and while a limit of the project holds the round back (POD_UPDATE_LIMITED, which " +
+        "names the limit). Those refused requests open nothing: NO_CLAIM leaves no pod to replace, NO_POD names what " +
+        "must change before you ask again, and POD_CHANGING and POD_UPDATE_LIMITED say when to ask again. A request " +
+        "that a sweep of the update rounds keeps waiting past 30 seconds opens nothing either (POD_UPDATE_BUSY, whose " +
+        "sentence says when to ask again). The daemon answers only once a claim of the issue records the round. It refuses a round " +
+        "that no claim records in time (POD_UPDATE_NOT_RECORDED), and answers 500 POD_UPDATE_FAILED where it cannot " +
+        "read the claims back after the post: either round can still open, so read updateRound on the issue's claims " +
+        "before you ask again. It refuses replace_pod while the project is paused (PROJECT_PAUSED, naming the pause that " +
+        "stands), and for a pod a pause holds (POD_HELD_BY_PAUSE): the hold of a pause that began after the daemon read " +
+        "the project as running, or a hold the resume left on a pod until a role of that pod is running again; neither " +
+        "opens a round. " +
+        "fresh_session (issue, role) starts one agent again in a new session, leaving behind the session it ran in: the daemon " +
+        "stops the agent if it runs, forgets the session, and starts the agent, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-        "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
-        "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
-        "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
-        "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
+        "The answer is empty when the agent came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+        "restarted the agent's phase, where the agent came back owing no task and the workflow refused that restart: the " +
+        "agent is running, and no work was handed to it. It says what was refused, where this request stopped the agent " +
+        "and a step that would have started it again was refused, and the state its claim stands in after that: read that state " +
         "in read_state, and ask for a fresh session again only where the claim is suspended. " +
-        "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +
-        "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
-        "The daemon refuses it for a claim whose process that read finds running " +
-        "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
-        "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
-        "one that records no process to read, and for one that moved under the request and that a second read " +
+        "It reaches an agent whose claim is stored working and that no process stands behind: the daemon reads that agent's " +
+        "process when the request arrives, suspends the agent where it stands, and starts it again with the task its dead turn held. " +
+        "The daemon refuses it for an agent whose claim's process that read finds running " +
+        "(CLAIM_IN_A_TURN), for an agent whose session is being compacted, whose process is not read at " +
+        "all (CLAIM_IN_A_TURN), for an agent whose process the runtime would not answer for, for " +
+        "one whose claim records no process to read, and for one whose claim moved under the request and that a second read " +
         "finds no longer working or gone once more, each left exactly as the request found it " +
-        "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
-        "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
-        "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
-        "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
-        "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
-        "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
-        "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
-        "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
-        "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
-        "refuses it for a claim that is suspended, failed or retired, and for one stored working " +
-        "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
-        "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
-        "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
-        "runtime would not answer for, for one that records no process to read, and for one " +
-        "that moved out of working while the request was made " +
-        "(CLAIM_UNSETTLED), for a claim a " +
-        "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
-        "where it is not), for a claim between states — one queued, one whose launch is in " +
-        "flight, one whose agent has registered and is not ready yet, which fresh_session " +
-        "reaches, and one left working under a relaunch the wake pacing parked " +
-        "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
+        "(CLAIM_UNSETTLED; an agent whose claim moved is otherwise answered as that second read finds it), for an agent a " +
+        "suspension that does not outrank yours is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
+        "its claim is working, CLAIM_UNSETTLED where it is not), for an agent whose claim is between states — " +
+        "queued, with its launch in flight, or left working under a relaunch the " +
+        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. Before any of those it refuses an agent " +
+        "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
+        "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the agent over while the request " +
+        "runs ends it with the same code, after your own suspension of the agent ran: the agent keeps the session its " +
+        "claim recorded. " +
+        "compact (issue, role) shortens one agent's session instead: the daemon has Oh My Pi write a text summary of the " +
+        "session so far, and the agent keeps its session, its workspace and everything it knows of its issue and is sent " +
+        "whatever task it owes again. Try compact first for an agent whose session a provider keeps refusing, and " +
+        "fresh_session for an agent whose claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
+        "says whether the session was compacted and, when it was not, why; the agent is back either way. The daemon " +
+        "refuses it for an agent whose claim is suspended, failed or retired, and for one whose claim is stored working " +
+        "and that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for an " +
+        "agent whose process the daemon reads as running (CLAIM_IN_A_TURN), for an agent whose " +
+        "session is being compacted already (CLAIM_IN_A_TURN), for an agent whose process the " +
+        "runtime would not answer for, for one whose claim records no process to read, and for one " +
+        "whose claim moved out of working while the request was made " +
+        "(CLAIM_UNSETTLED), for an agent a " +
+        "suspension is held over (CLAIM_IN_A_TURN where its claim is working, CLAIM_UNSETTLED " +
+        "where it is not), for an agent whose claim is between states — queued, with its launch in " +
+        "flight, registered and not ready yet, which fresh_session " +
+        "reaches, or left working under a relaunch the wake pacing parked " +
+        "(CLAIM_UNSETTLED) — for an agent whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
         "and for role controller. " +
+        "stop, retry, suspend and resume_agent (issue, role), with fresh_session and compact, are the actions on an agent, " +
+        "each naming one agent by its issue and role; the four " +
+        "are the operator's own. Each answers " +
+        "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
+        "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
+        "stop ends the agent: the daemon stops it at once, also in a turn, which loses that turn, and " +
+        "retires it with its session kept on record. Only retry, or a start of its issue's phase, runs " +
+        "it again. The daemon refuses stop for a tree's root architect, which ends only with its tree: suspend " +
+        "it instead. " +
+        "retry starts an agent that failed, or that a stop retired, again in the session its claim recorded, with " +
+        "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
+        "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
+        "retry for an agent whose claim is stored working (CLAIM_IN_A_TURN) and for a suspended agent: resume_agent that agent instead, unless the operator suspended it. " +
+        "suspend stops the agent and keeps its session and the task it owes. An agent in a turn " +
+        "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
+        "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the agent " +
+        "again until your resume_agent or the operator's legion claims resume. " +
+        "resume_agent starts a suspended agent again in the session its claim recorded, and sends it the task it owes. " +
+        "The daemon refuses resume_agent for an agent whose claim is stored working (CLAIM_IN_A_TURN). " +
+        "The daemon refuses resume_agent, suspend, stop, retry and fresh_session for an agent the operator suspended, or whose " +
+        "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of its " +
+        "claim's state, and the request leaves the agent as it was, but where fresh_session's own suspension of the " +
+        "agent ran first, or where fresh_session left behind the session its claim recorded, so the agent starts in a " +
+        "new session once it is started: only the operator lifts the operator's suspension, so ask the operator. " +
+        "The controller's compact is not refused the operator's suspension, and refuses such an agent " +
+        "in its own codes. The four " +
+        "refuse role controller as fresh_session and compact do. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
         "read_state. " +
@@ -899,8 +1063,11 @@ export function createLegionTool(deps: {
         "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
         "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
         "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
-        "the project is paused it refuses fresh_session and compact (PROJECT_PAUSED, naming the pause that stands), " +
-        "since each would start a turn. " +
+        "the project is paused it refuses fresh_session, compact, retry, resume_agent and replace_pod (PROJECT_PAUSED, " +
+        "naming the pause that stands), since each would start a turn: only the project's " +
+        "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. An agent a " +
+        "suspension holds when the project is resumed stays suspended until a resume_agent that may lift that " +
+        "suspension, or the operator's legion claims resume, lifts it. " +
         "replay_give_up applies again give-ups, the messages the daemon's intake gave up on because their handling kept " +
         "failing or they did not decode, which the daemon keeps whole. The daemon runs each one through the handling a " +
         "live delivery takes and publishes nothing to the stream, so replay once the fix for a record's last error runs in " +
@@ -939,7 +1106,9 @@ export function createLegionTool(deps: {
         const active = session(context);
         const operation = requiredString(parameters, "legion", "op");
         if (!OPERATIONS[active.kind].includes(operation)) {
-          throw new Error(`${operation} is not available to a ${active.kind} session`);
+          throw new Error(
+            `${operation} is not available to ${active.kind === "architect" ? "an" : "a"} ${active.kind} session`
+          );
         }
         if (active.kind !== "controller" && isPhaseOp(operation)) {
           const answer = await executePhaseOp(
@@ -962,6 +1131,17 @@ export function createLegionTool(deps: {
             return jsonSuccess(await readBuild({ daemon: client, build: BUILD }));
           }
           if (operation === "read_state") return readState(await client.state(), parameters);
+          if (isAgentAction(operation)) {
+            // Validated whole before its grant is minted with the registration's secret. The
+            // daemon decides which agents it reaches.
+            const issue = requiredString(parameters, operation, "issue");
+            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
+            if (role === undefined) {
+              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
+            }
+            const { grantId } = await controllerGrant(active.sessionID);
+            return await agentAction(client, operation, { grantId, issue, role });
+          }
           // The project's pause and its resume name no issue: the daemon acts on its own project.
           // Each is validated whole before its grant is minted, and each answer is the daemon's
           // own: the pause it began, or the pause it ended with how many held rows it let out.
@@ -989,25 +1169,18 @@ export function createLegionTool(deps: {
             const { grantId } = await controllerGrant(active.sessionID);
             return jsonSuccess(await client.intakeDiscard({ grantId, ...selection, reason }));
           }
-          // The controller's three writes of one issue: each validated whole before its grant is
-          // minted.
-          const issue = requiredString(parameters, operation, "issue");
-          if (operation === "fresh_session" || operation === "compact") {
-            const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
-            if (role === undefined) {
-              throw new Error(`${operation} requires role ${LEGION_ROLES.join(", ")}`);
-            }
+          // replace_pod and set_status, each validated whole before its grant is minted. Every
+          // other operation of the controller's is answered above, so one that reaches here is
+          // named, never run as either.
+          if (operation === "replace_pod") {
+            // The daemon decides whose pod it opens a round over, and answers the round whole.
+            const issue = requiredString(parameters, operation, "issue");
             const { grantId } = await controllerGrant(active.sessionID);
-            if (operation === "compact") {
-              // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so
-              // and names why, and the claim is back whatever it says.
-              return jsonSuccess(await client.compact({ grantId, issue, role }));
-            }
-            // The daemon's answer again: empty for a claim whose phase was restarted or needed
-            // no restart, and naming the refusal where the claim came back owing no task and
-            // the workflow refused the restart that would have handed it one.
-            return jsonSuccess(await client.freshSession({ grantId, issue, role }));
+            return jsonSuccess(await client.issuePodUpdate({ grantId, issue }));
           }
+          if (operation !== "set_status")
+            throw new Error(`Unsupported legion operation: ${operation}`);
+          const issue = requiredString(parameters, operation, "issue");
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {
             throw new Error(`set_status requires status ${ISSUE_STATUSES.join(", ")}`);

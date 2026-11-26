@@ -94,7 +94,7 @@ func TestTheProxySwapsInTheStoredTokenOfAMintedInstallationsProfile(t *testing.T
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,
 		Replay:          (&enroll.Service{Store: st}).Replay,
 		Minters:         map[string]requests.Minter{policy.TypeGitHubInstallations: secrets.GitHubInstallations{}.Mint},
-		AirlockProxyURL: "http://127.0.0.1:13381", AirlockCACertificate: "-----BEGIN CERTIFICATE-----\nminted-rig\n-----END CERTIFICATE-----\n",
+		AirlockProxyURL: "http://127.0.0.1:13381", ProxyRoots: func() string { return "-----BEGIN CERTIFICATE-----\nminted-rig\n-----END CERTIFICATE-----\n" },
 	}
 	m.Chain = requests.NewChainVerifier(st, profileAudience, time.Minute, m.Policy)
 	grants := &rolledGrants{}

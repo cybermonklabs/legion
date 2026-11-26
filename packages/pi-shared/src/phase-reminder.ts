@@ -566,9 +566,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // whatever the status), fails the claim at once and holds the issue for its architect,
         // and the next reminder is dropped. Any other refusal, or one whose report carries no
         // status and no code, fails nothing, so the reminders keep this pace for as long as the
-        // provider refuses — the whole of dispatch://INFRA-264 — and the project's controller is
-        // told once when the worker's turns that ended in a provider error, reminders' and
-        // prompts' alike, reach six in a row.
+        // provider refuses — the whole of dispatch://INFRA-264 — and the daemon sends the
+        // `provider-errors` notice once when the worker's turns that ended in a provider error,
+        // reminders' and prompts' alike, reach six in a row (`providerErrorRunReached` in the
+        // daemon says to whom).
         advance(turn);
         continued = false;
         armReminder("", deps.limits.reminderMs);

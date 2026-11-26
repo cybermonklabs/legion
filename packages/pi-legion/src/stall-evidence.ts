@@ -552,6 +552,9 @@ export interface StallNoticeInput {
   /** The architect claim the daemon names as the owner of this session's claim in its owed answer
    * (`LegionOwed.architect`), or undefined when it named none or could not be asked. */
   readonly owner: string | undefined;
+  /** Which notice is routed: the one that opens the ladder (`tellOverdue`), or the one that says
+   * the ladder stopped short of a step (`tellStopped`). */
+  readonly notice: "overdue" | "stopped";
 }
 
 /**
@@ -562,7 +565,9 @@ export interface StallNoticeInput {
  *   owed answer — the issue's own architect while its claim holds its role, else the nearest one
  *   above it, else the tree root's — and the tree's architect when the daemon named none;
  * - a root architect's session tells the controller, on `legion-<project>-controller`
- *   (`packages/contracts/src/legion-roles.ts:108`);
+ *   (`packages/contracts/src/legion-roles.ts:108`), only that its ladder stopped short: its
+ *   overdue notice goes to nobody, since until then the session recovers the call itself and the
+ *   daemon relaunches a process the ladder ends;
  * - the controller's own session tells nobody: it is the owner, and its evidence is in its
  *   transcript and its log.
  *
@@ -589,6 +594,12 @@ export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
   }
   if (claim === undefined) return { kind: "none", why: "this session holds no claim yet" };
   if (session.kind === "root-architect") {
+    if (input.notice === "overdue") {
+      return {
+        kind: "none",
+        why: "a root architect's session recovers its own call and the daemon relaunches a process its ladder ends, so the controller is told only once those steps stop short",
+      };
+    }
     return { kind: "topic", topic: roleTopic(controllerToken(project)) };
   }
   const own = roleToken(project, claim.issue, claim.role);
@@ -909,7 +920,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     };
   };
 
-  const noticeFor = async (): Promise<NoticeTarget> => {
+  const noticeFor = async (which: StallNoticeInput["notice"]): Promise<NoticeTarget> => {
     const session = deps.session();
     const claim = deps.claim();
     // Only a phase worker's notice depends on the daemon's answer, so only it pays the read, and
@@ -920,7 +931,13 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         : undefined;
     let notice: StallNotice;
     try {
-      notice = stallNoticeTopic({ session, claim, project: deps.project, owner });
+      notice = stallNoticeTopic({
+        session,
+        claim,
+        project: deps.project,
+        owner,
+        notice: which,
+      });
     } catch (error) {
       // An issue key of a shape `roleToken` refuses is one owner not told, never a ladder that
       // stops: the evidence is written and the steps run either way.
@@ -957,7 +974,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         tree: record.tree.read ? record.tree.processes.length : record.tree.reason,
       });
       const sent = await publishNotice(
-        await noticeFor(),
+        await noticeFor("overdue"),
         {
           message: stallNoticeMessage(record),
           payload: JSON.stringify(record),
@@ -1011,7 +1028,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       const claim = deps.claim();
       const who = claim === undefined ? "A session" : `The ${claim.role} of ${claim.issue}`;
       const sent = await publishNotice(
-        await noticeFor(),
+        await noticeFor("stopped"),
         {
           message:
             `${who} has a \`${call.toolName}\` call it cannot recover from on its own: ${reason}. ` +

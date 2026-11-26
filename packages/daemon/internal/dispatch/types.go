@@ -602,9 +602,10 @@ func (a HandoffAuthor) IsSession(id string) bool { return a.Kind == "session" &&
 
 // Caller is who Dispatch takes a credential for, as GET /api/v1/whoami answers a credential that is
 // not a person's browser session (its whoamiAgent): Session is the session the credential proved,
-// Project the one project it lets its holder write, and Owner the person it acts for, each nil
-// where Dispatch names none. A broker token Dispatch serves every write of the daemon's for names
-// the daemon's session (DaemonSession), its project and a person.
+// Project the project its token names, and Owner the person it acts for, each nil where Dispatch
+// names none. The daemon's own broker token names the session of the daemon's project
+// (DaemonSession), that project and a person, and the boot refuses any other (internal/daemon's
+// checkDaemonCaller).
 type Caller struct {
 	Session *string `json:"session"`
 	Project *string `json:"project"`
