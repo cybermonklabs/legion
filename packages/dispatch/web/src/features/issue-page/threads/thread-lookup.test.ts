@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderHookResult, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
@@ -93,12 +93,25 @@ function routes(): Routes {
   };
 }
 
-/** The lookup of `id` on `key`, over a query client with the app's own retry rules. */
-function lookUp(key: string, id: string, held = false): RenderHookResult<ThreadLookup, unknown> {
+/** Whether a page the view holds has the id, as the view tells the lookup: undefined while a
+ *  page that may hold it is out. */
+interface Pages {
+  readonly held: boolean | undefined;
+}
+
+/** The lookup of `id` on `key`, over a query client with the app's own retry rules. A case
+ *  draws it again with what the pages hold then (`rerender`). */
+function lookUp(
+  key: string,
+  id: string,
+  pages: Pages = { held: false }
+): RenderHookResult<ThreadLookup, Pages> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
   });
-  return renderHook(() => useThreadLookup(key, id, held), {
+  drawnClient = client;
+  return renderHook<ThreadLookup, Pages>((now) => useThreadLookup(key, id, now.held), {
+    initialProps: pages,
     wrapper: ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client }, children),
   });
@@ -109,7 +122,9 @@ function recordOf(lookup: ThreadLookup): string | undefined {
 }
 
 let reads: Routes | undefined;
-let view: RenderHookResult<ThreadLookup, unknown> | undefined;
+let view: RenderHookResult<ThreadLookup, Pages> | undefined;
+/** The query client of the lookup drawn last, which a case refreshes as the app does. */
+let drawnClient: QueryClient | undefined;
 
 afterEach(() => {
   view?.unmount();
@@ -131,9 +146,32 @@ test("an id that is not a uuid is refused before any read", async () => {
 test("an id that a page the view holds has is read by no lookup", async () => {
   jest.useFakeTimers();
   reads = routes();
-  view = lookUp(KEY, ASK_ID, true);
+  view = lookUp(KEY, ASK_ID, { held: true });
   await jump(0);
   expect(view.result.current.kind).toBe("held");
+  expect(reads.asked).toEqual({ ask: [], comment: [], message: [] });
+});
+
+test("while a page that may hold the id is out no lookup is sent, and the three go once the pages answered without it", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID, { held: undefined });
+  await jump(0);
+  expect(view.result.current.kind).toBe("reading");
+  expect(reads.asked).toEqual({ ask: [], comment: [], message: [] });
+  view.rerender({ held: false });
+  await jump(0);
+  expect(reads.asked).toEqual({ ask: [ASK_ID], comment: [ASK_ID], message: [ASK_ID] });
+  await reads.answer("ask", { body: ASK });
+  expect(recordOf(view.result.current)).toBe(ASK_ID);
+});
+
+test("an id that is not a uuid draws the line at once, while the pages are still out", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, "not-a-record", { held: undefined });
+  await jump(0);
+  expect(view.result.current.kind).toBe("missing");
   expect(reads.asked).toEqual({ ask: [], comment: [], message: [] });
 });
 
@@ -219,6 +257,33 @@ test("three 404s draw the line for an address that names no record, and no route
   expect(view.result.current.kind).toBe("missing");
   await tick(5_000);
   expect(reads.asked).toEqual({ ask: [ASK_ID], comment: [ASK_ID], message: [ASK_ID] });
+});
+
+test("neither a window focus nor a refresh of every read reads a route that answered 404 again", async () => {
+  jest.useFakeTimers();
+  reads = routes();
+  view = lookUp(KEY, ASK_ID);
+  await jump(0);
+  await reads.answer("ask", { error: ASK_404() });
+  await reads.answer("comment", { error: COMMENT_404() });
+  await reads.answer("message", { error: MESSAGE_404() });
+  try {
+    // The reader leaves the window and comes back to it, as a tab opened beside the page does.
+    act(() => {
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+    });
+    await jump(0);
+    // The event stream's reconnect refreshes every read the client holds (`refreshQueries`).
+    await act(async () => {
+      await drawnClient?.invalidateQueries();
+    });
+    await jump(0);
+    expect(view.result.current.kind).toBe("missing");
+    expect(reads.asked).toEqual({ ask: [ASK_ID], comment: [ASK_ID], message: [ASK_ID] });
+  } finally {
+    focusManager.setFocused(undefined);
+  }
 });
 
 test("a 403 is not read again either", async () => {

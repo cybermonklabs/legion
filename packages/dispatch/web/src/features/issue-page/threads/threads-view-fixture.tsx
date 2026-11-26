@@ -1,15 +1,16 @@
 /**
- * What the unit tests of the opened record share (`ThreadRecord.test.tsx`,
- * `draft-matrix.threads.test.tsx`, `ThreadRow.test.tsx`, `NewThread.test.tsx`): the issue the
- * captured fixtures were read from (`fixtures/README.md`), the server's answers to every read
- * Threads sends, Threads drawn at an address under what the app and the page provide, and a window
- * whose width a case sets.
+ * What the unit tests of Threads' records and addresses share (`ThreadRecord.test.tsx`,
+ * `draft-matrix.threads.test.tsx`, `ThreadRow.test.tsx`, `NewThread.test.tsx`,
+ * `ThreadsView.addresses.test.tsx`, `../address-target.test.tsx`): the issue the captured
+ * fixtures were read from (`fixtures/README.md`), the server's answers to every read Threads
+ * sends, Threads drawn at an address under what the app and the page provide, with the router's
+ * address and its Back, and a window whose width a case sets.
  */
 import { spyOn } from "bun:test";
 import type { QueryClient } from "@tanstack/react-query";
 import { act, render } from "@testing-library/react";
 import { http } from "msw";
-import { type ReactNode, useEffect } from "react";
+import type { ReactNode } from "react";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
 import { newQueryClient, signedInAsReader } from "../../../__tests__/draft-matrix-fixture";
@@ -18,6 +19,7 @@ import { issueCollaborators } from "../../../__tests__/search-fixture";
 import { api } from "../../../api/client";
 import type { PublishedReferences } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
+import { useKeymapScope } from "../../shell/keymap";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { NoTooltips } from "../NoTooltips";
 import { Publisher } from "../projection-fixture";
@@ -103,16 +105,21 @@ export function answerThreads(pages: PageAnswers = {}): SentReads {
   return sent;
 }
 
-/** Threads at the address the router holds, as the stage draws it, and the router's own
- *  navigation handed out, which a case moves the address with as the app does. */
-function AtAddress({
-  onNavigate,
-}: {
-  onNavigate: (navigate: NavigateFunction) => void;
-}): ReactNode {
+/** What the router holds as a case reads it: its own navigation, which a case moves the address
+ *  with as the app does, and the address it holds now. */
+interface Held {
+  navigate?: NavigateFunction;
+  pathname?: string;
+}
+
+/** Threads at the address the router holds, as the stage draws it, with the router's navigation
+ *  and address handed out in `held`. */
+function AtAddress({ held }: { held: Held }): ReactNode {
+  // The page's keys stand in its scope, which the page pushes (`useIssueKeymap`).
+  useKeymapScope("issue");
   const { pathname, search } = useLocation();
-  const navigate = useNavigate();
-  useEffect(() => onNavigate(navigate), [navigate, onNavigate]);
+  held.navigate = useNavigate();
+  held.pathname = pathname;
   const route = parseIssuePath(pathname, search);
   return route === undefined ? null : <ThreadsView issue={ISSUE} route={route} />;
 }
@@ -130,27 +137,33 @@ export function drawThreads(
     spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
     spyOn(api, "listAgents").mockResolvedValue([]),
   ];
-  let navigate: NavigateFunction | undefined;
+  const held: Held = {};
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <AppProviders client={client}>
         {published === undefined ? null : <Publisher published={published} />}
         <NoTooltips>
-          <AtAddress
-            onNavigate={(to) => {
-              navigate = to;
-            }}
-          />
+          <AtAddress held={held} />
         </NoTooltips>
       </AppProviders>
     </MemoryRouter>
   );
   return {
+    /** The address the router holds now. */
+    address(): string | undefined {
+      return held.pathname;
+    },
+    /** Returns to the entry before, as the browser's Back does. */
+    back(): void {
+      act(() => {
+        void held.navigate?.(-1);
+      });
+    },
     client,
     /** Moves the address to `to`, as a link the reader follows does. */
     go(to: string): void {
       act(() => {
-        void navigate?.(to);
+        void held.navigate?.(to);
       });
     },
     view,
@@ -162,8 +175,11 @@ export function drawThreads(
 }
 
 /** Whether a window `width` px wide matches `query`, one `(min-width: …)` or `(max-width: …)`
- *  clause in `px` or `rem`; any other query throws, naming it. */
+ *  clause in `px` or `rem`, or `not all and` one, as the page's stage asks; any other query
+ *  throws, naming it. */
 function widthMatches(width: number, query: string): boolean {
+  const negated = /^not all and (.+)$/.exec(query.trim());
+  if (negated !== null) return !widthMatches(width, negated[1] ?? "");
   const clause = /^\((min|max)-width:\s*([\d.]+)(px|rem)\)$/.exec(query.trim());
   if (clause === null) throw new Error(`The window's stub answers no media query "${query}".`);
   const px = Number(clause[2]) * (clause[3] === "rem" ? 16 : 1);

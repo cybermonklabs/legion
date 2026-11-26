@@ -5,7 +5,12 @@
  * `GET /api/v1/messages/{id}`, at once, each once, and a read the server refuses with a `4xx` is
  * not sent again. Only an answer whose `issue_key` is this issue's gives a record of this page.
  */
-import { queryOptions, type UseQueryResult, useQuery } from "@tanstack/react-query";
+import {
+  type QueryStatus,
+  queryOptions,
+  type UseQueryResult,
+  useQuery,
+} from "@tanstack/react-query";
 
 import { ApiError, api } from "../../../api/client";
 import { queryRetry } from "../../../api/query-client";
@@ -16,13 +21,20 @@ import { type ThreadRecord, type ThreadSource, threadRecords } from "./thread-re
 export type ThreadLookup =
   /** A page the view holds has the record, so nothing is read. */
   | { readonly kind: "held" }
-  /** A read that can still give the record is out. */
+  /** A read that can still give the record is out: a lookup, or a page that may hold it. */
   | { readonly kind: "reading" }
-  | { readonly kind: "found"; readonly record: ThreadRecord }
+  /** The record, with every record of its thread on the server, which a record that a reply with
+   *  a quote begins reads its thread's target from. */
+  | {
+      readonly kind: "found";
+      readonly record: ThreadRecord;
+      readonly thread: readonly ThreadRecord[];
+    }
   /** The id names no record of this issue: the page's line for an address it cannot find. */
   | { readonly kind: "missing" }
   /** A read failed past its retries and no other gave the record: the page's failed-read
-   *  sentence, whose Retry reads the failed routes again and keeps the others' answers. */
+   *  sentence, whose Retry reads the failed routes again and keeps the others' answers. A read
+   *  that Retry sent is out with no answer, so the lookup is reading again meanwhile. */
   | { readonly kind: "failed"; readonly retry: () => void };
 
 /** A record's id as the server stores it and every address writes it: a uuid. */
@@ -38,6 +50,18 @@ function lookupRetry(failureCount: number, error: unknown): boolean {
   return !refused(error) && queryRetry(failureCount, error);
 }
 
+/** What a lookup's rules read of its query: its state. */
+interface LookupQuery {
+  readonly state: { readonly status: QueryStatus; readonly error: unknown };
+}
+
+/** Whether a lookup stands refused with a `4xx`. Such a read is sent no more (R12): window focus,
+ *  an event's refresh or the stream's whole-cache refresh would each read it again for an answer
+ *  the server gives alike, so it is no longer enabled once refused. */
+function refusedRead(query: LookupQuery): boolean {
+  return query.state.status === "error" && refused(query.state.error);
+}
+
 /** The whole conversation of the message `id`, read by any message id in it, under the issue's
  *  message key, which every message event of the issue refreshes (`api/event-refresh.ts`). */
 const messageThreadQuery = (key: string, id: string | undefined) =>
@@ -47,19 +71,26 @@ const messageThreadQuery = (key: string, id: string | undefined) =>
   });
 
 /**
- * The record `id` names on issue `issueKey`, where `held` says no page the view holds has it. An
- * id that is no uuid is refused before any read. Where the comment route answers a reply with a
- * quote, which may begin a record (R8) and whose read holds only the comments whose `reply_to`
- * names it, its thread is read once more by that `reply_to`, whose records give the reply's.
+ * The record `id` names on issue `issueKey`. `held` says whether a page the view holds has it:
+ * true reads nothing, false sends the lookups, and undefined, while a page that may hold it is
+ * still out, waits for that page, so a record the first pages hold is never looked up (R15). An
+ * id that is no uuid is refused before any read, whatever the pages hold. Where the comment
+ * route answers a reply with a quote, which may begin a record (R8) and whose read holds only the
+ * comments whose `reply_to` names it, its thread is read once more by that `reply_to`, whose
+ * records give the reply's.
  */
 export function useThreadLookup(
   issueKey: string,
   id: string | undefined,
-  held: boolean
+  held: boolean | undefined
 ): ThreadLookup {
   const named = id !== undefined && RECORD_ID.test(id) ? id.toLowerCase() : undefined;
-  const asked = named !== undefined && !held;
-  const lookup = { ...EVENT_FRESH, enabled: asked, retry: lookupRetry };
+  const asked = named !== undefined && held === false;
+  const lookup = {
+    ...EVENT_FRESH,
+    enabled: (query: LookupQuery) => asked && !refusedRead(query),
+    retry: lookupRetry,
+  };
   const ask = useQuery({ ...askQuery(named), ...lookup });
   const comment = useQuery({ ...commentQuery(named), ...lookup });
   const message = useQuery({ ...messageThreadQuery(issueKey, named), ...lookup });
@@ -74,10 +105,10 @@ export function useThreadLookup(
   const thread = useQuery({
     ...commentQuery(head),
     ...lookup,
-    enabled: asked && head !== undefined,
+    enabled: (query: LookupQuery) => asked && head !== undefined && !refusedRead(query),
   });
-  if (held) return { kind: "held" };
   if (named === undefined) return { kind: "missing" };
+  if (held === true) return { kind: "held" };
 
   const answers: readonly Answer[] = [
     answerOf(ask, ask.data?.ask.issue_key),
@@ -86,12 +117,15 @@ export function useThreadLookup(
     answerOf(message, message.data?.message.issue_key),
     ...(head === undefined ? [] : [answerOf(thread, thread.data?.comment.issue_key)]),
   ];
+  // A record found stays found while a page that may hold it is out again, from the answers the
+  // client keeps.
   for (const answer of answers) {
     if (answer.source === undefined || answer.issue !== issueKey) continue;
-    const record = threadRecords(answer.source).find((one) => one.id === named);
-    if (record !== undefined) return { kind: "found", record };
+    const records = threadRecords(answer.source);
+    const record = records.find((one) => one.id === named);
+    if (record !== undefined) return { kind: "found", record, thread: records };
   }
-  if (answers.some((answer) => answer.out)) return { kind: "reading" };
+  if (held === undefined || answers.some((answer) => answer.out)) return { kind: "reading" };
   const failed = answers.filter((answer) => answer.failed);
   if (failed.length === 0) return { kind: "missing" };
   return {
@@ -107,8 +141,8 @@ interface Answer {
   readonly source: ThreadSource | undefined;
   /** The issue the answer is of, where it gives records at all. */
   readonly issue: string | null | undefined;
-  /** Whether the read is still out with no answer: its first try, a retry of its own, or one
-   *  that Retry started. */
+  /** Whether the read is out with no answer and no failure yet: its first try, a retry of its
+   *  own, or a read that Retry sent. */
   readonly out: boolean;
   /** Whether the read failed past its retries with no refusal of the server's. */
   readonly failed: boolean;
@@ -117,9 +151,11 @@ interface Answer {
 
 function answerOf(read: UseQueryResult<ThreadSource>, issue: string | null | undefined): Answer {
   return {
-    failed: read.isError && !read.isFetching && !refused(read.error),
+    failed: read.isError && !refused(read.error),
     issue,
-    out: read.data === undefined && (read.isPending || read.isFetching),
+    // Pending holds neither an answer nor a failure: TanStack Query 5 makes a read with no
+    // answer pending again as Retry sends it.
+    out: read.isPending,
     retry: () => void read.refetch(),
     source: read.data,
   };

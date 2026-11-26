@@ -8,14 +8,18 @@ import type { Message } from "../../../api/types";
 import { focusVisibleRing, pageLineBorder, pageMutedText } from "../../../theme/classes";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildIssuePath } from "../../refs/routes";
+import { useKeymap } from "../../shell/keymap";
 import { useMediaQuery } from "../../shell/useDialog";
 import { issueAddress } from "../issue-address";
 import { pageChrome } from "../page-structure";
-import { EMPTY_STATE_LINES, PRESET_NAMES, THREADS_WORDS } from "../page-words";
+import { ANSWER_LINES, EMPTY_STATE_LINES, PRESET_NAMES, THREADS_WORDS } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { FailedReadLine } from "../slots/failed-read-line";
 import { NewThread } from "./NewThread";
 import { ThreadList, useThreadLists } from "./ThreadList";
 import { OpenedRecord } from "./ThreadRecord";
+import { focusedEntry, recordChoice } from "./thread-address";
+import { useThreadLookup } from "./thread-lookup";
 import { threadRecords } from "./thread-records";
 
 /** From this width up the list and the main column stand side by side (R2): 1024 px. */
@@ -35,31 +39,55 @@ export const SIDE_BY_SIDE_QUERY = "(min-width: 64rem)";
  * list again once they widen it. The list's state is the view's (`useThreadLists`), so the list
  * drawn again holds the same choice and the rows it had shown.
  *
+ * `/threads/<id>` opens the record `<id>` (dispatch://INFRA-5704/spec#b-r-addresses, R12). A row
+ * opens it at that address, which goes on the browser's history, so Back returns to the list; with
+ * no caret in a box, Escape does too. Where no page the view holds has the record, once All's first
+ * pages have answered, R12's lookups read it (`useThreadLookup`), and an id that names no record of
+ * the issue draws the page's line for an address it cannot find. A record the address opens, and
+ * no row of the choice that is on draws, opens under its own choice (`recordChoice`): Agents for a
+ * thread between agents, All otherwise.
+ *
  * It draws no outline, no children's section, none of the issue's three sentences and no version
  * control (R1): only the two columns, in the outline's measure.
  */
 export function ThreadsView({ issue, route }: SlotProps): ReactNode {
-  const { hash, search } = useLocation();
+  const { hash, search, state } = useLocation();
   const navigate = useNavigate();
   const { record } = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const wide = useMediaQuery(SIDE_BY_SIDE_QUERY);
   const lists = useThreadLists(issue);
   const [newThread, setNewThread] = useState(false);
-  // A record the reader opens takes the main column from New thread.
+  // A record the reader opens takes the main column from New thread. Its choice is decided once
+  // the view holds it (`placing`, below).
   const [drawnRecord, setDrawnRecord] = useState(record);
+  const [placing, setPlacing] = useState(record);
   if (drawnRecord !== record) {
     setDrawnRecord(record);
+    setPlacing(record);
     if (record !== undefined) setNewThread(false);
   }
   // The thread New thread just sent, drawn from Dispatch's answer at its address until a page
   // of the list holds it, so it opens with no lookup (R10, R12).
   const [sent, setSent] = useState<Message>();
   const listPath = buildIssuePath({ key: issue.key, kind: "threads" });
-  const opened =
+  const held =
     record === undefined
       ? undefined
       : (lists.records.get(record) ??
         (sent?.id === record ? threadRecords({ message: sent, replies: null })[0] : undefined));
+  const lookup = useThreadLookup(
+    issue.key,
+    record,
+    held !== undefined ? true : lists.settled ? false : undefined
+  );
+  const opened = held ?? (lookup.kind === "found" ? lookup.record : undefined);
+  if (placing !== undefined && opened !== undefined) {
+    setPlacing(undefined);
+    // A row the reader pressed opens its record under the choice that drew it.
+    const drawn = lists.view.rows?.some((one) => one.id === opened.id) === true;
+    const under = recordChoice(opened, issue.project);
+    if (!drawn && under !== lists.choice) lists.choose(under);
+  }
   const open = record !== undefined || newThread;
   // The read mark of an opened record reads the reader's unread threads of the issue once
   // (`useMarkThreadRead`, R9, R15). From the first record opened the view watches that read
@@ -69,6 +97,19 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
   const [marking, setMarking] = useState(false);
   if (opened !== undefined && !marking) setMarking(true);
   useQuery({ ...myRepliesOwnerQuery({ issue: issue.key }), ...EVENT_FRESH, enabled: marking });
+  useKeymap("issue", [
+    {
+      // R12: Escape with no caret in a box closes the record and returns to the list. With the
+      // caret in a box the record takes the caret out first (`OpenedRecord`), and a menu, a
+      // dialog or Details takes the press before the page does.
+      id: "threads-close-record",
+      keys: "Escape",
+      label: THREADS_WORDS.close_record,
+      palette: false,
+      run: () => navigate(listPath),
+      when: () => record !== undefined,
+    },
+  ]);
 
   const main = (
     <div className="flex min-w-0 flex-1 flex-col gap-3" data-thread-main="">
@@ -86,15 +127,31 @@ export function ThreadsView({ issue, route }: SlotProps): ReactNode {
         </button>
       )}
       {record !== undefined ? (
-        opened === undefined ? null : (
+        opened !== undefined ? (
           // One record at a time: another record opened starts with no box of the last one open.
           <OpenedRecord
+            focus={focusedEntry(state)}
             issue={issue}
             key={opened.id}
             record={opened}
-            thread={[...lists.records.values()].filter((one) => one.thread === opened.thread)}
+            thread={
+              held === undefined && lookup.kind === "found"
+                ? lookup.thread
+                : [...lists.records.values()].filter((one) => one.thread === opened.thread)
+            }
           />
-        )
+        ) : lookup.kind === "missing" ? (
+          <p className={`text-sm ${pageMutedText}`} {...pageChrome}>
+            {ANSWER_LINES.threads_not_found}
+          </p>
+        ) : lookup.kind === "failed" ? (
+          // A read Retry sends makes the lookup reading again, so the line is never drawn busy.
+          <FailedReadLine
+            message={ANSWER_LINES.threads_unreadable}
+            onRetry={lookup.retry}
+            retrying={false}
+          />
+        ) : null
       ) : newThread ? (
         <NewThread
           issueKey={issue.key}

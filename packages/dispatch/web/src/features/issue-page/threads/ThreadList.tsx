@@ -308,6 +308,10 @@ export interface ThreadLists {
   readonly records: ReadonlyMap<string, ThreadRecord>;
   /** What each row's mark is read from (R7), once every one of those reads has answered. */
   readonly marks: MarkReads | undefined;
+  /** Whether each of All's first pages has answered or failed: a record no page holds by then is
+   *  one R12's lookups read (R15). All's pages are read whatever choice is on, and none of them
+   *  is ever out again with no answer. */
+  readonly settled: boolean;
 }
 
 /**
@@ -368,9 +372,10 @@ export function useThreadLists(issue: IssueDetails): ThreadLists {
   });
   const agentsView = useMergedChoice({ on: agentsOn, routes: agents, shown: shown.agents });
   const held = heldThreads(mineOn ? [...all, ...mine] : all);
+  const settled = all.every((route) => route.pages !== undefined || route.error !== null);
   const waitingView = useWaitingChoice({
     held,
-    heldSettled: all.every((route) => route.pages !== undefined || route.error !== null),
+    heldSettled: settled,
     issueKey: key,
     on: opened.has("waiting"),
     rows: waitingRows(replies.data, project),
@@ -438,6 +443,7 @@ export function useThreadLists(issue: IssueDetails): ThreadLists {
     choose,
     marks,
     records,
+    settled,
     showNext,
     view: {
       ...on,

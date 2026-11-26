@@ -81,6 +81,24 @@ function messageThread(
  *  open to edit. One stands open at a time (R9). */
 type OpenBox = { readonly kind: "reply" | "edit"; readonly id: string };
 
+/** The types of an `input` that take no typed words, so hold no caret. */
+const UNTYPED_INPUTS: Readonly<Record<string, true>> = {
+  button: true,
+  checkbox: true,
+  radio: true,
+  reset: true,
+  submit: true,
+};
+
+/** Whether `target` holds the reader's caret: a box's field, or the ask body's answer in words. */
+function holdsCaret(target: EventTarget): target is HTMLElement {
+  return (
+    target instanceof HTMLTextAreaElement ||
+    (target instanceof HTMLInputElement && UNTYPED_INPUTS[target.type] !== true) ||
+    (target instanceof HTMLElement && target.isContentEditable)
+  );
+}
+
 /**
  * The opened record (dispatch://INFRA-5704/spec#b-r-open, R9), in the main column: its kind as
  * its row names it, the words a record on text quotes above its root, then each entry whole in
@@ -104,14 +122,22 @@ type OpenBox = { readonly kind: "reply" | "edit"; readonly id: string };
  * where the record stands, so the record is brought into view as it opens: its entries stand on
  * screen, and the newest of them can dwell (R9).
  *
+ * Escape with the caret in a box takes the caret out of it, and the record and the box's words
+ * stay (R12): the page's Escape that closes the record waits for the next press, with no caret in
+ * a box (`ThreadsView`). A box that goes on Escape, one under an entry, goes as it does.
+ *
  * `thread` is every record the view holds of the record's thread on the server, which a record a
- * reply with a quote begins reads its thread's target from.
+ * reply with a quote begins reads its thread's target from. `focus` is the entry the address the
+ * record opened at focuses, a message `/messages/<id>` named (R12), which the record focuses as it
+ * opens.
  */
 export function OpenedRecord({
+  focus,
   issue,
   record,
   thread,
 }: {
+  readonly focus?: string;
   readonly issue: IssueDetails;
   readonly record: ThreadRecord;
   readonly thread: readonly ThreadRecord[];
@@ -120,9 +146,11 @@ export function OpenedRecord({
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const [open, setOpen] = useState<OpenBox>();
   const article = useRef<HTMLElement>(null);
+  const focused = useRef<HTMLLIElement>(null);
   // Once, as the record opens: the view keys a record by its id, so another record mounts anew.
   useLayoutEffect(() => {
     article.current?.scrollIntoView({ block: "nearest" });
+    focused.current?.focus();
   }, []);
   const closed = issue.closed_at !== null;
   // The record's newest write, which the read mark reads through (R9): an entry, or an ask's
@@ -200,6 +228,7 @@ export function OpenedRecord({
               ),
             }
           : {})}
+        {...(focus === post.id ? { focusRef: focused } : {})}
         key={post.id}
         kind={record.kind === "message" ? "message" : "comment"}
         {...(newest.id === post.id ? { markRef } : {})}
@@ -232,7 +261,20 @@ export function OpenedRecord({
     );
 
   return (
-    <article className="min-w-0 space-y-3" data-thread-record={record.id} ref={article}>
+    <article
+      className="min-w-0 space-y-3"
+      data-thread-record={record.id}
+      onKeyDown={(event) => {
+        // A `MentionComposer` box takes Escape on its own form and marks it handled, so the
+        // page's keys never hear it: the record takes the caret out here, and marks the press
+        // handled so the page's Escape does not close the record on it as well.
+        if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
+        if (!holdsCaret(event.target)) return;
+        event.preventDefault();
+        event.target.blur();
+      }}
+      ref={article}
+    >
       <h2 className={`text-[15px] font-semibold ${pageInkText}`} {...pageChrome}>
         <KindWords text={threadRow(record, names)} />
       </h2>

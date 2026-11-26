@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, ReactNode, Ref } from "react";
 
 import type { CommentWithTrees, MessageWithTrees } from "../../../api/types";
 import {
@@ -53,12 +53,14 @@ export function ReadMarkFoot({ markRef }: { readonly markRef: DwellRef }): React
  * entries of a record are siblings in document order (`OpenedRecord`).
  *
  * The author is named as a row of Threads names one (`nameOf`, root R9), and the words of the
- * entry are the author's, so each stands inside `data-author-text`.
+ * entry are the author's, so each stands inside `data-author-text`. The entry an address focuses
+ * (`focusRef`) takes the focus from a script alone, so it adds no tab stop (R12).
  */
 export function RecordEntry({
   author,
   depth,
   edit,
+  focusRef,
   kind,
   markRef,
   onEdit,
@@ -70,6 +72,8 @@ export function RecordEntry({
   readonly depth: number;
   /** The editor that stands in the words' place while the reader edits them. */
   readonly edit?: ReactNode;
+  /** The entry's element, where the address the record opened at focuses it. */
+  readonly focusRef?: Ref<HTMLLIElement>;
   readonly kind: "comment" | "message";
   /** The read mark's watch, on the record's newest entry. */
   readonly markRef?: DwellRef;
@@ -81,10 +85,12 @@ export function RecordEntry({
   const deleted = postDeletion(post);
   return (
     <li
-      className={`min-w-0 space-y-1 ${ENTRY_INDENT}`}
+      className={`min-w-0 space-y-1 ${ENTRY_INDENT} ${focusRef === undefined ? "" : `rounded-md ${focusVisibleRing}`}`}
       data-depth={depth}
       data-thread-entry={post.id}
+      ref={focusRef}
       style={depthStyle(depth)}
+      tabIndex={focusRef === undefined ? undefined : -1}
     >
       <p className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs ${pageQuietText}`}>
         <span className={`font-medium ${pageMutedText} [overflow-wrap:anywhere]`} {...authorText}>

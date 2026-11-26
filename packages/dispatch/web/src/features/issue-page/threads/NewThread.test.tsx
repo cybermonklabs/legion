@@ -244,6 +244,30 @@ describe("table C: New thread (R10, R11, R15)", () => {
     }
   });
 
+  test("refused with no words of Dispatch's: the line says the message was not sent, not a reply", async () => {
+    const at = drawWithParties();
+    const user = userEvent.setup();
+    // A failure with no answer of Dispatch's: the write store holds a lost connection's send and
+    // sends it again, so the line is for any other failure, such as an answer it cannot read.
+    const create = spyOn(api, "createMessage").mockRejectedValue(
+      new TypeError("The answer could not be read.")
+    );
+    try {
+      await openNewThread(user);
+      await user.click(option(STOPPED_ROLE) as HTMLElement);
+      await user.type(messageField(), WORDS);
+      await user.click(sendButton());
+      expect(await inPanel().findByRole("alert")).toHaveTextContent(
+        ANSWER_LINES.threads_message_not_sent
+      );
+      expect(inPanel().queryByText(ANSWER_LINES.threads_reply_not_sent)).toBeNull();
+      expect(messageField().value, "the refusal took the reader's words").toBe(WORDS);
+    } finally {
+      create.mockRestore();
+      at.done();
+    }
+  });
+
   test("sent: the new thread opens at its address, drawn from Dispatch's answer with no lookup", async () => {
     const at = drawWithParties();
     const user = userEvent.setup();

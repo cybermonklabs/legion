@@ -117,6 +117,7 @@ import { blockNode, expectOpeningLanded, focusThePage, nodeRow, tree } from "./i
 import { childrenSection, focusedNodeId } from "./issue-page-i";
 import { expectHeaderDrawn, waitingCount } from "./issue-page-p";
 import { decisionsBody } from "./issue-page-q";
+import { expectThreadsDrawn, openedRecord } from "./issue-page-threads";
 import { expect, type Locator, type Page, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
@@ -627,20 +628,16 @@ test("the header counts Dashboard's items on every view and drops one per act", 
 });
 
 // SLOW(>=2s): the whole Dashboard seed, then two loads of Dashboard, each followed by a thread's
-// link and waited on until the thread's row holds the focus.
+// link and waited on until Threads opens the thread's record.
 test("a thread item's link opens the thread", async ({ browser }) => {
   await phase(browser, seeded, async (page, seed) => {
-    // dispatch://INFRA-5704 is not on this main, so the link is the thread's own address.
-    for (const thread of [
-      {
-        address: buildIssuePath({ id: seed.threads.message, key: seed.key, kind: "message" }),
-        id: seed.threads.message,
-      },
-      {
-        address: buildIssuePath({ id: seed.threads.comment, key: seed.key, kind: "comment" }),
-        id: seed.threads.comment,
-      },
-    ]) {
+    // On the new page the link opens the thread's record in Threads, `/threads/<id>`
+    // (dispatch://INFRA-5704/spec#b-r-addresses, R12).
+    for (const id of [seed.threads.message, seed.threads.comment]) {
+      const thread = {
+        address: buildIssuePath({ key: seed.key, kind: "threads", record: id }),
+        id,
+      };
       await gotoIssue(page, presetPath(seed.key, "dashboard"));
       await expectDashboard(page, "/dashboard");
       const link = itemOf(waitingOf(issuePage(page)), { id: thread.id, kind: "thread" }).locator(
@@ -649,12 +646,11 @@ test("a thread item's link opens the thread", async ({ browser }) => {
       await expect(link, `the thread item draws no link to ${thread.address}`).not.toHaveCount(0);
       await link.first().click();
       await expect(page).toHaveURL(new RegExp(`${literal(thread.address)}$`));
-      await expectConversation(page, thread.address);
-      await expect
-        .poll(() => focusedNodeId(page), {
-          message: `${thread.address}, followed from Dashboard, does not focus the thread's row`,
-        })
-        .toBe(thread.id);
+      await expectThreadsDrawn(page, thread.address);
+      await expect(
+        openedRecord(page),
+        `${thread.address}, followed from Dashboard, does not open the thread's record`
+      ).toHaveAttribute("data-thread-record", thread.id);
     }
   });
 });

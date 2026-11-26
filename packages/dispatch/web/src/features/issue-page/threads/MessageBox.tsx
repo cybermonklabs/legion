@@ -19,7 +19,7 @@ import { composerNameOf } from "../../conversation/useKeptDrafts";
 import { type ThreadMessage, threadMessageWrite } from "../../threads/thread-message-write";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { authorText, pageChrome } from "../page-structure";
-import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
+import { ANSWER_LINES, CONTROL_LABELS, THREADS_WORDS } from "../page-words";
 
 /** Where a box's message goes: the message it answers, and the thread's target with the mode a
  *  message to it goes in. A thread whose root names no target sends neither. */
@@ -59,7 +59,9 @@ function messageInput(body: string, address: MessageAddress): CreateMessageInput
  * entry's Reply, Escape - and comes back shows them again, as a `MentionComposer` box does. They
  * leave the store once Dispatch took the message. While a send is out the field is held, and a
  * refusal says why beside Retry with the words kept. A box with no address yet, New thread's
- * before the reader chose its agent, offers no Send (R10).
+ * before the reader chose its agent, offers no Send (R10). A box whose message answers none, New
+ * thread's, writes a new thread: its write is named New thread and its refusal says the message
+ * was not sent, where a reply's says the reply was not.
  */
 export function MessageBox({
   address,
@@ -93,7 +95,8 @@ export function MessageBox({
     detail: (press) => ({ body: press.body, issueKey }),
     inline: true,
     kind: threadMessageWrite,
-    label: () => CONTROL_LABELS.reply,
+    label: (press) =>
+      press.input.in_reply_to === undefined ? THREADS_WORDS.new_thread : CONTROL_LABELS.reply,
     method: "POST",
     mutationKey: sendKey,
     onSuccess: (message, press) => {
@@ -162,7 +165,11 @@ export function MessageBox({
           {write.error instanceof ApiError ? (
             <span {...authorText}>{write.error.message}</span>
           ) : (
-            <span {...pageChrome}>{ANSWER_LINES.threads_reply_not_sent}</span>
+            <span {...pageChrome}>
+              {address?.inReplyTo === undefined
+                ? ANSWER_LINES.threads_message_not_sent
+                : ANSWER_LINES.threads_reply_not_sent}
+            </span>
           )}
           <button
             className={`font-medium underline ${pageMutedText}`}

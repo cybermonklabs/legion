@@ -11,11 +11,13 @@ const REASONS = {
   2: "2. An open ask draws no box at its foot, since its answer box is the ask body's, which Dashboard's matrix holds (`draft-matrix.thread-item.test.tsx`), so the box at its foot first mounts once the ask settles, with nothing typed in it yet.",
   3: "3. A record's kind is its thread's, which never changes, so each of its boxes writes a reply to a comment, a reply on an ask or a message for as long as the record is drawn.",
   4: "4. The editor opens over the comment's words as the record holds them when Edit is pressed: a newer body that lands while it is open is the editor's own case, which the edit matrix holds (`conversation/draft-matrix.edit.test.tsx`).",
+  5: "5. Whether a page or a lookup holds the record, and the choice it opens under, change neither the record drawn nor its key (`key={opened.id}`), so a box open in it stays mounted with its draft.",
 } as const;
 
 const oneIssue = { reason: REASONS[1] };
 const openAsk = { reason: REASONS[2] };
 const oneKind = { reason: REASONS[3] };
+const oneRecord = { reason: REASONS[5] };
 const goesFor = (kind: string) =>
   cells(`${HOST} · a reply box goes for another entry's, then opens again · ${kind}`, TYPED);
 const leaves = cells(`${HOST} · the reader leaves a reply box, then opens it again`, TYPED);
@@ -114,7 +116,7 @@ export const coverage: readonly CoverageEntry[] = [
 
   ...answers("ThreadsView | OpenedRecord | key | <OpenedRecord key={opened.id}>", ...everyBox),
   ...answers(
-    "ThreadsView | OpenedRecord | conditional | !(opened === undefined) ? …",
+    "ThreadsView | OpenedRecord | conditional | (opened !== undefined) ? …",
     reloaded("reply")
   ),
   ...answers("ThreadsView | OpenedRecord | conditional | (record !== undefined) ? …", newThread),
@@ -122,17 +124,23 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("ThreadsView | OpenedRecord | address prop | issue={issue}", oneIssue),
   ...answers("ThreadsView | OpenedRecord | address prop | record={opened}", ...everyBox),
   ...answers(
-    "ThreadsView | OpenedRecord | address prop | thread={[...lists.records.values()].filter((one) => one.thread === opened.thread)}",
+    'ThreadsView | OpenedRecord | address prop | thread={ held === undefined && lookup.kind === "found" ? lookup.thread : [...lists.records.values()].filter((one) => one.thread === opened.thread) }',
     another("foot")
   ),
   ...answers("ThreadsView | OpenedRecord | form | (wide || open) ? …", narrows),
   ...answers("ThreadsView | - | form | (wide) ? …", narrows),
   ...answers("ThreadsView | - | form | (newThread) ? …", newThread),
   ...answers("ThreadsView | - | form | (wide || !open) ? …", narrows),
-  ...answers("ThreadsView | OpenedRecord | form | !(opened === undefined) ? …", sentThread),
+  ...answers("ThreadsView | OpenedRecord | form | (opened !== undefined) ? …", sentThread),
   ...answers("ThreadsView | OpenedRecord | form | key={opened.id}", sentThread),
   ...answers("ThreadsView | - | form | (sent?.id === record) ? …", sentThread),
   ...answers("ThreadsView | - | form | if (opened !== undefined && !marking)", sentThread),
+  ...answers("ThreadsView | - | form | (held !== undefined) ? …", oneRecord),
+  ...answers(
+    "ThreadsView | - | form | if (placing !== undefined && opened !== undefined)",
+    oneRecord
+  ),
+  ...answers("ThreadsView | - | form | if (!drawn && under !== lists.choice)", oneRecord),
   ...answers("ViewThreadsSlot | ThreadsView | address prop | issue={issue}", oneIssue),
   ...answers("ViewThreadsSlot | ThreadsView | address prop | route={route}", ...everyBox),
 ];

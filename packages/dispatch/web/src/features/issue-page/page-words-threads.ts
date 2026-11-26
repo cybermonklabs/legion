@@ -41,6 +41,9 @@ export const THREADS_WORDS = freeze({
   /** Below 1024 px, above an opened record and above New thread: the control that returns to
    *  the list (R2). */
   back_to_list: "Back to the list",
+  /** What the page's list of keys names Escape by while a record is open: with no caret in a
+   *  box it closes the record and returns to the list (R12). */
+  close_record: "Close the thread and return to the list",
   /** The line that names a record's kind on its row (R7): a question, a comment, a comment on
    *  text, and a message. A message whose root targets an agent reads `message_to` and then the
    *  agent. */
@@ -86,9 +89,11 @@ export default {
        *  (R12). It answers an address the reader followed, as part L's lines for an address the
        *  outline cannot find do (`ADDRESS_FALLBACK_WORDS`). */
       threads_not_found: "This issue holds no thread at this address.",
-      /** What a box that writes a message says beside its Retry where its send failed and
-       *  Dispatch gave no words of its own, as for a lost connection (R9). */
+      /** What a box that writes a reply to a message says beside its Retry where its send failed
+       *  and Dispatch gave no words of its own, as for a lost connection (R9). */
       threads_reply_not_sent: "Could not send the reply.",
+      /** What New thread's box, which writes a new thread's first message, says there (R10). */
+      threads_message_not_sent: "Could not send the message.",
     },
     EMPTY_STATE_LINES: {
       /** All, where the issue holds no thread that All lists (R3). */
