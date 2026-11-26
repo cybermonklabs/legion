@@ -56,7 +56,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
-	c.last_turn_start, c.last_turn_end,
+	c.last_turn_start, c.last_turn_end, c.message_mark_at,
 	c.last_death_cause, c.last_death_at, c.last_death_digest,
 	c.last_start_failure, c.last_start_failure_at, c.last_start_failure_digest, c.last_ready,
 	c.turn_outcomes, c.abandoned_session, c.ended_work,
@@ -77,6 +77,11 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
 // writes historical state in migrations and test fixtures. The write and any role-holder
 // publication it queues share one transaction.
+//
+// It never writes the claim's message mark (claims.message_mark_at): a machine writes the whole
+// claim it holds in memory, so a mark written here would undo one made since that machine read
+// the claim, and MarkClaimMessageTx alone writes it. The one thing this write does to the mark is
+// clear it as the claim retires, since a retired claim takes none (MarkClaimMessageTx).
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 	var wrote error
 	if err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -474,6 +479,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		delivered_rows = (select coalesce(array_agg(distinct delivered order by delivered), '{}'::bigint[])
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
+		message_mark_at = case when excluded.state = 'retired' then null else claims.message_mark_at end,
 		last_death_cause = excluded.last_death_cause, last_death_at = excluded.last_death_at,
 		last_death_digest = excluded.last_death_digest,
 		last_start_failure = excluded.last_start_failure, last_start_failure_at = excluded.last_start_failure_at,
@@ -924,6 +930,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		lastSendFailure             *time.Time
 		lastSendError               *string
 		turnStart, turnEnd          *time.Time
+		messageMark                 *time.Time
 		lastReady                   *time.Time
 		deathAt, startFailureAt     *time.Time
 		deathDigest, failureDigest  []byte
@@ -954,7 +961,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
-		&turnStart, &turnEnd,
+		&turnStart, &turnEnd, &messageMark,
 		&c.LastDeathCause, &deathAt, &deathDigest, &c.LastStartFailure, &startFailureAt, &failureDigest, &lastReady,
 		&outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &repository, &repositoryRound, &updateOpened, &updateTasked, &updateSignalled,
@@ -1012,6 +1019,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)
+	c.MessageMarkAt = orZero(messageMark)
 	// A cause's time is read only beside a cause whose digest is the one stored with the time
 	// (causeTime), and a start failure's time before last_ready is read as none, since this
 	// release drops the start failure with its time at every ready; the migration's header

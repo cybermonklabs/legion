@@ -764,7 +764,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:500-520 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:541-561 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */

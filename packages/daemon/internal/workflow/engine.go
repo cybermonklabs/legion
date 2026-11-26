@@ -147,17 +147,22 @@ type Config struct {
 	// requests each, asked for by number). issues is
 	// never empty. Nil asks for none, as ReadMergeState's nil does.
 	ReadBaseMergeStates func(repo, base string, issues []string)
-	// Reserve is the moment a wake the engine causes may run, given the caller's own now and
-	// never a moment before it: the daemon's one wake limiter (internal/wakepace, openSupervision
-	// in internal/daemon), which paces every wake the daemon causes together — the role processes
-	// supervision launches (supervise.WakePace) and the catch-up the outbox writes in place of a
-	// launch, which is the one wake this engine reserves (claimReady, for an intake.ClaimReady
-	// the outbox's start row marked paced). nil is the pacing off, which is this package's
-	// convention for a collaborator a deployment does not have, as NoteUnread is: the catch-up is
-	// then due at once, exactly as every other catch-up is. The engine reads no configuration of
-	// the pacing and knows no limiter; what the rate and the burst were is the outbox's to log,
-	// where the wake runs (the daemon's wakeRan).
-	Reserve func(now time.Time) time.Time
+	// HoldCatchUp is told the outbox row of a catch-up the engine wrote held, once the fact that
+	// wrote it has committed (claimReady, for an intake.ClaimReady the outbox's start row marked
+	// paced): the daemon joins that row to its wake pacing's queue, where it waits its turn with
+	// the role processes supervision launches, and makes it due when the pacer lets it out (the
+	// daemon's catchUpPacing). nil is the pacing off, which is this package's convention for a
+	// collaborator a deployment does not have, as NoteUnread is: the catch-up is then due at
+	// once, exactly as every other catch-up is. The engine reads no configuration of the pacing
+	// and knows no pacer; what the rate and the burst were is the outbox's to log, where the wake
+	// runs (the daemon's wakeRan).
+	HoldCatchUp func(id int64, issue string)
+	// MessageMarked is told the claim a listener's report marked for a waiting Envoy message, with
+	// the mark the store holds, once the report's fact has committed (listenerWake): the daemon
+	// posts it to the claim's machine, whose waiting wake moves to the pacing's message queue
+	// (supervise.MessageMarked). nil tells nobody, and the mark still stands in the store for the
+	// next launch and the next boot to read.
+	MessageMarked func(token claim.Token, mark time.Time)
 	// Hooks are the deployment's hooks (`hooks`, config.Config.Hooks), each put in front of the
 	// roles it names every Every moves back of what it selects. The empty list fires nothing:
 	// the one hook a deployment that writes no key runs is the configuration's default

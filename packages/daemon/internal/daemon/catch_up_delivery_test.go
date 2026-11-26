@@ -160,7 +160,7 @@ func TestACatchUpKeepsTheRelaunchSentenceItWasQueuedWithWhenItIsDelivered(t *tes
 		if err != nil || root == nil {
 			return fmt.Errorf("read LEGION-1: %w", err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, d.records, config.DesignGateRootIssues.Steps(), *root, 1, sentence, d.now, time.Time{})
+		return workflow.QueueCatchUp(ctx, tx, d.records, config.DesignGateRootIssues.Steps(), *root, 1, sentence, d.now)
 	})
 	root := "LEGION-1"
 	putOutboxIssue(t, d.pool, d.records, record.Issue{Key: "LEGION-4", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",

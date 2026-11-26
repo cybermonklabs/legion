@@ -506,10 +506,16 @@ func TestTheProjectsRecordsWriteNoOutboxRowOfAnotherProjectsIssue(t *testing.T) 
 		}
 		seed(t, catchUp("OTHERPROJECT-6"))
 		before := rowsOf(t, "OTHERPROJECT-6")
-		write(t, func(tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "OTHERPROJECT-6", now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.DropCatchUps(ctx, tx, "OTHERPROJECT-6", now)
+			return err
+		})
 		refused(t, record.OutboxKindNotice, "OTHERPROJECT-6", before)
 		seed(t, catchUp("LEGION-6"))
-		write(t, func(tx pgx.Tx) error { return records.DropCatchUps(ctx, tx, "LEGION-6", now) })
+		write(t, func(tx pgx.Tx) error {
+			_, err := records.DropCatchUps(ctx, tx, "LEGION-6", now)
+			return err
+		})
 		if got := rowsOf(t, "LEGION-6"); len(got) != 0 {
 			t.Errorf("the project's own rows keyed LEGION-6 after the drop = %q, want its catch-up dropped", got)
 		}

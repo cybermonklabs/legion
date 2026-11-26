@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 )
 
 // Budgets are a claim's retry counters, each a separate policy with its own reset point.
@@ -175,17 +175,17 @@ var FailureCauses = []FailureCause{
 // already (registrationDeadline). It is the record's words and no outcome: what the policy reads
 // is o alone.
 //
-// turn is the moment the caller already reserved for this relaunch in the wake pacing, as
-// launchAfter takes it, and the zero time for every caller but the boot's replay of a recorded
-// death (RecordedDeath.Turn). The retry of a refused relaunch passes the zero time: it is raised
-// anew, so it reserves afresh.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string, turn time.Time) error {
+// place is the place the caller already took for this relaunch in the wake pacing, as launchAfter
+// takes it, and nil for every caller but the boot's replay of a recorded death
+// (RecordedDeath.Place). The retry of a refused relaunch passes nil: it is raised anew, so it
+// takes a place afresh.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, ending string, place *wakepace.Place) error {
 	if !Charges(o) {
-		return m.launchAfter(ctx, false, false, false, turn, ending)
+		return m.launchAfter(ctx, false, false, false, place, ending)
 	}
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, o, ending, time.Time{})
+			return m.relaunchAfterFailure(ctx, o, ending, nil)
 		}, err)
 	}
 	cause := failureCause(o)
@@ -201,7 +201,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 	if spent {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false, false, turn, ending)
+	return m.launchAfter(ctx, true, false, false, place, ending)
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of

@@ -582,10 +582,10 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 // UnownedPodRelease decides whether an issue's pod may be released because no claim of the issue
 // can use it. It is the daemon's second pod-release rule, beside IdleRelease, and it exists
 // because an issue every claim of which has failed, been retired or been suspended still holds
-// its Kubernetes pod, 3 CPU and 19 GiB, with nobody in it: a claim in any of those three states
-// runs no process (pods.IdleClaim.Live), so no role is in that pod and none is coming back to it
-// on its own. Nothing else takes such a pod back, and it stands for as long as the record holds
-// the issue.
+// its Kubernetes pod and the pod's reservation (2 CPU and 8 GiB at the defaults), with nobody in
+// it: a claim in any of those three states runs no process (pods.IdleClaim.Live), so no role is
+// in that pod and none is coming back to it on its own. Nothing else takes such a pod back, and
+// it stands for as long as the record holds the issue.
 //
 // It is pure, as IdleRelease is, and it reads less than that rule: no image, no plugin contract,
 // no turn and no reminder. Each of those is a fact about a live role — the image a released pod
