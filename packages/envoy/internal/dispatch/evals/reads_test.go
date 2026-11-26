@@ -125,8 +125,9 @@ func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
 // TestEachEvalReadsTheDayRowsOfItsOwnWriter: a logged eval's readings write and the computation
 // each hold a row of one eval, series and day side by side (eval_days.writer, R3), and every read
 // of an eval's rows reads its definition's writer's alone: the window read, the first day and the
-// items route's day rows. Logged, the eval reads the reading's row and its day as its first; read
-// as computed, the computation's two rows, the earlier of them its first day.
+// items route's day rows. Logged, the eval reads the reading's row and the zero rows its write left
+// after it (writeLoggedZeros), and the reading's day as its first; read as computed, the
+// computation's two rows, the earlier of them its first day.
 func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -150,7 +151,7 @@ func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
 		rows  []string
 		first string
 	}{
-		{"logged", logged, []string{"window 2026-11-04 7 no samples"}, "2026-11-04"},
+		{"logged", logged, []string{"window 2026-11-04 7 no samples", "window 2026-11-05 0 no samples", "window 2026-11-06 0 no samples"}, "2026-11-04"},
 		{"computed", computed, []string{"window 2026-11-03 3 no samples", "window 2026-11-04 3 no samples"}, "2026-11-03"},
 	} {
 		days, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{test.entry}, "", nil, window, nil)

@@ -59,9 +59,8 @@ import (
 //     change, an issue_filings change for the issue's filing, which the Legion days cut by that
 //     repository on the filing's day (migration 20261117100002).
 //   - issue_filings: the filing's day before and after, in the filing's project.
-//   - eval_readings: no day, since the readings write keeps a logged eval's day rows itself; the
-//     eval's zero rows are filled up to today, which a reading measured before its eval's first
-//     day leaves a gap in.
+//   - eval_readings: no day, since the readings write keeps a logged eval's day rows itself, the
+//     zero rows its readings leave owed among them (writeLoggedZeros).
 //   - session_group, eval_versions and eval_days: no day.
 //
 // The event log adds two more: an issue event that can move the count of open P0 issues with no
@@ -255,11 +254,11 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 // row key; the merge times its changes moved a pull request from and the earliest start they name
 // of a deploy run, by repository; the Legion days the facts and filing changes name, by project;
 // the issues whose repository or parent moved; the projects whose count of unowned P0 issues may
-// have moved; the logged evals whose readings changed, by project; the walks to begin again; the
-// rebuild to begin; whether a change of the delivery settings row is among its changes; the
-// delivery settings to record with the page's cursors as the ones the delivery and CI rows stand
-// built under, and whether that record moves what every evals view reads; and the repositories to
-// record as the ones they stand built for, with those they stood built for before.
+// have moved; the walks to begin again; the rebuild to begin; whether a change of the delivery
+// settings row is among its changes; the delivery settings to record with the page's cursors as
+// the ones the delivery and CI rows stand built under, and whether that record moves what every
+// evals view reads; and the repositories to record as the ones they stand built for, with those
+// they stood built for before.
 type pageWork struct {
 	prs  map[string]pullRequestRef
 	runs map[string]runRef
@@ -274,7 +273,6 @@ type pageWork struct {
 	legion     map[string]map[time.Time]bool
 	reparented map[string]bool
 	unowned    map[string]bool
-	logged     map[string]map[string]bool
 	// restart names the families whose walks begin again: walkDelivery and walkLegion (every
 	// project's) and walkLogged (every project's). rebuild is the reason of the rebuild of every
 	// served family the page's commit begins (replaceRebuild): a database whose cursors are gone, a
@@ -320,7 +318,7 @@ func newPageWork() *pageWork {
 	return &pageWork{
 		prs: map[string]pullRequestRef{}, runs: map[string]runRef{}, left: map[string][]time.Time{}, ran: map[string]time.Time{},
 		legion: map[string]map[time.Time]bool{}, reparented: map[string]bool{}, unowned: map[string]bool{},
-		logged: map[string]map[string]bool{}, restart: map[string]bool{},
+		restart: map[string]bool{},
 	}
 }
 
@@ -371,11 +369,6 @@ func (w *pageWork) addChange(change delivery.Change) {
 				w.legion[change.Repo][measures.Midnight(*at)] = true
 			}
 		}
-	case delivery.ChangeKindEvalReadings:
-		if w.logged[change.Repo] == nil {
-			w.logged[change.Repo] = map[string]bool{}
-		}
-		w.logged[change.Repo][change.Ref] = true
 	}
 }
 
@@ -543,8 +536,8 @@ func walkOf(family, project string) walkKey {
 // page's commit, as the span writes it answers, which the caller commits with the page's cursors
 // (commitPage). The days a write left owed before this page (owedDays) are named with the page's
 // own: a pass that failed after a moving write and before the day's own left them so. The
-// unowned-p0 rows and the logged evals' zero rows are written before it answers, so every write
-// the page's cursors pass is made, or is in the commit that moves them.
+// unowned-p0 rows are written before it answers, so every write the page's cursors pass is made,
+// or is in the commit that moves them.
 func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) {
 	owed, err := r.store.owedDays(ctx, r.owners)
 	if err != nil {
@@ -557,13 +550,6 @@ func (r *refresh) apply(ctx context.Context, w *pageWork) ([]*spanWrite, error) 
 	for _, project := range slices.Sorted(maps.Keys(w.unowned)) {
 		if r.known[project] {
 			if err := r.writeUnowned(ctx, project); err != nil {
-				return nil, err
-			}
-		}
-	}
-	for _, project := range slices.Sorted(maps.Keys(w.logged)) {
-		if r.known[project] {
-			if err := r.fillLogged(ctx, project, slices.Sorted(maps.Keys(w.logged[project]))); err != nil {
 				return nil, err
 			}
 		}
@@ -1243,10 +1229,10 @@ func (r *refresh) writeUnowned(ctx context.Context, project string) error {
 	return nil
 }
 
-// fillLogged writes the zero rows of project's logged evals ids names (every one where ids is nil)
-// from each series' first day to today (fillLoggedZeros), recorded where it wrote any.
-func (r *refresh) fillLogged(ctx context.Context, project string, ids []string) error {
-	filled, err := r.fillLoggedZeros(ctx, project, ids)
+// fillLogged writes the zero rows of project's logged evals from each series' first day to today
+// (fillLoggedZeros), recorded where it wrote any.
+func (r *refresh) fillLogged(ctx context.Context, project string) error {
+	filled, err := r.fillLoggedZeros(ctx, project)
 	if err != nil {
 		return err
 	}
@@ -1494,7 +1480,7 @@ func (r *refresh) walk(ctx context.Context) (bool, bool, error) {
 	parts.mark(partRebuildWalks)
 	for _, project := range r.projects {
 		if err := r.walkDaily(ctx, walks, walkKey{family: walkLogged, project: project},
-			func(ctx context.Context) error { return r.fillLogged(ctx, project, nil) }); err != nil {
+			func(ctx context.Context) error { return r.fillLogged(ctx, project) }); err != nil {
 			return false, false, err
 		}
 		if err := r.walkDaily(ctx, walks, walkKey{family: walkUnowned, project: project},

@@ -487,8 +487,10 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 		}
 		t.Logf("%s: rows from %s to %s, %d days, n of today %d", name, days[0].Format(time.DateOnly), days[len(days)-1].Format(time.DateOnly), len(days), n[refresherToday])
 	}
-	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day > $2 and n = 0 and repo = ''`, EvalID("EVAL", "build-minutes"), readingDay); got != 3 {
-		t.Errorf("the logged eval holds %d zero rows after its reading's day, want the 3 days through today", got)
+	// The write filled the zero rows through the database's today, past the rig's (writeLoggedZeros).
+	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day > $2 and day <= $3 and n = 0 and repo = ''`,
+		EvalID("EVAL", "build-minutes"), readingDay, refresherToday); got != 3 {
+		t.Errorf("the logged eval holds %d zero rows after its reading's day through today, want the 3 days", got)
 	}
 	if got := r.count(t, `select count(*) from eval_days where eval_id = $1 and day = $2 and repo = ''`, EvalID(deliveries.Project, SlugUnownedP0), refresherToday); got != 1 {
 		t.Errorf("%s holds %d unowned-p0 rows of today, want 1", deliveries.Project, got)

@@ -281,8 +281,10 @@ func TestABatchWithABadLastRowStoresNothing(t *testing.T) {
 			t.Errorf("%s: the refused batch moved eval_versions from %d rows to %d", slug, versions, moved)
 		}
 	}
-	if days := r.count(t, `select count(*) from eval_days where day = '2026-11-03'`); days != 0 {
-		t.Errorf("the refused batches left %d day rows on their day, want none", days)
+	// The first write left the zero rows of the days after its reading's (writeLoggedZeros), this
+	// day's among them, which a stored batch would have added its readings to.
+	if days := r.count(t, `select count(*) from eval_days where day = '2026-11-03' and n > 0`); days != 0 {
+		t.Errorf("the refused batches left %d day rows holding readings on their day, want none", days)
 	}
 }
 
@@ -422,7 +424,8 @@ const dayKeyOrder = `
 // estimate); the inserts, the locks and the updates each take every key once, in the byte order of
 // the keys across their statements, the order Postgres's `collate "C"` gives them (dayKeyOrder);
 // every row holds its one reading; and the write logs one eval_days change of the eval, spanning
-// the day, as one statement does (migration 20261117100014).
+// the day and the zero rows it writes of every day after it through today, as one statement does
+// (migration 20261117100014).
 func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -471,7 +474,7 @@ func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 		// at is the index of the statement's series, after which come its repositories and days.
 		at int
 	}{
-		{"insert", []string{"insert into eval_days"}, 4},
+		{"insert", []string{"insert into eval_days", "k(series, repo, day, listed)"}, 4},
 		{"lock", []string{"from eval_days", "for update"}, 3},
 		{"update", []string{"update eval_days"}, 4},
 	} {
@@ -511,12 +514,75 @@ func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
 			t.Errorf("the day row of series %.12q... and repository %.12q... holds n %d, sum %v and samples %v, want its one reading %v", key.series, key.repo, stored.N, showValue(stored.Sum), stored.Samples, values[key])
 		}
 	}
+	var clock time.Time
+	if err := r.database.Pool.QueryRow(t.Context(), `select now()`).Scan(&clock); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
 	changes := r.loggedChanges(t, "eval_days", heads)
-	if len(changes) != 1 || changes[0].evalID != evalID || !changes[0].first.Equal(day) || !changes[0].last.Equal(day) {
-		t.Errorf("the write logged the eval_days changes %v, want one of %s on %s", changes, evalID, day.Format(time.DateOnly))
+	if today := measures.Midnight(clock); len(changes) != 1 || changes[0].evalID != evalID || !changes[0].first.Equal(day) || !changes[0].last.Equal(today) {
+		t.Errorf("the write logged the eval_days changes %v, want one of %s from %s to %s", changes, evalID, day.Format(time.DateOnly), today.Format(time.DateOnly))
 	}
 	largest, what := largestStatement(sent)
 	t.Logf("%d statements, the largest %d bytes of parameters (%s), of %d; changes logged %v", len(sent), largest, what, statementBytes, changes)
+}
+
+// TestTheMostZeroRowsOneReadingsWriteOwesGoInBoundedStatements: the most zero rows one readings
+// write owes, a first reading of each of the MaxEvalSeries series an eval holds, each name the most
+// bytes a key holds, measured on MeasuredAtFloor, the earliest day a write takes, so that every
+// series owes the zero row of every day after the floor through today. The stored figures are
+// folded through today first, so the write folds the figures of the days it fills. The write sends
+// no statement of more than statementBytes of parameters as pgx encodes them, leaves each series a
+// row on every day from the floor through today, logs one eval_days change of the eval spanning
+// them, and leaves the stored figures the fold of the rows that stand. It logs how long it took and
+// how many day rows it wrote.
+func TestTheMostZeroRowsOneReadingsWriteOwesGoInBoundedStatements(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	var clock time.Time
+	if err := r.database.Pool.QueryRow(t.Context(), `select now()`).Scan(&clock); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	r.now = clock
+	r.settle(t)
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
+	const slug = "floor-fill"
+	evalID := EvalID(r.project, slug)
+	name := func(index int) string {
+		prefix := fmt.Sprintf("s%03d-", index)
+		return prefix + strings.Repeat("x", maxKeyBytes-len(prefix))
+	}
+	rows := make([]json.RawMessage, MaxEvalSeries)
+	for index := range rows {
+		rows[index] = row(t, map[string]any{"series": name(index), "row_kind": "run", "row_key": fmt.Sprint(index), "value": 1.5,
+			"measured_at": MeasuredAtFloor.Add(time.Duration(index) * time.Second)})
+	}
+	heads := r.changeHeads(t)
+	began := time.Now()
+	r.write(t, slug, alice, rows...)
+	took := time.Since(began)
+	sent := r.measured(t, statements.take())
+	for _, statement := range sent {
+		if statement.bytes > statementBytes {
+			t.Errorf("the write sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
+		}
+	}
+	today := measures.Midnight(clock)
+	days := int(today.Sub(MeasuredAtFloor).Hours()/24) + 1
+	written := r.count(t, `select count(*) from eval_days where eval_id = $1`, evalID)
+	zeros := r.count(t, `select count(*) from eval_days where eval_id = $1 and n = 0 and day > $2 and day <= $3`, evalID, MeasuredAtFloor, today)
+	if want := MaxEvalSeries * days; written != want || zeros != want-MaxEvalSeries {
+		t.Errorf("the write left %d day rows of %s, %d of them zero rows after the floor, want a row of each of its %d series on each of the %d days from %s through %s, all but the floor's zero rows",
+			written, evalID, zeros, MaxEvalSeries, days, MeasuredAtFloor.Format(time.DateOnly), today.Format(time.DateOnly))
+	}
+	changes := r.loggedChanges(t, "eval_days", heads)
+	if len(changes) != 1 || changes[0].evalID != evalID || !changes[0].first.Equal(MeasuredAtFloor) || !changes[0].last.Equal(today) {
+		t.Errorf("the write logged the eval_days changes %v, want one of %s from %s to %s", changes, evalID, MeasuredAtFloor.Format(time.DateOnly), today.Format(time.DateOnly))
+	}
+	expectTruth(t, "after the write of the most zero rows", r.storedFigures(t), r.truthFigures(t))
+	largest, what := largestStatement(sent)
+	t.Logf("a first reading of each of %d series on %s wrote %d day rows through %s in %s: %d statements, the largest %d bytes of parameters (%s), of %d",
+		MaxEvalSeries, MeasuredAtFloor.Format(time.DateOnly), written, today.Format(time.DateOnly), took, len(sent), largest, what, statementBytes)
 }
 
 // changeHeads is the newest pending and the newest drained change, before a write whose changes
@@ -1310,6 +1376,96 @@ func TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills(t *testing
 			t.Errorf("the day row of %s is %s, want samples %v, sum %v, num %v, den %v, max %s, last %s at %v", want.day.Format(time.DateOnly),
 				shown, want.samples, want.sum, want.num, want.den, showValue(want.max), showValue(want.lastValue), want.lastAt)
 		}
+	}
+}
+
+// TestAReadingsWriteWritesTheZeroRowsItsReadingsLeaveOwed: a readings write writes, in its own
+// transaction, the zero row of every day its readings leave owed, so a view of the eval is sent one
+// change of its day rows, and the refresher's fill after it finds nothing to write. A first reading
+// of a slug twelve days back leaves its series a row on every day from its own through today, and
+// then a reading three days before that first day leaves one on each of the two days up to it.
+// After each write every row it added carries its transaction (xmin, the transaction of its
+// reading's row), the change log holds one eval_days change of the eval spanning the days it wrote,
+// and the refresher's fill of the project's logged evals as of the same moment writes no row and
+// logs no change. Before, the fill wrote the days after the reading in a transaction of its own,
+// which a view was sent as a second change.
+func TestAReadingsWriteWritesTheZeroRowsItsReadingsLeaveOwed(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	var clock time.Time
+	if err := r.database.Pool.QueryRow(ctx, `select now()`).Scan(&clock); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	today := measures.Midnight(clock)
+	const slug = "first-fill"
+	evalID := EvalID(r.project, slug)
+	// held is each day the series holds its all-repositories row of, by the transaction that wrote
+	// the row.
+	held := func() map[time.Time]string {
+		t.Helper()
+		rows, err := r.database.Pool.Query(ctx, `select day, xmin::text from eval_days where eval_id = $1 and series = 'minutes' and repo = ''`, evalID)
+		if err != nil {
+			t.Fatalf("read the rows of %s: %v", evalID, err)
+		}
+		days := map[time.Time]string{}
+		var day time.Time
+		var xmin string
+		if _, err := pgx.ForEachRow(rows, []any{&day, &xmin}, func() error {
+			days[measures.Midnight(day)] = xmin
+			return nil
+		}); err != nil {
+			t.Fatalf("read the rows of %s: %v", evalID, err)
+		}
+		return days
+	}
+	for index, step := range []struct {
+		what string
+		// day is the reading's day, and last the last day the write owes a row of.
+		day, last time.Time
+	}{
+		{"a first reading twelve days back", today.AddDate(0, 0, -12), today},
+		{"a reading three days before the series' first day", today.AddDate(0, 0, -15), today.AddDate(0, 0, -13)},
+	} {
+		before, heads, key := held(), r.changeHeads(t), fmt.Sprint("run-", index)
+		r.write(t, slug, alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": key, "value": 3, "measured_at": step.day.Add(9 * time.Hour)}))
+		var xmin string
+		if err := r.database.Pool.QueryRow(ctx, `select xmin::text from eval_readings where eval_id = $1 and row_key = $2`, evalID, key).Scan(&xmin); err != nil {
+			t.Fatalf("%s: read the transaction of the reading: %v", step.what, err)
+		}
+		after := held()
+		var missing, others []string
+		for day := step.day; !day.After(today); day = day.AddDate(0, 0, 1) {
+			if _, ok := after[day]; !ok {
+				missing = append(missing, day.Format(time.DateOnly))
+			}
+		}
+		for day, by := range after {
+			if _, was := before[day]; !was && by != xmin {
+				others = append(others, day.Format(time.DateOnly)+" "+by)
+			}
+		}
+		slices.Sort(others)
+		if len(missing) > 0 {
+			t.Errorf("%s: the series holds no row of %v, days from the reading's %s through today %s", step.what, missing, step.day.Format(time.DateOnly), today.Format(time.DateOnly))
+		}
+		if added, want := len(after)-len(before), int(step.last.Sub(step.day).Hours()/24)+1; len(others) > 0 || added != want {
+			t.Errorf("%s: the write added %d rows, %v of another transaction than its own %s, want %d of its own", step.what, added, others, xmin, want)
+		}
+		if changes := r.loggedChanges(t, "eval_days", heads); len(changes) != 1 || changes[0].evalID != evalID ||
+			!changes[0].first.Equal(step.day) || !changes[0].last.Equal(step.last) {
+			t.Errorf("%s: the write logged the eval_days changes %v, want one of %s from %s to %s", step.what, changes, evalID,
+				step.day.Format(time.DateOnly), step.last.Format(time.DateOnly))
+		}
+		heads = r.changeHeads(t)
+		filled, err := r.registry.newRefresh(testBuild, clock, walkBatch).fillLoggedZeros(ctx, r.project)
+		if err != nil {
+			t.Fatalf("%s: the refresher's fill after the write: %v", step.what, err)
+		}
+		if changes := r.loggedChanges(t, "eval_days", heads); filled != 0 || len(changes) != 0 {
+			t.Errorf("%s: the refresher's fill after the write wrote %d rows and logged the eval_days changes %v, want none", step.what, filled, changes)
+		}
+		t.Logf("%s: the write added %d rows, through %s, in its transaction %s", step.what, len(after)-len(before), step.last.Format(time.DateOnly), xmin)
 	}
 }
 

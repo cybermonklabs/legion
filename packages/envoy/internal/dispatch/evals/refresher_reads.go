@@ -2,6 +2,7 @@ package evals
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -11,7 +12,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // refresher_reads.go holds the refresher's reads of where each item a change names stands, each
@@ -507,46 +510,51 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 	return earliest, nil
 }
 
-// fillLoggedZeros writes, for each series of project's logged evals (every one where ids is nil,
-// else those of ids that are logged), the zero row of every day from the series' first day to the
-// pass's today that holds no all-repositories row of it, in one insert, and answers how many it
-// wrote. Its rows are the readings write's (writer `readings`), since a logged eval's fold reads
-// those alone: a series' first day is its first such row's, which a readings write made
-// (days.go), and the zero row is the row that write leaves where every value is taken away: n 0,
-// a zero sum, numerator and denominator, no sample, no maximum and no last value, so a later
-// reading of that day adds to it as to any row. A day that holds a row keeps it. The zero row
-// takes the listing of the series' newest row.
+// fillLoggedZeros writes, for each series of project's logged evals, the zero row of every day from
+// the series' first day to the pass's today that holds no all-repositories row of it, in one insert
+// (loggedZeros, the statement the readings write sends for the days its rows leave owed), and
+// answers how many it wrote. Its rows are the readings write's (writer `readings`), since a logged
+// eval's fold reads those alone: a series' first day is its first such row's, which a readings
+// write made (days.go). A day that holds a row keeps it, and the zero row takes the listing of the
+// series' newest row.
 //
 // The days it writes are the gaps between a series' stored rows, each row followed by the days up
 // to the next one's (lead), and after its newest row the days up to today: so it generates and
 // probes the missing days alone, where the whole span from the first day would cost a probe of
-// every day the series holds on every readings write that reaches it.
+// every day the series holds.
+//
+// The readings write writes the zero rows its rows leave owed through its own today
+// (writeLoggedZeros), so what is left to the fill is the turn of each new day, which no write
+// makes, and a walk begun again (walkDaily). At a midnight, a write that read the day before as its
+// today and the fill of the new day leave every day of the eval its row, and write none twice: a
+// row both would write is the same zero row, inserted once (on conflict do nothing), each under
+// the eval's lock. Of a write of an eval the fill reads as logged, either the write commits first,
+// and the fill's insert, which reads the rows once the fill holds the eval's lock, fills after the
+// write's rows; or the fill commits first, and the write, which reads its today once it holds the
+// eval's lock, reads the new day. A write that registers its eval, which no read of the fill's
+// finds until it commits, holds the lock of the project's `evals-md` from before it stores the eval
+// to its commit (lockDocument), so the fill first waits out every such write that is running
+// (awaitRegistrations): either the eval is stored when the fill reads the project's evals, or the
+// write takes that lock after the wait and reads its today after it, the new day. Each reading of
+// the new day holds while the database's clock and the refresher's agree to within the time a pass
+// takes to reach its fill.
 //
 // It takes the lock of every eval it fills first (lockEvals), as every other writer of these rows
 // takes its eval's (lockEval), and reads the listings after it: so the listing it copies is the
 // one the last register write of the eval left on every stored row (relistDays), and no register
-// write moves it until the fill commits. The insert takes its rows in the byte order of their keys
-// (eval, series, day), the order every statement that inserts or locks one eval's day rows takes
-// them in (writeDays); left to the database's collation, a series `latency` and a series `Queue`
-// would be taken in the other order. Its change rows wait in the change log's outbox (migration
-// 20261117100014), so it takes no change log lock; a batch of them is moved into the log once it
-// has committed (drainChanges).
-func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
-	// loggedEvals is project's logged evals ($1 the project, $2 SourceLogged), which the fill reads
-	// twice, each read ending in the ids it keeps.
-	const loggedEvals = `select eval_id from evals_current where project_key = $1 and source = $2`
-	logged := loggedEvals
-	args := []any{project, SourceLogged}
-	if ids != nil {
-		logged += ` and eval_id = any($3)`
-		args = append(args, ids)
+// write moves it until the fill commits. Its change rows wait in the change log's outbox
+// (migration 20261117100014), so it takes no change log lock; a batch of them is moved into the
+// log once it has committed (drainChanges).
+func (r *refresh) fillLoggedZeros(ctx context.Context, project string) (int64, error) {
+	if err := r.awaitRegistrations(ctx, project); err != nil {
+		return 0, err
 	}
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin the zero rows of %s's logged evals: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, logged, args...)
+	rows, err := tx.Query(ctx, `select eval_id from evals_current where project_key = $1 and source = $2`, project, SourceLogged)
 	if err != nil {
 		return 0, fmt.Errorf("read %s's logged evals: %w", project, err)
 	}
@@ -561,39 +569,20 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 		return 0, err
 	}
 	// An eval read logged above that the seed took over before its lock was taken is computed now,
-	// so the insert reads which of them are logged again, under their locks.
-	inserted, err := tx.Query(ctx, `
-		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, samples, built_by)
-		select stored.project_key, stored.eval_id, $5::text, stored.series, '', gap.day::date, stored.listed, 0, 0, 0, 0, '{}', $4
-		from (
-			select project_key, eval_id, series, day,
-			       lead(day) over series_days as next_day,
-			       last_value(listed) over (series_days rows between unbounded preceding and unbounded following) as listed
-			from eval_days
-			where project_key = $1 and writer = $5 and repo = ''
-			  and eval_id = any(array(`+loggedEvals+` and eval_id = any($6)))
-			window series_days as (partition by eval_id, series order by day)
-		) stored
-		cross join generate_series((stored.day + 1)::timestamp,
-			least(coalesce(stored.next_day - 1, $3::date), $3::date)::timestamp, interval '1 day') as gap(day)
-		order by stored.eval_id collate "C", stored.series collate "C", gap.day
-		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
-		returning eval_id, day
-	`, project, SourceLogged, r.today, r.build, writerReadings, evalIDs)
-	if err != nil {
-		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
-	}
-	// The days it wrote are the days whose stored figures it may have moved, folded again in its
-	// transaction (foldFiguresInTx) under the locks it holds.
+	// so the insert reads which of them are logged again, under their locks. The days it writes are
+	// the days whose stored figures it may have moved, folded again in its transaction
+	// (foldFiguresInTx) under the locks it holds.
 	spans := map[string]daySpan{}
-	var written int64
-	var evalID string
-	var day time.Time
-	if _, err := pgx.ForEachRow(inserted, []any{&evalID, &day}, func() error {
-		written++
-		addSpan(spans, evalID, measures.Midnight(day), measures.Midnight(day))
-		return nil
-	}); err != nil {
+	written, err := writeZeroRows(ctx, tx, `
+		select project_key, eval_id, series, day,
+		       lead(day) over series_days as next_day,
+		       last_value(listed) over (series_days rows between unbounded preceding and unbounded following) as listed
+		from eval_days
+		where project_key = $1 and writer = $3 and repo = ''
+		  and eval_id = any(array(select eval_id from evals_current where project_key = $1 and source = $5 and eval_id = any($6)))
+		window series_days as (partition by eval_id, series order by day)
+	`, spans, project, r.today, writerReadings, r.build, SourceLogged, evalIDs)
+	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
 	}
 	if err := foldFiguresInTx(ctx, tx, r.build, map[string]map[string]daySpan{project: spans}); err != nil {
@@ -604,4 +593,37 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 	}
 	r.store.drainChanges(ctx)
 	return written, nil
+}
+
+// awaitRegistrations waits until no write that registers an eval of project is running. Each takes
+// the lock of the project's `evals-md` before it stores the eval and holds it to its commit
+// (lockDocument): the document's owner lock, or, where the project has none yet, the project's
+// documents' lock (docs.LockProjectArtifacts), under which it creates the document. This takes the
+// second and then the first, the order every taker of both takes them in, in a transaction of its
+// own that takes nothing else and commits at once, so it joins no lock cycle.
+func (r *refresh) awaitRegistrations(ctx context.Context, project string) error {
+	tx, err := r.store.database.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin the wait for %s's registrations: %w", project, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := docs.LockProjectArtifacts(ctx, tx, project); err != nil {
+		return err
+	}
+	var document string
+	switch err := tx.QueryRow(ctx, `
+		select id::text from artifacts where project_key = $1 and issue_key is null and session_id is null and slug = $2
+	`, project, DocumentSlug).Scan(&document); {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		return fmt.Errorf("read the %s document of %s: %w", DocumentSlug, project, err)
+	default:
+		if err := store.LockOwner(ctx, tx, store.ArtifactOwner(document)); err != nil {
+			return fmt.Errorf("wait for the registrations of %s: %w", project, err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("end the wait for %s's registrations: %w", project, err)
+	}
+	return nil
 }
