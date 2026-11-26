@@ -33,6 +33,7 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_REUSED,
+  TEXT_REFUSAL_HEADER,
 } from "@legion/contracts";
 import type { RequestCredential } from "../bearer";
 import {
@@ -1164,6 +1165,46 @@ test.each([
   expect(run.keys).toHaveLength(2);
   expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
   expect((error as DispatchWriteUnsettledError).key).toBe(run.keys[0] as string);
+});
+
+/** A handler's refusal of a text for the text alone (`TEXT_REFUSAL_HEADER`), written after the key
+ *  claim, so it carries this request's key back: `keyedWrites` sets the header before the handler
+ *  runs (request_keys.go:468). */
+const textRefusal = (status: number, code: string): Kind => ({
+  name: `${status} handler ${code} text refusal fresh exact echo`,
+  role: "refusal",
+  at: "attempt",
+  status,
+  code,
+  writer: "handler",
+  keyEcho: "exact",
+  respond: (key) =>
+    refused(status, code, "the text is refused", key, { [TEXT_REFUSAL_HEADER]: "text" }),
+});
+
+// A text refusal is never asked again (`answerEvent`), so it reaches the stored-status test at any
+// status. `storedStatus` keeps no 408 and no 429 under the key (request_keys.go:1473-1475), so such
+// a refusal after a possible landing is no stored answer and the write stays unsettled, where a
+// 400 text refusal is stored and settles as Dispatch's refusal.
+test.each([
+  textRefusal(408, "REQUEST_TIMEOUT"),
+  textRefusal(429, "EDIT_QUEUE_FULL"),
+])("after a gateway page, $name leaves the write unsettled", async (answer) => {
+  const { run, error } = await drive([kind("502 page"), answer]);
+
+  expect(run.keys).toHaveLength(2);
+  expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+  expect((error as DispatchWriteUnsettledError).key).toBe(run.keys[0] as string);
+});
+
+test("after a gateway page, a 400 text refusal echoing the key settles as Dispatch's refusal", async () => {
+  const { run, error } = await drive([kind("502 page"), textRefusal(400, "INVALID_MARKDOWN")]);
+
+  expect(run.keys).toHaveLength(2);
+  expect(error).not.toBeInstanceOf(DispatchWriteUnsettledError);
+  expect(error).toEqual(
+    expect.objectContaining({ code: "INVALID_MARKDOWN", status: 400, fromDispatch: true })
+  );
 });
 
 /** The events of each kind of step that asks again, rotated along a path so each appears. */

@@ -981,12 +981,13 @@ async function writeAnswer(response: Response): Promise<WriteAnswer> {
   };
 }
 
-/** Whether `storedStatus` (the Envoy module's `internal/dispatch/api/request_keys.go`) keeps this
- *  answer under the key, for an answer that is no outage: a 4xx but a 401. `answerEvent`, its one
- *  caller, hands every outage (a 408, a 429, a 5xx) to `retriesUnderKey` before it asks, so an
- *  outage never reaches this and it does not test for one. */
+/** Whether `storedStatus` (the Envoy module's `internal/dispatch/api/request_keys.go:1473-1475`)
+ *  keeps this answer under the key, which this mirrors: a 4xx that is neither a 401 nor an outage
+ *  (`outage`: a 408 or a 429). An outage does reach it: `answerEvent` hands no text refusal to
+ *  `retriesUnderKey`, whatever its status, and the keyed layer answers a text refusal with the
+ *  key, as it answers every handler's answer to a keyed write. */
 function isStoredKeyStatus(status: number): boolean {
-  return status >= 400 && status < 500 && status !== 401;
+  return status >= 400 && status < 500 && status !== 401 && !outage(status);
 }
 
 /**
@@ -1014,9 +1015,9 @@ function isStoredKeyStatus(status: number): boolean {
  *
  * A write sent through Cipher's proxy (`proxied`) first reads whether the answer is the proxy's own
  * (`Cipher-Proxy-Code`). One it wrote before any byte left it (`Cipher-Proxy-Forwarded: false`) is
- * `proxy-failed` for an outage (`outage`: a 408, a 429 or a 5xx), which is asked again as every
- * other outage is, and `proxy-refused` for any other status, which the same placeholder would get
- * again. One it wrote after the write may have reached Dispatch (`unknown`, or no such header) is
+ * `proxy-failed` for an outage (`outage`: a 408, a 429 or a 5xx), which is asked again under the
+ * key, and `proxy-refused` for any other status, which the same placeholder would get again. One
+ * it wrote after the write may have reached Dispatch (`unknown`, or no such header) is
  * `proxy-unsettled`. A service's answer it carried has no code, and is read as Dispatch's.
  */
 function answerEvent(
