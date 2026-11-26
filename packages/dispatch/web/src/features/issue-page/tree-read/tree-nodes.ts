@@ -44,6 +44,7 @@ import {
   NODE_TYPES,
   type NodeType,
 } from "../page-words";
+import { titleReading } from "../statement-rules";
 import { storedReading } from "../stored-reading";
 import {
   addDocumentChips,
@@ -60,7 +61,6 @@ import {
   requirementGaps,
   stableSourceOf,
   type TreeContext,
-  titleReading,
 } from "../tree-drafts";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
 
@@ -523,17 +523,29 @@ function draftRequirement(
  * A check or a plan task of this issue: under the parent the read answers, and again under each
  * other statement of this issue its `serves` tuples name, transcluded there as the outline
  * places it (root R4); its `needs` tuples are chips, one per task needed (`needsChips`). It
- * carries the outline's two gaps of the chain: a `serves` naming a node that is no statement - a
- * node of another kind, or a `requirement` block of a document other than the spec, which is a
- * requirement and no statement, so the gap's words say what both are - and a plan task naming
- * nothing it serves and nothing it attempts. A check stands as the server reads the commit each
- * of its results ran at (`checkStanding`), and draws the results read's facts; a check of the
- * Verification document that read does not hold has no result, and a check block of any other
- * document draws no state.
+ * carries the outline's three gaps of the chain:
+ *
+ * - **A citation whose target is no statement** (`serves_not_requirement`): a `serves` naming a
+ *   node of another kind, or a `requirement` block of a document other than the spec, which is a
+ *   requirement and no statement, so the gap's words say what both are; or one of this issue's
+ *   own pointers that names no node of the answer - a target deleted after the write, such as a
+ *   requirement taken out of the spec - where the answer holds blocks of the document it names,
+ *   since only there can the page tell a deleted block from one it has not read. A reference
+ *   this issue does not address (`nodeIdOf`) is no such citation: the page cannot tell it from a
+ *   statement of an issue above, which a check serves.
+ * - **A check that names nothing it serves** (`serves_nothing`): a check that draws a state,
+ *   one of the Verification document or of the results read, whose block names no `serves` at
+ *   all, so it stands under the issue with nothing to prove.
+ * - **A plan task nobody asked for** (`nobody_asked`): one naming nothing it serves and nothing it
+ *   attempts.
+ *
+ * A check stands as the server reads the commit each of its results ran at (`checkStanding`),
+ * and draws the results read's facts; a check of the Verification document that read does not
+ * hold has no result, and a check block of any other document draws no state.
  */
 function draftServing(
   node: TreeAnswerNode,
-  _answer: TreeAnswer,
+  answer: TreeAnswer,
   context: TreeDraftContext
 ): Draft | undefined {
   // A plan task of an issue under this one is drafted where the read answers its place in the
@@ -571,7 +583,20 @@ function draftServing(
     isStatementNode(target, context) ? [context.treeIdOf(target.id)] : []
   );
   draft.parents = [...new Set([...context.placeOf(node), ...requirements])];
-  if (served.some((target) => !isStatementNode(target, context))) {
+  // A pointer of this issue's own whose target the answer holds no node of, in a document whose
+  // blocks the answer holds.
+  const namesNothingHeld = (pointer: string): boolean => {
+    const id = context.nodeIdOf(pointer);
+    if (id === undefined || context.nodeByTreeId(id) !== undefined) return false;
+    const route = parseNodeReference(pointer);
+    const slug =
+      route?.kind === "spec" ? context.specSlug : route?.kind === "artifact" ? route.slug : "";
+    return slug !== "" && (answer.nodes ?? []).some((one) => one.document?.slug === slug);
+  };
+  if (
+    served.some((target) => !isStatementNode(target, context)) ||
+    (!foreign && pointersOf(node, "serves").some(namesNothingHeld))
+  ) {
     draft.gaps.push("serves_not_requirement");
   }
   // What a task of another issue serves is that issue's statements, which its own page says it
@@ -596,6 +621,13 @@ function draftServing(
     ) {
       draft.state = "no-result";
     }
+  }
+  if (
+    node.supertag === "check" &&
+    draft.state !== undefined &&
+    !namesAny(node, "serves", context)
+  ) {
+    draft.gaps.push("serves_nothing");
   }
   return draft;
 }

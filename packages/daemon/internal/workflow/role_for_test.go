@@ -14,19 +14,22 @@ import (
 // spec and decomposes its tree, and accepting, where it signs the work off. No row of the table
 // starts either (Table), and every site that starts, resumes or reports a phase's worker skips
 // the architect, which internal/textcheck's TestEveryReaderOfRoleForLeavesTheArchitectUnchanged
-// holds for every reader of RoleFor in the daemon.
+// holds for every reader of RoleFor in the daemon. No role works awaiting_children: a parent
+// waiting on its open children holds the start of the phase it stopped, and no role of it is
+// woken until the admission pass gives that start back (dispatch://INFRA-3320 R11).
 var roleForAnswers = map[phase.Phase]claim.Role{
-	phase.Admitted:       claim.RoleArchitect,
-	phase.AwaitingPerson: "",
-	phase.Planning:       claim.RolePlanner,
-	phase.Implementing:   claim.RoleImplementer,
-	phase.Testing:        claim.RoleTester,
-	phase.Reviewing:      claim.RoleReviewer,
-	phase.Accepting:      claim.RoleArchitect,
-	phase.Retro:          claim.RoleImplementer,
-	phase.Merging:        claim.RoleMerger,
-	phase.Done:           "",
-	phase.Held:           "",
+	phase.Admitted:         claim.RoleArchitect,
+	phase.AwaitingPerson:   "",
+	phase.AwaitingChildren: "",
+	phase.Planning:         claim.RolePlanner,
+	phase.Implementing:     claim.RoleImplementer,
+	phase.Testing:          claim.RoleTester,
+	phase.Reviewing:        claim.RoleReviewer,
+	phase.Accepting:        claim.RoleArchitect,
+	phase.Retro:            claim.RoleImplementer,
+	phase.Merging:          claim.RoleMerger,
+	phase.Done:             "",
+	phase.Held:             "",
 }
 
 // R1: phase.RoleFor answers the architect for admitted, beside accepting, and this package's

@@ -608,10 +608,12 @@ async function readLensRowsIn(
 
 /**
  * Row 1's (2), the first reading of what the lens rows draw: statement 1's row is drawn, and the
- * pre-mortem's row stands under it, by the tree's own levels. Then (1): after statement 1's other
- * children, the trade-off analysis, then the pre-mortem, each tagged by its kind's words,
- * capitalised and whole, with the focus on another row; each by alice, with its time and its
- * verdict, or the words that say it has none.
+ * pre-mortem's row stands under it, by the tree's own levels. Then (1): under statement 1, among
+ * its conversation nodes and before its ranked children (its check and its plan task), the
+ * trade-off analysis, then the pre-mortem, as the read answers a node's conversation first, by
+ * `made_at` (INFRA-1253's spec at version 247); each tagged by its kind's words, capitalised and
+ * whole, with the focus on another row; each by alice, with its time and its verdict, or the
+ * words that say it has none.
  */
 async function expectLensesUnderStatementOne(
   page: Page,
@@ -634,15 +636,27 @@ async function expectLensesUnderStatementOne(
   const tradeOff = await drawnIn(page, view, ids.tradeOff, "the trade-off analysis");
   const preMortem = await drawnIn(page, view, ids.preMortem, "the pre-mortem");
   const rows = await drawnRows(page);
+  const children = childrenOf(rows, statementOne);
+  // The ranked children the view draws: its check, and its plan task where the view's read holds
+  // one, which Conversation's names no kind of (`CONVERSATION_KINDS`).
+  const ranked = (row: DrawnRow) => row.type === "check" || row.type === "plan_task";
+  const lastLens = Math.max(
+    ...[tradeOff, preMortem].map((id) => children.findIndex((row) => row.id === id))
+  );
   expect(
-    childrenOf(rows, statementOne)
-      .slice(-2)
-      .map((row) => row.id),
+    {
+      checkDrawn: children.some((row) => row.type === "check"),
+      lenses: children.filter((row) => row.type === "lens").map((row) => row.id),
+      rankedBeforeALens: children
+        .slice(0, lastLens)
+        .filter(ranked)
+        .map((row) => row.id),
+    },
     inView(
       view,
-      "under statement 1, after its other children, the trade-off analysis and then the pre-mortem"
+      "under statement 1, among its conversation nodes and before its ranked children, the trade-off analysis and then the pre-mortem"
     )
-  ).toEqual([tradeOff, preMortem]);
+  ).toEqual({ checkDrawn: true, lenses: [tradeOff, preMortem], rankedBeforeALens: [] });
   // The focus goes to statement 1, so each lens's tag is read on a row that has none.
   await focusRow(page, statementOne);
   for (const lens of [

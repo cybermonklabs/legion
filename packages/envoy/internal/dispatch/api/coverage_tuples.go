@@ -40,7 +40,8 @@ type tupleCheck struct {
 // order, each the reader may see. What serves each is read by walking serves inbound
 // from the requirement (servesInto, over graph_tuples_as_of_in), so a check serving three
 // requirements is listed once under each of them; a node of the issue or of an issue under it
-// serves, and a proposed one serves nothing yet. A requirement no check serves is a gap; one no
+// serves where it is live, whatever state a node above it holds, and a proposed or an overtaken
+// one serves nothing (readServingChecks). A requirement no live check serves is a gap; one no
 // check of which holds a passing result against the words the check holds now is unproven - a
 // check holding no result, holding only a fail, or holding a pass recorded against a text sum it no
 // longer holds - and a retracted result counts as none; one a check proves is proved. A requirement
@@ -304,9 +305,11 @@ func registerTreeTexts(trees *displayTreeReader, requirements []model.Requiremen
 const planTaskBlockType = "plan_task"
 
 // readServingChecks reads each node serving names that is a check or a plan node of one of
-// issues, as the reader may see it and not proposed: its type and current text sum (its
-// document_blocks row), its issue, and for a check where its newest result that stands leaves it
-// (checkProof), read off the result nodes under it.
+// issues, as the reader may see it, that serves: one at neither proposed, a question still open,
+// nor overtaken, which is closed, by its own state alone, whatever state a node above it holds
+// (INFRA-1253's architect, dispatch://INFRA-1253/comment/c797249f-ab6c-4b52-a848-724932e12668).
+// It reads its type and current text sum (its document_blocks row), its issue, and for a check
+// where its newest result that stands leaves it (checkProof), read off the result nodes under it.
 func readServingChecks(ctx context.Context, q queryer, who model.Actor, serving map[string][]refs.Target, issues []string, cut refs.TreeCut) (map[refs.Target]tupleCheck, map[refs.Target]string, error) {
 	var targets []refs.Target
 	var ids []string

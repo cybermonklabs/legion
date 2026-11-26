@@ -20,7 +20,10 @@ import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, parseIssuePath, parseNodeReference } from "../refs/routes";
 import { lastHeldAsk, lastHeldOpening, lastHeldReference } from "./address-target";
 import { targetLastHeld } from "./graph-edit/last-held-chips";
-import { usePublishLastHeldReferences } from "./graph-edit/last-held-store";
+import {
+  usePublishLastHeldOpening,
+  usePublishLastHeldReferences,
+} from "./graph-edit/last-held-store";
 import { issueAddress, pathToTarget } from "./issue-address";
 import {
   buildIssueTree,
@@ -41,13 +44,6 @@ import { useLineRefusals } from "./useLineRefusals";
  *  built from what that read holds, and keeps standing on it through a refetch that fails. */
 export interface IssueTreeView
   extends Pick<TreeRead, "blocksHeld" | "blocksOf" | "blocksRead" | "failed" | "pending"> {
-  /** Where the page's address opens instead (R9 of INFRA-5705): on the Spec view's own address
-   *  naming, by its `#b-` fragment, a block the read the view draws from lacks, once the names
-   *  read under a set that holds the block's reference has answered, the version that last held
-   *  the block, or the same address without its fragment where none is named
-   *  (`address-target.ts`' `lastHeldOpening`). Undefined for every other address, and while that
-   *  read is out or answers the block live. The Spec view's slot opens it (`view-spec.tsx`). */
-  readonly lastHeldAddress: string | undefined;
   /** The names line's state while the names stand failed (`useLineRefusals`), and none while
    *  they do not: what a view reads to draw the page's line that the names failed. The names
    *  are the batched names read's (`useIssueTree`); they stand failed from a failure of that read
@@ -81,18 +77,20 @@ export interface IssueTreeView
 
 /** The names line's state while the tree's names stand failed (`IssueTreeView.namesFailure`). */
 export interface NamesFailure {
-  /** How many times the names read has failed since it last held an answer under its set of
-   *  addresses (`useLineRefusals`): one for each of its failures while it holds no answer under
-   *  its set, as TanStack Query's `errorUpdateCount` rises under that set. The read moved to
-   *  another set adds the failures that set's query holds, new to the line, so the count changes
-   *  only with a new failure, and the line draws its alert again only then. It is not the read's
-   *  own `errorUpdateCount`. */
+  /** How many failures of the names read the line has counted while the tree's slot lives, each
+   *  once under its set of addresses (`useLineRefusals`): one for each of its failures while it
+   *  holds no answer under its set, as TanStack Query's `errorUpdateCount` rises under that set.
+   *  The read back on a set the line has counted adds only a failure new to that set, so the
+   *  count changes only with a new failure, and the line draws its alert again only then. It is
+   *  not the read's own `errorUpdateCount`. */
   readonly failure: number;
   /** Asks the names read again (its own `refetch`), and no other read. */
   readonly retry: () => void;
   /** Whether the names read runs, again or under a new set of addresses (TanStack Query's
    *  `isFetching`). */
   readonly retrying: boolean;
+  /** Whether the line speaks: not where it stands again for a failure it already said. */
+  readonly speaks: boolean;
 }
 
 /**
@@ -499,7 +497,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     enabled: false,
   });
   const answer = targets.data ?? heldAnswer.data;
-  // Where the Spec view's address opens instead (`IssueTreeView.lastHeldAddress`): read only from
+  // Where the Spec view's address opens instead (`usePublishLastHeldOpening`): read only from
   // the answer of the set the names read is asked under, once that set holds the block's
   // reference, and never from an older set's (`heldAnswer`), which may name the block as it
   // stood before.
@@ -510,6 +508,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     const member = (targets.data.targets ?? []).find((one) => one.ref === missing);
     return lastHeldOpening(member, `${pathname}${search}`);
   }, [askedFor, missing, pathname, search, targets.data]);
+  usePublishLastHeldOpening(key, lastHeldAddress);
   const named = useMemo(
     () => (answer === undefined ? undefined : (answer.targets ?? [])),
     [answer]
@@ -520,24 +519,25 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // The names stand failed, the names in hand standing through it (above), from a failure of the
   // names read while it holds no answer under its set until it holds one, by one count of its
   // failures (`useLineRefusals`), so the line says a failure again only for a new one: the read
-  // out under a set never read before does not change it. The Retry asks the read again, and the
-  // line is busy while it runs.
-  const [failure] = useLineRefusals([
+  // back on a set it has counted does not change it. The Retry asks the read again, and the line
+  // is busy while it runs.
+  const [{ refusals: failure, speaks, stands }] = useLineRefusals([
     [{ errorUpdateCount: targets.errorUpdateCount, failing: !targetsAnswered, hash: targetsHash }],
   ]);
   const { isFetching: retrying, refetch: refetchTargets } = targets;
   const namesFailure = useMemo(
     (): NamesFailure | undefined =>
-      failure > 0
+      stands
         ? {
             failure,
             retry: () => {
               void refetchTargets();
             },
             retrying,
+            speaks,
           }
         : undefined,
-    [failure, refetchTargets, retrying]
+    [failure, refetchTargets, retrying, speaks, stands]
   );
   // The same answer every surface of this page would otherwise read one pointer at a time, which
   // a link in a document, in a decision's card or in a comment's preview shows, a row's in-place
@@ -617,7 +617,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       blocksOf: read.blocksOf,
       blocksRead: read.blocksRead,
       failed: read.failed,
-      lastHeldAddress,
       namesFailure,
       namesHeld,
       pending: read.pending,
@@ -629,7 +628,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       read.blocksOf,
       read.blocksRead,
       read.failed,
-      lastHeldAddress,
       namesFailure,
       namesHeld,
       read.pending,

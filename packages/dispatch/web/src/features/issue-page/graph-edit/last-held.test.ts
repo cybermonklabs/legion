@@ -34,7 +34,11 @@ import { treeReferences } from "../useIssueTree";
 import { fixture } from "./graph-edit-fixtures";
 import { lastHeldPath } from "./last-held";
 import { targetLastHeld } from "./last-held-chips";
-import { usePublishLastHeldReferences } from "./last-held-store";
+import {
+  useLastHeldOpening,
+  usePublishLastHeldOpening,
+  usePublishLastHeldReferences,
+} from "./last-held-store";
 
 /**
  * A citation of a deleted node opens the version that last held it (R9 of INFRA-5705's spec):
@@ -63,9 +67,11 @@ import { usePublishLastHeldReferences } from "./last-held-store";
  *   `lastHeld` both draw as today.
  * - An address on the issue page whose `#b-<block>` names a block that no read holds (the Spec
  *   view's own address: `address-target.ts`' `lastHeldAsk`, through the page's names read in
- *   `useIssueTree.ts`, opened by `slots/view-spec.tsx`) sends one `reference-targets` read for it
- *   and opens `lastHeldPath` of its `last_held`, replacing the address; where the read answers no
- *   `last_held`, the address opens without the block (no `#b-` fragment) and draws no line.
+ *   `useIssueTree.ts`, which publishes where it opens by the issue's key,
+ *   `usePublishLastHeldOpening(issue, address)`, read by `useLastHeldOpening(issue)` and opened by
+ *   `slots/view-spec.tsx`) sends one `reference-targets` read for it and opens `lastHeldPath` of
+ *   its `last_held`, replacing the address; where the read answers no `last_held`, the address
+ *   opens without the block (no `#b-` fragment) and draws no line.
  * - An address of the issue's own route, Graph's, or the Plan or Verification filter's whose
  *   `#b-<block>` names, in no document, a block no read holds (`address-target.ts`'
  *   `useUnqualifiedLastHeld`, opened by `slots/body.tsx`) sends one `reference-targets` read of
@@ -332,6 +338,40 @@ test("every surface that draws a gone reference reads last_held", async () => {
     expected.searchParams.get("v")
   );
   words.unmount();
+});
+
+// R9: where the Spec view's address opens instead is published by the page's names read, by the
+// issue's key (`last-held-store.ts`' `usePublishLastHeldOpening`), and the view's slot reads it
+// there (`useLastHeldOpening`, `slots/view-spec.tsx`), building no tree of its own. It stands
+// while its publisher names it and goes when the publisher names none or leaves, and a reader of
+// another issue reads none.
+test("the Spec view's opening is read by the issue's key while its publisher names it", () => {
+  const opened = lastHeldPath(STATEMENT().last_held ?? "");
+  if (opened === undefined) throw new Error("the statement's last_held opens nowhere");
+  const other = `${KEY}-OTHER`;
+  const seen: { other?: string; own?: string } = {};
+  function Read(): ReactNode {
+    seen.own = useLastHeldOpening(KEY);
+    seen.other = useLastHeldOpening(other);
+    return null;
+  }
+  function Opening({ address }: { address: string | undefined }): ReactNode {
+    usePublishLastHeldOpening(KEY, address);
+    return null;
+  }
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const draw = (publisher: ReactNode) =>
+    createElement(QueryClientProvider, { client }, publisher, createElement(Read));
+  const view = render(draw(createElement(Opening, { address: opened })));
+  expect(seen.own, "the published opening was not read").toBe(opened);
+  expect(seen.other, "another issue read this issue's opening").toBeUndefined();
+  view.rerender(draw(createElement(Opening, { address: undefined })));
+  expect(seen.own, "the opening stayed after its publisher named none").toBeUndefined();
+  view.rerender(draw(createElement(Opening, { address: opened })));
+  expect(seen.own).toBe(opened);
+  view.rerender(draw(null));
+  expect(seen.own, "the opening stayed after its publisher left").toBeUndefined();
+  view.unmount();
 });
 
 /** A stub of every read the page's outline is drawn from, answering the references the page asks

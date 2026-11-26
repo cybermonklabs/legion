@@ -10,6 +10,7 @@ import type {
 import {
   artifact,
   DECISIONS_SLUG,
+  entryOf,
   KEY,
   node,
   READER,
@@ -28,10 +29,10 @@ import type { TreeAsk, TreeNode } from "../issue-tree";
  * The issue's key, the reader, a document, a node and the issue's tree are the Decisions
  * filter's own fixtures (`decisions-filter/decisions-fixtures.ts`), the same in value and in
  * what they build. What is here differs from that module's fixture of the same name, and is the
- * Spec view's own: the issue's decisions document is `artifact-dec`, which `decisionsRead` names
- * as its document, and its `artifacts` is typed as present, so a case can add a document; a
- * statement is marked a statement, carries its counts and opens with its number; a `shaped` tie
- * names a requirement; a decision is given its kind and waits for no review.
+ * Spec view's own: the issue's decisions document is `artifact-dec`, and its `artifacts` is typed
+ * as present, so a case can add a document; a statement is marked a statement, carries its
+ * counts and opens with its number; a `shaped` tie names a requirement; a decision is given its
+ * kind and waits for no review, and the decisions read answers it as that module's entry does.
  *
  * The addresses are the ones this issue would answer with: a statement is a block of the spec,
  * a decision a block of `decisions.md`, and an ask its own id, so a tie resolves through the
@@ -132,9 +133,18 @@ export function decision(
   };
 }
 
-/** The decisions read over `made`. */
+/** The decisions read over `made`, as the client builds it from the tree's Decisions view
+ *  (`api/decisions-tree.ts`): an entry for each (`entryOf`), a person's by the answered ask it
+ *  names, and nothing in the `decisions` member, which that read leaves empty. The entries name
+ *  no document: these decisions are blocks of `decisions.md`, which plays no part, and the view
+ *  names a document only for a block of one that does. */
 export function decisionsRead(made: readonly Decision[]): IssueDecisions {
-  return { decisions: [...made], document: "artifact-dec", entries: [], open_questions: [] };
+  return {
+    decisions: [],
+    document: null,
+    entries: made.map((row) => ({ ...entryOf(row), document: null })),
+    open_questions: [],
+  };
 }
 
 /** The address of one statement, which is one block of the issue's spec. */

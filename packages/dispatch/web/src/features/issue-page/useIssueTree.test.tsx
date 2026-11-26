@@ -514,9 +514,10 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
   }
 });
 
-// A names read moved to a set of addresses whose query already failed holds no answer there, and
-// the failure that query holds is new to the names line, which says it again (`useLineRefusals`).
-test("a names read moved to a set of addresses whose query already failed says its failure again", async () => {
+// A names read back on a set of addresses whose failure the names line has counted holds no
+// answer there, so the line stands on it, busy while it runs again, but that failure is one the
+// line has said, so its count stays (`useLineRefusals`).
+test("a names read back on a set of addresses whose failure the line counted stands busy with its failure unchanged", async () => {
   // Where set, a names read stays out until it settles; every one of them fails.
   let out: Promise<void> | undefined;
   const stubs = stubTreeReads(async () => {
@@ -531,6 +532,7 @@ test("a names read moved to a set of addresses whose query already failed says i
   try {
     const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
     await waitFor(() => expect(view.result.current?.failure).toBe(1));
+    expect(view.result.current?.speaks, "the line's first failure was not said").toBe(true);
     // A comment citing another issue arrives with the tree read's next answer, and the names read
     // of the tree's new set fails too.
     await act(async () =>
@@ -540,11 +542,16 @@ test("a names read moved to a set of addresses whose query already failed says i
       )
     );
     await waitFor(() => expect(view.result.current?.failure).toBe(2));
-    // The comment goes: the read moves back to the first set, whose query failed, and is out.
+    // The new set's names read answers, the one active read holding none, and the line leaves.
+    await act(async () => client.setQueriesData({ type: "active" }, (d) => d ?? { targets: [] }));
+    await waitFor(() => expect(view.result.current).toBeUndefined());
+    // The comment goes: the read moves back to the first set, whose failure the line counted, and
+    // is out.
     out = held.promise;
     await act(async () => client.setQueryData(conversationTreeKey(KEY), treeAnswer([])));
     await waitFor(() => expect(view.result.current?.retrying).toBe(true));
-    expect(view.result.current?.failure, "the first set's failure was not said again").toBe(3);
+    expect(view.result.current?.failure, "the first set's failure was said again").toBe(2);
+    expect(view.result.current?.speaks, "the line said again a failure it had said").toBe(false);
     view.unmount();
   } finally {
     held.resolve();

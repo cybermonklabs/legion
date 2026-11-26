@@ -15,6 +15,12 @@ import type { PartWords } from "./page-words-parts";
 
 export default {
   add: {
+    VERIFICATION_WORDS: {
+      /** After a count of checks, which every count of them is written with: "1 check", "6
+       *  checks". */
+      check_many: "checks",
+      check_one: "check",
+    },
     STATE_LINES: {
       /** What the Spec view says over its columns, on load as much as later, of a group of its
        *  reads that stands failed, beside one Retry for the group
@@ -23,6 +29,23 @@ export default {
        *  `results_unreadable`, which names the results read alone. */
       statements_unreadable: "Could not load the statements.",
       spec_results_unreadable: "Could not load the results.",
+    },
+    CONTROL_LABELS: {
+      /** The labels of the two rows under the sentences, each a control that turns a filter on:
+       *  "How it gets done" the Plan filter, "What you will be shown" the Verification filter. */
+      in_short_how: "How it gets done",
+      in_short_shown: "What you will be shown",
+    },
+    GAP_LINES: {
+      /** A check whose `serves` names no target at all (`tree-drafts.ts`'s `servePlacements`):
+       *  it proves no statement, so it stands under the issue with nothing to prove. A check
+       *  whose `serves` names a target that is no statement carries `serves_not_requirement`
+       *  instead. */
+      serves_nothing: "This check names no statement it serves.",
+    },
+    GAP_WORDS: {
+      /** The check names nothing it serves, so no statement stands behind it. */
+      serves_nothing: "No statement",
     },
   },
   unasked: [],

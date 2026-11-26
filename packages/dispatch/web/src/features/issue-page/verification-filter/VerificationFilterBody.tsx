@@ -2,6 +2,7 @@ import {
   createContext,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useContext,
   useEffect,
@@ -43,7 +44,8 @@ import { parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { useDocumentStage } from "../document-stage";
-import { chipName, type NodeChip, type TreeNode } from "../issue-tree";
+import { chipName } from "../first-line";
+import type { NodeChip, TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { NODE_EDITED_MARKS } from "../NodeRow";
@@ -68,6 +70,7 @@ import {
 import { type Press, trackPress } from "../press-focus";
 import { RowText } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
+import { useAddressActed, useAddressLanding } from "../spec-filter/address-landing";
 import { type OnEditing, pressAsksCaret, useNodeEditing, useWordsPress } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
@@ -189,8 +192,15 @@ export function queryTyped(query: string): boolean {
  * is not the words' (`pressAsksCaret`). The page draws that document's one editor (`onEditing`),
  * and the row draws it on its stage in place of its words while it is the row edited; Escape
  * gives the row back the focus and its words.
+ *
+ * An address that names a row the tree draws puts the focus on that row, once per following of
+ * the address and once every read the page's tree is built from has settled, as the Spec view's
+ * address does (`SpecFilterBody`), and that row takes the tab stop as the focus does, from where
+ * the reader may move it on. A reader who acted since they followed the address keeps the focus
+ * where they put it, and the tab stop where it was.
  */
 export function VerificationFilterBody({
+  addressActs,
   addressed,
   artifacts,
   checks,
@@ -201,9 +211,16 @@ export function VerificationFilterBody({
   onEditing,
   published,
   reads,
+  readsSettled = false,
+  reveal,
   view,
   whole,
 }: {
+  /** The reader's acts since they followed the address: a controller their first act aborts,
+   *  which the stage starts once for each following (`StageSlot`'s `ReaderActsWatch`) and the
+   *  landing reads, as the Spec view's does (`SpecFilterBody`'s `addressActs`). None where the
+   *  body is drawn without the stage, which then lands as where the reader made no act. */
+  addressActs?: RefObject<AbortController | undefined>;
   /** The node the address names (`named`, its id) and the call told whether the body draws a row
    *  of it with the reader's chip applied (`tell`), before the browser paints and again as what
    *  it draws changes, once all three reads have answered (`slots/view-verification.tsx`). */
@@ -253,6 +270,16 @@ export function VerificationFilterBody({
    *  out. A read that has answered once stays answered when a later refetch fails: the body
    *  draws what it last answered. */
   reads: VerificationReads;
+  /** Whether every read the page's tree is built from has answered, with its data or with its
+   *  failure (`useOutlineReads`'s `readsSettled`), which the row the address names waits on
+   *  before it takes the focus and the tab stop (`reveal`). False where none is given, so a body
+   *  given no address lands nowhere. */
+  readsSettled?: boolean;
+  /** The id of the node the address names (`useAddressTarget`'s last node of `reveal`). Where
+   *  the tree draws a row of its own for that node, the row takes the focus and the tab stop once
+   *  per following of the address, unless the reader has acted since they followed it
+   *  (`addressActs`). */
+  reveal?: string;
   /** The tree as the Verification filter left it (`presetView`). */
   view: TreeNode;
   /** The Verification view with no words query, where a query is typed: what the issue holds,
@@ -357,9 +384,46 @@ export function VerificationFilterBody({
   // The row that holds the tree's one tab stop, by its id in `rows`: the issue's at first. A
   // row the reader's narrowing took out hands it back to the issue's row, in this render rather
   // than in an effect after it, so the tree is never drawn without its stop.
+  // Once every read the page's tree is built from has settled, the row the address names takes
+  // the stop, once per following of the address, only while the tree draws that row and only
+  // where the reader has not acted since they followed the address, as the Spec view's does
+  // (`SpecFilterBody`); a key the reader presses moves it on from there, Home to the issue's row
+  // included, as from any row, and a narrowing that takes the row out hands it back to the
+  // issue's row as above. With no address naming a row the stop is as it was.
   const [rovingId, setRovingId] = useState(view.id);
   if (rovingId !== view.id && !rows.includes(rovingId)) setRovingId(view.id);
+  // The address's row is the stop from the render that lands on it: the stage gives a focus that
+  // rests on nothing to the tab-stop row as that render is drawn (`slots/stage.tsx`), before the
+  // landing's frame, and a landing whose row lost the focus to another row by then leaves the
+  // focus there (`landOnRow`). So the stop is given in this render, as the line above hands it
+  // back, under the key the landing takes (the following and the row, `stopGiven`), and not
+  // again in that following. It is given only where the reader has not acted since the
+  // following, which this one render reads (`addressActs`): for a reader who acted the landing
+  // does nothing, but the stage still gives a focus they left on nothing - a turn of the wheel,
+  // or a key pressed on the page, before any row was drawn - to the tab-stop row as the rows
+  // come, where the address's row would take it off screen; the issue's row, at the view's top,
+  // takes it instead. An act draws nothing, so a stop that read it at every render would move
+  // at whatever render came next; it is read in this one alone. A key that moved the stop in
+  // this following is an act the body holds in its state too (`keyMovedIn`), the one a body
+  // drawn without the stage knows of: the row the reader moved to keeps the stop, as it keeps
+  // the focus, as the Spec view keeps the row the reader moved to first (`SpecFilterBody`'s
+  // `stop`).
+  const { acted, following } = useAddressActed(addressActs);
+  const addressRow =
+    readsSettled && reveal !== undefined && rows.includes(reveal) ? reveal : undefined;
+  const [stopGiven, setStopGiven] = useState<string | undefined>(undefined);
+  const [keyMovedIn, setKeyMovedIn] = useState<string | undefined>(undefined);
+  if (addressRow !== undefined && stopGiven !== `${following}:${addressRow}`) {
+    setStopGiven(`${following}:${addressRow}`);
+    if (keyMovedIn !== following && !acted) setRovingId(addressRow);
+  }
   const tabIndexFor = (id: string): 0 | -1 => (id === rovingId ? 0 : -1);
+  // The tree's own element, inside which the editing finds the row it edits by the row's key
+  // (`data-row-key`, which is the row's id in `rows`), and the landing the address's row.
+  const tree = useRef<HTMLDivElement>(null);
+  // An address that names a row puts the focus on it once every read the page's tree is built
+  // from has settled, as the Spec view's does (`useAddressLanding`).
+  useAddressLanding({ acts: addressActs, drawn: rows.join(" "), id: addressRow, tree });
   // Each drawn check's press, by its row's id in `rows`: true where the reader pressed its facts
   // open, false where they pressed them shut while the focus held them open, and no entry where
   // the focus alone decides. It is held here rather than in each check so `o` on a statement's
@@ -399,9 +463,6 @@ export function VerificationFilterBody({
     }
     return reached.length > 0;
   };
-  // The tree's own element, inside which the editing finds the row it edits by the row's key
-  // (`data-row-key`, which is the row's id in `rows`).
-  const tree = useRef<HTMLDivElement | null>(null);
   // What a key reported where it put no caret, and the row it was pressed on, read from the focus
   // as the Decisions view reads it (`DecisionsFilterBody`'s `reportHere`), which draws it at its
   // end until the focus moves to another row or leaves the view, as an outline's row draws one
@@ -481,6 +542,8 @@ export function VerificationFilterBody({
       // it is, still bring that row back on screen where the reader scrolled it off.
       const id = to.dataset.verificationRow;
       if (id !== undefined) setRovingId(id);
+      // In this following the address's row takes the stop no more (`keyMovedIn`).
+      if (id !== undefined) setKeyMovedIn(following);
       moveToRow(to);
       return;
     }

@@ -18,7 +18,14 @@ import {
   type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
-import { getIssue, getIssueCoverage, getIssueEvents, listComments, listIssueAsks } from "./api";
+import {
+  dashboardOrigin,
+  getIssue,
+  getIssueCoverage,
+  getIssueEvents,
+  listComments,
+  listIssueAsks,
+} from "./api";
 import { seedSpineCases, seedWholeIssue } from "./issue-layout-seed";
 import { gotoIssue, phase, presetCount, presetToggle, presetToggles } from "./issue-page";
 import { expectIssuePageDrawn } from "./issue-page-g";
@@ -43,7 +50,6 @@ import {
   convertedGate,
   type DecisionsRead,
   type DrawnNode,
-  decisionNodesGate,
   decisionsAreNodes,
   decisionsReadOf,
   decisionTimes,
@@ -52,6 +58,7 @@ import {
   type OutlineKind,
   outlineAnswerOf,
   owedUnless,
+  partUGate,
   R2_ROW_KINDS,
   seedEventsLanded,
   type TreeView,
@@ -118,9 +125,9 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests 
  * `@owed`: each runs for real once its gates are on the base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (`decisionNodesGate`); row 2's Decisions (`decisionsViewGate`); row 3's
- * Decisions (`decisionsViewGate`) and its decision lines (`partUGate`); row 4's Keep
- * (`decisionsViewGate` and `partUGate`). Each such row stands in its row's file.
+ * holds a decision (`partUGate`); row 2's Decisions (`decisionsViewGate`); row 3's Decisions
+ * (`decisionsViewGate` and `partUGate`) and its decision lines (`partUGate`); row 4's Keep
+ * (`decisionsViewGate` and `decisionNodesGate`). Each such row stands in its row's file.
  *
  * These helpers name the tree read's modules and its answer's types, so they are not in
  * `e2e/issue-page-t.ts`, which the recorder loads on a base without the tree read. They are not
@@ -129,7 +136,7 @@ import { type ApiRequest, type ApiRequests, expectLoadSettled, watchApiRequests 
  */
 
 /** The seeds whose rows the fixture records a decision row of: row 1's decision clauses read
- *  them (`decisionNodesGate`). */
+ *  them (`partUGate`). */
 export const DECISION_SEEDS = new Set(
   SEEDS.flatMap(([name]) =>
     fixtureSeed(name).rows.some((row) => row.kind.type === "decision") ? [name] : []
@@ -637,10 +644,10 @@ function answeredReviewState(node: IssueTreeNode, changed: boolean): string | nu
   return node.decision?.kept == null ? null : "kept";
 }
 
-/** Row 1's decision clauses, once the seeds' decisions are nodes (`decisionNodesGate`): each
- *  decision row's review state is the answer's, each Change stands under its decision's row, the
- *  section that restates a person's answer is no row, and the answered question's row carries a
- *  chip for each node its `shaped` ties name. */
+/** Row 1's decision clauses, once the page draws the decisions from the tree read's nodes
+ *  (`partUGate`): each decision row's review state is the answer's, each Change stands under its
+ *  decision's row, the section that restates a person's answer is no row, and the answered
+ *  question's row carries a chip for each node its `shaped` ties name. */
 function expectDecisionsFromNodes(outline: OutlineRead, recorded: SeedFixture): void {
   const { answer, rows } = outline;
   const idOf = treeIdOf(answer, outline.reads);
@@ -744,18 +751,18 @@ export async function expectSameRows(
   });
 }
 
-/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `decisionNodesGate`
- *  and asserted once it is met (`expectDecisionsFromNodes`). */
+/** Row 1's decision clauses on the seed `name`, which `seed` seeds, owed on `partUGate` and
+ *  asserted once it is met (`expectDecisionsFromNodes`). */
 export async function expectSameRowsDecisions(
   browser: Browser,
   name: string,
   seed: NamedSeed[1]
 ): Promise<void> {
+  owedUnless(partUGate);
   await phase(browser, seed, async (page, seeded) => {
     owedUnless(await treeReadGate(page, seeded.key));
     owedUnless(await convertedGate(page, seeded.key));
     const outline = await readOutline(page, seeded);
-    owedUnless(decisionNodesGate(outline.answer, outline.decisions));
     expectDecisionsFromNodes(outline, fixtureSeed(name));
   });
 }
@@ -895,6 +902,29 @@ export async function editNoticesSent(key: string, traffic: ApiRequests): Promis
     })
     .toEqual([]);
   await expectLoadSettled(traffic);
+}
+
+/**
+ * Imports every architecture source of issue `key`'s project now, through the signed-in page's
+ * own request context (`POST /api/v1/projects/{key}/architecture-sources/sync`), so that each
+ * holds what the server's own import pass would find, and that pass sends no event while a row
+ * counts what the page sends. The pass re-imports every enabled source about every 5 minutes,
+ * the first at a moment drawn within 5 minutes of the server's start (`SyncInterval` and
+ * `duty.RunJittered`, `packages/envoy/internal/dispatch/architecture/ticker.go`), and it sends an
+ * event only where the source's state changes: `architecture.synced` for a changed model,
+ * `architecture.sync_failed` for a new failure (`importer.go`'s `Sync`). A seed that imports its
+ * source with the App installed and then takes the App away (`seedWholeIssue`) leaves that
+ * failure for the next pass to find, and the page answers its `architecture.sync_failed` by
+ * reading the project's architecture and its sources again (`api/event-refresh.ts`): two requests
+ * in whatever window of the row the pass lands in. This import records the failure, so the pass
+ * finds the same one and sends nothing; the event this import sends is in the log before its
+ * answer, and lands before the load (`seedEventsLanded`).
+ */
+export async function architectureSettled(page: Page, key: string): Promise<void> {
+  const { project } = await getIssue(key);
+  const path = `/api/v1/projects/${encodeURIComponent(project)}/architecture-sources/sync`;
+  const response = await page.request.post(path, { headers: { Origin: dashboardOrigin } });
+  expect(response.ok(), `POST ${path} answers ${response.status()}`).toBe(true);
 }
 
 /** Turns `filter` on and waits for its rows to hold still. */

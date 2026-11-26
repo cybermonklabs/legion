@@ -1411,6 +1411,10 @@ const (
 // controllerOmp is the Oh My Pi executable of controllerTree's agent.
 const controllerOmp = "/opt/omp/bin/omp"
 
+// controllerSecrets is the agent-secrets executable of controllerTree's renewer and keygen, which
+// its shim names with --agent-secrets-bin.
+const controllerSecrets = "/usr/local/bin/agent-secrets"
+
 // controllerEndable are the processes of controllerTree the guard may end: Oh My Pi's JavaScript
 // eval kernel, its Python kernel and its shell command, an orphan under PID 1, a `kubectl exec`
 // shell, and each impostor.
@@ -1420,7 +1424,9 @@ var controllerEndable = []int{ctlEval, ctlKernel, ctlCommand, ctlCommandHelper, 
 // sizes gives it, none where it names none. The launcher is the test process, which stands for PID
 // 1 of the controller's container: the guard and the classifier know the launcher by their own
 // pid. Its pid guard may hold a jj, which runs a git (ctlHeld). Its generation is the shim, its own
-// child, which runs Oh My Pi, the secrets renewer and a keygen. Oh My Pi runs its daemon broker,
+// child, started by the argv the launcher gives it (reapingShim, so the shim reaps orphans and the
+// classifier reads its own children by shimOwnChildren's rule), which runs Oh My Pi, the secrets
+// renewer and a keygen. Oh My Pi runs its daemon broker,
 // which runs the LSP multiplexer, both of them helpers; its JavaScript eval kernel, the same
 // executable; a Python kernel; and a shell command, under which Oh My Pi's executable runs with a
 // helper's argument. Under PID 1 are an orphan a command left behind and a worker-shim of this
@@ -1436,10 +1442,10 @@ func controllerTree(t *testing.T, sizes map[int]uint64) *guardPod {
 	for _, gp := range []guardProcess{
 		{pid: ctlHeld, ppid: launcher, exe: "/usr/local/bin/jj", args: []string{"jj", "workspace", "update-stale"}},
 		{pid: ctlHeldChild, ppid: ctlHeld, exe: "/usr/bin/git", args: []string{"git", "gc", "--auto"}},
-		{pid: ctlShim, ppid: launcher, exe: exe, args: []string{"legion", shimArgument, "--connect", "tcp://daemon", "--", controllerOmp}},
+		{pid: ctlShim, ppid: launcher, exe: exe, args: reapingShim([]string{"legion", shimArgument, "--connect", "tcp://daemon", "--" + shimwire.AgentSecretsBinFlag, controllerSecrets, "--", controllerOmp})},
 		{pid: ctlOmp, ppid: ctlShim, exe: controllerOmp, args: []string{controllerOmp, "--mode", "rpc"}},
-		{pid: ctlRenewer, ppid: ctlShim, exe: "/usr/local/bin/agent-secrets", args: []string{"agent-secrets", "renew"}},
-		{pid: ctlKeygen, ppid: ctlShim, exe: "/usr/local/bin/agent-secrets", args: []string{"agent-secrets", "keygen"}},
+		{pid: ctlRenewer, ppid: ctlShim, exe: controllerSecrets, args: []string{"agent-secrets", shimwire.AgentSecretsRenew}},
+		{pid: ctlKeygen, ppid: ctlShim, exe: controllerSecrets, args: []string{"agent-secrets", shimwire.AgentSecretsKeygen}},
 		{pid: ctlBroker, ppid: ctlOmp, exe: controllerOmp, args: []string{controllerOmp, "__omp_worker_daemon_broker"}},
 		{pid: ctlMux, ppid: ctlBroker, exe: controllerOmp, args: []string{controllerOmp, "__omp_worker_lsp_mux"}},
 		{pid: ctlEval, ppid: ctlOmp, exe: controllerOmp, args: []string{controllerOmp, ompEvalKernel}},
