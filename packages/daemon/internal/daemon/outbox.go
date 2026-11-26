@@ -2134,7 +2134,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 // stays owed until the role holds its topic and the row's publish reaches it. The debt ends
 // undelivered on these events alone:
 //
-//  1. a pod release of the issue recorded after that stop (store.StoppedByAPause);
+//  1. a pod release of the issue recorded after that stop, or a release of it whose teardown gave
+//     up on its record after that stop (store.StoppedByAPause);
 //  2. a takeover suspension: the claim suspended by any source but the release, an operator's,
 //     the daemon's and a root's own exit among them;
 //  3. a failure;
@@ -4014,11 +4015,13 @@ func (r *outbox) issueSandboxName(issue string) string {
 // as the launch the pause owes that role, and the pause's resume runs its start. The task of that
 // start becomes the task of a wake of a role the pause stopped (workflow.PausedWakeTask), since the
 // release took no pod. While the project runs, the cancel drops that wake and its start instead,
-// and the role's resume carries what the role must still read of it (releaseResume). A role that
-// the release stopped and no cancel resumes keeps its wake's start: a role whose claim a close, a
-// linger or an operator took over, and a role whose stop the release's mark does not record. That
-// start's task becomes the task of the same wake in the words of a release that did not finish
-// (workflow.TakenOverWakeTask), paused or not.
+// and the role's resume carries what the role must still read of it (releaseResume). Two kinds of
+// role the release stopped keep their wake's start, whose task becomes the task of the same wake
+// in the words of a release that did not finish (workflow.TakenOverWakeTask), paused or not: a
+// role whose claim a close, a linger or an operator took over, which no cancel resumes, and a role
+// whose stop the release's mark does not record, which that start brings back. A role of that
+// second kind with no start queued, as where no wake of it was taken, is resumed, or recorded
+// stopped by the pause, as a role the mark records is (store.CancelIssueRelease).
 //
 // The hold the cancel records (store.RecordPodHoldTx) commits in the cancel's own transaction,
 // which CancelIssueRelease joins under its lifecycle serializer, so it is ordered with every other

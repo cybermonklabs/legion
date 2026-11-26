@@ -67,6 +67,8 @@ body: |-
   mark`, with the issue, the release and the error. The release records then hold no row of that
   release, and each wake taken while it stood still starts its role once, recorded against no
   release.
+  A role that a project's pause stopped before such a release is told the release's words at its
+  next wake, that its pod was released, as after a recorded release.
   While such a release has not finished, the issue's whole workflow waits: every start of its
   roles, and every notice, hook prompt, merge-queue removal message and merge-forward message to a
   released role. The docs say how an operator ends it when the cluster cannot be fixed. A delivery

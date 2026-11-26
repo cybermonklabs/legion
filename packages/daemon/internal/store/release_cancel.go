@@ -55,10 +55,12 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // whose wake it did not drop.
 //
 // It answers the roles it queued a resume for (ReleaseCancelled.Resumed): the claims this release
-// suspended that are still suspended as `released`. A claim another path took over — a close, a
-// linger, an operator — is left to that path, which is what the source on the suspension says;
-// one an earlier release left `released` is no business of this release, which is why the
-// mark's own set is read and never every released claim of the issue.
+// suspended that are still suspended as `released`, less a role whose stop the mark does not
+// record that a queued start already brings back (below). A claim another path took over — a
+// close, a linger, an operator — is left to that path, which is what the source on the suspension
+// says; one an earlier release left `released` is no business of this release, which is why the
+// mark's own set and this release's own stops are read and never every released claim of the
+// issue.
 //
 // A wake of a role this release recorded as `released` can come before the release ends, and the
 // release goes on then (releaseOvertaken). A cancel can still follow that wake, for another cause:
@@ -81,22 +83,26 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // back. A cancel made while the project is paused drops no wake of a released role; the paragraph
 // on the pause below says why.
 //
-// Two kinds of role that this release stopped are resumed by no cancel, and the cancel keeps the
-// start of their wake. Each such start says that the release took the pod, and the release took
-// none, so the cancel tells it in the words of a release that did not finish
-// (ReleaseCancelPause.TakenOverWakeTask, retellWakesOf), paused or not. The first is a role of the
-// mark's set whose claim a close, a linger or an operator took over after its wake: its start is
-// that path's (dropTakenOverWakes). The second is a role whose stop suspended its claim as
-// `released` and did not record it on the mark (unrecordedStops): the stop records the role in a
-// transaction of its own after the suspension (ReleaseSuspendedClaim), and that record can fail,
-// or the daemon can stop before it. A wake of such a role reads as a wake of a role outside the
-// set, which cancels the release (releaseOvertaken). No cancel resumes that claim, because the set
-// does not name it, so its wake's start is the role's one start, in the pod that stayed. While the
-// claim is still `released`, the cancel keeps that wake's resume and makes it pair with release 0,
-// since no release took the pod (pairUnrecordedWakesWithNoRelease). Where a close, a linger or an
-// operator took that claim over too, its start is that path's, as for a role of the set, and the
-// cancel deletes the wake's resume by the same rule (dropTakenOverWakes). A role this release did
-// not stop is not told again: one an earlier release left `released` and a wake brought back while
+// Two kinds of role that this release stopped keep the start of their wake. Each such start says
+// that the release took the pod, and the release took none, so the cancel tells it in the words of
+// a release that did not finish (ReleaseCancelPause.TakenOverWakeTask, retellWakesOf), paused or
+// not. The first is a role of the mark's set whose claim a close, a linger or an operator took
+// over after its wake: its start is that path's (dropTakenOverWakes), and no cancel resumes it.
+// The second is a role whose stop suspended its claim as `released` and did not record it on the
+// mark (unrecordedStops): the stop records the role in a transaction of its own after the
+// suspension (ReleaseSuspendedClaim), and that record can fail, or the daemon can stop before it.
+// A wake of such a role reads as a wake of a role outside the set, which cancels the release
+// (releaseOvertaken), and its start is the role's one start, in the pod that stayed: the cancel
+// queues no resume of a role whose start is queued for the issue's generation (startQueued, as a
+// wake reads it before it takes anything). A role of this kind with no start queued, as where no
+// wake of it was taken, is resumed as a role of the set is, or recorded stopped by the pause while
+// the project is paused (below): nothing else brings it back, since its stop's row, run again,
+// reads the release over, and a pod that stayed arms no backstop. While the claim is still
+// `released`, the cancel keeps that wake's resume and makes it pair with release 0, since no
+// release took the pod (pairUnrecordedWakesWithNoRelease). Where a close, a linger or an operator
+// took that claim over too, its start is that path's, as for a role of the set, and the cancel
+// deletes the wake's resume by the same rule (dropTakenOverWakes). A role this release did not
+// stop is not told again: one an earlier release left `released` and a wake brought back while
 // this release stood. That earlier release did take its pod, so the start's words that its pod was
 // released are true.
 //
@@ -244,18 +250,13 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 			return err
 		}
 		stillReleased := releasedRoleNames(roles)
-		var standing issueStanding
-		if len(roles) > 0 {
-			if standing, err = resumeStanding(ctx, tx, issue, outOfWorkflow); err != nil {
-				return err
-			}
-		}
-		// The roles this release stopped that no cancel resumes, whose wake's start is the role's
-		// one start: the roles whose stop the mark does not record, and the roles of the set that
-		// another path took over. paired are the roles whose stop the mark does not record and
-		// whose claim is still `released`. takenOver are the roles of either set whose claim is
-		// not suspended as `released`: another path took it over, or the role's stop has not run
-		// yet. The reads write nothing, so they come before the locks below.
+		// The roles this release stopped whose wake's start, where a wake of them was taken, is the
+		// role's one start: the roles whose stop the mark does not record, and the roles of the set
+		// that another path took over. paired are the roles whose stop the mark does not record and
+		// whose claim is still `released`; the cancel resumes one of them only where no start of it
+		// is queued (below). takenOver are the roles of either set whose claim is not suspended as
+		// `released`: another path took it over, or the role's stop has not run yet. The reads
+		// write nothing, so they come before the locks below.
 		unrecorded, err := unrecordedStops(ctx, tx, issue, first, last, suspended)
 		if err != nil {
 			return err
@@ -271,6 +272,12 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 				takenOver = append(takenOver, role)
 			}
 		}
+		var standing issueStanding
+		if len(roles) > 0 || len(unrecordedReleased) > 0 {
+			if standing, err = resumeStanding(ctx, tx, issue, outOfWorkflow); err != nil {
+				return err
+			}
+		}
 		var held Pause
 		var open bool
 		if len(suspended) > 0 || len(unrecorded) > 0 {
@@ -281,6 +288,19 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 			}
 			if held, open, err = LockOpenPauseByTokenTx(ctx, tx, project); err != nil {
 				return err
+			}
+		}
+		// A paired role with a start queued for the issue's generation, its wake's, keeps that
+		// start as its one start. One with none, as where no wake of it was taken, joins roles: the
+		// cancel resumes it, or records it stopped by the pause while the project is paused, as it
+		// does a role of the set.
+		for _, r := range unrecordedReleased {
+			queued, err := startQueued(ctx, tx, issue, r.role, standing.generation)
+			if err != nil {
+				return err
+			}
+			if !queued {
+				roles = append(roles, r)
 			}
 		}
 		// Each of those roles is told in the words of a release that did not finish. The retell
@@ -612,13 +632,13 @@ func dropTakenOverWakes(ctx context.Context, tx pgx.Tx, project, issue string, t
 // its resume names the newest release recorded before the wake (LatestPodRelease). This release
 // took no pod, so the wake is no release's return. Left as it is, the records would count a pod
 // return for a release that did not take that pod. Unlike dropTakenOverWakes, this keeps the
-// resume. No cancel resumes such a claim, so the wake's start is the role's one start, and that
-// start resumes the claim in the pod that stayed. The stuck warning and the role's first turn
-// read the resume. Its kind, its times and its seen release stay. A resume of release 0 that no
-// pause holds is the resume of no release, as the first wake of an issue that no release took is,
-// and the stranded report leaves it out (UnfinishedPodResumesTx). A held wake already pairs with
-// release 0, and this leaves it as it is. A cancel calls this whether the project runs or is
-// paused (CancelIssueRelease).
+// resume. The cancel queues no resume of such a claim while the wake's start is queued
+// (CancelIssueRelease), so that start is the role's one start, and it resumes the claim in the pod
+// that stayed. The stuck warning and the role's first turn read the resume. Its kind, its times
+// and its seen release stay. A resume of release 0 that no pause holds is the resume of no
+// release, as the first wake of an issue that no release took is, and the stranded report leaves
+// it out (UnfinishedPodResumesTx). A held wake already pairs with release 0, and this leaves it as
+// it is. A cancel calls this whether the project runs or is paused (CancelIssueRelease).
 //
 // A role whose stop the mark does not record and whose claim a close, a linger or an operator
 // took over is not one of paired. Its wake's start finishes without acting, or waits for an

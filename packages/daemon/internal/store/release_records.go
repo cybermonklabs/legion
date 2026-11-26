@@ -285,16 +285,22 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 // (clock_at) move to at where they were earlier, as the record moves them, because the pod starts
 // to come back at the release's end. A held wake keeps its pause. The same transaction retells the
 // start of each such wake in the release's words (retellWakesUnderRelease, wakeTask), since the
-// pod is gone, ends every running hold streak of the pod, as the record does, and then deletes the
-// mark (deleteIssueRelease). With no mark, or no such resume, it changes no resume.
+// pod is gone, ends every running hold streak of the pod, as the record does, records that the
+// teardown gave up on the record of the mark at at (recordReleaseGiveUp, pod_release_give_ups),
+// and then deletes the mark (deleteIssueRelease). With no mark, or no such resume, it changes no
+// resume, and with no mark it records no give-up.
 //
-// The settle and the clear of the mark are one transaction, so no wake is taken between them. A
-// take locks the mark first (lockReleaseMark; PodRecords.TakePodWake). A take that committed
-// before this locked the mark is a wake taken under the mark, and this settles it. A take that
-// comes while this runs waits for its commit and then finds no mark: it pairs with the newest
-// release recorded (LatestPodRelease), as every wake after a release's end does. With the clear in
-// a later transaction, a wake taken between the two would pair with the release before this one,
-// which did not take this pod, and its start would not be told in this release's words.
+// The settle, the retell, the give-up's row and the delete of the mark are one transaction, under
+// the mark's lock, so each wake of the issue is taken either before it or after it. A take locks
+// the mark first (lockReleaseMark; PodRecords.TakePodWake). A take that committed before this
+// locked the mark is a wake taken under the mark: this settles its resume and retells its start in
+// the release's words. A take that comes while this runs waits for its commit and then finds no
+// mark: it pairs with the newest release recorded (LatestPodRelease), as every wake after a
+// release's end does, and the read of what stopped its role (StoppingPauseTx) takes the give-up's
+// row as the end of this release, as it takes a recorded release's time. So a wake of a role that
+// a pause stopped before this release is told the release's words whether it is taken before this
+// transaction or after it, and a wake of a role no pause stopped is told them because this release
+// stopped it.
 //
 // The transaction takes RecordPodRelease's lock order: the issue's release mark `for update`,
 // then, before it writes anything, the project's open pause row `for share`
@@ -352,12 +358,29 @@ func (s *Store) SettleUnrecordedRelease(ctx context.Context, project, issue stri
 		if err := endPodHoldStreaks(ctx, tx, project, issue, ""); err != nil {
 			return err
 		}
+		if err := recordReleaseGiveUp(ctx, tx, project, issue, at); err != nil {
+			return err
+		}
 		return deleteIssueRelease(ctx, tx, project, issue)
 	})
 	if err != nil {
 		return false, fmt.Errorf("settle the wakes of the unrecorded release of %s: %w", issue, err)
 	}
 	return recorded, nil
+}
+
+// recordReleaseGiveUp records, through tx, that the teardown of issue's release gave up on its
+// record at at (pod_release_give_ups): one row for the mark that stands, which the caller holds
+// `for update` and deletes after this in the same transaction (SettleUnrecordedRelease), and none
+// where no mark stands. at is the moment that release ended. The two reads of a pause's stop
+// compare the stop's end against it as against a recorded release's time (podReleaseEnded), and
+// no other read counts the row as a release.
+func recordReleaseGiveUp(ctx context.Context, tx pgx.Tx, project, issue string, at time.Time) error {
+	if _, err := tx.Exec(ctx, `insert into pod_release_give_ups (project, issue, issue_release_id, at)
+		select project, issue, id, $3 from issue_releases where project = $1 and issue = $2`, project, issue, at); err != nil {
+		return fmt.Errorf("record the give-up of the release of %s: %w", issue, err)
+	}
+	return nil
 }
 
 // retellWakesUnderRelease rewrites the task of each start that a wake taken under the release's

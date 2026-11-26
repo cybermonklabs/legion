@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -506,6 +508,113 @@ func TestATeardownWhoseRecordFailsEveryTimeGivesUpAtTheBound(t *testing.T) {
 					closed, taken, later)
 			}
 		})
+	}
+}
+
+// The reviewer's round 5 on cybermonklabs/legion#4194, medium, through the daemon's teardown and
+// the workflow's backstop. A project's pause stops the implementer after the release's workspace
+// check and before the release's stop of it: the pause's stop ends `stopped`, and the operator
+// resumes the project. The release's stop then suspends the implementer as `released` and records
+// it on the mark. Every record of the release fails (refusePodReleaseRecords), an attempt a minute
+// before the bound among them, and the attempt at the bound gives up on the record
+// (outbox.settleGivenUp), which arms the open phase's backstop. When that backstop comes due, the
+// workflow wakes the implementer (fireDueBackstops, workflow's podBackstopDue and wakeReleased):
+// the release took the pod, so the wake's start carries the backstop's text in the release's
+// words (workflow.WakeTask, StoppedByRelease), and the wake is no held wake of the pause.
+//
+// The negative control is the settle without its record of the give-up
+// (store.recordReleaseGiveUp): the wake reads the pause as what stopped the role last
+// (store.StoppingPauseTx), and its start carries the pause's words, held by that pause.
+func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *testing.T) {
+	t.Parallel()
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.runner.backstop = time.Hour
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	// The workspace check runs first, alone: the release's stop and its teardown wait.
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1
+		and (kind = 'issue_release' or (kind = 'supervise' and payload->>'op' = 'release'))`, rig.issue.Key); err != nil {
+		t.Fatalf("hold the release's stop and teardown back: %v", err)
+	}
+	rig.drain(t)
+	if got := rig.machine.Claim(); got.State != supervise.StateIdle || !rig.marked(t) {
+		t.Fatalf("after the check the claim = %s and the mark stands = %t; want the implementer idle under the release's mark",
+			got.State, rig.marked(t))
+	}
+	pausedAt := time.Now().UTC()
+	pause := openLegionPause(t, rig.pool, pausedAt)
+	if _, err := rig.pool.Exec(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
+		values ($1, 'LEGION', $2, $3, 'implementer', $4, $4, $5)`, pause, string(rig.token), rig.issue.Key, pausedAt,
+		string(store.PauseStopStopped)); err != nil {
+		t.Fatalf("record the pause's stop of the implementer: %v", err)
+	}
+	endLegionPause(t, rig.pool, pause, pausedAt.Add(time.Second))
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() where issue = $1 and kind = 'supervise' and payload->>'op' = 'release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("let the release's stop run: %v", err)
+	}
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+		t.Fatalf("after the stop the claim = %s by %s and the mark stands = %t; want it released under the release's mark",
+			got.State, got.SuspendedBy, rig.marked(t))
+	}
+
+	refusePodReleaseRecords(t, rig.pool)
+	var markedAt time.Time
+	if err := rig.pool.QueryRow(ctx, `select marked_at from issue_releases where issue = $1`, rig.issue.Key).Scan(&markedAt); err != nil {
+		t.Fatalf("read the release's mark: %v", err)
+	}
+	for _, after := range []time.Duration{workflow.WakeHeldForRelease - time.Minute, workflow.WakeHeldForRelease} {
+		rig.runner.now = func() time.Time { return markedAt.Add(after) }
+		teardownDueAgain(t, rig, false)
+		if err := rig.runner.RunOnce(ctx); err != nil {
+			t.Fatalf("run the teardown %s after the mark: %v", after, err)
+		}
+	}
+	if records := rig.records(t); rig.marked(t) || len(records.Releases) != 0 {
+		t.Fatalf("after the attempt at the bound the mark stands = %t and the releases = %+v; want the teardown given up, with no release recorded",
+			rig.marked(t), records.Releases)
+	}
+
+	// The backstop the teardown armed comes due, and the daemon's pass applies it to the
+	// workflow's engine, handed the store's pod tables as the daemon's is.
+	tables, err := rig.st.PodRecordsOf("legion")
+	if err != nil {
+		t.Fatalf("read the pod tables: %v", err)
+	}
+	rig.w.handlers = []intake.Handler{workflow.New(rig.issues, workflow.Config{Project: "LEGION", Repositories: testRepositories,
+		Pods: tables}, quietLogger())}
+	rig.w.fireDueBackstops(ctx, markedAt.Add(workflow.WakeHeldForRelease+rig.runner.backstop))
+	var fired int
+	if err := rig.pool.QueryRow(ctx, `select count(*) from pod_wake_backstops where issue = $1 and role = 'implementer' and fired`,
+		rig.issue.Key).Scan(&fired); err != nil || fired != 1 {
+		t.Fatalf("the implementer's fired backstops = %d (%v), want the one the teardown armed", fired, err)
+	}
+	rows, err := rig.pool.Query(ctx, `select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`,
+		rig.issue.Key)
+	if err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	var starts []record.SuperviseRequest
+	for rows.Next() {
+		var payload []byte
+		var start record.SuperviseRequest
+		if err := rows.Scan(&payload); err != nil || json.Unmarshal(payload, &start) != nil {
+			t.Fatalf("read a queued start: %v", err)
+		}
+		starts = append(starts, start)
+	}
+	rows.Close()
+	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].WakeKind != pods.WakeBackstop {
+		t.Fatalf("queued starts = %+v, want the backstop's one start of the implementer", starts)
+	}
+	start := starts[0]
+	if want := workflow.WakeTask(start.WakeKind, start.WakeDetail, workflow.StoppedByRelease); start.Task != want || start.Pause != 0 {
+		t.Fatalf("the backstop's start = task %q held by pause %d; want the task %q and no pause: the release took the pod after the pause's stop (the pause's words are %q)",
+			start.Task, start.Pause, want, workflow.WakeTask(start.WakeKind, start.WakeDetail, workflow.StoppedByPause))
+	}
+	if _, held, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || !open || held != 0 {
+		t.Fatalf("the implementer's open resume = pause %d, open %t, %v; want the backstop's wake, held by no pause", held, open, err)
 	}
 }
 

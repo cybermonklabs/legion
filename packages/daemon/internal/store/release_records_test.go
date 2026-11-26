@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // holdRows is every hold of the pod, oldest first, with whether its streak is still running.
@@ -289,5 +291,111 @@ func TestAnUnrecordedReleaseSettlesTheWakeUnderItsMarkUnlessARecordNamesIt(t *te
 				}
 			}
 		})
+	}
+}
+
+// The reviewer's round 5 on cybermonklabs/legion#4194, medium. A project's pause stops the
+// implementer after the release's workspace check, and the release's stop then suspends it as
+// `released` and records it on the mark. Every record of the release fails, and the teardown gives
+// up on it (SettleUnrecordedRelease), which writes no pod release. That release took the pod all
+// the same, so the moment it gave up ends what the pause's stop says of the role, as a recorded
+// release's time does: before the settle the stop is the pause's, for a wake's words and the pause
+// that holds it (StoppingPauseTx) and for the held role message's debt (StoppedByAPause), and after
+// it neither read answers a pause. The settle records the give-up of its mark once, at its moment,
+// and the newest release a wake pairs with is still the one before it (LatestPodRelease). The
+// control is a later stop: the role comes back, and a second pause stops it after the give-up, so
+// both reads answer the second pause.
+//
+// The negative control is the settle without its record of the give-up (recordReleaseGiveUp):
+// both reads still answer the first pause after the settle.
+func TestAReleaseThatGaveUpOnItsRecordEndsThePausesStopBeforeIt(t *testing.T) {
+	t.Parallel()
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	earlier, _, err := st.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		Roles: []string{string(claim.RoleImplementer)}, At: at.Add(-2 * time.Hour)})
+	if err != nil {
+		t.Fatalf("record the earlier release: %v", err)
+	}
+	pauseOf := func(began, ended time.Time) int64 {
+		t.Helper()
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into project_pauses (project, began_at, by_kind, reason, ended_at, ended_by_kind, ended_by_session)
+			values ('LEGION', $1, 'operator', 'a pause of the test', $2, 'operator', '') returning id`, began, ended).Scan(&id); err != nil {
+			t.Fatalf("record a pause: %v", err)
+		}
+		return id
+	}
+	stop := func(pause int64, ended time.Time) {
+		t.Helper()
+		if _, err := st.Pool().Exec(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
+			values ($1, 'LEGION', $2, $3, 'implementer', $4, $4, $5)`, pause, string(releasedToken), rootIssue, ended, string(PauseStopStopped)); err != nil {
+			t.Fatalf("record pause %d's stop of the implementer: %v", pause, err)
+		}
+	}
+	// reads are what the two reads of a pause's stop answer for the implementer, and the newest
+	// release a wake of it pairs with.
+	reads := func() (stopping, owed, latest int64) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) error {
+			var err error
+			if stopping, err = StoppingPauseTx(ctx, tx, "legion", rootIssue, releasedToken); err != nil {
+				return err
+			}
+			latest, err = LatestPodRelease(ctx, tx, "legion", rootIssue)
+			return err
+		})
+		owed, err := st.StoppedByAPause(ctx, "legion", rootIssue, releasedToken)
+		if err != nil {
+			t.Fatalf("read the pause the held role message's debt names: %v", err)
+		}
+		return stopping, owed, latest
+	}
+
+	first := pauseOf(at.Add(-30*time.Minute), at.Add(-20*time.Minute))
+	stop(first, at.Add(-25*time.Minute))
+	boundary, _, _ := releaseTwoRolesThroughTheStore(t, st)
+	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+	var mark int64
+	if err := st.Pool().QueryRow(ctx, `select id from issue_releases where issue = $1`, rootIssue).Scan(&mark); err != nil {
+		t.Fatalf("read the release's mark: %v", err)
+	}
+	if stopping, owed, _ := reads(); stopping != first || owed != first {
+		t.Fatalf("before the give-up StoppingPauseTx = %d and StoppedByAPause = %d, want pause %d for both: the case's premise",
+			stopping, owed, first)
+	}
+
+	if recorded, err := st.SettleUnrecordedRelease(ctx, "legion", rootIssue, 0, at, nil); err != nil || recorded {
+		t.Fatalf("SettleUnrecordedRelease = recorded %t, %v; want the give-up settled", recorded, err)
+	}
+	if stopping, owed, latest := reads(); stopping != 0 || owed != 0 || latest != earlier {
+		t.Errorf("after the give-up StoppingPauseTx = %d, StoppedByAPause = %d and LatestPodRelease = %d; want no pause for either and the earlier release %d: the release that gave up took the pod and recorded no release",
+			stopping, owed, latest, earlier)
+	}
+	var gaveUp []string
+	rows, err := st.Pool().Query(ctx, `select issue_release_id::text || ' at ' || to_char(at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US')
+		from pod_release_give_ups where project = 'legion' and issue = $1 order by id`, rootIssue)
+	if err != nil {
+		t.Fatalf("read the give-ups of the release: %v", err)
+	}
+	if gaveUp, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatalf("read the give-ups of the release: %v", err)
+	}
+	if want := fmt.Sprintf("%d at %s", mark, at.Format("2006-01-02T15:04:05.000000")); len(gaveUp) != 1 || gaveUp[0] != want {
+		t.Errorf("the give-ups of the release = %q, want one, %q: the mark the settle cleared, at its moment", gaveUp, want)
+	}
+
+	if _, err := st.Pool().Exec(ctx, `update claims set last_ready = $2 where token = $1`, string(releasedToken), at.Add(10*time.Minute)); err != nil {
+		t.Fatalf("bring the implementer back: %v", err)
+	}
+	second := pauseOf(at.Add(20*time.Minute), at.Add(40*time.Minute))
+	stop(second, at.Add(30*time.Minute))
+	if stopping, owed, _ := reads(); stopping != second || owed != second {
+		t.Errorf("control: after a second pause stopped the role again, StoppingPauseTx = %d and StoppedByAPause = %d, want pause %d for both",
+			stopping, owed, second)
 	}
 }

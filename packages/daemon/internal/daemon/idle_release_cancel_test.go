@@ -130,11 +130,11 @@ func (r *idleRig) wakePairs(t *testing.T, role claim.Role) []wakePair {
 // pod was released. The stop's retry reads that wake as a wake of a role outside the mark's set,
 // so the release is overtaken and cancelled. The pod never went away, so the start must say that
 // the release did not finish, with no word of a pod that went away. No cancel resumes a claim its
-// mark does not name, so that start is the implementer's one start, and it brings the role back
-// in the same pod. An earlier release of the pod is recorded, so the wake's resume names that
-// release. This release took no pod, so the cancel keeps the resume and makes it name release 0.
-// Before the cancel, the test reads the start's words of a released pod and the resume's earlier
-// release, so each check after the cancel can fail.
+// mark does not name while a start of it is queued, so that start is the implementer's one start,
+// and it brings the role back in the same pod. An earlier release of the pod is recorded, so the
+// wake's resume names that release. This release took no pod, so the cancel keeps the resume and
+// makes it name release 0. Before the cancel, the test reads the start's words of a released pod
+// and the resume's earlier release, so each check after the cancel can fail.
 //
 // The second row is the control. An earlier release left the architect `released`, and this
 // release did not stop it: its claim is no claim this release suspended, and its resume is no
