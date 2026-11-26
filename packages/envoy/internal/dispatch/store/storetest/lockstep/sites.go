@@ -42,6 +42,7 @@ var storeWriteCallSites = map[string]string{
 	// version states it right after its event (appendEvents, above).
 	"api/artifacts.go#commitArtifactVersionEvent":   "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/artifacts.go#storeArtifact":                "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	"api/artifacts.go#queueNewArtifact":             "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"api/issue_create.go#createIssue":               "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
@@ -63,7 +64,8 @@ var storeWriteCallSites = map[string]string{
 	// event the settlement appends: its lock steps are driven with the document service's other
 	// store writers, since api's TestEveryObjectNodeWriterTakesTheStoreLockOrder comes with the
 	// object-node writers below.
-	"docs/ask_blocks.go#createAskBlock": "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
+	"docs/ask_blocks.go#createAskBlock": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
+	"api/reviews.go#openApprovalAsk":    "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The object nodes a request's own write states - a document's (queueNewArtifact) and its removal's
 	// (removeArtifact), an approval request's (openApprovalAsk), a message's
 	// (createStoredMessage), a session's reply's (insertSessionReply) and a broadcast copy's
@@ -71,6 +73,11 @@ var storeWriteCallSites = map[string]string{
 	// documents, the ask block and the approval request, S4 for the messages. Each of them is
 	// driven through the order the object nodes share (QueueNodes, then QueueCaused) by api's
 	// TestEveryObjectNodeWriterTakesTheStoreLockOrder, which comes with them.
+	// The removal of an untouched document states its node gone, before its row goes, caused by
+	// the artifact.removed event it appends after the row (Write of the node the document's
+	// create would have written, for a document an earlier build made with none, then
+	// QueueNodes, then the event and the gone statement in one batch, appendCausingEvent).
+	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
