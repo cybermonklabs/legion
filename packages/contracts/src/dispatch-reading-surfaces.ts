@@ -120,6 +120,7 @@ export type DispatchReadingSurface =
   | "plan-task-line"
   | "lens-fact-line"
   | "lens-chain-line"
+  | "lens-chip"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -711,6 +712,22 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "lens-chain-line",
+  },
+  // A chip of those lines and of the chain: a lens, a check or a constraint a lens line names, a
+  // node a fact line names, and the lens a chain stopped at.
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/lenses/NodeLink.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/lenses/LensChain.test.tsx",
+      test: "a lens line's chip reads a dispatch:// reference the page published by its target's name",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, a lens's Triggered by and Triggered chips, a risk's Prevented by chips, a statement's Constrained by chips, a fact line's chip, and the chip a lens's chain ends on",
+    reason: `A chip names a lens, a check or a constraint on one line by its whole words - a lens by its kind's words, a check and a constraint by the words of its row, each store address in them as its kind's word - and a fact line's chip names a node by the words the line names it by, as a link to the node's row where a view draws it. The page's word for a kind is drawn as it is. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "lens-chip",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
