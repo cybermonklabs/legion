@@ -1,0 +1,20 @@
+# proxy-call-line-names-no-way: the call line of a call to a bound host names no way, so a reader
+# of the log cannot tell a swapped value from a minted token, a signature, an exchange or a DPoP
+# proof.
+# must fail: TestTheCallLineNamesTheWay
+# must fail: TestTheAnthropicKindCarriesTheAdminAPIAlone
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -990,9 +990,7 @@
+ 	}
+ 	// The way the name's credential went in, or would have: swap, mint, sign, exchange or dpop.
+ 	// A line of no name (a refusal before one was chosen) names none.
+-	if c.chosen.way != "" {
+-		fields = append(fields, "way", c.chosen.way)
+-	}
++	// MUTANT: the call line names no way, as before the bindings carried one.
+ 	if reason != "" {
+ 		fields = append(fields, "reason", reason)
+ 	}
