@@ -108,12 +108,9 @@ type Delivery struct {
 	// told and nothing else; the records' own ToldBy names the delivery, which every take of the
 	// task shares, and cannot say which take told them.
 	TakeTold Sentences
-	// CheckLook is the look of a closed issue's production check this task is of, from the start
-	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
-	// turn's completion is a check report rather than a phase completion: the API routes on the
-	// look the claim's worker took (Claim.ServingCheck), and the report is of that look rather
-	// than of whichever look the check has reached (api/handoff.go, checkReport). The zero value
-	// is a task of no look: every phase task, an operator's own, a resume.
+	// CheckLook is the look and check instance this task gives the worker. ServingCheck uses it
+	// to attribute an explicitly named check report to the look the worker took, not to choose
+	// between a report and a phase completion. Phase tasks, operator tasks and resumes carry zero.
 	CheckLook CheckLook
 	Phase     phase.Phase
 	QueuedAt  time.Time

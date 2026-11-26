@@ -9,11 +9,12 @@
 // also refuses what a pod could not run with: the `runtime.kubernetes` block's own values, and the
 // keys outside it every pod needs.
 //
-// Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
+// Load reads the file and nothing it names: a path key (`instructions`, `private_name_rules_file`,
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
-// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
+// ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the
+// private-name rule file (internal/daemon's launchSecrets), and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
 // then reads them as boot does (daemon.CheckStart). The daemon reads an instructions file again
 // at each launch, so an edit of one needs no restart.
@@ -110,6 +111,16 @@ type Config struct {
 	// InstructionsPath is the operator's deployment instructions, "" when none; boot copies it to
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
+	// PrivateNameRulesFile is the deployment's private-name rule file, a gitleaks rule file the
+	// daemon reads and compiles at boot and hands every launch as the launch secret
+	// leakguard.RulesSecret, so that every role's leak guard runs it (internal/daemon's readBoot
+	// and launchSecrets): `private_name_rules_file`, resolved against the file's directory, else
+	// LEGION_PRIVATE_NAME_RULES_FILE (leakguard.RulesFileVar) in the daemon's environment, as
+	// written. "" names none, and every role's guard then runs no private-name rule.
+	// PrivateNameRulesNamedBy is which of the two named it, as the operator wrote it, so that a
+	// refusal of the file names the setting the operator has to change; "" when none is named.
+	PrivateNameRulesFile    string
+	PrivateNameRulesNamedBy string
 	// WorkerStreamPort is the worker stream listener's TCP port under a runtime that dials it by
 	// TCP; Port + 1 unless the file names another.
 	WorkerStreamPort int
@@ -460,6 +471,7 @@ type fileConfig struct {
 	// key: 0 is a value an operator may set, and the count reader refuses it.
 	WorkerWakesPerMinute *int
 	OperatorTokenFile    *string
+	PrivateNameRulesFile *string
 	EnvoyURL             *string
 	NatsURLs             []string
 	EnvoyTokenFile       *string
@@ -1131,6 +1143,19 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	}
 	if strings.TrimSpace(cfg.PostgresDSN) == "" {
 		return Config{}, errors.New("postgres_dsn is required (or set LEGION_POSTGRES_DSN)")
+	}
+
+	// The deployment's private-name rule file: the variable first and the file's key over it, as
+	// postgres_dsn is read. A variable set to the empty string names none, as a role's guard reads
+	// the same variable (leakguard.Guard.rules); a key set to it is refused by its reader, as every
+	// other path key's is. The variable is a setting of its own and not a fallback the key retires:
+	// a daemon of an earlier release refuses the key, so a deployment that may roll back names the
+	// file there.
+	if named := env(leakguard.RulesFileVar); named != "" {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = named, leakguard.RulesFileVar
+	}
+	if file.PrivateNameRulesFile != nil {
+		cfg.PrivateNameRulesFile, cfg.PrivateNameRulesNamedBy = underConfig(*file.PrivateNameRulesFile, configDir), "private_name_rules_file"
 	}
 
 	if file.Port != nil {

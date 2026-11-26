@@ -8,15 +8,16 @@ import (
 )
 
 // The run, the phase entry and the production check look a claim's worker is on, which is what a
-// completion is attributed to and what says whether it is a phase completion or a report on the
-// check. The order matters in all three: a task a take holds answers over what the claim was left
-// serving, and a task the worker took and had taken back answers only for a claim that has served
-// none — a worker holding a taken-back next task while still finishing the last one's work
-// reports the last one's, which is the sequence the fencing exists for. The three accessors read
-// the same three sources the same way, so one table holds them all; where they part is a task
-// that carries a run but no entry — a resume, a production check's look — which moves the run on
-// and leaves the entry the claim serves alone, and a task of a phase, which is no look's and takes
-// the look back: its worker is in the workflow again, where its completion is its phase's.
+// completion is attributed to; the completion's own checkOpenedAt, not this, says whether it is a
+// phase completion or a report on the check. The order matters in all three: a task a take holds
+// answers over what the claim was left serving, and a task the worker took and had taken back
+// answers only for a claim that has served none — a worker holding a taken-back next task while
+// still finishing the last one's work reports the last one's, which is the sequence the fencing
+// exists for. The three accessors read the same three sources the same way, so one table holds
+// them all; where they part is a task that carries a run but no entry — a resume, a production
+// check's look — which moves the run on and leaves the entry the claim serves alone, and a task of
+// a phase, which carries no look and leaves the finished look on the claim until another look
+// replaces it.
 //
 // The look parts from the other two once more, in what "a claim that has served none" means for
 // it: the look of a taken-back task is taken only by a claim that has served nothing at all,
@@ -119,10 +120,10 @@ func TestTheRunAClaimServes(t *testing.T) {
 			serving: 5, entry: 4, look: look,
 		},
 		{
-			name: "a phase task on a claim left serving a look: the look goes with the phase work",
+			name: "a phase task on a claim left serving a look: the finished look stays on the claim",
 			claim: Claim{ServingGeneration: 5, ServedEntry: 4, ServingCheckLook: look, TaskTaken: 2, Pending: &Delivery{
 				Number: 2, Generation: 6, Entry: 6, Phase: phase.Testing, ConfirmedAt: at}},
-			serving: 6, entry: 6,
+			serving: 6, entry: 6, look: look,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

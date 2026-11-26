@@ -38,11 +38,11 @@ func TestAProductionCheckFollowsAPlan(t *testing.T) {
 		r.walkSteps([]string{"implementer", "tester"})
 		tester := r.worker(claim.RoleTester)
 		session := tester.session
-		r.lookOpens(tester)
+		opened := r.lookOpens(tester)
 		if got := r.d.claim(tester.token).Session; got != session {
 			t.Fatalf("%s's tester holds the session %q at the check's look, want %q, the one that tested the task", r.key, got, session)
 		}
-		r.reportLook(tester)
+		r.reportLook(tester, opened)
 
 		r.on(r.issues[1].key)
 		r.givePlan("implementer")
@@ -52,8 +52,7 @@ func TestAProductionCheckFollowsAPlan(t *testing.T) {
 		if launches := r.launchesOfRole(claim.RoleTester); len(launches) != 1 || launches[0] != "Spawn" || lastLaunch(t, r.rt, fresh.token).ResumeSessionFile != "" {
 			t.Fatalf("%s's tester was launched %v, want one Spawn that resumes no session: no tester ran on the plan implementer, so the check opens on a fresh session", r.key, launches)
 		}
-		r.lookOpens(fresh)
-		r.reportLook(fresh)
+		r.reportLook(fresh, r.lookOpens(fresh))
 	})
 
 	t.Run("control: production_check off opens none", func(t *testing.T) {
@@ -84,7 +83,7 @@ func (r *ownerStepsRig) checkOpened() bool {
 // look, which its turn then takes up. A launch of c's claim after the one its pane came up in is the
 // look's start resuming the claim, which the close had suspended: that launch must resume c's own
 // session, and its pane comes up in it (reattach) before its plugin takes the look.
-func (r *ownerStepsRig) lookOpens(c *stepClaimant) {
+func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	t := r.t
 	t.Helper()
 	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the merge to open "+r.key+"'s production check", r.checkOpened)
@@ -119,6 +118,19 @@ func (r *ownerStepsRig) lookOpens(c *stepClaimant) {
 	c.answer()
 	c.driver.mustStartTurn(t)
 	c.waitState(supervise.StateWorking)
+	_, value, ok := strings.Cut(taken.Text, "check_opened_at `")
+	if !ok {
+		t.Fatalf("the production check task gives no check identity: %s", taken.Text)
+	}
+	value, _, ok = strings.Cut(value, "`")
+	if !ok {
+		t.Fatal("the production check task gives no closing delimiter for its check identity")
+	}
+	opened, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatalf("the task's check identity is not an RFC3339 instant: %v", err)
+	}
+	return opened
 }
 
 // reattach is c's pane coming up in its claim's latest launch, which must resume c's own session:
@@ -170,10 +182,10 @@ func (r *ownerStepsRig) reattach(c *stepClaimant) {
 
 // reportLook is c's report of pass on the look its turn took up, which ends the check, and the wait
 // for the check to end with the issue still done.
-func (r *ownerStepsRig) reportLook(c *stepClaimant) {
+func (r *ownerStepsRig) reportLook(c *stepClaimant, opened time.Time) {
 	t := r.t
 	t.Helper()
-	if status, body := r.complete(c, api.HandoffCompleteRequest{Summary: "production holds every requirement", Verdict: "pass"}); status != http.StatusOK {
+	if status, body := r.complete(c, api.HandoffCompleteRequest{Summary: "production holds every requirement", Verdict: "pass", CheckOpenedAt: &opened}); status != http.StatusOK {
 		t.Fatalf("the tester's report on %s's look = %d %s, want 200", r.key, status, body)
 	}
 	c.endTurn()

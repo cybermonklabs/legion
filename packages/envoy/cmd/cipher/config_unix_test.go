@@ -23,6 +23,7 @@ import (
 // 30 s before the test binary's deadline, and a case run after it would begin with no time left
 // and be blamed for that hang.
 func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at config_unix_test.go:37); it sets a package variable the package's other tests read (clientConfig set at config_unix_test.go:38).
 	for _, tc := range []struct {
 		name   string
 		create func(path string) error

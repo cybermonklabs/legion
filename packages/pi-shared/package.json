@@ -159,7 +159,7 @@
     }
   },
   "scripts": {
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ test/"
   },

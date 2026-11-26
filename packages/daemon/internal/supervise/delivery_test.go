@@ -107,11 +107,9 @@ func TestARetiredTasksEntryStaysOnTheClaimAndAResumeLeavesIt(t *testing.T) {
 	}
 }
 
-// The production check look a finished task's retire leaves on the claim, durably, beside the
-// run and the entry: the checking agent goes on working that look in whatever turn comes
-// next, and the completion it reports there is still a report on that look (api/handoff.go). A
-// task of a phase takes it back, since a worker in the workflow again reports its phase.
-func TestARetiredLooksTaskLeavesItsLookOnTheClaimAndAPhaseTaskTakesItBack(t *testing.T) {
+// A finished look stays on the claim across phase work. Only another look replaces it: the
+// completion request itself, not the pending task's phase, says whether it reports a look.
+func TestARetiredLooksTaskLeavesItsLookOnTheClaimUntilAnotherLooksTask(t *testing.T) {
 	opened := time.Date(2026, 10, 19, 6, 0, 0, 0, time.UTC)
 	look := CheckLook{Look: 2, OpenedAt: opened}
 	h := newHarness(t)
@@ -137,12 +135,22 @@ func TestARetiredLooksTaskLeavesItsLookOnTheClaimAndAPhaseTaskTakesItBack(t *tes
 
 	h.must(RequestDeliver{Claim: testToken, Task: "Continue Workflow. Issue: LEGION-209. Phase: testing.", Generation: 8, Phase: phase.Testing, Entry: 2})
 	h.must(StreamTurnStart{Claim: testToken})
-	if got := h.claim().ServingCheck(); got != (CheckLook{}) {
-		t.Fatalf("during the phase task's turn the claim serves look %+v, want none: its completion is the phase's", got)
+	if got := h.claim().ServingCheck(); got != look {
+		t.Fatalf("during the phase task's turn the claim serves look %+v, want %+v", got, look)
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
-	if stored := h.store.load(testToken); stored.ServingCheckLook != (CheckLook{}) {
-		t.Fatalf("after the phase task's turn the stored claim serves look %+v, want none", stored.ServingCheckLook)
+	if stored := h.store.load(testToken); stored.ServingCheckLook != look {
+		t.Fatalf("after the phase task's turn the stored claim serves look %+v, want %+v", stored.ServingCheckLook, look)
+	}
+	next := CheckLook{Look: 3, OpenedAt: opened}
+	h.must(RequestDeliver{Claim: testToken, Task: "check again", Generation: 8, CheckLook: next})
+	h.must(StreamTurnStart{Claim: testToken})
+	if got := h.claim().ServingCheck(); got != next {
+		t.Fatalf("during the next look's turn the claim serves %+v, want %+v", got, next)
+	}
+	h.must(StreamTurnEnd{Claim: testToken})
+	if got, stored := h.claim().ServingCheck(), h.store.load(testToken).ServingCheckLook; got != next || stored != next {
+		t.Fatalf("after the next look the claim serves %+v, stored %+v, want %+v", got, stored, next)
 	}
 }
 
