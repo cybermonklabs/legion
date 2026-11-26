@@ -207,8 +207,9 @@ echo "case: --check holds the //ci: lines to the files they name"
 status=0
 out=$(python3 .github/scripts/go_legs_select.py --check 2>&1) || status=$?
 check "this tree passes" "$(is "$status" 0)"
-sed -i 's#^//ci:reads packages/contracts/fixtures/session-grant.json#//ci:reads packages/contracts/fixtures/no-such-grant.json#' \
-  "$(git grep -l '^//ci:reads packages/contracts/fixtures/session-grant.json' -- '*.go' | head -1)"
+grant=packages/contracts/fixtures/session-grant.json
+sed -i "s|^//ci:reads $grant|//ci:reads ${grant%session-grant.json}no-such-grant.json|" \
+  "$(git grep -l "^//ci:reads $grant" -- '*.go' | head -1)"
 status=0
 out=$(python3 .github/scripts/go_legs_select.py --check 2>&1) || status=$?
 check "a glob that names no file fails" "$(is "$status" 1)"

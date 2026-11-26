@@ -873,11 +873,12 @@ unset GO_LEGS_SELECTED
 echo "case: a selection that names a package no place names runs it in unlisted's last leg"
 root=$(tree selected-dropped "$dropped")
 export GO_LEGS_SELECTED='{"job": {"legs": [2], "packages": ["b/c"]}}'
+# The selection starts leg 2 alone, so the matrix runs one leg.
 check "the last leg prints that package alone, though the change selects none of its own" \
-  "$(is "$(legs "$root" job 2)" "./b/c/
+  "$(is "$(legs "$root" job 2 1)" "./b/c/
 exit=0")"
 export GO_LEGS_SELECTED='{"job": {"legs": [2], "packages": ["a"]}}'
-check "and leaves it out when the change does not select it" "$(is "$(legs "$root" job 2)" "./a/
+check "and leaves it out when the change does not select it" "$(is "$(legs "$root" job 2 1)" "./a/
 exit=0")"
 unset GO_LEGS_SELECTED
 

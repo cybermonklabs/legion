@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The selection of ci.yaml's `affected` job (.github/scripts/go_legs_select.py says what it holds
-# and why a change selects what it selects): writes the step output affected_packages to
+# The selection that the affected job in ci.yaml runs (.github/scripts/go_legs_select.py says what
+# it holds and why a change selects what it selects): writes the step output affected_packages to
 # $GITHUB_OUTPUT, the legs of each Go legs job the change starts and the packages they run, from
 # the commit the change is measured from:
 #   * a pull request: the first parent of the merge commit the run checked out, so the diff is the
