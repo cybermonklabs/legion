@@ -14,8 +14,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -118,8 +118,8 @@ printf '%s\n' "$*" >> "${0%/bin/codegraph}/codegraph.log"
 // and an empty Jujutsu config home.
 type issueVolume struct {
 	root, token, jjLog, credentialLog, codegraphLog, realJJ, tmp, bin string
-	defaultBranch                                                   string
-	env                                                             map[string]string
+	defaultBranch                                                     string
+	env                                                               map[string]string
 }
 
 func newIssueVolume(t *testing.T) *issueVolume {

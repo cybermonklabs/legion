@@ -13,7 +13,7 @@ import (
 
 type testClock struct{ now time.Time }
 
-func newTestClock() *testClock { return &testClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)} }
+func newTestClock() *testClock      { return &testClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)} }
 func (c *testClock) Now() time.Time { return c.now }
 func (c *testClock) Sleep(ctx context.Context, d time.Duration) error {
 	c.now = c.now.Add(d)

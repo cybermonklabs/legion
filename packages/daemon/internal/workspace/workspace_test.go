@@ -627,7 +627,6 @@ func staticToken(token string) func() (string, error) {
 	return func() (string, error) { return token, nil }
 }
 
-
 func TestProvisionKilledCloneLeavesNoFinalDirectory(t *testing.T) {
 	run := newLocalRunner(t)
 	run.killClone = true
