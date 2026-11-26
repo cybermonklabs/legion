@@ -4481,3 +4481,87 @@ test("on a 390 px phone opening a priority's title keeps its 22 px type and the 
     before.headerHeight
   );
 });
+
+// Round 21's row, of the class of the tester's red row of round 20 above (InPlaceField.tsx's
+// "nothing under it moves as it opens and closes"), found by a search of that class rather than
+// measured. Below 1280 px `styles.css` gives every `textarea` a 44 px floor. At 99366266 a
+// one-line title's open box is shorter than that - a 28 px line, 4 px of padding above and below
+// under 768 px and none from there, a 1 px border - while its closed heading is 38 px tall under
+// 768 px and 30 px from there, so by the classes' arithmetic opening it grows the header by 6 px
+// at 390 px and by 14 px at 1024 px. A title of two lines or more is taller than the floor and
+// moves nothing. The open box keeps the floor and its heading's place: 7 px of padding above and
+// below, and as much negative margin as that adds to the heading's padding. Each reading opens
+// the title as the keyboard does, the heading's button focused and Enter pressed, and compares
+// the open box with the closed heading. The three-line title is three words each too wide to
+// share a line with another at 390 px, from Arial's metrics to DejaVu Sans Bold's, so it takes
+// three lines in whichever font the engine draws it.
+// SLOW(>=2s): two priorities written, two pages read, and the title opened at two widths.
+test("below 1280 px opening a one-line priority title, and a three-line one at 390 px, keeps the box's 44 px floor, the header's height, the title's type and where its words stand", async ({
+  page,
+}) => {
+  const step = (text: string) => `a priority's title box below 1280 px: ${text}`;
+  const threeLines = "Decommissioning overcompensating counterbalancing";
+  const short = await createPriority({ owner: "alice", title: "Ship it" });
+  const long = await createPriority({ owner: "alice", title: threeLines });
+  const header = page.getByTestId("priority-header");
+  const button = header.getByRole("heading", { level: 1 }).getByRole("button");
+  const box = page.getByRole("textbox", { name: "Title" });
+  // What the reader sees of the title, closed or open: the height of its button or its box, the
+  // header's height, the title's type, the lines it takes, and the top of the box its words are
+  // drawn in - the content box of the button or of the open box - in the window.
+  const reading = () =>
+    header.evaluate((node) => {
+      const control = node.querySelector("h1 button, h1 textarea");
+      if (control === null) throw new Error("the header draws no title");
+      const style = getComputedStyle(control);
+      const rect = control.getBoundingClientRect();
+      const padding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      return {
+        controlHeight: rect.height,
+        fontSize: style.fontSize,
+        headerHeight: Math.round(node.getBoundingClientRect().height * 10) / 10,
+        lines: Math.round((control.clientHeight - padding) / Number.parseFloat(style.lineHeight)),
+        wordsTop: rect.top + control.clientTop + Number.parseFloat(style.paddingTop),
+      };
+    });
+  // Opens the title at `at` from the keyboard, compares the open box with the closed heading,
+  // and closes it again with Escape, which gives the focus back to the heading's button.
+  const openAndCompare = async (at: string, lines: number) => {
+    const closed = await reading();
+    expect(closed.lines, step(`${at}: the closed title takes ${lines} line(s)`)).toBe(lines);
+    await button.focus();
+    await page.keyboard.press("Enter");
+    await expect(box, step(`${at}: Enter opens the title box`)).toBeFocused();
+    await nextFrames(page);
+    const open = await reading();
+    expect(
+      open.controlHeight,
+      step(`${at}: the open box keeps the 44 px floor`)
+    ).toBeGreaterThanOrEqual(44);
+    expect(open.headerHeight, step(`${at}: the open box keeps the header's height`)).toBe(
+      closed.headerHeight
+    );
+    expect(open.fontSize, step(`${at}: the open box keeps the heading's type`)).toBe(
+      closed.fontSize
+    );
+    expect(
+      Math.abs(open.wordsTop - closed.wordsTop),
+      step(`${at}: the open box keeps the title's words where the heading drew them, within 1 px`)
+    ).toBeLessThanOrEqual(1);
+    await page.keyboard.press("Escape");
+    await expect(button, step(`${at}: Escape gives the focus back to the title`)).toBeFocused();
+  };
+
+  await page.setViewportSize({ height: 664, width: 390 });
+  await page.goto(`/priorities/${short.id}`);
+  await expect(button, step("the one-line title is drawn")).toHaveText("Ship it");
+  await openAndCompare("at 390x664, a one-line title", 1);
+  await page.setViewportSize({ height: 768, width: 1024 });
+  await nextFrames(page);
+  await openAndCompare("at 1024x768, a one-line title", 1);
+
+  await page.setViewportSize({ height: 664, width: 390 });
+  await page.goto(`/priorities/${long.id}`);
+  await expect(button, step("the three-line title is drawn")).toHaveText(threeLines);
+  await openAndCompare("at 390x664, a three-line title", 3);
+});

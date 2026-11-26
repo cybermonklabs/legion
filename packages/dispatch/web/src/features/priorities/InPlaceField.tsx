@@ -437,7 +437,20 @@ export function InPlaceField({
           <h1 className={`-mx-2 min-w-0 ${TITLE_TYPE} ${textPrimaryOnSurface}`}>
             <textarea
               {...typing}
-              className={`block w-full resize-none overflow-hidden rounded-lg border px-2 py-1 outline-none md:py-0 ${TITLE_TYPE} ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
+              // Below 1280 px `styles.css` gives every box a 44 px floor (the touch target
+              // `packages/dispatch/README.md` asks of every control), in no layer. The box keeps
+              // the floor: 7 px of padding above and below a one-line title's 28 px line, inside
+              // its 1 px border, make it 44 px tall. As much negative margin as that padding adds
+              // to the closed heading's (`HEADING_BOX`) keeps the box in the heading's place and
+              // its words where the heading draws them, so nothing under it moves as it opens.
+              // Below 768 px the heading is 38 px tall (1 + 4 + 28 + 4 + 1), its words 5 px down,
+              // and 3 px of margin above and below leave the box a 38 px place, its words at
+              // -3 + 1 + 7 = 5 px. From 768 px the heading is 30 px tall (1 + 28 + 1), its words
+              // 1 px down, and 7 px leave the box a 30 px place, its words at -7 + 1 + 7 = 1 px. A
+              // title of more lines takes the same padding and margin, so the height the layout
+              // effect above gives the box leaves it its heading's place too. From 1280 px there
+              // is no floor, and the box takes the heading's padding, none, and no margin.
+              className={`-my-[3px] block w-full resize-none overflow-hidden rounded-lg border px-2 py-[7px] outline-none md:-my-[7px] xl:my-0 xl:py-0 ${TITLE_TYPE} ${borderTransparent} ${bgTransparent} ${textPrimaryOnSurface} ${borderStrongHover} ${focusBorder}`}
               // The heading's 22 px type at every width, so the title wraps in the box as in the
               // heading: below 1280 px `styles.css` gives every box a 16 px floor in no layer,
               // which `data-own-type` takes off this one.
