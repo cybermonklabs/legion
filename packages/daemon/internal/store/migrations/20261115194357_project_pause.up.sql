@@ -69,25 +69,30 @@
 -- role is live as a pod no claim owns, with the unpushed work on its disk. Third, with the daemon
 -- stopped, run the three statements below. The earlier release decodes a row strictly
 -- (record.DecodeOutboxPayload, DisallowUnknownFields), so a row it cannot decode fails and is
--- retried on its backoff for ever, as 20261111041503 says of its notice kind. The rows of the two
--- new notice kinds go:
+-- retried on its backoff for ever, as 20261111041503 says of its notice kind.
 --
---   delete from outbox where kind = 'controller_notice'
---     and payload->>'kind' in ('project-paused', 'project-resumed');
+-- The first statement deletes the rows of the two new notice kinds. The second deletes the stops
+-- of the pause. A resume deletes the ones that have not run, so it finds only a stop that was
+-- running at the resume. The stops of claims of another project's issue go too. They are keyed by
+-- the project and name their claim's issue (record.SuperviseRequest's Issue), a key the earlier
+-- release does not know either. The third keeps each start's work and takes off two keys the
+-- earlier release does not know. They are the pause and the wake's kind (record.SuperviseRequest's
+-- Pause and WakeKind).
 --
--- The stops of the pause go too (a resume deletes the ones that have not run, so this finds only
--- a stop that was running at the resume), the stops of claims of another project's issue among
--- them, which are keyed by the project and name their claim's issue (record.SuperviseRequest's
--- Issue), a key the earlier release does not know either:
+-- The three statements are the way back, the last paragraph of this header (migrations.WayBack).
+-- docs/kubernetes.md carries the same block under the heading above. internal/textcheck's
+-- TestTheProjectPauseWayBackIsOneTextInTheHeaderAndTheGuide holds the two to one text, and
+-- internal/store's TestTheProjectPauseWayBackLeavesWhatTheReleaseBeforeReads runs this one.
 --
---   delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop';
---
--- And a start keeps its work but loses the two keys the earlier release does not know, the pause
--- and the wake's kind (record.SuperviseRequest's Pause and WakeKind):
---
---   update outbox set payload = payload - 'pause' - 'wakeKind'
---     where kind = 'supervise' and payload->>'op' = 'start'
---     and (payload ? 'pause' or payload ? 'wakeKind');
+-- -- The controller's notices of a pause and of a resume.
+-- delete from outbox where kind = 'controller_notice'
+--   and payload->>'kind' in ('project-paused', 'project-resumed');
+-- -- A pause's stop of one role.
+-- delete from outbox where kind = 'supervise' and payload->>'op' = 'pause_stop';
+-- -- A start keeps its work and loses the two keys this release added.
+-- update outbox set payload = payload - 'pause' - 'wakeKind'
+--   where kind = 'supervise' and payload->>'op' = 'start'
+--   and (payload ? 'pause' or payload ? 'wakeKind');
 create table project_pauses (
   id bigserial primary key,
   project text not null check (project ~ '^[A-Z][A-Z0-9]*$'),
