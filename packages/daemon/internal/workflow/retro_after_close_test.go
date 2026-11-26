@@ -1374,6 +1374,64 @@ func TestAWokenRootArchitectIsSuspendedOnceNoRetroOfItsTreeIsOpen(t *testing.T) 
 	}
 }
 
+// The end of a tree's last open retro after a close leaves the root architect to a retro's wake
+// that waits for it (P6, P7): the retro's agent published its finding, whose wake is queued, and
+// then reported, which ended the retro. A suspension written then would stand above the wake's
+// start and stop the architect before it took the wake's task, so none is written; the idle
+// release stops the architect once its turn on the finding ends. With no wake waiting, the end
+// suspends the architect as before (TestAWokenRootArchitectIsSuspendedOnceNoRetroOfItsTreeIsOpen).
+// The tree's one retro here is the root's own.
+func TestTheEndOfATreesLastRetroLeavesTheRootArchitectToTheWakeQueuedForIt(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		wake     bool
+		suspends int
+	}{
+		{name: "a wake of the architect is queued for the retro's finding", wake: true},
+		{name: "no wake of the architect is queued", suspends: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRetroRig(t)
+			r.engine.cfg.Pods = wakePods(t, r.pool)
+			r.root(t, phase.Admitted)
+			r.runTo(t, "LEGION-208", phase.Implementing)
+			r.person(t, "LEGION-208", "done")
+			lingering(t, r.pool, "LEGION-208")
+			seedRunClaim(t, r.pool, "LEGION-208", claim.RoleArchitect, 1, "suspended", "daemon", "session-architect")
+			if tc.wake {
+				woken := r.mark(t)
+				r.apply("finding", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: treeRoleToken(t, "LEGION-208", claim.RoleArchitect),
+					At: r.clock.now, Report: "report-finding"})
+				var wakes int
+				for _, request := range supervisesSince(t, r.pool, "LEGION-208", woken) {
+					if request.Op == "start" && request.RetroWake {
+						wakes++
+					}
+				}
+				if wakes != 1 {
+					t.Fatalf("retro wakes of the root architect for the finding = %d, want one", wakes)
+				}
+			}
+
+			mark := r.mark(t)
+			if result := r.report(t, "LEGION-208", 1); result.Refusal != nil {
+				t.Fatalf("the report of the root's retro was refused: %+v", result.Refusal)
+			}
+			var suspends []record.SuperviseRequest
+			for _, stop := range stopsOf(supervisesSince(t, r.pool, "LEGION-208", mark), claim.RoleArchitect) {
+				if stop.Op == "suspend" {
+					suspends = append(suspends, stop)
+				}
+			}
+			if len(suspends) != tc.suspends {
+				t.Fatalf("suspensions of the root architect at the end of the tree's last retro = %+v, want %d", suspends, tc.suspends)
+			}
+		})
+	}
+}
+
 // A run starts with its issue's own first phase, or with the first phase of an issue beneath it in
 // that run: the record holds a row for the issue that started and for each issue above it, at
 // each one's own run and in their tree, with the moment it started, and none for an issue whose run

@@ -440,7 +440,13 @@ func (e *Engine) nameRetroEnd(ctx context.Context, tx pgx.Tx, issue record.Issue
 // The tree's root architect, which a message to its role topic woke while a retro after a close
 // of the tree was open, is the daemon's to suspend again once no such retro is open and the
 // root has left the workflow or lingers, and the root's pod goes with it where no check of
-// the root is open. A tree past its linger closes again (closeTreeAfterRetros).
+// the root is open. One that a retro's wake is queued for, or whose claim holds the task of one
+// (retroWakeOwed), is not suspended: the retro's agent publishes its finding and then reports, so
+// that wake can stand behind the very report that ends the tree's last open retro, and a
+// suspension written now would stand above its start and stop the architect before it took the
+// task. Its idle release stops it once its turn on the finding ends (pods.IdleView.RetroHolds); the
+// root's IssueSuspend still goes, and waits while the architect's process runs
+// (store.IssueSuspension). A tree past its linger closes again (closeTreeAfterRetros).
 func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue record.Issue, ended record.RunRetro) error {
 	if InWorkflow(issue) {
 		return nil
@@ -474,7 +480,14 @@ func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue rec
 		}
 	}
 	if len(open) == 0 && record.Stopped(*root) {
-		if err := e.suspend(ctx, tx, *root, claim.RoleArchitect, fmt.Sprintf("no retro after a close of the tree of %s is open", root.Key)); err != nil {
+		owed, err := e.retroWakeOwed(ctx, tx, *root)
+		if err != nil {
+			return err
+		}
+		if owed {
+			e.logOnCommit(ctx, "workflow: the tree's last open retro after a close ended while a retro's wake of its root architect waits; the architect is left to that wake",
+				"tree", root.Key, "issue", issue.Key)
+		} else if err := e.suspend(ctx, tx, *root, claim.RoleArchitect, fmt.Sprintf("no retro after a close of the tree of %s is open", root.Key)); err != nil {
 			return err
 		}
 		if root.Key != issue.Key {
@@ -533,14 +546,15 @@ func (e *Engine) closeTreeAfterRetros(ctx context.Context, tx pgx.Tx, root recor
 // retroWake wakes the architect of a tree root whose claim the tree's close suspended, or the
 // linger's end retired, on a message somebody published to its role topic while no live session
 // held it (a listener's role_message report naming held, a claim that is not released, as the
-// listener's report read it: Pods.ClaimByToken): while a retro after a close of the tree is open,
-// the retro's agent publishes its findings there, and the woken architect gets the message Envoy
-// kept. It wakes nothing for a claim that is no tree root's own architect while a retro after a
-// close of its tree is open (RetroWakeOf), for a claim in any other state (a release's is
-// wakeReleased's, a live one hears the message itself), and where such a wake is already queued.
-// The wake is a start of the architect with the wake's kind, no phase and no run, marked as a
-// retro's wake (record.SuperviseRequest.RetroWake), which the outbox lets past the guard that
-// drops a wake of a claim the daemon suspended.
+// listener's report read it: Pods.ClaimByToken): the agent of a retro after a close of the tree
+// publishes its findings there, and the woken architect gets the message Envoy kept. It wakes
+// nothing for a claim that is no tree root's own architect while its tree takes such a wake
+// (RetroWakeOf: a retro after a close of the tree open, or the last one ended within the hour
+// Envoy keeps the message), for a claim in any other state (a release's is wakeReleased's, a live
+// one hears the message itself), and where such a wake is already queued. The wake is a start of
+// the architect with the wake's kind, no phase and no run, marked as a retro's wake
+// (record.SuperviseRequest.RetroWake), which the outbox lets past the guard that drops a wake of a
+// claim the daemon suspended.
 func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim) error {
 	if held.Role != claim.RoleArchitect ||
 		!(held.State == supervise.StateSuspended && held.SuspendedBy == supervise.SuspendedByDaemon || held.State == supervise.StateRetired) {
@@ -551,31 +565,78 @@ func (e *Engine) retroWake(ctx context.Context, tx pgx.Tx, held supervise.Claim)
 	if err != nil || root == nil {
 		return err
 	}
-	if _, architect, err := RetroWakeOf(ctx, e.store, tx, *root, token); err != nil || !architect {
+	if _, architect, err := RetroWakeOf(ctx, e.store, tx, *root, token, e.now()); err != nil || !architect {
 		return err
 	}
 	run, err := e.store.RoleRun(ctx, tx, token, root.Key, claim.RoleArchitect, root.Generation)
 	if err != nil {
 		return err
 	}
-	if slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
-		return queued.Request.Op == "start" && queued.Request.RetroWake
-	}) {
+	if slices.ContainsFunc(run.Queued, retroWakeStart) {
 		return nil
 	}
 	wake := wakeRow(*root, claim.RoleArchitect, pods.WakeRoleMessage, 0, retroArchitectWakeTask(string(token)))
 	wake.RetroWake = true
-	e.logOnCommit(ctx, "wake: a message to the root architect of a closed tree wakes it while a retro after a close of the tree is open",
+	e.logOnCommit(ctx, "wake: a message to the root architect of a closed tree wakes it while the tree takes a retro's wake",
 		"tree", root.Key, "architect", token, "state", held.State)
 	return e.enqueue(ctx, tx, root.Key, wake)
 }
 
+// retroWakeStart is whether queued is the start of a retro's wake of a root architect (retroWake).
+func retroWakeStart(queued record.QueuedSupervise) bool {
+	return queued.Request.Op == "start" && queued.Request.RetroWake
+}
+
+// RetroWakeStands is why the wake of root's architect for a retro's finding
+// (record.SuperviseRequest.RetroWake) stands no more at now, and "" while it stands: root is its
+// tree's root, the tree has left the workflow or lingers (record.Stopped), and it takes such a wake
+// (record.Store.TreeTakesRetroWake: a retro after the close of an issue of the tree is open, or the
+// last one ended within the hour Envoy keeps the finding's message, in a tree not past its
+// linger). A tree that runs again starts its architect itself, and a tree past that hour has
+// nothing more for it to hear. It is the one rule both ends of that wake read: the outbox's start of
+// it (internal/daemon's retroWakeHolds) and the send of its task (internal/daemon's
+// workflowRuntime.retroWakeHolds, supervise.Deps.RetroWakeHolds), which drops a task the tree's
+// readmission, or that hour's end, left on the architect's claim.
+func RetroWakeStands(ctx context.Context, records record.Store, tx pgx.Tx, root record.Issue, now time.Time) (string, error) {
+	switch {
+	case !claim.IsTreeRoot(root.Key, root.Tree):
+		return "the issue is no tree's root", nil
+	case !record.Stopped(root):
+		return fmt.Sprintf("the tree runs again (%s, %s)", root.Phase, root.Status), nil
+	}
+	takes, err := records.TreeTakesRetroWake(ctx, tx, root.Tree, now)
+	if err != nil || takes {
+		return "", err
+	}
+	return "no retro after a close of the tree is open, and the last one ended over an hour ago or the tree is past its linger", nil
+}
+
+// retroWakeOwed is whether root's architect has a retro's wake still to take: its start queued
+// (retroWakeStart), or its task held by the architect's claim, taken by a turn or not
+// (supervise.Delivery.RetroWake), which the claim holds until the turn that took it ends.
+func (e *Engine) retroWakeOwed(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
+	token, err := stepClaim(root, root.Key, claim.RoleArchitect)
+	if err != nil {
+		return false, err
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, root.Key, claim.RoleArchitect, root.Generation)
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(run.Queued, retroWakeStart) {
+		return true, nil
+	}
+	return run.Claim != nil && run.Claim.Pending != nil && run.Claim.Pending.RetroWake(), nil
+}
+
 // retroArchitectWakeTask is the task of a root architect woken for a message to its role topic
-// token while a retro after a close of its tree is open (retroWake): what stopped its session, the
-// message, and what a retro's finding asks of it.
+// token while its tree takes a retro's wake (retroWake): what stopped its session, that a retro
+// after a close ran in its tree within the last hour and somebody published the message the wake is
+// for, and what a retro's finding asks of it. The listener's report names the role and nothing of
+// who sent the message, so neither does the task.
 func retroArchitectWakeTask(token string) string {
-	return "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue of your tree is open, " +
-		"and this wake is a message somebody published to your role topic (" + token + ") while your session was stopped. " +
+	return "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue ran in your tree within the last hour, " +
+		"and somebody published a message to your role topic (" + token + ") while your session was stopped: this wake is for that message. " +
 		"Envoy keeps a role message for one hour: a message kept for your role reaches this session as an Envoy card that shows kept_at, " +
 		"possibly before this task. A requirement a retro finds unmet is yours to put to the person as one decision; " +
 		"one that another open child of the same parent carries is pending and goes to no one."

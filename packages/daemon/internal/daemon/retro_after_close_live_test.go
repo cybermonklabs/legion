@@ -38,7 +38,8 @@
 // and the claims the runtime launched, and three tables through SQL: run_retros, for an issue's
 // retros after a close (retrosAfterClose, which reads none where the table does not exist, as on
 // main), tree_lifecycles, for a lifecycle's epoch (lifecycleEpoch), and outbox, for the
-// linger_close row a park queues, which it brings due with the issue's linger_until (endLinger).
+// linger_close row a park queues, which it brings due with the issue's linger_until (endLinger),
+// and for a retro phase's start row still queued (queuedRetroStarts).
 // So the same file builds and runs on main. That is what the script's negative control needs.
 //
 // Each step runs on its own and prints `== <step>`, then `ok <step>` or `FAIL <step> at
@@ -110,7 +111,7 @@ const (
 
 // retroArchitectWakeOpening is the opening of the daemon's wake task to a closed tree's root
 // architect (workflow's retroArchitectWakeTask).
-const retroArchitectWakeOpening = "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue of your tree is open"
+const retroArchitectWakeOpening = "Your tree closed, and the daemon stopped your session with it. A retro Legion runs after the close of an issue ran in your tree within the last hour"
 
 // retroStepFailure is what a step's assertion ends the step with: the assertion that did not hold.
 type retroStepFailure struct{ at string }
@@ -153,8 +154,8 @@ type retroLive struct {
 }
 
 // TestTheRetroRunsAfterTheCloseLive drives the proof's steps against one booted daemon: steps 1 to 9,
-// 17, 14, then the root's (11) and the member's retro it leaves open (10), then the parked roots (12
-// and 13). Steps 15 and 16 are the plan's after INFRA-3570's branch is merged in.
+// 17, 18, 14, then the root's (11) and the member's retro it leaves open (10), then the parked roots
+// (12 and 13). Steps 15 and 16 are the plan's after INFRA-3570's branch is merged in.
 func TestTheRetroRunsAfterTheCloseLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newRetroLive(t)
@@ -168,6 +169,7 @@ func TestTheRetroRunsAfterTheCloseLive(t *testing.T) {
 	r.run("closed-in-retro", r.closedInRetro)
 	r.run("merged-early", r.mergedEarly)
 	r.run("sent-back-then-closed", r.sentBackThenClosed)
+	r.run("retro-task-held-at-close", r.retroTaskHeldAtClose)
 	r.run("todo-ends-retro", r.todoEndsRetro)
 	// Steps 15 and 16 go here (t9, after INFRA-3570's branch is merged into this one: the retro's
 	// agent is then the one record.PlaceWorker names, and the daemon's task goes to it).
@@ -608,6 +610,51 @@ func (r *retroLive) todoEndsRetro() {
 	r.note("read back: closed again before its second run's first phase, %s got no retro task, row or launch over %s", c, liveSettle)
 }
 
+// retro-task-held-at-close (step 18): another child runs to accepting, and its implementer, idle
+// since its push, starts a turn of its own (it reports streaming); T's architect's sign-off then
+// moves the child into its retro, whose task the daemon queues on that claim behind the running
+// turn, so no turn has taken it. A person closes the child while that task waits. The close keeps
+// the retro's turn and claim, and the task it holds, of the retro phase the done child has left,
+// is held rather than dropped: once the agent's own turn ends it reaches the agent, the retro
+// completes, and no other retro task comes.
+func (r *retroLive) retroTaskHeldAtClose() {
+	c := r.todoChild(r.tree)
+	r.walkTo(c, phase.Accepting)
+	implementer := r.agents[r.token(c, claim.RoleImplementer)]
+	implementer.beginOwnTurn()
+	r.signOff(c)
+	r.waitPhase(c, phase.Retro)
+	r.until("the retro's task queued on "+string(implementer.token)+" behind its own turn, taken by none, its start row finished", retroWait, func() bool {
+		p := r.d.claim(implementer.token).Pending
+		return p != nil && p.Phase == phase.Retro && p.ConfirmedAt == nil && r.queuedRetroStarts(c) == 0
+	})
+	r.note("%s is in its retro: its implementer, in a turn of its own, holds the retro's task %s unconfirmed, and no start of the retro is queued",
+		c, r.d.claim(implementer.token).Pending.ID)
+	mark := r.markOf(c, claim.RoleImplementer)
+	before := len(r.retroRows(c))
+	r.person(c, "done", r.tree, false)
+	r.waitStatus(c, "done")
+	r.note("a person closed %s while its retro's task waited behind the agent's own turn: an issue.updated envelope, status done", c)
+	implementer.endOwnTurn()
+	task := implementer.next()
+	if !retroTaskText(task.Message, false) {
+		r.fail("%s's implementer was given %q once its own turn ended, want the retro's task it held at the close", c, firstLine(task.Message))
+	}
+	r.note("read back: once its own turn ended, %s was sent the retro's task it held at the close: %s", implementer.token, firstLine(task.Message))
+	status, body := implementer.complete(api.HandoffCompleteRequest{Summary: "retro written", PlanRating: new(4), PlanReason: new("The plan fit the work.")})
+	if status != http.StatusOK {
+		r.fail("the retro's completion with the plan rating 4 was answered %d %s, want 200", status, strings.TrimSpace(body))
+	}
+	implementer.endTurn()
+	r.awaitRetroRow(c, max(before-1, 0), retroRowWant{result: "passed", rating: 4})
+	time.Sleep(liveSettle)
+	if got := r.retroTasksSince(c, claim.RoleImplementer, mark, false); got != 1 {
+		r.fail("%s's implementer was given %d retro tasks after the close, want the one it held", c, got)
+	}
+	r.requireStatusStays(c, "done", mark)
+	r.note("read back: the completion was answered 200, Dispatch's retro row of %s ended passed, rated 4, and no other retro task came over %s", c, liveSettle)
+}
+
 // root-closed (A2): a person's done on the test root after its first phase: one task to T's retro
 // agent. T's architect, suspended by the close, is resumed in its kept session when the retro agent
 // publishes one finding to its role topic through the real Envoy listener, which keeps the message
@@ -629,27 +676,45 @@ func (r *retroLive) rootClosed() {
 	})
 	r.root.end()
 	r.note("read back: one retro task went to %s; %s's architect is suspended by the close with session file %s kept", agent.token, t, file)
+	finding := r.publishFinding(t, token, agent)
+	r.root = r.wokenArchitect(t, token, file, r.root.boot, finding)
+	r.completesRetro(t, agent, mark, 5)
+}
 
-	finding := "a requirement the retro of " + t + " found unmet"
+// publishFinding is the retro agent's finding of root's retro, published to the role topic of
+// architect, root's architect, through the real Envoy listener, which answers that it keeps the
+// message for a role no live session holds. It answers the finding's text.
+func (r *retroLive) publishFinding(root string, architect claim.Token, agent *retroAgent) string {
+	r.t.Helper()
+	finding := "a requirement the retro of " + root + " found unmet"
 	status, body := r.listener.publish(map[string]any{
-		"topic": notify.RoleTopicPrefix + string(token), "message": finding,
-		"source": "agent", "source_session": agent.session, "idempotency_key": "retro-finding-" + t,
+		"topic": notify.RoleTopicPrefix + string(architect), "message": finding,
+		"source": "agent", "source_session": agent.session, "idempotency_key": "retro-finding-" + root,
 	})
 	var answer struct {
 		Kept       bool   `json:"kept"`
 		KeptReason string `json:"kept_reason"`
 	}
 	if err := json.Unmarshal([]byte(body), &answer); err != nil || status != http.StatusAccepted || !answer.Kept {
-		r.fail("the finding's publish to %s answered %d %s, want 202 kept for a role no live session holds", notify.RoleTopicPrefix+string(token), status, body)
+		r.fail("the finding's publish to %s answered %d %s, want 202 kept for a role no live session holds", notify.RoleTopicPrefix+string(architect), status, body)
 	}
-	r.note("the retro agent published its finding to %s through the Envoy listener: %d, kept (%s)", notify.RoleTopicPrefix+string(token), status, answer.KeptReason)
-	var resumed *retroAgent
-	r.until("the daemon resuming T's architect in its kept session on the listener's wake", retroWait, func() bool {
+	r.note("the retro agent published its finding to %s through the Envoy listener: %d, kept (%s)", notify.RoleTopicPrefix+string(architect), status, answer.KeptReason)
+	return finding
+}
+
+// wokenArchitect waits for the daemon to resume root's architect, token, from its kept session
+// file on the listener's wake for the finding, in a launch other than the one boot named, and plays
+// the resumed session: it registers with the listener as the holder of the architect's role, is
+// delivered the kept finding once, and receives the daemon's one retro wake task. It answers the
+// resumed process.
+func (r *retroLive) wokenArchitect(root string, token claim.Token, file, boot, finding string) *retroAgent {
+	r.t.Helper()
+	r.until("the daemon resuming "+string(token)+" in its kept session on the listener's wake", retroWait, func() bool {
 		launches := launchesSince(r.rt, token, 0)
 		last := launches[len(launches)-1]
-		return last.Method == "Resume" && last.Spec.ResumeSessionFile == file && last.Spec.BootToken != r.root.boot
+		return last.Method == "Resume" && last.Spec.ResumeSessionFile == file && last.Spec.BootToken != boot
 	})
-	resumed = r.register(t, t, claim.RoleArchitect)
+	resumed := r.register(root, root, claim.RoleArchitect)
 	envoy := r.joinEnvoy(resumed)
 	r.until("the kept finding delivered to the resumed architect's session", retroWait, func() bool { return envoy.got(finding) == 1 })
 	wake := resumed.next()
@@ -658,8 +723,7 @@ func (r *retroLive) rootClosed() {
 			token, len(prompts), wake.Message, retroArchitectWakeOpening)
 	}
 	r.note("read back: the daemon resumed %s from its kept session file %s on the listener's wake; the session took the role, was delivered the finding once and received the daemon's retro wake task once", token, file)
-	r.root = resumed
-	r.completesRetro(t, agent, mark, 5)
+	return resumed
 }
 
 // member-open-at-root-close: step 3's child C2 left its retro unreported while the test root
@@ -676,9 +740,13 @@ func (r *retroLive) memberOpenAtRootClose() {
 	r.completesRetro(c, agent, taskMark{}, 4)
 }
 
-// root-closed-in-linger: a second root R2 runs into implementing, a person moves it to icebox and
-// then closes it inside its linger: one task to its implementer, resumed in its kept session; the
-// retro completes.
+// root-closed-in-linger: a second root R2 runs into implementing with its architect live, a person
+// moves it to icebox and then closes it inside its linger: one task to its implementer, resumed in
+// its kept session. R2's retro is the one open retro of its tree: its agent publishes one finding to
+// R2's architect's role topic through the Envoy listener and reports at once, so the report ends
+// the tree's last open retro before the daemon has woken anyone for the finding. The retro completes,
+// and R2's architect, suspended by the park, is still resumed in its kept session and gets the
+// finding and the daemon's retro wake task.
 func (r *retroLive) rootClosedInLinger() {
 	r.parkedRootClosed(r.r2, "icebox", false)
 }
@@ -692,9 +760,16 @@ func (r *retroLive) expiredRootClosed() {
 }
 
 // parkedRootClosed is steps 12 and 13: root runs into implementing, a person parks it at status,
-// and a person's done follows, inside its linger or, when expired, after the linger's end.
+// and a person's done follows, inside its linger or, when expired, after the linger's end. Inside
+// its linger (step 12), root's architect is live before the park, and its retro's agent publishes
+// a finding to it and reports at once.
 func (r *retroLive) parkedRootClosed(root, status string, expired bool) {
 	r.waitIssue(root+" in planning", root, func(i api.Issue) bool { return i.Phase == phase.Planning })
+	var architect *retroAgent
+	if !expired {
+		architect = r.register(root, root, claim.RoleArchitect)
+		r.note("registered and readied %s's architect as session %s", root, architect.session)
+	}
 	r.walkTo(root, phase.Implementing)
 	implementer := r.registerTask(root, root, claim.RoleImplementer)
 	implementer.endTurn()
@@ -706,6 +781,15 @@ func (r *retroLive) parkedRootClosed(root, status string, expired bool) {
 		return held.State == string(supervise.StateSuspended) && held.SuspendedBy == string(supervise.SuspendedByDaemon)
 	})
 	implementer.end()
+	var architectFile string
+	if architect != nil {
+		r.until("the architect of "+root+" suspended with its session kept by the park", retroWait, func() bool {
+			held := r.d.claim(architect.token)
+			return held.State == string(supervise.StateSuspended) && held.SuspendedBy == string(supervise.SuspendedByDaemon)
+		})
+		architectFile = r.d.claim(architect.token).SessionFile
+		architect.end()
+	}
 	epoch := r.lifecycleEpoch(root)
 	if expired {
 		endLinger(r.t, r.st.Pool(), root, func(what string, cond func() bool) { r.until(what, retroWait, cond) })
@@ -730,7 +814,17 @@ func (r *retroLive) parkedRootClosed(root, status string, expired bool) {
 	}
 	r.requireTaskOnce(root, mark)
 	r.note("read back: one retro task went to %s, resumed in its kept session file %s: %s", agent.token, file, firstLine(task.Message))
+	if architect == nil {
+		r.completesRetro(root, agent, mark, 4)
+		return
+	}
+	finding := r.publishFinding(root, architect.token, agent)
 	r.completesRetro(root, agent, mark, 4)
+	if _, open := r.retrosAfterClose(root); open != 0 {
+		r.fail("%s's run_retros rows hold %d open retros after its report, want none: the report ended the tree's last open retro", root, open)
+	}
+	r.note("read back: the retro's report came at once after the finding and ended the last open retro of %s's tree", root)
+	r.wokenArchitect(root, architect.token, architectFile, architect.boot, finding)
 }
 
 // ---- the processes the driver plays --------------------------------------------------------------
@@ -1002,6 +1096,28 @@ func (a *retroAgent) ownTurn() {
 	a.inTurn = false
 	a.mu.Unlock()
 	a.r.waitState(a.token, supervise.StateIdle)
+}
+
+// beginOwnTurn starts a turn of the agent's own, one no prompt of the daemon's started, and returns
+// once the daemon holds the claim working; the agent reports it streaming until endOwnTurn.
+func (a *retroAgent) beginOwnTurn() {
+	a.r.t.Helper()
+	a.mu.Lock()
+	a.inTurn = true
+	a.mu.Unlock()
+	a.send(shimwire.AgentStart{})
+	a.r.waitState(a.token, supervise.StateWorking)
+}
+
+// endOwnTurn ends the turn beginOwnTurn started, its model having answered: whatever the daemon
+// holds for the claim may be sent once it ends.
+func (a *retroAgent) endOwnTurn() {
+	a.r.t.Helper()
+	a.answer()
+	a.mu.Lock()
+	a.inTurn = false
+	a.mu.Unlock()
+	a.send(shimwire.AgentEnd{})
 }
 
 // waitState waits for the daemon's listing to hold the claim in state.
@@ -1737,4 +1853,16 @@ func (r *retroLive) lifecycleEpoch(root string) int64 {
 		r.fail("read the lifecycle of %s: %v", root, err)
 	}
 	return epoch
+}
+
+// queuedRetroStarts is how many supervise start rows of issue's retro phase the outbox still
+// holds, read through SQL: a start the outbox has run is gone from it.
+func (r *retroLive) queuedRetroStarts(issue string) int {
+	r.t.Helper()
+	var n int
+	if err := r.st.Pool().QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'phase' = 'retro'`, issue).Scan(&n); err != nil {
+		r.fail("read the queued retro starts of %s: %v", issue, err)
+	}
+	return n
 }

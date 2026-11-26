@@ -226,7 +226,7 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 // that already waits in the pacing moves to the message queue. A claim that is released is woken
 // as well, and the start that wake queues finds the claim marked. A role report that names a
 // claim that is not released may still name the architect of a tree root the tree's close took
-// over, which a retro after a close of that tree wakes while it is open (retroWake).
+// over, which the wake of a retro's finding brings back while its tree takes it (retroWake).
 func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.ListenerWake) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -440,10 +440,11 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // neither the issue nor its root has left the workflow and neither lingers
 // (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an operator's to
 // resume, never a wake's — but one: a retro after a close holds the pod of its own agent, released
-// once its turn ended, and of the tree root's architect while a retro after a close of its tree is
-// open (RetroWakeOf). Such a wake's start is marked as the retro's
-// (record.SuperviseRequest.RetroRun for its agent, RetroWake for the architect), which the outbox
-// fences on the open retro rather than on the issue's standing.
+// once its turn ended, and of the tree root's architect while its tree takes the wake of a retro's
+// finding (RetroWakeOf: a retro after a close of the tree open, or the last one ended within the
+// hour). Such a wake's start is marked as the retro's (record.SuperviseRequest.RetroRun for its
+// agent, RetroWake for the architect), which the outbox fences on the retro's record rather than on
+// the issue's standing.
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
 // and a project's pause stops as released, finds no record here, even where the database it shares
@@ -492,7 +493,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	var retroRun uint64
 	var retroWake bool
 	if !pods.InWorkflowNotLingering(issue.Standing(), root.Standing(), record.OutOfWorkflow) {
-		if retroRun, retroWake, err = RetroWakeOf(ctx, e.store, tx, *issue, released.Token); err != nil || retroRun == 0 && !retroWake {
+		if retroRun, retroWake, err = RetroWakeOf(ctx, e.store, tx, *issue, released.Token, e.now()); err != nil || retroRun == 0 && !retroWake {
 			return false, err
 		}
 	}
@@ -523,15 +524,18 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, row)
 }
 
-// RetroWakeOf is the retro after a close that a wake of issue's claim token is for: run is the run
-// of the issue's open retro after its close where token is that retro's agent, and architect is
-// true where issue is its tree's root, token is that root's own architect and a retro after a
-// close of an issue of the tree is open; neither where the claim serves no such retro. It is the
-// one rule of which claims a retro after a close holds the pod for (pods.Standing.RetroHolds),
-// which the workflow's wake of a released claim (wakeReleased), its wake of a root architect a
-// role message names (retroWake) and the outbox's wake for a delivery it holds (internal/daemon's
-// retroHoldsClaim) each read in their own transaction, so they bring the same claims back.
-func RetroWakeOf(ctx context.Context, records record.Store, tx pgx.Tx, issue record.Issue, token claim.Token) (run uint64, architect bool, err error) {
+// RetroWakeOf is the retro after a close that a wake of issue's claim token is for, at now: run is
+// the run of the issue's open retro after its close where token is that retro's agent, and
+// architect is true where issue is its tree's root, token is that root's own architect and the tree
+// takes the wake of a retro's finding (record.Store.TreeTakesRetroWake: a retro after a close of an
+// issue of the tree is open, or the last one ended within the hour Envoy keeps the finding's
+// message, pods.RetroWakeWindow, since the retro's agent reports a moment after it publishes);
+// neither where the claim serves no such retro. It is the one rule of which claims a retro after a
+// close holds the pod for (pods.Standing.RetroHolds), which the workflow's wake of a released claim
+// (wakeReleased), its wake of a root architect a role message names (retroWake) and the outbox's
+// wake for a delivery it holds (internal/daemon's retroHoldsClaim) each read in their own
+// transaction, so they bring the same claims back.
+func RetroWakeOf(ctx context.Context, records record.Store, tx pgx.Tx, issue record.Issue, token claim.Token, now time.Time) (run uint64, architect bool, err error) {
 	open, err := records.OpenRetroOfIssue(ctx, tx, issue.Key)
 	if err != nil {
 		return 0, false, err
@@ -546,8 +550,8 @@ func RetroWakeOf(ctx context.Context, records record.Store, tx pgx.Tx, issue rec
 	if err != nil || own != token {
 		return 0, false, err
 	}
-	tree, err := records.OpenRetrosOfTree(ctx, tx, issue.Tree)
-	return 0, len(tree) > 0, err
+	architect, err = records.TreeTakesRetroWake(ctx, tx, issue.Tree, now)
+	return 0, architect, err
 }
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role

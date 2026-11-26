@@ -17,11 +17,15 @@
 -- the root architect's wake read.
 --
 -- The fill writes a row for the current run of each recorded issue that started, from what the
--- database holds, and none for an older run, which no close reads again. A run started where its
--- issue stands in a phase that carries a run (not admitted, awaiting_person or done, and not held
--- from admitted, awaiting_person or done) or holds a step start of the run's generation
--- (step_starts, whose record names the generation of each place's latest start). Each issue above
--- such an issue in its tree started its own current run too, where that start came after every
+-- database holds, and, for an issue whose current run did not start, a row for its newest run that
+-- did, since a close reads the newest run of any generation (the workflow's retroAtClose) and owes
+-- that run's retro where it had none: the highest earlier generation one of the issue's step starts
+-- names, started at its earliest step start, its retro had where a retro or a merge step start of
+-- it stands. No other older run gets a row, and no issue above is marked started from one. A run
+-- started where its issue stands in a phase that carries a run (not admitted, awaiting_person or
+-- done, and not held from admitted, awaiting_person or done) or holds a step start of the run's
+-- generation (step_starts, whose record names the generation of each place's latest start). Each
+-- issue above such an issue in its tree started its own current run too, where that start came after every
 -- step start the issue above holds of an earlier run of its own: a parent held at admitted for its
 -- children (admit's waitsForChildren) above a child that started is started, and a root
 -- re-admitted after its tree finished is not started by the children of its earlier run, which
@@ -161,7 +165,24 @@ retro as (
       or exists (select 1 from step_starts s
         where s.issue = i.key and s.kind in ('retro', 'merge') and coalesce((s.record->>'generation')::bigint, 0) = i.generation)
       or exists (select 1 from phases p where p.issue = i.key and p.role = 'merger' and p.step_task <> ''))
+),
+-- older is, for each recorded issue whose current run did not start, its newest run that did: the
+-- highest earlier generation one of its step starts names, which a close owes the retro of where
+-- it had none (the workflow's retroAtClose reads the newest run of any generation). It started at
+-- its earliest step start and had its retro where a retro or a merge step start of it stands.
+older as (
+  select i.key as issue, n.generation, i.tree,
+    (select min(s.started_at) from step_starts s
+      where s.issue = i.key and coalesce((s.record->>'generation')::bigint, 0) = n.generation) as started_at,
+    (select min(s.started_at) from step_starts s
+      where s.issue = i.key and s.kind in ('retro', 'merge') and coalesce((s.record->>'generation')::bigint, 0) = n.generation) as retro_started_at
+  from issues i
+  cross join lateral (select max(coalesce((s.record->>'generation')::bigint, 0)) as generation from step_starts s
+    where s.issue = i.key and coalesce((s.record->>'generation')::bigint, 0) between 1 and i.generation - 1) n
+  where n.generation is not null and not exists (select 1 from started st where st.issue = i.key)
 )
 insert into run_retros (issue, generation, tree, started_at, retro_started_at)
 select s.issue, s.generation, s.tree, s.started_at, r.retro_started_at
-from started s left join retro r on r.issue = s.issue and r.generation = s.generation;
+from started s left join retro r on r.issue = s.issue and r.generation = s.generation
+union all
+select o.issue, o.generation, o.tree, o.started_at, o.retro_started_at from older o;

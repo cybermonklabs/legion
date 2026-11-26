@@ -1108,6 +1108,14 @@ type Deps struct {
 	// is never put to it, which the machine decides rather than this answer. generation is 0 for a
 	// task of no run. nil holds every delivery.
 	PhaseHolds func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
+	// RetroWakeHolds says whether the tree root issue still takes the wake of a retro's finding
+	// whose task its architect's claim holds (Delivery.RetroWake): its tree has left the workflow
+	// or lingers, and a retro after a close of it is open or the last one ended within the hour
+	// Envoy keeps the finding's message. Such a task names no phase and no run, so nothing else
+	// drops it, and its text says a retro ran in the tree within the last hour, which is false once
+	// the tree runs again or that hour has passed with no retro open: false drops it rather than
+	// sends it. It is asked only about the task of a retro's wake. nil holds every delivery.
+	RetroWakeHolds func(ctx context.Context, issue string) (bool, error)
 	// RootHears says whether the root of c's tree has an architect to hear d now: it runs, it does
 	// not linger and it does not wait in `todo` for an admission slot. A root architect's task of
 	// a run names no phase, so no phase ever drops it, and it waits on the claim until that claim
@@ -4949,8 +4957,8 @@ func (m *Machine) forgetSend() {
 // since a second try of a release answers the names it freed as none (the last paragraph).
 // Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and take no deadline: what they
 // wait on is an advisory lock another transaction holds, so a deadline there would fail a launch
-// that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
+// that was only queued behind its predecessor. So do the reads of the record — PhaseHolds,
+// RetroWakeHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
 // the next write will say rather than hold the row, and whose failure costs the decision and
 // nothing after it. The deadline is what keeps a database that has stopped answering from holding
 // the machine's lock for the length of the outage.

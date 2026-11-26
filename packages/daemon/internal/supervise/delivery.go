@@ -42,6 +42,27 @@ type CheckLook struct {
 // (Claim.ServingRetroRun), as it leaves the look.
 type RetroRun uint64
 
+// retroWakeTaskPrefix starts the delivery id of the task of a retro's wake of a tree root's
+// architect (record.SuperviseRequest.RetroWake): the wake a finding of a retro after a close brings
+// that architect back for. The task names no phase, no run, no entry, no look and no retro run, so
+// the id is the one record of what it is, as the relaunch's prefix is (relaunchTaskPrefix), and
+// every take-back keeps it (rotateTaskID). Two readers ask it: the send, which drops the task once
+// its tree takes such a wake no more (sendPending, Deps.RetroWakeHolds), and the workflow's end of
+// a tree's last retro after a close, which leaves an architect holding one to its idle release
+// rather than suspend it (Delivery.RetroWake).
+const retroWakeTaskPrefix = "retro-wake:"
+
+// RetroWakeTaskID is the delivery id of the task of a retro's wake whose start row minted id: the
+// outbox's start of the wake names it so, in place of the row's own id.
+func RetroWakeTaskID(id string) string { return retroWakeTaskPrefix + id }
+
+// retroWakeTask is whether delivery id is the task of a retro's wake (RetroWakeTaskID).
+func retroWakeTask(id string) bool { return strings.HasPrefix(id, retroWakeTaskPrefix) }
+
+// RetroWake is whether d is the task of a retro's wake of a tree root's architect
+// (RetroWakeTaskID).
+func (d Delivery) RetroWake() bool { return retroWakeTask(d.ID) }
+
 // Delivery is a claim's pending task: at most one per claim, persisted, and sent only when the
 // claim is ready or idle and its connection is registered.
 //
@@ -829,7 +850,11 @@ func (c Claim) openRoundHoldsTask() bool {
 // one in that state when its session is abandoned before the delivery's turn (forgetSession), and
 // sending it would tell the fresh agent the old session's record in the text it was queued with.
 // So does a fourth: a task queued for news of the approved design alone that has nothing left to
-// say once its news is read again from the record (currentNews).
+// say once its news is read again from the record (currentNews). And a fifth: the task of a
+// retro's wake of a tree root's architect (Delivery.RetroWake) once its tree takes that wake no
+// more (Deps.RetroWakeHolds): it names no phase, so no phase drops it, and its text says a retro
+// ran in the tree within the last hour, which the tree's readmission, or that hour passing with no
+// retro open, makes false.
 //
 // A drop that leaves the claim holding nothing while its record of the last let-go still tells
 // gives it the daemon's own delivery of that record and sends it (relaunchAfterDrop): the ready
@@ -902,12 +927,19 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// task that holds, so a task its phase has left is dropped without a read of its news.
 	round, asks := updateRoundOf(p.ID)
 	spent := p.Relaunch() && !m.claim.EndedWork.Tells()
-	holds, says := !asks && !spent, true
+	holds, says, woken := !asks && !spent, true, true
 	if holds {
 		var err error
 		if holds, err = m.phaseHolds(ctx, *p); err != nil {
 			return err
 		}
+	}
+	if holds && p.RetroWake() {
+		var err error
+		if woken, err = m.retroWakeHolds(ctx); err != nil {
+			return err
+		}
+		holds = woken
 	}
 	if holds {
 		var err error
@@ -923,6 +955,9 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		case spent:
 			m.log.Info("supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that record no longer tells; it is dropped rather than sent",
 				"delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation, "toldBy", m.claim.EndedWork.ToldBy)
+		case !woken:
+			m.log.Info("supervise: this task is a retro's wake of the tree root's architect, and its tree takes that wake no more (it runs again, or the hour after its last retro after a close ended has passed); it is dropped rather than sent",
+				"delivery", p.ID, "issue", m.claim.Issue)
 		case !holds:
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than sent",
 				"delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
@@ -1368,13 +1403,27 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 	return holds, nil
 }
 
+// retroWakeHolds asks whether the tree root the claim works still takes the wake of a retro's
+// finding whose task the claim holds (Deps.RetroWakeHolds). It is asked only about such a task
+// (Delivery.RetroWake). A daemon with no workflow configured supplies no answer, and the task holds.
+func (m *Machine) retroWakeHolds(ctx context.Context) (bool, error) {
+	if m.deps.RetroWakeHolds == nil {
+		return true, nil
+	}
+	holds, err := m.deps.RetroWakeHolds(ctx, m.claim.Issue)
+	if err != nil {
+		return false, fmt.Errorf("read whether the tree of %s takes a retro's wake: %w", m.claim.Token, err)
+	}
+	return holds, nil
+}
+
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left
 // behind, for an older daemon's ask of an update round, for the daemon's own delivery of a
-// relaunch's record that no longer tells and for a task queued for news of which nothing stands
-// now, dropUpdateTask for the ask of a round that is over, retire for the ask the claim ends
-// with, and queue for the task a newer one replaces. The claim keeps its state — the task is
-// stale, not the agent.
+// relaunch's record that no longer tells, for a task queued for news of which nothing stands
+// now and for the task of a retro's wake its tree takes no more, dropUpdateTask for the ask of a
+// round that is over, retire for the ask the claim ends with, and queue for the task a newer one
+// replaces. The claim keeps its state — the task is stale, not the agent.
 //
 // A confirmed task of a run leaves the run behind it, and its phase entry and its check look
 // with it: the worker goes on working it in whatever turn comes next — one an Envoy notice

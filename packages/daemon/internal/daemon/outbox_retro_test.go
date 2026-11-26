@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -89,6 +90,7 @@ func newRetroOutboxRig(t *testing.T, issues []record.Issue, handlers ...intake.H
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
 		RootHears:      (&workflowRuntime{pool: pool, records: records}).rootHears,
+		RetroWakeHolds: (&workflowRuntime{pool: pool, records: records}).retroWakeHolds,
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
@@ -133,6 +135,13 @@ func (r *retroOutboxRig) claimOf(issue record.Issue, role claim.Role, state supe
 // (INFRA-5602's P2). It answers the run.
 func (r *retroOutboxRig) openRetroAfterClose(issue record.Issue, agent claim.Token) uint64 {
 	r.t.Helper()
+	return r.openRetroOnEntry(issue, agent, 0)
+}
+
+// openRetroOnEntry is openRetroAfterClose for a retro that was running at the close, on the phase
+// entry its agent's task carries (record.RunRetro.Entry), or 0 for a retro the close started.
+func (r *retroOutboxRig) openRetroOnEntry(issue record.Issue, agent claim.Token, entry int64) uint64 {
+	r.t.Helper()
 	run := issue.Generation
 	started := time.Now().Add(-time.Minute).UTC().Truncate(time.Microsecond)
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -142,7 +151,7 @@ func (r *retroOutboxRig) openRetroAfterClose(issue record.Issue, agent claim.Tok
 		if err := r.records.MarkRetroStarted(ctx, tx, issue.Key, run, issue.Tree, started); err != nil {
 			return err
 		}
-		return r.records.OpenRetroAfterClose(ctx, tx, issue.Key, run, issue.Tree, started, started.Add(workflow.RetroAfterCloseBound), agent, 0)
+		return r.records.OpenRetroAfterClose(ctx, tx, issue.Key, run, issue.Tree, started, started.Add(workflow.RetroAfterCloseBound), agent, entry)
 	}); err != nil {
 		r.t.Fatalf("open the retro after the close of %s: %v", issue.Key, err)
 	}
@@ -152,8 +161,14 @@ func (r *retroOutboxRig) openRetroAfterClose(issue record.Issue, agent claim.Tok
 // endRetroAfterClose ends issue's open retro of run with outcome, by cause.
 func (r *retroOutboxRig) endRetroAfterClose(issue record.Issue, run uint64, outcome record.RetroOutcome, cause record.RetroEndCause) {
 	r.t.Helper()
+	r.endRetroAfterCloseAt(issue, run, time.Now(), outcome, cause)
+}
+
+// endRetroAfterCloseAt is endRetroAfterClose at the moment at.
+func (r *retroOutboxRig) endRetroAfterCloseAt(issue record.Issue, run uint64, at time.Time, outcome record.RetroOutcome, cause record.RetroEndCause) {
+	r.t.Helper()
 	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
-		_, ended, err := r.records.EndRetroAfterClose(ctx, tx, issue.Key, run, time.Now().UTC().Truncate(time.Microsecond), outcome, cause)
+		_, ended, err := r.records.EndRetroAfterClose(ctx, tx, issue.Key, run, at.UTC().Truncate(time.Microsecond), outcome, cause)
 		if err == nil && !ended {
 			return fmt.Errorf("the retro of run %d was not open", run)
 		}
@@ -161,6 +176,51 @@ func (r *retroOutboxRig) endRetroAfterClose(issue record.Issue, run uint64, outc
 	}); err != nil {
 		r.t.Fatalf("end the retro after the close of %s: %v", issue.Key, err)
 	}
+}
+
+// wakeEngine is the workflow engine the rig's facts go through where a retro's wake is at stake,
+// with the store's pod records (workflow.Config.Pods), through which the listener's report of a
+// role message finds the claim it names, as the daemon wires them; the runner applies the facts of
+// its rows through it too.
+func (r *retroOutboxRig) wakeEngine() *workflow.Engine {
+	r.t.Helper()
+	pods, err := r.st.PodRecordsOf("LEGION")
+	if err != nil {
+		r.t.Fatalf("read the project's pod records: %v", err)
+	}
+	engine := workflow.New(r.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+		Linger: time.Hour, Pods: pods}, quietLogger())
+	r.runner.handlers = append(r.runner.handlers, engine)
+	return engine
+}
+
+// readyUp brings the launched claim of token up as its process does, as bringUp does, without
+// waiting for a task to be sent: the hello, the registration with its session, and its ready.
+func readyUp(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token) {
+	t.Helper()
+	machine.Wait()
+	generation := machine.Claim().Generation
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: token, Generation: generation},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: retroAgentSession, SessionFile: retroAgentSessionFile,
+			CapabilityHash: []byte("capability-of-" + retroAgentSession)},
+		supervise.RequestReady{Claim: token, Generation: generation, Session: retroAgentSession},
+	} {
+		if err := machine.Handle(ctx, ev); err != nil {
+			t.Fatalf("handle %T for %s: %v", ev, token, err)
+		}
+	}
+	machine.Wait()
+}
+
+// promptsOf is every prompt the fake process of the claim token was sent.
+func (r *retroOutboxRig) promptsOf(token claim.Token) []fake.Prompt {
+	r.t.Helper()
+	conn, ok := r.sup.deps.Conns.Conn(token)
+	if !ok {
+		r.t.Fatalf("no fake connection registered for %s", token)
+	}
+	return conn.(*fake.Conn).Prompts()
 }
 
 // runRetro is issue's record of run as the store holds it now, nil for none.
@@ -898,16 +958,352 @@ func TestARetroWakeOfTheRootArchitectOfALingeringTreeIsSentNotHeld(t *testing.T)
 	machine.Wait()
 
 	p := machine.Claim().Pending
-	if p == nil || p.ID != "outbox:79" || p.Phase != "" || p.Task != wakeTask {
+	if p == nil || p.ID != supervise.RetroWakeTaskID("outbox:79") || !p.RetroWake() || p.Phase != "" || p.Task != wakeTask {
 		t.Fatalf("the architect's pending delivery = %+v, want outbox:79 with no phase carrying the wake task", p)
 	}
 	if p.Generation != 0 {
 		t.Errorf("the retro wake delivery names generation %d, want 0 (a task of no run)", p.Generation)
 	}
-	if prompts := fakeConn.Prompts(); len(prompts) != 1 || prompts[0].DeliveryID != "outbox:79" || prompts[0].Message != wakeTask {
+	if prompts := fakeConn.Prompts(); len(prompts) != 1 || prompts[0].DeliveryID != p.ID || prompts[0].Message != wakeTask {
 		t.Errorf("the resumed architect's process received prompts %+v, want the one wake task outbox:79 sent rather than held", prompts)
 	}
 	if p.DeliveredAt.IsZero() {
 		t.Errorf("the retro wake delivery %s has zero DeliveredAt, want it sent to the resumed architect", p.ID)
+	}
+}
+
+// retroWakeTask is a task the wake of a root architect for a retro's finding carries in these
+// tests (workflow's retroArchitectWakeTask writes the daemon's own).
+const retroWakeTask = "Your tree closed, and the daemon stopped your session with it. Somebody published a message to your role topic."
+
+// retroWakeRow is the start of the wake of root's architect for a retro's finding, row id: the
+// architect's start of the role message's kind at the root's generation, marked as a retro's wake
+// (record.SuperviseRequest.RetroWake), as the workflow's retroWake queues it.
+func retroWakeRow(t *testing.T, root record.Issue, id int64) record.OutboxRow {
+	t.Helper()
+	row := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
+		Generation: root.Generation, WakeKind: pods.WakeRoleMessage, RetroWake: true, Task: retroWakeTask}, time.Now())
+	row.ID = id
+	return row
+}
+
+// The outbox's start of a root architect's wake for a retro's finding is fenced on the retros
+// after a close of its tree (INFRA-5602's P6): it resumes the architect while one is open, and for
+// the hour Envoy keeps the message after the tree's last one ended (pods.RetroWakeWindow), since
+// the retro's agent reports a moment after it publishes and its report can end that retro before
+// this row runs. It finishes without acting, and starts and resumes nothing, once that hour has
+// passed, in a tree past its linger, whose last retro's end closed it again, and in a tree that
+// runs again.
+func TestARetroWakeStartIsFencedOnTheHourAfterTheTreesLastRetroEnded(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// fence ends the root's retro, given its run, or leaves it open, and may record the root
+		// anew; it answers the root as the row meets it.
+		fence func(r *retroOutboxRig, root record.Issue, run uint64) record.Issue
+		acts  bool
+	}{
+		{name: "a retro of the tree is open", acts: true, fence: func(_ *retroOutboxRig, root record.Issue, _ uint64) record.Issue { return root }},
+		{name: "the tree's last retro ended a minute ago", acts: true, fence: func(r *retroOutboxRig, root record.Issue, run uint64) record.Issue {
+			r.endRetroAfterCloseAt(root, run, time.Now().Add(-time.Minute), record.RetroOutcomePassed, record.RetroEndReport)
+			return root
+		}},
+		{name: "the tree's last retro ended over an hour ago", fence: func(r *retroOutboxRig, root record.Issue, run uint64) record.Issue {
+			r.endRetroAfterCloseAt(root, run, time.Now().Add(-time.Hour-time.Minute), record.RetroOutcomePassed, record.RetroEndReport)
+			return root
+		}},
+		{name: "the tree is past its linger, its last retro ended a minute ago", fence: func(r *retroOutboxRig, root record.Issue, run uint64) record.Issue {
+			r.endRetroAfterCloseAt(root, run, time.Now().Add(-time.Minute), record.RetroOutcomePassed, record.RetroEndReport)
+			until := time.Now().Add(-30 * time.Second)
+			root.LingerUntil = &until
+			putOutboxIssue(r.t, r.pool, r.records, root)
+			return root
+		}},
+		{name: "the tree runs again", fence: func(r *retroOutboxRig, root record.Issue, run uint64) record.Issue {
+			r.endRetroAfterCloseAt(root, run, time.Now().Add(-time.Minute), record.RetroOutcomeStopped, record.RetroEndTodo)
+			root.Phase, root.Status, root.LingerUntil = phase.Planning, "in_progress", nil
+			putOutboxIssue(r.t, r.pool, r.records, root)
+			return root
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := checkRoot()
+			r := newRetroOutboxRig(t, []record.Issue{root})
+			architect, token := r.claimOf(root, claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByDaemon)
+			run := r.openRetroAfterClose(root, mustClaimToken(t, root.Key, claim.RoleImplementer))
+			root = tc.fence(r, root, run)
+
+			if err := r.runner.execute(r.ctx, retroWakeRow(t, root, 79)); err != nil {
+				t.Fatalf("the retro wake of %s's architect = %v, want it run", root.Key, err)
+			}
+			got := architect.Claim()
+			if !tc.acts {
+				if got.State != supervise.StateSuspended || got.LastStartRow != 0 || got.Pending != nil || len(r.rt.CallsOf("Resume")) != 0 {
+					t.Fatalf("the architect after the retro wake = %s with last start %d and pending %+v, resumes %+v; want it left suspended with nothing started",
+						got.State, got.LastStartRow, got.Pending, r.rt.CallsOf("Resume"))
+				}
+				return
+			}
+			if got.State == supervise.StateSuspended || got.LastStartRow != 79 || got.Pending == nil || got.Pending.Task != retroWakeTask {
+				t.Fatalf("the architect after the retro wake = %s with last start %d and pending %+v, want it resumed by row 79 holding the wake's task",
+					got.State, got.LastStartRow, got.Pending)
+			}
+			relaunchedInItsSession(t, r.rt, token)
+		})
+	}
+}
+
+// s24: the retro after the close of a root is its tree's only open retro (INFRA-5602's P6, P7). Its
+// agent publishes a finding to the root architect's role topic and reports a moment later, so the
+// report ends the tree's last open retro either before the outbox has run the wake the listener's
+// report of that message queued, or after that wake resumed the architect. The wake stands either
+// way, for the hour Envoy keeps the message: the outbox's start of it resumes the architect's
+// suspended claim in its kept session, the report queues no suspension of the architect, which
+// would stand above the wake's start and stop it at its ready, and once its process is up the
+// architect is sent the wake's task and is not stopped.
+func TestARootArchitectWithAQueuedRetroWakeIsNotSuspended(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		wakeFirst bool
+	}{
+		{name: "the report before the outbox runs the wake"},
+		{name: "the report after the wake resumed the architect", wakeFirst: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := checkRoot()
+			r := newRetroOutboxRig(t, []record.Issue{root})
+			engine := r.wakeEngine()
+			architect, token := r.claimOf(root, claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByDaemon)
+			agent := mustClaimToken(t, root.Key, claim.RoleImplementer)
+			run := r.openRetroAfterClose(root, agent)
+			drain := func(what string) {
+				t.Helper()
+				for range 2 {
+					if err := r.runner.RunOnce(r.ctx); err != nil {
+						t.Fatalf("run %s: %v", what, err)
+					}
+				}
+			}
+
+			applyFact(t, r.pool, "listener", "finding-of-"+root.Key, intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(token),
+				At: time.Now(), Report: "finding-of-" + root.Key}, engine)
+			if tc.wakeFirst {
+				drain("the wake")
+			}
+			applyFact(t, r.pool, "api", fmt.Sprintf("retro-after-close:%s:%d", root.Key, run), intake.RetroReport{Issue: root.Key, Claim: agent,
+				Generation: run, PlanRating: record.PlanRating{Rating: 4, Reason: "The plan fit the work."}}, engine)
+			drain("the rows of the finding and the report")
+
+			if got := architect.Claim(); got.State == supervise.StateSuspended || got.Pending == nil {
+				t.Fatalf("the root architect after its retro's finding and report = %s holding %+v, want it resumed by the wake, holding the wake's task",
+					got.State, got.Pending)
+			}
+			relaunchedInItsSession(t, r.rt, token)
+			readyUp(r.ctx, t, architect, token)
+			if got := architect.Claim(); got.State == supervise.StateSuspended || got.Pending == nil {
+				t.Fatalf("the root architect at its ready = %s holding %+v, want it up with the wake's task: no suspension stops it before its task",
+					got.State, got.Pending)
+			}
+			awaitSent(t, architect)
+			if prompts := r.promptsOf(token); len(prompts) != 1 || !strings.Contains(prompts[0].Message, string(token)) {
+				t.Fatalf("the woken architect's process was sent %+v, want the one wake task naming its role topic token %s", prompts, token)
+			}
+		})
+	}
+}
+
+// s25: a root architect a retro's wake resumed is stopped again before it takes the wake's task,
+// which then waits on its suspended claim, as a task of no phase does. The task says a retro after
+// a close of the tree ran within the last hour and that somebody published a message to the
+// architect's role topic, which the tree's readmission makes stale: the architect comes back for
+// the readmission's own start, and the wake's task is dropped rather than sent
+// (workflowRuntime.retroWakeHolds), so its process gets the readmission's task alone.
+func TestARetroWakeTaskIsNotSentAtTheTreesReadmission(t *testing.T) {
+	t.Parallel()
+	root := checkRoot()
+	r := newRetroOutboxRig(t, []record.Issue{root})
+	architect, token := r.claimOf(root, claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByDaemon)
+	r.openRetroAfterClose(root, mustClaimToken(t, root.Key, claim.RoleImplementer))
+	if err := r.runner.execute(r.ctx, retroWakeRow(t, root, 79)); err != nil {
+		t.Fatalf("the retro wake of %s's architect = %v, want the architect resumed", root.Key, err)
+	}
+	suspend := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "suspend", Tree: root.Tree, Role: claim.RoleArchitect,
+		Generation: root.Generation, Reason: "the tree of " + root.Key + " lingers"}, time.Now())
+	suspend.ID = 80
+	// The suspension of a launch is held until the agent is ready, and acts then, before any task
+	// goes (supervise's holdSuspendUntilReady); the row is answered that it is held.
+	_ = r.runner.execute(r.ctx, suspend)
+	readyUp(r.ctx, t, architect, token)
+	if got := architect.Claim(); got.State != supervise.StateSuspended || got.Pending == nil || got.Pending.Task != retroWakeTask {
+		t.Fatalf("the architect after its suspension = %s holding %+v, want it suspended holding the wake's task", got.State, got.Pending)
+	}
+	sent := len(r.promptsOf(token))
+
+	// The tree is readmitted: its root runs again at its next generation, and the readmission
+	// starts the root's architect with a task of its own.
+	readmitted := root
+	readmitted.Phase, readmitted.Status, readmitted.Generation, readmitted.LingerUntil = phase.Planning, "in_progress", root.Generation+1, nil
+	putOutboxIssue(t, r.pool, r.records, readmitted)
+	const readmissionTask = "Continue root. Issue: LEGION-208. The tree runs again."
+	start := mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree, Role: claim.RoleArchitect,
+		Generation: readmitted.Generation, Task: readmissionTask}, time.Now())
+	start.ID = 81
+	// The claim still holds the wake's task, which its start's task waits behind until the claim's
+	// ready decides it; the row runs again then, as its backoff runs it.
+	_ = r.runner.execute(r.ctx, start)
+	readyUp(r.ctx, t, architect, token)
+	if err := r.runner.execute(r.ctx, start); err != nil {
+		t.Fatalf("the readmission's start of the architect = %v, want its task delivered", err)
+	}
+	awaitSent(t, architect)
+	var tasks []string
+	for _, prompt := range r.promptsOf(token)[sent:] {
+		tasks = append(tasks, prompt.Message)
+	}
+	if len(tasks) != 1 || tasks[0] != readmissionTask {
+		t.Fatalf("the architect's process was sent %q after the readmission, want the readmission's task alone and never the stale wake's", tasks)
+	}
+}
+
+// retroWindow is one claim of s26: the implementer of a child standing in its retro, its machine,
+// its fake connection and the clock its machine's timers wait on.
+type retroWindow struct {
+	t       *testing.T
+	r       *retroOutboxRig
+	issue   record.Issue
+	machine *supervise.Machine
+	token   claim.Token
+	conn    *fake.Conn
+	clock   *heldClock
+}
+
+// retroPhaseEntry is the phase entry the retro's task carries in s26, which the record of the
+// retro running at the close names (record.RunRetro.Entry).
+const retroPhaseEntry = 5
+
+// resume is the retro phase's start reaching the implementer's suspended claim: its rule resume.
+func (w *retroWindow) resume() {
+	w.t.Helper()
+	if err := w.machine.Handle(w.r.ctx, supervise.RequestRuleResume{Claim: w.token, Reason: "start row 81 of " + w.issue.Key + ` (phase "retro")`}); err != nil {
+		w.t.Fatalf("resume %s: %v", w.token, err)
+	}
+}
+
+// deliver is that start's task, of the retro phase of the child's run on retroPhaseEntry.
+func (w *retroWindow) deliver() {
+	w.t.Helper()
+	err := w.machine.Handle(w.r.ctx, supervise.RequestDeliver{Claim: w.token, Task: retroTaskLine(w.issue), Phase: phase.Retro,
+		Generation: w.issue.Generation, Entry: retroPhaseEntry, ID: "outbox:81", Row: 81})
+	if err != nil {
+		w.t.Fatalf("deliver the retro's task to %s: %v", w.token, err)
+	}
+	w.machine.Wait()
+}
+
+// s26: the child's retro of run g was running at the close of run g (INFRA-5602's P4): the start
+// of its retro phase had run, so the close keeps the agent's claim and sends no task of its own,
+// and the task the claim holds is that start's, of the retro phase of run g, which the done issue
+// has left. While the retro after the close of run g is open that task is held, not dropped
+// (workflowRuntime.phaseHolds), in each window in which no turn has it at the close: the claim
+// booting after the resume, the task queued behind a turn of the agent's own, its send in a
+// backoff after the transport lost it, and a turn that took it before the close and ended in a
+// provider error after it, which takes the task back to be sent again. Each window ends with the
+// task sent and taken, and its completion is the retro's report, answered 200 with the rating.
+func TestARetroTaskOfTheClosedRunIsHeldNotDropped(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		// before brings the resumed claim, holding the retro's task, to the window the close
+		// comes in; after ends that window, which is where the task goes on or is dropped.
+		before, after func(w *retroWindow)
+	}{
+		{name: "booting after the resume", before: func(w *retroWindow) {
+			w.resume()
+			w.deliver()
+		}, after: func(w *retroWindow) {
+			readyUp(w.r.ctx, w.t, w.machine, w.token)
+		}},
+		{name: "queued behind a turn of the agent's own", before: func(w *retroWindow) {
+			w.resume()
+			readyUp(w.r.ctx, w.t, w.machine, w.token)
+			w.conn.SetStreaming(true)
+			if err := w.machine.Handle(w.r.ctx, supervise.StreamTurnStart{Claim: w.token}); err != nil {
+				w.t.Fatalf("start the agent's own turn: %v", err)
+			}
+			w.deliver()
+		}, after: func(w *retroWindow) {
+			w.conn.SetStreaming(false)
+			endTurn(w.r.ctx, w.t, w.machine, w.token)
+		}},
+		{name: "in a send backoff after the transport lost it", before: func(w *retroWindow) {
+			w.resume()
+			readyUp(w.r.ctx, w.t, w.machine, w.token)
+			w.conn.FailPrompt(errors.New("the worker stream dropped the frame"))
+			w.deliver()
+		}, after: func(w *retroWindow) {
+			w.conn.FailPrompt(nil)
+			if err := w.machine.Handle(w.r.ctx, aliveObservation(w.machine)); err != nil {
+				w.t.Fatalf("post the sweep's observation: %v", err)
+			}
+		}},
+		{name: "sent again after a turn that ended in a provider error", before: func(w *retroWindow) {
+			w.resume()
+			readyUp(w.r.ctx, w.t, w.machine, w.token)
+			w.deliver()
+			awaitSent(w.t, w.machine)
+			takeHeldTask(w.r.ctx, w.t, w.machine, w.token)
+		}, after: func(w *retroWindow) {
+			taken := w.machine.Claim().Pending
+			if err := w.machine.Handle(w.r.ctx, supervise.StreamTurnEnd{Claim: w.token}); err != nil {
+				w.t.Fatalf("end the turn: %v", err)
+			}
+			if err := w.machine.Handle(w.r.ctx, supervise.StreamPromptResult{Claim: w.token, DeliveryID: taken.ID, AgentInvoked: true,
+				Error: "overloaded_error", HTTPStatus: http.StatusServiceUnavailable}); err != nil {
+				w.t.Fatalf("report the turn's provider error: %v", err)
+			}
+			w.machine.Wait()
+			if fired := w.clock.fire(30 * time.Second); fired != 1 {
+				w.t.Fatalf("firing the ladder's first wait ran %d timers, want 1", fired)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			inRetro := retroClosedChild()
+			inRetro.Phase, inRetro.Status = phase.Retro, "in_progress"
+			r := newRetroOutboxRig(t, []record.Issue{retroRunningTree(), inRetro})
+			clock := &heldClock{}
+			r.sup.deps.Clock = clock
+			r.sup.deps.PhaseHolds = (&workflowRuntime{pool: r.pool, records: r.records}).phaseHolds
+			machine, token := r.claimOf(inRetro, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByDaemon)
+			conn, _ := r.sup.deps.Conns.Conn(token)
+			w := &retroWindow{t: t, r: r, issue: inRetro, machine: machine, token: token, conn: conn.(*fake.Conn), clock: clock}
+			tc.before(w)
+
+			// A person closes the child: it stands done, and its retro, running, is open after
+			// the close on the entry of the task the claim holds.
+			closed := retroClosedChild()
+			putOutboxIssue(t, r.pool, r.records, closed)
+			run := r.openRetroOnEntry(closed, token, retroPhaseEntry)
+			tc.after(w)
+
+			machine.Wait()
+			if p := machine.Claim().Pending; p == nil || p.Phase != phase.Retro || p.Generation != run {
+				t.Fatalf("the implementer holds %+v once the window ends, want the retro's task of run %d held: its retro after the close is open", p, run)
+			}
+			awaitSent(t, machine)
+			takeHeldTask(r.ctx, t, machine, token)
+			if status, body := r.completionRoute()(machine, retroReport()); status != http.StatusOK {
+				t.Fatalf("the retro's report = %d %s, want 200", status, body)
+			}
+			want := intake.RetroReport{Issue: closed.Key, Claim: token, Generation: run,
+				PlanRating: record.PlanRating{Rating: 4, Reason: "The plan named the tests the change needed."}}
+			if got := r.facts.facts(); len(got) != 1 || got[0] != want {
+				t.Fatalf("facts after the report = %+v, want the one report %+v", got, want)
+			}
+		})
 	}
 }

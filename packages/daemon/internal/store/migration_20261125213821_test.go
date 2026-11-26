@@ -119,6 +119,17 @@ func seedRunRetroIssues(t *testing.T, store *Store) {
 	seed.merger("LEGION-5035", "default", 1, &retro)
 	seed.issue("LEGION-5036", "LEGION-5036", "", "implementing", "", "", 2, false)
 	seed.merger("LEGION-5036", "", 3, &first)
+
+	// A child set back to todo (its second run, at admitted) whose second run has not started: its
+	// newest run that started is the first, which a close of it owes the retro of unless that run
+	// had one (the workflow's retroAtClose reads the newest run of any generation). One child's
+	// first run had a retro step start; the other's had none.
+	seed.issue("LEGION-5050", "LEGION-5050", "", "implementing", "", "", 1, false)
+	seed.issue("LEGION-5051", "LEGION-5050", "LEGION-5050", "admitted", "", "", 2, false)
+	seed.stepStart("LEGION-5051", "step", 1, 1, first)
+	seed.stepStart("LEGION-5051", "retro", 0, 1, retro)
+	seed.issue("LEGION-5052", "LEGION-5050", "LEGION-5050", "admitted", "", "", 2, false)
+	seed.stepStart("LEGION-5052", "step", 1, 1, first)
 }
 
 // 20261125213821 adds run_retros, one row for each issue and run, which is the one source of
@@ -129,8 +140,10 @@ func seedRunRetroIssues(t *testing.T, store *Store) {
 // held at admitted above a child that started is started; TakenBack alone does not start a run,
 // since it survives a root's re-admission; a run had its retro where a retro step start of its
 // generation, of any result, stands, or its issue stands in retro (not held for its children) or
-// merging, or held from either, or its merger's phases row was entered in the run; and only the
-// current run of each issue is filled.
+// merging, or held from either, or its merger's phases row was entered in the run. An issue whose
+// current run has not started gets a row for its newest run that did, from its step starts, since
+// a close reads the newest run of any generation; every other issue gets one for its current run
+// alone.
 func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 	store := emptyStore(t)
 	migrateThrough(t, store, runRetrosVersion-1)
@@ -148,7 +161,7 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 		return row
 	}
 	for _, tc := range []struct{ name, issue, want string }{
-		{"a root re-admitted with TakenBack set and no step start in this run did not start", "LEGION-5001", "none"},
+		{"a root re-admitted with TakenBack set and no step start in this run has its newest started run, its first", "LEGION-5001", "(1,LEGION-5001,f)"},
 		{"a root with TakenBack set and no step start at all did not start", "LEGION-5002", "none"},
 		{"a parent held at admitted above a child that started is started", "LEGION-5010", "(1,LEGION-5010,f)"},
 		{"the child that started is started", "LEGION-5011", "(1,LEGION-5010,f)"},
@@ -167,6 +180,8 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 		{"an issue held from implementing had none", "LEGION-5037", "(1,LEGION-5037,f)"},
 		{"a merger entered in this run says the retro passed", "LEGION-5035", "(2,LEGION-5035,t)"},
 		{"a merger row of an earlier run, its task cleared, says nothing of this one", "LEGION-5036", "(2,LEGION-5036,f)"},
+		{"a child set back to todo, not started again, has its first run, which had its retro", "LEGION-5051", "(1,LEGION-5050,t)"},
+		{"a child set back to todo, not started again, has its first run, which had no retro", "LEGION-5052", "(1,LEGION-5050,f)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := rowOf(t, tc.issue); got != tc.want {
@@ -181,15 +196,23 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 			t.Fatalf("the retro of LEGION-5021 started at %v, want %v", got, want)
 		}
 	})
-	t.Run("only the current run of each issue has a row, and no retro after a close is open", func(t *testing.T) {
-		const query = `select count(*)::text from run_retros r join issues i on i.key = r.issue
-			where r.generation <> i.generation or r.opened_at is not null or r.bound_at is not null or r.agent <> '' or r.entry <> 0
+	t.Run("each issue has one row, its current run's or its newest started run's, and no retro after a close is open", func(t *testing.T) {
+		const opened = `select count(*)::text from run_retros r
+			where r.opened_at is not null or r.bound_at is not null or r.agent <> '' or r.entry <> 0
 			or r.ended_at is not null or r.outcome <> '' or r.ended_by <> ''`
-		if got, want := rowsAsText(t, store, query), []string{"0"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("rows of an older run or with a retro after a close = %v, want none", got)
+		if got, want := rowsAsText(t, store, opened), []string{"0"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("rows with a retro after a close = %v, want none", got)
 		}
-		if got, want := rowsAsText(t, store, `select count(*)::text from run_retros`), []string{"16"}; !reflect.DeepEqual(got, want) {
-			t.Fatalf("run_retros holds %v rows, want %v: one for each of the 16 issues whose run started", got, want)
+		const older = `select coalesce(string_agg(r.issue || ':' || r.generation, ',' order by r.issue), '') from run_retros r
+			join issues i on i.key = r.issue where r.generation <> i.generation`
+		if got, want := rowsAsText(t, store, older), []string{"LEGION-5001:1,LEGION-5051:1,LEGION-5052:1"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("rows of a run other than the current one = %v, want %v: the issues whose current run has not started", got, want)
+		}
+		if got, want := rowsAsText(t, store, `select count(*)::text from run_retros`), []string{"20"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("run_retros holds %v rows, want %v: one for each of the 20 issues a run of which started", got, want)
+		}
+		if got, want := rowsAsText(t, store, `select count(*)::text from (select issue from run_retros group by issue having count(*) > 1) twice`), []string{"0"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("issues with more than one run_retros row = %v, want none", got)
 		}
 	})
 }

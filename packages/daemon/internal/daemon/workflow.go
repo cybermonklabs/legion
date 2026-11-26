@@ -1229,12 +1229,58 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 // so there is no record only for a claim the workflow never made — the operator's own spawn, whose
 // issue key need not be an issue key at all. The comparison itself is record.PhaseHolds, which a
 // test that wires this answer without a daemon calls too.
+//
+// One task holds although its issue has left its phase: a task of the retro phase of run g while
+// the retro after the close of run g that was running at the close is open (record.RunRetro, its
+// Entry set), read with the issue in the same read. The close keeps that retro's turn and sends it
+// no task of its own (workflow's retroAtClose, P4 of dispatch://INFRA-5602), so this task is the
+// retro's whole work: one the claim holds and no turn has taken yet, its claim booting after a
+// resume, queued behind a turn of the agent's own or in a send's backoff, and one a provider error
+// took back from the turn that had it, which goes again on the ladder. Dropped, it would leave the
+// retro to end at its bound with no rating; held, its turn's completion is the retro's report
+// (api's servedRetroRun, on the record's entry). A retro the close started instead (Entry 0) is
+// sent its own task of no phase, and the retro phase's task stays dropped, so the agent is not
+// handed the retro twice.
 func (w *workflowRuntime) phaseHolds(ctx context.Context, key string, queuedFor phase.Phase, generation uint64) (bool, error) {
-	issue, err := w.recordedIssue(ctx, key)
-	if err != nil {
+	var issue *record.Issue
+	var retro *record.RunRetro
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if issue, err = w.records.Issue(ctx, tx, key); err != nil || issue == nil {
+			return err
+		}
+		if queuedFor == phase.Retro && generation > 0 && !record.PhaseHolds(issue, queuedFor, generation) {
+			retro, err = w.records.RunRetro(ctx, tx, key, generation)
+		}
+		return err
+	}); err != nil {
 		return false, fmt.Errorf("read %s for the phase of its task: %w", key, err)
 	}
+	if retro != nil && retro.Open() && retro.Entry > 0 {
+		return true, nil
+	}
 	return record.PhaseHolds(issue, queuedFor, generation), nil
+}
+
+// retroWakeHolds answers supervise's Deps.RetroWakeHolds from the record: whether the tree root
+// key, whose architect's claim holds the task of a retro's wake, still takes that wake
+// (workflow.RetroWakeStands, the rule the outbox's start of the wake is fenced on too), at this
+// daemon's clock. A root the record does not hold holds the task, as phaseHolds holds a task of an
+// issue it does not record.
+func (w *workflowRuntime) retroWakeHolds(ctx context.Context, key string) (bool, error) {
+	stands := true
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		root, err := w.records.Issue(ctx, tx, key)
+		if err != nil || root == nil {
+			return err
+		}
+		why, err := workflow.RetroWakeStands(ctx, w.records, tx, *root, w.clockNow())
+		stands = why == ""
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read whether the tree of %s takes a retro's wake: %w", key, err)
+	}
+	return stands, nil
 }
 
 // phaseRole answers supervise's Deps.PhaseRole from the issue record: the worker of key's open

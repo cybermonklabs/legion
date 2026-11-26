@@ -2753,21 +2753,24 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// Machine.supersedes), so the start that StartedBy is told of below reads it too.
 		// A retro wake of a closed, lingering tree's root architect (record.SuperviseRequest.RetroWake)
 		// names no run and holds no decisions: its delivery passes generation 0 (a task of no run)
-		// so supervise's asksRoot does not hold it behind Deps.RootHears while the tree lingers.
+		// so supervise's asksRoot does not hold it behind Deps.RootHears while the tree lingers. Its
+		// id is marked as such a wake's (supervise.RetroWakeTaskID), the one record of what it is: the
+		// send drops it once its tree takes the wake no more (Deps.RetroWakeHolds), and the end of
+		// the tree's last retro after a close leaves its architect to it (workflow's retroWakeOwed).
 		var task *supervise.RequestDeliver
 		if payload.Task != "" || payload.News {
 			kept, err := keptJSON(payload.Kept)
 			if err != nil {
 				return err
 			}
-			generation := payload.Generation
+			generation, id := payload.Generation, fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID)
 			if payload.RetroWake {
-				generation = 0
+				generation, id = 0, supervise.RetroWakeTaskID(id)
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: generation,
 				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt}, RetroRun: supervise.RetroRun(payload.RetroRun),
-				ID: fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
+				ID: id, Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -4454,30 +4457,29 @@ func (r *outbox) retroHolds(ctx context.Context, row record.OutboxRow, payload r
 }
 
 // retroWakeHolds is whether the wake of a tree root's architect for a finding of a retro after a
-// close (record.SuperviseRequest.RetroWake) still has that retro to be woken for: the row's issue
-// is its tree's root, at the generation the row names, the tree has left the workflow or lingers
-// (record.Stopped), and a retro after the close of an issue of the tree is open. A tree
-// re-admitted since (its root running again, at a later generation) starts its architect itself,
-// and a tree whose last such retro ended has nothing more for it to hear: either leaves the row
-// nothing to start, and it finishes without acting, logged with why.
+// close (record.SuperviseRequest.RetroWake) still has that finding to be woken for: the row's
+// issue is at the generation the row names, and the wake stands (workflow.RetroWakeStands): the
+// issue is its tree's root, the tree has left the workflow or lingers (record.Stopped), and it
+// takes such a wake, a retro after the close of an issue of the tree open or the last one ended
+// within the hour Envoy keeps the finding's message (pods.RetroWakeWindow). That hour is what
+// keeps the wake standing behind the retro's own report, which can end the tree's last open retro
+// the moment after its agent published the finding. A tree re-admitted since (its root running
+// again, at a later generation) starts its architect itself, and a tree past that hour, or past
+// its linger, has nothing more for it to hear: either leaves the row nothing to start, and it
+// finishes without acting, logged with why.
 func (r *outbox) retroWakeHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (bool, error) {
-	var why string
-	switch {
-	case !claim.IsTreeRoot(issue.Key, issue.Tree):
-		why = "the issue is no tree's root"
-	case payload.Generation != issue.Generation:
+	why := ""
+	if payload.Generation != issue.Generation {
 		why = fmt.Sprintf("the root is at generation %d", issue.Generation)
-	case !record.Stopped(issue):
-		why = fmt.Sprintf("the tree runs again (%s, %s)", issue.Phase, issue.Status)
-	default:
-		open, err := r.openRetrosOfTree(ctx, issue.Tree)
-		if err != nil {
-			return false, err
-		}
-		if len(open) > 0 {
-			return true, nil
-		}
-		why = "no retro after a close of the tree is open"
+	} else if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		why, err = workflow.RetroWakeStands(ctx, r.records, tx, issue, r.now())
+		return err
+	}); err != nil {
+		return false, fmt.Errorf("read whether the wake of row %d of %s stands: %w", row.ID, issue.Key, err)
+	}
+	if why == "" {
+		return true, nil
 	}
 	r.log.Info("retro wake of the root architect finishes without acting", "row", row.ID, "issue", row.Issue, "wake", payload.WakeKind,
 		"why", why)
@@ -4527,9 +4529,8 @@ func (r *outbox) retroBound(ctx context.Context, row record.OutboxRow, payload r
 	return nil
 }
 
-// runRetro is issue's record of run (record.RunRetro), nil for none, and openRetrosOfTree every
-// open retro after a close of tree's issues: each read in a transaction of its own just before the
-// executor acts on a row, as productionCheck reads a check.
+// runRetro is issue's record of run (record.RunRetro), nil for none, read in a transaction of its
+// own just before the executor acts on a row, as productionCheck reads a check.
 func (r *outbox) runRetro(ctx context.Context, issue string, run uint64) (*record.RunRetro, error) {
 	var retro *record.RunRetro
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -4540,18 +4541,6 @@ func (r *outbox) runRetro(ctx context.Context, issue string, run uint64) (*recor
 		return nil, fmt.Errorf("read the record of run %d of %s: %w", run, issue, err)
 	}
 	return retro, nil
-}
-
-func (r *outbox) openRetrosOfTree(ctx context.Context, tree string) ([]record.RunRetro, error) {
-	var open []record.RunRetro
-	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		open, err = r.records.OpenRetrosOfTree(ctx, tx, tree)
-		return err
-	}); err != nil {
-		return nil, fmt.Errorf("read the open retros after a close of tree %s: %w", tree, err)
-	}
-	return open, nil
 }
 
 // checkLookHeld is a check start that met an operator's suspension of the check's own role
