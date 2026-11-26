@@ -30,6 +30,7 @@ import (
 // writes the answer is the outcome's owedKnown, so an answer that owes nothing may be nil or empty
 // alike.
 func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
+	t.Parallel()
 	topic := "notifications.dispatch.issue.T-1.message.created"
 	s1 := contracts.LegacyAgentSubject("s1")
 	roleTopic := contracts.RoleTopicPrefix + "reviewer"
@@ -108,6 +109,7 @@ func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			got := owedKeys(&row.event, row.reached, row.refused)
 			if !slices.Equal(got, row.want) {
 				t.Fatalf("owedKeys = %#v, want %#v", got, row.want)
@@ -134,6 +136,7 @@ func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
 // Controls in the same run: a copy for a session that does not hold the role waits for nothing,
 // and the outbox's own order holds the comment's forward to next behind the earlier event.
 func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// afterRecord moves the role once the record made as of the comment is written.
@@ -143,6 +146,7 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 		{name: "the role moves before the comment", afterRecord: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 			ctx := context.Background()
 			rig := newRoleRig(t)
@@ -216,8 +220,7 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 				t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 				return
 			}
-			time.Sleep(time.Second)
-			if got := recv.received(); len(got) != 0 {
+			if got := recv.receivedNow(t, rig.client); len(got) != 0 {
 				t.Fatalf("control: %s took %d copies while the earlier event was not due, want none", next, len(got))
 			}
 			dueNow(t, rig.database, earlier.ID)
@@ -250,6 +253,7 @@ func eventRecord(t *testing.T, database *store.Store, id int64) (owed []string, 
 // they were. A batch that finds what it owes unchanged writes nothing to it: the row's version is
 // the same after it, which is the control that the test can tell a write from none.
 func TestAnEventNotDueHasWhatItOwesWrittenAgain(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
@@ -304,6 +308,7 @@ func TestAnEventNotDueHasWhatItOwesWrittenAgain(t *testing.T) {
 // the batch read it, so s1's copy of a later comment waits behind nothing. Before the batch the
 // same event, never recorded (null), holds the copy: the control that the rig sees a hold.
 func TestAnEventTheOutboxCannotReadOwesNothing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, unreadable, failure string
 	}{
@@ -317,6 +322,7 @@ func TestAnEventTheOutboxCannotReadOwesNothing(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			ctx := context.Background()
 			database := storetest.Open(t)
 			broker := events.NewBroker()

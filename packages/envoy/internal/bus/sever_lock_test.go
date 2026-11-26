@@ -81,12 +81,9 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 				client.Sever()
 				close(severed)
 			}()
-			select {
-			case <-severed:
-			case <-time.After(10 * time.Second):
-				thaw()
-				t.Fatal("Sever did not return within 10 s while the write held nats.go's lock: it waited for the client's lock")
-			}
+			// A Sever that waits for the client's lock waits until the write is thawed, which only
+			// the test's end does (HoldStalledWrite's cleanup), so the wait names it.
+			testwait.Receive(t, "Sever to return while the write holds nats.go's lock", severed)
 			thaw()
 			testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the client's connection of its own after the sever", func() bool {
 				return client.Connected() && client.Connection() != conn
@@ -98,13 +95,8 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			if err := replacement.Flush(); err != nil {
 				t.Fatalf("flush the replacement connection: %v", err)
 			}
-			select {
-			case msg := <-received:
-				if string(msg.Data) != "after" {
-					t.Fatalf("the subscriber received %q before the second marker: the severed connection sent the publish that waited behind the held write", msg.Data)
-				}
-			case <-time.After(30 * time.Second):
-				t.Fatal("control: the second marker did not reach the subscriber within 30 s")
+			if msg := testwait.Receive(t, "control: the second marker to reach the subscriber", received); string(msg.Data) != "after" {
+				t.Fatalf("the subscriber received %q before the second marker: the severed connection sent the publish that waited behind the held write", msg.Data)
 			}
 		})
 	}
@@ -143,13 +135,9 @@ func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
 	}
 	peers := make([]net.Conn, 0, dropped)
 	for range dropped {
-		select {
-		case conn := <-accepted:
-			t.Cleanup(func() { _ = conn.Close() })
-			peers = append(peers, conn)
-		case <-time.After(30 * time.Second):
-			t.Fatal("control: the listener did not accept every dial")
-		}
+		conn := testwait.Receive(t, "control: the listener to accept every dial", accepted)
+		t.Cleanup(func() { _ = conn.Close() })
+		peers = append(peers, conn)
 	}
 	ended := make([]bool, dropped)
 	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "every dropped socket closed by the garbage collector", func() bool {
