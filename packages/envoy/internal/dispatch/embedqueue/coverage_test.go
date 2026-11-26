@@ -1025,7 +1025,8 @@ func commitForeignVector(t *testing.T, database *store.Store, id string) {
 // embedded again under the new identity.
 //
 // The recheck runs every 3 s here (Deps.identityRecheck), and nothing else drops the vector the
-// old configuration commits, so the wait for it is the test binary's (testwait.Eventually).
+// old configuration commits once the boot pass has ended, so the wait for it is
+// testwait.Eventually's minute.
 func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPass(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -1033,11 +1034,14 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	seedIssue(t, database, "ROLL", "ROLL-2", "Embedded before the roll")
 	drain(t, Deps{Store: database, Embedder: newPlaceEmbedder(foreignIdentity)})
 	mustExec(t, database.Pool, `update embeddings set embedding = null, model = null, embedded_hash = null, next_attempt_at = now() where id = 'ROLL-1'`)
-	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), identityRecheck: 3 * time.Second})
-	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here.
+	parked := make(chan struct{})
+	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), coverageParked: closeOnceSettled(parked), identityRecheck: 3 * time.Second})
+	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here. The boot
+	// pass has also ended (its loop parked), so no step of it can be what drops the vector below.
 	testwait.Eventually(t, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "ROLL-1") == configuredIdentity && modelOf(t, database, "ROLL-2") != foreignIdentity
 	})
+	testwait.Receive(t, "the coverage loop to park after its boot pass", parked)
 	commitForeignVector(t, database, "ROLL-1")
 	testwait.Eventually(t, "ROLL-1 dropped by the recheck and embedded again here", func() bool {
 		return modelOf(t, database, "ROLL-1") == configuredIdentity
@@ -1050,17 +1054,20 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 // embedded_hash is distinct from content_hash, which this row's is not, and search compares a
 // stored vector only with a query vector of its own identity - so without them the issue would
 // be matched by no meaning search for the life of the process. The recheck runs every second here
-// (Deps.identityRecheck), so the wait for it is the test binary's (testwait.Eventually).
+// (Deps.identityRecheck), so the wait for it is testwait.Eventually's minute.
 func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "CLEAN", "CLEAN-1", "Embedded here at boot")
-	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), identityRecheck: time.Second})
+	parked := make(chan struct{})
+	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity), coverageParked: closeOnceSettled(parked), identityRecheck: time.Second})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
-	// finds none: the database holds one row and this process made its vector.
+	// finds none: the database holds one row and this process made its vector. The boot pass has
+	// also ended (its loop parked), so only a recheck can drop the vector committed below.
 	testwait.Eventually(t, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "CLEAN-1") == configuredIdentity
 	})
+	testwait.Receive(t, "the coverage loop to park after its boot pass", parked)
 	commitForeignVector(t, database, "CLEAN-1")
 	testwait.Eventually(t, "CLEAN-1's foreign vector dropped and embedded again here", func() bool {
 		return modelOf(t, database, "CLEAN-1") == configuredIdentity

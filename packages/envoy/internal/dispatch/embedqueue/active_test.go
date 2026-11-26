@@ -182,7 +182,9 @@ func TestARestartKeepsItsIdentityActive(t *testing.T) {
 // its debt at its own, so together they never take more than the larger ceiling per minute, and
 // neither stops the other. The ceilings are small, so a "minute" of tokens passes in seconds.
 func TestTwoCeilingsTogetherNeverPassTheLargerOne(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it counts what the two processes reserve in a 3 s window of real time: a
+	// reservation held past the window by load takes nothing, and fewer reservations in it would
+	// let a refill faster than the larger ceiling pass under the bound.
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	ctx := context.Background()

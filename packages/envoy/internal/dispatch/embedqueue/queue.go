@@ -89,7 +89,9 @@ type Deps struct {
 	proven *proof
 	// enqueued is signalled, without blocking, each time Cover changes rows: it writes embeddings
 	// itself rather than through embeddings_enqueue, so no notification announces what it makes
-	// pending, and Run's scan loop wakes on this instead. Nil for a caller that builds Deps itself.
+	// pending, and Run's scan loop wakes on this instead. Run makes it (a buffer of one) unless a
+	// test of this package has, to signal the scan loop itself and read whether a signal is still
+	// waiting there. Nil for a caller that builds Deps itself.
 	enqueued chan struct{}
 	// idle and coverageParked are the two ends of Run's work, for a test that must know the
 	// process has finished all of it: idle is called whenever the scan loop waits with nothing
@@ -189,8 +191,11 @@ func Run(ctx context.Context, deps Deps) {
 		return
 	}
 	deps.proven = newProof()
-	wake := make(chan struct{}, 1)
-	deps.enqueued = wake
+	wake := deps.enqueued
+	if wake == nil {
+		wake = make(chan struct{}, 1)
+		deps.enqueued = wake
+	}
 	coverageCtx, err := store.ForConcurrentRead(ctx)
 	if err != nil {
 		slog.Error("dispatch embedqueue: not started: the caller holds a pooled connection", "error", err)

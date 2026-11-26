@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1560,22 +1561,21 @@ func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 // (Deps.coverageParked) with its pass done, nothing owed and its next recheck
 // identityRecheckInterval away, so it will write no more rows and signal no more wakes; and the
 // scan loop reports the state the woken shape exists for - nothing owed, nothing due, no timer
-// armed, no wake waiting (duty.WokenLoop.Idle). Neither can come early: the coverage loop
-// reports only with its wait armed, after a pass that succeeded and left no step waiting on the
-// embedder, and the scan loop reports idle only from the top of its wait, after a pass that
-// found nothing pending.
+// armed, no wake waiting (duty.WokenLoop.Idle).
 //
-// The idle report has to be earned rather than waited for. The scan loop reports it each time
-// it settles, which here it does while the coverage pass is still running its queries, and with
-// nothing left to do it would never report again; an idle report made before the coverage
-// loop's last write says nothing about the rows it wrote. So this drops whatever report is in
-// hand and then wakes the queue itself (Deps.Wake), which buys one more pass, whose idle report
-// is necessarily made after everything the coverage pass wrote and after any wake it left in
-// the buffer. A quiet window alone would not do: a wake Cover left in the buffer earns a pass
-// five seconds (retryInterval) into a window the test has already called quiet. The window below
-// rules no period out - the two reports do that - but guards against anything else in the
-// process that might still make a statement, and it stays far shorter than
-// identityRecheckInterval, which this test leaves at its ten minutes.
+// An idle report made before the coverage loop's last write says nothing about the rows it
+// wrote, and with nothing left to do the scan loop would never report again. So once the
+// coverage loop has parked, the test signals the scan loop's own wake channel (Deps.enqueued,
+// which it makes here, so no relay stands between the signal and the loop) and takes the scan
+// loop's next idle report while that report's call holds the loop. With the loop held nothing
+// takes a signal from the channel, so an empty channel then means the test's signal, and any
+// signal Cover left there before it, was taken by a pass that ended before this report; a signal
+// still there arrived after the report's check, and the test lets the loop run on to the next
+// report. A quiet window alone would not do: a wake Cover left in the buffer earns a pass five
+// seconds (retryInterval) into a window the test has already called quiet. The window below
+// rules no period out - the reports do that - but guards against anything else in the process
+// that might still make a statement, and it stays far shorter than identityRecheckInterval,
+// which this test leaves at its ten minutes.
 //
 // Real time, over a window longer than retryInterval: every statement it counts is one on a
 // Postgres pool, which no synctest bubble can hold, and the window is the test's own guard
@@ -1588,31 +1588,46 @@ func TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone(t *testing.T) {
 	counter := &storetest.StatementCounter{}
 	counted := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
 	parked := make(chan struct{})
-	idle := make(chan struct{}, 1)
-	wake := make(chan struct{})
+	wake := make(chan struct{}, 1)
+	// Each idle report the test takes holds the scan loop until the test closes the report's
+	// channel. Reports before the test asks for them, and after it has its answer, hold nothing.
+	var asking atomic.Bool
+	idles := make(chan chan struct{})
+	answered := make(chan struct{})
+	answer := sync.OnceFunc(func() { close(answered) })
 	runQueue(t, Deps{
 		Store:          counted,
 		Embedder:       newSyncEmbedder(configuredIdentity),
-		Wake:           wake,
+		enqueued:       wake,
 		coverageParked: closeOnceSettled(parked),
 		idle: func() {
+			if !asking.Load() {
+				return
+			}
+			release := make(chan struct{})
 			select {
-			case idle <- struct{}{}:
-			default:
+			case idles <- release:
+				<-release
+			case <-answered:
 			}
 		},
 	})
+	// Registered after runQueue's, so it runs first: a test that fails while asking lets the
+	// loop go before Run is stopped.
+	t.Cleanup(answer)
 	testwait.Receive(t, "Run's coverage loop to report itself parked", parked)
-	select {
-	case <-idle:
-	default:
-	}
+	asking.Store(true)
 	select {
 	case wake <- struct{}{}:
-	case <-testwait.Context(t).Done():
-		t.Fatal("Run took no wake after its coverage pass parked, before the test binary's deadline")
+	default: // a signal already waits there, and earns the same pass
 	}
-	testwait.Receive(t, "Run's scan loop to go idle after the coverage pass ended", idle)
+	for settled := false; !settled; {
+		release := testwait.Receive(t, "Run's scan loop to report itself idle after the test's signal", idles)
+		if settled = len(wake) == 0; settled {
+			answer()
+		}
+		close(release)
+	}
 	items, current, _, _, _ := coverage(t, database, configuredIdentity)
 	if items != 2 || current != 2 {
 		t.Fatalf("coverage = %d items, %d current; want both items embedded once Run is idle", items, current)
@@ -1756,7 +1771,8 @@ func TestAThrottledScanWaitsAtLeastRetryIntervalBeforeItsNextBatch(t *testing.T)
 // embeddings_enqueue announces on WakeChannel when its upsert writes a row - a new item, or a
 // changed text - and not when the text is the one the row already holds.
 func TestEnqueueNotifiesOnlyWhenItWritesARow(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the write that must notify nothing is read over a 500 ms window, and a
+	// notification load delayed past it would be taken by the next step, which expects one.
 	database := storetest.Open(t)
 	ctx := context.Background()
 	listener, err := database.Pool.Listener(ctx)
