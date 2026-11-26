@@ -1,0 +1,70 @@
+diff --git a/packages/envoy/internal/bus/narrowed_filter_cluster_test.go b/packages/envoy/internal/bus/narrowed_filter_cluster_test.go
+index e0e6e0128cc..010758991ef 100644
+--- a/packages/envoy/internal/bus/narrowed_filter_cluster_test.go
++++ b/packages/envoy/internal/bus/narrowed_filter_cluster_test.go
+@@ -2,14 +2,11 @@ package bus
+ 
+ import (
+ 	"context"
+-	"errors"
+ 	"slices"
+ 	"strings"
+ 	"testing"
+ 	"time"
+ 
+-	"github.com/nats-io/nats.go"
+-
+ 	"github.com/sjawhar/envoy/internal/contracts"
+ 	"github.com/sjawhar/envoy/internal/testnats"
+ )
+@@ -42,7 +39,13 @@ func TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream(t *testin
+ 	}
+ 
+ 	// Step 2: notifications.team.> narrowed as the quiesce narrows it, and a JetStream publish on a
+-	// team topic stored nowhere.
++	// team topic stored nowhere. The stream's leader drops its subscription to the subject before
++	// it answers the update, and the other members learn that over the cluster's routes later: a
++	// member that has not yet learned it routes the publish to the leader, which drops it without
++	// an answer, so the publish can time out (nats.ErrTimeout) rather than be answered no-responders
++	// (nats.ErrNoStreamResponse). A server that stored the message and never answered would time out
++	// too, so the publish's result decides nothing: the step reads the stream's last sequence before
++	// and after it, and the publish keeps its bounded wait (Cluster.JetStream's).
+ 	original := info.Config
+ 	narrowed := original
+ 	narrowed.Subjects = slices.Clone(original.Subjects)
+@@ -59,13 +62,17 @@ func TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream(t *testin
+ 	if _, err := js.UpdateStream(&narrowed); err != nil {
+ 		t.Fatalf("narrow notifications.team.>: %v", err)
+ 	}
+-	if read := testnats.AwaitSettledStream(t, js, Stream).Config.Subjects; slices.Contains(read, "notifications.team.>") ||
++	settled := testnats.AwaitSettledStream(t, js, Stream)
++	if read := settled.Config.Subjects; slices.Contains(read, "notifications.team.>") ||
+ 		!slices.Contains(read, "notifications.team.__envoy_move_frozen.>") {
+ 		t.Fatalf("the server reads the stream's subjects as %v, want notifications.team.> narrowed", read)
+ 	}
+-	if _, err := js.Publish(teamT, []byte("narrowed")); !errors.Is(err, nats.ErrNoStreamResponse) {
+-		t.Fatalf("a JetStream publish on %s while narrowed: %v, want no stream to answer it", teamT, err)
++	_, err := js.Publish(teamT, []byte("narrowed"))
++	if last := testnats.AwaitSettledStream(t, js, Stream).State.LastSeq; last != settled.State.LastSeq {
++		t.Fatalf("a JetStream publish on %s while narrowed returned %v, and the stream's last sequence moved from %d to %d: the stream stored it",
++			teamT, err, settled.State.LastSeq, last)
+ 	}
++	t.Logf("a JetStream publish on %s while narrowed returned %v, and the stream's last sequence stayed %d", teamT, err, settled.State.LastSeq)
+ 
+ 	// Step 3: the consumer's create and update, each naming the narrowed subject, each kept as sent.
+ 	consumers, err := ConnectSessionConsumers(cluster.URLs(), 0, nil)
+@@ -109,8 +116,13 @@ func TestASessionConsumerKeepsANarrowedFilterSubjectOnAThreeCopyStream(t *testin
+ 	}
+ 	var want []string
+ 	var wantSequences []uint64
+-	for _, subject := range []string{teamT, teamOther, teamU, agent} {
++	for i, subject := range []string{teamT, teamOther, teamU, agent} {
+ 		sequence := publishStored(t, owner, subject, "after the restore on "+subject)
++		// The stream stores its publishes in the order it takes them, so a narrowed publish it stored
++		// after step 2's read would put this one past the sequence after that read.
++		if i == 0 && sequence != settled.State.LastSeq+1 {
++			t.Fatalf("the first publish after the restore was stored at %d, want %d, the sequence after the narrowed stream's last: the stream stored something since step 2", sequence, settled.State.LastSeq+1)
++		}
+ 		if subject != teamOther {
+ 			want = append(want, subject)
+ 			wantSequences = append(wantSequences, sequence)

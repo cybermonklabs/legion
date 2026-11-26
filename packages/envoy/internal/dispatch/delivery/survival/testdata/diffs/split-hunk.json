@@ -1,0 +1,3 @@
+[
+{"old_path": "packages/envoy/internal/bus/narrowed_filter_cluster_test.go", "new_path": "packages/envoy/internal/bus/narrowed_filter_cluster_test.go", "status": "modified", "binary": false, "hunks": [[5, 1, 5, 0], [11, 2, 10, 0], [45, 1, 42, 7], [62, 1, 65, 2], [66, 2, 70, 4], [69, 0, 75, 1], [112, 1, 119, 1], [114, 0, 121, 5]]}
+]

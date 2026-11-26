@@ -1,0 +1,4 @@
+[
+{"old_path": null, "new_path": ".opencode/.claude", "status": "added", "binary": false, "hunks": [[1, 0, 1, 1]]},
+{"old_path": ".opencode/skills/legion-controller/SKILL.md", "new_path": ".opencode/skills/legion-controller/SKILL.md", "status": "modified", "binary": false, "hunks": [[155, 0, 155, 23]]}
+]

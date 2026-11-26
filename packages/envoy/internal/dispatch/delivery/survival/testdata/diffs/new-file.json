@@ -1,0 +1,4 @@
+[
+{"old_path": null, "new_path": "packages/daemon/.changes/unreleased/pr5556-Fixed-20261125-200935.yaml", "status": "added", "binary": false, "hunks": [[1, 0, 1, 9]]},
+{"old_path": "packages/daemon/internal/daemon/dispatch_broker_live_test.go", "new_path": "packages/daemon/internal/daemon/dispatch_broker_live_test.go", "status": "modified", "binary": false, "hunks": [[1558, 1, 1558, 1], [1561, 1, 1561, 2], [1613, 0, 1614, 4]]}
+]

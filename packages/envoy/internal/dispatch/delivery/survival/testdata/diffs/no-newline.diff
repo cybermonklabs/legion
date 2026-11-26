@@ -1,0 +1,59 @@
+diff --git a/packages/contracts/package.json b/packages/contracts/package.json
+index fdd2c31cb91..93b410ae907 100644
+--- a/packages/contracts/package.json
++++ b/packages/contracts/package.json
+@@ -2,6 +2,13 @@
+   "name": "@legion/contracts",
+   "version": "0.10.0",
+   "type": "module",
++  "exports": {
++    ".": {
++      "types": "./src/index.ts",
++      "bun": "./src/index.ts",
++      "default": "./dist/index.js"
++    }
++  },
+   "main": "dist/index.js",
+   "types": "dist/index.d.ts",
+   "scripts": {
+@@ -19,4 +26,4 @@
+     "@types/bun": "latest",
+     "typescript": "^5.3.0"
+   }
+-}
++}
+\ No newline at end of file
+diff --git a/packages/envoy-client/package.json b/packages/envoy-client/package.json
+index 870dbbd6618..d3790a0d509 100644
+--- a/packages/envoy-client/package.json
++++ b/packages/envoy-client/package.json
+@@ -5,18 +5,22 @@
+   "exports": {
+     "./defaults": {
+       "types": "./src/defaults.ts",
++      "bun": "./src/defaults.ts",
+       "default": "./dist/defaults.js"
+     },
+     "./display": {
+       "types": "./src/display.ts",
++      "bun": "./src/display.ts",
+       "default": "./dist/display.js"
+     },
+     "./tool-contract": {
+       "types": "./src/tool-contract.ts",
++      "bun": "./src/tool-contract.ts",
+       "default": "./dist/tool-contract.js"
+     },
+     "./transport": {
+       "types": "./src/transport.ts",
++      "bun": "./src/transport.ts",
+       "default": "./dist/transport.js"
+     }
+   },
+@@ -35,4 +39,4 @@
+     "@types/bun": "latest",
+     "typescript": "^5.3.0"
+   }
+-}
++}
+\ No newline at end of file

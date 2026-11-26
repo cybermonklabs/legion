@@ -1,0 +1,5 @@
+[
+{"old_path": "packages/envoy/.changes/unreleased/btree-gin-extension-Added-20261124-002702.yaml", "new_path": "packages/envoy/.changes/unreleased/btree-gin-extension-Added-20261124-002702.yaml", "status": "modified", "binary": false, "hunks": [[5, 5, 5, 11], [17, 0, 23, 13]]},
+{"old_path": "packages/envoy/internal/dispatch/store/census_test.go", "new_path": "packages/envoy/internal/dispatch/store/census_test.go", "status": "modified", "binary": false, "hunks": [[1130, 0, 1130, 20], [1141, 4, 1161, 3], [1146, 15, 1165, 6], [1162, 1, 1172, 0], [1164, 2, 1173, 1], [1218, 4, 1226, 3], [1223, 15, 1230, 5], [1239, 1, 1236, 0], [1254, 2, 1250, 3], [1261, 5, 1258, 1], [1456, 4, 1449, 3], [1461, 12, 1453, 3], [1474, 1, 1457, 0], [1476, 2, 1458, 1]]},
+{"old_path": "packages/envoy/internal/dispatch/store/migrations/20261125125703_btree_gin.up.sql", "new_path": "packages/envoy/internal/dispatch/store/migrations/20261125125703_btree_gin.up.sql", "status": "modified", "binary": false, "hunks": [[6, 4, 6, 10]]}
+]

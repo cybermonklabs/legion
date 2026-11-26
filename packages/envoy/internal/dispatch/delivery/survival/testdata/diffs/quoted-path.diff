@@ -1,0 +1,8 @@
+diff --git "a/packages/envoy/internal/dispatch/delivery/survival/testdata/shapes/na\303\257ve \"name\".txt" "b/packages/envoy/internal/dispatch/delivery/survival/testdata/shapes/na\303\257ve \"name\".txt"
+new file mode 100644
+index 00000000000..64bd5567209
+--- /dev/null
++++ "b/packages/envoy/internal/dispatch/delivery/survival/testdata/shapes/na\303\257ve \"name\".txt"	
+@@ -0,0 +1,2 @@
++the first line of a file whose path git quotes
++the second line of that file
