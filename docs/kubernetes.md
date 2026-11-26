@@ -57,7 +57,7 @@ It carries:
 - `@bopstack/pi-codegraph`, installed at `/opt/omp-plugins` from the committed lockfile at `packages/daemon/docker/omp-plugins` (its `package.json` is the pin;
   the build resolves nothing from npm), the one plugin linked into the OMP profile `legion` (`OMP_PROFILE=legion`;
   plugins resolve to `/home/legion/.omp/profiles/legion/plugins/node_modules`), backed by the CodeGraph CLI (`@colbymchenry/codegraph`, installed at `/opt/codegraph` from the committed lockfile at `packages/daemon/docker/codegraph`) at `/opt/codegraph/bin` (`PATH`)
-  — the `codegraph` tool each role's prompt says when to query: the architects before the spec names what a change touches (`packages/daemon/internal/prompts/roles/architect.md`, `architect-root.md`), and the planner, the implementer, the tester and the reviewer at their own step (`roles/core/planner.md`, `implementer.md`, `tester.md`, `reviewer.md`), with what an empty answer or a missing index asks of them in `roles/core/common.md`.
+  — the `codegraph` tool each role's prompt says when to query: the architects before the spec names what a change touches (`packages/daemon/internal/prompts/roles/architect.md`, `architect-root.md`), the planner, the implementer, the tester and the reviewer at their own step (`roles/core/planner.md`, `implementer.md`, `tester.md`, `reviewer.md`), with what a missing tool or an empty, stale or partial answer asks of them in `roles/core/common.md`, and the merger where the base changed code the change uses (`roles/merger.md`).
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
 - OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>-<digest prefix>/` (the version and the first 12 hexadecimal digits of the embedded addons' digest):
@@ -6439,8 +6439,8 @@ it waits for that release at least 3 s and at most what the pod's `terminationGr
 The whole stop fits inside the grace from 9 s up, so the daemon refuses a smaller `worker_stop_timeout_seconds` under `runtime: kubernetes` at configuration load (`legion config check` says so, quoting the key and the floor), and the relaunch is never told a live build holds the workspace;
 it runs the warm-up again, and `status` on the index that stop left on the pod's disk answers complete, so nothing runs, or reports it partial, which `codegraph index` repairs.
 A relaunch in a new pod finds no index and builds one, as the issue's first pod did, except on [a kept volume](#a-kept-volume-on-a-microvm-pod), where it finds the index that the earlier pod left.
-The tester's `affected` and the reviewer's `impact`/`callers` queries answer once `codegraph status --json` reports `index.state: "complete"`;
-before that a role falls back to grep, as its prompt says.
+The roles' CodeGraph queries (`impact`, `callers`, `affected`, `explore`) answer once `codegraph status --json` reports `index.state: "complete"`;
+before that, or when an answer is empty, a role reads the source itself, as its prompt says.
 The init containers never call `codegraph`.
 
 Every pod runs:

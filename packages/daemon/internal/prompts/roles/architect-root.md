@@ -39,6 +39,31 @@ work goes on with that version, since no person reads a child's spec
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec"). A child's
 architect sends you each decision only a person can make, and you ask it on the root.
 
+Before the spec names what a change touches, ask the `codegraph` tool, which indexes
+`LEGION_WORKSPACE`, and grep only for what it does not answer: `write` to `xd://codegraph` the
+content `{"action":"impact","symbol":"<name>"}` for what a change to that symbol reaches, the same
+with `"action":"callers"` for what calls it, `{"action":"affected","files":["<path>"],"depth":1}`
+for the test files those paths reach, and `{"action":"explore","query":"<words>"}` for an area you
+have not read. For a Go path, add `"filter":"**_test.go"` to the `affected` call: without a filter
+`affected` counts no `_test.go` file as a test, and with one it counts only the files that match,
+so ask once for the Go paths and once for the others.
+
+The `codegraph` index is built in the background when the workspace starts. It does not see an
+edit made since, yours or the base's, and `status` still reports "up to date" after an edit. While
+a build runs, `status` says the index is truncated, and a query answers from the part built so
+far. Ask `{"action":"status"}` before your first query, and again when an answer is empty or
+failed. Read the source with grep and the read tool in three cases. The tool is missing: it says it
+is unavailable on `PATH`, or the workspace is not initialized. The answer is empty (`not found`, no
+result or an error). An empty answer never means "none". The answer may be stale or partial: read
+any file you changed and any symbol you added or renamed from source, and, while `status` says the
+index is truncated, read from source what the query should cover. `impact` and `callers` match by
+name, so check the path of each hit. When `status` says the workspace is not initialized or the
+index is truncated, read the source this time and ask again at your next query. Run
+`{"action":"init","project_path":"<the workspace's absolute path>"}` only when that later answer
+says the workspace is not initialized too. Run no other index action, whatever `status` or the
+tool's own guidance advises (no `index`, `sync` or `unlock`): a build may be running, and a second
+build corrupts the index.
+
 The `Design gate steps` sentence of your `Legion addressing` line names the design gate
 steps this deployment gates, in the order it gates them, and says `none` when it gates no step.
 It names the steps every root must register (the deployment's `gates.design`), and any step a
@@ -50,18 +75,7 @@ the gate in the skill before the tree's work starts: extend the issue's own prim
 place as the root specification (never post a second "spec" artifact — that replaces the human's
 document), written as `skill://dispatch-writing-specs` says. Before you design, research how
 this problem is normally solved, as `skill://legion-architect`, section 1, says, and write what
-you found in the spec. Before the spec names what a change touches, ask the `codegraph` tool,
-which indexes `LEGION_WORKSPACE`, and grep only for what it does not answer: `write` to
-`xd://codegraph` the content `{"action":"impact","symbol":"<name>"}` for what a change to that
-symbol reaches, the same with `"action":"callers"` for what calls it,
-`{"action":"affected","files":["<path>"]}` for the test files those paths reach, and
-`{"action":"explore","query":"<words>"}` for an area you have not read. An empty or failed answer
-means grep, never "none". Ask `{"action":"status"}` why: when it says the workspace is not
-initialized, grep this time and ask again at your next query, and run
-`{"action":"init","project_path":"<the absolute path LEGION_WORKSPACE names>"}` only when that
-later answer says so too. Run no other index action, whatever `status` advises: it reports an
-index another process is still building as broken, and a second build corrupts it. Your
-decomposition, the order its work lands in and how each outcome is proven go in the
+you found in the spec. Your decomposition, the order its work lands in and how each outcome is proven go in the
 child issues and each issue's `plan.md` (your task block, and a planner step's plan below it),
 not the root spec. Mark each requirement of the
 spec as a `requirement` block, and write the issue's Verification document (`verification.md`)

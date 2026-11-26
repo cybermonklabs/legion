@@ -1,11 +1,13 @@
 package prompts
 
 //ci:reads packages/daemon/docker/omp-plugins/package.json TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost reads the plugin version codeGraphActions copies
+//ci:reads packages/daemon/docker/codegraph/package.json TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost reads the CLI version codeGraphCLIForms copies
 
 import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -804,15 +806,20 @@ var codeGraphActions = []string{
 	"impact", "affected", "init", "index", "sync", "unlock",
 }
 
-// codeGraphPluginVersion is the version of @bopstack/pi-codegraph that codeGraphActions copies.
-const codeGraphPluginVersion = "0.1.1"
+// codeGraphPluginVersion is the version of @bopstack/pi-codegraph that codeGraphActions copies, and
+// codeGraphCLIVersion the version of the CodeGraph CLI (@colbymchenry/codegraph) whose commands
+// codeGraphCLIForms and go/claude-mechanics.md copy. Each is the pin of the worker image.
+const (
+	codeGraphPluginVersion = "0.1.1"
+	codeGraphCLIVersion    = "1.5.0"
+)
 
 // codeGraphRoles classifies every role a claim can be on by what its prompt must say about the
 // `codegraph` tool: the actions of the step it carries at the point where it decides, besides
-// `status` and `init`, which the rule for an empty answer names for every role that reads code. A
-// role that is not here fails TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost until
-// someone says whether it reads code. The controller has no claim role: its spawn spec carries no
-// repository or workspace, so its prompt files are checked apart.
+// `status` and `init`, which the rule for a missing, an empty or a stale answer names for every role
+// that reads code. A role that is not here fails TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost
+// until someone says whether it reads code. The controller has no claim role: its spawn spec
+// carries no repository or workspace, so its prompt files are checked apart.
 var codeGraphRoles = map[claim.Role][]string{
 	claim.RoleArchitect:   {"impact", "callers", "affected", "explore"},
 	claim.RolePlanner:     {"impact", "callers", "affected", "explore"},
@@ -822,17 +829,17 @@ var codeGraphRoles = map[claim.Role][]string{
 	claim.RoleMerger:      {"callers", "impact"},
 }
 
-// codeGraphHostParts is the daemon prompt part each backend's launch is told after its role's
-// parts, and "" where the role's own text is all it needs. Oh My Pi reaches the tool with a `write`
-// to `xd://codegraph`, as every role's step says. Claude Code has no such tool, so its part says
-// which command each action is. A backend that is not here fails the test until someone says how
-// its roles reach the tool.
-var codeGraphHostParts = map[runtime.Backend]string{
-	runtime.BackendOmp:    "",
-	runtime.BackendClaude: "claude-mechanics.md",
+// codeGraphByCommand is whether each backend's roles reach CodeGraph through the `codegraph`
+// command, which the backend's prompt part maps action by action, rather than through the tool that
+// every role's own text names. Claude Code has no such tool. A backend that is not here fails the
+// test until someone says how its roles reach CodeGraph.
+var codeGraphByCommand = map[runtime.Backend]bool{
+	runtime.BackendOmp:    false,
+	runtime.BackendClaude: true,
 }
 
-// codeGraphCLIForms is the command a Claude Code role runs for each action a prompt names.
+// codeGraphCLIForms is the command a role that reaches CodeGraph by its command runs for each
+// action a prompt names, and goAffectedCLIForm the one for `affected` on a Go path.
 var codeGraphCLIForms = map[string]string{
 	"impact":   "codegraph impact <symbol>",
 	"callers":  "codegraph callers <symbol>",
@@ -842,72 +849,86 @@ var codeGraphCLIForms = map[string]string{
 	"init":     "codegraph init <path>",
 }
 
+const goAffectedCLIForm = "codegraph affected <path> --depth 1 --filter '**_test.go'"
+
+// dockerPin is the version the worker image pins for package, read from the package.json under
+// packages/daemon/docker/dir.
+func dockerPin(t *testing.T, dir, pkg string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "docker", dir, "package.json"))
+	if err != nil {
+		t.Fatalf("read the pin of %s: %v", pkg, err)
+	}
+	var pinned struct {
+		Dependencies map[string]string `json:"dependencies"`
+	}
+	if err := json.Unmarshal(body, &pinned); err != nil {
+		t.Fatalf("decode the pin of %s: %v", pkg, err)
+	}
+	return pinned.Dependencies[pkg]
+}
+
 // Every role that reads or changes code is told when to ask the `codegraph` tool, for the host it
 // runs on: the architects before the spec names what a change touches, the planner before a task
 // names its files and tests, the implementer before it changes a symbol, the tester before it
 // judges the implementer's tests, the reviewer for each changed exported symbol and the merger
 // where the base changed code the change uses. The inventory is every claim role on every backend
-// that runs it, so a role or a backend added later fails here until it is classified, and the
-// controller, which works no checkout, is told nothing.
+// that runs it, each row the prompt that backend launches the role with, so a role or a backend
+// added later fails here until it is classified, and the controller, which works no checkout, is
+// told nothing.
 //
-// Each composed prompt gives the call's shape once and the rule for a missing, an empty or a stale
-// answer once. A role that took `status`'s advice would start a second build beside the
-// warm-up's, which `status` reports as broken while it runs. Every action a prompt names is one the
-// tool takes and one the role's row lists, `affected` always with a depth, since its default depth
-// returns most of the repository's tests. This shows the text is loaded, never that a role
-// follows it.
+// Each prompt gives the call's shape once and the rule for a missing tool and for an empty, a stale
+// or a partial answer once. A role that took `status` or the tool's own advice would start a second
+// build beside the warm-up's, which corrupts the index. Every action a prompt names is one the tool
+// takes and one the role's row lists, `affected` always with `"depth":1` (its default depth fans
+// out across unrelated tests) and, for a Go path, a filter (without one it counts no `_test.go`
+// file as a test). This shows the text is loaded, never that a role follows it.
 func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
-	pin, err := os.ReadFile(filepath.Join("..", "..", "docker", "omp-plugins", "package.json"))
-	if err != nil {
-		t.Fatalf("read the plugin pin: %v", err)
+	if got := dockerPin(t, "omp-plugins", "@bopstack/pi-codegraph"); got != codeGraphPluginVersion {
+		t.Fatalf("@bopstack/pi-codegraph is pinned at %q and codeGraphActions copies %s: re-read src/descriptors.ts of the pinned version and update codeGraphActions", got, codeGraphPluginVersion)
 	}
-	var pinned struct {
-		Dependencies map[string]string `json:"dependencies"`
-	}
-	if err := json.Unmarshal(pin, &pinned); err != nil {
-		t.Fatalf("decode the plugin pin: %v", err)
-	}
-	if got := pinned.Dependencies["@bopstack/pi-codegraph"]; got != codeGraphPluginVersion {
-		t.Fatalf("@bopstack/pi-codegraph is pinned at %q and codeGraphActions copies %s: re-read src/descriptors.ts of the pinned version and update codeGraphActions and codeGraphCLIForms", got, codeGraphPluginVersion)
+	if got := dockerPin(t, "codegraph", "@colbymchenry/codegraph"); got != codeGraphCLIVersion {
+		t.Fatalf("@colbymchenry/codegraph is pinned at %q and codeGraphCLIForms copies %s: run `codegraph <subcommand> --help` of each form in the pinned version and update codeGraphCLIForms and go/claude-mechanics.md", got, codeGraphCLIVersion)
 	}
 
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Each is held once per composed prompt: the part that carries the step and the rule says it,
-	// and no other part of the prompt repeats it.
 	const (
-		callShape      = "`write` to `xd://codegraph` the content `{\"action\":"
-		staleAnswer    = "It does not see an edit made since, yours or the base's"
-		readsSource    = "Read the source with grep and the read tool in three cases"
-		missingTool    = "The tool is missing: it says it is unavailable on `PATH`, or the workspace is not initialized"
-		emptyAnswer    = "An empty answer never means \"none\""
-		nameMatching   = "`impact` and `callers` match by name"
-		laterInit      = "only when that later answer says so too"
-		noIndexAction  = "Run no other index action, whatever `status` or the tool's own guidance advises"
-		goTestAffected = "`affected` does not reach a Go test in the same package"
-		claudeMapping  = "is the `codegraph` command"
-		retiredCall    = "codegraph({"
+		callShape     = "`write` to `xd://codegraph` the content `{\"action\":"
+		staleAnswer   = "It does not see an edit made since, yours or the base's"
+		buildRunning  = "While a build runs, `status` says the index is truncated"
+		statusFirst   = "Ask `{\"action\":\"status\"}` before your first query"
+		readsSource   = "Read the source with grep and the read tool in three cases"
+		missingTool   = "The tool is missing: it says it is unavailable on `PATH`, or the workspace is not initialized"
+		emptyAnswer   = "An empty answer never means \"none\""
+		partialAnswer = "The answer may be stale or partial"
+		nameMatching  = "`impact` and `callers` match by name"
+		laterInit     = "only when that later answer says the workspace is not initialized too"
+		noIndexAction = "Run no other index action, whatever `status` or the tool's own guidance advises"
+		// Held only by a prompt whose role names `affected`, and, for the mapping, a role that
+		// reaches CodeGraph by its command.
+		goFilter      = "For a Go path, add `\"filter\":\"**_test.go\"` to the `affected` call"
+		claudeMapping = "is the `codegraph` command"
+		retiredCall   = "codegraph({"
 	)
+	onceEach := []string{callShape, staleAnswer, buildRunning, statusFirst, readsSource, missingTool, emptyAnswer, partialAnswer, nameMatching, laterInit, noIndexAction}
 	action := regexp.MustCompile(`"action":"([^"]*)"`)
 	affectedCall := regexp.MustCompile(`\{"action":"affected"[^}]*\}`)
-	count := func(text, needle string) int { return strings.Count(text, needle) }
 
 	for role := range codeGraphRoles {
-		if !slices.Contains(claim.Roles, role) {
+		if !claim.IsRole(role) {
 			t.Errorf("codeGraphRoles classifies %q, which is not a claim role", role)
 		}
 	}
-	for _, name := range runtime.BackendNames() {
-		backend := runtime.Backend(name)
-		part, ok := codeGraphHostParts[backend]
+	backends := slices.Sorted(maps.Keys(runtime.Backends))
+	for _, backend := range backends {
+		byCommand, ok := codeGraphByCommand[backend]
 		if !ok {
-			t.Errorf("the backend %q has no row in codeGraphHostParts: say how its roles reach the `codegraph` tool", backend)
-			continue
-		}
-		if got := runtime.Backends[backend].PromptPart; got != part {
-			t.Errorf("the backend %q is told the prompt part %q, and codeGraphHostParts says %q", backend, got, part)
+			t.Errorf("the backend %q has no row in codeGraphByCommand: say how its roles reach the `codegraph` tool", backend)
+		} else if byCommand && runtime.Backends[backend].PromptPart == "" {
+			t.Errorf("the backend %q reaches CodeGraph by its command, and names no prompt part that maps the actions to it", backend)
 		}
 	}
 
@@ -917,64 +938,79 @@ func TestEveryCodeReadingRoleIsToldWhenToAskCodeGraphOnEachHost(t *testing.T) {
 			t.Errorf("the role %q has no row in codeGraphRoles: say whether its prompt must tell it when to ask the `codegraph` tool", role)
 			continue
 		}
-		// The rule names status and init for every role that reads code.
 		named := append([]string{"status", "init"}, listed...)
 		for _, isRoot := range []bool{true, false} {
 			if isRoot && role != claim.RoleArchitect {
 				continue
 			}
-			for _, name := range runtime.BackendNames() {
-				backend := runtime.Backend(name)
+			for _, backend := range backends {
 				info := runtime.Backends[backend]
 				if !info.Runs(role) {
 					continue
 				}
 				row := fmt.Sprintf("%s (root %t) on %s", role, isRoot, backend)
 				t.Run(row, func(t *testing.T) {
-					text := foldWhitespace(composedText(t, composer, role, isRoot))
-					for _, needle := range []string{callShape, staleAnswer, readsSource, missingTool, emptyAnswer, nameMatching, laterInit, noIndexAction} {
-						if n := count(text, needle); n != 1 {
-							t.Errorf("the composed prompt of %s holds %q %d times, want once", row, needle, n)
+					launched := composedText(t, composer, role, isRoot)
+					if info.PromptPart != "" {
+						launched += readJoined(t, composer.Part(info.PromptPart))
+					}
+					text := foldWhitespace(launched)
+					for _, needle := range onceEach {
+						if n := strings.Count(text, needle); n != 1 {
+							t.Errorf("the prompt of %s holds %q %d times, want once", row, needle, n)
 						}
 					}
 					if strings.Contains(text, retiredCall) {
-						t.Errorf("the composed prompt of %s holds %q, a call no host can make", row, retiredCall)
+						t.Errorf("the prompt of %s holds %q, a call no host can make", row, retiredCall)
 					}
 					found := map[string]bool{}
 					for _, match := range action.FindAllStringSubmatch(text, -1) {
 						found[match[1]] = true
 						switch {
 						case !slices.Contains(codeGraphActions, match[1]):
-							t.Errorf("the composed prompt of %s names the action %q, which the `codegraph` tool does not take (%q)", row, match[1], codeGraphActions)
+							t.Errorf("the prompt of %s names the action %q, which the `codegraph` tool does not take (%q)", row, match[1], codeGraphActions)
 						case !slices.Contains(named, match[1]):
-							t.Errorf("the composed prompt of %s names the action %q, which is not one of the actions codeGraphRoles lists for it (%q, and status and init)", row, match[1], listed)
+							t.Errorf("the prompt of %s names the action %q, which is not one of the actions codeGraphRoles lists for it (%q, and status and init)", row, match[1], listed)
 						}
 					}
 					for _, want := range named {
 						if !found[want] {
-							t.Errorf("the composed prompt of %s never names the action %q", row, want)
+							t.Errorf("the prompt of %s never names the action %q", row, want)
 						}
 					}
 					if slices.Contains(listed, "affected") {
-						if n := count(text, goTestAffected); n != 1 {
-							t.Errorf("the composed prompt of %s holds %q %d times, want once: its `affected` misses a Go test of the same package", row, goTestAffected, n)
+						if n := strings.Count(text, goFilter); n != 1 {
+							t.Errorf("the prompt of %s holds %q %d times, want once: without a filter `affected` counts no `_test.go` file as a test", row, goFilter, n)
 						}
 					}
 					for _, call := range affectedCall.FindAllString(text, -1) {
 						if !strings.Contains(call, `"depth":1`) {
-							t.Errorf("the composed prompt of %s names the call %s without \"depth\":1: the default depth returns most of the repository's tests", row, call)
+							t.Errorf("the prompt of %s names the call %s without \"depth\":1: the default depth fans out across unrelated tests", row, call)
 						}
 					}
-					if part := codeGraphHostParts[backend]; part != "" {
-						host := foldWhitespace(readJoined(t, composer.Part(part)))
-						if n := count(host, claudeMapping); n != 1 {
-							t.Errorf("%s holds %q %d times, want once: %s has the `codegraph` command and no `codegraph` tool", part, claudeMapping, n, backend)
-						}
+					wantMapping := 0
+					if codeGraphByCommand[backend] {
+						wantMapping = 1
+						forms := map[string]string{}
 						for _, want := range named {
-							if form := codeGraphCLIForms[want]; !strings.Contains(host, form) {
-								t.Errorf("%s does not say that the action %q is %q, which a role of %s runs", part, want, form, backend)
+							form, ok := codeGraphCLIForms[want]
+							if !ok {
+								t.Errorf("codeGraphCLIForms has no command for the action %q, which the prompt of %s names", want, row)
+								continue
+							}
+							forms[want] = form
+						}
+						if slices.Contains(listed, "affected") {
+							forms["affected on a Go path"] = goAffectedCLIForm
+						}
+						for what, form := range forms {
+							if !strings.Contains(text, form) {
+								t.Errorf("the prompt of %s does not say that %s is %q", row, what, form)
 							}
 						}
+					}
+					if n := strings.Count(text, claudeMapping); n != wantMapping {
+						t.Errorf("the prompt of %s holds %q %d times, want %d: only a backend that reaches CodeGraph by its command is told the command for each action", row, claudeMapping, n, wantMapping)
 					}
 				})
 			}

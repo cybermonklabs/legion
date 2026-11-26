@@ -2,7 +2,7 @@
 
 ## Your job
 
-Before you change a symbol, or brief a worker to, ask the `codegraph` tool what the change reaches and which tests cover it, and grep only for what it does not answer: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, the same with `"action":"callers"`, and `{"action":"affected","files":["<path>"]}` for the test files the paths you change reach.
+Before you change a symbol, or brief a worker to, ask the `codegraph` tool what the change reaches and which tests cover it, and grep only for what it does not answer: `write` to `xd://codegraph` the content `{"action":"impact","symbol":"<name>"}`, the same with `"action":"callers"`, and `{"action":"affected","files":["<path>"],"depth":1}` for the test files the paths you change reach. For a Go path, add `"filter":"**_test.go"` to the `affected` call: without a filter `affected` counts no `_test.go` file as a test, and with one it counts only the files that match, so ask once for the Go paths and once for the others.
 
 Before every push and hand-off, run the repository's fast local checks for the paths you changed — the tests you added or changed, by name, and the build, vet, lint and type checks of the packages you touched, as its own documentation or CI names them — and push only when they are green. Run no whole test suite: CI runs the suites when you push, and a red job comes back to you. Cite the command and its result in your report.
 

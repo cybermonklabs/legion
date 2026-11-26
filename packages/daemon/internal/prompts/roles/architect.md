@@ -98,13 +98,27 @@ version changes, naming the version and what changed. Request no approval for it
 Before the spec names what a change touches, ask the `codegraph` tool, which indexes
 `LEGION_WORKSPACE`, and grep only for what it does not answer: `write` to `xd://codegraph` the
 content `{"action":"impact","symbol":"<name>"}` for what a change to that symbol reaches, the same
-with `"action":"callers"` for what calls it, `{"action":"affected","files":["<path>"]}` for the
-test files those paths reach, and `{"action":"explore","query":"<words>"}` for an area you have not
-read. An empty or failed answer means grep, never "none". Ask `{"action":"status"}` why: when it
-says the workspace is not initialized, grep this time and ask again at your next query, and run
-`{"action":"init","project_path":"<the absolute path LEGION_WORKSPACE names>"}` only when that
-later answer says so too. Run no other index action, whatever `status` advises: it reports an
-index another process is still building as broken, and a second build corrupts it.
+with `"action":"callers"` for what calls it, `{"action":"affected","files":["<path>"],"depth":1}`
+for the test files those paths reach, and `{"action":"explore","query":"<words>"}` for an area you
+have not read. For a Go path, add `"filter":"**_test.go"` to the `affected` call: without a filter
+`affected` counts no `_test.go` file as a test, and with one it counts only the files that match,
+so ask once for the Go paths and once for the others.
+
+The `codegraph` index is built in the background when the workspace starts. It does not see an
+edit made since, yours or the base's, and `status` still reports "up to date" after an edit. While
+a build runs, `status` says the index is truncated, and a query answers from the part built so
+far. Ask `{"action":"status"}` before your first query, and again when an answer is empty or
+failed. Read the source with grep and the read tool in three cases. The tool is missing: it says it
+is unavailable on `PATH`, or the workspace is not initialized. The answer is empty (`not found`, no
+result or an error). An empty answer never means "none". The answer may be stale or partial: read
+any file you changed and any symbol you added or renamed from source, and, while `status` says the
+index is truncated, read from source what the query should cover. `impact` and `callers` match by
+name, so check the path of each hit. When `status` says the workspace is not initialized or the
+index is truncated, read the source this time and ask again at your next query. Run
+`{"action":"init","project_path":"<the workspace's absolute path>"}` only when that later answer
+says the workspace is not initialized too. Run no other index action, whatever `status` or the
+tool's own guidance advises (no `index`, `sync` or `unlock`): a build may be running, and a second
+build corrupts the index.
 
 Create children under your own issue as `skill://legion-architect/references/decomposition.md`
 says, and review each version of their specs as "Reviewing a child's spec" in that reference
