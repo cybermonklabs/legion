@@ -18,15 +18,15 @@ import type { InboxRoute } from "./inbox-route";
  * `keymapScope={DIALOG_SCOPE}` puts its j/k/Enter/Escape bindings on the scope a dialog anywhere
  * on the stack exclusively consults, instead of the standalone page's `inbox` scope, which a
  * dialog's keydown handling never reaches. `pane={false}` is the third: a peek is a strip beside
- * the page it covers, not a two-column reader, so it keeps the card in the row at every width -
- * the Inbox the page itself shows below 1280 px. The rows scroll in this `aside` rather than in
- * the window, so it is also the box the Inbox's viewport anchor is given (`scroller`): without
- * it the anchor compensates a removed row with `window.scrollBy`, which moves nothing here, and
- * the row the reader's hand is on jumps by a card's height. What the reader's browser keeps -
- * the thread order, and which bands they folded - is theirs rather than the address's, so the
- * drawer and the page agree. The drawer draws no title line of its own: the Inbox's header line
- * holds its title, its search box and the close button (`header`), whose ref is the dialog's
- * first focus.
+ * the page it covers, not a reader of one row at a time, so it keeps the card in the row at every
+ * width, where the Inbox page lists short rows and opens one row's view. The rows scroll in this
+ * `aside` rather than in the window, so it is also the box the Inbox's viewport anchor is given
+ * (`scroller`): without it the anchor compensates a removed row with `window.scrollBy`, which
+ * moves nothing here, and the row the reader's hand is on jumps by a card's height. What the
+ * reader's browser keeps - the thread order, and which bands they folded - is theirs rather than
+ * the address's, so the drawer and the page agree. The drawer draws no title line of its own: the
+ * Inbox's header line holds its title, its search box and the close button (`header`), whose ref
+ * is the dialog's first focus.
  */
 export function InboxDrawer({ onClose, open }: { onClose: () => void; open: boolean }): ReactNode {
   const closeButtonRef = useRef<HTMLButtonElement>(null);

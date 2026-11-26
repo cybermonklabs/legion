@@ -145,7 +145,9 @@ export interface InboxSelection {
   /** The thread rows a **Dismiss** press names, each with what the page drew in it, which is
    *  what the bar counts for that press. */
   readonly selectedThreads: readonly InboxDismissRow[];
-  readonly snoozePick: (until: string) => void;
+  /** Snoozes the marked asks the view is drawing until `until`; settles once the server has
+   *  answered for every one of them. */
+  readonly snoozePick: (until: string) => Promise<void>;
   /** What the reader is told about the last bulk snooze the server refused in part. */
   readonly snoozeRefusal: string | undefined;
   /** Whether Dispatch refused this ask's snooze in the bar's newest pick: the rollback has put
@@ -315,12 +317,12 @@ export function useInboxSelection({
   // selection, and their rows the band they were kept in, in one commit; the ones it refused are
   // marked again under its own reason, even if Clear ran while the write was in flight, so a
   // second pick retries exactly those.
-  const snoozePick = (until: string) => {
+  const snoozePick = (until: string): Promise<void> => {
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);
     refusedPick.current = new Set();
     setSnoozing(new Set(ids));
-    void bulkWrite.submit(ids, until).then(({ failed }) => {
+    return bulkWrite.submit(ids, until).then(({ failed }) => {
       const refused = new Set(failed.map(({ askId }) => askId));
       refusedPick.current = refused;
       // The bar's going and its hand-off are one render. This runs outside any event of the

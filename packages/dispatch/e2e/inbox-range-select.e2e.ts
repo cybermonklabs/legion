@@ -5,7 +5,7 @@ import { isDismissedPage, pageIds, seedDismissedThreads } from "./dismissed-seed
 import { chooseShow, listTrigger, openFilterPanel, pickFromList } from "./filters";
 import { describeFocus, frameAndTask, holdsFocus, tabTo } from "./focus";
 import { drawer } from "./inbox-drawer";
-import { inboxList, inboxPane, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
+import { inboxList, inboxPane, selectedRow } from "./inbox-pane";
 import {
   asSession,
   replyRowId,
@@ -14,6 +14,7 @@ import {
   THREAD_SESSION,
 } from "./inbox-threads";
 import { drawnIds } from "./inbox-view";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { type BrowserContext, expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -886,8 +887,8 @@ test("the keyboard makes the same range from the anchor", async ({ browser }) =>
   }
 });
 
-// SLOW(>=2s): twelve seeded rows drawn as cards, a shift-click ten rows down, then a scroll back
-// and a five-step pointer drag across one row's words.
+// SLOW(>=2s): twelve seeded rows drawn as cards in the drawer, a shift-click ten rows down, then a
+// scroll back and a five-step pointer drag across one row's words.
 test("a shift-click selects no text and keeps the focus on its checkbox", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
@@ -897,9 +898,14 @@ test("a shift-click selects no text and keeps the focus on its checkbox", async 
 
   const alice = await asUser(browser, "alice");
   try {
-    // Below the column's width each row is a card, whose title is plain text: on a short row
-    // the title is a link, which a drag carries rather than selects.
-    const page = await inboxPage(alice, "/", READING_PANE_WIDTH - 256);
+    // The drawer draws each row as a card, whose title is plain text: on a short row - the Inbox
+    // page's, at every width since INFRA-5200 - the title is a link, which a drag carries rather
+    // than selects. The drawer opens over another page, which draws no Inbox list of its own.
+    const page = await inboxPage(alice, "/agents", READING_PANE_WIDTH - 256);
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+    await page.locator("body").focus();
+    await page.keyboard.press("i");
+    await expect(drawer(page)).toBeVisible();
     await expect(rows(page)).toHaveCount(12);
     const drawn = await drawnIds(inboxList(page));
     const selectedText = () => page.evaluate(() => window.getSelection()?.toString() ?? "");

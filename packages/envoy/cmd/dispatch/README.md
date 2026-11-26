@@ -212,7 +212,7 @@ a reader that trusts only a session the server saw proved reads that mark, and a
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, or the project scope `none` or a narrowed one in any shape but a read-only token's)
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, the project scope `none` or a narrowed one in any shape but a read-only token's, or the scope `approve` in any shape but an approve-only token's; `ciphertoken.ErrNotASession` holds the whole list)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
@@ -220,13 +220,14 @@ The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
 
-No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
+No broker-issued token a machine holds has the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, a Legion daemon's own token holds `legion-status` alone (below), and every other holds none (`brokerTokenActor`).
 Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
-So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses every broker-issued token at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
+So every route whose `scopes` name `approve` (`GET /api/v1`; `x-oauth-scopes` in `dispatch-openapi.json`) refuses each of those tokens at its scope gate (`gateRouteScopes`), before the handler runs and before anything is relayed to the broker:
 `403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
+The one broker-issued token that approves is an approve-only token (below), which no machine holds.
 The answer to an approval request (`POST /api/v1/asks/{id}/answer`) needs only `person` at that gate, because the ask's kind is known only once its row is read, so a token that holds no scope and a read-only token are refused there as above;
 a token acting for its person passes the gate and is refused inside the answer's transaction (`answerAsk`), once the ask's kind is read and before anything is written, with the same `403 OAUTH_SCOPE_REQUIRED` naming `approve`, and the request stays open.
-The person makes those calls from their browser session, or with a personal token they gave `approve`.
+The person makes those calls from their browser session, with a personal token they gave `approve`, or from an agent session on a box where they signed in, through the secrets broker's proxy with an approve-only token (below), which no file on the box holds.
 A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
 
 A read-only token is any token that holds `read`, and it may only read.
@@ -280,6 +281,14 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries a read-only token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
+
+An approve-only token is the token the secrets broker mints for a person's approve grant: a session on a box where the person signed in trades that sign-in for the grant, holds only a placeholder, and sends each approval through the broker's proxy, which puts in the token, bound to the broker pod's own key, and never releases it.
+It holds the OAuth scope `approve` alone and the project scope `person`, and names a person and a session and no service and no project.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesApproveOnly` set, so Dispatch accepts such a token as its person with both of the person's scopes and marks its credential approve-only (`model.Credential.ApproveOnly`).
+Dispatch serves it on the routes its approve list names (`approveScopeRoutes` in `internal/dispatch/api/routes_table.go`): every route that needs `approve` less the mint and the change of a personal token (`POST /api/v1/me/agent-tokens`, `PATCH /api/v1/me/agent-tokens/{id}`), whose token would be an approve credential on the box, and with the answer of an approval request.
+Every other route of the table, and `GET /ws/live`, answers it `403 APPROVE_ONLY_TOKEN` (`contracts.DispatchApproveOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseApproveOnlyToken`), before the route's scopes and everything else it does.
+The answer route serves every kind of ask, so `answerAsk` refuses such a token the answer of any ask that is not an approval request with the same `403 APPROVE_ONLY_TOKEN`, once the ask's kind is read inside the answer's transaction and before anything is written: a question's answer, its free text among it, is no approval.
+A service whose verifier does not set the switch answers such a token `401`, and the NATS auth service refuses it as `not_a_session`.
 
 A job's token is the token the broker mints from a job entry: `BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod, `BROKER_EXCHANGE_JOB_WORKFLOWS` for a GitHub Actions workflow, and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine.
 The entry names an identity, its projects and, where it fixes one, a session, and it names no person.
@@ -1455,11 +1464,11 @@ So for each surface the two builds share, this is what build N+1 may change whil
 - **Routes.**
   A route is added freely.
   Build N answers a route that only build N+1 serves with the JSON `404 NOT_FOUND` `no route for <METHOD> <path>`, and it answers a known path asked with a method it does not serve the same way (Routes, below).
-  The page (`web/src/api/client.ts`) and the `dispatch` command (`packages/envoy-client/src/dispatch-http.ts`) send that request again, with the same body, after 1, 2 and 4 seconds, each wait jittered by a quarter:
+  The page (`web/src/api/client.ts`) and the `dispatch` command (`packages/envoy-client/src/dispatch-http.ts`) send that request again, with the same body, after 1, 2 and 4 seconds, each wait jittered by a quarter, but for the Inbox page's reads of `GET /api/v1/me/inbox` and `dispatch inbox`'s, which fall back (below):
   no handler ran, and the next attempt can reach the other build.
   After the last attempt they say that the action is not offered yet because a release is in progress.
   A route is removed only in the release after the one that stops calling it, so no page or command still serving calls a route that is gone.
-  `dispatch inbox` calls `GET /api/v1/me/inbox`, which this release adds, so where the server answers `404` for it, it falls back to `GET /api/v1/inbox` and `GET /api/v1/me/replies`, the reads it replaces.
+  The Inbox page (`getMeInbox` and `inboxOfTheReleaseBefore` in `web/src/api/client.ts`) and `dispatch inbox` call `GET /api/v1/me/inbox`, which this release adds, so each asks it once, and where the server answers `404` for it, falls back to `GET /api/v1/inbox` and `GET /api/v1/me/replies`, the reads it replaces.
 
 - **Query values and opaque tokens** (a cursor, a `kind`, an enum value in a query): reader-first.
   The release that reads a new value or token shape ships before the release that sends or mints it.
@@ -5181,7 +5190,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but the two fallbacks of a roll (Two builds at once, above), the page's read of every project's open asks (`openAsksOfTheReleaseBefore`) and `dispatch inbox`'s (`inboxReadOfTheReleaseBefore`), and the Inbox reads `GET /api/v1/me/inbox`.
+  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but the three fallbacks of a roll (Two builds at once, above), the page's read of every project's open asks (`openAsksOfTheReleaseBefore`), the Inbox page's reads of its rows (`getMeInbox` and `inboxOfTheReleaseBefore` in `web/src/api/client.ts`), which ask `GET /api/v1/me/inbox` once and read this route and `GET /api/v1/me/replies` where it has no route, and `dispatch inbox`'s (`inboxReadOfTheReleaseBefore`), and the Inbox reads `GET /api/v1/me/inbox`.
   List open asks newest-first, including their issue key, title, and assignee.
   `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, the assignee of its issue until somebody hands it on, and the default assignee of its project while the issue holds nobody — so it keeps the asks waiting on the caller or on that person, and `unassigned` keeps the asks that chain names nobody for, which every project naming a default assignee leaves none of;
   an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`.
@@ -5195,7 +5204,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but `dispatch inbox`'s fallback of a roll (`inboxReadOfTheReleaseBefore`, Two builds at once, above), and the Inbox reads `GET /api/v1/me/inbox`.
+  Kept for one release, for a page or `dispatch` command of the release before: no page or command of this release calls it but two of the three fallbacks of a roll (Two builds at once, above), the Inbox page's reads of its rows (`getMeInbox` and `inboxOfTheReleaseBefore` in `web/src/api/client.ts`), which ask `GET /api/v1/me/inbox` once and read `GET /api/v1/inbox` and this route where it has no route, and `dispatch inbox`'s (`inboxReadOfTheReleaseBefore`), and the Inbox reads `GET /api/v1/me/inbox`.
   List the caller's Inbox threads, in the state's own order, of the kinds `kind` names:
   `reply`, the default, the threads they wrote in (an ask, a comment thread, an issue message thread) where somebody else has written since they last read it, less an open ask on an open issue that waits on them, which the Inbox already lists;
   `agent`, their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;

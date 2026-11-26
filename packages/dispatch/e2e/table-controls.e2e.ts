@@ -96,7 +96,6 @@ import { assigneeFilter, assigneeOptions, closeAssigneeFilter, pickAssignee } fr
 import {
   askCard,
   askControls,
-  hasReadingPane,
   inboxList,
   inboxPane,
   inboxRow,
@@ -122,6 +121,7 @@ import { rowSnooze } from "./keyboard-inbox";
 import { seedLegionDaemon } from "./legion-seed";
 import { inboxRead } from "./pick-writes";
 import { sql } from "./psql";
+import { hasReadingPane } from "./reading-pane";
 import { sessionIds } from "./session-ids";
 import { expandedState, settledState } from "./settled";
 import {
@@ -6889,13 +6889,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
   const [repositoryWord, repositoryLeft, repositoryPicked] =
     step === 0 ? ["acme/gadgets", [], /^acme\/gadgets$/] : ["inh", ["Inherit"], /^acme\/widgets$/];
-  // The Inbox's two Snoozes. With the reading column a row's Snooze is in the column's head, for
-  // the row the column shows; without it, in the row itself.
+  // The Inbox's two Snoozes. A row's Snooze is in the head of the pane the row opens in, for the
+  // row it shows: the reading column beside the list, and below its width the reading view in
+  // the list's place, whose short rows draw no Snooze (INFRA-5200).
   const snoozed = seed.snoozes[step] ?? { after: "", bulk: "", row: "" };
-  const rowSnooze = listTrigger(
-    hasReadingPane(page) ? inboxPane(page) : inboxRow(page, snoozed.row),
-    /^Snooze /
-  );
+  const rowSnooze = listTrigger(inboxPane(page), /^Snooze /);
   const bulkSnooze = listTrigger(
     page.getByRole("toolbar", { name: "Selected rows" }),
     "Snooze selected asks"
@@ -6921,15 +6919,13 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const [sizeWord, sizeOption] = step === 0 ? ["250", "250 per page"] : ["100", "100 per page"];
   // The priority of the width's own issue, which the List's row, the Board's card and the
   // Inbox's question pick in turn: P3 to P1, P1 to P2, then P2 to P0. The Inbox draws a
-  // question's priority in the reading column's head, for the row the column shows, and without
-  // the column in the row itself.
+  // question's priority in the head of the pane the row opens in, beside the list or in its
+  // place below the column's width (INFRA-5200).
   const prioritized = seed.priorities[step] ?? { ask: "", issue: "" };
   const priorityOf = (scope: Locator) => listTrigger(scope, `Priority of ${prioritized.issue}`);
   const listPriority = priorityOf(main.locator(`[data-issue-row="${prioritized.issue}"]`));
   const cardPriority = priorityOf(main.locator(`[data-board-card="${prioritized.issue}"]`));
-  const inboxPriority = priorityOf(
-    hasReadingPane(page) ? inboxPane(page) : inboxRow(page, prioritized.ask)
-  );
+  const inboxPriority = priorityOf(inboxPane(page));
   // The Delivery page over the fixture's custom range, so the Window starts on Custom range….
   const deliveryPage = `/delivery?${DELIVERY_WINDOW}&mode=list`;
   const deliveryWindow = listTrigger(main, "Window");
@@ -7060,8 +7056,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: ["Tomorrow"],
       picked: laterAfter(1),
       // The pick takes the row away once its write lands. With the reading column the focus goes
-      // to the column's own stop; without it no hand-off of the Inbox's own lands the focus the
-      // row took with it, so the row reads none.
+      // to the column's own stop; below its width the pick is made in the reading view's head,
+      // whose landing this row does not read.
       focusAfterPick: hasReadingPane(page) ? paneScroller(page) : null,
     },
     {

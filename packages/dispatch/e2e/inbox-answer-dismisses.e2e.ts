@@ -7,7 +7,7 @@ import {
   replyToMessageDelivery,
 } from "./api";
 import { describeFocus, frameAndTask, holdsFocus, tabTo } from "./focus";
-import { inboxList, inboxPane, paneScroller, READING_PANE_WIDTH, selectedRow } from "./inbox-pane";
+import { inboxList, inboxPane, paneScroller, selectedRow } from "./inbox-pane";
 import {
   agentRowId,
   asSession,
@@ -18,6 +18,7 @@ import {
   THREAD_SESSION,
 } from "./inbox-threads";
 import { sql } from "./psql";
+import { READING_PANE_WIDTH } from "./reading-pane";
 import { type BrowserContext, expect, type Locator, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 

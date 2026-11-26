@@ -34,7 +34,7 @@ import {
 import { bodyOf } from "./bodies";
 import { documentEditor, needsYouCards, openSpecAndAwaitHeadingIds } from "./editor";
 import { peekTrigger } from "./inbox-drawer";
-import { askControls, hasReadingPane, inboxPane, inboxRow, selectRow } from "./inbox-pane";
+import { askControls, inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import {
   agentRowId,
   asSession,
@@ -43,6 +43,7 @@ import {
   seedCommentThread,
   THREAD_SESSION,
 } from "./inbox-threads";
+import { hasReadingPane } from "./reading-pane";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
@@ -53,18 +54,14 @@ function drawer(page: Page) {
 }
 
 /**
- * An approval request's own card, as the Inbox draws one at this width.
+ * An approval request's own card, as the Inbox draws one.
  *
- * Below `READING_PANE_WIDTH` that is the card in the question's row on the Inbox page. From
- * there the page shows an approval as the document under review in its reading column
- * (INFRA-575), which carries no card, and the drawer is the Inbox that still keeps one
- * (`pane={false}`): it opens over whatever page is showing, so this navigates to one.
+ * The Inbox page shows an approval as the document under review, in its reading column from
+ * `READING_PANE_WIDTH` (INFRA-575) and in place of the list below it (INFRA-5200), neither of
+ * which carries a card; the drawer is the Inbox that still keeps one (`pane={false}`) at every
+ * width: it opens over whatever page is showing, so this navigates to one.
  */
 async function approvalCard(page: Page, askId: string): Promise<Locator> {
-  if (!hasReadingPane(page)) {
-    await page.goto("/");
-    return page.getByTestId(`ask-${askId}`);
-  }
   // The key waits for the page's heading: pressed as the page loads, before the shell has
   // registered its keys, it can open nothing.
   await page.goto("/agents");
@@ -724,10 +721,10 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    // The question's own card is where the Inbox shows the question itself: the row's card
-    // below 1280 px, and the drawer's from there up, since the Inbox page's reading column
-    // shows an approval as the document under review rather than a card (INFRA-575) and its
-    // short row gives the question one line on purpose.
+    // The question's own card is where the Inbox shows the question itself: the drawer's, since
+    // the Inbox page's reading column and its reading view show an approval as the document
+    // under review rather than a card (INFRA-575, INFRA-5200) and its short row gives the
+    // question one line on purpose.
     const card = await approvalCard(page, requested.ask.id);
     await expect(card).toBeVisible();
     const question = card.locator("p", { hasText: ending });
@@ -737,7 +734,7 @@ test("an approval ask's Inbox card shows a question carrying a long summary whol
     // this bound is thousands of lines, past any height a person's window has, so the height
     // is the one the card itself reports rather than a number written here.
     const viewport = page.viewportSize();
-    if (viewport !== null && hasReadingPane(page)) {
+    if (viewport !== null) {
       const needed = await question.evaluate((element) => {
         let height = element.scrollHeight;
         for (let node: Element | null = element; node !== null; node = node.parentElement) {
@@ -938,19 +935,14 @@ test("an approval request for an unassigned issue's non-primary document remains
     // through the issue itself (the margin below).
     await page.goto("/");
     await expect(inboxRow(page, nonPrimary.ask.id)).toBeVisible();
-    // Actionable means the Inbox offers the review where this width draws it: the reading
-    // column's head over the document under review from 1280 px (INFRA-575), and the
-    // question's own card, which names itself an approval, below that.
+    // Actionable means the Inbox offers the review where it reads the request: the head over
+    // the document under review, in the reading column from 1280 px (INFRA-575) and in place of
+    // the list below it (INFRA-5200).
     const controls = await askControls(page, nonPrimary.ask.id);
-    if (hasReadingPane(page)) {
-      await expect(controls.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
-      await expect(
-        controls.getByRole("button", { exact: true, name: "Request changes" })
-      ).toBeVisible();
-    } else {
-      await expect(controls).toContainText("Approval requested");
-      await expect(controls.getByRole("radio")).toHaveCount(2);
-    }
+    await expect(controls.getByRole("button", { exact: true, name: "Approve" })).toBeVisible();
+    await expect(
+      controls.getByRole("button", { exact: true, name: "Request changes" })
+    ).toBeVisible();
     const inboxShot = testInfo.outputPath("approval-non-primary-inbox-1280.png");
     await page.screenshot({ path: inboxShot, fullPage: true });
     await testInfo.attach("non-primary approval in the project default's Inbox", {
@@ -1096,15 +1088,10 @@ test("an open approval ask's document link reaches the issue's Conversation, and
     // A project-level document's approval request links its own document the same way. A
     // document has no assignee, so its question reaches the default assignee of its project -
     // alice, who made GATE - and her own list is where the Inbox lists it. The link is the
-    // card's named version below 1280 px, and from there the short row's own owner link, the
-    // reading column having drawn the document itself in place of a card (INFRA-575); both
-    // carry the same address.
+    // short row's own owner link at every width, the reading pane drawing the document itself in
+    // place of a card (INFRA-575, INFRA-5200).
     await page.goto("/");
-    const inboxLink = hasReadingPane(page)
-      ? inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]")
-      : page
-          .getByTestId(`ask-${docApproval.ask.id}`)
-          .getByRole("link", { name: "runbook.md, version 1" });
+    const inboxLink = inboxRow(page, docApproval.ask.id).locator("[data-inbox-owner]");
     await expect(inboxLink).toHaveAttribute("href", docPath);
 
     await page.goto(`/projects/GATE/documents/${doc.artifact.slug}`);
@@ -1708,10 +1695,14 @@ test("the approval mark stands at one place on every row", async ({ browser }) =
     // title.
     for (const row of roomy) await expectOwnerBesideMarks(page, row);
 
-    // Below its width: the two cards.
+    // Below its width: the two cards. The Inbox page lists short rows there too (INFRA-5200), so
+    // the cards are the drawer's, opened over a page that draws no Inbox list of its own.
     await page.setViewportSize({ height: 768, width: 1024 });
-    await page.goto("/");
-    expect(hasReadingPane(page)).toBe(false);
+    await page.goto("/agents");
+    await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+    await page.locator("body").focus();
+    await page.keyboard.press("i");
+    await expect(drawer(page)).toBeVisible();
     for (const row of cards) {
       await expect(
         row.renderer === "ask card"
@@ -1754,8 +1745,9 @@ async function expectMarkAndKeyInCard(scope: Page | Locator, rowId: string): Pro
 // SLOW(>=2s): two issues seeded, a Verification document approved and then edited and polled
 // until stale, then the Inbox and the drawer over an issue page each read and measured to fit.
 // The two short rows beside the pane are read by the five states and the live change, at the
-// pane's width. Below the pane's width each row is a card, a claim the desktop projects cannot
-// make, so the row runs on the phone projects alone. @phone @phone-only
+// pane's width. Below the pane's width the Inbox page lists short rows too (INFRA-5200), and the
+// drawer each row as a card, a claim the desktop projects cannot make, so the row runs on the
+// phone projects alone. @phone @phone-only
 test("the approval mark at phone width @phone @phone-only", async ({ browser }) => {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "PHONEMARK", name: "Phone mark" });
@@ -1808,20 +1800,26 @@ test("the approval mark at phone width @phone @phone-only", async ({ browser }) 
     const page = await alice.newPage();
     await page.goto("/");
     expect(hasReadingPane(page)).toBe(false);
-    // Below the pane's width each row is a card, and each card wears the mark.
-    await expect(page.getByTestId(`ask-${ask.id}`)).toBeVisible();
+    // Below the pane's width the Inbox page lists short rows (INFRA-5200), each wearing the mark,
+    // and draws no card in them.
+    await expect(inboxRow(page, ask.id)).toBeVisible();
+    await expect(page.getByTestId(`ask-${ask.id}`)).toHaveCount(0);
     await expect(markOf(page, ask.id)).toHaveText("Approved v1");
-    await expect(inboxRow(page, row).locator("[data-inbox-thread-card]")).toBeVisible();
+    await expect(inboxRow(page, row).locator("[data-inbox-thread-card]")).toHaveCount(0);
     await expect(markOf(page, row)).toHaveText("Approved v1");
-    // The long mark and the long key stay inside their card.
+    // The long mark and the long key stay inside their row.
     await expect(markOf(page, wideAsk.id)).toHaveText(longMark);
     await expectMarkAndKeyInCard(page, wideAsk.id);
     await assertPageFits(page);
 
-    // The drawer draws the same cards over another page.
+    // The drawer draws each row as a card over another page, and each card wears the mark.
     await page.goto(`/issues/${issue.key}`);
     await peekTrigger(page).click();
     await expect(drawer(page)).toBeVisible();
+    await expect(drawer(page).getByTestId(`ask-${ask.id}`)).toBeVisible();
+    await expect(
+      drawer(page).locator(`[data-inbox-row="${row}"] [data-inbox-thread-card]`)
+    ).toBeVisible();
     await expect(markOf(drawer(page), ask.id)).toHaveText("Approved v1");
     await expect(markOf(drawer(page), row)).toHaveText("Approved v1");
     await expect(markOf(drawer(page), wideAsk.id)).toHaveText(longMark);

@@ -15,14 +15,7 @@ import {
 import { recordClipboard } from "./clipboard";
 import { listTrigger, pickFromList } from "./filters";
 import { clearAssigneeFilter, closeAssigneeFilter, pickAssignee } from "./inbox-filter";
-import {
-  hasReadingPane,
-  inboxList,
-  inboxPane,
-  paneScroller,
-  selectedRow,
-  selectRow,
-} from "./inbox-pane";
+import { inboxList, inboxPane, paneScroller, selectedRow, selectRow } from "./inbox-pane";
 import {
   agentRowId,
   replyRowId,
@@ -42,6 +35,7 @@ import {
   session,
 } from "./keyboard-inbox";
 import { inboxRead } from "./pick-writes";
+import { hasReadingPane } from "./reading-pane";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 

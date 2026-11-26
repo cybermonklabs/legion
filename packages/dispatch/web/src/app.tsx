@@ -26,6 +26,7 @@ import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversati
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
+import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { buildInboxPath } from "./features/inbox/inbox-route";
@@ -88,7 +89,6 @@ import {
 import {
   COMPACT_VIEWPORT_QUERY,
   MD_VIEWPORT_QUERY,
-  READING_PANE_QUERY,
   useDialog,
   useMediaQuery,
 } from "./features/shell/useDialog";
@@ -294,15 +294,22 @@ function ShellMessagePage({ children, title }: { children?: ReactNode; title: st
   );
 }
 
+/**
+ * The Inbox page: the Inbox alone (`Inbox`), which draws the page's heading as its own header
+ * line - the page's title, the search box and **Answered by you** (`InboxHeader`) - above the
+ * list and the row the reader is reading. From the reading column's width, and below it while the
+ * reader has a row open, it fills the height left under the shell's navigation
+ * (`useInboxFillsViewport`); otherwise the page scrolls as one document.
+ */
 function InboxPage(): ReactNode {
   useDocumentTitle("Inbox · Dispatch");
-  // From the reading pane's width the page fills the viewport (`fillsViewport` below), and the
-  // two columns divide the height left under the header; below it the page scrolls as ever. The
-  // Inbox draws the page's header line itself, its title as the page's `h1` (`InboxHeader`): the
-  // search box in it is the Inbox's.
-  const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
+  // From the reading pane's width, and below it while a row's reading view is open, the page
+  // fills the viewport (`fillsViewport` below) and the Inbox divides the height left under its
+  // header; otherwise the page scrolls as ever. The Inbox draws the page's header line itself,
+  // its title as the page's `h1` (`InboxHeader`): the search box in it is the Inbox's.
+  const fillsViewport = useInboxFillsViewport();
   return (
-    <section className={readingPaneShown ? "flex min-h-0 flex-1 flex-col" : undefined}>
+    <section className={fillsViewport ? "flex min-h-0 flex-1 flex-col" : undefined}>
       <Inbox header={{ kind: "page" }} />
     </section>
   );
@@ -533,6 +540,25 @@ function ShellProviders({
   );
 }
 
+/**
+ * The signed-in frame, in three named groups in this order:
+ *
+ * - **Navigation**: below the compact width, a top bar - the title, the Inbox count or Peek, the
+ *   unread replies, then Menu - whose counts wrap whole onto a second row of the bar, with the
+ *   navigation itself in a drawer the reader opens with Menu. From the compact width up it is
+ *   the sidebar, or the rail the reader collapses it to; the issue frame draws its icon rail
+ *   from the `md` width instead and opens the same drawer from it.
+ * - **Main**: the page (`<main>`).
+ * - **Margin**: the details column, which the reader collapses or resizes (`MarginColumn`).
+ *
+ * Below `xl` Navigation stands above Main; from `xl` the groups stand side by side, in that
+ * order. The Margin's own narrow forms - its rail, the issue frame's Details drawer - are
+ * `Margin`'s (`features/margin/Margin.tsx`). A page that
+ * scrolls inside itself - the Inbox from its reading column's width, or below it with a row
+ * open (`useInboxFillsViewport`) - gets a viewport-tall frame whose Main hands that page the
+ * height left under Navigation. The status corner, the search bar, the Inbox drawer and the
+ * dialogs float over the frame and are in none of its groups.
+ */
 function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const queryClient = useQueryClient();
   const [navigationOpen, setNavigationOpen] = useState(false);
@@ -624,11 +650,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // the browser has them, so a phone's collapsing toolbar is accounted for), with `<main>` a
   // flex column that hands it the height left below the compact header, capped above an iOS
   // on-screen keyboard while its composer has focus. The Inbox is one of them wherever its
-  // reading pane shows: each of the pane's two columns scrolls in itself, which it cannot do
-  // while the page scrolls as one. Below that width the Inbox scrolls the document as ever.
-  const readingPaneShown = useMediaQuery(READING_PANE_QUERY);
+  // reading pane shows, and below that width while a row's reading view is open
+  // (`useInboxFillsViewport`): each scrolls in itself, which it cannot do while the page
+  // scrolls as one. Otherwise the Inbox scrolls the document as ever.
+  const inboxFillsViewport = useInboxFillsViewport();
   const fillsViewport =
-    routeFillsViewport(location.pathname) || (routeIsInbox(location.pathname) && readingPaneShown);
+    routeFillsViewport(location.pathname) ||
+    (routeIsInbox(location.pathname) && inboxFillsViewport);
   // The session whose live view the address names, or `null` on every other page. The shell
   // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
   // is the one thing about the live view the router still decides.
