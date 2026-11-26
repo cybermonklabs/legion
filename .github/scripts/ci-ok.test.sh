@@ -540,7 +540,7 @@ check "keeps it a failure" \
 
 echo "case: every job that restates its legs' result writes the words runner-shutdown.sh reads"
 # The marker is read by its words, so a job whose error is reworded would hide its legs' shutdowns
-# again with every check green: each such step of the three files whose jobs run in legs must hold
+# again with every check green: each such step of the four files whose jobs run in legs must hold
 # them.
 marker=$(sed -n "s/^RUNNER_SHUTDOWN_RESTATED=\"\(.*\)\"\$/\1/p" "$script_dir/runner-shutdown.sh")
 check "runner-shutdown.sh spells the marker" "$(is "$([ -n "$marker" ] && echo set)" set)"
@@ -556,6 +556,7 @@ print(len(steps), sum(os.environ["MARKER"] in step.get("run", "") for step in st
 check "both restating steps of ci-job-daemon-go.yaml write it" "$(is "$(restating ci-job-daemon-go.yaml)" "2 2")"
 check "envoy-go's restating step writes it" "$(is "$(restating ci-job-envoy-go.yaml)" "1 1")"
 check "envoy-go-race's restating step writes it" "$(is "$(restating ci-job-envoy-go-race.yaml)" "1 1")"
+check "envoy-session-stall's restating step writes it" "$(is "$(restating ci-job-envoy-session-stall.yaml)" "1 1")"
 
 echo "case: GitHub refuses the check runs of this head"
 # The read is tried three times and the verdict is reached without it: a read that did not

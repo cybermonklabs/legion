@@ -2301,6 +2301,9 @@ BROWSER_SUITE_STEPS = (
     f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
 )
 STALL = "envoy-session-stall"
+# The suites run in the legs of this job of STALL's file; STALL there only restates their result.
+STALL_LEGS = "envoy-session-stall-legs"
+STALL_FILE = job_file(STALL)
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"

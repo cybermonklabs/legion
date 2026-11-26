@@ -2948,6 +2948,25 @@ envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK 
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
 
+## Why the session stall suites run in legs
+
+The job's ten suites ran one after another in one job of 9.4 minutes (median of main's runs from
+2026-11-24T08:40Z to 2026-11-25T02:44Z, dispatch://INFRA-3411/artifact/ci-speed-md), and it ended
+last in 56% of the pull requests that ran no held suite. Each suite starts its own stack (natsd, a
+listener, a Dispatch server, as each needs), so none waits on another, and they split into legs
+of one matrix, each on a runner of its own with the same rig: the Postgres service, the Bun
+install, Go with the go-envoy cache and the contracts build, about one minute. A step's
+`if: matrix.leg == <n>` puts each suite in exactly one leg, and the legs are balanced from the
+serial job's step times (job 139688693306, in the called file's header) so each ends within 5
+minutes (dispatch://INFRA-5794/spec#b-r5): leg 1 the role takeover smoke, the pi-envoy stall test,
+the moved-approval advice and the keyed resend (153 s); leg 2 envoy-client's connection options,
+the broker credential tests and the comment mention (169 s); leg 3 the session state rig, the
+claude-envoy stall test and the design-gate advice (182 s). Rebalance them from the legs' own
+step times. The job `envoy-session-stall` of the called file waits for the legs and passes only
+when each passed, so the check-run name `envoy-session-stall / envoy-session-stall` and ci-ok's
+reading of it are what they were; its error carries the words runner-shutdown.sh reads, so a leg
+the platform killed still reads as a runner shutdown.
+
 ## What the ci-filters job holds every filter and every workflow file to
 
 Holds the table every filter is computed from to ci.yaml - every gate a filter the changes job

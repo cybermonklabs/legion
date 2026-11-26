@@ -7,9 +7,22 @@ name: CI job envoy-session-stall
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# The suites run in legs, all at the same time: envoy-session-stall-legs runs once per leg, each
+# leg with the same rig (Postgres, the Bun install, Go and the contracts build) and the suites its
+# steps' `if: matrix.leg == <n>` give it, so each suite runs in exactly one leg. The legs are
+# balanced from the step times of the one serial job they replace (job 139688693306: the role
+# takeover smoke 109 s, the NATS connection options 106 s, the session state rig 84 s, claude-envoy
+# 73 s, the broker credential 46 s, pi-envoy 31 s, design-gate 25 s, the comment mention 17 s, the
+# keyed resend 7 s, the moved approval 6 s), so each leg ends within 5 minutes; rebalance them from
+# the legs' own step times. The job envoy-session-stall waits for the legs and passes only when
+# every leg passed: it carries the check-run name `envoy-session-stall / envoy-session-stall` that
+# the one job had before the legs.
+# why: .github/ci-notes/ci.md#why-the-session-stall-suites-run-in-legs
+#
+# Each job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
+# ci.yaml ends, so a failing leg does not wait for the others to end. `ci-ok-changes` carries
+# `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -30,9 +43,17 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  envoy-session-stall:
+  # The suites' legs, each with the steps whose `if:` names its number.
+  # why: .github/ci-notes/ci.md#why-the-session-stall-suites-run-in-legs
+  envoy-session-stall-legs:
+    name: envoy-session-stall (leg ${{ matrix.leg }})
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    strategy:
+      # One leg's failure leaves the others running, so each reports its own suites.
+      fail-fast: false
+      matrix:
+        leg: [1, 2, 3]
+    timeout-minutes: 15
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -46,7 +67,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 20 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       LEGION_E2E_ENVOY_STACK: "1"
       LEGION_E2E_DISPATCH_STACK: "1"
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -84,6 +105,7 @@ jobs:
         run: bun run build
         working-directory: packages/contracts
       - name: Stall test of envoy-client's NATS connection options
+        if: matrix.leg == 2
         run: bun test src/__tests__/nats-stall.test.ts
         working-directory: packages/envoy-client
       # A session's broker-token credential on a real natsd behind the real NATS auth service
@@ -92,19 +114,23 @@ jobs:
       # once a token is live (slice E2, t-e-9); and a session switch that subscribes
       # the new session's subject only once the connection is admitted with its token (t-e-10).
       - name: Broker credential tests on a hub behind the auth service
+        if: matrix.leg == 2
         run: bun test src/__tests__/nats-credential.test.ts -t "a session's connection to a hub behind the auth service"
         working-directory: packages/envoy-client
       # A path, not a filter: bun test discovers only names holding ".test" or ".spec", and takes
       # this one as a file because of the leading "./".
       - name: Session state rig of a stalled session
+        if: matrix.leg == 3
         run: bun test ./test/session-stall.ts
         working-directory: packages/envoy-client
       # Through the package's own test script, so the file's hooks get the one --timeout that
       # packages/pi-envoy/package.json sets, as the pi-envoy job's run gives them.
       - name: Stall test of pi-envoy
+        if: matrix.leg == 1
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
+        if: matrix.leg == 3
         run: bun test tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy
       # The role takeover smoke (INFRA-404, A5): one line per row of its spec's R8 table, driven
@@ -112,23 +138,27 @@ jobs:
       # It needs no model provider and no deployment, so unlike the other smokes in
       # packages/pi-envoy/scripts it runs here.
       - name: Role takeover smoke
+        if: matrix.leg == 1
         run: bash packages/pi-envoy/scripts/smoke-role-takeover.sh
       # The design-gate advice over the real CLI and a real Dispatch server (dispatch://INFRA-1727):
       # the server this suite starts is built from this tree, so what it asserts is the sentence a
       # person reads in a terminal rather than one rendered from a stub.
       - name: Design-gate advice of the real CLI against a real Dispatch
+        if: matrix.leg == 3
         run: bun test src/__tests__/design-gate-advice.live.test.ts
         working-directory: packages/envoy-client
       # The moved-approval-request advice over the same real CLI and real Dispatch
       # (dispatch://INFRA-3096): it proves the field the server fills on a write that takes an
       # open approval request back from the person is the field the CLI reads and prints.
       - name: Moved-approval advice of the real CLI against a real Dispatch
+        if: matrix.leg == 1
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
       # to Dispatch.
       - name: Comment mention of the real CLI against a real Dispatch
+        if: matrix.leg == 2
         run: bun test src/__tests__/comment-mention.live.test.ts
         working-directory: packages/envoy-client
       # A keyed write a real Dispatch refused because it could not resolve the caller.
@@ -136,8 +166,48 @@ jobs:
       # started with an OIDC issuer nothing serves, and the issue holds the comment once.
       # It needs the same Postgres and Go this job already has.
       - name: A refused keyed write resent under its key against a real Dispatch
+        if: matrix.leg == 1
         run: bun test src/__tests__/dispatch-keyed-resend-live.test.ts
         working-directory: packages/envoy-client
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-session-stall
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The job of the caller's name, which restates the legs' result under the check-run name
+  # `envoy-session-stall / envoy-session-stall`, so ci-ok's job map, the merge queue and every
+  # reader of that name read what they read before. A leg's own failure has already posted its
+  # early ci-ok from the leg.
+  # why: .github/ci-notes/ci.md#why-the-session-stall-suites-run-in-legs
+  envoy-session-stall:
+    needs: [envoy-session-stall-legs]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    steps:
+      # The ci-ok report below is an action of this repository's .github.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # The result is written into the run: rather than set in an env:, which check-ci-filters.sh
+      # reads as able to move what the legs' go commands compile. The error says this job restates
+      # its legs' result, in the words `.github/scripts/runner-shutdown.sh#RUNNER_SHUTDOWN_RESTATED`
+      # holds, so a leg the platform killed still reads as a runner shutdown.
+      - name: Pass only when every leg passed
+        run: |
+          if [ "${{ needs.envoy-session-stall-legs.result }}" != success ]; then
+            echo "::error::envoy-session-stall's legs ended ${{ needs.envoy-session-stall-legs.result }}, and this job restates its legs' result: each leg's own check run says why it did not pass"
+            exit 1
+          fi
+          echo "envoy-session-stall's legs ended success"
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report
