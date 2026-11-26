@@ -1,0 +1,26 @@
+{
+  "c0": {
+    "messages-come-in-the-order-of-their-writes": [
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/go.mod"
+    ]
+  },
+  "c1": {
+    "messages-come-in-the-order-of-their-writes": [
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/go.mod"
+    ]
+  },
+  "c2": {
+    "messages-come-in-the-order-of-their-writes": [
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/go.mod"
+    ]
+  },
+  "c3": {
+    "messages-come-in-the-order-of-their-writes": [
+      "packages/envoy/cmd/listener/*",
+      "packages/envoy/go.mod"
+    ]
+  }
+}

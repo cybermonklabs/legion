@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -14,7 +14,14 @@ import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { loadedEngine, useMarkdownHeadline, warmMarkdownRenderer } from "./markdown-engine";
+import { ReferenceHostIs } from "./reference-host";
 import { Unfurl } from "./Unfurl";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** CORE-1's summary read, which a reference to it shows. */
 const issue: IssueReferenceSummary = {
@@ -168,12 +175,16 @@ test("a preview inside a link holds no link of its own, and a click on its refer
       <Routes>
         <Route
           element={
-            <Link to="/host">
-              <MarkdownPreview
-                lines={2}
-                markdown="see [the docs](https://example.com/docs) and dispatch://CORE-1"
-              />
-            </Link>
+            // R6's second shape, which the host declares once for everything under it: the
+            // link is the one control, so nothing inside it is a link of its own.
+            <ReferenceHostIs host="control">
+              <Link to="/host">
+                <MarkdownPreview
+                  lines={2}
+                  markdown="see [the docs](https://example.com/docs) and dispatch://CORE-1"
+                />
+              </Link>
+            </ReferenceHostIs>
           }
           path="/"
         />
@@ -230,7 +241,9 @@ test("search hits mark the runs the server matched, and a reference it matched i
     await waitFor(() => expect(element).toHaveTextContent("Design decision"));
     const marks = Array.from(element.querySelectorAll("mark"), (mark) => mark.textContent);
     expect(marks).toEqual(["port", "CORE-1 Design decision"]);
-    const marked = element.querySelector("mark [data-dispatch-ref]");
+    const marked = element
+      .querySelector("[data-dispatch-ref] mark")
+      ?.closest("[data-dispatch-ref]");
     expect(marked?.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1");
     expect(element.textContent).not.toContain("dispatch://");
   } finally {
@@ -246,7 +259,7 @@ function Headline({ max, tree }: { max: number; tree: DisplayTree }): ReactNode 
   );
 }
 
-test("a headline writes a reference as its short form, keeps one in code as written, and never cuts a character in half", async () => {
+test("a headline writes a reference it has not read as written, keeps one in code as written, and never cuts a character in half", async () => {
   const view = render(
     <>
       <Headline max={60} tree={tree("a-headline-with-references")} />
@@ -260,7 +273,9 @@ test("a headline writes a reference as its short form, keeps one in code as writ
       expect(outputs).toHaveLength(3);
       return outputs;
     });
-    expect(reference?.textContent).toBe("Blocked on CORE-2 ask, see dispatch://CORE-3");
+    expect(reference?.textContent).toBe(
+      "Blocked on dispatch://CORE-2/ask/a1, see dispatch://CORE-3"
+    );
     expect(reference?.getAttribute("data-cut")).toBe("false");
     const cut = emoji?.textContent ?? "";
     expect(cut).toBe(`a${"😀".repeat(59)}…`);
@@ -305,7 +320,9 @@ test("an ask's unfurl card never borrows its issue's status, and reads no issue,
   );
   try {
     await waitFor(() => expect(getAsk).toHaveBeenCalledWith("ask-1"));
-    // The ask has not answered: the card says what it is, not the issue's status.
+    // The ask has not answered: the card says what it is, not the issue's status. Its words are
+    // the projection's, which keeps an address as written until the address's read answers, as
+    // a painted link reads before its title resolves - never a status borrowed from the issue.
     await tick(20);
     const card = within(view.container).getByRole("link");
     expect(card.textContent).toBe("dispatch://CORE-1/ask/ask-1");

@@ -37,6 +37,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
+- A test of the leak guard, or of code that runs it, names the fixture rule file of `packages/daemon/internal/leakguard/leakguardtest`.
+  `WriteRules` writes the file into a directory of the test's and returns its path, which the test gives `LEGION_PRIVATE_NAME_RULES_FILE`, and `Rules` is the file's text, which a test compiles with `leakguard.LoadRules` where it runs a compiled set itself (`RuleSet.Check`) or hands one to the daemon's branch create.
+  Every name in it is an invented word, and its constants (`RulesHost`, `PairName` and `PairWord`, `Word`, and each rule's class) are what a test puts in the write it checks and looks for in the report, so a Go test of the guard assembles no name of any deployment's rules.
+  It holds no file the guard refuses: a test of a refused rule file builds that file in its own body, often from `Rules` with one change.
+
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   Each build is made once per test process and shared by every test that asks for the same one, in a directory `cmdtest.Main` makes and removes, so a package that builds a command runs its tests through it: `func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }`, or `cmdtest.Run` around another harness's `Main`.
@@ -233,7 +238,7 @@ itself, whose tests import its sources by relative path.
   `packages/claude-envoy/tests/transpiler-cache.ts`).
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 124 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -599,6 +604,38 @@ adds far more memory than the others: a few hundred megabytes or more of live he
 collection, about three times that under the race detector. Beside the package's other tests
 such a test would take the binary toward the step's limit.
 
+## A test in `packages/daemon/internal/daemon` runs beside the others
+
+Every top-level test of `packages/daemon/internal/daemon` in the default build calls `t.Parallel()`
+as its first statement, and the package's `TestMain` runs 4 at once (`daemonTestParallelism`).
+The live drivers behind `//go:build e2e`, which no unit run compiles, are not held to this. Each
+test already has a database of its own (a clone of the package's template, `testDSN` and
+`isolatedOutboxPool`), its own ports and state directory, and a NATS server of the package's pool
+(`internal/testnats`). go test starts no parallel test until every serial one has run, so a serial
+test runs alone while the runner's other cores wait.
+
+A test that cannot run beside the others says why in a `// Not parallel:` comment on its first
+line: it calls `t.Setenv` or `t.Chdir`; it writes a package variable (`readinessRetry`, through
+`fastReadiness`, or `record.StatusRowKinds`); it changes the process's signal disposition; it is a
+helper process that exits the test binary (`TestIdleRigRoleProcess`); or it holds a wall-clock
+bound that the parallel tests' load could make it miss, which the comment names (`podStopBound`'s
+one second in `TestAPodStartsItsRolesOneLoadAtATime`). A new test with neither the call nor the
+comment runs alone for no reason, as 46 tests did by 2026-11-25.
+
+## A daemon test writes a file it then executes with `internal/execfile`
+
+In a package of the daemon module whose tests run beside each other (`cmd/legion`,
+`internal/daemon`, `internal/intake`), a test writes a file it or its program then executes (a
+stand-in git, gh, jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile`
+(`execfile.Write`, `execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
+another test forks while the file is open for writing holds the write descriptor until its own
+exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
+(ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
+reading from the open to the close, so no fork lands in between. Code a test runs that writes such
+a file holds the lock the same way (`internal/runtime/workerbin`'s `writeTemporary`,
+`internal/leakguard`'s `writeCopyFile`). A file no program executes (a token, a configuration, a
+record) needs neither.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
@@ -615,18 +652,30 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
+steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its nineteen source-guard
 tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
+Every package of `packages/daemon` runs in CI in exactly one leg that `.github/go-legs.yaml` names
+for it (or under `elsewhere`, with the job that runs it). When you add, remove, rename or move a
+daemon package, change its line there in the same change: every daemon-go leg fails, naming the
+package, while `go list ./...` and the file disagree. Put a new package in the leg its measured
+time fits, longest first; `.github/ci-notes/ci-job-daemon-go.md` says how the legs are balanced.
+
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI runs it only
-under the race detector, once per run, in the `daemon-go-race` job's step "Test the concurrent
-packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`), beside the
-`daemon-go` job; `daemon-go`'s plain step ("Test the Go daemon") leaves it out,
-and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+under the race detector, once per run, split by test name over the three race legs
+`.github/go-legs.yaml` gives it, a group of
+`.github/go-legs/packages/daemon/internal/daemon.yaml` each, whose step
+is "Test the concurrent packages under the race detector" (`.github/workflows/ci-job-daemon-go.yaml`,
+job `daemon-go-race-legs`), beside the plain legs; the plain step ("Test the Go daemon") leaves it
+out, and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. A
+test you add, rename or delete needs no edit of that file to keep CI green: a test no group names
+runs in the group `.github/scripts/go_legs.py` places it in, the same in every leg, and a name the
+package no longer declares matches nothing, each with a warning on the legs' logs for the next
+rebalance. The
 figures below were measured while these steps were the `test` job's. On CI's runners, while the
 plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
 2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
@@ -723,6 +772,12 @@ to migrate the template its `Clone` copies, so a test binary of `internal/store`
 `internal/testpg` back, and the half of the fixture that needs no schema sits in `testdb`, which
 imports no package of the module except `internal/testwait`, which imports none, and so is open to
 every package of it.
+Each of those tests runs beside the others on databases and pools of its own, four at a time unless
+the command line names a `-parallel` (`storeTestParallelism`). A pool writes its refusals, and
+`Transact`'s lines about a commit over that `*Pool` itself, to its own log (`Pool.log`), so a test
+reads its own lines there (`captureLog`) and never swaps the default logger. `Transact`'s lines
+about a commit over any other `TxPool`, a test's wrapper of a `*Pool` included, go to the default
+logger.
 `internal/daemon`'s tests boot daemons, which migrate the database they are given: each test's
 daemons write in a clone of the package's template (`testDSN`), so a boot there finds the schema
 in place, and the tests run beside each other on databases of their own. So do `internal/workflow`'s,
