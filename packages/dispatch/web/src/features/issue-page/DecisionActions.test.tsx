@@ -26,6 +26,7 @@ import {
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferenceNamesProvider } from "../refs/reference-names";
 import { ChangeDraftsProvider, DecisionActions } from "./DecisionActions";
+import { presetPath } from "./issue-address";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
@@ -620,6 +621,46 @@ test("a waiting decision past the outline read's first page draws Keep and Chang
     );
   } finally {
     view.unmount();
+  }
+});
+
+// Where both reads hold the decision, the node finds it first in the read its row is drawn from
+// (`useDecisionReads`): on the Decisions view the decisions view read, and on Conversation the
+// outline read. Here the two answer the same decision with different sums, as where the agent
+// changed it between the two reads: Keep on the Decisions view sends the decisions view read's
+// sum, and on Conversation the outline read's, so a Keep never stands over words the row it was
+// pressed on did not draw.
+test("Keep sends the sum of the read the view draws the decision from, where both reads hold it", async () => {
+  const keep = spyOn(api, "keepDecision").mockImplementation(() => new Promise<never>(() => {}));
+  const drawn = (sum: string) =>
+    treeAnswer([decisionNode("d1", ONE.text, { decision: { text_sha256: sum } })]);
+  try {
+    for (const preset of ["decisions", "conversation"] as const) {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      client.setQueryData(conversationTreeKey(KEY), drawn("sum-outline"));
+      client.setQueryData(viewKey(KEY, "decisions"), drawn("sum-view"));
+      const user = userEvent.setup();
+      const view = render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={[presetPath(KEY, preset)]}>
+            <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+          </MemoryRouter>
+        </QueryClientProvider>
+      );
+      try {
+        const calls = keep.mock.calls.length;
+        await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
+        await waitFor(() => expect(keep.mock.calls.length).toBe(calls + 1));
+      } finally {
+        view.unmount();
+      }
+    }
+    expect(
+      keep.mock.calls.map((call) => call[2]),
+      "Keep sent a sum of a read other than the one the view draws the decision from"
+    ).toEqual(["sum-view", "sum-outline"]);
+  } finally {
+    keep.mockRestore();
   }
 });
 

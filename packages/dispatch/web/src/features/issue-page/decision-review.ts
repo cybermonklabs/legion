@@ -46,6 +46,29 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "edited_at" | "id">;
 
 /**
+ * Whether `decision` is a person's decision because a person decided it (INFRA-1196's decision
+ * 516): its `decided_by` names a person (`decidedBy`, a `user` actor, which `deciderOf` reads a
+ * `person:<login>` end as). One whose `decided_by` names a session, or nobody, is an agent's. A
+ * `decision` block a person decided is that person's decision, as an answered ask is, whose
+ * `decided_by` names its person too: it stands with the reader's own decisions where that person
+ * is the reader, and with what others decided, under that person's name, for every other reader
+ * (`decisions-filter/decisions-parts.ts`), and the Spec filter's column says a person said it
+ * (`spec-filter/spec-decided-by.ts`). It never waits for review - root R35 has only an agent's
+ * decision that changed a statement wait - whatever the read's `waiting_review` says: the
+ * decisions read answers that true for every such block that is neither kept nor replaced
+ * (`decisionread/decisions.go`' `decision`), and the person's own decision is not an agent's to
+ * keep or change (INFRA-1253's person-node rule). So the review list and how a decision stands
+ * read this rule themselves (`inReviewList`, `reviewState`), and every reader of them - the
+ * outline's `draftDecision`, the Decisions filter, the header's count (`waiting.ts`) - reads it
+ * with them; neither Keep nor Change is drawn on it (`DecisionActions.tsx`). An agent's decision
+ * keeps every rule it has. It lives here, beside the rules that read it, which the decision
+ * nodes' module reads (`decision-nodes.ts`).
+ */
+export function decidedByPerson(decision: Pick<DecisionNode, "decidedBy">): boolean {
+  return decision.decidedBy?.kind === "user";
+}
+
+/**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
  * person's review - neither kept as it reads now nor replaced, which is the server's
  * `waiting_review` - that a link ties to a statement of this issue, and that the reader has not
@@ -59,18 +82,16 @@ export type ChangeComment = Pick<Comment, "author" | "body" | "created_at" | "ed
  * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
  * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with
  * the list. A decision a person decided is no agent's decision, whatever its `waiting_review`
- * says, and is never an entry (`decision-nodes.ts`' `decidedByPerson`, INFRA-1196's decision
- * 516): that rule is read from the decision nodes, whose module reads this one, so each caller
- * reads it before this one (`waiting.ts`, `decisions-filter/decisions-parts.ts`,
- * `tree-read/tree-nodes.ts`' `draftDecision`).
+ * says, and is never an entry (`decidedByPerson`, INFRA-1196's decision 516).
  */
 export function inReviewList(
-  decision: Pick<DecisionNode, "links" | "waiting_review">,
+  decision: Pick<DecisionNode, "decidedBy" | "links" | "waiting_review">,
   isCoverageStatement: (reference: string) => boolean,
   changed = false
 ): boolean {
   return (
     !changed &&
+    !decidedByPerson(decision) &&
     decision.waiting_review &&
     (decision.links ?? []).some(
       (link) => link.to.ref !== undefined && isCoverageStatement(link.to.ref)
@@ -92,15 +113,16 @@ export interface DecisionContent {
  * then waiting for review; then kept, by the person whose name the row draws after it
  * (`TreeNode.keptBy`). It is the one rule the outline (`tree-read/tree-nodes.ts`'
  * `draftDecision`) and the Decisions filter (`decisions-filter/decisions-parts.ts`) read. A
- * decision a person decided (`decision-nodes.ts`' `decidedByPerson`) stands in no state of an
- * agent's decision's review, kept, asked to change or waiting, so each hands it only whether it
- * was replaced.
+ * decision a person decided (`decidedByPerson`) stands in no state of an agent's decision's
+ * review, kept, asked to change or waiting, whatever its `waiting_review` says: only replaced,
+ * where it was.
  */
 export function reviewState(
-  decision: Partial<Pick<Decision, "kept" | "replaced" | "waiting_review">>,
+  decision: Partial<Pick<DecisionNode, "decidedBy" | "kept" | "replaced" | "waiting_review">>,
   changed: boolean
 ): DecisionState | undefined {
   if (decision.replaced === true) return "replaced";
+  if (decidedByPerson(decision)) return undefined;
   if (changed) return "change_requested";
   if (decision.waiting_review === true) return "waiting_review";
   return decision.kept == null ? undefined : "kept";

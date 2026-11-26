@@ -85,10 +85,10 @@ import {
   issueTreeQuery,
   treeRead,
   useBlocksRunning,
+  useLastAnswer,
   useTreeRead,
   viewQuery,
 } from "../tree-read/tree-read";
-import { useLastAnswer } from "../useIssueTree";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";

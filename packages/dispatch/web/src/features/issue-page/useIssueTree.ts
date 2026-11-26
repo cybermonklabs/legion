@@ -33,6 +33,7 @@ import {
   type TreeRead,
   type TreeView,
   treeRead,
+  useLastAnswer,
   useTreeRead,
   viewQuery,
 } from "./tree-read/tree-read";
@@ -152,24 +153,6 @@ const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
 /** The set of addresses the batched names read is given until the gate first opens: none, and
  *  the same empty set on every render, so the read's options are made once meanwhile. */
 const NO_REFS: readonly string[] = [];
-
-/**
- * The last value given other than undefined: the one given while there is one, and the last one
- * given before while undefined is. The batched names read keeps by it the set of addresses it
- * was last given while the gate that holds it back is shut (`useIssueTree`'s `askedFor`). It
- * keeps a set of addresses and never a names answer: a correction's marks are written into the
- * answer the cache holds (`markCorrectedPost`), and a ref holding the answer itself would go on
- * drawing it as it was kept, a deleted post's words among them, so the answer is read from the
- * cache under the set it was last answered for (`useLastAnswered`). The Spec view's column
- * (`spec-filter/SpecFilterBody.tsx`) keeps by it the last answer of its view read, which a Keep
- * or a Change drops, until the next one lands. The ref is written during render only with the
- * value given in that render, so it never stands over a newer one.
- */
-export function useLastAnswer<T>(value: T | undefined): T | undefined {
-  const last = useRef(value);
-  if (value !== undefined) last.current = value;
-  return last.current;
-}
 
 /**
  * The set of addresses a names read answered last: `refs` while its read under them holds an
@@ -593,7 +576,14 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   );
 }
 
-/** Keep the view's placement and metadata, adding only outline context the view omitted. */
+/**
+ * Keep the view's placement and metadata, adding only outline context the view omitted: each
+ * node and tuple of `outline` the view's answer lacks. A filter drawn off the tree this builds
+ * reads which of its nodes are the view read's own from that read's answer itself
+ * (`presets.ts`' `presetView`, `ownNodes`), so a decision or a question of Conversation's pages
+ * held so far that the view's answer does not hold is no row, count or part of the Decisions
+ * view, and every other view's tree keeps the outline's nodes in the walk's order.
+ */
 function viewWithContext(answer: TreeAnswer, outline: TreeAnswer | undefined): TreeAnswer {
   if (outline === undefined) return answer;
   const nodes = new Set(answer.nodes?.map(({ id, kind }) => `${kind}:${id}`));

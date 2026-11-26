@@ -1,6 +1,6 @@
 import type { Comment, IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import { askOfNode, decidedByPerson, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import { askOfNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, deletedPostIds, inReviewList } from "./decision-review";
 import { nextTreeCursor } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
@@ -25,12 +25,14 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * `draftDecision` (`tree-read/tree-nodes.ts`) marks a decision waiting by, so the count counts
  * the decisions the outline marks as waiting and no other.
  *
- * A decision is a decision node of the decisions view read (`decisions`, `?view=decisions`),
- * which holds every decision and every question of the issue, however many pages of
- * Conversation's read (`tree`) the page holds: that read is paged (R15), and a decision past its
- * pages held so far would otherwise go uncounted. The page reads the decisions view the first
- * time the Decisions filter is on in a load (`ViewReadProvider`), so until it holds an answer,
- * and where its read fails or a Keep or a Change dropped it, Conversation's read stands in.
+ * A decision is a decision node of the answer the count is read from (`answer`), which its
+ * caller selects: the decisions view read (`?view=decisions`) wherever the page holds it, which
+ * holds every decision and every question of the issue, however many pages of Conversation's
+ * read the page holds - that read is paged (R15), and a decision past its pages held so far
+ * would otherwise go uncounted - and Conversation's read until then. The page reads the
+ * decisions view the first time the Decisions filter is on in a load (`ViewReadProvider`), so
+ * until it holds an answer, and where its read fails or a Keep or a Change dropped it,
+ * Conversation's read stands in (`IssuePropertiesRow.tsx`).
  * The decisions are read once per answer (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks:
  * the read answers a person's decision on every ask a person answered, which says, with no asks,
  * which question is a person's decision, which never waits for review, and which agent's
@@ -46,10 +48,10 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * since the tree read answers a deleted comment with no mark of the delete.
  *
  * A decision a person decided, whose `decided_by` names a person, is that person's decision and
- * never waits for review (`decision-nodes.ts`' `decidedByPerson`, INFRA-1196's decision 516), so
- * it is not counted, whatever the read's `waiting_review` says, as the outline marks it waiting
- * on nobody (`draftDecision`). Who decided it is the answer's `decided_by` tuple, so the
- * decisions read with no asks say it too.
+ * never waits for review (`decision-review.ts`' `decidedByPerson`, INFRA-1196's decision 516),
+ * which the review list's own rule reads (`inReviewList`), so it is not counted, whatever the
+ * read's `waiting_review` says, as the outline marks it waiting on nobody (`draftDecision`). Who
+ * decided it is the answer's `decided_by` tuple, so the decisions read with no asks say it too.
  *
  * An overtaken decision or question, a node the read answers `overtaken`, counts in no
  * count of what waits (R2), as the outline marks it waiting on nobody (`draftDecision`,
@@ -85,24 +87,19 @@ export function waitingOnReader(
   viewer: string | undefined,
   isCoverageStatement: (reference: string) => boolean,
   {
+    answer,
     comments,
-    decisions,
-    tree,
   }: {
+    /** The read the decisions, the questions and the Changes are counted from: the decisions
+     *  view read where the page holds it, which hangs each Change under its decision, and
+     *  Conversation's read until then, as the caller selects it; none for a count of the
+     *  approvals alone. */
+    readonly answer?: TreeAnswer;
     /** The page's comments read, which says which Changes their author deleted. */
     readonly comments?: readonly Pick<Comment, "deleted_at" | "id">[];
-    /** The decisions view read, where the page holds it, which hangs each Change under its
-     *  decision. */
-    readonly decisions?: TreeAnswer;
-    /** Conversation's read, which stands in for the decisions view read until the page holds
-     *  it. */
-    readonly tree: TreeAnswer | undefined;
-  }
+  } = {}
 ): WaitingOnReader {
-  // The decisions, the questions and the Changes are the decisions view's where the page holds
-  // it, and the tree read's until then.
-  const counted = decisions ?? tree;
-  const overtaken = overtakenAsks(issue, viewer === undefined ? undefined : counted);
+  const overtaken = overtakenAsks(issue, viewer === undefined ? undefined : answer);
   const open =
     viewer === undefined
       ? []
@@ -124,17 +121,15 @@ export function waitingOnReader(
   // count does not move while the comments read is out or older. A Change its author deleted
   // asks nothing any more, as in the outline.
   let reviewing = 0;
-  if (viewer !== undefined && counted !== undefined) {
-    const changes = decisionNodeChanges(counted, undefined, deletedPostIds(comments));
-    reviewing = [...decisionsOfAnswer(counted, issue.key).values()].filter(
+  if (viewer !== undefined && answer !== undefined) {
+    const changes = decisionNodeChanges(answer, undefined, deletedPostIds(comments));
+    reviewing = [...decisionsOfAnswer(answer, issue.key).values()].filter(
       (decision) =>
-        !decidedByPerson(decision) &&
         decision.node.state !== "overtaken" &&
         inReviewList(decision, isCoverageStatement, changes.has(decision.node.id))
     ).length;
   }
-  const more =
-    viewer !== undefined && counted !== undefined && nextTreeCursor(counted) !== undefined;
+  const more = viewer !== undefined && answer !== undefined && nextTreeCursor(answer) !== undefined;
   return {
     approvals,
     asks,

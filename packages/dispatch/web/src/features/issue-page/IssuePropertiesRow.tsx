@@ -93,24 +93,20 @@ export function IssuePropertiesRow({
   // The decisions, and each Change that read hangs under its decision, are the decisions view
   // read's wherever the page holds it, which holds each of them however many pages of the tree
   // read the page holds, watched under the key the page reads it by and never sent (`treeRead`),
-  // so the count sends no view read of its own.
+  // so the count sends no view read of its own; Conversation's read stands in until then.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
   const decisions = useQuery(treeRead(viewQuery(issue.key, "decisions"))).data;
+  const answer = decisions ?? tree;
   const isCoverageStatement = useMemo(
     () => coverageStatements(issue, coverage.data),
     [issue, coverage.data]
   );
   const waiting = useMemo(
-    () =>
-      waitingOnReader(issue, viewer, isCoverageStatement, {
-        comments: comments.data,
-        decisions,
-        tree,
-      }),
-    [issue, viewer, isCoverageStatement, tree, comments.data, decisions]
+    () => waitingOnReader(issue, viewer, isCoverageStatement, { answer, comments: comments.data }),
+    [issue, viewer, isCoverageStatement, answer, comments.data]
   );
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.

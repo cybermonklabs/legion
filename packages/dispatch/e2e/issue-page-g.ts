@@ -1459,6 +1459,49 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
   };
 }
 
+/** What `seedLongStatement` wrote: the issue, and the planner's long statement by node id. */
+export interface LongStatementSeed {
+  readonly key: string;
+  readonly statement: string;
+}
+
+/**
+ * One issue whose spec holds one long statement the planner wrote, which a check of its
+ * Verification document serves and no result proves, and whose conversation is one question the
+ * planner asked that waits on the reader: `seedLongRows`' statement, check and question, with
+ * none of its comments. The tree read answers a node's conversation before its ranked children
+ * (R8), so the question is the body's first row and the statement the second, in the first view
+ * at every width, where `seedLongRows`' comments stand above it.
+ */
+export async function seedLongStatement(): Promise<LongStatementSeed> {
+  await createProject({ key: PROJECT, name: "Rows" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A long statement",
+  });
+  const key = issue.key;
+  const body = longWords("w", 160);
+  await editArtifact(
+    issue.primary_artifact_id,
+    { ops: [{ after: "end", markdown: `:::requirement{#r-long}\n${body}\n:::\n`, op: "insert" }] },
+    asPlanner
+  );
+  const serves = buildDispatchReference({ block: { id: "r-long" }, key, kind: "spec" });
+  await createIssueArtifact(key, {
+    content:
+      `:::check{#c-long serves="${serves}" surface="browser" run="bun run e2e" ` +
+      `when="before_merge"}\nThe long statement holds.\n:::\n`,
+    name: "verification.md",
+  });
+  const specSlug =
+    ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
+  // A question that waits on the reader, which an outline that opens with the focus on such a
+  // question focuses in place of its first row, so the statement is no row the opening focuses.
+  await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
+  return { key, statement: blockNode(specSlug, "r-long") };
+}
+
 /** How many columns the table of `seedWideNote`'s note holds: at 390 px, each headed by one word
  *  that no line breaks, far more than the width of a row's words. */
 export const WIDE_NOTE_COLUMNS = 16;

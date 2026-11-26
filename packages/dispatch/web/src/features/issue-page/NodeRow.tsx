@@ -112,6 +112,7 @@ export function NodeRow({
   answerer,
   author,
   context,
+  countsHeld = false,
   document,
   editable = false,
   editing,
@@ -143,6 +144,11 @@ export function NodeRow({
   /** Whether the view draws this row only as the ancestor of a match: the row is faint and
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
+  /** Whether the row holds the line its node's counts are drawn in though the node holds none
+   *  yet: a statement's row while the coverage read that counts what serves it is out
+   *  (`TreeRows.tsx`), so the counts are drawn into a line of their own height and move nothing
+   *  under the row (the plan's "The places held", row 6). False unless the view passes it. */
+  countsHeld?: boolean;
   /** The document this row's node is a block of, which names the issue whose tree read holds
    *  the node: a decision's Keep and Change write on the decision node's own document
    *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
@@ -369,6 +375,7 @@ export function NodeRow({
           {oneLine ? null : (
             <NodeFace
               author={author}
+              countsHeld={countsHeld}
               document={document}
               isClosed={isClosed}
               node={node}
@@ -1456,16 +1463,23 @@ function Chip({
  * the two counts the coverage read carries for a requirement, and Keep and Change on a decision
  * that waits (`DecisionActions.tsx`). A node with none of these draws nothing here. It carries
  * the page's one mark of what a row draws under its words, `data-node-body`, which the views'
- * own rows (the Verification view's facts, the Decisions view's body) carry too.
+ * own rows (the Verification view's facts, the Decisions view's body) carry too. The counts'
+ * line is drawn before the counts are held where the row holds it for them (`countsHeld`):
+ * empty, and one line of the counts' own type tall, so the counts arrive into it and move
+ * nothing.
  */
 function NodeFace({
   author,
+  countsHeld,
   document,
   isClosed,
   node,
   tabStops,
 }: {
   author: { readonly kind: AuthorKind; readonly name: string };
+  /** Whether the counts' line is drawn though the node holds no counts yet (`NodeRow`'s
+   *  `countsHeld`). */
+  countsHeld: boolean;
   document?: Artifact;
   isClosed: boolean;
   node: TreeNode;
@@ -1474,12 +1488,13 @@ function NodeFace({
   const reviewed = node.type === "decision" && node.waiting;
   // A child issue's row names no author: its facts after its title say how it stands (ruling 5).
   const authored = node.child === undefined && authorLine(author);
+  const counted = node.counts !== undefined || countsHeld;
   const holds =
     authored ||
     node.facts.length > 0 ||
     node.gaps.length > 0 ||
     (node.coverageNotes ?? []).length > 0 ||
-    node.counts !== undefined ||
+    counted ||
     reviewed;
   if (!holds) return null;
   return (
@@ -1496,14 +1511,18 @@ function NodeFace({
           {words}
         </p>
       ))}
-      {node.counts === undefined ? null : (
-        <p className={`text-xs ${pageQuietText}`} {...pageChrome}>
-          <span>{CONTROL_LABELS.serving_checks}: </span>
-          <span {...authorText}>{node.counts.checks}</span>
-          <span>, {CONTROL_LABELS.serving_plan_tasks}: </span>
-          <span {...authorText}>{node.counts.planTasks}</span>
+      {counted ? (
+        <p className={`min-h-4 text-xs ${pageQuietText}`} data-node-counts="" {...pageChrome}>
+          {node.counts === undefined ? null : (
+            <>
+              <span>{CONTROL_LABELS.serving_checks}: </span>
+              <span {...authorText}>{node.counts.checks}</span>
+              <span>, {CONTROL_LABELS.serving_plan_tasks}: </span>
+              <span {...authorText}>{node.counts.planTasks}</span>
+            </>
+          )}
         </p>
-      )}
+      ) : null}
       {reviewed ? (
         <DecisionActions
           document={document}

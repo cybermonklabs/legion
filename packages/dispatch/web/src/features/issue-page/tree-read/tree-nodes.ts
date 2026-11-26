@@ -24,7 +24,6 @@ import {
   askNodeId,
   askOfNode,
   type DecisionNode,
-  decidedByPerson,
   decisionNodes,
   isSpecBlock,
   issueAsks,
@@ -38,6 +37,7 @@ import {
 } from "../decision-nodes/decision-nodes";
 import {
   blockIdOfNode,
+  decidedByPerson,
   decisionNodeChanges,
   deletedPostIds,
   firstOfEachId,
@@ -714,7 +714,7 @@ function draftResult(
  * - so it waits on nobody, and is unsure only where the read says so. Nor does one the read
  * answers `overtaken` wait on anybody (R2), as the header's count does not count it.
  *
- * A decision whose `decided_by` names a person is that person's decision (`decision-nodes.ts`'
+ * A decision whose `decided_by` names a person is that person's decision (`decision-review.ts`'
  * `decidedByPerson`, INFRA-1196's decision 516), so its author is that person, and it is not an
  * agent's to keep or change: it waits for no review, whatever the read's `waiting_review` says, a
  * comment under it asks no change of it, and the one state it stands in is replaced, where it
@@ -743,19 +743,21 @@ function draftDecision(
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
   const decided = context.decisions.get(node);
-  const person = decidedByPerson({ decidedBy: decider });
-  const change = person ? undefined : context.changes.get(draft.id);
+  // How it stands is read with who decided it: a decision a person decided waits for no review,
+  // whatever its `waiting_review` says, and stands only replaced, where it was (`reviewState`,
+  // `inReviewList`).
+  const reviewed = { ...decision, ...(decider === undefined ? {} : { decidedBy: decider }) };
+  const change = context.changes.get(draft.id);
   const changed = change !== undefined;
-  draft.state = reviewState(person ? { replaced: decision.replaced } : decision, changed);
+  draft.state = reviewState(reviewed, changed);
   const changer = change?.author?.[0];
   if (draft.state === "change_requested" && changer !== undefined) draft.changedBy = changer;
-  if (!person && decision.kept != null && decision.waiting_review !== true) {
+  if (!decidedByPerson(reviewed) && decision.kept != null && decision.waiting_review !== true) {
     draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
   }
   draft.replaced = decision.replaced === true;
   if (decided?.unsure ?? decision.unsure === true) draft.unsure = true;
   draft.waiting =
-    !person &&
     node.state !== "overtaken" &&
     decided !== undefined &&
     context.viewer !== undefined &&

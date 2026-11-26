@@ -1,7 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
@@ -9,10 +9,10 @@ import { conversationTreeKey } from "../../../api/queries";
 import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { DECISIONS_WORDS } from "../page-words";
-import { presetView } from "../presets";
-import { pagedAnswer } from "../tree-read/tree-fixtures";
+import { filterSignals, presetView } from "../presets";
+import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
 import { outlineQuery, type TreeAnswer, viewKey, viewQuery } from "../tree-read/tree-read";
-import { useDecisionsEntries } from "./decisions-entries";
+import { useDecisionsEntries, useDecisionsTree } from "./decisions-entries";
 import {
   AGENT,
   answeredAsk,
@@ -87,6 +87,43 @@ async function mountOver(
   await act(() => Promise.resolve());
   return hook;
 }
+
+/**
+ * The seam's parts over `client` as the view's slot hands it its tree (`slots/view-decisions.tsx`),
+ * for a case that reads a decision past Conversation's first page, which only that tree holds:
+ * the tree the decisions view read builds (`useDecisionsTree`) from `decisions`, held on the page
+ * tree's root and in `client`, and from the reads `client` holds, Conversation's among them, with
+ * the view as the slot leaves it (`presetView`); and the Decisions control's signal over that
+ * tree (`filterSignals`).
+ */
+async function slotOver(client: QueryClient, decisions: TreeAnswer) {
+  const issue = issueDetails();
+  const page: TreeNode = { ...issueTree([]), views: { decisions } };
+  client.setQueryData(viewKey(KEY, "decisions"), decisions);
+  const wrapper = ({ children: inside }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{inside}</QueryClientProvider>
+  );
+  const hook = renderHook(
+    () => {
+      const root = useDecisionsTree(issue, page, READER);
+      const view = useMemo(() => presetView(root, "decisions", "").root, [root]);
+      const { parts } = useDecisionsEntries({ issue, reader: READER, root, view });
+      return { parts, signal: filterSignals(root, "", root).decisions };
+    },
+    { wrapper }
+  );
+  // A read the mount started has had its turn before the parts are read.
+  await act(() => Promise.resolve());
+  const drawn = hook.result.current;
+  hook.unmount();
+  return drawn;
+}
+
+/** Statement `s1` of the spec as Conversation's read answers it: the statement a decision's
+ *  `shaped` tie names, which the decisions view read leaves to that read. */
+const S1 = treeNode("s1", "requirement", KEY, {
+  document: { artifact_id: SPEC_DOCUMENT.id, position: 0, slug: SPEC_SLUG },
+});
 
 /** The seam's parts over `client` for the issue whose tree holds `children`, with `decisions`
  *  the decisions view held on its root (undefined for a view that holds no answer), read once. */
@@ -592,12 +629,15 @@ test("a decision stands in its part with its state from the tree read until the 
 // (measured on a preview of 776d9d85: INFRA-1196's first page held 467 nodes with 462 remaining,
 // and no node of a person's answered question and the agent's decision under it, which the
 // decisions view held). A decision the view read holds stands in its part with its state, whether
-// or not the tree the page has read so far holds its node.
+// or not the tree the page has read so far holds its node. The seam is handed the tree that read
+// builds, as the slot hands it (`slotOver`).
 test("a decision the view read holds stands in its part where the tree read has not reached it yet", async () => {
-  const children = [statement("s1"), decisionNode("first")];
   const tied = { decision: { links: [shaped(specRef("s1"))] } };
   const view = treeAnswer([decision("first", tied), decision("later", tied)]);
-  const parts = await entriesOf(children, view, [], [], treeAnswer([decision("first", tied)]));
+  const { parts } = await slotOver(
+    heldClient([], [], treeAnswer([S1, decision("first", tied)])),
+    view
+  );
 
   expect(
     [...idsOf(parts).review].sort(),
@@ -611,17 +651,16 @@ test("a decision the view read holds stands in its part where the tree read has 
 // later decision, which the view read holds with the reader's Change under it. The Change is read
 // from the view read, so that decision stands with the reader's own decisions, reads "Changed by"
 // with her name and is not on the review list, as a decision on the first page with its Change
-// does.
+// does. The seam is handed the tree that read builds, as the slot hands it (`slotOver`).
 test("a waiting decision past Conversation's first page with the reader's Change in the view read stands with her decisions", async () => {
-  const children = [statement("s1"), decisionNode("first")];
   const tied = { decision: { links: [shaped(specRef("s1"))] } };
   const asked = {
     ...changeComment("change-later", "later", "2026-11-15T09:00:00Z", "Name the read."),
     role: "context" as const,
   };
   const view = treeAnswer([decision("first", tied), decision("later", tied), asked]);
-  const firstPage = pagedAnswer(treeAnswer([decision("first", tied)]), "next-page", 30);
-  const parts = await entriesOf(children, view, [], [], firstPage);
+  const firstPage = pagedAnswer(treeAnswer([S1, decision("first", tied)]), "next-page", 30);
+  const { parts } = await slotOver(heldClient([], [], firstPage), view);
 
   expect(
     { review: idsOf(parts).review, yours: idsOf(parts).yours },
@@ -637,6 +676,29 @@ test("a waiting decision past Conversation's first page with the reader's Change
     later === undefined ? undefined : entryStanding(later, (actor) => actor.id)?.words,
     "the later decision does not read Changed by with the reader's name"
   ).toBe(`${DECISIONS_WORDS.changed_by} ${READER}`);
+});
+
+// R2, R15: the Decisions view's parts and its count are the Decisions view read's. Conversation's
+// pages held so far hold two waiting decisions tied to a statement; the Decisions view read's
+// answer, a first page that names a next one, holds the first alone. The tree that read builds
+// holds the later decision as Conversation's context alone (`useIssueTree.ts`'
+// `viewWithContext`), so the view counts the first alone, with "+", its review list holds the
+// first, and its foot holds nothing: the later decision stands in no part until a page of the
+// Decisions view read holds it.
+test("a waiting decision Conversation's pages hold and the Decisions view read's page does not is no entry, count or part of the view", async () => {
+  const tied = { decision: { links: [shaped(specRef("s1"))] } };
+  const conversation = treeAnswer([S1, decision("first", tied), decision("later", tied)]);
+  const decisions = pagedAnswer(treeAnswer([decision("first", tied)]), "next-page", 30);
+  const { parts, signal } = await slotOver(heldClient([], [], conversation), decisions);
+
+  expect(
+    `${signal.count}${signal.more === true ? "+" : ""}`,
+    "the Decisions count reads a decision the Decisions view read's page does not hold"
+  ).toBe("1+");
+  expect({ agents: idsOf(parts).agents, review: idsOf(parts).review }).toEqual({
+    agents: [],
+    review: [D("first")],
+  });
 });
 
 // The seam's reads are refreshed by the events that change them alone, as every read of the page

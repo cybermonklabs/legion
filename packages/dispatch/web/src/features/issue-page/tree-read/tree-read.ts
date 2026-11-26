@@ -11,7 +11,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
@@ -605,18 +605,41 @@ export function useBlocksRunning(key: string, role: TreeFilter): boolean {
   return role === choice.filter ? view.isFetching : read.isFetching;
 }
 
+/**
+ * The last value given other than undefined: the one given while there is one, and the last one
+ * given before while undefined is. The batched names read keeps by it the set of addresses it
+ * was last given while the gate that holds it back is shut (`useIssueTree.ts`' `askedFor`). It
+ * keeps a set of addresses and never a names answer: a correction's marks are written into the
+ * answer the cache holds (`markCorrectedPost`), and a ref holding the answer itself would go on
+ * drawing it as it was kept, a deleted post's words among them, so the answer is read from the
+ * cache under the set it was last answered for (`useLastAnswered`). The Spec view's column
+ * (`spec-filter/SpecFilterBody.tsx`) and the Decisions view (`decisions-entries.ts`'
+ * `useDecisionsTree`, `useDecisionReads`) keep by it the last answer of their view read, which a
+ * Keep or a Change drops, until the next one lands. The ref is written during render only with
+ * the value given in that render, so it never stands over a newer one.
+ */
+export function useLastAnswer<T>(value: T | undefined): T | undefined {
+  const last = useRef(value);
+  if (value !== undefined) last.current = value;
+  return last.current;
+}
+
 /** The two reads of issue `key` a decision's Keep and Change look for their decision in
  *  (`DecisionActions.tsx`), in the order they look: first the read its row is drawn from - on the
  *  Decisions view the decisions view read, and in every other view the outline read the page
  *  holds (`OutlineChoice`) - then the other. Both are watched and never sent, since `useTreeRead`
  *  sends the outline read and `ViewReadProvider` the view: for a surface that holds the issue's
- *  key and not its reads. */
+ *  key and not its reads. The decisions view read is its last answer (`useLastAnswer`): a Keep
+ *  or a Change drops the view (`dropViews`) as it settles and reads it again, and the Decisions
+ *  view keeps drawing its last answer until the next one lands (`decisions-entries.ts`'
+ *  `useDecisionsTree`), so a decision only that read holds keeps its controls meanwhile, and a
+ *  refused Keep its refusal. */
 export function useDecisionReads(
   key: string
 ): readonly [TreeAnswer | undefined, TreeAnswer | undefined] {
   const choice = useOutlineChoice();
   const outline = useQuery({ ...observedOutline(key, choice), enabled: false }).data;
-  const view = useQuery({ ...viewQuery(key, "decisions"), enabled: false }).data;
+  const view = useLastAnswer(useQuery({ ...viewQuery(key, "decisions"), enabled: false }).data);
   return choice.preset === "decisions" ? [view, outline] : [outline, view];
 }
 

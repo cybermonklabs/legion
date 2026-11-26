@@ -33,12 +33,8 @@ import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import {
-  anchorBlock,
-  type DecisionNode,
-  decidedByPerson,
-  decisionsOfAnswer,
-} from "./decision-nodes/decision-nodes";
+import { anchorBlock, type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import { decidedByPerson } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import {
@@ -288,7 +284,9 @@ function DecisionControls({
     // read again and every view the page holds is dropped (`readDecisionsAgain`), the Decisions
     // view's and the Spec view's among them, since each draws how the decision stands: so every
     // one draws the decision as it now stands, kept, or in its new words with Keep to press
-    // again. A refusal is said below, on the decision, until the next press.
+    // again. Each view draws its last answer until the next one lands (`useLastAnswer`), so a
+    // decision only the Decisions view read holds keeps these controls meanwhile, and a refusal
+    // is said below, on the decision, until the next press.
     onSettled: () => readDecisionsAgain(queryClient, issueKey),
   });
   return (
