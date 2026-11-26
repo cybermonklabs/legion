@@ -4,13 +4,14 @@
  *
  *  - every view under the head, from the view row's one list (`PRESET_ORDER`), with Dashboard,
  *    Threads and Documents owed until their parts add them to that list (R1);
- *  - every act at each width, from R2 and Verification v4's "The acts at each width" (R2);
+ *  - every act at each width, from R2 and Verification v8's "The acts at each width" and Rows 4
+ *    and 5 of `c-load-1440` (R2);
  *  - every control whose box R3 holds, from the plan's Inventories (R3).
  */
 import { expect, test } from "bun:test";
 
 import { PRESET_NAMES, PRESET_ORDER } from "../../web/src/features/issue-page/page-words";
-import { actRowTitle, LOAD_ACTS, LOAD_VIEWS } from "../issue-page-load";
+import { actRowTitle, afterLoadOrder, LOAD_ACTS, LOAD_VIEWS } from "../issue-page-load";
 import { BOX_GROUPS } from "../load-instruments";
 import realConfig from "../playwright.config";
 
@@ -64,7 +65,7 @@ test("the load rows read every view the view row draws and owe the three later v
 
 test("the act rows make every act at each width, and no Keys act at 390 px", () => {
   const presses = PRESET_ORDER.map((view) => `a press on ${PRESET_NAMES[view]}`);
-  const outline = ["a fold", "an unfold", "j", "k"];
+  const outline = ["a fold", "an unfold", "j", "k", "Enter"];
   expect(LOAD_ACTS[1440].map((act) => act.name)).toEqual([
     ...presses,
     ...outline,
@@ -79,6 +80,38 @@ test("the act rows make every act at each width, and no Keys act at 390 px", () 
   ]);
   expect(LOAD_ACTS[390].filter((act) => act.kind === "keys")).toEqual([]);
 
+  // After the load, `Enter` is made four times in each load: in Conversation and in Graph, on a
+  // row of the tree read's first page and on one of its second page, each in its view, so Graph's
+  // follow the press on Graph. Every other act is made once, the presses on the views last, each
+  // from the view before it, Conversation's after every other.
+  const conversationEnters = [
+    "Enter in Conversation on a row of the first page",
+    "Enter in Conversation on a row of the second page",
+  ];
+  const graphEnters = [
+    "Enter in Graph on a node of the first page",
+    "Enter in Graph on a node of the second page",
+  ];
+  const viewsAfter = PRESET_ORDER.filter((view) => view !== "conversation").flatMap((view) => [
+    `a press on ${PRESET_NAMES[view]}`,
+    ...(view === "graph" ? graphEnters : []),
+  ]);
+  for (const [width, others] of [
+    [1440, ["a fold", "an unfold", "j", "k", "a press on Keys", "a press on Details"]],
+    [390, ["a press on the one control", "a fold", "an unfold", "j", "k", "a press on Details"]],
+  ] as const) {
+    expect(afterLoadOrder(LOAD_ACTS[width]).map((act) => act.name)).toEqual([
+      ...others,
+      ...conversationEnters,
+      ...viewsAfter,
+      "a press on Conversation",
+    ]);
+  }
+  // Each `Enter` after the load leaves the row's text with Escape before the next act.
+  for (const act of afterLoadOrder(LOAD_ACTS[1440]).filter((each) => each.kind === "edit")) {
+    expect(act.after.map((step) => step.input)).toEqual([{ key: "Escape", kind: "key" }]);
+  }
+
   // A press on a view is its own control from 1280 px up, and below 1280 px a choice in the one
   // control's menu: the menu is opened first, and the choice is the act measured.
   for (const act of LOAD_ACTS[1440].filter((each) => each.kind === "view")) {
@@ -89,7 +122,7 @@ test("the act rows make every act at each width, and no Keys act at 390 px", () 
     expect(act.steps[0]?.input.kind).toBe("press");
   }
   // Every act measures its last step and no other.
-  for (const act of [...LOAD_ACTS[1440], ...LOAD_ACTS[390]]) {
+  for (const act of [...LOAD_ACTS[1440], ...LOAD_ACTS[390], ...afterLoadOrder(LOAD_ACTS[1440])]) {
     expect(act.steps.map((step) => step.measured).lastIndexOf(true)).toBe(act.steps.length - 1);
     expect(act.steps.filter((step) => step.measured)).toHaveLength(1);
   }

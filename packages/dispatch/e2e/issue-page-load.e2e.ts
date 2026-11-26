@@ -98,10 +98,13 @@ import { expect } from "./test";
  *   children's section and holds no row of the outline with children, so the row a fold and an
  *   unfold act on - the first in the document that holds children - is scrolled into view first,
  *   and the act is made at the first moment after that; at 1440 px it is the first such row in
- *   the viewport, as the first drawing of the rows draws it.
+ *   the viewport, as the first drawing of the rows draws it. `Enter`, like `k`, first steps
+ *   forward with `j`, and its result is the caret in the focused row's text.
  * - Row 5 (R2): each act, made once in each load after it has ended, shows its result within
- *   200 ms, read as Row 4 reads it. A control an earlier act scrolled out of reach is scrolled
- *   back into view first (`revealStep`).
+ *   200 ms, read as Row 4 reads it, with `Enter` made four times (`AFTER_LOAD_ENTERS`): in
+ *   Conversation and in Graph, on a row of the tree read's first page and on one of its second
+ *   page, each on a row pressed on its words first and left with Escape after. A control an
+ *   earlier act scrolled out of reach is scrolled back into view first (`revealStep`).
  *
  * The rows of one worker share its seed (`test` of `e2e/issue-page-load.ts`), so they run in the
  * order they are written, and Row 2, whose first focus seeds an ask that waits on the reader in
@@ -117,8 +120,8 @@ test.describe.configure({ mode: "default" });
 const LOAD_ROW_MS = 300_000;
 
 /** How long the row of every act after the load may take: five loads, each with every act of
- *  its width made once and waited out. */
-const AFTER_LOAD_ROW_MS = 900_000;
+ *  its width and four `Enter`s made once and waited out. */
+const AFTER_LOAD_ROW_MS = 1_200_000;
 
 /** How long the row of the named rows may take: sixteen loads and the seed of its first focus. */
 const NAMED_ROW_MS = 1_200_000;

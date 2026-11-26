@@ -750,10 +750,20 @@ test("a load that drew Conversation's empty line drew its first screen: its pain
   const line = await boundedLoad(open);
   expect(line.firstDrawn).toEqual({ after: 1_700, drew: "empty-line" });
   expect([line.firstScreen, line.stopped]).toEqual([1_716, null]);
-  // The acts on a row are the fold, the unfold, `j` and `k`, which a page with no row has nothing
-  // to make on; every other act is made, from where the act before it left the page.
+  // The acts on a row are the fold, the unfold, `j`, `k` and the four `Enter`s of Row 5, which a
+  // page with no row has nothing to make on; every other act is made, from where the act before
+  // it left the page.
   const onRows = AFTER_LOAD_ACTS.filter((act) => act.when === "rows");
-  expect(onRows.map((act) => act.kind).sort()).toEqual(["fold", "next", "previous", "unfold"]);
+  expect(onRows.map((act) => act.kind).sort()).toEqual([
+    "edit",
+    "edit",
+    "edit",
+    "edit",
+    "fold",
+    "next",
+    "previous",
+    "unfold",
+  ]);
   expect(made).toEqual(AFTER_LOAD_ACTS.filter((act) => act.when !== "rows").map((act) => act.name));
   expect(line.acts.map((act) => act.shown)).toEqual(
     AFTER_LOAD_ACTS.map((act) => (act.when === "rows" ? null : 120))

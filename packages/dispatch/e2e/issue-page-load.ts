@@ -159,6 +159,7 @@ export type LoadWidth = 1440 | 390;
 /** What kind of act an act is. */
 export type LoadActKind =
   | "details"
+  | "edit"
   | "fold"
   | "keys"
   | "menu"
@@ -178,9 +179,12 @@ export interface LoadAct {
   readonly steps: readonly ActStep[];
   /** The view a press on a view turns on. */
   readonly view?: Preset;
+  /** The view an act after the load is made in, where it is not Conversation: it follows the
+   *  press on that view (`afterLoadOrder`). */
+  readonly on?: Preset;
   /** The first moment the act can be made during the load: a press on a control at the first
-   *  drawing of the view row, and a fold, an unfold, `j` and `k` at the first drawing of the
-   *  rows. */
+   *  drawing of the view row, and a fold, an unfold, `j`, `k` and `Enter` at the first drawing of
+   *  the rows. */
   readonly when: "rows" | "view row";
 }
 
@@ -198,6 +202,21 @@ const DETAILS_OPEN = 'aside[data-testid="desktop-margin-shell"]:not([hidden])';
 /** The fold control of a row that holds children (`NodeRow.tsx`), and an open such row. */
 const FOLD_CONTROL = "button[data-node-bullet]";
 const OPEN_ROW = '[data-node-row][aria-expanded="true"]';
+/** The box a row's editor is drawn in while the row holds the caret (`node-caret.ts`'s
+ *  `EDITOR_BOX_ATTRIBUTE`, `StagedDocument.tsx`). */
+export const EDITOR_BOX_SELECTOR = "[data-editor-box]";
+/** The element of a row that owns the words of its first line (`LOAD_ROW_SELECTOR`). */
+const ROW_WORDS = '[elementtiming="issue-page-row"]';
+/** A row of the outline whose node is a block of one of the issue's documents, whose id ends in
+ *  its block's fragment (`tree-drafts.ts`'s `blockNodeId`): a row whose text `Enter` puts the
+ *  caret in, where a row of a child issue, a comment or a message has none. */
+export const DOCUMENT_ROW_SELECTOR = '[data-issue-body] [data-node-row][data-node-id*="#b-"]';
+/** The control of the root's paging rule, which draws the next top-level rows of the read the
+ *  page holds (`TreeRows.tsx`'s `PageControl`, kind `page`, at the top level). */
+export const ROWS_PAGE_CONTROL = '[data-issue-body] [data-tree-page][aria-level="1"] button';
+/** The control after the last row that reads the tree read's next page (`PageControl`, kind
+ *  `more`). */
+export const READ_PAGE_CONTROL = "[data-issue-body] [data-tree-more] button";
 
 /** A step made with the mouse at `target`'s box. */
 function press(name: string, target: ActTarget, result: ActStep["result"], measured: boolean) {
@@ -261,11 +280,60 @@ const UNFOLD = press(
   true
 );
 const NEXT = stroke("j", "j", { kind: "ring", step: 1 }, true);
+/** `Enter` on the focused row, which puts the caret in the row's text (`useTreeKeymap.ts`'s
+ *  `tree-edit`). */
+const ENTER = stroke("Enter", "Enter", { box: EDITOR_BOX_SELECTOR, kind: "caret" }, true);
+/** Escape from the row's text, which gives the focus back to the row (`tree-leave-caret`). */
+const LEAVE_TEXT = stroke("Escape", "Escape", { kind: "focus" }, false);
+
+/**
+ * `Enter` once the load has ended, named `name` and made in `on`, on a row of a document's block:
+ * the first the view draws, or where `paging` names a paging control, the first of the rows that
+ * control draws once it is pressed. The row is pressed on its words first, which puts the focus on
+ * it, and Escape leaves its text after.
+ */
+function enterOn(name: string, on: Preset, paging: string | null): LoadAct {
+  const pager = (selector: string) =>
+    press("a press on the paging control", { kind: "control", selector }, { kind: "more" }, false);
+  const row = press(
+    "a press on the row",
+    {
+      drawn: paging === null ? "any" : "since",
+      kind: "row",
+      row: DOCUMENT_ROW_SELECTOR,
+      words: ROW_WORDS,
+    },
+    { kind: "focus" },
+    false
+  );
+  return {
+    after: [LEAVE_TEXT],
+    kind: "edit",
+    name,
+    on,
+    steps: [...(paging === null ? [] : [pager(paging)]), row, { ...ENTER, name }],
+    when: "rows",
+  };
+}
+
+/**
+ * Row 5's `Enter`s, four in each load (Verification v8, `c-load-1440` Row 5): in Conversation and
+ * in Graph, each on a row of the tree read's first page and on one of its second page. In
+ * Conversation, whose read is one page, the second page's row is one the root's paging rule draws
+ * once its control is pressed; in Graph it is a node of the read's next page, which the control
+ * after the last row reads.
+ */
+export const AFTER_LOAD_ENTERS: readonly LoadAct[] = [
+  enterOn("Enter in Conversation on a row of the first page", "conversation", null),
+  enterOn("Enter in Conversation on a row of the second page", "conversation", ROWS_PAGE_CONTROL),
+  enterOn("Enter in Graph on a node of the first page", "graph", null),
+  enterOn("Enter in Graph on a node of the second page", "graph", READ_PAGE_CONTROL),
+];
 
 /**
  * The acts every width makes on Conversation's rows: a fold and an unfold of the first row that
- * holds children, and `j` and `k`. An unfold first folds that row, and `k` first steps forward
- * with `j`, so each has a row to act on at its first moment.
+ * holds children, `j`, `k` and `Enter` on the focused row. An unfold first folds that row, and `k`
+ * and `Enter` first step forward with `j`, so each has a row to act on at its first moment.
  *
  * At 1440 px the row folded is the first in the viewport under the header that holds children,
  * which the first drawing of the rows holds. At 390 px the first screen is the children's section,
@@ -301,6 +369,13 @@ function outlineActs(within: "document" | "viewport"): readonly LoadAct[] {
       kind: "previous",
       name: "k",
       steps: [{ ...NEXT, measured: false }, stroke("k", "k", { kind: "ring", step: -1 }, true)],
+      when: "rows",
+    },
+    {
+      after: [LEAVE_TEXT],
+      kind: "edit",
+      name: "Enter",
+      steps: [{ ...NEXT, measured: false }, ENTER],
       when: "rows",
     },
   ];
@@ -360,10 +435,11 @@ const ONE_CONTROL_ACT: LoadAct = {
   when: "view row",
 };
 
-/** The acts at each width (Verification v4, "The acts at each width"): at 1440 px a press on each
- *  view control, a fold, an unfold, `j`, `k`, Keys and Details; at 390 px a press on the one
- *  control, a press on each view in its menu, a fold, an unfold, `j`, `k` and Details. The page
- *  draws no Keys at 760 px and below, so 390 px has no such act. */
+/** The acts at each width (Verification v8, "The acts at each width" and `c-load-1440` Row 4): at
+ *  1440 px a press on each view control, a fold, an unfold, `j`, `k`, `Enter`, Keys and Details;
+ *  at 390 px a press on the one control, a press on each view in its menu, a fold, an unfold,
+ *  `j`, `k`, `Enter` and Details. The page draws no Keys at 760 px and below, so 390 px has no
+ *  such act. */
 export const LOAD_ACTS: Readonly<Record<LoadWidth, readonly LoadAct[]>> = {
   390: [
     ONE_CONTROL_ACT,
@@ -398,13 +474,21 @@ export function actAddress(key: string, act: LoadAct): string {
 }
 
 /** The acts of `acts` in the order one load after its end makes them, from Conversation's
- *  address: every act that is no press on a view, then each press on a view from the view before
- *  it, Conversation's last, so a press on Conversation is made from another view too. */
+ *  address: every act that is no press on a view and no `Enter`, then, where `acts` holds
+ *  `Enter`, Row 5's `Enter`s in Conversation (`AFTER_LOAD_ENTERS`), then each press on a view
+ *  from the view before it, each followed by the `Enter`s made in that view, Conversation's
+ *  press last, so a press on Conversation is made from another view too. */
 export function afterLoadOrder(acts: readonly LoadAct[]): LoadAct[] {
   const views = acts.filter((act) => act.kind === "view");
+  const enters = acts.some((act) => act.kind === "edit") ? AFTER_LOAD_ENTERS : [];
+  const madeIn = (view: Preset | undefined) =>
+    enters.filter((act) => (act.on ?? "conversation") === view);
   return [
-    ...acts.filter((act) => act.kind !== "view"),
-    ...views.filter((act) => act.view !== "conversation"),
+    ...acts.filter((act) => act.kind !== "view" && act.kind !== "edit"),
+    ...madeIn("conversation"),
+    ...views
+      .filter((act) => act.view !== "conversation")
+      .flatMap((act) => [act, ...madeIn(act.view)]),
     ...views.filter((act) => act.view === "conversation"),
   ];
 }

@@ -11,12 +11,16 @@ import { readFileSync } from "node:fs";
 import { errors, type Page } from "@playwright/test";
 
 import {
+  AFTER_LOAD_ENTERS,
   answeredQuestion,
+  DOCUMENT_ROW_SELECTOR,
+  EDITOR_BOX_SELECTOR,
   HEADER_SELECTORS,
   LOAD_ACTS,
   LOAD_ROW_SELECTOR,
   makeSteps,
   namedRow,
+  ROWS_PAGE_CONTROL,
   rowAddress,
   VIEW_ROW_SELECTOR,
 } from "../issue-page-load";
@@ -25,6 +29,7 @@ import {
   ANSWER_GROUP,
   actBounds,
   actReading,
+  armStep,
   BOX_GROUPS,
   type BoxEntry,
   boundHolds,
@@ -43,6 +48,7 @@ import {
   longestEvent,
   longestTaskAfter,
   longestTaskAfterViewRow,
+  makeInput,
   NAMED_GROUP,
   NOT_APPLICABLE,
   namedRowAt,
@@ -687,34 +693,39 @@ function boxAt(x: number, y: number, width: number, height: number): StandInBox 
 interface StandInElement {
   readonly attributes: Record<string, string>;
   readonly name: string;
-  closest(): StandInElement | null;
+  closest(selector: string): StandInElement | null;
   contains(other: unknown): boolean;
   getAttribute(name: string): string | null;
   getBoundingClientRect(): StandInBox;
+  getClientRects(): StandInBox[];
   hasAttribute(name: string): boolean;
   readonly isConnected: true;
+  readonly isContentEditable: boolean;
   querySelector(): null;
   querySelectorAll(): StandInElement[];
   scrollIntoView(): void;
   readonly textContent: string;
 }
 
-/** An element named `name`, drawn at `box`: its attributes, its words, the elements its
- *  selectors find inside it and the one `closest` finds around it, whatever the selector, and
- *  what scrolling it into view does to the page. */
+/** An element named `name`, drawn at `box`: its attributes, its words, whether it is an
+ *  editable, the elements inside it (which every selector of `querySelectorAll` finds, and which
+ *  it contains), the one `closest` finds around it for a selector (`around`, which may answer the
+ *  same whatever the selector), and what scrolling it into view does to the page. */
 function standInElement(
   name: string,
   box: () => StandInBox,
   {
     attributes = {},
+    editable = false,
     inside = () => [],
     around = () => null,
     onScroll = () => {},
     words = "",
   }: {
     readonly attributes?: Record<string, string>;
+    readonly editable?: boolean;
     readonly inside?: () => StandInElement[];
-    readonly around?: () => StandInElement | null;
+    readonly around?: (selector: string) => StandInElement | null;
     readonly onScroll?: () => void;
     readonly words?: string;
   } = {}
@@ -722,11 +733,16 @@ function standInElement(
   const drawn: StandInElement = {
     attributes,
     closest: around,
-    contains: (other) => other === drawn,
+    contains: (other) => other === drawn || inside().some((held) => held === other),
     getAttribute: (attribute) => attributes[attribute] ?? null,
     getBoundingClientRect: box,
+    getClientRects: () => {
+      const drawnBox = box();
+      return drawnBox.width === 0 && drawnBox.height === 0 ? [] : [drawnBox];
+    },
     hasAttribute: (attribute) => attribute in attributes,
     isConnected: true,
+    isContentEditable: editable,
     name,
     querySelector: () => null,
     querySelectorAll: inside,
@@ -736,21 +752,33 @@ function standInElement(
   return drawn;
 }
 
+/** A selection of a stand-in page, with as much of one as the init script reads. */
+interface StandInSelection {
+  readonly anchorNode: StandInElement | null;
+  readonly isCollapsed: boolean;
+  readonly rangeCount: number;
+}
+
 /**
  * A stand-in of a browser that draws `drawn` (topmost first) in a viewport `height` px tall,
  * answers each selector of `selected` with its elements, and does `press` with what a press at
- * its point reaches, the page hearing its pointerdown whatever it reached. Its font set holds
- * `faces`, none unless given, and `loadingDone` dispatches its `loadingdone`. The page's frames
- * run each time the stand-in of Playwright waits on the page, and the messages a frame posts are
- * delivered once its callbacks have run. Answers the globals the init script runs against
- * (`withStandIns`), the stand-in of Playwright's page and the name of what each press reached.
+ * its point reaches, the page hearing its pointerdown whatever it reached, and `key` with each
+ * key pressed, the page hearing its keydown first. The element holding the focus is `active`'s
+ * and the selection `selection`'s, none unless given. Its font set holds `faces`, none unless
+ * given, and `loadingDone` dispatches its `loadingdone`. The page's frames run each time the
+ * stand-in of Playwright waits on the page, and the messages a frame posts are delivered once
+ * its callbacks have run. Answers the globals the init script runs against (`withStandIns`), the
+ * stand-in of Playwright's page and the name of what each press reached.
  */
 function standInBrowser(world: {
+  readonly active?: () => StandInElement | null;
   readonly drawn: () => readonly StandInElement[];
   readonly faces?: () => readonly { readonly family: string; readonly status: string }[];
   readonly height: number;
+  readonly key?: (key: string) => void;
   readonly press: (hit: StandInElement | null) => void;
   readonly selected: Record<string, () => readonly StandInElement[]>;
+  readonly selection?: () => StandInSelection | null;
 }) {
   const elementFromPoint = (x: number, y: number) =>
     y < 0 || y >= world.height
@@ -772,7 +800,14 @@ function standInBrowser(world: {
   const fontListeners: (() => void)[] = [];
   const pressed: string[] = [];
   const playwright = {
-    keyboard: { press: async () => {} },
+    keyboard: {
+      press: async (key: string) => {
+        for (const listener of listeners.get("keydown") ?? []) {
+          listener({ isTrusted: true, timeStamp: performance.now(), type: "keydown" });
+        }
+        world.key?.(key);
+      },
+    },
     mouse: {
       click: async (x: number, y: number) => {
         const hit = elementFromPoint(x, y);
@@ -798,7 +833,11 @@ function standInBrowser(world: {
       port2 = { postMessage: (index: number) => messages.push(index) };
     },
     document: {
+      get activeElement() {
+        return world.active?.() ?? null;
+      },
       elementFromPoint,
+      getSelection: () => world.selection?.() ?? null,
       fonts: {
         addEventListener: (type: string, listener: () => void) => {
           if (type === "loadingdone") fontListeners.push(listener);
@@ -1182,6 +1221,146 @@ test("the frame whose callback first counts the typeface's face loaded, and the 
   // With the face counted loaded from frame 1 on and no event near frame 4, a widening there is a
   // move like any other.
   expect((await swapLoad({ done: 9, loaded: 1, relayout: 4 })).moved).toEqual([4, 8]);
+});
+
+/** A row of a stand-in outline drawn by block `block` of the spec, with the box its editor is
+ *  drawn in and that editor's editable inside it, each of which `closest` finds the row from. */
+function editedRow(
+  name: string,
+  block: string,
+  box: () => StandInBox,
+  inside: () => StandInElement[] = () => []
+) {
+  const around = (selector: string) =>
+    selector === VIEW_ROW_SELECTOR ? row : selector === EDITOR_BOX_SELECTOR ? editorBox : null;
+  const row: StandInElement = standInElement(name, box, {
+    around: (selector) => (selector === VIEW_ROW_SELECTOR ? row : null),
+    attributes: { "data-node-id": `spec#b-${block}`, "data-node-type": "requirement" },
+    inside: () => [editorBox, editable, ...inside()],
+  });
+  const editorBox = standInElement(`${name}'s editor box`, box, { around });
+  const editable = standInElement(`${name}'s editable`, box, { around, editable: true });
+  return { editable, row };
+}
+
+test("Enter shows its result at the first frame whose caret is in the focused row's text: an editable inside the row's editor box holding the focus, with one point selected in it", async () => {
+  const enter = LOAD_ACTS[1440].find((act) => act.kind === "edit");
+  const [forward, enterStep] = enter?.steps ?? [];
+  if (forward === undefined || enterStep === undefined || enter?.name !== "Enter") {
+    throw new Error("the acts at 1440 px hold no Enter that first steps forward with j");
+  }
+  let active: StandInElement | null = null;
+  let selection: StandInSelection | null = null;
+  const { editable, row } = editedRow("the row", "r3", () => boxAt(378, 200, 1000, 120));
+  const elsewhere = standInElement("an editor elsewhere", () => boxAt(0, 600, 300, 40), {
+    editable: true,
+  });
+  const browser = standInBrowser({
+    active: () => active,
+    drawn: () => [row],
+    height: 900,
+    // `j` with no row focused puts the focus on the first row.
+    key: (key) => {
+      if (key === "j") active = row;
+    },
+    press: () => {},
+    selected: { [VIEW_ROW_SELECTOR]: () => [row] },
+    selection: () => selection,
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    const frames = (count: number) =>
+      browser.page.waitForFunction(
+        (at) => (window.__loadInstruments?.record().frames.length ?? 0) >= at,
+        count
+      );
+    await makeSteps(browser.page, 0, [forward], "now");
+    expect(instruments.shown(0)).toBe(true);
+    await makeInput(browser.page, enterStep, await armStep(browser.page, 1, enterStep, "now"));
+    const at = instruments.record().frames.length;
+    // The focus goes to an editor outside the row first, then to the row's editable with words
+    // selected in it, and the caret is one point in it only from frame `at + 4` on.
+    active = elsewhere;
+    selection = { anchorNode: elsewhere, isCollapsed: true, rangeCount: 1 };
+    await frames(at + 2);
+    active = editable;
+    selection = { anchorNode: editable, isCollapsed: false, rangeCount: 1 };
+    await frames(at + 4);
+    expect(instruments.shown(1)).toBe(false);
+    selection = { anchorNode: editable, isCollapsed: true, rangeCount: 1 };
+    await frames(at + 6);
+    const record = instruments.record();
+    expect(record.acts[1]?.result).toBe(at + 4);
+    const reading = actReading(record, 1);
+    expect(reading.act).toBe("Enter");
+    expect(reading.read).toBeNull();
+    expect(reading.shown).not.toBeNull();
+  });
+});
+
+test("Enter on a row of the second page presses the paging control, then the words of the first row it drew where no link stands, then Enter, and leaves the row's text with Escape", async () => {
+  const name = "Enter in Conversation on a row of the second page";
+  const act = AFTER_LOAD_ENTERS.find((each) => each.name === name);
+  if (act === undefined) throw new Error(`Row 5 makes no act named ${name}`);
+  let paged = false;
+  let active: StandInElement | null = null;
+  let selection: StandInSelection | null = null;
+  const pager = standInElement("the paging control", () => boxAt(400, 700, 120, 24));
+  const first = editedRow("a row of the first page", "r3", () => boxAt(378, 300, 1000, 30));
+  // The first line of the row the control drew opens with a link, which a press on the row's
+  // words must not land on.
+  const link: StandInElement = standInElement(
+    "a link in its words",
+    () => boxAt(378, 730, 40, 20),
+    {
+      around: (selector) =>
+        selector === VIEW_ROW_SELECTOR ? drawn.row : selector.startsWith("a, ") ? link : null,
+    }
+  );
+  const drawn = editedRow(
+    "the row it drew",
+    "r51",
+    () => boxAt(378, 730, 1000, 30),
+    () => [link]
+  );
+  const browser = standInBrowser({
+    active: () => active,
+    drawn: () => (paged ? [link, drawn.row, first.row] : [first.row, pager]),
+    height: 900,
+    key: (key) => {
+      if (key === "Enter") {
+        active = drawn.editable;
+        selection = { anchorNode: drawn.editable, isCollapsed: true, rangeCount: 1 };
+      }
+      if (key === "Escape") {
+        active = drawn.row;
+        selection = null;
+      }
+    },
+    press: (hit) => {
+      if (hit === pager) paged = true;
+      if (hit === first.row || hit === drawn.row) active = hit;
+    },
+    selected: {
+      [DOCUMENT_ROW_SELECTOR]: () => (paged ? [first.row, drawn.row] : [first.row]),
+      [ROWS_PAGE_CONTROL]: () => (paged ? [] : [pager]),
+      [VIEW_ROW_SELECTOR]: () => (paged ? [first.row, drawn.row] : [first.row]),
+    },
+    selection: () => selection,
+  });
+  await withStandIns(browser.globals, async (instruments) => {
+    const made = await makeSteps(browser.page, 0, act.steps, "now");
+    await makeSteps(browser.page, made.next, act.after, "now");
+    expect(browser.pressed).toEqual(["the paging control", "the row it drew"]);
+    const record = instruments.record();
+    expect(record.acts.map((each) => [each.name, each.result !== null])).toEqual([
+      ["a press on the paging control", true],
+      ["a press on the row", true],
+      [name, true],
+      ["Escape", true],
+    ]);
+    expect(actReading(record, made.last).act).toBe(name);
+    expect(active).toBe(drawn.row);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------

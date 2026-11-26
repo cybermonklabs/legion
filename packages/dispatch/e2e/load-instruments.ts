@@ -646,8 +646,12 @@ export interface ControlTarget {
 
 /** What a press presses: a control; the fold control of the first row that `row` finds (an open
  *  row holding children), among the rows in the viewport under the header (`within: "viewport"`)
- *  or in the whole document (`within: "document"`, which `reveal` scrolls into view first); or
- *  the fold control of the row the step before folded. */
+ *  or in the whole document (`within: "document"`, which `reveal` scrolls into view first); the
+ *  fold control of the row the step before folded; or a row itself (`kind: "row"`): the first row
+ *  `row` finds, or with `drawn: "since"` the first of them the document did not hold at the
+ *  event of the step before (a row that step drew), pressed on the words of its first line (the
+ *  element `words` finds in it) where nothing that takes a press of its own stands, which puts
+ *  the focus on the row. */
 export type ActTarget =
   | ControlTarget
   | {
@@ -656,7 +660,13 @@ export type ActTarget =
       readonly row: string;
       readonly within: "document" | "viewport";
     }
-  | { readonly control: string; readonly kind: "folded" };
+  | { readonly control: string; readonly kind: "folded" }
+  | {
+      readonly drawn: "any" | "since";
+      readonly kind: "row";
+      readonly row: string;
+      readonly words: string;
+    };
 
 /** How a step is made: the mouse at its target's box, or a key. */
 export type ActInput =
@@ -667,13 +677,21 @@ export type ActInput =
  *  document holds a row of a view that was not in it at the event, and the view's place shows it
  *  loads where `busy` is in the document. `expanded`: the row the step pressed the fold control of
  *  reads `aria-expanded` as `value`. `ring`: the focus is on the visible row after (1) or before
- *  (-1) the one it was on at the event, in the viewport under the header. */
+ *  (-1) the one it was on at the event, in the viewport under the header. `more`: the document
+ *  holds a row of a view that was not in it at the event, one a paging control drew. `focus`: the
+ *  focus is on the row itself that the step pressed, or for a key the row the focus was in at the
+ *  event. `caret`: the caret is in the text of the row that held the focus at the event: the
+ *  focused element is an editable inside the box `box` finds in that row, which the row's editor
+ *  is drawn in, and the selection is collapsed inside it. */
 export type ActResult =
   | { readonly kind: "absent"; readonly selector: string }
   | { readonly kind: "present"; readonly selector: string }
   | { readonly busy: string; readonly current: ControlTarget; readonly kind: "view" }
   | { readonly kind: "expanded"; readonly value: "false" | "true" }
-  | { readonly kind: "ring"; readonly step: -1 | 1 };
+  | { readonly kind: "ring"; readonly step: -1 | 1 }
+  | { readonly kind: "more" }
+  | { readonly kind: "focus" }
+  | { readonly box: string; readonly kind: "caret" };
 
 /** One step of an act. */
 export interface ActStep {
@@ -734,7 +752,8 @@ export interface PageConfig extends InstrumentConfig {
 /** What the init script puts on the page. */
 interface LoadInstruments {
   /** Arms the page for step `index` once `when` has come and its target is drawn: answers the
-   *  target's centre, `{ x: -1, y: -1 }` for a key, and null until then. */
+   *  point a press lands at (a control's centre, a row's words), `{ x: -1, y: -1 }` for a key,
+   *  and null until then. */
   arm(
     index: number,
     step: ActStep,
@@ -747,9 +766,9 @@ interface LoadInstruments {
   probe(): { readonly now: number; readonly tasks: readonly TaskEntry[] };
   /** What the init script has collected. */
   record(): LoadRecord;
-  /** Whether a press at the centre of `step`'s target, where it is a control or the fold control
-   *  of the first row in the document that holds children, reaches it: the target is drawn, and
-   *  the topmost element at its centre is it or inside it. Where it is not, the target is
+  /** Whether a press on `step`'s target, where it is a control, the fold control of the first row
+   *  in the document that holds children, or a row, reaches it: the target is drawn, and the
+   *  topmost element where the press lands is it or inside it. Where it is not, the target is
    *  scrolled to the middle of the viewport, and the answer is false until the next frame reads
    *  it again. True for a key and for the other fold targets, which are where they are. */
   reveal(step: ActStep): boolean;
@@ -1038,10 +1057,51 @@ export function instrumentPage(config: PageConfig): void {
   const foldControl = (row: Element, selector: string): Element | null =>
     [...row.querySelectorAll(selector)].find((found) => found.closest(config.viewRows) === row) ??
     null;
+  // What takes a press of its own inside a row, which a press that puts the focus on the row
+  // lands on none of.
+  const PRESSABLE =
+    'a, button, input, select, textarea, summary, [role="button"], [role="link"], [contenteditable="true"]';
+  type RowAim = Extract<ActTarget, { readonly kind: "row" }>;
+  // The first drawn row `aim` finds, in the document's order: with `drawn: "since"`, the first the
+  // document did not hold at the event of the step before, which is the step armed until this
+  // one is.
+  const aimedRow = (aim: RowAim): Element | null => {
+    const since = aim.drawn === "since" ? armed : null;
+    return (
+      [...document.querySelectorAll(aim.row)].find(
+        (row) => row.getClientRects().length > 0 && (since === null || !since.before.has(row))
+      ) ?? null
+    );
+  };
+  // Where a press on `row`'s first line lands on its words: a point of the line under the header
+  // and in the viewport whose topmost element is the row's own and inside nothing in it that
+  // takes a press of its own. Null where the line has no such point on screen.
+  const wordsPoint = (
+    row: Element,
+    aim: RowAim,
+    top: number
+  ): { readonly x: number; readonly y: number } | null => {
+    const line = row.querySelector(aim.words) ?? row;
+    for (const rect of line.getClientRects()) {
+      const y = rect.top + rect.height / 2;
+      if (y < top || y >= window.innerHeight) continue;
+      for (let x = rect.left + 2; x < rect.right - 1; x += 12) {
+        const hit = document.elementFromPoint(x, y);
+        if (hit === null || hit.closest(config.viewRows) !== row) continue;
+        const taker = hit.closest(PRESSABLE);
+        if (taker === null || !row.contains(taker)) return { x, y };
+      }
+    }
+    return null;
+  };
   const target = (
     aim: ActTarget,
     top: number
-  ): { readonly control: Element; readonly row: Element | null } | null => {
+  ): {
+    readonly control: Element;
+    readonly point?: { readonly x: number; readonly y: number };
+    readonly row: Element | null;
+  } | null => {
     if (aim.kind === "control") {
       const found = control(aim);
       return found === null ? null : { control: found, row: null };
@@ -1050,6 +1110,11 @@ export function instrumentPage(config: PageConfig): void {
       const row = folded === null ? null : resolve(folded);
       const found = row === null ? null : foldControl(row, aim.control);
       return row === null || found === null ? null : { control: found, row };
+    }
+    if (aim.kind === "row") {
+      const row = aimedRow(aim);
+      const point = row === null ? null : wordsPoint(row, aim, top);
+      return row === null || point === null ? null : { control: row, point, row };
     }
     for (const row of document.querySelectorAll(aim.row)) {
       if (aim.within === "viewport" && !inViewport(row.getBoundingClientRect(), top)) continue;
@@ -1088,6 +1153,29 @@ export function instrumentPage(config: PageConfig): void {
       }
       case "ring":
         return ringHolds(on, result.step, top);
+      case "more":
+        return [...document.querySelectorAll(config.viewRows)].some((row) => !on.before.has(row));
+      case "focus": {
+        const held = on.row ?? on.focused;
+        return held !== null && document.activeElement === resolve(held);
+      }
+      case "caret": {
+        // The caret is in the row's text where the element holding the focus is an editable
+        // inside the box the row's editor is drawn in, and the selection is one point in it.
+        const row = on.focused === null ? null : resolve(on.focused);
+        const active = document.activeElement as HTMLElement | null;
+        const box = active?.closest(result.box) ?? null;
+        if (row === null || active === null || box?.closest(config.viewRows) !== row) return false;
+        if (!active.isContentEditable) return false;
+        const selection = document.getSelection();
+        return (
+          selection !== null &&
+          selection.rangeCount > 0 &&
+          selection.isCollapsed &&
+          selection.anchorNode !== null &&
+          active.contains(selection.anchorNode)
+        );
+      }
     }
   };
   const loadsHolds = (on: Armed): boolean => {
@@ -1167,7 +1255,7 @@ export function instrumentPage(config: PageConfig): void {
         if (found === null) return null;
         const box = found.control.getBoundingClientRect();
         if (box.width === 0 || box.height === 0) return null;
-        point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+        point = found.point ?? { x: box.x + box.width / 2, y: box.y + box.height / 2 };
         row = found.row === null ? null : { label: rowLabel(found.row), row: found.row };
       }
       if (row !== null && step.result.kind === "expanded" && step.result.value === "false") {
@@ -1219,6 +1307,13 @@ export function instrumentPage(config: PageConfig): void {
       if (step.input.kind !== "press") return true;
       const aim = step.input.target;
       if (aim.kind === "folded" || (aim.kind === "fold" && aim.within === "viewport")) return true;
+      if (aim.kind === "row") {
+        const row = aimedRow(aim);
+        if (row === null) return false;
+        if (wordsPoint(row, aim, foot()) !== null) return true;
+        row.scrollIntoView({ behavior: "instant", block: "center", inline: "nearest" });
+        return false;
+      }
       const found = aim.kind === "control" ? control(aim) : (target(aim, foot())?.control ?? null);
       if (found === null) return false;
       const box = found.getBoundingClientRect();
@@ -1414,7 +1509,8 @@ const ARM_MS = 60_000;
 
 /** Arms `page` for `step` under `index` once `when` has come and its target is drawn, polled at
  *  each frame so a step made at a first drawing is made at the frame that drew it. Answers where
- *  a press lands: the target's centre, as that frame drew it. */
+ *  a press lands: the target's centre, or the words of a row's first line, as that frame drew
+ *  it. */
 export async function armStep(
   page: Page,
   index: number,
@@ -1441,14 +1537,14 @@ export async function armStep(
 }
 
 /**
- * Waits until a press at the centre of `step`'s target, where it is a control or the first row
- * of the document that holds children (`ActTarget`'s `within: "document"`), reaches it, scrolling
- * the target into the viewport where it is out of reach. An act made once the reader has moved
- * the page - after `j` brought a lower row on screen, at 1440 px the view row scrolls under the
- * band that stays at the top, and at 390 px the header scrolls away - is made where a reader
- * makes it, at a control they can press; and at 390 px the fold's row, which the first screen
- * does not hold, is scrolled to first. Any other press at a first drawing is made where its
- * target was first drawn and never waits for this (`makeSteps`).
+ * Waits until a press on `step`'s target, where it is a control, the first row of the document
+ * that holds children (`ActTarget`'s `within: "document"`) or a row pressed on its words, reaches
+ * it, scrolling the target into the viewport where it is out of reach. An act made once the
+ * reader has moved the page - after `j` brought a lower row on screen, at 1440 px the view row
+ * scrolls under the band that stays at the top, and at 390 px the header scrolls away - is made
+ * where a reader makes it, at a control they can press; and at 390 px the fold's row, which the
+ * first screen does not hold, is scrolled to first. Any other press at a first drawing is made
+ * where its target was first drawn and never waits for this (`makeSteps`).
  */
 export async function revealStep(page: Page, step: ActStep): Promise<void> {
   try {
