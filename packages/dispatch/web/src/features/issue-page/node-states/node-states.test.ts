@@ -1352,8 +1352,9 @@ function drawSpec(
   let moveTo: (to: string) => void = () => {};
   // The view over `over`, under the providers the page draws it under, with what the page
   // publishes for its chips published to the names store and handed to the body.
-  const page = (over: TreeNode, published = publishedTree(over)): ReactNode =>
-    createElement(
+  const page = (over: TreeNode): ReactNode => {
+    const published = publishedTree(over);
+    return createElement(
       QueryClientProvider,
       { client },
       createElement(
@@ -1396,6 +1397,7 @@ function drawSpec(
         )
       )
     );
+  };
   const view = render(page(root));
   return {
     again: (over) => view.rerender(page(over)),

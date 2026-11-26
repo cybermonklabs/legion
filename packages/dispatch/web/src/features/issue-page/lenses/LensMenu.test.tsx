@@ -791,7 +791,7 @@ test("a 201 lands on the outline the reader still stands on", async () => {
 
 // A 201 reads the open view's tree again and no view of the issue: no view draws a lens, a
 // finding or a risk, so a view held before the pick, which an observer reads, keeps its answer
-// and is neither reset nor read again (R6). The page lands on the new lens's row only once the
+// and is neither reset nor read again. The page lands on the new lens's row only once the
 // tree read the pick made has answered: until then the menu says the pick is out and the address
 // stays where it was. The client records when each read begins, as the page's event feed has it
 // do, so the pick's read keeps to the scheduler's interval.
@@ -918,9 +918,9 @@ test("a 201 on a tree read already marked stale reads it again and lands", async
 });
 
 // In Graph the act is offered too, and a 201 reads Graph's tree once - the tree read with no
-// view, which names no kind - and never Conversation's read, which Graph does not draw (R6). The
-// page lands on Graph's own address of the new lens's row, keeping the words filter, so the lens
-// is drawn in the view it was invoked in (R4, R7).
+// view, which names no kind - and never Conversation's read, which Graph does not draw. The page
+// lands on Graph's own address of the new lens's row, keeping the words filter, so the lens is
+// drawn in the view it was invoked in.
 test("an invocation made in Graph reads Graph's tree once and lands on Graph's ?node=", async () => {
   const user = userEvent.setup();
   const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;

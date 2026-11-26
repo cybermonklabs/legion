@@ -143,8 +143,8 @@ function Words({ children }: { children: ReactNode }): ReactNode {
 /** A fact line, drawn as `Words`, as its one `LensFacts` field holds it: its words, or its parts
  *  (`FactParts`): each part of plain words through the plain-text projection (`FactString`), and
  *  each chip of a node the tree read holds as a link to that node's row (`NodeLink`), as a line's
- *  chips are, named as `store-words.ts` named it (decision 388). Drawn so, the parts read as
- *  their words (`factText`), a reference in them as its target's name. */
+ *  chips are, named as `store-words.ts` named it, never as a bare address. Drawn so, the parts
+ *  read as their words (`factText`), a reference in them as its target's name. */
 function FactWords({
   tabStops,
   words,
@@ -175,7 +175,7 @@ function FactWords({
  * One part of plain words of a fact line, drawn through the framework's plain-text projection
  * (`usePlainHeadline`, the reading list's `lens-fact-line`): each reference in it reads as its
  * target's name, by the name the page published for it and else by a read of its own, and never
- * as a raw address (R22). The words are read from their reading where a run of them keeps a mark
+ * as a raw address. The words are read from their reading where a run of them keeps a mark
  * (`factLine`), so an address in code reads as written, and else as one text run, and a role in
  * them by the issue the page is on. The projection trims the words it reads, so the one space a
  * part keeps at either end beside a chip is drawn around them (`spacedWords`). Nothing until the

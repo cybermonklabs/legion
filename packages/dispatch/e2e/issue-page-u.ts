@@ -24,6 +24,7 @@ import {
 import {
   asPlanner,
   awaitBlockAsk,
+  awaitBlockAsks,
   blockNodeIn,
   PROJECT,
   pause,
@@ -124,7 +125,6 @@ export async function viewNodesOf(key: string, view: TreeView): Promise<IssueTre
  * none - the page sends its view read only once Decisions is pressed - the read of the Decisions
  * view the row sends itself, so the gate reads what the server holds and not whether the page
  * asked. A row whose server may serve no such view gates on `decisionsViewServedGate` first.
- * `partUGate` reads no read: it checks the code under test (`issue-page-t-tree.ts`).
  */
 export async function heldDecisionsRead(
   key: string,
@@ -768,7 +768,7 @@ async function awaitTreeBlocks(key: string, blocks: readonly string[]): Promise<
  * six statements and an open question, which waits on her as the issue's assignee
  * (`specDocument`). The planner then writes `PAGE_QUESTIONS` open questions of
  * `PAGE_QUESTION_WORDS`, which wait on her too, and the seed waits until each is an ask
- * (`awaitBlockAsk`). Only then does the planner write a decision tied to the first statement and
+ * (`awaitBlockAsks`). Only then does the planner write a decision tied to the first statement and
  * the question whose answer shaped the third to the fifth statements (`answeredQuestionBlock`),
  * which alice answers (`PAGED_ANSWER`); then a decision tied to the second statement, and a
  * decision under the answered question (`from_ask`) tied to the sixth, which the question did
@@ -825,8 +825,7 @@ export async function seedPagedDecisions(): Promise<PagedDecisionsSeed> {
   );
   // Every question is an ask before the answered question is written, so each was made before
   // it and stands before it in Conversation's read.
-  const pageQuestions: string[] = [];
-  for (const block of questionBlocks) pageQuestions.push(await awaitBlockAsk(key, block));
+  const pageQuestions = await awaitBlockAsks(key, questionBlocks);
   const beforeTheAnswer = [
     "## Decisions",
     pagedDecision(

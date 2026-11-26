@@ -966,6 +966,18 @@ const answered: Ask = {
   state: "answered",
 };
 
+/** The tree with an open question and a waiting decision under block `q1`, whose ask's own node
+ *  carries `ask`. */
+function underBlock(ask: Partial<TreeAnswerNode>): TreeAnswer {
+  return answerOf([
+    statement,
+    askBlock(),
+    inSpecAsk(ask),
+    ...mine({ parent: parentNamed("q1") }),
+    { ...decisionNode("under", ["r1"]), parent: parentNamed("q1") },
+  ]);
+}
+
 // Decision 447: the count pairs a question written as a block of the spec with its ask as the
 // tree does (`askOfNode`), through the issue's open asks and the asks read alike. Once alice
 // answered it, the question is no open ask of the issue, and only the asks read names the block
@@ -974,15 +986,6 @@ const answered: Ask = {
 // neither, and the tree draws the block's row and both of them closed and none waiting. With its
 // ask's node live, both wait, in the count as in the tree.
 test("an answered question whose ask is overtaken counts nothing under it", () => {
-  const underBlock = (ask: Partial<TreeAnswerNode>) =>
-    answerOf([
-      statement,
-      askBlock(),
-      inSpecAsk(ask),
-      ...mine({ parent: parentNamed("q1") }),
-      { ...decisionNode("under", ["r1"]), parent: parentNamed("q1") },
-    ]);
-
   expect(countedAndDrawn(underBlock({}), issue, [answered])).toEqual({
     counted: { approvals: [spec.id], asks: 1, decisions: 1, total: 3 },
     drawn: ["mine", "spec#b-under"],
@@ -1006,10 +1009,10 @@ test("an answered question whose ask is overtaken counts nothing under it", () =
   ]);
 });
 
-/** The decisions view read of `tree` in the view's own shape: the node of each ask that is no
- *  block of a document, and each decision, each under the parent `tree` names it by, which the
- *  view names by its line alone where it holds no node of it; never the block a question is
- *  written as, nor any other node. */
+/** A decisions view read over `tree`: it keeps the node of each ask that is no block of a
+ *  document, the approval request's among them — which the view itself never holds and which no
+ *  count here reads off a node — and each decision, each under the parent `tree` names it by,
+ *  never the block a question is written as nor any other node. */
 function decisionsViewOf(tree: TreeAnswer): TreeAnswer {
   return {
     ...tree,
@@ -1028,21 +1031,21 @@ function decisionsViewOf(tree: TreeAnswer): TreeAnswer {
 // together, so it counts what it counts from Conversation's read alone: with the question's ask's
 // node overtaken, neither waits on the reader; with it live, both do.
 test("an answered question whose ask the decisions view holds overtaken counts nothing under its block", () => {
-  const underBlock = (ask: Partial<TreeAnswerNode>) =>
-    answerOf([
-      statement,
-      askBlock(),
-      inSpecAsk(ask),
-      ...mine({ parent: parentNamed("q1") }),
-      { ...decisionNode("under", ["r1"]), parent: parentNamed("q1") },
-    ]);
-  const counted = (tree: TreeAnswer, decisions?: TreeAnswer) =>
+  const counted = (tree: TreeAnswer, decisions: TreeAnswer) =>
     waitingOnReader(issue, "alice", isCoverageStatement, { asksRead: [answered], decisions, tree });
 
   const live = underBlock({});
-  expect(counted(live, decisionsViewOf(live))).toEqual(counted(live));
-  expect(counted(live)).toEqual({ approvals: [spec.id], asks: 1, decisions: 1, total: 3 });
+  expect(counted(live, decisionsViewOf(live))).toEqual({
+    approvals: [spec.id],
+    asks: 1,
+    decisions: 1,
+    total: 3,
+  });
   const overtaken = underBlock({ state: "overtaken" });
-  expect(counted(overtaken, decisionsViewOf(overtaken))).toEqual(counted(overtaken));
-  expect(counted(overtaken)).toEqual({ approvals: [spec.id], asks: 0, decisions: 0, total: 1 });
+  expect(counted(overtaken, decisionsViewOf(overtaken))).toEqual({
+    approvals: [spec.id],
+    asks: 0,
+    decisions: 0,
+    total: 1,
+  });
 });

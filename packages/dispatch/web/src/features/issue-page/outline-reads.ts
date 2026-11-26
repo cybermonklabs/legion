@@ -60,6 +60,12 @@ export interface OutlineReads {
    *  under that role's own filter its view read, and else the outline read; so a view that
    *  draws from them reads them here, through the observers the outline's reads hold. */
   readonly blocksOf: IssueTreeView["blocksOf"];
+  /** Whether the coverage read has neither answered nor been refused yet: until it has, each
+   *  statement's row holds the line its counts will be drawn in (`TreeRows.tsx`), so the counts
+   *  arriving move nothing (the plan's "The places held", row 6). A read refused before it
+   *  answered holds no place again while it runs again (a Retry, an event's refresh): its row
+   *  draws no counts until a read of it answers. */
+  readonly coverageOut: boolean;
   /** The line of each read the tree's rows come from that stands failed (`standsFailed`), and
    *  the names' line while it stands (`IssueTreeView.namesFailure`), in the order the reads are
    *  given: the five reads (`reads`), and the names last, as the tree reads them last
@@ -269,9 +275,15 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   const own = useQueries({
     combine: (
       answers
-    ): { failed: readonly FailedRead[]; reads: OutlineReads["reads"]; settled: boolean } => {
-      const [, , asks, comments, messages] = answers;
+    ): {
+      coverageOut: boolean;
+      failed: readonly FailedRead[];
+      reads: OutlineReads["reads"];
+      settled: boolean;
+    } => {
+      const [coverage, , asks, comments, messages] = answers;
       return {
+        coverageOut: coverage.isPending && coverage.errorUpdateCount === 0,
         failed: failedLines(answers, (index) => ({
           bringsQuestions: five[index].bringsQuestions,
           key: five[index].line,
@@ -302,6 +314,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
   );
   return {
     blocksOf,
+    coverageOut: own.coverageOut,
     failed,
     names,
     namesHeld,

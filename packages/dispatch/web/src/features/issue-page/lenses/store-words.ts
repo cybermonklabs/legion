@@ -38,7 +38,7 @@ import {
 import { outlineRowPath, type StoreKind } from "./store-link";
 
 /**
- * A store address in a row's words on the issue page (decision 388): `dispatch://lens/<uuid>`,
+ * A store address in a row's words on the issue page: `dispatch://lens/<uuid>`,
  * `dispatch://risk/<uuid>`, `dispatch://constraint/<uuid>`, and a finding's
  * `dispatch://lens/<uuid>#b-<id>`. No route names one (`refs/store-address.ts`), so the row's
  * renderer, which names every other reference, draws a bare one as its author wrote it, and a
@@ -193,7 +193,7 @@ function lineRuns(raw: string | undefined, index: () => StoreIndex): DisplayTree
  * `codeOnlyRuns` reads, since the walk names or drops every link to a store address: a row draws
  * a verdict, a heading and a constraint's words that cite nothing from `codeOnlyRuns`, so the
  * same words that cite a node are drawn as the same one line, the cited words alone changed, with
- * none of the lists and emphasis a parse made in the page would draw (R20). Every other address
+ * none of the lists and emphasis a parse made in the page would draw. Every other address
  * stays as its author wrote it, for the row's renderer to name.
  */
 function namedLine(named: DisplayTree): DisplayTree[] {
@@ -431,7 +431,7 @@ function nameRuns(
  * address in its words is named, as plain words; undefined where its words hold none or are code,
  * so it stays as its author wrote it. In a reading drawn as a body, each run of one author link
  * keeps its own link beside its other marks, and how the shared renderer draws a marked link
- * (several anchors) is decision 407's, part N's; a one-line row keeps the link alone on each run,
+ * (several anchors) is the shared renderer's; a one-line row keeps the link alone on each run,
  * words in code among them, which its renderer draws as one link, and a fact line reads them as
  * one chip (`namedLine`, `factWords`).
  */

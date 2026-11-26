@@ -202,7 +202,7 @@ function ChainEntries({
  * The whole words of the row a lens stands under, which its chain entry names it by, drawn
  * through the framework's plain-text projection (`usePlainHeadline`, the reading list's
  * `lens-chain-line`): each reference in them reads as its target's name, by the name the page
- * published for it and else by a read of its own, and never as a raw address (R22). The words are
+ * published for it and else by a read of its own, and never as a raw address. The words are
  * read from their reading where a run of them keeps a mark (`LensPlace.onReading`), so an address
  * in code reads as written, and else as one text run, and a role in them by the issue the page is
  * on. Nothing until the projection has answered.
