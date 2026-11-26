@@ -13,7 +13,7 @@
 // a pool whose transactions are cancelled between two statements (testdb.CancelAfterScan), and the
 // drop that waits out an autovacuum worker and a backend that has not exited yet (testdb.Drop),
 // which every clone of this package's template and the template itself go through. ClonePool keeps
-// the pool_max_conns its cloned DSN names; a test-owned pool with an unsized URL uses Envoy's
-// public testpool (testpool.PoolConns, testpool.ParseConfig and testpool.NewPool), which both Go
-// modules import.
+// the pool_max_conns its cloned DSN names; a pool a test builds itself takes Envoy's public
+// testpool, whose one rule keeps a pool_max_conns the DSN names and gives testpool.PoolConns where
+// it names none, and which both Go modules import.
 package testpg

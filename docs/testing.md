@@ -815,19 +815,21 @@ A pgx pool a daemon test opens on a URL `testdb.Database`, `testpg.Clone` or the
 `internal/daemon` and `internal/store` holds the `pool_max_conns` `LEGION_TEST_PG_DSN` names.
 `testdb.PoolBounded` carries that setting through each rewrite, or writes
 `pool_max_conns=testpool.PoolConns` where the environment names no size. The caller keeps that
-setting with `pgxpool.ParseConfig` or `store.Open`; it does not overrule a developer's choice.
-A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or another child process reads takes
-`testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which hold none of pgxpool's keys even
-when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a key to the server, which refuses it,
-`psql` refuses the URL, and Dispatch refuses a URL that sets `pool_max_conns`.
+setting with `pgxpool.ParseConfig`, `store.Open` or `testpool`; it does not overrule a developer's
+choice. A URL that libpq, `pgx.Connect`, `psql`, a scratch Dispatch or another child process reads
+takes `testdb.PlainDatabase` or `testdb.DatabaseURL` instead, which hold none of pgxpool's keys
+even when `LEGION_TEST_PG_DSN` sets one: `pgx.Connect` sends such a key to the server, which
+refuses it, `psql` refuses the URL, and Dispatch refuses a URL that sets `pool_max_conns`.
 
-A test-owned pool whose URL carries no `pool_max_conns` must use `testpool.ParseConfig` or
-`testpool.NewPool`. That is the rule for `testdb.Outage`, Envoy's `storetest.URL`, and a test's
-own temporary database. Those helpers set MaxConns to `testpool.PoolConns`, 4, which is pgx's
-floor and the size every unsized pool had on CI. A test that needs another size sets MaxConns
-itself. The helper is a public package of the Envoy module, which the daemon imports through its
-replace; it imports only pgxpool and the standard library. It is separate because Envoy's
-`internal/testpg` imports testcontainers.
+A pool a test builds itself takes one rule, in Envoy's public `testpool` package: a
+`pool_max_conns` its DSN names wins, and `testpool.PoolConns`, 4, is the size where the DSN names
+none (`testdb.Outage`, Envoy's `storetest.URL`, a test's own temporary database). `testpool.ParseConfig`
+and `testpool.NewPool` apply it to a DSN, and `testpool.Size` to a configuration another factory
+parsed, such as the daemon store's `PoolConfig`. Four is pgx's floor and the size every unsized
+pool had on CI. A test that needs another size names it in the DSN or sets MaxConns itself. The
+package is a public package of the Envoy module, which the daemon imports through its replace; it
+imports only pgx and the standard library. It is separate because Envoy's `internal/testpg`
+imports testcontainers.
 
 ## A Go test that opens a NATS client
 
