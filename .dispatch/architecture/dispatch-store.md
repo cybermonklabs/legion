@@ -28,7 +28,9 @@ It is a count and not the newest `seq`, because two writes of one issue's runs d
 It holds each session's newest stamped title in `session_titles`, one row a session keyed by `session_id` (`20261117100008_session_titles`).
 `delivery.ResolveSessionTitles` reads that table by its primary key, one `session_id = any($1)` read for every id it is given, and reads no row of `events`.
 The constraint trigger `events_session_title` on `events` (`20261117100015_events_session_titles`), deferred to the commit, writes the row in the transaction that inserts an event of a session actor whose origin stamps a non-empty `session_title`.
-It replaces a stored title only with the title of a later `created_at`, so an event that stamps no title takes no title away, and of two titled events of one session at one `created_at` the one inserted first keeps the title.
+It replaces a stored title only with the title of a later `created_at`, so an event that stamps no title takes no title away.
+Every event of one transaction has the transaction's start as its `created_at`, and of two titled events of one session in one transaction the one inserted first keeps the title.
+Two transactions of one session that start in the same microsecond also give their events one `created_at`: the one that commits first keeps the title, and a later titled event of the session replaces either.
 The boot's fill, `store.FillSessionTitles`, writes the titles of the events stored before the trigger, after the migrations and before the server listens (`cmd/dispatch/main.go`), and the boot stops when the fill fails.
 It takes `store.SessionTitlesFillBatch` (1,000) sessions in each transaction, under the trigger's own guard, and keeps its keyset cursor in the one row of `session_titles_backfill` (`20261117100016_session_titles_backfill`), which the batch that finds no further session deletes.
 The partial index `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'` (`20261117100010_issues_unowned_p0`, built `concurrently`) holds the open P0 issues alone.
