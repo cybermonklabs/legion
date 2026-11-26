@@ -1578,7 +1578,8 @@ no Dispatch call: whoever keeps the label in step with the priorities moves it o
 requests, and the next run reads it. Only a priority pull request that is approved or in the merge
 queue is held against other changes: one still in review may change much before it lands, and
 holding every other pull request to a head that may not merge would block work for nothing. A
-priority pull request is never held to another one.
+change whose every pull request is labelled `priority` is not held to the others; a priority pull
+request in a merge group with other pull requests is judged with them.
 
 A priority pull request that has fallen behind main does not fail every other change in the
 conflicts it already has with main. The plain merge of a change with such a head carries every one
@@ -1591,7 +1592,9 @@ the check, and one the base's merge holds alike does not. The script's header sa
 them apart.
 
 Both events, because they answer two questions. On a pull request the check tells the author at
-once, at the push. The merge group is the gate: a pull request that passed before a priority pull
+once, at the push, and judges the change as the queue will land it, one squash commit on its
+base, so a pull request a priority pull request is stacked on gets the verdict its merge group
+will get. The merge group is the gate: a pull request that passed before a priority pull
 request was approved is checked again when it is queued, against the priority pull requests
 approved or queued then, and the ci-ok-report step posts the failing ci-ok as soon as the job
 fails at the front of the queue. A failure names the priority pull request, its title and the
@@ -1599,8 +1602,8 @@ files, and the remedy: wait for it to merge, then merge main and resolve the con
 
 What it costs: one ubuntu-24.04-arm job on every pull request push and every merge group, which
 is a standard runner of a public repository and bills nothing. Its timeout is 10 minutes; it
-fetches only when a priority pull request is approved or queued, runs one git merge-tree merge
-for each, and a second where the first conflicts.
+fetches only when a priority pull request other than the event's own is approved or queued, and
+the script's header counts the git merge-tree runs it makes for each.
 
 ## What the priority-conflicts job's scopes are for
 
