@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "set": "skilluse",
+  "cases": [
+    {
+      "id": "P09",
+      "skill": "legion-retro",
+      "kind": "need",
+      "session": "legion",
+      "role": "retro",
+      "source": {
+        "ref": "skills/legion-retro/SKILL.md",
+        "commit": "5a972e7d37b6770c644a7f4020f9096e0d3022cc"
+      },
+      "world": {
+        "clock": "2030-01-09T10:00:00Z",
+        "dispatch": {
+          "issue": {
+            "key": "ACME-31",
+            "title": "The step reader names the variant it read",
+            "status": "in_progress",
+            "spec": "## Goal\n\nThe step reader names the variant each step record ran under.\n\n## Requirements\n\n:::requirement{#r1}\n**R1.** A step record the reader returns names its variant. From: the issue.\n:::\n",
+            "parent": "ACME-10"
+          },
+          "documents": [
+            {
+              "name": "verification.md",
+              "body": "# Verification\n\n:::check{#k1 surface=\"cli\" run=\"go test -run 'TestStepReaderVariant' ./internal/dispatch/\" when=\"before_merge\" negative_control=\"A record without a variant fails the reader test.\"}\nThe step reader returns each record's variant.\n:::\n"
+            }
+          ],
+          "handoffs": [
+            {
+              "id": "hnd-acme-31-implement-1",
+              "phase": "implement",
+              "version": 1,
+              "author": "ses-acme-31-implementer",
+              "at": "2030-01-09T08:10:00Z",
+              "body": { "head": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a" }
+            },
+            {
+              "id": "hnd-acme-31-test-1",
+              "phase": "test",
+              "version": 1,
+              "author": "ses-acme-31-tester",
+              "at": "2030-01-09T08:50:00Z",
+              "body": { "head": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a" }
+            },
+            {
+              "id": "hnd-acme-31-review-1",
+              "phase": "review",
+              "version": 1,
+              "author": "ses-acme-31-reviewer",
+              "at": "2030-01-09T09:30:00Z",
+              "body": { "head": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a", "verdict": "approved" }
+            }
+          ],
+          "comments": [],
+          "asks": [],
+          "results": [
+            {
+              "check": "k1",
+              "role": "implementer",
+              "verdict": "pass",
+              "commit": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a",
+              "at": "2030-01-09T08:05:00Z"
+            },
+            {
+              "check": "k1",
+              "role": "tester",
+              "verdict": "pass",
+              "commit": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a",
+              "at": "2030-01-09T08:45:00Z"
+            }
+          ]
+        },
+        "git": {
+          "commits": [
+            {
+              "id": "2a4c6e8b0d1f3a5c7e9b1d3f5a7c9e0b2d4f6a8c",
+              "parents": [],
+              "description": "main: the base the issue branch starts from"
+            },
+            {
+              "id": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a",
+              "parents": ["2a4c6e8b0d1f3a5c7e9b1d3f5a7c9e0b2d4f6a8c"],
+              "description": "feat(dispatch): the step reader names the variant it read"
+            }
+          ],
+          "remote": {
+            "name": "origin",
+            "branches": [
+              { "name": "main", "head": "2a4c6e8b0d1f3a5c7e9b1d3f5a7c9e0b2d4f6a8c" },
+              { "name": "legion/ACME-31", "head": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a" }
+            ]
+          },
+          "workspace": { "standingOn": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a", "localOnly": [] }
+        },
+        "github": {
+          "repository": "cybermonklabs/legion",
+          "pullRequests": [
+            {
+              "number": 88,
+              "state": "open",
+              "draft": false,
+              "head": {
+                "ref": "legion/ACME-31",
+                "sha": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a"
+              },
+              "base": "main",
+              "title": "feat(dispatch): the step reader names the variant it read (ACME-31)",
+              "body": "## Summary\n\nThe step reader names the variant each step record ran under.\n\n## Checks\n\n- k1 pass at 8f0a2c4e (tester)\n",
+              "mergeCommit": null,
+              "reviews": [
+                {
+                  "id": "rev-88-1",
+                  "author": "legion-reviewer[bot]",
+                  "state": "APPROVED",
+                  "commit": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a",
+                  "at": "2030-01-09T09:30:00Z",
+                  "body": ""
+                }
+              ],
+              "reviewThreads": [[]],
+              "checks": [
+                {
+                  "name": "ci",
+                  "commit": "8f0a2c4e6b8d1f3a5c7e9b0d2f4a6c8e1b3d5f7a",
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ]
+            }
+          ],
+          "mergeQueue": []
+        },
+        "daemon": {
+          "phase": "retro",
+          "step": { "place": 5, "name": "retro" },
+          "task": {
+            "steps": "plan (planner), implement (implementer), test (tester), review (reviewer), retro (implementer), merge (merger)"
+          },
+          "productionCheck": null
+        },
+        "production": null
+      },
+      "task": "Continue The step reader names the variant it read. Issue: ACME-31. Phase: retro. Working copy: branch legion/ACME-31. Resume the existing phase work.",
+      "tools": ["read", "bash", "legion", "task"],
+      "rubric": {
+        "loaded": "The run reads skill://legion-retro before its first write.",
+        "finished": "The run records what the work taught as one dispatch comment on ACME-31, pushes nothing, and completes retro with handoff_complete carrying plan_rating, a whole number from 1 to 5, and plan_reason, one sentence of why."
+      },
+      "withheldControl": {
+        "readFails": "With legion-retro withheld from the session's skills, the read of skill://legion-retro does not resolve.",
+        "cannotFinish": "The retro's steps are in the withheld skill alone: what the learnings comment holds (skill://legion-retro/references/learnings.md) and the evidence the plan rating is read from, so the finished line cannot pass from the task text."
+      }
+    }
+  ]
+}

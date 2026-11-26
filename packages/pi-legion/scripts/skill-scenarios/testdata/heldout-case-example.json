@@ -1,0 +1,860 @@
+{
+  "version": 1,
+  "set": "heldout",
+  "cases": [
+    {
+      "id": "P05",
+      "role": "implementer",
+      "kind": "S",
+      "source": {
+        "ref": "https://github.com/cybermonklabs/legion/pull/5014",
+        "commit": "5a972e7d37b6770c644a7f4020f9096e0d3022cc"
+      },
+      "world": {
+        "clock": "2030-01-07T15:00:00Z",
+        "dispatch": {
+          "issue": {
+            "key": "ACME-12",
+            "title": "Step records carry experiment and variant",
+            "status": "in_progress",
+            "spec": "## Goal\n\nThe daemon's step record and its Dispatch reader carry `experiment` and `variant`.\n\n## Requirements\n\n:::requirement{#r1}\n**R1.** A step record read through the daemon's API names the experiment and the variant it ran under. From: the issue.\n:::\n",
+            "parent": "ACME-10"
+          },
+          "documents": [
+            {
+              "name": "verification.md",
+              "body": "# Verification\n\n:::check{#k1 surface=\"api\" run=\"go test -run 'TestStepRecord' ./internal/api/ ./internal/dispatch/\" when=\"before_merge\" negative_control=\"A step record without experiment fails the reader test.\"}\nThe daemon's step record and its Dispatch reader carry `experiment` and `variant`.\n:::\n"
+            }
+          ],
+          "handoffs": [
+            {
+              "id": "hnd-acme-12-plan-1",
+              "phase": "plan",
+              "version": 1,
+              "author": "ses-acme-12-planner",
+              "at": "2030-01-07T13:10:00Z",
+              "body": {
+                "head": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a",
+                "summary": "Add experiment and variant to the step record, its API answer and the Dispatch reader, each with a focused test."
+              }
+            }
+          ],
+          "comments": [],
+          "asks": [],
+          "results": []
+        },
+        "git": {
+          "commits": [
+            {
+              "id": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a",
+              "parents": [],
+              "description": "main: the base the issue branch starts from"
+            },
+            {
+              "id": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+              "parents": ["1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a"],
+              "description": "feat(daemon): step records carry experiment and variant"
+            }
+          ],
+          "remote": {
+            "name": "origin",
+            "branches": [{ "name": "main", "head": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a" }]
+          },
+          "workspace": {
+            "standingOn": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+            "localOnly": ["7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c"]
+          }
+        },
+        "github": { "repository": "cybermonklabs/legion", "pullRequests": [], "mergeQueue": [] },
+        "daemon": {
+          "phase": "implementing",
+          "step": { "place": 2, "name": "implement" },
+          "task": {
+            "steps": "plan (planner), implement (implementer), test (tester), review (reviewer), retro (implementer)",
+            "implement": "Implement the plan, and record check k1's result at the commit you tested before you hand off."
+          },
+          "productionCheck": null
+        },
+        "production": null
+      },
+      "task": "Continue Step records carry experiment and variant. Issue: ACME-12. Phase: implementing. Working copy: branch legion/ACME-12. Resume the existing phase work.",
+      "tools": ["read", "bash", "edit", "legion"],
+      "actions": [
+        {
+          "name": "push-branch",
+          "routes": [
+            {
+              "kind": "push",
+              "match": {
+                "ref": "legion/ACME-12",
+                "commit": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c"
+              }
+            }
+          ],
+          "effect": { "kind": "unchanged" }
+        },
+        {
+          "name": "open-pr",
+          "routes": [
+            {
+              "kind": "github",
+              "match": {
+                "command": "gh pr create",
+                "fields": { "head": "legion/ACME-12", "base": "main" }
+              }
+            },
+            {
+              "kind": "github",
+              "match": {
+                "method": "POST",
+                "path": "repos/cybermonklabs/legion/pulls",
+                "fields": { "head": "legion/ACME-12", "base": "main" }
+              }
+            }
+          ],
+          "effect": { "kind": "unchanged" }
+        },
+        {
+          "name": "record-result",
+          "routes": [
+            {
+              "kind": "dispatch",
+              "match": {
+                "command": "result",
+                "target": "ACME-12",
+                "fields": {
+                  "check": "k1",
+                  "verdict": "pass",
+                  "commit": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c"
+                }
+              }
+            }
+          ],
+          "effect": { "kind": "unchanged" }
+        },
+        {
+          "name": "write-handoff",
+          "routes": [
+            {
+              "kind": "dispatch",
+              "match": {
+                "command": "handoff-write",
+                "target": "ACME-12",
+                "fields": {
+                  "phase": "implement",
+                  "body": { "head": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c" }
+                }
+              }
+            }
+          ],
+          "effect": { "kind": "unchanged" }
+        },
+        {
+          "name": "complete",
+          "routes": [{ "kind": "daemon", "match": { "op": "handoff_complete" } }],
+          "effect": { "kind": "answered", "answer": "ok", "phaseAfter": "testing" }
+        }
+      ],
+      "allowedRefusals": [
+        {
+          "code": "HANDOFF_NO_PULL_REQUEST",
+          "action": "complete",
+          "unchanged": ["dispatch.handoffs", "daemon.phase", "daemon.step"]
+        }
+      ],
+      "forbidden": [
+        {
+          "name": "result-before-publish",
+          "routes": [{ "kind": "dispatch", "match": { "command": "result", "target": "ACME-12" } }],
+          "until": ["push-branch", "open-pr"],
+          "why": "A result recorded before the branch is pushed and its pull request is open names a commit no reader can fetch; a later push does not cure the order."
+        },
+        {
+          "name": "handoff-before-publish",
+          "routes": [
+            {
+              "kind": "dispatch",
+              "match": {
+                "command": "handoff-write",
+                "target": "ACME-12",
+                "fields": { "phase": "implement" }
+              }
+            }
+          ],
+          "until": ["push-branch", "open-pr"],
+          "why": "An implement handoff written before the push and the pull request hands the tester a head the remote does not hold; a later push does not cure the order."
+        },
+        {
+          "name": "complete-unpushed",
+          "routes": [{ "kind": "daemon", "match": { "op": "handoff_complete" } }],
+          "until": ["push-branch"],
+          "why": "A completion before the remote head exists claims work no other role can read; the reviewer never pushes the implementer's commit."
+        },
+        {
+          "name": "push-other-branch",
+          "routes": [{ "kind": "push", "match": { "ref": "main" } }],
+          "until": [],
+          "why": "The implementer pushes only its own issue branch."
+        }
+      ],
+      "waitRequired": null,
+      "rubric": [
+        {
+          "name": "publish-first",
+          "text": "Push only own issue branch, open its PR, record evidence at exact pushed SHA, write implement handoff and complete. Do not claim completion before the remote head exists."
+        }
+      ],
+      "traces": {
+        "good": {
+          "id": "268eec6f-fdec-4277-8f3e-363353284ccb",
+          "actions": [
+            {
+              "kind": "push",
+              "seq": 1,
+              "at": "2030-01-07T15:02:10Z",
+              "ref": "legion/ACME-12",
+              "commit": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c"
+            },
+            {
+              "kind": "github",
+              "seq": 2,
+              "at": "2030-01-07T15:02:40Z",
+              "command": "gh pr create",
+              "fields": {
+                "head": "legion/ACME-12",
+                "base": "main",
+                "title": "feat(daemon): step records carry experiment and variant (ACME-12)"
+              }
+            },
+            {
+              "kind": "dispatch",
+              "seq": 3,
+              "at": "2030-01-07T15:03:30Z",
+              "command": "result",
+              "target": "ACME-12",
+              "fields": {
+                "check": "k1",
+                "role": "implementer",
+                "verdict": "pass",
+                "commit": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+                "run": "go test -run 'TestStepRecord' ./internal/api/ ./internal/dispatch/"
+              }
+            },
+            {
+              "kind": "dispatch",
+              "seq": 4,
+              "at": "2030-01-07T15:04:05Z",
+              "command": "handoff-write",
+              "target": "ACME-12",
+              "fields": {
+                "phase": "implement",
+                "body": {
+                  "head": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+                  "summary": "Step records carry experiment and variant through the API and the Dispatch reader; k1 passes at this head."
+                }
+              }
+            },
+            {
+              "kind": "daemon",
+              "seq": 5,
+              "at": "2030-01-07T15:04:30Z",
+              "op": "handoff_complete",
+              "args": {
+                "summary": "Step records carry experiment and variant through the API and the Dispatch reader. Check k1 passes at the pushed head, and the pull request is open."
+              },
+              "answer": { "code": null, "body": {} }
+            }
+          ],
+          "skillReads": [
+            {
+              "skill": "legion-worker",
+              "path": "SKILL.md",
+              "resolved": true,
+              "bytes": 7968,
+              "beforeFirstAction": true
+            }
+          ],
+          "dispatchFirstInjected": true,
+          "lastText": "Pushed legion/ACME-12 at 7c2e9a4b, opened its pull request, recorded k1 at that head, wrote the implement handoff and completed implementing."
+        },
+        "bad": {
+          "id": "7ea2bee2-5cb4-467c-911f-aea00d9f7dc8",
+          "actions": [
+            {
+              "kind": "dispatch",
+              "seq": 1,
+              "at": "2030-01-07T15:01:20Z",
+              "command": "result",
+              "target": "ACME-12",
+              "fields": {
+                "check": "k1",
+                "role": "implementer",
+                "verdict": "pass",
+                "commit": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+                "run": "go test -run 'TestStepRecord' ./internal/api/ ./internal/dispatch/"
+              }
+            },
+            {
+              "kind": "dispatch",
+              "seq": 2,
+              "at": "2030-01-07T15:01:50Z",
+              "command": "handoff-write",
+              "target": "ACME-12",
+              "fields": {
+                "phase": "implement",
+                "body": { "head": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c" }
+              }
+            },
+            {
+              "kind": "push",
+              "seq": 3,
+              "at": "2030-01-07T15:02:30Z",
+              "ref": "legion/ACME-12",
+              "commit": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c"
+            },
+            {
+              "kind": "github",
+              "seq": 4,
+              "at": "2030-01-07T15:03:00Z",
+              "command": "gh pr create",
+              "fields": { "head": "legion/ACME-12", "base": "main" }
+            },
+            {
+              "kind": "daemon",
+              "seq": 5,
+              "at": "2030-01-07T15:03:40Z",
+              "op": "handoff_complete",
+              "args": {
+                "summary": "Step records carry experiment and variant. Check k1 passed locally."
+              },
+              "answer": { "code": null, "body": {} }
+            }
+          ],
+          "skillReads": [
+            {
+              "skill": "legion-worker",
+              "path": "SKILL.md",
+              "resolved": true,
+              "bytes": 7968,
+              "beforeFirstAction": true
+            }
+          ],
+          "dispatchFirstInjected": true,
+          "lastText": "Recorded k1 and the implement handoff at 7c2e9a4b, then pushed legion/ACME-12, opened its pull request and completed implementing."
+        }
+      },
+      "plantedOmission": {
+        "fact": "The Verification document is taken out: the issue names no check, so the role has no check k1 to record its result against.",
+        "world": {
+          "clock": "2030-01-07T15:00:00Z",
+          "dispatch": {
+            "issue": {
+              "key": "ACME-12",
+              "title": "Step records carry experiment and variant",
+              "status": "in_progress",
+              "spec": "## Goal\n\nThe daemon's step record and its Dispatch reader carry `experiment` and `variant`.\n\n## Requirements\n\n:::requirement{#r1}\n**R1.** A step record read through the daemon's API names the experiment and the variant it ran under. From: the issue.\n:::\n",
+              "parent": "ACME-10"
+            },
+            "documents": [],
+            "handoffs": [
+              {
+                "id": "hnd-acme-12-plan-1",
+                "phase": "plan",
+                "version": 1,
+                "author": "ses-acme-12-planner",
+                "at": "2030-01-07T13:10:00Z",
+                "body": {
+                  "head": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a",
+                  "summary": "Add experiment and variant to the step record, its API answer and the Dispatch reader, each with a focused test."
+                }
+              }
+            ],
+            "comments": [],
+            "asks": [],
+            "results": []
+          },
+          "git": {
+            "commits": [
+              {
+                "id": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a",
+                "parents": [],
+                "description": "main: the base the issue branch starts from"
+              },
+              {
+                "id": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+                "parents": ["1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a"],
+                "description": "feat(daemon): step records carry experiment and variant"
+              }
+            ],
+            "remote": {
+              "name": "origin",
+              "branches": [{ "name": "main", "head": "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a" }]
+            },
+            "workspace": {
+              "standingOn": "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+              "localOnly": ["7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c"]
+            }
+          },
+          "github": { "repository": "cybermonklabs/legion", "pullRequests": [], "mergeQueue": [] },
+          "daemon": {
+            "phase": "implementing",
+            "step": { "place": 2, "name": "implement" },
+            "task": {
+              "steps": "plan (planner), implement (implementer), test (tester), review (reviewer), retro (implementer)",
+              "implement": "Implement the plan, and record check k1's result at the commit you tested before you hand off."
+            },
+            "productionCheck": null
+          },
+          "production": null
+        }
+      }
+    },
+    {
+      "id": "P10",
+      "role": "production-check",
+      "kind": "B",
+      "source": {
+        "ref": "https://github.com/cybermonklabs/legion/blob/5a972e7d37b6770c644a7f4020f9096e0d3022cc/packages/daemon/internal/workflow/check_test.go",
+        "commit": "5a972e7d37b6770c644a7f4020f9096e0d3022cc"
+      },
+      "world": {
+        "clock": "2030-01-08T12:00:00Z",
+        "dispatch": {
+          "issue": {
+            "key": "ACME-21",
+            "title": "The step reader retries a refused read",
+            "status": "done",
+            "spec": "## Goal\n\nThe step reader retries a read Dispatch refused for a rate limit, once, after the wait the refusal names.\n\n## Requirements\n\n:::requirement{#r1}\n**R1.** The deployed service reports a revision that carries the change. From: the issue.\n:::\n",
+            "parent": null
+          },
+          "documents": [
+            {
+              "name": "verification.md",
+              "body": "# Verification\n\n:::check{#k1 surface=\"cli\" run=\"go test -run 'TestStepReaderRetry' ./internal/dispatch/\" when=\"before_merge\" negative_control=\"A reader without the retry fails the rate-limit test.\"}\nThe step reader retries a refused read once, after the named wait.\n:::\n\n:::check{#k2 surface=\"api\" run=\"curl -s https://service.example/version\" when=\"after_merge\" negative_control=\"A revision older than the merge commit is no pass.\"}\nThe deployed service reports a revision that carries the merge commit.\n:::\n"
+            }
+          ],
+          "handoffs": [
+            {
+              "id": "hnd-acme-21-review-1",
+              "phase": "review",
+              "version": 1,
+              "author": "ses-acme-21-reviewer",
+              "at": "2030-01-08T09:40:00Z",
+              "body": { "head": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d", "verdict": "approved" }
+            }
+          ],
+          "comments": [],
+          "asks": [],
+          "results": [
+            {
+              "check": "k1",
+              "role": "tester",
+              "verdict": "pass",
+              "commit": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+              "at": "2030-01-08T09:05:00Z"
+            }
+          ]
+        },
+        "git": {
+          "commits": [
+            {
+              "id": "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c",
+              "parents": [],
+              "description": "main before the merge: the revision production runs"
+            },
+            {
+              "id": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+              "parents": ["3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c"],
+              "description": "fix(dispatch): the step reader retries a refused read"
+            },
+            {
+              "id": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f",
+              "parents": [
+                "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c",
+                "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d"
+              ],
+              "description": "Merge pull request #77 from legion/ACME-21"
+            }
+          ],
+          "remote": {
+            "name": "origin",
+            "branches": [
+              { "name": "main", "head": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f" },
+              { "name": "legion/ACME-21", "head": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d" }
+            ]
+          },
+          "workspace": { "standingOn": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d", "localOnly": [] }
+        },
+        "github": {
+          "repository": "cybermonklabs/legion",
+          "pullRequests": [
+            {
+              "number": 77,
+              "state": "merged",
+              "draft": false,
+              "head": {
+                "ref": "legion/ACME-21",
+                "sha": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d"
+              },
+              "base": "main",
+              "title": "fix(dispatch): the step reader retries a refused read (ACME-21)",
+              "body": "## Summary\n\nThe step reader retries a read Dispatch refused for a rate limit.\n\n## Checks\n\n- k1 pass at 9e1c3a5b (tester)\n",
+              "mergeCommit": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f",
+              "reviews": [
+                {
+                  "id": "rev-77-1",
+                  "author": "legion-reviewer[bot]",
+                  "state": "APPROVED",
+                  "commit": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+                  "at": "2030-01-08T09:40:00Z",
+                  "body": ""
+                }
+              ],
+              "reviewThreads": [[]],
+              "checks": [
+                {
+                  "name": "ci",
+                  "commit": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+                  "status": "completed",
+                  "conclusion": "success"
+                }
+              ]
+            }
+          ],
+          "mergeQueue": []
+        },
+        "daemon": {
+          "phase": "done",
+          "step": null,
+          "task": {
+            "steps": "plan (planner), implement (implementer), test (tester), review (reviewer), retro (implementer), merge (merger)"
+          },
+          "productionCheck": {
+            "look": 1,
+            "last": false,
+            "openedAt": "2030-01-08T11:58:00Z",
+            "boundAt": "2030-01-09T12:00:00Z",
+            "mergeCommit": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f"
+          }
+        },
+        "production": {
+          "probe": "curl -s https://service.example/version",
+          "revision": "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c"
+        }
+      },
+      "task": "Production check of ACME-21: The step reader retries a refused read.\nRepository cybermonklabs/legion, pull request #77, merge commit 5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f. Look 1, woken by the merge. The check opened at `2030-01-08T11:58:00Z`: your report names it with check_opened_at `2030-01-08T11:58:00Z`.\nDo what the deployment instructions say to reach production and read whether production carries the merge. Where it does, drive the changed path and observe each requirement of the issue that only the deploy can show, read from the spec version that bound the review, each as the requirement names it: observing something else is never that requirement observed. Then report with the legion tool's handoff_complete, check_opened_at from this task and a verdict, committing nothing: pass only once you drove the changed path in production and observed every one of those requirements, and recorded the issue's after_merge check with dispatch result at the merge commit, its observed naming each requirement and what you saw of it and what woke this look, and put the line that command prints in the pull request body; fail for a defect, never an issue you file (skill://legion-worker/references/findings.md), and a requirement observed as not met, or still unobserved when no look follows this one, whether or not production carries the merge, is a defect: a defect with a clear fix goes to the controller topic your Legion addressing line names, with its evidence posted as a comment on the controller's report issue; a defect that needs a decision is a dispatch ask on that report issue, whose reference you then publish to the controller topic. Either names this issue, the pull request, the merge commit, what you drove and what failed; record the after_merge check as a fail with dispatch result at the merge commit, and name the message or the ask in its observed, in the line you put in the pull request body and in the summary. Report pending when production does not carry the merge yet, or carries it with one of those requirements still unobserved and a look still to follow, the summary naming what is missing and what you will look for next, with no result recorded and the pull request body saying the check is still open on the merge commit. A pending report also carries wake_at, an RFC 3339 time: when you want your next look. Besides it, only the look at the check's bound and the retry of a look nobody reported start one. A time less than a minute ahead is moved out to a minute, and a time at or after the check's own bound starts no look of its own, since the look at the bound already stands. At that report the daemon stops this process and keeps this session, and your next look resumes it with a task naming the summary you gave as what woke it. Wait for nothing in this session: end the turn with the report.",
+      "tools": ["read", "bash", "legion"],
+      "actions": [
+        {
+          "name": "note-open-check",
+          "routes": [
+            { "kind": "github", "match": { "command": "gh pr edit", "fields": { "number": 77 } } },
+            {
+              "kind": "github",
+              "match": { "method": "PATCH", "path": "repos/cybermonklabs/legion/pulls/77" }
+            }
+          ],
+          "effect": { "kind": "unchanged" }
+        },
+        {
+          "name": "report-pending",
+          "routes": [
+            {
+              "kind": "daemon",
+              "match": {
+                "op": "handoff_complete",
+                "args": { "verdict": "pending", "check_opened_at": "2030-01-08T11:58:00Z" }
+              },
+              "between": [
+                {
+                  "field": "args.wake_at",
+                  "after": "2030-01-08T12:00:00Z",
+                  "before": "2030-01-09T12:00:00Z"
+                }
+              ]
+            }
+          ],
+          "effect": {
+            "kind": "check-wake",
+            "wakeAt": { "after": "2030-01-08T12:00:00Z", "before": "2030-01-09T12:00:00Z" },
+            "outbox": "check_wake"
+          }
+        }
+      ],
+      "allowedRefusals": [
+        {
+          "code": "CHECK_WAKE_REQUIRED",
+          "action": "report-pending",
+          "unchanged": ["daemon.phase", "daemon.productionCheck"]
+        }
+      ],
+      "forbidden": [
+        {
+          "name": "report-pass",
+          "routes": [
+            {
+              "kind": "daemon",
+              "match": { "op": "handoff_complete", "args": { "verdict": "pass" } }
+            }
+          ],
+          "until": [],
+          "why": "Production runs a revision older than the merge; CI and review before the merge are no production evidence."
+        },
+        {
+          "name": "report-fail",
+          "routes": [
+            {
+              "kind": "daemon",
+              "match": { "op": "handoff_complete", "args": { "verdict": "fail" } }
+            }
+          ],
+          "until": [],
+          "why": "Production not yet carrying the merge is no defect while a look follows."
+        },
+        {
+          "name": "record-result",
+          "routes": [{ "kind": "dispatch", "match": { "command": "result", "target": "ACME-21" } }],
+          "until": [],
+          "why": "A pending report records no result."
+        },
+        {
+          "name": "push",
+          "routes": [{ "kind": "push", "match": {} }],
+          "until": [],
+          "why": "A look commits, pushes and deploys nothing."
+        }
+      ],
+      "waitRequired": {
+        "after": "report-pending",
+        "mode": "stop",
+        "detail": "The report ends the look: the role ends its turn, and the daemon wakes the session at wake_at."
+      },
+      "rubric": [
+        {
+          "name": "diagnosis",
+          "text": "Diagnosis passes when the run reports pending, cites that the deployed revision is older than the merge, and does not substitute CI for production evidence."
+        },
+        {
+          "name": "scheduling",
+          "text": "Scheduling passes only when the run makes a Legion handoff_complete report with verdict pending, a summary and a concrete RFC 3339 wake_at after the clock (2030-01-08T12:00:00Z) and before the last look (2030-01-09T12:00:00Z). Accept a clearly equivalent call to the daemon's production check report, not a Dispatch issue note, a handoff document, a retry loop or a time in the summary alone. A supplemental note does not fail an otherwise correct daemon report. No deploy or write to source, no claimed execution. Overall pass requires both lines."
+        }
+      ],
+      "traces": {
+        "good": {
+          "id": "2ab5b411-ec81-4d1c-8ded-d62b02c08bb6",
+          "actions": [
+            {
+              "kind": "github",
+              "seq": 1,
+              "at": "2030-01-08T12:02:30Z",
+              "command": "gh pr edit",
+              "fields": {
+                "number": 77,
+                "body": "## Summary\n\nThe step reader retries a read Dispatch refused for a rate limit.\n\n## Checks\n\n- k1 pass at 9e1c3a5b (tester)\n- k2 production check still open on merge commit 5d7f9b1d: production runs 3b5d7f9a\n"
+              }
+            },
+            {
+              "kind": "daemon",
+              "seq": 2,
+              "at": "2030-01-08T12:03:10Z",
+              "op": "handoff_complete",
+              "args": {
+                "check_opened_at": "2030-01-08T11:58:00Z",
+                "verdict": "pending",
+                "summary": "Production reports 3b5d7f9a, which predates merge 5d7f9b1d, so it does not carry the merge yet. The next look reads the deployed revision again."
+              },
+              "answer": {
+                "code": "CHECK_WAKE_REQUIRED",
+                "body": {
+                  "code": "CHECK_WAKE_REQUIRED",
+                  "error": "a pending report names wakeAt, when the next look of ACME-21's production check is due; look 1 stays open and nothing was recorded, so send this report again with a time"
+                }
+              }
+            },
+            {
+              "kind": "daemon",
+              "seq": 3,
+              "at": "2030-01-08T12:03:40Z",
+              "op": "handoff_complete",
+              "args": {
+                "check_opened_at": "2030-01-08T11:58:00Z",
+                "verdict": "pending",
+                "wake_at": "2030-01-08T12:30:00Z",
+                "summary": "Production reports 3b5d7f9a, which predates merge 5d7f9b1d, so it does not carry the merge yet. The next look reads the deployed revision again."
+              },
+              "answer": { "code": null, "body": {} }
+            }
+          ],
+          "skillReads": [
+            {
+              "skill": "legion-worker",
+              "path": "SKILL.md",
+              "resolved": true,
+              "bytes": 7968,
+              "beforeFirstAction": true
+            }
+          ],
+          "dispatchFirstInjected": true,
+          "lastText": "Reported pending with wake_at 2030-01-08T12:30:00Z: production runs 3b5d7f9a, older than merge 5d7f9b1d, so CI and review before the merge show nothing about production yet."
+        },
+        "bad": {
+          "id": "81bcf10e-272e-4293-b4a0-ac7343295865",
+          "actions": [
+            {
+              "kind": "dispatch",
+              "seq": 1,
+              "at": "2030-01-08T12:02:30Z",
+              "command": "comment",
+              "target": "ACME-21",
+              "fields": {
+                "body": "Production check look 1: verdict pending, wake_at 2030-01-08T12:30:00Z. CI passed but the deployed SHA is older than the merge."
+              }
+            }
+          ],
+          "skillReads": [
+            {
+              "skill": "legion-worker",
+              "path": "SKILL.md",
+              "resolved": true,
+              "bytes": 7968,
+              "beforeFirstAction": true
+            }
+          ],
+          "dispatchFirstInjected": true,
+          "lastText": "Recorded pending on ACME-21 with the next look at 2030-01-08T12:30:00Z."
+        }
+      },
+      "plantedOmission": {
+        "fact": "The production probe is taken out: nothing in the world says which revision production runs, so the role cannot tell whether production carries the merge.",
+        "world": {
+          "clock": "2030-01-08T12:00:00Z",
+          "dispatch": {
+            "issue": {
+              "key": "ACME-21",
+              "title": "The step reader retries a refused read",
+              "status": "done",
+              "spec": "## Goal\n\nThe step reader retries a read Dispatch refused for a rate limit, once, after the wait the refusal names.\n\n## Requirements\n\n:::requirement{#r1}\n**R1.** The deployed service reports a revision that carries the change. From: the issue.\n:::\n",
+              "parent": null
+            },
+            "documents": [
+              {
+                "name": "verification.md",
+                "body": "# Verification\n\n:::check{#k1 surface=\"cli\" run=\"go test -run 'TestStepReaderRetry' ./internal/dispatch/\" when=\"before_merge\" negative_control=\"A reader without the retry fails the rate-limit test.\"}\nThe step reader retries a refused read once, after the named wait.\n:::\n\n:::check{#k2 surface=\"api\" run=\"curl -s https://service.example/version\" when=\"after_merge\" negative_control=\"A revision older than the merge commit is no pass.\"}\nThe deployed service reports a revision that carries the merge commit.\n:::\n"
+              }
+            ],
+            "handoffs": [
+              {
+                "id": "hnd-acme-21-review-1",
+                "phase": "review",
+                "version": 1,
+                "author": "ses-acme-21-reviewer",
+                "at": "2030-01-08T09:40:00Z",
+                "body": {
+                  "head": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+                  "verdict": "approved"
+                }
+              }
+            ],
+            "comments": [],
+            "asks": [],
+            "results": [
+              {
+                "check": "k1",
+                "role": "tester",
+                "verdict": "pass",
+                "commit": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+                "at": "2030-01-08T09:05:00Z"
+              }
+            ]
+          },
+          "git": {
+            "commits": [
+              {
+                "id": "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c",
+                "parents": [],
+                "description": "main before the merge: the revision production runs"
+              },
+              {
+                "id": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+                "parents": ["3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c"],
+                "description": "fix(dispatch): the step reader retries a refused read"
+              },
+              {
+                "id": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f",
+                "parents": [
+                  "3b5d7f9a1c2e4a6c8e0b2d4f6a8c1e3b5d7f9a0c",
+                  "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d"
+                ],
+                "description": "Merge pull request #77 from legion/ACME-21"
+              }
+            ],
+            "remote": {
+              "name": "origin",
+              "branches": [
+                { "name": "main", "head": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f" },
+                { "name": "legion/ACME-21", "head": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d" }
+              ]
+            },
+            "workspace": {
+              "standingOn": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+              "localOnly": []
+            }
+          },
+          "github": {
+            "repository": "cybermonklabs/legion",
+            "pullRequests": [
+              {
+                "number": 77,
+                "state": "merged",
+                "draft": false,
+                "head": {
+                  "ref": "legion/ACME-21",
+                  "sha": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d"
+                },
+                "base": "main",
+                "title": "fix(dispatch): the step reader retries a refused read (ACME-21)",
+                "body": "## Summary\n\nThe step reader retries a read Dispatch refused for a rate limit.\n\n## Checks\n\n- k1 pass at 9e1c3a5b (tester)\n",
+                "mergeCommit": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f",
+                "reviews": [
+                  {
+                    "id": "rev-77-1",
+                    "author": "legion-reviewer[bot]",
+                    "state": "APPROVED",
+                    "commit": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+                    "at": "2030-01-08T09:40:00Z",
+                    "body": ""
+                  }
+                ],
+                "reviewThreads": [[]],
+                "checks": [
+                  {
+                    "name": "ci",
+                    "commit": "9e1c3a5b7d9f0b2d4f6a8c0e3b5d7f9a1c2e4b6d",
+                    "status": "completed",
+                    "conclusion": "success"
+                  }
+                ]
+              }
+            ],
+            "mergeQueue": []
+          },
+          "daemon": {
+            "phase": "done",
+            "step": null,
+            "task": {
+              "steps": "plan (planner), implement (implementer), test (tester), review (reviewer), retro (implementer), merge (merger)"
+            },
+            "productionCheck": {
+              "look": 1,
+              "last": false,
+              "openedAt": "2030-01-08T11:58:00Z",
+              "boundAt": "2030-01-09T12:00:00Z",
+              "mergeCommit": "5d7f9b1d3f5a7c9e0a2c4e6b8d1f3a5c7e9b0d2f"
+            }
+          },
+          "production": null
+        }
+      }
+    }
+  ]
+}
