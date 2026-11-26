@@ -210,6 +210,13 @@ const fetchDepth = new AsyncLocalStorage<number>();
 /** A row's fetch may hand a request on through `globalThis.fetch` this many times at most. */
 const MOST_NESTED_FETCHES = 8;
 const recordingFetch: typeof globalThis.fetch = async (input, init) => {
+  // A request from a row that has already ended — a retry timer or a background pass that row
+  // left behind — must neither rewrite the new row's `registeredTopics` nor land in its
+  // `installedFetch` (which sent `ses_heartbeat`'s 250 ms retry into `ses_retry`'s stub under
+  // load at 5e20dddc).
+  if (fromEndedRow()) {
+    throw new Error("stopped fetch from an ended row");
+  }
   const depth = (fetchDepth.getStore() ?? 0) + 1;
   if (depth > MOST_NESTED_FETCHES) {
     throw new Error(
@@ -25878,14 +25885,24 @@ console.log(JSON.stringify(args));
   });
 
   test("a heartbeat tick during a registry outage warns once instead of rejecting unhandled", async () => {
-    // The extension captures fetch by value at creation, so the blip must be
-    // flipped inside the same function object rather than by reassigning
-    // globalThis.fetch afterwards.
+    // Each failed registration is retried 250 ms later (`LISTENER_CALL_RETRY_DELAY_MS`). On the
+    // real clock, the second tick's retry stayed pending after this row returned and fired into
+    // the next row's `globalThis.fetch` under load (at 5e20dddc). Running on the test's clock
+    // (`onPassClock`), as the retry row below does, lets both ticks' retries finish inside this
+    // row with no real timer left behind.
     // An hour, past the command's guard, so no deadline ends a pass (`UNRACED_PASS_DEADLINE_MS`).
     process.env.ENVOY_PASS_DEADLINE_MS = String(UNRACED_PASS_DEADLINE_MS);
     let registryDown = false;
+    let failedAttempts = 0;
+    let reached = { at: 0, ...Promise.withResolvers<void>() };
     globalThis.fetch = async (input, init) => {
-      if (registryDown) throw new Error("network unreachable");
+      if (registryDown) {
+        if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
+          failedAttempts += 1;
+          if (failedAttempts >= reached.at) reached.resolve();
+        }
+        throw new Error("network unreachable");
+      }
       return responseWithRegistration(input, init, {
         session_id: "ses_heartbeat",
         machine_id: "test",
@@ -25893,48 +25910,59 @@ console.log(JSON.stringify(args));
         topics: [],
       });
     };
-    const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-blip");
-    const fixture = createPi();
-    const intervals: (() => void)[] = [];
-    const notifications: string[] = [];
-    const warned = Promise.withResolvers<void>();
-    const context: SessionContext = {
-      // The host always carries a managed one-shot timer, and the heartbeat's extra call after a
-      // failed registration is scheduled on it; the default fake leaves that one pending.
-      ...sessionContext("ses_heartbeat"),
-      setInterval: (callback) => intervals.push(callback),
-      ui: {
-        ...sessionContext().ui,
-        notify: (message) => {
-          notifications.push(message);
-          if (message.includes("registry heartbeat failed")) warned.resolve();
+    await onPassClock(async (clock) => {
+      const { default: envoyExtension }: EnvoyModule = await clock.waitOn(
+        "the extension's module",
+        import("./envoy.ts?heartbeat-blip")
+      );
+      const fixture = createPi();
+      const intervals: (() => void)[] = [];
+      const notifications: string[] = [];
+      const warned = Promise.withResolvers<void>();
+      const context: SessionContext = {
+        // The host always carries a managed one-shot timer, and the heartbeat's extra call after a
+        // failed registration is scheduled on it; the default fake leaves that one pending.
+        ...sessionContext("ses_heartbeat"),
+        setInterval: (callback) => intervals.push(callback),
+        ui: {
+          ...sessionContext().ui,
+          notify: (message) => {
+            notifications.push(message);
+            if (message.includes("registry heartbeat failed")) warned.resolve();
+          },
         },
-      },
-    };
+      };
 
-    await envoyExtension(fixture.pi);
-    await fixture.handlers.get("session_start")?.({}, context);
-    // The healthy start must land on the heartbeat branch, not the NATS-retry
-    // branch; a failed registration here would register the wrong interval.
-    expect(notifications).toEqual([]);
-    expect(intervals.length).toBe(1);
+      await envoyExtension(fixture.pi);
+      rowSessionShutdown(fixture, context);
+      await clock.run("the start", fixture.handlers.get("session_start")?.({}, context));
+      // The healthy start must land on the heartbeat branch, not the NATS-retry
+      // branch; a failed registration here would register the wrong interval.
+      expect(notifications).toEqual([]);
+      expect(intervals.length).toBe(1);
 
-    // The internet blip: every registry call now rejects. bun:test swallows
-    // unhandled rejections before user listeners, so the observable contract
-    // is the owned rejection's warning: exactly one per outage, however many
-    // ticks elapse. On the unfixed code the tick rejects unhandled (fatal in
-    // OMP via postmortem exitAfterFatal) and no warning ever appears.
-    registryDown = true;
-    for (const tick of intervals) tick();
-    await settled("the heartbeat's warning", warned.promise);
-    for (const tick of intervals) tick();
-    await Promise.resolve();
+      // The internet blip: every registry call now rejects. bun:test swallows
+      // unhandled rejections before user listeners, so the observable contract
+      // is the owned rejection's warning: exactly one per outage, however many
+      // ticks elapse. On the unfixed code the tick rejects unhandled (fatal in
+      // OMP via postmortem exitAfterFatal) and no warning ever appears.
+      registryDown = true;
+      for (const tick of intervals) tick();
+      await clock.stepping("the heartbeat's warning", warned.promise, 1_000);
 
-    const warnings = notifications.filter((message) =>
-      message.includes("registry heartbeat failed")
-    );
-    expect(warnings).toHaveLength(1);
-    // What can hang is the wait for the heartbeat's warning, which ends at the row's deadline.
+      // A second tick runs through both of its failed attempts too, still warning nothing and
+      // leaving no retry timer behind for the row after this one.
+      const afterFirst = failedAttempts;
+      reached = { at: afterFirst + 2, ...Promise.withResolvers<void>() };
+      for (const tick of intervals) tick();
+      await clock.stepping("the second tick's failed attempts", reached.promise, 1_000);
+      await settle();
+
+      const warnings = notifications.filter((message) =>
+        message.includes("registry heartbeat failed")
+      );
+      expect(warnings).toHaveLength(1);
+    });
   });
 
   test("a registration that times out is retried once inside forty seconds, and a success returns the cadence to the heartbeat", async () => {

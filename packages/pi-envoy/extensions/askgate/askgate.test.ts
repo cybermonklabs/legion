@@ -6455,22 +6455,19 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     // ceiling and stay at 96, where each is 20 of 20 on that pod.
   });
 
-  // The seven rows below, before the warn-mode row, run the same real `dispatch` subprocesses as
-  // the row above: the gate's dry run, and the post. Each model call these rows make is answered
-  // at once, by `bind`'s default or by the first row's own REVISE, so the gate's 90 s deadline
-  // decides none of them. A run these rows fail under load is the gate's own ceiling: the dry run
-  // does not finish inside DRY_RUN_TIMEOUT_MS (20 s) nor when run again, and the gate answers an
+  // The rows below, before the warn-mode row, run the same real `dispatch` subprocesses as the row
+  // above: the gate's dry run, and the post. Each model call these rows make is answered at once,
+  // by `bind`'s default or by the first row's own REVISE, so the gate's 90 s deadline decides none
+  // of them. A run these rows fail under load is the gate's own ceiling: the dry run does not
+  // finish inside DRY_RUN_TIMEOUT_MS (20 s) nor when run again, and the gate answers an
   // `outcome="error"` block, charged 46 to 48 s, where the row asserts a pass. That is a
   // production budget that no guard can cover, and how far down it reaches depends on the pod. At
-  // the 80 rung the first four rows were 19 or 20 of 20 at 4380d793 (the Jobs infra-1580-k1-gvhwj
-  // and infra-1580-k2-jwpck of the cluster's `builds` namespace, two CPUs and 8 GiB, 121 and 92
-  // busy loops for the 80 rung) and the last three 18 or 19 of 20 at 0fba4c77 (the Jobs
-  // infra-1580-r26-ea80-8jqwq and infra-1580-r26-ec80-785db, 117 busy loops for the 80 rung, and
-  // infra-1580-r26-eb80-dw9zn, 68); at the 64 rung the first four were 18 to 20 of 20 at 2a77b2b8
-  // (infra-1580-k7-8fc7c and infra-1580-k8-2kz84, 128 and 108 busy loops for the 64 rung). Each
-  // red was that block. So these rows' acceptance rung is 48 busy loops, 24 per CPU, where each is
-  // 20 of 20 (infra-1580-k6-5qzzh at 4380d793, and infra-1580-k9-xvzd6 and infra-1580-k10-ps4hl at
-  // 8c41ece7, 70 busy loops for the 48 rung, row A 31.3 s to 37.3 s).
+  // the 80 rung they were 18 to 20 of 20 (infra-1580-k1-gvhwj, -k2-jwpck, -r26-ea80-8jqwq,
+  // -r26-eb80-dw9zn, -r26-ec80-785db); at the 64 rung 18 to 20 of 20 (-k7-8fc7c, -k8-2kz84); and
+  // at the 48 rung "a file a call earlier in the same message writes…" (which runs two dry runs)
+  // was 19 of 20 on a pod of 77 busy loops for the 48 rung (infra-1580-r37e48-lx6qj, row A
+  // 35.2 s, at 5e20dddc, the red charged 46 596 ms). Each red was that block. So these rows'
+  // acceptance rung is 32 busy loops, 16 per CPU.
 
   // INFRA-4224: the CLI's own `dispatch artifact --dry-run` asks Dispatch how it would store inline
   // text (POST /api/v1/markdown/round-trip). The gate reads the arguments alone, and the call
