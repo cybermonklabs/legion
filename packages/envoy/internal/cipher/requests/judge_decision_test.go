@@ -430,8 +430,8 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ApplyJudgeDecision = %+v, %v; want the decision made", dec, err)
 			}
-			if dec.State != c.wantState || dec.Detail != c.wantDetail {
-				t.Fatalf("the decision = state %q detail %q; want %q and %q", dec.State, dec.Detail, c.wantState, c.wantDetail)
+			if dec.State != c.wantState || dec.Detail != c.wantDetail || dec.JudgedVerdict != c.wantVerdict {
+				t.Fatalf("the decision = state %q detail %q judged verdict %q; want %q, %q and %q", dec.State, dec.Detail, dec.JudgedVerdict, c.wantState, c.wantDetail, c.wantVerdict)
 			}
 
 			judged := readJudged(t, m, *req.RecordID)

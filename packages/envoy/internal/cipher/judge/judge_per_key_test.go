@@ -76,6 +76,19 @@ func TestOneDenyingCallDeniesTheRequest(t *testing.T) {
 	}
 }
 
+// TestCombineHandsAnUnknownWordToThePerson: only Grant admits a request. A word a future model
+// adapter returns without an error but that is neither Grant nor Deny is not an approval, nor a
+// final refusal: the runner must receive an error and hand the request to its person.
+func TestCombineHandsAnUnknownWordToThePerson(t *testing.T) {
+	verdict, _, _, err := combine([]keyCall{{key: testSecret, verdict: Verdict{Word: "maybe", Reason: "not a decision"}}})
+	if err == nil {
+		t.Fatalf("combine of an unknown verdict word = %+v, nil; want an error that hands the request to its person", verdict)
+	}
+	if verdict.Word != Deny {
+		t.Errorf("combine of an unknown verdict word = %+v; want a non-grant verdict", verdict)
+	}
+}
+
 // TestACallThatFailsBesideAGrantIsHandedToThePerson: the row records what happened, never a deny
 // the judge did not make. One key's call grants and the other's runs past the model's bound, so
 // the request goes to its person: the row's verdict says so, its calls name one granted and one

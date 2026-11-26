@@ -41,10 +41,10 @@ func TestAJudgedRowIsWrittenWhenTheLandedReadLosesItsConnection(t *testing.T) {
 	if !ended {
 		t.Fatal("the hook ended no backend, so this run did not lose the landed read's connection and proves nothing")
 	}
-	if err != nil || res.Write != JudgedAppliedUnknown {
-		t.Errorf("LogJudged(applied false) whose landed read lost its connection = %q, %v; want %q and the row written", res.Write, err, JudgedAppliedUnknown)
+	if err != nil || res.Write != JudgedAppliedUnknown || res.Verdict != JudgedUnknown {
+		t.Errorf("LogJudged(applied false) whose landed read lost its connection = %+v, %v; want %q and verdict %q", res, err, JudgedAppliedUnknown, JudgedUnknown)
 	}
-	if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 || judged[0].applied != AppliedUnknown {
-		t.Errorf("request.judged rows = %+v; want one, applied %q: a run that asked the model keeps its row", judged, AppliedUnknown)
+	if judged := readJudged(t, m, *req.RecordID); len(judged) != 1 || judged[0].applied != AppliedUnknown || judged[0].verdict != JudgedUnknown {
+		t.Errorf("request.judged rows = %+v; want one, applied %q and verdict %q: a run that asked the model keeps its row", judged, AppliedUnknown, JudgedUnknown)
 	}
 }

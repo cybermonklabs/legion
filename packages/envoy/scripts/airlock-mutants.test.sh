@@ -2,7 +2,7 @@
 # airlock-mutants.test.sh: what airlock-mutants.sh counts for a mutant held to the tests it names,
 # run against a fixture tree and a stand-in `go`, so no real package, database or model is used.
 #
-# The real script is copied into a fixture packages/envoy that holds one file, fixture.go, and three
+# The real script is copied into a fixture packages/envoy that holds one file, fixture.go, and two
 # requests-* mutants of it. The stand-in go answers `go test -run '^(<Test>)$'` from the copy it
 # runs in: TestFixtureEnds passes while fixture.go says ENDS=yes and fails once a patch made it say
 # ENDS=no, and every named test fails when BROKER_TEST_DATABASE_URL names port 1, as a real test
@@ -28,8 +28,9 @@ trap 'rm -rf "$work"' EXIT
 
 fx="$work/repo"
 envoy="$fx/packages/envoy"
-mkdir -p "$envoy/scripts" "$envoy/internal/cipher/requests/testdata/mutants" "$work/bin"
+mkdir -p "$envoy/scripts/lib" "$envoy/internal/cipher/requests/testdata/mutants" "$work/bin"
 cp "$script_dir/airlock-mutants.sh" "$envoy/scripts/"
+cp "$script_dir/lib/mutant-package.sh" "$envoy/scripts/lib/"
 printf 'package requests\n\n// ENDS=yes\n' >"$envoy/internal/cipher/requests/fixture.go"
 
 mutant() { # <name> <the line its patch writes in place of "// ENDS=yes"> <the test it names>

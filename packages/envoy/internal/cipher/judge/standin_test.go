@@ -644,7 +644,7 @@ func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID
 	if f.applyErr != nil {
 		return requests.Decision{}, f.applyErr
 	}
-	return requests.Decision{RequestID: recordID, State: "granted", GrantID: "grant-" + modelID}, nil
+	return requests.Decision{RequestID: recordID, State: "granted", GrantID: "grant-" + modelID, JudgedVerdict: verdict}, nil
 }
 
 // LogJudged writes the row, or answers what wrote answers in its place: JudgedAlreadyApplied
@@ -664,7 +664,7 @@ func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[st
 	verdict := requests.JudgedNotPending
 	switch {
 	case wrote == requests.JudgedAppliedUnknown:
-		verdict = requests.AppliedUnknown
+		verdict = requests.JudgedUnknown
 	case f.state == "pending":
 		verdict = requests.JudgedHandedOver
 	}
@@ -687,7 +687,7 @@ func (f *fakeRequests) DenyJudged(ctx context.Context, recordID, modelID string,
 	if f.denyErr != nil {
 		return requests.Decision{}, f.denyErr
 	}
-	return requests.Decision{RequestID: recordID, State: "denied"}, nil
+	return requests.Decision{RequestID: recordID, State: "denied", JudgedVerdict: verdict}, nil
 }
 
 // refused is what the judge refused: the verdict each denial carried and the reason it gave.

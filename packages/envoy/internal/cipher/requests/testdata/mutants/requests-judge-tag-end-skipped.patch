@@ -6,8 +6,8 @@
 
 --- a/packages/envoy/internal/cipher/requests/machine_read.go
 +++ b/packages/envoy/internal/cipher/requests/machine_read.go
-@@ -353,9 +353,7 @@
- 			return recordID, noLongerServed(name)
+@@ -361,9 +361,7 @@ func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmen
+ 			err = fmt.Errorf("%w: %w", ErrGrantChainInvalid, refusal)
  		}
  		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
 -		if ended := m.endJudgedGrant(ctx, grantID, err); ended != nil {

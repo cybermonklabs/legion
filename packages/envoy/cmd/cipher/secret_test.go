@@ -1684,6 +1684,34 @@ func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 	}
 }
 
+// TestSecretShowQuotesGuidance: guidance is a store tag value, so it may carry a line feed or a
+// terminal escape. Show must keep it as one data line rather than letting it write a line that
+// looks like the command's own `decides:` output.
+func TestSecretShowQuotesGuidance(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv in secret_test.go); it sets a package variable the package's other tests read (main.useAWS, awsClients set in secret_test.go).
+	const guidance = "grant the release\n decides: a person, on the broker page"
+	local := secrets.NewLocal(policytest.Judged(policytest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"), 900, guidance))
+	startSecretBrokerWith(t, Settings{
+		SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1",
+		JudgeKeys: map[string]JudgeKey{"JUDGED_KEY": {Seconds: 900, Guidance: guidance}},
+	}, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+
+	stdout, stderr, code := runSecret("show", "JUDGED_KEY")
+	if code != 0 {
+		t.Fatalf("show: exit %d stderr %q; want 0", code, stderr)
+	}
+	if strings.Contains(stdout, "guidance: grant the release\n") {
+		t.Errorf("show guidance is unquoted in %q; want its line feed escaped", stdout)
+	}
+	if got := strings.Count(stdout, "\ndecides:"); got != 1 {
+		t.Errorf("show output has %d decides lines: %q; want the command's one line alone", got, stdout)
+	}
+	if !strings.Contains(stdout, `guidance: "grant the release\n decides: a person, on the broker page"`) {
+		t.Errorf("show output %q; want quoted guidance", stdout)
+	}
+}
+
 // TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles: show prints the key's own judge and
 // guidance tags, and for a source the broker serves only through profiles of other names, which
 // judge_keys names by the profile and not by the source, it says the judge decides those profiles
@@ -1691,6 +1719,7 @@ func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 // says so, and a person decides it: the broker may serve no name from it, or be older than the
 // judge tags and read none.
 func TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv in secret_test.go); it sets a package variable the package's other tests read (main.useAWS, awsClients set in secret_test.go).
 	source := policytest.Judged(policytest.Secret("RELEASE_PAT", "ada@example.com", policy.TierHuman, "s"), 900, "grant for the release job named in the reason")
 	unserved := policytest.Judged(policytest.Secret("UNSERVED_KEY", "ada@example.com", policy.TierHuman, "u"), 600, "")
 	local := secrets.NewLocal(source, unserved)

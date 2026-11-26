@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type secretForm struct {
@@ -833,10 +834,12 @@ func whoDecides(view secretView, settings Settings) string {
 	slices.Sort(profiles)
 	var decides string
 	switch {
-	case view.Admin == "true":
-		decides = "a person, on the broker page: an administrator's key, which the judge never decides"
-	case view.Type == policy.TypeAnthropicFederation:
-		decides = "a person, on the broker page: an Anthropic federation key, which the judge never decides"
+	case policy.PersonApprovesEveryRelease(view.Admin == policy.AdminTrue, view.Type):
+		if view.Admin == policy.AdminTrue {
+			decides = "a person, on the broker page: an administrator's key, which the judge never decides"
+		} else {
+			decides = "a person, on the broker page: an Anthropic federation key, which the judge never decides"
+		}
 	case hasJudge:
 		decides = fmt.Sprintf("the model judge, up to %s, against its guidance; the key's person only if the judge cannot decide", time.Duration(entry.Seconds)*time.Second)
 	case len(profiles) > 0:
@@ -1400,7 +1403,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "name: %s\nstore: %s\nsecret_name: %s\nowner: %s\ntier: %s\ntype: %s\ngithub_owners: %s\nrequesters: %s\nscopes: %s\nadmin: %s\nproject: %s\nproject_channels: %s\nrollback_guard: %s\nmax_grant: %s\ndefault_grant: %s\ncreated: %s\nlast_changed: %s\n",
 		view.Name, view.Store, view.SecretName, orDash(view.Owner), orDash(view.Tier), orDash(view.Type), orDash(view.GitHubOwners), orDash(view.Requesters), orDash(view.Scopes), orDash(view.Admin), orDashPtr(view.Project), orDashPtr(view.ProjectChannels), rollbackGuard, orDash(view.MaxGrant), orDash(view.DefaultGrant), formatTime(view.Created), formatTime(view.LastChanged))
-	fmt.Fprintf(stdout, "judge: %s\nguidance: %s\ndecides: %s\n", orDash(view.Judge), orDash(view.Guidance), whoDecides(view, s.settings))
+	fmt.Fprintf(stdout, "judge: %s\nguidance: %s\ndecides: %s\n", orDash(view.Judge), orDash(redact.OneLine(view.Guidance)), whoDecides(view, s.settings))
 	fmt.Fprintf(stdout, "proxy: %s\nproxy_narrowed: %s\nkinds_rollback_guard: %s\n", orDash(view.Proxy), orDash(view.ProxyNarrowed), kindsGuard)
 	switch {
 	case view.EarliestPurge != nil:

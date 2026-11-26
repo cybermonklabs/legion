@@ -23,12 +23,13 @@ import (
 // is a deployment with no profiles file, which declares no kind and holds no profile.
 type Profiles struct {
 	list []Profile
-	// digests is Digest of each profile of list, at the same index, computed once as the file is
-	// read, since every set Current makes live carries it (apply).
+	// digests is the file's own fingerprint of each profile of list (fileServed), at the same
+	// index, computed once as the file is read, since every set Current makes live carries it
+	// (apply).
 	digests []string
 	// index is the index in list of the profile of each name, the first where the file repeats a
-	// name (only DecodeProfiles reads such a file), so Lookup, Digest and SourceOf read a name
-	// without walking the file.
+	// name (only DecodeProfiles reads such a file), so Lookup and SourceOf read a name without
+	// walking the file.
 	index map[string]int
 	// of is, for each source a profile of another name uses, those profiles' names in the file's
 	// order (Of). index and of are built once as the file is read, since every set Current makes
@@ -768,21 +769,6 @@ func (p Profiles) LegacyProxy(name string) *ProxyBlock {
 	return nil
 }
 
-// Digest is the fingerprint of one profile as the file writes it, "" when p holds none of that
-// name. It is the SHA-256, in hex, of the profile's JSON as encoding/json marshals a Profile, in
-// the form ParseProfiles answers it, with its own proxy string as the kind it is behind
-// (digestOf): two spellings of one profile fingerprint alike, and every field that decides what a
-// grant of it may do is in the fingerprint. The served profile's fingerprint (Secret.ProfileDigest)
-// is its served one (servedDigest), which is this while the profile is served behind no kind, or
-// behind its own proxy string's alone. The broker folds the served one into its policy version, so
-// an edit of a profile's entry ends that profile's grants and no others.
-func (p Profiles) Digest(name string) string {
-	if i, held := p.index[name]; held {
-		return p.digests[i]
-	}
-	return ""
-}
-
 // servedAs is what a profile is served as beyond its entry: the kind it is behind, its source's
 // proxy tag or else its own proxy string ("" for none), and that kind's allow in its one written
 // form (allowForm, "" for a kind with none); whether its source is tagged proxy-narrowed; and its
@@ -797,14 +783,14 @@ type servedAs struct {
 
 // fileServed is how the profile at index i is served by its file alone: behind the kind its own
 // proxy string names, with that kind's allow, under no proxy-narrowed tag and no judge tag. Its
-// fingerprint is the file's own (Digest).
+// fingerprint is the file's own (digests).
 func (p Profiles) fileServed(i int) servedAs {
 	kind := p.list[i].ProxyKind
 	return servedAs{kind: kind, kindAllow: p.kindAllow[kind]}
 }
 
 // servedDigest is the fingerprint the profile at index i is served with, as served: digestOf of it
-// served so, which is its file's own fingerprint (Digest), computed once, while it is served as its
+// served so, which is its file's own fingerprint (digests), computed once, while it is served as its
 // file alone serves it (fileServed).
 func (p Profiles) servedDigest(i int, served servedAs) string {
 	if served == p.fileServed(i) {

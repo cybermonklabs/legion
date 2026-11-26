@@ -797,14 +797,20 @@ func (secret Secret) Type() string {
 	return secretType
 }
 
-// PersonApprovesEveryRelease reports whether a person approves every release of the secret, so
-// the model judge decides none of its requests whatever its judge tag says: a secret tagged admin
-// (TagAdmin), and an anthropic-federation secret (TypeAnthropicFederation, read from its Source
-// with ParseTypeSource), whose token can be an organization administrator's whether or not the
-// tag says so. Each of the judge's gates reads it (requests' judgeKey, judgeStillDecides,
-// currentPolicyAdmits and JudgePolicy).
+// PersonApprovesEveryRelease reports whether a person approves every release of a secret with
+// admin and secretType, so the model judge decides none of its requests whatever its judge tag
+// says: a secret tagged admin (TagAdmin), and an anthropic-federation secret
+// (TypeAnthropicFederation, read from its Source with ParseTypeSource), whose token can be an
+// organization administrator's whether or not the tag says so. secret show reads it too.
+func PersonApprovesEveryRelease(admin bool, secretType string) bool {
+	return admin || secretType == TypeAnthropicFederation
+}
+
+// PersonApprovesEveryRelease reports whether a person approves every release of secret. Each of
+// the judge's gates reads it (requests' judgeKey, judgeStillDecides, currentPolicyAdmits and
+// JudgePolicy).
 func (secret Secret) PersonApprovesEveryRelease() bool {
-	return secret.Admin || secret.Type() == TypeAnthropicFederation
+	return PersonApprovesEveryRelease(secret.Admin, secret.Type())
 }
 
 // GitHubOwnerLogins is GitHubOwners as a list of lowercase logins, nil when it is "".

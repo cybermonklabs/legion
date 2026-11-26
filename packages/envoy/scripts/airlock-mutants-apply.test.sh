@@ -10,15 +10,20 @@
 # not, and 3 when it found no patch at all, which is no pass.
 set -uo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR source=lib/mutant-package.sh
+. "$script_dir/lib/mutant-package.sh"
 found=0
 failed=0
-for patch in "$root"/packages/envoy/internal/cipher/{proxyrules,proxy,policy,requests}/testdata/mutants/*.patch; do
-	[ -e "$patch" ] || continue
-	found=$((found + 1))
-	if ! out="$(git -C "$root" apply --check -p1 "$patch" 2>&1)"; then
-		printf 'FAIL: %s does not apply: %s\n' "${patch#"$root"/}" "$(printf '%s' "$out" | head -n 2 | tr '\n' ' ')"
-		failed=$((failed + 1))
-	fi
+for package in $(mutant_packages); do
+	for patch in "$root/packages/envoy/internal/cipher/$package/testdata/mutants/"*.patch; do
+		[ -e "$patch" ] || continue
+		found=$((found + 1))
+		if ! out="$(git -C "$root" apply --check -p1 "$patch" 2>&1)"; then
+			printf 'FAIL: %s does not apply: %s\n' "${patch#"$root"/}" "$(printf '%s' "$out" | head -n 2 | tr '\n' ' ')"
+			failed=$((failed + 1))
+		fi
+	done
 done
 if [ "$found" -eq 0 ]; then
 	echo "UNKNOWN: no mutant patch found under $root/packages/envoy/internal/cipher/*/testdata/mutants"

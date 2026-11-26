@@ -231,6 +231,10 @@ type Decision struct {
 	RequestID string
 	State     string
 	GrantID   string
+	// JudgedVerdict is the request.judged verdict the judge's own transaction wrote, or "" for
+	// a person's decision. It is returned from that transaction so the judge logs the row's word
+	// rather than mapping State a second time.
+	JudgedVerdict string
 	// Detail is what the decision recorded beside the request's new state, empty when it
 	// recorded none. An approval ends denied with one of two: the requesting enrollment was no
 	// longer live, or the secret's requesters tag no longer lists the session
@@ -2177,7 +2181,7 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	verdict := JudgedNotPending
 	switch {
 	case wrote == JudgedAppliedUnknown:
-		verdict = AppliedUnknown
+		verdict = JudgedUnknown
 	case state == "pending":
 		verdict = JudgedHandedOver
 	}
@@ -2283,13 +2287,15 @@ const AppliedUnknown = "unknown"
 // The model's answer for each key is the row's calls (judge.keyCall); this word is the outcome.
 // JudgedGranted and JudgedRefused are written by the decision's own transaction (decider.judgedRow),
 // which alone knows what it did; the judge writes JudgedHandedOver for a row that leaves the
-// request to its person (LogJudged), and JudgedNotPending for one written once the request was
-// already decided, cancelled or expired.
+// request to its person, JudgedNotPending for one written once the request was already decided,
+// cancelled or expired, and JudgedUnknown when a lost approval answer and an unread outcome leave
+// no fact about what happened.
 const (
 	JudgedGranted    = "granted"
 	JudgedRefused    = "refused"
 	JudgedHandedOver = "handed to the person"
 	JudgedNotPending = "not pending"
+	JudgedUnknown    = "unknown"
 )
 
 // judgedDetail is a caller's verdict as the audit row holds it: a copy of what the caller gave,
@@ -2775,6 +2781,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// judged is the row the judge's verdict goes in as, built once here and logged below from
 	// the same object, so the line and the row cannot say different things.
 	var judged auditDetail
+	var judgedVerdict string
 	if who.isJudge() {
 		// D11: the judge's verdict goes in beside the decision, inside the decision's own
 		// transaction, so the grant and the record of why it exists are written together or not
@@ -2783,6 +2790,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		// became. Its applied, though, is what the request became: next, and nothing the judge
 		// wrote (decider.judgedRow).
 		judged = who.judgedRow(next)
+		judgedVerdict, _ = judged["verdict"].(string)
 		if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nullable(grantID), who.actor(), judged); err != nil {
 			return Decision{}, false, err
 		}
@@ -2823,7 +2831,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if who.isJudge() {
 		logGrantRow(judgedKind, who.actor(), enr, requestID, grantID, rawJSON(judged))
 	}
-	return Decision{RequestID: requestID, State: next, GrantID: grantID, Detail: detail}, false, nil
+	return Decision{RequestID: requestID, State: next, GrantID: grantID, JudgedVerdict: judgedVerdict, Detail: detail}, false, nil
 }
 
 // decidedUnder records, for each name of a request an approval is granting, the fingerprint of
@@ -3023,16 +3031,21 @@ func verifyRecordBody(recordID, body string) (record.Body, error) {
 // record's id; the releases (checkRelease, for Values and AirlockValues) and reuseLiveGrant call
 // verifyChainForRelease, which logs a chain that fails (GrantChainInvalidMessage).
 func (m *Machine) VerifyChain(ctx context.Context, grantID string) error {
-	_, err := m.verifyChain(ctx, grantID)
+	var set *policy.Set
+	if m.Policy != nil {
+		set = m.Policy.Get()
+	}
+	_, err := m.verifyChain(ctx, grantID, set)
 	return err
 }
 
 // verifyChain is VerifyChain's whole check, and also answers the id of the credential-request
 // record the grant's chain rests on, so a release that logs a chain that fails names that record
-// without reading the grant's row a second time. The id is "" for an automatic grant, which has
-// no record and always passes, and for a grant whose row could not be read; it is the record's
-// whenever the error is ErrGrantChainInvalid.
-func (m *Machine) verifyChain(ctx context.Context, grantID string) (recordID string, err error) {
+// without reading the grant's row a second time. set is the one policy snapshot this verification
+// reads for every decided key; nil leaves the verifier's configured JudgeSeconds alone. The id is
+// "" for an automatic grant, which has no record and always passes, and for a grant whose row
+// could not be read; it is the record's whenever the error is ErrGrantChainInvalid.
+func (m *Machine) verifyChain(ctx context.Context, grantID string, set *policy.Set) (recordID string, err error) {
 	var id *string
 	if err := m.Store.Pool.QueryRow(ctx, `select r.record_id from grants g join requests r on r.id=g.request_id where g.id=$1`, grantID).Scan(&id); err != nil {
 		return "", err
@@ -3040,7 +3053,13 @@ func (m *Machine) verifyChain(ctx context.Context, grantID string) (recordID str
 	if id == nil {
 		return "", nil
 	}
-	if _, err := m.Chain.Verify(ctx, *id); err != nil {
+	chain := m.Chain
+	if set != nil {
+		snapshot := *chain
+		snapshot.JudgeSeconds = set.JudgeSeconds
+		chain = &snapshot
+	}
+	if _, err := chain.Verify(ctx, *id); err != nil {
 		// A group approval whose group cannot vouch for its decider now (stale, or never read)
 		// has lapsed: the grant is no longer live, and no chain failed. The typed error is kept
 		// beneath, so noteLapsedApprover reads its group and decider.

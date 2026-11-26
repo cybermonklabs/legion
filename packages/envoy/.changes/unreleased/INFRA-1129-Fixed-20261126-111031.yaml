@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  A judged grant of two or more keys now ends for good when one key's judge tag is taken off or
+  lowered below the grant's lifetime, even while another of its keys is not served. The release
+  read only the first key the chain refused, so an unserved key named before the retagged one
+  paused the grant instead, and serving both keys again released it. The chain check and the
+  release now read one policy, and a grant pauses only when every key it refuses is unserved. The
+  model judge also grants a request only on a `grant` answer: any other word from a call hands the
+  request to its person, where it used to count as a grant. And `agent-secrets secret show` prints
+  a key's guidance on one line, Go-quoted when it holds a line feed or another control character,
+  so a guidance can no longer print a line that reads as the command's own, such as `decides:`.
+time: 2026-11-26T11:10:31Z
+custom:
+    Issue: INFRA-1129

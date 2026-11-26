@@ -98,3 +98,36 @@ func TestAJudgeTagLoweredBelowAJudgedGrantOrTakenOffEndsItForGood(t *testing.T) 
 		})
 	}
 }
+
+// TestAJudgedGrantEndsWhenAnUnservedKeyPrecedesAKeyWhoseJudgeTagIsTakenOff: a release must inspect
+// every key the judge decided under one policy snapshot before treating a missing key as a pause.
+// Otherwise, MayJudge stops at DEEL_API_KEY's missing policy entry and the release never sees that
+// SECOND_JUDGED_KEY is still served but its judge tag has been taken off. Restoring both keys would
+// then revive the grant, though the removed tag must end it for good.
+func TestAJudgedGrantEndsWhenAnUnservedKeyPrecedesAKeyWhoseJudgeTagIsTakenOff(t *testing.T) {
+	m, session, key := newJudgeFixture(t)
+	second := policytest.Judged(policytest.Secret("SECOND_JUDGED_KEY", fixtureOperator, policy.TierHuman, "second-v1"), 900, "")
+	retag(t, m, second)
+	judged := judgedGrant(t, m, session, key, 600, "DEEL_API_KEY", "SECOND_JUDGED_KEY")
+	if release, err := m.Values(t.Context(), judged, session, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" || releasedValue(release, "SECOND_JUDGED_KEY") == "" {
+		t.Fatalf("Values before the retag = %+v, %v; want both judged keys released", release, err)
+	}
+
+	unserved := policytest.Judged(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"), 1800, "")
+	judgeTakenOff := policytest.Secret("SECOND_JUDGED_KEY", fixtureOperator, policy.TierHuman, "second-v1")
+	retag(t, m, unserved, judgeTakenOff)
+	if release, err := m.Values(t.Context(), judged, session, ReleaseCall{}); err == nil || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "SECOND_JUDGED_KEY") != "" {
+		t.Fatalf("Values after DEEL_API_KEY is unserved and SECOND_JUDGED_KEY loses its judge tag = %+v, %v; want neither key released", release, err)
+	}
+
+	retag(t, m,
+		policytest.Judged(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"), 900, ""),
+		policytest.Judged(policytest.Secret("SECOND_JUDGED_KEY", fixtureOperator, policy.TierHuman, "second-v1"), 900, ""),
+	)
+	if release, err := m.Values(t.Context(), judged, session, ReleaseCall{}); err == nil || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "SECOND_JUDGED_KEY") != "" {
+		t.Fatalf("Values once both keys are served and judged again = %+v, %v; want the grant to stay ended", release, err)
+	}
+	if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
+		t.Fatalf("grant revoked_by = %q with %d grant.revoked rows; want %s and 1", by, audits, GrantEndedActor)
+	}
+}

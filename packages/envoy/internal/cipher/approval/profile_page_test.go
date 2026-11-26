@@ -169,7 +169,7 @@ func TestAnApprovalIsBoundToTheProfileItsPagePrinted(t *testing.T) {
 	if form == nil {
 		t.Fatalf("the page for %s offers no decision", p.recordID)
 	}
-	printed := p.recordID + " GITHUB_WRITE " + policytest.Profiles(t, read).Digest("GITHUB_WRITE")
+	printed := p.recordID + " GITHUB_WRITE " + r.machine.Policy.Get().Secrets["GITHUB_WRITE"].ProfileDigest
 	if got := form["profile_digest"]; len(got) != 1 || got[0] != printed {
 		t.Fatalf("the decision form carries the profile fingerprints %q; want [%q], the one profile the page printed", got, printed)
 	}

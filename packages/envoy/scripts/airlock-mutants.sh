@@ -61,6 +61,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source-path=SCRIPTDIR source=lib/mutant-package.sh
+. "$SCRIPT_DIR/lib/mutant-package.sh"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_DIR="$(cd "$ENVOY_DIR/../.." && pwd)"
 AIRLOCK_PKG_DIR="$ENVOY_DIR/internal/cipher/proxyrules"
@@ -141,15 +143,15 @@ apply_patch() {
 	fi
 }
 
-# mutant_file is the patch a mutant's name names: a proxy-*, policy-* or requests-* mutant's under
-# that package's own testdata, every other under the airlock's.
 mutant_file() {
-	case "$1" in
-	proxy-*) echo "$PROXY_MUTANT_DIR/$1.patch" ;;
-	policy-*) echo "$POLICY_MUTANT_DIR/$1.patch" ;;
-	requests-*) echo "$REQUESTS_MUTANT_DIR/$1.patch" ;;
-	*) echo "$MUTANT_DIR/$1.patch" ;;
+	local dir
+	case "$(mutant_package "$1")" in
+	proxy) dir="$PROXY_MUTANT_DIR" ;;
+	policy) dir="$POLICY_MUTANT_DIR" ;;
+	requests) dir="$REQUESTS_MUTANT_DIR" ;;
+	*) dir="$MUTANT_DIR" ;;
 	esac
+	printf '%s/%s.patch\n' "$dir" "$1"
 }
 
 # The mutants to run: the names given, else every patch of the four testdata/mutants, in name order.
@@ -164,24 +166,29 @@ if [[ ${#names[@]} -gt 0 ]]; then
 		mutants+=("$name")
 	done
 else
-	for patch_file in "$MUTANT_DIR"/*.patch "$PROXY_MUTANT_DIR"/proxy-*.patch "$POLICY_MUTANT_DIR"/policy-*.patch "$REQUESTS_MUTANT_DIR"/requests-*.patch; do
-		mutants+=("$(basename "$patch_file" .patch)")
+	for package in $(mutant_packages); do
+		case "$package" in
+		proxyrules) patches=("$MUTANT_DIR"/*.patch) ;;
+		proxy) patches=("$PROXY_MUTANT_DIR"/proxy-*.patch) ;;
+		policy) patches=("$POLICY_MUTANT_DIR"/policy-*.patch) ;;
+		requests) patches=("$REQUESTS_MUTANT_DIR"/requests-*.patch) ;;
+		esac
+		for patch_file in "${patches[@]}"; do
+			mutants+=("$(basename "$patch_file" .patch)")
+		done
 	done
 fi
 
-# database_mutant_unrun answers whether <name> is a mutant whose tests need the Postgres
-# BROKER_TEST_DATABASE_URL names, on a run where it names none.
 database_mutant_unrun() {
-	[[ "$1" == requests-* && -z "${BROKER_TEST_DATABASE_URL:-}" ]]
+	[[ "$(mutant_package "$1")" == requests && -z "${BROKER_TEST_DATABASE_URL:-}" ]]
 }
 
 needs_lake=false
 needs_model=false
 for name in "${mutants[@]}"; do
-	case "$name" in
-	lean-*) needs_lake=true ;;
-	proxy-* | policy-* | requests-*) ;;
-	*) needs_model=true ;;
+	case "$(mutant_package "$name")" in
+	proxyrules) [[ "$name" == lean-* ]] && needs_lake=true || needs_model=true ;;
+	*) ;;
 	esac
 done
 
@@ -327,12 +334,9 @@ for name in "${mutants[@]}"; do
 	started=$SECONDS
 	copy="$WORK_DIR/$name"
 	log="$WORK_DIR/$name.log"
-	if [[ "$name" == proxy-* || "$name" == policy-* || "$name" == requests-* ]]; then
-		case "$name" in
-		policy-*) package=./internal/cipher/policy/ ;;
-		requests-*) package=./internal/cipher/requests/ ;;
-		*) package=./internal/cipher/proxy/ ;;
-		esac
+	package_kind="$(mutant_package "$name")"
+	if [[ "$package_kind" == proxy || "$package_kind" == policy || "$package_kind" == requests ]]; then
+		package="./internal/cipher/$package_kind/"
 		tests="$(must_fail "$(mutant_file "$name")")"
 		if [ -z "$tests" ]; then
 			echo "FAIL: $name — the patch names no test that must fail (a '# must fail: <Test>' line), so nothing it could catch would count"
@@ -355,7 +359,7 @@ for name in "${mutants[@]}"; do
 		continue
 	fi
 
-	if [[ "$name" == proxy-* || "$name" == policy-* || "$name" == requests-* ]]; then
+	if [[ "$package_kind" == proxy || "$package_kind" == policy || "$package_kind" == requests ]]; then
 		set +e
 		named_tests "$copy" "$log" "$tests" "$package"
 		verdict=$?
