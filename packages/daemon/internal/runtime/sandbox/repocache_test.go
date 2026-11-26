@@ -270,8 +270,8 @@ func TestEnsureRepositoryCacheCreatesSuspendedWritesTheSecretThenSetsRunning(t *
 			t.Errorf("the cache volume is %+v, want the claim %s", v, cacheVolume+"-"+name)
 		}
 	}
-	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor || spec.NodeSelector[poolKey] != poolValue || len(spec.Tolerations) == 0 || spec.Tolerations[0].Key != poolKey {
-		t.Errorf("the cache pod is placed %v %v %v, want gVisor on the Legion pool", spec.RuntimeClassName, spec.NodeSelector, spec.Tolerations)
+	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor || !maps.Equal(spec.NodeSelector, g.r.scheduling.NodeSelector) || !slices.Equal(spec.Tolerations, g.r.scheduling.Tolerations) {
+		t.Errorf("the cache pod is placed %v %v %v, want gVisor under the operator's scheduling alone %v %v", spec.RuntimeClassName, spec.NodeSelector, spec.Tolerations, g.r.scheduling.NodeSelector, g.r.scheduling.Tolerations)
 	}
 	if spec.RestartPolicy != corev1.RestartPolicyAlways {
 		t.Errorf("the cache pod restarts %s, want Always", spec.RestartPolicy)

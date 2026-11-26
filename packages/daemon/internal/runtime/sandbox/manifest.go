@@ -81,13 +81,13 @@ const (
 	agentSecretsExchangeVolume = "agent-secrets-exchange"
 )
 
-// The Legion pool every pod runs on: its taint, tolerated, and its label, selected
-// (the cluster's `legion` NodePool). The gVisor RuntimeClass's own selector also
-// matches another pool, so the pool label is what keeps a pod on Legion's nodes.
+// poolKey is the label of the retired Legion pool, a node pool that set Legion's pods apart from
+// the cluster's general nodes. Legion's pods share the general nodes, so no pod selects or
+// tolerates anything of the pool, and configure refuses a configured selector that names the key.
+// gvisor is the RuntimeClass of every pod that does not run in a microVM (placement).
 const (
-	poolKey   = "legion.dev/pool"
-	poolValue = "legion"
-	gvisor    = "gvisor"
+	poolKey = "legion.dev/pool"
+	gvisor  = "gvisor"
 )
 
 // A microVM pod's placement (placement): GKE Sandbox's microVM RuntimeClass, which adds the
@@ -2145,38 +2145,39 @@ func podPath(legionDir string) string {
 	return strings.Join(entries, ":")
 }
 
-// nodeSelector is the Legion pool's label and the configured selector, which configure keeps off
-// the pool's key.
+// nodeSelector is a copy of the configured selector, which configure keeps off poolKey: a pod
+// selects no node label the operator did not name. It is a copy so that a pod's own selector
+// (placement's microVM class) never writes the operator's.
 func (r *Runtime) nodeSelector() map[string]string {
-	selector := map[string]string{poolKey: poolValue}
-	for key, value := range r.scheduling.NodeSelector {
-		selector[key] = value
-	}
-	return selector
+	return maps.Clone(r.scheduling.NodeSelector)
 }
 
-// tolerations are the Legion pool's taint, tolerated, then the configured ones.
+// tolerations are a copy of the configured tolerations: a pod tolerates no taint the operator did
+// not name. It is a copy so that a pod's own list (placement's microVM class) never writes the
+// operator's.
 func (r *Runtime) tolerations() []corev1.Toleration {
-	return append([]corev1.Toleration{{
-		Key: poolKey, Operator: corev1.TolerationOpEqual, Value: poolValue, Effect: corev1.TaintEffectNoSchedule,
-	}}, r.scheduling.Tolerations...)
+	return slices.Clone(r.scheduling.Tolerations)
 }
 
 // placement is where a launch's pod runs: its RuntimeClass, node selector and tolerations. A
 // gVisor pod's are every other pod's (the repository cache pods' and the image probe's, which run
-// in gVisor whatever the sandbox block says): gVisor, on the Legion pool (nodeSelector,
-// tolerations). A microVM pod (launch.microVM), an issue's or the controller's, runs under
-// microVMRuntimeClass on the Legion pool's nodes of its ComputeClass: its selector is the gVisor
-// pod's with computeClassKey set to that class, in place of any class the operator's selector
-// names, and its tolerations are the gVisor pod's, less any the operator gave of computeClassKey,
-// which tolerates the class being replaced, then the taint GKE puts on that class's nodes. The
-// RuntimeClass adds the sandbox's own selector and toleration at admission.
+// in gVisor whatever the sandbox block says): gVisor, under the operator's selector and
+// tolerations alone (nodeSelector, tolerations), on the cluster's general nodes. A microVM pod
+// (launch.microVM), an issue's or the controller's, runs under microVMRuntimeClass on the nodes of
+// its ComputeClass: its selector is the gVisor pod's with computeClassKey set to that class, in
+// place of any class the operator's selector names, and its tolerations are the gVisor pod's, less
+// any the operator gave of computeClassKey, which tolerates the class being replaced, then the
+// taint GKE puts on that class's nodes. The RuntimeClass adds the sandbox's own selector and
+// toleration at admission.
 func (r *Runtime) placement(l launch) (runtimeClass string, selector map[string]string, tolerations []corev1.Toleration) {
 	selector, tolerations = r.nodeSelector(), r.tolerations()
 	if l.microVM == nil {
 		return gvisor, selector, tolerations
 	}
 	class := l.microVM.ComputeClass
+	if selector == nil {
+		selector = map[string]string{}
+	}
 	selector[computeClassKey] = class
 	tolerations = slices.DeleteFunc(tolerations, func(t corev1.Toleration) bool { return t.Key == computeClassKey })
 	tolerations = append(tolerations, corev1.Toleration{

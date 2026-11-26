@@ -382,8 +382,8 @@ func configureProber(opts Options) (*Runtime, error) {
 	case opts.Dispatch.Broker && (opts.AgentSecrets == nil || opts.AgentSecrets.ExchangeAudience == ""):
 		return refuse("Dispatch.Broker is set but AgentSecrets names no exchange audience: under the broker a launch carries no Dispatch token and its role trades its pod's exchange identity, which no pod carries without one")
 	case poolSet:
-		return refuse("scheduling node selector sets %s=%q: %s is the runtime's, which puts every pod on the %s pool the cluster's admission policy requires",
-			poolKey, pool, poolKey, poolValue)
+		return refuse("scheduling node selector sets %s=%q: Legion's pods share the cluster's general nodes, and the retired Legion pool's label would set them apart on nodes of their own",
+			poolKey, pool)
 	}
 	if errs := validation.IsValidLabelValue(opts.Project); len(errs) > 0 {
 		return refuse("project %q is not a label value: %s", opts.Project, strings.Join(errs, "; "))

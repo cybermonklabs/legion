@@ -1656,7 +1656,7 @@ Here:
 
 1. **`begin bridge`**, right after `begin snapshot` (so a leaked bridge object shows up in `namespace-clean`'s before/after diff even if its own teardown fails) and before `begin session-db`:
    the operator context creates one pod and one ClusterIP Service, both named `bridge-<project>` and labelled `legion.dev/project=<project>`, running `mirror.gcr.io/jpillora/chisel` (pinned by digest) as a reverse-tunnel server
-   — non-root, read-only root filesystem, every capability dropped, tolerating the `legion` pool's taint without requiring it, and carrying the same eviction-protection annotation pair every Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`)
+   — non-root, read-only root filesystem, every capability dropped, and carrying the same eviction-protection annotation pair every Legion issue pod does (`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, `karpenter.sh/do-not-disrupt: "true"`)
    — without them the bridge pod, alone on its own node, is fair game for GKE's node consolidation mid-run.
    Only the chisel server's *data* ports, the ones the caller names, are on the Service, each a Service port named `p<port>` (here the worker stream's and the session database's);
    its control port is never exposed by the Service or the cluster network, reachable only through `kubectl port-forward` under the operator context.
@@ -1848,7 +1848,7 @@ it appends its pod's uid to a marker file on the pod's own disk and sleeps, so t
 That marker proves a role's identity within one pod and nothing across pods
 — the disk dies with the pod, so a replacement starts with an empty one — and continuity across a pod is read from the session table instead.
 The runtime's settings: a 5-minute boot timeout, 3 registration intervals, a 15-second termination grace, a 10-second probe interval, storage class `LEGION_E2E_STORAGE_CLASS` (AWS's `gp2`, GKE's `standard-rwo`), a 20Gi issue volume, the daemon's default reservations with the issue pod's overridden field by field (`liveIssueOverride`:
-2500m CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling beyond the Legion pool the runtime selects:
+2500m CPU and 4 GiB, request equal to limit, and a 10Gi ephemeral-storage limit and request), as a deployment's `runtime.kubernetes.resources.issue` does, the controller's pod at the defaults, and no scheduling, so no pod selects or tolerates anything of a node pool:
 no pod asks for or keeps off another pod's node.
 
 The checks, in order, each printing what it observed and then `CHECK <name>: PASS`:
@@ -3111,7 +3111,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
 - `pod-shape`
 
   every Sandbox pod whose one `roles` container the pod watch saw ready is judged from the spec the watch recorded for it, deleted pods included:
-  gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, the pool, Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
+  gVisor, the operator's ServiceAccount and one projected token, the run's route ConfigMap mounted as every role's profile `models.yml`, no selector or toleration of the retired Legion pool (`legion.dev/pool`), Pod Security restricted, its launcher's `--connect` naming `advertise_host` at the worker-stream port the daemon served when the pod was created (each daemon's from its start, in `worker-streams.jsonl`;
   a move waits out the second the stopped daemon could have created a pod in, since a pod's `creationTimestamp` counts whole seconds;
   the run assumes, without checking, that the devbox's clock, which dates each start, and the API server's agree within that second, and that by then the Agent Sandbox controller, which creates each pod after the daemon writes its Sandbox, has created the pod of every Sandbox the stopped daemon wrote), six role-private Secrets, split provisioning, and the run's reservations:
   every container, the init containers included, carries cpu and memory as both request and limit and ephemeral-storage as a request no greater than its limit (the node-disk bound between pods of unrelated trees), all four the issue pod's one reservation:
@@ -4002,7 +4002,7 @@ The cluster is deleted on any exit.
 
 | check | what it holds |
 | :--- | :--- |
-| `cluster`, `agent-sandbox`, `gvisor` | the lib's: the kind cluster, its one node labelled `legion.dev/pool=legion`, the `legion` namespace and the `standard` storage class; Agent Sandbox v1.0.3's release manifest, pinned by sha256, applied and its controller rolled out; gVisor's dated release, pinned by sha512, installed into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor` |
+| `cluster`, `agent-sandbox`, `gvisor` | the lib's: the kind cluster and its one node, the `legion` namespace and the `standard` storage class; Agent Sandbox v1.0.3's release manifest, pinned by sha256, applied and its controller rolled out; gVisor's dated release, pinned by sha512, installed into the node's containerd as the `runsc` handler with a `gvisor` RuntimeClass, and a `runtimeClassName: gvisor` pod's `dmesg` says `Starting gVisor` |
 | `image` | the worker image, pulled into the node's containerd by digest |
 | `launch` | `TestABurstableIssuePodRendersLive` (`internal/daemon/burstable_live_test.go`, `-tags e2e`), built as a static test binary and run in a container on the kind network, writes two `legion.yaml` files, reads each with the daemon's loader, translates it with `sandboxOptions`, runs the cluster check, and launches one issue's root through the Sandbox runtime's `Spawn` on a worker stream bound to that container's address (pods reach the kind network's containers, while a host firewall can keep them from the host itself); the launch makes the repository's cache first, as every issue pod's does; it holds the `roles` container to the issue pod's request and limit (2 CPU, 8Gi under 32Gi, 6Gi under 80Gi for the first file; 2 CPU, 8Gi, 6Gi under 80Gi for the second) and the pod to its QoS class |
 | `qos-class` | `kubectl get pod <pod> -o jsonpath='{.status.qosClass}'` reads `Burstable` for the file with `issue: {memory: 32Gi, memory_request: 8Gi}` and `Guaranteed` for the file with no `resources` block; each pod has a `roles` container, is `PodScheduled=True` under `runtimeClassName: gvisor`, and its manifest is kept as evidence |
@@ -7917,7 +7917,6 @@ Each item below names a function, then what it does.
 - `kind_sandbox_create NAME WORK`
 
   creates the cluster `NAME`, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
-  labels its one node (`kind_node`) `legion.dev/pool=legion`, the pool the runtime places every pod on;
   creates the `legion` namespace and checks kind's `standard` storage class
 
 - `kind_k ARGS…`

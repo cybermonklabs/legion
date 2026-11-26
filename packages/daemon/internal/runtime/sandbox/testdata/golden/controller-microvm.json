@@ -128,8 +128,7 @@
         ],
         "enableServiceLinks": false,
         "nodeSelector": {
-          "cloud.google.com/compute-class": "example-microvm",
-          "legion.dev/pool": "legion"
+          "cloud.google.com/compute-class": "example-microvm"
         },
         "priorityClassName": "legion",
         "restartPolicy": "Always",
@@ -143,12 +142,6 @@
         },
         "terminationGracePeriodSeconds": 30,
         "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          },
           {
             "effect": "NoSchedule",
             "key": "cloud.google.com/compute-class",

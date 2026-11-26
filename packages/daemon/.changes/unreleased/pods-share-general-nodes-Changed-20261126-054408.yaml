@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+    Legion's pods share the cluster's general nodes. A pod the daemon builds, an issue pod, the
+    controller's pod, a repository cache pod or the image probe pod, carries only the operator's
+    `runtime.kubernetes.scheduling.node_selector` and `scheduling.tolerations`, and a microVM pod
+    also its ComputeClass's selector and toleration. No pod selects `legion.dev/pool: legion` or
+    tolerates the taint `legion.dev/pool=legion:NoSchedule`. The loader still refuses a
+    `node_selector` that sets `legion.dev/pool`, because that label would set Legion's pods apart
+    on nodes of their own.
+
+    Before this release runs, the deployment removes any admission rule that requires the
+    `legion.dev/pool` label on Legion's pods. A pod that runs when the daemon restarts keeps its
+    placement until the daemon replaces it.
+time: 2026-11-26T05:44:08Z
+custom:
+    Issue: pods-share-general-nodes

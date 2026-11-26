@@ -134,8 +134,8 @@ func (r *Runtime) cacheManifest(repo ghrepo.Repository) sandbox {
 }
 
 // cachePodTemplate is a cache's pod: one container, cacheContainer, running `legion workspace-init
-// cache` on the runtime's image, on the Legion pool under gVisor with the workers' pod security and
-// the probe's placement, mounting its volume at CacheRoot and its Secret's two tokens read-only —
+// cache` on the runtime's image, under gVisor with the workers' pod security and the probe's
+// placement, mounting its volume at CacheRoot and its Secret's two tokens read-only —
 // the provisioning token, as workspace-fetch mounts the issue pod's (LEGION_PROVISION_TOKEN_FILE),
 // and the bearer token its clients present (LEGION_REPOSITORY_CACHE_TOKEN_FILE) — with a memory
 // TMPDIR for the fetch's one-shot credential and a readinessProbe of GET /readyz on

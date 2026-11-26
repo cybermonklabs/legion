@@ -1425,9 +1425,9 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 }
 
 // New refuses options no cluster could run: an image not pinned by digest, an issue volume with no
-// storage class on a cluster that has no default, a stream pods cannot dial, a pool the runtime
-// does not choose, a microVM issue pod with no ComputeClass to run on or no storage class for its
-// disk, no source for the provisioning token or the roles' gh files, and a Resources
+// storage class on a cluster that has no default, a stream pods cannot dial, a selector of the
+// retired Legion pool's label, a microVM issue pod with no ComputeClass to run on or no storage
+// class for its disk, no source for the provisioning token or the roles' gh files, and a Resources
 // map that would leave a container unreserved — a role or the controller without an entry, or an
 // entry that is no reservation: a cpu or memory request past its limit, no memory, an
 // ephemeral-storage request past its limit or none at all, or a resource the daemon never sizes —
@@ -1448,7 +1448,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"url no bearer":             {func(o *Options) { o.DispatchURL = "https://dispatch.internal" }, "configured together"},
 		"bearer no url":             {func(o *Options) { o.Dispatch.Bearer = "dispatch-bearer" }, "configured together"},
 		"another pool":              {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "gpu"} }, "legion.dev/pool"},
-		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: poolValue} }, "legion.dev/pool"},
+		"the pool restated":         {func(o *Options) { o.Scheduling.NodeSelector = map[string]string{poolKey: "legion"} }, "legion.dev/pool"},
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
 		"no gh credential":          {func(o *Options) { o.GitHubCredential = nil }, "no github credential function"},
 		"no gh dirs":                {func(o *Options) { o.GitHubDirs = nil }, "no github directories function"},
@@ -2349,26 +2349,27 @@ func TestImageOwnedPathsCoverWhatAPodRunsFromTheImage(t *testing.T) {
 }
 
 // Every Legion pod, an issue's and the controller's alike, asks nothing of its placement beyond the
-// Legion pool and, for a microVM pod, its ComputeClass: of its template's fields, the ones that
-// bear on scheduling are the node selector and tolerations and the Legion priority class, and no
-// other — nothing ties it to, or keeps it off, another pod's node. Each issue pod owns a
-// ReadWriteOnce volume of its own and shares nothing with the other pods of its tree, so the
-// scheduler places it wherever the pool has room (LEGION-632). Pinned as the exact key set of the
+// operator's scheduling and, for a microVM pod, its ComputeClass: of its template's fields, the
+// ones that bear on scheduling are the node selector and tolerations and the Legion priority
+// class, and no other — nothing ties it to, or keeps it off, another pod's node. Each issue pod
+// owns a ReadWriteOnce volume of its own and shares nothing with the other pods of its tree, so the
+// scheduler places it wherever a node has room (LEGION-632). Pinned as the exact key set of the
 // pod spec the manifest sends, so a field added to the template shows here by name; the
 // controller's pod alone sends no initContainers, since it runs none. The selector and the
-// tolerations are pinned whole too: the pool's label and taint alone on a gVisor pod, and on a
-// microVM pod — an issue's whose issue runs in one (SandboxConfig.Of), or the controller's of a
-// microvm project (SandboxConfig.Controller) — those and its ComputeClass's label and taint alone.
-func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
+// tolerations are pinned whole too: the golden options name a priority class and neither of them,
+// so a gVisor pod sends neither, and a microVM pod — an issue's whose issue runs in one
+// (SandboxConfig.Of), or the controller's of a microvm project (SandboxConfig.Controller) — sends
+// its ComputeClass's label and taint alone.
+func TestEveryLegionPodAsksNothingOfItsPlacementBeyondTheOperatorsScheduling(t *testing.T) {
 	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"automountServiceAccountToken", "containers", "enableServiceLinks", "initContainers", "nodeSelector",
+		"automountServiceAccountToken", "containers", "enableServiceLinks", "initContainers",
 		"priorityClassName", "restartPolicy", "runtimeClassName", "securityContext", "terminationGracePeriodSeconds",
-		"tolerations", "volumes",
+		"volumes",
 	}
 	taint := func(key, value string) map[string]any {
 		return map[string]any{"key": key, "operator": "Equal", "value": value, "effect": "NoSchedule"}
@@ -2378,22 +2379,24 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 			tc.apply(r)
 			manifest := manifestOf(t, r, tc.spec).(map[string]any)
 			pod := manifest["spec"].(map[string]any)["podTemplate"].(map[string]any)["spec"].(map[string]any)
-			expected := want
-			if tc.spec.Role == claim.RoleController {
-				expected = slices.DeleteFunc(slices.Clone(want), func(key string) bool { return key == "initContainers" })
-			}
-			if got := slices.Sorted(maps.Keys(pod)); !slices.Equal(got, expected) {
-				t.Errorf("the pod spec sent carries %v, want exactly %v", got, expected)
-			}
-			selector, tolerations := map[string]any{poolKey: poolValue}, []any{taint(poolKey, poolValue)}
 			where := tc.sandbox.Of(tc.spec.Issue)
 			if tc.spec.Role == claim.RoleController {
 				where = tc.sandbox.Controller()
 			}
+			// selector and tolerations are nil, a key the pod spec does not send, where the pod has none.
+			var selector, tolerations any
+			expected := slices.Clone(want)
 			if where == SandboxMicroVM {
 				class := tc.sandbox.MicroVM.ComputeClass
-				selector[computeClassKey] = class
-				tolerations = append(tolerations, taint(computeClassKey, class))
+				selector, tolerations = map[string]any{computeClassKey: class}, []any{taint(computeClassKey, class)}
+				expected = append(expected, "nodeSelector", "tolerations")
+			}
+			if tc.spec.Role == claim.RoleController {
+				expected = slices.DeleteFunc(expected, func(key string) bool { return key == "initContainers" })
+			}
+			slices.Sort(expected)
+			if got := slices.Sorted(maps.Keys(pod)); !slices.Equal(got, expected) {
+				t.Errorf("the pod spec sent carries %v, want exactly %v", got, expected)
 			}
 			if got := pod["nodeSelector"]; !reflect.DeepEqual(got, selector) {
 				t.Errorf("the pod selects %v, want exactly %v", got, selector)
@@ -2620,10 +2623,8 @@ func sandboxOf(c config.SandboxConfig) SandboxConfig {
 	return block
 }
 
-// poolToleration is the Legion pool's taint, tolerated, and computeClassToleration the taint GKE
-// puts on the nodes of the custom ComputeClass class.
-var poolToleration = corev1.Toleration{Key: poolKey, Operator: corev1.TolerationOpEqual, Value: poolValue, Effect: corev1.TaintEffectNoSchedule}
-
+// computeClassToleration is the taint GKE puts on the nodes of the custom ComputeClass class,
+// tolerated.
 func computeClassToleration(class string) corev1.Toleration {
 	return corev1.Toleration{Key: computeClassKey, Operator: corev1.TolerationOpEqual, Value: class, Effect: corev1.TaintEffectNoSchedule}
 }
@@ -2735,10 +2736,10 @@ func TestAGVisorProjectRendersTodaysIssuePod(t *testing.T) {
 	}
 }
 
-// A microVM project runs each of its issue pods on GKE Sandbox's microVM RuntimeClass, on the Legion
-// pool's nodes of its ComputeClass: the selector is the pool's and the operator's with the class
-// beside them, the tolerations the pool's and the operator's with the class's taint after them, and
-// the pod is labelled legion.dev/sandbox=microvm, the label a NetworkPolicy selects it by.
+// A microVM project runs each of its issue pods on GKE Sandbox's microVM RuntimeClass, on the nodes
+// of its ComputeClass: the selector is the operator's with the class beside it, the tolerations the
+// operator's with the class's taint after them, and the pod is labelled legion.dev/sandbox=microvm,
+// the label a NetworkPolicy selects it by.
 func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
 	t.Parallel()
 	dedicated := corev1.Toleration{Key: "dedicated", Operator: corev1.TolerationOpEqual, Value: "legion", Effect: corev1.TaintEffectNoSchedule}
@@ -2753,11 +2754,11 @@ func TestAMicroVMProjectRendersItsIssuePodsOnTheMicroVMClass(t *testing.T) {
 			if pod.RuntimeClassName == nil || *pod.RuntimeClassName != "microvm" {
 				t.Errorf("the pod runs under the RuntimeClass %s, want microvm", runtimeClassText(pod.RuntimeClassName))
 			}
-			selector := map[string]string{poolKey: poolValue, "kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
+			selector := map[string]string{"kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
 			if !maps.Equal(pod.NodeSelector, selector) {
 				t.Errorf("the pod selects %v, want exactly %v", pod.NodeSelector, selector)
 			}
-			tolerations := []corev1.Toleration{poolToleration, dedicated, computeClassToleration(testComputeClass)}
+			tolerations := []corev1.Toleration{dedicated, computeClassToleration(testComputeClass)}
 			if !reflect.DeepEqual(pod.Tolerations, tolerations) {
 				t.Errorf("the pod tolerates %+v, want exactly %+v", pod.Tolerations, tolerations)
 			}
@@ -3084,8 +3085,8 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 }
 
 // A microVM pod tolerates the taint GKE puts on its ComputeClass's nodes,
-// cloud.google.com/compute-class=<class>:NoSchedule, after the pool's and the operator's
-// tolerations. The class it names replaces any the operator's scheduling names, the class the
+// cloud.google.com/compute-class=<class>:NoSchedule, after the operator's tolerations. The class it
+// names replaces any the operator's scheduling names, the class the
 // project's gVisor pods run on: the operator's compute class selector takes the microVM class's
 // value and the operator's toleration of a compute class is dropped, every other entry of both kept
 // as the operator wrote it. A gVisor pod of the same project keeps the operator's class, and the
@@ -3103,11 +3104,11 @@ func TestAMicroVMPodToleratesItsComputeClass(t *testing.T) {
 		class       string
 		tolerations []corev1.Toleration
 	}{
-		"the canary's microVM pod": {childSpec(t), testComputeClass, []corev1.Toleration{poolToleration, dedicated, computeClassToleration(testComputeClass)}},
-		"a gVisor issue pod":       {rootSpec(t), "Scale-Out", []corev1.Toleration{poolToleration, scaleOut, dedicated}},
+		"the canary's microVM pod": {childSpec(t), testComputeClass, []corev1.Toleration{dedicated, computeClassToleration(testComputeClass)}},
+		"a gVisor issue pod":       {rootSpec(t), "Scale-Out", []corev1.Toleration{scaleOut, dedicated}},
 	} {
 		pod := podOf(t, r, tc.spec)
-		selector := map[string]string{poolKey: poolValue, computeClassKey: tc.class, "kubernetes.io/arch": "amd64"}
+		selector := map[string]string{computeClassKey: tc.class, "kubernetes.io/arch": "amd64"}
 		if !maps.Equal(pod.NodeSelector, selector) {
 			t.Errorf("%s selects %v, want exactly %v", what, pod.NodeSelector, selector)
 		}
@@ -3264,11 +3265,11 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 				if pod.RuntimeClassName == nil || *pod.RuntimeClassName != microVMRuntimeClass {
 					t.Errorf("the controller's pod runs under the RuntimeClass %s, want %s", runtimeClassText(pod.RuntimeClassName), microVMRuntimeClass)
 				}
-				selector := map[string]string{poolKey: poolValue, "kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
+				selector := map[string]string{"kubernetes.io/arch": "amd64", computeClassKey: testComputeClass}
 				if !maps.Equal(pod.NodeSelector, selector) {
 					t.Errorf("the controller's pod selects %v, want exactly %v", pod.NodeSelector, selector)
 				}
-				if want := []corev1.Toleration{poolToleration, dedicated, computeClassToleration(testComputeClass)}; !reflect.DeepEqual(pod.Tolerations, want) {
+				if want := []corev1.Toleration{dedicated, computeClassToleration(testComputeClass)}; !reflect.DeepEqual(pod.Tolerations, want) {
 					t.Errorf("the controller's pod tolerates %+v, want exactly %+v, Scale-Out's not among them", pod.Tolerations, want)
 				}
 				if got := controller.Metadata.Labels[labelSandbox]; got != string(SandboxMicroVM) {
@@ -3327,11 +3328,11 @@ func TestTheControllerPodRunsInTheProjectsSandbox(t *testing.T) {
 				if spec.RuntimeClassName == nil || *spec.RuntimeClassName != gvisor {
 					t.Errorf("the %s pod runs under the RuntimeClass %s, want %s", pod.kind, runtimeClassText(spec.RuntimeClassName), gvisor)
 				}
-				if want := map[string]string{poolKey: poolValue, computeClassKey: "Scale-Out", "kubernetes.io/arch": "amd64"}; !maps.Equal(spec.NodeSelector, want) {
-					t.Errorf("the %s pod selects %v, want exactly the pool's and the operator's %v", pod.kind, spec.NodeSelector, want)
+				if want := map[string]string{computeClassKey: "Scale-Out", "kubernetes.io/arch": "amd64"}; !maps.Equal(spec.NodeSelector, want) {
+					t.Errorf("the %s pod selects %v, want exactly the operator's %v", pod.kind, spec.NodeSelector, want)
 				}
-				if want := []corev1.Toleration{poolToleration, scaleOut, dedicated}; !reflect.DeepEqual(spec.Tolerations, want) {
-					t.Errorf("the %s pod tolerates %+v, want exactly the pool's and the operator's %+v", pod.kind, spec.Tolerations, want)
+				if want := []corev1.Toleration{scaleOut, dedicated}; !reflect.DeepEqual(spec.Tolerations, want) {
+					t.Errorf("the %s pod tolerates %+v, want exactly the operator's %+v", pod.kind, spec.Tolerations, want)
 				}
 				if value, ok := pod.template.Metadata.Labels[labelSandbox]; ok {
 					t.Errorf("the %s pod is labelled %s=%q", pod.kind, labelSandbox, value)

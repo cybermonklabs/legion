@@ -14,7 +14,7 @@ in your cluster, from one published worker image, and every agent of that issue 
 
 | Piece | What Legion needs from it |
 | --- | --- |
-| A Kubernetes cluster | Agent Sandbox installed, a gVisor runtime class, a node pool for Legion, a namespace and a storage class ([below](#the-cluster)). |
+| A Kubernetes cluster | Agent Sandbox installed, a gVisor runtime class, a namespace and a storage class ([below](#the-cluster)). |
 | A host for the daemon | Reachable from the pods on two ports: the API (`port`, 13370 by default) and the worker stream (`worker_stream_port`, the API port plus one). |
 | Postgres | Two databases: one for the daemon's record (`postgres_dsn`, or `LEGION_POSTGRES_DSN` in its environment), and one for the agents' conversations, which every pod reaches directly (`runtime.kubernetes.session_store`, required, with its key: `postgres` with `session_dsn_secret`, or `cloudsql-iam` with `session_database`; an issue pod's disk is deleted with the pod, so a conversation kept on it would die with it). The second may be another database of the same server; its login needs `USAGE, CREATE ON SCHEMA public`, since Oh My Pi creates its own two tables there. |
 | [Dispatch](/legion/dispatch/) | Its URL and a bearer token for Legion's agents, and, for the issues that name no repository, the project's default repository, set in Dispatch ([below](#the-projects-repositories)). |
@@ -293,9 +293,10 @@ Dispatch read them, delete the files, then install every App from
   the version it speaks and the Deployment `agent-sandbox-system/agent-sandbox-controller` has an
   available replica. The refusal names every missing piece.
 - **gVisor.** Every pod runs with `runtimeClassName: gvisor`.
-- **A node pool for Legion.** Every pod selects nodes labelled `legion.dev/pool=legion` and
-  tolerates the taint `legion.dev/pool=legion:NoSchedule`. You may add node selectors, tolerations
-  and a priority class under `runtime.kubernetes.scheduling`, but not the pool label itself.
+- **Placement on the cluster's nodes.** Legion's pods share the cluster's general nodes: a pod
+  selects the node labels and tolerates the taints you set under `runtime.kubernetes.scheduling`,
+  with its priority class, and a microVM pod also its ComputeClass's label and toleration. The
+  selector may not set `legion.dev/pool`, the label of the retired Legion pool.
 - **One reservation per pod, no affinity set by Legion.** An issue pod runs every role of the
   issue in one container, `roles`, each role's process in Linux namespaces of its own that keep
   its tokens out of its siblings' reads; the roles share the pod's own disk and network, so code
@@ -358,8 +359,8 @@ Dispatch read them, delete the files, then install every App from
   reserves disk and places no pod a full node could not hold. Legion sets no affinity on a pod (GKE
   Autopilot adds its own to an issue or controller pod): an issue pod carries a disk of its own and
   shares none, so the
-  scheduler places it wherever the pool has room and Karpenter
-  adds nodes under the pool's limits. Concurrent issue pods are bounded by the nodes the pool's
+  scheduler places it wherever a node has room and Karpenter adds nodes under its NodePool's
+  limits. Concurrent issue pods are bounded by the nodes the NodePool's
   `limits.cpu` and `limits.memory` let Karpenter make, since Karpenter counts each node's whole
   capacity against those limits (three pods per 8-vCPU floor node, so about 96 on the 32 floor
   nodes of `limits.cpu: 256`, or three on each of `limits.memory` / 64 GiB floor nodes when that is

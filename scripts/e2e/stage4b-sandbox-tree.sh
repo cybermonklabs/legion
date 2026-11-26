@@ -2127,10 +2127,11 @@ block_account() {
 # check_pod_shape SPEC prints each way the pod object SPEC departs from the issue-pod shape, or
 # nothing, with its Secrets' values as they are now: gVisor; the operator's ServiceAccount and one
 # projected token; the one `roles` container, mounting the route ConfigMap where every role's
-# profile reads it; the pool; restricted security; every container, the init containers included,
-# reserving cpu and memory as both request and limit and ephemeral-storage as a request under its
-# limit, each the issue pod's one reservation under the run's override and the defaults
-# (run_resources), so the pod is Guaranteed and bounded on the node's disk, and no affinity
+# profile reads it; no selector or toleration of the retired Legion pool; restricted security;
+# every container, the init containers included, reserving cpu and memory as both request and
+# limit and ephemeral-storage as a request under its limit, each the issue pod's one reservation
+# under the run's override and the defaults (run_resources), so the pod is Guaranteed and bounded
+# on the node's disk, and no affinity
 # (lib/stage4b-pods.jq reservation_problems); the launcher dialing the worker stream the daemon
 # served when the pod was created, at advertise_host; each role's gh files in a volume of its own
 # under its directory of the roles directory, read-only; no Secret value in a container's
@@ -2162,8 +2163,8 @@ shape_problems() {
         | if ($route_volumes | length) != 1 then "no one volume of the route ConfigMap \($route)"
           elif ([$c.volumeMounts[]? | select(.name == $route_volumes[0] and .mountPath == "/var/run/legion/home/.omp/profiles/legion/agent/models.yml")] | length) != 1
           then "the roles container does not mount models.yml of \($route) where every role profile reads it" else empty end),
-      (if $s.nodeSelector["legion.dev/pool"] != "legion" then "nodeSelector \($s.nodeSelector)" else empty end),
-      (if ([$s.tolerations[]? | select(.key == "legion.dev/pool")] | length) == 0 then "no legion.dev/pool toleration" else empty end),
+      (if $s.nodeSelector["legion.dev/pool"] != null then "nodeSelector \($s.nodeSelector): a Legion pod selects no legion.dev/pool" else empty end),
+      (if ([$s.tolerations[]? | select(.key == "legion.dev/pool")] | length) != 0 then "tolerations \($s.tolerations): a Legion pod tolerates no legion.dev/pool taint" else empty end),
       # Pod Security "restricted": non-root and RuntimeDefault seccomp may be set on the pod; the
       # escalation and capability rules are set on each container.
       ([$s.initContainers[]?, $s.containers[]] | .[] as $k
