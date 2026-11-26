@@ -589,7 +589,7 @@ func transitionAsk(ctx context.Context, tx pgx.Tx, id string, planned delivery) 
 			return nil, fmt.Errorf("answer ask %s: %w", id, err)
 		}
 		ask.State, ask.Answer = "answered", &answer
-		if err := indexAskParts(ctx, tx, ask, refs.AskPartsAt(ask), false); err != nil {
+		if err := indexAskParts(ctx, tx, ask, refs.AskPartsAt(ask)); err != nil {
 			return nil, err
 		}
 		payload := model.AskAnsweredEventPayload{AskEventPayload: model.NewAskEventPayload(ask, model.ReferenceChanges{})}

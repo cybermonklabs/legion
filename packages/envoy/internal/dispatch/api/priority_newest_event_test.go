@@ -34,17 +34,13 @@ import (
 // each member, with priorityMemberTerms (its seed priorityRelationSeed), parentDepthCapSQL and
 // priorityProjectFilter written out as they were at that commit. It is the oracle of the tests
 // below, held letter for letter. A text built from the package's own constants would move with
-// them, and the two sides would then agree however the read changed.
+// them, and the two sides would then agree however the read changed. Its walk over the members
+// is mainNewestEventWalk, the frozen text of that walk, which it is built from: so the oracle
+// carries main's walk by construction, and the walk has one frozen text.
 const mainPriorityNewestEventQuery = `with recursive members_seed as (
 		select ($1::text[])[i] as key, ($2::text[])[i] as priority
 		from generate_subscripts($1::text[], 1) as seed(i)
-	), members_spread as (
-		select s.key, s.priority, 0 as depth from members_seed s
-		union all
-		select c.key, m.priority, m.depth + 1
-		from members_spread m join issues c on c.parent_key = m.key
-		where m.depth < 32
-	), members as (
+	), ` + mainNewestEventWalk + `, members as (
 		select distinct key, priority from members_spread
 	)
 	select m.priority, max(e.created_at)
@@ -55,11 +51,12 @@ const mainPriorityNewestEventQuery = `with recursive members_seed as (
 	group by m.priority`
 
 // mainNewestEventWalk is main's walk over the members of each priority, the recursive CTE that
-// newestEventWalkCTE names, frozen letter for letter as mainPriorityNewestEventQuery holds it,
-// which the plan test requires of that text. Each step joins issues on parent_key, and the
-// planner hashes issues for it from one read of the table. It decides the holds a text of the
-// newest event is put to (requireNewestEventPlan): a text that carries it takes main's walk, and
-// any other text takes a walk of its own, such as the walk keyed through issues_parent_key
+// newestEventWalkCTE names, frozen letter for letter as it stood at that commit. It is the walk
+// that mainPriorityNewestEventQuery is built from, so the buffers the plan test reads off the walk
+// of main's plans (requireWalkWithinMains) are this walk's. Each step joins issues on parent_key,
+// and the planner hashes issues for it from one read of the table. It decides the holds a text of
+// the newest event is put to (requireNewestEventPlan): a text that carries it takes main's walk,
+// and any other text takes a walk of its own, such as the walk keyed through issues_parent_key
 // (priorityNewestEventKeyedWalkQuery) that a reading on production may call for.
 const mainNewestEventWalk = `members_spread as (
 		select s.key, s.priority, 0 as depth from members_seed s
@@ -363,9 +360,6 @@ func TestPriorityNewestEventAnswersMainsTime(t *testing.T) {
 //     reads issues in a Seq Scan.
 func TestPriorityNewestEventReadsOneEventOfEachMember(t *testing.T) {
 	t.Parallel()
-	if !strings.Contains(mainPriorityNewestEventQuery, mainNewestEventWalk) {
-		t.Fatalf("main's text (mainPriorityNewestEventQuery) does not carry main's walk as mainNewestEventWalk freezes it:\n%s", mainNewestEventWalk)
-	}
 	if strings.Contains(priorityNewestEventKeyedWalkQuery, mainNewestEventWalk) {
 		t.Fatalf("the statement with its walk keyed (priorityNewestEventKeyedWalkQuery) carries main's walk, so no plan the test reads takes the keyed branch")
 	}
