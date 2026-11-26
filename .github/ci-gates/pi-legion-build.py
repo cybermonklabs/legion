@@ -23,24 +23,16 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#dist/THIRD_PARTY_NOTICES` writes that file with it"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions` imports scripts/e2e/lib/script-functions, and the typecheck includes scripts/skill-scenarios/*.ts"),
     # What the skills' guard reads beside the skills and the package, run by
-    # "Check the skills against their guard": the Claude plugin builder it spawns, and the
-    # roots of its sweep over every file a Legion agent reads.
-    ("packages/claude-envoy/**", f"{at('pi-legion-build', 'Check the skills against their guard')}: `packages/pi-legion/src/skills-guard.test.ts#no skill, agent or plugin file keeps work in the foreground` spawns packages/claude-envoy/scripts/build.ts (`packages/pi-legion/src/skills-guard.test.ts#PLUGIN_BUILDER`) and asserts an exact file list over the tree it writes"),
-    ("packages/envoy-client/bin/dispatch.ts", "the dispatch entry of that builder's BUNDLE_ENTRYPOINTS (`packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS` and `packages/claude-envoy/scripts/build.ts#../envoy-client/bin/dispatch.ts`), outside the package it builds"),
-    (f"{DAEMON}/internal/**", f"{at('pi-legion-build', 'Check the skills against their guard')}: `packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` "
-                              'sweeps every file under packages/daemon/internal, a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "packages/daemon/internal")`, '
-                              "and `packages/pi-legion/src/skills-guard.test.ts#no skill or prompt promises an update round no daemon can open` reads internal/supervise"),
-    ("docs/kubernetes.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
-                           'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/kubernetes.md")`'),
-    ("docs/site/src/content/docs/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
-                                      'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/site/src/content/docs")`, '
-                                      "and `packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads the legion guides under it"),
-    ("deploy/kubernetes/daemon/controller.yaml.example", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
-                                                         'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "deploy/kubernetes/daemon/controller.yaml.example")`'),
-    ("AGENTS.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
-                  'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`'),
-    ("README.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
-                  'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "README.md")`'),
-) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
+    # "Check the skills against their guard": the daemon's prompt parts and its Go, where it
+    # reads the references a role is pointed along, and the two guides it holds to the round count.
+    (f"{DAEMON}/internal/prompts/**/*.md", f"{at('pi-legion-build', 'Check the skills against their guard')}: `packages/pi-legion/src/skills-guard.test.ts#promptsRoot` is a root of the guard's skill:// links, "
+                                          "and `packages/pi-legion/src/skills-guard.test.ts#every reference a shipped text or the daemon names resolves against the packed plugins` "
+                                          "reads every .md under it, the prompt parts"),
+    ("docs/site/src/content/docs/legion/**", "`packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads concepts.md and troubleshooting.md there"),
+) + [Read(f"{DAEMON}/**/*.go", "`packages/pi-legion/src/skills-guard.test.ts#every reference a shipped text or the daemon names resolves against the packed plugins` "
+                              "reads every .go of packages/daemon but its tests, the root at "
+                              '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "packages/daemon")`',
+          but=("**/*_test.go",))]
+  + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build"))

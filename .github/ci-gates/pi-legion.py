@@ -8,8 +8,6 @@ GATE = gate("pi_legion", "pi-legion", runs=[
 ], reads=reads(
     ("packages/pi-legion/**", f"{at('pi-legion', 'Test pi-legion')} in packages/pi-legion"),
     ("packages/pi-envoy/**", "`packages/pi-legion/extensions/legion.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion.test.ts#envoyEntry` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntryDefault` and `packages/pi-legion/extensions/legion-role-claim.test.ts#envoyEntry` import ../../pi-envoy/extensions/envoy; `packages/pi-shared/test/omp-harness.ts#runLegionPane` loads it"),
-    ("packages/claude-envoy/**", "`packages/pi-legion/src/skills-guard.test.ts#PLUGIN_BUILDER` and `packages/pi-legion/src/skills-guard.test.ts#no skill, agent or plugin file keeps work in the foreground` spawns packages/claude-envoy/scripts/build.ts and asserts an exact file list over the tree it writes, so that script and everything it reads - `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS` among them - are read by this job through a spawn, which carries no import and which no derivation sees"),
-    ("packages/envoy-client/bin/dispatch.ts", "the dispatch entry of that builder's BUNDLE_ENTRYPOINTS, outside the package it builds: `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS` and `packages/claude-envoy/scripts/build.ts#../envoy-client/bin/dispatch.ts`"),
     ("packages/pi-shared/src/**", "packages/pi-legion/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts"),
     ("packages/pi-shared/test/**", "`packages/pi-legion/extensions/legion-phase-stall-omp.test.ts#@legion/pi-shared/test/omp-harness`, `packages/pi-legion/extensions/legion-role-tools-omp.test.ts#@legion/pi-shared/test/omp-harness`, `packages/pi-legion/src/skills-guard.test.ts#@legion/pi-shared/test/skills-guard`, `packages/pi-legion/scripts/prepack.test.ts#@legion/pi-shared/test/skills-guard`"),
     ("packages/envoy-client/test/subscribe-answer.ts", "`packages/pi-legion/extensions/legion-role-claim.test.ts#consumerDelivery` "
@@ -33,27 +31,13 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("packages/dispatch/e2e/**", "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#packages/dispatch/e2e/run-server.sh` and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#packages/pi-legion/scripts/skill-scenarios/seed.ts` names packages/dispatch/e2e/run-server.sh and seed.ts in the checkout it builds, and `packages/pi-legion/scripts/skill-scenarios/seed.ts#../../../dispatch/e2e/api` imports packages/dispatch/e2e/api.ts"),
     ("packages/dispatch/web/src/api/types.ts", "`packages/dispatch/e2e/api.ts#../web/src/api/types`"),
     ("packages/dispatch/web/src/api/paths.ts", "`packages/dispatch/e2e/api.ts#../web/src/api/paths` imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Result from it, since that client is keyed on the generated document's path patterns"),
-    ("skills/**", "`packages/pi-legion/src/skills-guard.test.ts#stageSkills` and `packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` stages them, and that test reads the roots it lists, skills/legion-controller among them; `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model` and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout`; prepack stages skills"),
+    ("skills/**", "`packages/pi-legion/src/skills-guard.test.ts#stageSkills` stages both plugins' partitions of them and `packages/pi-legion/src/skills-guard.test.ts#repoSkillsRoot` resolves every skill:// link against them; `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model` and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout`; prepack stages skills"),
     ("scripts/pi-plugin-prepack.sh", "`packages/pi-shared/test/skills-guard.ts#PREPACK_SCRIPT` and `packages/pi-shared/test/skills-guard.ts#stageSkills`"),
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#$root/scripts/third-party-notices.ts`"),
-    (f"{DAEMON}/internal/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
-                              '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "packages/daemon/internal")`'
-                              " sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal, a root of that test's list"),
-    ("docs/kubernetes.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
-                           '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/kubernetes.md")`'
-                           " sweeps it, a root of that test's list"),
-    ("docs/site/src/content/docs/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
-                                      '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/site/src/content/docs")`'
-                                      " sweeps it, a root of that test's list"),
-    ("deploy/kubernetes/daemon/controller.yaml.example", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
-                                                         '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "deploy/kubernetes/daemon/controller.yaml.example")`'
-                                                         " sweeps it, a root of that test's list"),
-    ("AGENTS.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
-                  '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`'
-                  " sweeps it, a root of that test's list"),
-    ("README.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential` and "
-                  '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "README.md")`'
-                  " sweeps it, a root of that test's list"),
+    (f"{DAEMON}/internal/prompts/**/*.md", "`packages/pi-legion/src/skills-guard.test.ts#promptsRoot` is a root of the guard's skill:// links, "
+                                          "and `packages/pi-legion/src/skills-guard.test.ts#every reference a shipped text or the daemon names resolves against the packed plugins` "
+                                          "reads every .md under it, the prompt parts; `packages/pi-legion/scripts/skill-scenarios/daemon-pane.test.ts#promptPart` reads the parts a launch composes"),
+    ("docs/site/src/content/docs/legion/**", "`packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads concepts.md and troubleshooting.md there"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh"),
     ("packages/envoy/scripts/lib/pg-url.sh", "`packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/packages/envoy/scripts/lib/pg-url.sh` sources it for pg_sql and safe_url; "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a URL and keeps the rest` and "
@@ -62,7 +46,11 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                              "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#pgUrl` copies it into its scratch checkout beside rig.sh"),
     (".omp-pin", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies .omp-pin"),
     ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#runDaemonPane` writes the overlay and runs go run"),
-) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
+) + [Read(f"{DAEMON}/**/*.go", "`packages/pi-legion/src/skills-guard.test.ts#every reference a shipped text or the daemon names resolves against the packed plugins` "
+                              "reads every .go of packages/daemon but its tests, the root at "
+                              '`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "packages/daemon")`',
+          but=("**/*_test.go",))]
+  + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
   + bun_job("pi-legion"))

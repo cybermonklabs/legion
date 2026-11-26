@@ -4946,11 +4946,8 @@ COMPILERS = (
     ("pi-shared", "pi_shared"),
 )
 
-# A file of another package that the job's own tests compile, read by relative path, or run as a
-# program, with the test that reaches it. The last class is the one no derivation sees: a spawn
-# carries no import, so `bunx tsc --listFilesOnly` of the job's own program lists none of it
-# (measured: zero claude-envoy files in packages/pi-legion's program), and check-ts-filters.sh
-# cannot hold the filter to it.
+# A file of another package that the job's own tests compile or read by relative path, with the
+# test that reaches it.
 READS = (
     ("broker_client", "packages/envoy/internal/cipherclient/testdata/wire.json",
      "`packages/cipher-client/src/__tests__/wire.test.ts#CORPUS_PATH`"),
@@ -4966,14 +4963,6 @@ READS = (
     ("pi_legion", "packages/dispatch/e2e/harness-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-real-broker.ts", "packages/pi-legion's tsc program"),
     ("pi_legion", "packages/dispatch/e2e/harness-signin.ts", "packages/pi-legion's tsc program"),
-    ("pi_legion", "packages/claude-envoy/scripts/build.ts",
-     "`packages/pi-legion/src/skills-guard.test.ts#PLUGIN_BUILDER`, which spawns that builder and asserts an "
-     "exact file list over what it writes"),
-    ("pi_legion", "packages/claude-envoy/bin/envoy-channel.ts",
-     "that builder's `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS`, bundled into "
-     "the tree the same test asserts over"),
-    ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
-     "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
     ("test", "packages/dispatch/web/src/fonts/inter/package.json",
      "`scripts/third-party-notices.test.ts#lists the typeface the Dispatch web app ships, with the SIL Open Font License's text` "
      "(thirdPartyNotices over the font file's path)"),

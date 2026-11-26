@@ -517,23 +517,15 @@ lockfile and no workspace manifest is an input of this job. The lint and the
 typecheck of the same directory are the tooling-checks job's, which the tooling_checks
 filter names scripts/sessions for.
 
-## pi_legion: src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts
-
-src/skills-guard.test.ts spawns packages/claude-envoy/scripts/build.ts (PLUGIN_BUILDER) and
-asserts an exact file list over the tree it writes, so this job reads that whole
-package and the one entry of `packages/claude-envoy/scripts/build.ts#BUNDLE_ENTRYPOINTS` that
-lives outside it. A spawn carries no import, so no derivation of this repository
-sees the reach: both patterns are hand-kept, with their declared reads in
-ci_job_reads.py.
-
 ## pi_legion_build: the skills' guard and what it reads
 
 pi-legion-build runs src/skills-guard.test.ts too, so its gate (.github/ci-gates/pi-legion-build.py)
-declares what pi_legion's declares for it: the builder above, and the roots of the guard's sweep
-over every file a Legion agent reads (packages/daemon/internal, AGENTS.md, README.md,
-docs/kubernetes.md, docs/site's docs and the controller's example manifest). A change to any of
-them selects the job, so a skill or prompt change that breaks the guard fails on the pull request,
-not first in the merge queue.
+declares what pi_legion's declares for it: the daemon's prompt parts and every .go of
+packages/daemon but its tests, where the guard reads the references a role is pointed along, and
+the two legion guides it holds to the round count. A change to any of them selects the job, so a
+skill, prompt or daemon change that breaks the guard fails on the pull request, not first in the
+merge queue. The guard's test of the agents Oh My Pi bundles skips there, since the job installs
+no Oh My Pi, and runs in pi-legion's suite on the pin.
 
 ## pi_legion: The Dispatch e2e client that scripts/skill-scenarios/seed.ts imports
 
@@ -1846,9 +1838,9 @@ case's command word, is no such name, and nor is text that another part of the s
 too, which the rename of the part the citation means leaves standing. The release command of
 release-push.sh is cited by its case arm, `.github/scripts/release-push.sh#release)`: that file
 holds the arm's text once, so the rename of the arm alone fails the citation, which a citation
-of its usage line would not. A root of the list that skills-guard.test.ts sweeps is cited by
-its entry, `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "AGENTS.md")`,
-since another string of that file holds the file name alone.
+of its usage line would not. A root that skills-guard.test.ts reads is cited by its call,
+`packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "packages/daemon")`, since
+another string of that file, the prompts' root, holds the same path.
 
 Outside .github a //ci: line alone is read: a line whose text, after any whitespace, starts with
 the five characters //ci:, the test that the parser of .github/scripts/ci_filter_sources.py puts

@@ -390,7 +390,8 @@ Each item below names a script, then what it proves.
 
   measures the first model input of each Legion launch with the subject checkout's prompt files and packaged plugins.
   It records one row per launch and checks reference resolution with a loopback model stand-in.
-  Run it as a build Job. The default run needs no model credentials.
+  Run it as a build Job.
+  The default run needs no model credentials.
 
 - `late-completion.sh`
 
@@ -5053,11 +5054,13 @@ The interactive controller runs in a separate Oh My Pi process, with the prompt 
 The model stand-in keeps the first request and asks each pane to read the two references from `--refs`.
 The reference table maps each launch under `launches` to `retained` and `removed` `skill://` paths.
 It names `planner/omp` under `withheld_control_launch`.
-On the base both paths must resolve. On the candidate only the retained path must resolve.
+On the base both paths must resolve.
+On the candidate only the retained path must resolve.
 The withheld-file control repeats the planner launch in a separate profile without the retained file.
 
 `rows.jsonl` holds one row per launch, with prompt part hashes, byte counts, and reference outcomes.
-`requests/` holds the original request bodies. `splits/` accounts for the wire bytes separately from the input totals.
+`requests/` holds the original request bodies.
+`splits/` accounts for the wire bytes separately from the input totals.
 Input totals count the decoded system and message text specified by the row, tool definitions, and observed reads.
 `argv/` and `prompts/` show which prompt file each process received.
 `control-withheld.json` and `control-extra-read.json` hold the two controls.

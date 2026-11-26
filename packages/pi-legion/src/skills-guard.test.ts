@@ -123,14 +123,16 @@ test("every reference a shipped text or the daemon names resolves against the pa
 });
 
 // The agents Oh My Pi bundles are read from the Oh My Pi binary itself, as
-// packages/pi-envoy/src/skills-guard.test.ts's agent test reads them: LEGION_TEST_OMP names it,
-// and on GitHub Actions it must be set.
+// packages/pi-envoy/src/skills-guard.test.ts's agent test reads them: LEGION_TEST_OMP names it, and
+// a run without it skips this test. CI runs this file twice: pi-legion-build's step "Check the
+// skills against their guard", the pull request's half, installs no Oh My Pi, so the test skips
+// there; pi-legion's "Test pi-legion", the merge queue's half, runs it on the pin
+// .github/actions/install-omp installs and exports as LEGION_TEST_OMP.
 const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-test.skipIf(omp === undefined && !onActions)(
+test.skipIf(omp === undefined)(
   "every task agent a shipped text or the daemon names is one this plugin ships or Oh My Pi bundles",
   async () => {
-    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
+    if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset");
     const envoyStaged = stageSkills("@sjawhar/pi-envoy");
     try {
       const agentReferences = everyReference(envoyStaged).filter(
