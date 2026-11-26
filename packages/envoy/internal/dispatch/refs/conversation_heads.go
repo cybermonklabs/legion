@@ -33,8 +33,9 @@ type headItemOwner struct {
 // answered in conversationNodes' order. It is false, and reads nothing, where a comment of page
 // holds no head row of its conversation columns, or it or one of its blocks is a node the store
 // holds reserved for its author, whom the loaders' predicate compares with who and the rows do not:
-// the caller reads ConversationPageNodes then.
-func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page CommentPage, heads *HeadTree) ([]ExcerptedNode, bool, error) {
+// the caller reads ConversationPageNodes then. serverURL is the deployment whose dashboard URLs
+// each excerpt is cut around, as ConversationNodes cuts them.
+func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page CommentPage, heads *HeadTree, serverURL string) ([]ExcerptedNode, bool, error) {
 	blocksOf := headCommentBlocks(heads)
 	ids := make([]string, 0, len(page.IDs))
 	written := make([]time.Time, 0, len(page.IDs))
@@ -118,10 +119,10 @@ func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Acto
 		if !found {
 			continue
 		}
-		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
 		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
 			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
-				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
 			}
 		}
 	}

@@ -12,7 +12,9 @@ import {
 } from "../../theme/classes";
 import { ApprovalChip, approvalVersion } from "../doc/ApprovalChip";
 import { AgentName } from "../refs/AgentName";
+import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath } from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import type { StepEntry } from "./gated-steps";
 
 /** A value drawn inside `NoTooltips` - a document's name, a version, a reviewer's reason - keeps
@@ -175,9 +177,11 @@ function StepState({
 
 /** Why a step's reviewer sent its document back, as one wrapping line: the chip says only
  *  `Changes requested`, and the reason is the whole of what the writer must act on. It is given
- *  no width, no clamp and no tooltip, so a phone reads all of it. Inside `NoTooltips` the line
- *  is the page's own words and the reason is the reviewer's, each with its mark; the reviewer's
- *  name carries its own (`AgentName`). */
+ *  no width, no clamp and no tooltip, so a phone reads all of it. The reason is the reviewer's
+ *  own text on that document, drawn by the renderer from the reading the server sent with it
+ *  (`reason_tree`), as the Reviews dialog draws it. Inside `NoTooltips` the line is the page's
+ *  own words and the reason is the reviewer's, each with its mark; the reviewer's name carries
+ *  its own (`AgentName`). */
 function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const page = usePageWords();
   const approval = entry.document?.approval;
@@ -186,6 +190,16 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   }
   const version = approvalVersion(approval);
   const reason = approval.reason ?? null;
+  const reasonBody =
+    reason === null ? null : (
+      <MarkdownBody
+        markdown={reason}
+        source={textSourceOf("artifact", entry.document?.id, entry.document?.issue_key)}
+        surface="approval-review-reason"
+        tree={approval.reason_tree}
+        variant="inline"
+      />
+    );
   return (
     <p
       // Inside `NoTooltips` the line is the new issue page's secondary words.
@@ -202,14 +216,18 @@ function StepReason({ entry }: { entry: StepEntry }): ReactNode {
           {` requested changes on v${version}`}
         </>
       )}
-      {reason === null ? null : page === null ? (
-        ` · ${reason}`
-      ) : (
+      {reasonBody === null ? null : (
         <>
           {" · "}
-          <span className={VALUE_WRAPS} {...page.authorText}>
-            {reason}
-          </span>
+          {/* Inside `NoTooltips` the reason is a value: it carries the author's mark and breaks
+              anywhere, on a wrapper, since the renderer takes no class. */}
+          {page === null ? (
+            reasonBody
+          ) : (
+            <span className={VALUE_WRAPS} {...page.authorText}>
+              {reasonBody}
+            </span>
+          )}
         </>
       )}
     </p>

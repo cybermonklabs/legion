@@ -80,14 +80,13 @@ func blockAddressOf(t testing.TB, database *store.Store, key, blockID string) st
 // query parameters it declares and those it must not, the codes its description names, and, by
 // status, the members a refusal's body declares beside its code and its message.
 type nodePlacementOperation struct {
-	method, operationID   string
-	request, response     string
-	takes, answers        []string
-	ifMatchRequired       bool
-	query, notQuery       []string
-	codes                 []string
-	refusals              map[string][]string
-	generatedHeaderMember string
+	method, operationID string
+	request, response   string
+	takes, answers      []string
+	ifMatchRequired     bool
+	query, notQuery     []string
+	codes               []string
+	refusals            map[string][]string
 }
 
 // nodePlacementOperations are the operations the node's own resource serves (R7): the move, whose
@@ -104,7 +103,6 @@ var nodePlacementOperations = []nodePlacementOperation{{
 		"409 ANSWERED_ASK_KEPT", "409 PARENT_NOT_REACHED", "409 PARENT_DOCUMENT_REMOVABLE", "409 PARENT_CONTENDED",
 		"409 CONTAINER_WOULD_EMPTY", "412 PRECONDITION_FAILED", "428 PRECONDITION_REQUIRED",
 	},
-	generatedHeaderMember: `"If-Match": string;`,
 }, {
 	method: "delete", operationID: "deleteApiV1IssuesByKeyNodesById",
 	request: "ActorInput", response: "NodeDeleted",
@@ -115,31 +113,27 @@ var nodePlacementOperations = []nodePlacementOperation{{
 		"409 NODE_HOLDS_RESULT", "409 ANSWERED_ASK_KEPT", "409 DELETE_COUNT_MOVED", "409 PARENT_CONTENDED",
 		"409 CONTAINER_WOULD_EMPTY", "412 PRECONDITION_FAILED", "428 PRECONDITION_REQUIRED",
 	},
-	refusals:              map[string][]string{"409": {"code", "error", "count"}},
-	generatedHeaderMember: `"If-Match"?: string;`,
+	refusals: map[string][]string{"409": {"code", "error", "count"}},
 }}
 
 // TestNodePlacementRoutesMatchTheGeneratedContract reads the committed contract of the node's own
-// resource, /api/v1/issues/{key}/nodes/{id} (R7): packages/contracts/schemas/dispatch-openapi.json
-// and packages/contracts/src/dispatch-api.generated.ts. Each operation of nodePlacementOperations
-// declares its body's members and its answer's, an If-Match header (required on the move, which
-// every request sends, and not on the delete, whose dry run sends none), the query parameters it
-// takes and none of those it must not, each refusal body richer than a code and a message (the
-// delete's 409 DELETE_COUNT_MOVED and its count), and names each code of its refusals in its
-// description;
-// the generated TypeScript holds the operation, its If-Match member and each member of its body
-// and its answer; and every node of the tree read declares placement_seq, the tag a move's If-Match
-// names. A failure names the operation and the member or the code it cannot find.
+// resource, /api/v1/issues/{key}/nodes/{id} (R7): packages/contracts/schemas/dispatch-openapi.json.
+// Each operation of nodePlacementOperations declares its body's members and its answer's, an
+// If-Match header (required on the move, which every request sends, and not on the delete, whose
+// dry run sends none), the query parameters it takes and none of those it must not, each refusal
+// body richer than a code and a message (the delete's 409 DELETE_COUNT_MOVED and its count), and
+// names each code of its refusals in its description; and every node of the tree read declares
+// placement_seq, the tag a move's If-Match names. The TypeScript types are rendered from this
+// document by every `bun install` and committed nowhere, and
+// packages/contracts/scripts/gen-api.test.ts holds the generator to declaring every path and every
+// schema of it, so the document is what this test reads. A failure names the operation and the
+// member or the code it cannot find.
 func TestNodePlacementRoutesMatchTheGeneratedContract(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join("..", "..", "..", "..", "..")
 	encoded, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(OpenAPIDocumentPath)))
 	if err != nil {
 		t.Fatalf("read %s: %v", OpenAPIDocumentPath, err)
-	}
-	generated, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(contractsGenerated)))
-	if err != nil {
-		t.Fatalf("read %s: %v", contractsGenerated, err)
 	}
 	type parameter struct {
 		Name     string `json:"name"`
@@ -238,23 +232,6 @@ func TestNodePlacementRoutesMatchTheGeneratedContract(t *testing.T) {
 				return shape != "" && !slices.ContainsFunc(declares, func(member string) bool { _, held := properties[member]; return !held })
 			}) {
 				t.Errorf("%s's %s answer declares no body with %v among %v", name, status, declares, shapes)
-			}
-		}
-		operationAt := strings.Index(string(generated), "\n  "+want.operationID+": {")
-		if operationAt < 0 {
-			t.Errorf("%s holds no operation %s for %s", contractsGenerated, want.operationID, name)
-			continue
-		}
-		rest := string(generated[operationAt+1:])
-		if end := strings.Index(rest, "\n  }"); end >= 0 {
-			rest = rest[:end]
-		}
-		if !strings.Contains(rest, want.generatedHeaderMember) {
-			t.Errorf("%s's operation %s holds no %s", contractsGenerated, want.operationID, want.generatedHeaderMember)
-		}
-		for _, schema := range []string{want.request, want.response} {
-			if !strings.Contains(string(generated), "export type "+schema+" = ") {
-				t.Errorf("%s exports no type %s for %s", contractsGenerated, schema, name)
 			}
 		}
 	}

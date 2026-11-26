@@ -559,7 +559,7 @@ func requireTheDeferredWriteLeavesNoRow(t *testing.T) {
 		}
 		var stated graphstore.Uncaused
 		if whole {
-			if _, _, stated, _, err = refs.IndexBlocks(ctx, tx, document.artifactID, versions, rendered, blocks, nil, nil, facts); err != nil {
+			if _, _, stated, _, err = refs.IndexBlocks(ctx, tx, document.artifactID, versions, rendered, blocks, nil, nil, "", facts); err != nil {
 				t.Fatalf("index version %d: %v", number, err)
 			}
 		} else {

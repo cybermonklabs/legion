@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -240,7 +239,7 @@ func TestTheNextAskOnTheIssueNamesTheDeclinedAsk(t *testing.T) {
 		requireNamesTheDeclinedAsk(t, "the ask whose check filled every place", crowded.Body.String(), declined)
 
 		// A check that cannot run at all: the allowance ends before its first read.
-		served.suggestionTimeout = time.Nanosecond
+		served.suggestionTimeout = spentRelatedAllowance
 		unchecked := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 			"question": "Which of them comes last?", "actor": adviceSessionActor("session-crowded"),
 		})

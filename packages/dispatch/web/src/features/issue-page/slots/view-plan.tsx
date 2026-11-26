@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -15,10 +14,11 @@ import { EMPTY_STATE_LINES } from "../page-words";
 import { type PlanFailedRead, PlanFilterBody, type PlanReads } from "../plan-filter/PlanFilterBody";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
-import { useTreeReadRunning, viewQuery } from "../tree-read/tree-read";
+import { useBlocksRunning } from "../tree-read/tree-read";
 import { NextViewPage } from "../tree-read/view-read";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
+import { usePublishViewParents } from "./view-parents";
 
 /**
  * The Plan view: the plan's tasks as a chart of time, with one control in the view's first line
@@ -39,9 +39,15 @@ export function ViewPlanSlot({
   const address = issueAddress(route, search, hash, spec?.slug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
   // of those reads has settled (`useOutlineReads`), each under the key and with the freshness the
-  // tree reads it by, so they cost no request of their own.
+  // tree reads it by, so they cost no request of their own; what the page publishes of its
+  // batched names read, which the body hands its rows in the render that draws them
+  // (`published`), so none of them reads a reference the page asks for; and the outline's names
+  // line while those reads stand failed (`names`), which the body draws over its tree, since
+  // every reference its bars and steps draw waits on those names.
   const {
     blocksOf,
+    names,
+    published,
     readsSettled: outlineSettled,
     refused: refusedLines,
     root,
@@ -69,11 +75,11 @@ export function ViewPlanSlot({
   // from the reader the press of "Steps", the focused row and its mark, a step being edited, or
   // the address's step having taken the focus, which it takes once.
   const planId = roleDocument(issue, "plan")?.id;
-  const planBlocks = blocksOf("plan");
+  // Each with whether the read that holds it runs (`useBlocksRunning`): the plan's own view read
+  // and the outline read, each from an observer of its own.
+  const planBlocks = { ...blocksOf("plan"), isFetching: useBlocksRunning(issue.key, "plan") };
   const specId = spec?.id;
-  const specBlocks = blocksOf("spec");
-  // Whether the tree read runs, from an observer of its own (`useTreeReadRunning`).
-  const running = useTreeReadRunning(issue.key);
+  const specBlocks = { ...blocksOf("spec"), isFetching: useBlocksRunning(issue.key, "spec") };
   const answered =
     (planId === undefined || planBlocks.data !== undefined) &&
     (specId === undefined || specBlocks.data !== undefined);
@@ -89,8 +95,7 @@ export function ViewPlanSlot({
     { id: specId, query: specBlocks, read: "statements" },
   ] as const;
   // The one line's Retry reads again each of the two reads that stands refused, and is busy while
-  // either runs, the view read's running from an observer of its own that sends nothing.
-  const viewRunning = useQuery({ ...viewQuery(issue.key, "plan"), enabled: false }).isFetching;
+  // either runs.
   const retry = (): void => {
     for (const query of [planBlocks, specBlocks]) if (standsFailed(query)) void query.refetch();
   };
@@ -101,7 +106,7 @@ export function ViewPlanSlot({
             failure: query.errorUpdateCount,
             read,
             retry,
-            retrying: running || viewRunning,
+            retrying: planBlocks.isFetching || specBlocks.isFetching,
           },
         ]
       : []
@@ -111,7 +116,7 @@ export function ViewPlanSlot({
   // the network (paused), is not out.
   const out = watched.some(
     ({ id, query }) =>
-      id !== undefined && query.data === undefined && (running || !standsFailed(query))
+      id !== undefined && query.data === undefined && (query.isFetching || !standsFailed(query))
   );
   const reads: PlanReads =
     failed.length > 0
@@ -141,6 +146,9 @@ export function ViewPlanSlot({
     () => (address.filter === "" ? whole : presetView(root, "plan", address.filter, named)),
     [address.filter, named, root, whole]
   );
+  // The other statements a step serves are named by the page's names, which the whole plan's view
+  // names where only its own tree holds them (`PresetView.parents`).
+  usePublishViewParents(whole.parents);
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`). The view draws a line of its own for the
   // plan's blocks and the spec's (`watched`). It draws a row for a task alone - a step of the
@@ -176,9 +184,11 @@ export function ViewPlanSlot({
           // The words filter's Escape comes before the view is left.
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
+          namesLine={names}
           onEditing={onEditing}
           plan={plan}
           planBlocks={planBlocks.data}
+          published={published}
           reads={reads}
           {...(request === undefined ? {} : { request })}
           reveal={reveal}

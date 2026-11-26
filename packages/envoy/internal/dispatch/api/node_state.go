@@ -633,7 +633,7 @@ func (s *server) listIssueProposed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The store keys a document by its ref_key, which is the id its loader reads it by.
-	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, targets)
+	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, targets, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

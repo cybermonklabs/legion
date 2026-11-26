@@ -365,7 +365,7 @@ func (p *PgVersioned) appendRoomTx(ctx context.Context, room string, flush *Room
 	head, admitted := read.latest, len(updates)
 	if gated {
 		var replaced bool
-		head, admitted, replaced, err = gateAppend(ctx, conn, room, heldThrough, appendBrowser, updates, read, p.maxPendingItems)
+		head, admitted, replaced, err = gateAppend(ctx, conn, room, heldThrough, appendBrowser, updates, read, p.maxPendingItems, p.closeMargin)
 		if err != nil {
 			return 0, err
 		}

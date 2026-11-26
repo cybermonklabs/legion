@@ -199,12 +199,21 @@ export function NextPageWords({ left }: { left: number | undefined }): ReactNode
   );
 }
 
+/** The mark each control that draws more of the outline carries, by its kind (`PageControl`):
+ *  the row after a node's children, the control that reads older comments, and the one that
+ *  reads the read's next page. */
+const PAGE_CONTROL_MARKS = {
+  more: "data-tree-more",
+  older: "data-older-comments",
+  page: "data-tree-page",
+} as const;
+
 /**
  * One control that draws more of the outline in place (R15), at the level of the rows it draws
  * and under the guides of the levels above them: the row after a node's drawn children, the
  * control above the first row that reads older comments, and the control after the last row that
  * reads the read's next page. A press replaces it with what it drew, so it takes no focus from
- * that press: it leaves the focus where it is (decision 366), and it is out of the tab order, as
+ * that press: it leaves the focus where it is, and it is out of the tab order, as
  * every control inside the tree is, since the tree is one tab stop. The keys press it from the row
  * beside it, and leave the focus on the first row it drew (`useTreeKeymap.ts`'s `tree-next` and
  * `tree-previous`); a press of the read's next page leaves it there too.
@@ -216,10 +225,8 @@ function PageControl({
   onPress,
 }: {
   children: ReactNode;
-  /** Which of the three it is, by the mark it carries: the row after a node's children
-   *  (`data-tree-page`), the control that reads older comments (`data-older-comments`), or the
-   *  one that reads the read's next page (`data-tree-more`). */
-  kind: "more" | "older" | "page";
+  /** Which of the three it is, by the mark it carries (`PAGE_CONTROL_MARKS`). */
+  kind: keyof typeof PAGE_CONTROL_MARKS;
   level: number;
   onPress: () => void;
 }): ReactNode {
@@ -231,9 +238,7 @@ function PageControl({
       role="treeitem"
       style={{ "--row-depth": depth } as CSSProperties}
       tabIndex={-1}
-      data-older-comments={kind === "older" ? "" : undefined}
-      data-tree-more={kind === "more" ? "" : undefined}
-      data-tree-page={kind === "page" ? "" : undefined}
+      {...{ [PAGE_CONTROL_MARKS[kind]]: "" }}
     >
       <IndentGuides depth={depth} />
       <button

@@ -33,13 +33,14 @@ const specWriterGuardPkg = "api"
 // specWriterSinks are the writes of the document service that make or change a version of a
 // document, by method name: the nine the spec's Design names, and the accept and the reject of a
 // suggestion, which change a document's text too (plan, "Where the plan departs from the spec's
-// words"). A call names one through the interface the handlers hold (docs.API) or through the
-// service itself (docs.Service), and either is a call of the sink. KeepAskBlockInStep is the write
-// of an ask's state into its block, which SetBlockAttributes made before it. DrainOwedQueries is
-// no sink: the version it appends once a check result is recorded or retracted re-renders the
-// issue's query documents for that result, and a result is no requirement, criterion or check
-// node, nor is its tuple to its check a relation out of one, so the version writes nothing the
-// check guards; specWriterRevisions names the routes that reach it, each with that reason.
+// words"). KeepAskBlockInStep is the write of a closed ask's block, which took the place of
+// SetBlockAttributes once a person's answer lives on the ask's node. A call names one through the
+// interface the handlers hold (docs.API) or through the service itself (docs.Service), and either
+// is a call of the sink. DrainOwedQueries is no sink: the version it appends once a check result
+// is recorded or retracted re-renders the issue's query documents for that result, and a result
+// is no requirement, criterion or check node, nor is its tuple to its check a relation out of
+// one, so the version writes nothing the check guards; specWriterRevisions names the routes that
+// reach it, each with that reason.
 var specWriterSinks = []string{
 	"AcceptSuggestion", "ApplyOps", "KeepAskBlockInStep", "NamedVersion", "RebuildDocument", "RejectSuggestion",
 	"ReplaceText", "SeedText", "SetAskBlockText", "SnapshotVersion", "WriteIssueAskStates",

@@ -13,6 +13,7 @@ import { api } from "../../../api/client";
 import { liveFeedUp, liveSocketFor } from "../../../api/live-socket";
 import type { IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
+import { NOTHING_PUBLISHED } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
@@ -28,6 +29,7 @@ import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { AppProviders, stubReads } from "../slots/stage-fixtures";
 import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
+import { treeReferences } from "../useIssueTree";
 import fixture from "./__fixtures__/graph-edit.json";
 import { ROW_MENU_ATTRIBUTE } from "./RowMenu";
 
@@ -530,8 +532,10 @@ function IssueScope(): ReactNode {
 
 /** The outline alone, as the page's body draws it: `IssueTree` over the tree `buildIssueTree`
  *  makes of the fixture's read, under the page's keymap and the providers a row's editing needs,
- *  with no editor behind it. `edited` keeps each document the tree put the caret in, and
- *  `undefined` where the caret leaves (`onEditing`). */
+ *  with no editor behind it. The page publishes what it does while its names read is out: every
+ *  reference the tree cites, asked for and not yet answered (`useIssueTree.ts`'
+ *  `treeReferences`), so no row reads one itself. `edited` keeps each document the tree put the
+ *  caret in, and `undefined` where the caret leaves (`onEditing`). */
 function drawOutline(): { readonly edited: (string | undefined)[]; readonly view: RenderResult } {
   const client = signedIn();
   client.setQueryData(outlineQuery(KEY, "graph").queryKey, converted);
@@ -554,6 +558,7 @@ function drawOutline(): { readonly edited: (string | undefined)[]; readonly view
                     holdsEscape={false}
                     isClosed={false}
                     onEditing={(artifactId) => edited.push(artifactId)}
+                    published={{ ...NOTHING_PUBLISHED, asked: new Set(treeReferences(root)) }}
                     readsHeld
                     readsSettled
                     reveal={undefined}

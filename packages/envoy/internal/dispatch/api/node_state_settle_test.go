@@ -266,7 +266,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	// requireRefusedSettle holds a settle to its refusal, naming the node, and the node to proposed.
 	requireRefusedSettle := func(name, blockID string, response *httptest.ResponseRecorder, status int, code string) {
 		t.Helper()
-		refusal := requireRefused(t, name, response, status, code)
+		refusal := requireRefusedNaming(t, name, response, status, code)
 		if !strings.Contains(refusal.Error, requirement(blockID)) {
 			t.Fatalf("%s is refused %q, which does not name the node %s", name, refusal.Error, requirement(blockID))
 		}
@@ -493,7 +493,7 @@ func TestSettlingAProposedNodeIsOneWriteByAPersonOrItsAuthor(t *testing.T) {
 	answered := map[string]string{}
 	for _, lens := range []lensInvoked{ownOnly, holding} {
 		response := asFirst(http.MethodPost, statePath(issue.Key, lens.Address, "state"), toState(graphstore.StateGone))
-		requireRefused(t, "the first agent's gone on its own lens "+lens.Address, response, http.StatusForbidden, codeStateNotPermitted, lens.Address)
+		requireRefusedNaming(t, "the first agent's gone on its own lens "+lens.Address, response, http.StatusForbidden, codeStateNotPermitted, lens.Address)
 		answered[lens.ID] = strings.ReplaceAll(response.Body.String(), lens.ID, "<lens>")
 		if state := storedNodeOf(t, rig.database, lens.Address).State; state != graphstore.StateLive {
 			t.Errorf("the first agent's refused gone left its lens %s at %s, want live", lens.Address, state)
@@ -586,7 +586,7 @@ func TestATokenThatProvesNoIDOfItsOwnSettlesWhatItWrote(t *testing.T) {
 	refused := func(as writer, address, whose string) {
 		t.Helper()
 		response := post(as, nodePath(address, "settle"), map[string]any{})
-		refusal := requireRefused(t, as.name+"'s settle of "+whose, response, http.StatusForbidden, codeSettleNotPermitted)
+		refusal := requireRefusedNaming(t, as.name+"'s settle of "+whose, response, http.StatusForbidden, codeSettleNotPermitted)
 		if !strings.Contains(refusal.Error, address) {
 			t.Fatalf("%s's settle of %s is refused %q, which does not name the node %s", as.name, whose, refusal.Error, address)
 		}
@@ -759,7 +759,7 @@ func TestABrokerSessionOfAWorkloadIsNotThatWorkload(t *testing.T) {
 		requireAnswersAsALensNobodyWrote(t, as.name+"'s read of the pod's lens", lens, func(address string) *httptest.ResponseRecorder {
 			return read(as, address)
 		})
-		requireRefused(t, as.name+"'s settle of the pod's lens", as.send(http.MethodPost, statePath(issue, lens, "settle"), map[string]any{}),
+		requireRefusedNaming(t, as.name+"'s settle of the pod's lens", as.send(http.MethodPost, statePath(issue, lens, "settle"), map[string]any{}),
 			http.StatusForbidden, contracts.DispatchSignInRequired, workload)
 		if state := storedNodeOf(t, rig.database, lens).State; state != graphstore.StateProposed {
 			t.Fatalf("%s's refused settle left the pod's lens at %s, want proposed", as.name, state)

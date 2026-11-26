@@ -1,13 +1,11 @@
 package api
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -19,10 +17,11 @@ import (
 //
 // The write belongs to the deployment's daemon and to no person, which is why the route declares
 // no personal scope: the daemon presents the credential the deployment configured, as it does on
-// PATCH /api/v1/issues/{key}, and such a credential holds no scope at all. The list is the
-// daemon's own configuration published back, not a choice a person makes here, so nothing is
-// lost by letting a machine write it; a person who sets a deployment's gate sets it in that
-// deployment's configuration.
+// PATCH /api/v1/issues/{key}, and such a credential holds no person scope. The shared token holds
+// no scope at all, and the daemon's own broker token holds legion-status alone (brokerTokenActor),
+// which no route's scope list names. The list is the daemon's own configuration published back,
+// not a choice a person makes here, so nothing is lost by letting a machine write it; a person who
+// sets a deployment's gate sets it in that deployment's configuration.
 
 // projectGatedSteps is the stored row the route answers: the project and the steps it gates.
 type projectGatedSteps struct {
@@ -121,12 +120,6 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	// kept for one release: steps-write-admits
 	steps = gatedStepsWithout(steps)
 
-	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -141,26 +134,36 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 	// failing one of the two (`deadlock detected`, 500). The lock assigns no transaction id; the
 	// update is the first statement that writes, and one that finds the list unchanged writes
 	// nothing.
-	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project.Key)); err != nil {
+	key := r.PathValue("key")
+	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(key)); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The update returns the setting too, read under the owner lock, so the event carries the
-	// row as this write left it and not as loadProject read it before the lock.
-	if err := tx.QueryRow(r.Context(), `
+	// The row is read under the owner lock, which every writer of the row takes first, so the
+	// event carries the row as this write leaves it. The read comes before the update, which
+	// assigns the transaction id, so it adds no statement to the window an open transaction id
+	// holds (TestXidWindowRouteTable). An unknown project is 404 PROJECT_NOT_FOUND here, before
+	// anything is written.
+	project, err := s.loadProject(r.Context(), tx, key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	written, err := tx.Exec(r.Context(), `
 		update projects set gated_steps = $2
 		where key = $1 and gated_steps is distinct from $2
-		returning gated_steps, proven_sessions
-	`, project.Key, steps).Scan(&project.GatedSteps, &project.ProvenSessions); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// The deployment published the list the row already holds. Nothing changed, so
-			// nothing is written and no event is appended; the answer is still the stored row.
-			WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
-			return
-		}
+	`, key, steps)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if written.RowsAffected() == 0 {
+		// The deployment published the list the row already holds. Nothing changed, so
+		// nothing is written and no event is appended; the answer is still the stored row.
+		WriteJSON(w, http.StatusOK, projectGatedSteps{Project: project.Key, Steps: steps})
+		return
+	}
+	project.GatedSteps = steps
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.updated", actor, project))
 	if err != nil {
 		s.writeHandlerError(w, err)

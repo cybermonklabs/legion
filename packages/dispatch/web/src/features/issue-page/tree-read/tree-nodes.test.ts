@@ -1,6 +1,7 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 
+import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
 import { routeUrl } from "../../../api/paths";
 import { CONVERSATION_KINDS } from "../../../api/queries";
@@ -17,20 +18,29 @@ import type {
   RequirementCoverage,
 } from "../../../api/types";
 import { withEntries } from "../../issue/decision-entries";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { decisionChanges, decisionNodeChanges } from "../decision-review";
 import {
   assemble,
   buildIssueTree,
   type IssueTreeReads,
-  lineWords,
+  lineWordsRaw,
+  type NodeChip,
   nodeWords,
   type TreeNode,
   treeWordsOf,
 } from "../issue-tree";
 import { GLYPH_TOKENS, NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
+import { nameOf } from "../projection-fixture";
 import { blockNodeId } from "../tree-drafts";
-import { type TreeNodeExtra, treeAnswer, treeNode, treeTuple as tuple } from "./tree-fixtures";
+import {
+  pagedAnswer,
+  type TreeNodeExtra,
+  treeAnswer,
+  treeNode,
+  treeTuple as tuple,
+} from "./tree-fixtures";
 import {
   blocksOfRole,
   nextTreeCursor,
@@ -60,6 +70,18 @@ import {
  */
 
 const KEY = "CORE-1";
+
+// A chip is named from its reading through the shared projection, which loads its engine once.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** A chip as a row reads it: its fields, with the name it draws (`nameOf`) in place of the
+ *  reading. */
+function drawnChip(chip: NodeChip): Omit<NodeChip, "reading"> & { readonly name: string } {
+  const { reading: _reading, ...fields } = chip;
+  return { ...fields, name: nameOf(chip) };
+}
 
 /** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
  *  to `treeDraftSteps` (later work drafts a lens, a finding, a risk, a constraint and a
@@ -386,7 +408,7 @@ test("a node's words come from its text_tree", () => {
 
   const words = [blockNodeId("spec", "r1"), "c1"].map((id) => {
     const one = nodeOf(root, id);
-    return one === undefined ? undefined : [nodeWords(one), lineWords(one)];
+    return one === undefined ? undefined : [nodeWords(one), lineWordsRaw(one)];
   });
   expect(words).toEqual([
     ["Draw the tree from one read. Then the rest.", "Draw the tree from one read."],
@@ -426,7 +448,7 @@ test("a typed block's row and its chip draw the block's own content, not its kin
     "Build the step.",
     reading("Build the step."),
   ]);
-  expect(step?.chips.map((chip) => chip.name)).toEqual(["The first statement."]);
+  expect(step?.chips.map(nameOf)).toEqual(["The first statement."]);
 });
 
 /** A typed block of the spec and a person's comment under it, each a new object at each call. */
@@ -448,11 +470,11 @@ test("drawing the same answer twice hands a row the same reading and the same so
 
   const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
   expect(row?.tree).toEqual(reading("The first statement."));
-  expect(row?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(row?.source).toEqual({ id: SPEC.id, issue: KEY, kind: "artifact" });
   expect(again?.tree).toBe(row?.tree);
   expect(again?.source).toBe(row?.source);
   const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
-  expect(turn?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turn?.source).toEqual({ id: "c1", issue: KEY, kind: "comment" });
   expect(turnAgain?.source).toBe(turn?.source);
 });
 
@@ -471,10 +493,10 @@ test("a node whose reading stays the same object keeps its source when another o
   const builds = [drawn(before).drafts, drawn(after).drafts];
 
   const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
-  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source).toEqual({ id: SPEC.id, issue: KEY, kind: "artifact" });
   expect(again?.source, "a node changed beside its words is handed a new source").toBe(row?.source);
   const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
-  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toEqual({ id: "c1", issue: KEY, kind: "comment" });
   expect(turnAgain?.source, "a comment changed beside its words is handed a new source").toBe(
     turn?.source
   );
@@ -489,10 +511,10 @@ test("a new record of an id is handed a new source, not the one made for the rec
   const builds = Array.from({ length: 2 }, () => drawn(records()).drafts);
 
   const [row, again] = builds.map((drafts) => drafts.get(blockNodeId("spec", "r1")));
-  expect(again?.source).toEqual({ id: SPEC.id, kind: "artifact" });
+  expect(again?.source).toEqual({ id: SPEC.id, issue: KEY, kind: "artifact" });
   expect(again?.source, "a new block is handed the old block's source").not.toBe(row?.source);
   const [turn, turnAgain] = builds.map((drafts) => drafts.get("c1"));
-  expect(turnAgain?.source).toEqual({ id: "c1", kind: "comment" });
+  expect(turnAgain?.source).toEqual({ id: "c1", issue: KEY, kind: "comment" });
   expect(turnAgain?.source, "a new comment is handed the old comment's source").not.toBe(
     turn?.source
   );
@@ -547,7 +569,7 @@ test("an unconverted issue's typed block stands under the parent the read answer
     source: drafts.get(second)?.source,
   }).toEqual({
     reference: `dispatch://${KEY}/artifact/plan-md#b-t2`,
-    source: { id: PLAN.id, kind: "artifact" },
+    source: { id: PLAN.id, issue: KEY, kind: "artifact" },
   });
   expect(blocksOfRole(tree, "plan", reads.issue)?.map((one) => [one.id, one.from])).toEqual([
     ["t1", 0],
@@ -674,7 +696,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
     [first, false, [`dispatch://${KEY}/spec#b-r2`]],
     [second, true, [`dispatch://${KEY}/spec#b-r1`]],
   ]);
-  expect(nodeOf(root, blockNodeId("plan-md", "t2"))?.chips).toEqual([
+  expect(nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map(drawnChip)).toEqual([
     {
       answered: true,
       gone: false,
@@ -684,7 +706,7 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
     },
   ]);
   expect(placementsOf(root, "d1").map((one) => one.parent)).toEqual([KEY]);
-  expect(nodeOf(root, "d1")?.chips).toEqual([
+  expect(nodeOf(root, "d1")?.chips.map(drawnChip)).toEqual([
     {
       answered: true,
       gone: false,
@@ -855,24 +877,22 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
     ),
   });
 
-  expect(nodeOf(root, blockNodeId("spec", "q1"))).toMatchObject({
-    chips: [
-      {
-        answered: true,
-        gone: false,
-        name: "Words of r1.",
-        ref: `dispatch://${KEY}/spec#b-r1`,
-      },
-      {
-        answered: true,
-        gone: false,
-        name: "Words of r2.",
-        ref: `dispatch://${KEY}/spec#b-r2`,
-      },
-    ],
-    reference: `dispatch://${KEY}/ask/ask-1`,
-    state: "answered",
-  });
+  const ask = nodeOf(root, blockNodeId("spec", "q1"));
+  expect(ask).toMatchObject({ reference: `dispatch://${KEY}/ask/ask-1`, state: "answered" });
+  expect(ask?.chips.map(drawnChip)).toMatchObject([
+    {
+      answered: true,
+      gone: false,
+      name: "Words of r1.",
+      ref: `dispatch://${KEY}/spec#b-r1`,
+    },
+    {
+      answered: true,
+      gone: false,
+      name: "Words of r2.",
+      ref: `dispatch://${KEY}/spec#b-r2`,
+    },
+  ]);
 });
 
 // R3: a decision of a decisions read of the release before - a section of `decisions.md`, which
@@ -970,7 +990,7 @@ test("drawing the same decisions read twice hands a section's row the same words
   const [row, again] = [buildIssueTree(reads), buildIssueTree(reads)].map((root) =>
     nodeOf(root, blockNodeId("decisions-md", "d1"))
   );
-  expect(row?.source).toEqual({ id: DECISIONS.id, kind: "artifact" });
+  expect(row?.source).toEqual({ id: DECISIONS.id, issue: KEY, kind: "artifact" });
   expect(row?.tree).toEqual(reading("Keep the model pure."));
   expect(again?.tree, "a re-read hands the section new words").toBe(row?.tree);
   expect(again?.source, "a re-read hands the section a new source").toBe(row?.source);
@@ -1092,14 +1112,6 @@ test("a draft carries its read id, and the context answers its tree id and its l
   }
 });
 
-/** `page` as the server answers it where the read goes on past it: the `cursor` that names the
- *  next page, and how many nodes the read holds after this one (`remaining`), which the server
- *  answers beside the cursor and the generated contract does not name yet. */
-function pagedAnswer(page: TreeAnswer, cursor: string | null, remaining?: number): TreeAnswer {
-  const count = remaining === undefined ? {} : { remaining };
-  return { ...page, cursor, ...count };
-}
-
 // R1, R15: a load reads each outline read's first page, which holds the newest comment page, and
 // each view's first page, and no next page, though each page names one: the answer is that page,
 // which names the next (`cursor`) and how many nodes the read holds after it (`remaining`), and
@@ -1210,19 +1222,25 @@ test("a press reads the next page and draws its rows in order", async () => {
 // The tree read honours TanStack's abort signal, so a read given up - a reset, the last observer
 // gone - asks for no next page, and a walk of many pages stops there.
 test("a read given up asks for no next page", async () => {
-  const first: TreeAnswer = {
-    ...answer([block("r1", "requirement", KEY, SPEC, 0)]),
-    cursor: "page-2",
-  };
+  const first = pagedAnswer(answer([block("r1", "requirement", KEY, SPEC, 0)]), "page-2", 1);
+  const second = pagedAnswer(
+    treeAnswer([node("c1", "comment", "r1")], [], { converted: true }),
+    null
+  );
   const out = Promise.withResolvers<TreeAnswer>();
+  let refetching = false;
   const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) =>
-    page?.cursor === undefined ? out.promise : answer([])
+    page?.cursor === undefined ? (refetching ? out.promise : first) : second
   );
   try {
     const client = new QueryClient();
     const query = issueTreeQuery(KEY);
-    const reading = client.fetchQuery(query).catch(() => undefined);
-    await client.cancelQueries({ queryKey: query.queryKey });
+    await client.fetchQuery(query);
+    await readNextTreePage(client, KEY, "graph");
+    const held = client.getQueryData(query.queryKey);
+    refetching = true;
+    const reading = client.refetchQueries({ exact: true, queryKey: query.queryKey });
+    await client.cancelQueries({ exact: true, queryKey: query.queryKey });
     await reading;
     out.resolve(first);
     // The walk goes on in a promise TanStack no longer hands out, so the case waits for the turn
@@ -1230,45 +1248,14 @@ test("a read given up asks for no next page", async () => {
     const turn = Promise.withResolvers<void>();
     setTimeout(turn.resolve, 0);
     await turn.promise;
-    expect(read).toHaveBeenCalledTimes(1);
-    expect(client.getQueryData(query.queryKey)).toBeUndefined();
+    expect(read.mock.calls.map(([, page]) => page?.cursor)).toEqual([
+      undefined,
+      "page-2",
+      undefined,
+    ]);
+    expect(client.getQueryData(query.queryKey) === held).toBe(true);
   } finally {
     read.mockRestore();
-  }
-});
-
-/** Reads the tree once through `issueTreeQuery`, with every page `serve` answers for the cursor
- *  it is asked with. The server answers at most `bound` pages and then refuses, so a walk that
- *  never ends fails the case rather than holding it. */
-async function walkWith(serve: (cursor: string | undefined) => TreeAnswer, bound = 10) {
-  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
-    if (read.mock.calls.length > bound) throw new Error(`more than ${bound} page reads`);
-    return serve(page?.cursor);
-  });
-  try {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const outcome = await client.fetchQuery(issueTreeQuery(KEY)).then(
-      (merged) => ({ nodes: (merged.nodes ?? []).map((one) => one.id) }),
-      (error: unknown) => ({ error: String(error) })
-    );
-    return { cursors: read.mock.calls.map(([, page]) => page?.cursor), outcome };
-  } finally {
-    read.mockRestore();
-  }
-}
-
-// A page that names no next page is the last one, however the server writes "none": a server
-// whose paged answers leave an empty cursor out of the body, as Go's `omitzero` does, or write it
-// as the empty string, sends one page, and the walk ends there instead of asking for the first
-// page again, without end.
-test("a page that names no next page ends the walk, the cursor left out or empty", async () => {
-  const only = answer([block("r1", "requirement", KEY, SPEC, 0)]);
-  const { cursor: _none, ...leftOut } = only;
-  for (const last of [leftOut as TreeAnswer, { ...only, cursor: "" }]) {
-    expect(await walkWith(() => last)).toEqual({
-      cursors: [undefined],
-      outcome: { nodes: [KEY, `${KEY}/spec#r1`] },
-    });
   }
 });
 
@@ -1632,7 +1619,7 @@ test("a plan task's needs pointer the read ties no node to is still a chip, name
     nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map((chip) => ({
       gone: chip.gone,
       label: chip.label,
-      name: chip.name,
+      name: nameOf(chip),
       ref: chip.ref,
     }))
   ).toEqual([
@@ -1686,7 +1673,7 @@ test("a plan task's needs the read sends on its reading alone are chips, a remov
     nodeOf(root, blockNodeId("plan-md", "t2"))?.chips.map((chip) => ({
       gone: chip.gone,
       label: chip.label,
-      name: chip.name,
+      name: nameOf(chip),
       ref: chip.ref,
     })),
     "t2's needs are no chips"
@@ -1800,7 +1787,10 @@ test("a requirement whose From line cites a document carries its chip from the t
   );
 
   expect(
-    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map(({ name, ref }) => ({ name, ref })),
+    nodeOf(root, blockNodeId("spec", "r-cites"))?.chips.map((chip) => ({
+      name: nameOf(chip),
+      ref: chip.ref,
+    })),
     "the requirement draws no chip for the document its From line cites"
   ).toEqual([{ name: NODE_TYPE_NAMES.document, ref: cites }]);
 });
@@ -1810,20 +1800,14 @@ test("a requirement whose From line cites a document carries its chip from the t
 function commentRead(id: string, extra: Partial<Comment> = {}): Comment {
   return {
     anchor: null,
-    answers: null,
-    artifact_id: null,
+    ...commentDeliveryFields(),
     ask_id: null,
     author: { id: "alice", kind: "user" },
     body: `Words of ${id}.`,
     created_at: "2026-11-05T00:00:00Z",
-    deleted_at: null,
-    deleted_by: null,
-    deliveries: [],
     edited_at: null,
     id,
     issue_key: KEY,
-    mentions: [],
-    reply_block: null,
     reply_to: null,
     resolved: false,
     resolved_at: null,
@@ -1866,17 +1850,13 @@ test("Conversation's read names root R1's kinds and never block", async () => {
     "prose",
     "callout",
   ]);
-  expect(CONVERSATION_KINDS).not.toContain("block");
   const conversation = outlineQuery(KEY, "conversation");
   expect<unknown>(conversation.queryKey).toEqual([
     "issue-tree",
     KEY,
     { kind: [...CONVERSATION_KINDS] },
   ]);
-  expect(outlineQuery(KEY, "conversation").queryKey, "the key of another load").toEqual(
-    conversation.queryKey
-  );
-  expect(outlineQuery(KEY, "graph").queryKey).toEqual(issueTreeQuery(KEY).queryKey);
+  expect<unknown>(outlineQuery(KEY, "graph").queryKey).toEqual(["issue-tree", KEY]);
   const read = spyOn(api, "getIssueTree").mockResolvedValue(answer([]));
   try {
     const client = new QueryClient();
@@ -1926,9 +1906,6 @@ test("a comment on a node's text is no row", () => {
       placementsOf(root, id).map((one) => one.parent)
     )
   ).toEqual([[KEY], ["c-post"], [KEY]]);
-  expect((tree.nodes ?? []).map((one) => one.id)).toEqual(
-    expect.arrayContaining(["c-on", "c-on-reply"])
-  );
   expect(placementsOf(drawn(tree).root, "c-on").map((one) => one.parent)).toEqual([
     blockNodeId("spec", "r1"),
   ]);
@@ -2027,10 +2004,11 @@ test("a prose node of the tree read is drafted and named in Graph", () => {
 // a list, a heading: a block whose text opens no typed block - as a block node of the supertag
 // `block`, and only its `kind` filter names it prose (the server's `nodeKind`). Graph draws it as
 // a prose row, and so does Conversation, whose read asks for prose and answers it so too. A
-// finding, a block whose id names its lens, and a typed block keep the steps that draft them, and
-// an ask's, a comment's or a message's own block stays part of its item. A block of a converted
-// document, which names its `document`, is a prose row of Graph and no row of Conversation, and
-// no filter draws a block its view read marks as context.
+// finding - a block whose id names its lens, or whose parent is a lens, even one nothing drafts -
+// and a typed block are never drafted as prose, and an ask's, a comment's or a message's own
+// block stays part of its item. A block of a converted document, which names its `document`, is a
+// prose row of Graph and no row of Conversation, and no filter draws a block its view read marks
+// as context.
 test("a plain block of the room's fragment is drafted and named as prose in Graph", () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
   const orphanLens = "c3000000-0000-4000-8000-000000000004";

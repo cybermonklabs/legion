@@ -17,6 +17,8 @@ export function specSummary(root: TreeNode, specSlug: string): TreeNode | undefi
     return undefined;
   };
   if (specSlug === "") return undefined;
+  const memo = walk(root);
+  if (memo !== undefined) return memo;
   const spec = root.views?.trees?.spec;
-  return walk(root) ?? (spec === undefined ? undefined : walk(spec));
+  return spec === undefined ? undefined : walk(spec);
 }

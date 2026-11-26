@@ -8,16 +8,21 @@ import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from ".
 import { referenceTargetsQuery } from "../../../api/queries";
 import type { Artifact, IssueDetails, ReferenceTarget } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import {
+  PublishedReferenceNames,
+  type PublishedReferences,
+  ReferenceNamesProvider,
+  usePublishReferenceNames,
+} from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { blockReferences } from "../address-target";
 import { artifact, issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
-import { buildIssueTree, type TreeNode, targetLastHeld, targetNaming } from "../issue-tree";
+import { buildIssueTree, type TreeNode, targetNaming } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
 import { waitInAct } from "../outline-fixtures";
 import { authorKind, CONTROL_LABELS } from "../page-words";
 import { RowText } from "../RowText";
-import { ReferenceNamesProvider, usePublishReferenceBatch } from "../reference-names";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { AppProviders, stubReads } from "../slots/stage-fixtures";
@@ -25,8 +30,11 @@ import { treeContext } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { wholeTreeOnly } from "../tree-read/tree-fixtures";
 import type { TreeAnswer } from "../tree-read/tree-read";
+import { treeReferences } from "../useIssueTree";
 import fixture from "./__fixtures__/graph-edit.json";
 import { lastHeldPath } from "./last-held";
+import { targetLastHeld } from "./last-held-chips";
+import { usePublishLastHeldReferences } from "./last-held-store";
 
 /**
  * A citation of a deleted node opens the version that last held it (R9 of INFRA-5705's spec):
@@ -44,9 +52,11 @@ import { lastHeldPath } from "./last-held";
  *   An address of any other shape answers undefined.
  * - `NodeChip.lastHeld?: string` (`issue-tree.ts`): `chipOf` (`tree-drafts.ts`) sets it from
  *   `ReferenceTarget.last_held` on a chip that is `gone`, and on no other.
- * - `usePublishReferenceBatch(names, ambiguous, edited, deleted, lastHeld)` (`reference-names.tsx`)
- *   publishes the page's whole batch, the map of each gone reference to its `last_held` as its
- *   fifth argument, and `useKnownLastHeldReferences()` hands that map to the surfaces.
+ * - `usePublishLastHeldReferences(lastHeld)` (`graph-edit/last-held-store.ts`) publishes, beside
+ *   the names the page publishes from the same read (`refs/reference-names.tsx`'s
+ *   `usePublishReferenceNames`), the map of each gone reference to its `last_held`
+ *   (`last-held-chips.ts`' `targetLastHeld`), and `useKnownLastHeldReferences()` hands that map
+ *   to the surfaces under the page's query client.
  * - A gone chip with `lastHeld` draws `CONTROL_LABELS.target_gone` as a link to `lastHeldPath` of
  *   it, titled `CONTROL_LABELS.last_held_title` (`NodeRow.tsx`'s `Chip`); a gone reference in a
  *   row's words (`RowText.tsx`, `row-references.ts`) draws the same link in place; with no
@@ -210,33 +220,52 @@ function drawRow(chip: TreeNode["chips"][number]) {
   );
 }
 
-/** Publishes what the page publishes from its one batched read, for the surfaces under it. */
+/** Publishes what the page publishes from its one batched read: its names (`published`) and the
+ *  versions that last held its gone references (`lastHeld`), and draws `children` with the
+ *  page's names handed to them in the render that draws them, as the outline is drawn
+ *  (`PublishedReferenceNames`, `IssueTree.tsx`), so no surface reads a reference the page asks
+ *  for. */
 function Publish({
+  children,
   lastHeld,
-  names,
+  published,
 }: {
+  children?: ReactNode;
   lastHeld: ReadonlyMap<string, string | undefined>;
-  names: ReadonlyMap<string, string>;
+  published: PublishedReferences;
 }): ReactNode {
-  usePublishReferenceBatch(names, new Set(), new Set(), new Map(), lastHeld);
-  return null;
+  usePublishReferenceNames(published);
+  usePublishLastHeldReferences(lastHeld);
+  // The provider's type holds its children among its props, as `ProvidersSlot`'s does (`Stage`).
+  const props: ComponentProps<typeof PublishedReferenceNames> = { children, published };
+  return createElement(PublishedReferenceNames, props);
 }
 
-const NO_NAMES: ReadonlyMap<string, string> = new Map();
+/** What the page publishes of `reads`' batched read, as `useIssueTree.ts` publishes it: each
+ *  target as a chip names it (`targetNaming`), with `asked` the references the page asks for,
+ *  every target by default. */
+function publishedOf(
+  reads: Parameters<typeof targetNaming>[0],
+  asked: readonly string[] = (reads.targets ?? []).map((target) => target.ref)
+): PublishedReferences {
+  return { ...targetNaming(reads), asked: new Set(asked) };
+}
 
 // R9: every surface that draws a reference to a gone node reads `last_held`, none by a new import of
 // the model: `chipOf` carries it into `NodeChip`, the row's `Chip` draws it, and a row's words and
-// the names the page publishes (`reference-names.tsx`, `row-references.ts`, `RowText.tsx`) draw it
-// in place. The address fallback (`address-target.ts`, `useIssueTree.ts`, `slots/view-spec.tsx`,
-// `slots/body.tsx`) is the cases that draw the page at an address (`drawAt`).
-test("every surface that draws a gone reference reads last_held", () => {
+// the versions the page publishes (`last-held-store.ts`, `row-references.ts`, `RowText.tsx`) draw
+// it in place. The address fallback (`address-target.ts`, `useIssueTree.ts`,
+// `slots/view-spec.tsx`, `slots/body.tsx`) is the cases that draw the page at an address
+// (`drawAt`).
+test("every surface that draws a gone reference reads last_held", async () => {
+  await warmMarkdownRenderer();
   const targets = allTargets();
   const statement = STATEMENT();
   const expected = urlOf(lastHeldPath(statement.last_held ?? ""));
   const reads = { issue: issueDetails(), targets, tree: undefined as TreeAnswer | undefined };
 
   // `chipOf` and `NodeChip`: the gone chip carries it, a live one and a gone lens carry none.
-  const context = treeContext(reads, () => "");
+  const context = treeContext(reads);
   const chip = context.chipOf(statement.ref);
   expect(chip).toMatchObject({ gone: true, lastHeld: statement.last_held });
   const live = targets.find((target) => !target.gone);
@@ -266,8 +295,8 @@ test("every surface that draws a gone reference reads last_held", () => {
   ).toEqual([]);
   bare.unmount();
 
-  // `reference-names.tsx`, `row-references.ts` and `RowText.tsx`: a row's words that cite the gone
-  // node draw the same link, in place.
+  // `last-held-store.ts`, `row-references.ts` and `RowText.tsx`: a row's words that cite the gone
+  // node draw the same link, in place, once the reading is painted.
   const lastHeld = new Map([[statement.ref, statement.last_held ?? ""]]);
   // Under a query client, as the page draws a row's words: who is signed in is the read
   // `stubReads` answers.
@@ -282,16 +311,22 @@ test("every surface that draws a gone reference reads last_held", () => {
         createElement(
           ReferenceNamesProvider,
           null,
-          createElement(Publish, { lastHeld, names: NO_NAMES }),
-          createElement(RowText, { markdown: `See ${statement.ref}.` })
+          createElement(
+            Publish,
+            { lastHeld, published: publishedOf(reads) },
+            createElement(RowText, { markdown: `See ${statement.ref}.` })
+          )
         )
       )
     )
   );
-  const cited = words.container.querySelector<HTMLAnchorElement>("a[data-row-reference]");
-  expect(cited?.textContent, "the row's words draw the gone reference as Deleted").toBe(
-    CONTROL_LABELS.target_gone
+  await waitFor(() =>
+    expect(
+      words.container.querySelector<HTMLAnchorElement>("a[data-row-reference]")?.textContent,
+      "the row's words draw the gone reference as Deleted"
+    ).toBe(CONTROL_LABELS.target_gone)
   );
+  const cited = words.container.querySelector<HTMLAnchorElement>("a[data-row-reference]");
   expect(urlOf(cited?.getAttribute("href") ?? "").pathname).toBe(expected.pathname);
   expect(urlOf(cited?.getAttribute("href") ?? "").searchParams.get("v")).toBe(
     expected.searchParams.get("v")
@@ -644,10 +679,10 @@ test("the read of a block a fragment names in no document asks the role document
 // R9 and c-citation: a comment of the person that cites a node deleted in Graph reads it as
 // Deleted in its words and on a chip of its row, each a link to the one version that last held
 // the node. The chip is the one `chipOf` makes from the batched read's answer, which the row
-// gains where its words cite the node (`tree-drafts.ts`' `addLastHeldChips`): once however often
-// they cite it, after the chip its words earn for a document, and on no row whose words do not
-// cite it. A reference the read answers live, gone with no version, or gone with a version the
-// page cannot open earns no chip, and before the read answers none does.
+// gains where its words cite the node (`last-held-chips.ts`' `addLastHeldChips`): once however
+// often they cite it, after the chip its words earn for a document, and on no row whose words do
+// not cite it. A reference the read answers live, gone with no version, or gone with a version
+// the page cannot open earns no chip, and before the read answers none does.
 test("a comment citing a node deleted in Graph draws it on a chip as in its words", async () => {
   await warmMarkdownRenderer();
   const statement = STATEMENT();
@@ -700,7 +735,7 @@ test("a comment citing a node deleted in Graph draws it on a chip as in its word
   // version, and no chip of any other reference its words cite.
   const root = buildIssueTree(reads);
   const drawn = rowOf(root);
-  const chip = treeContext(reads, () => "").chipOf(statement.ref);
+  const chip = treeContext(reads).chipOf(statement.ref);
   expect(chip).toMatchObject({ gone: true, lastHeld: statement.last_held });
   expect(drawn.chips).toEqual([...before.chips, chip]);
   // No other row gains a chip, though the read answers nodes deleted with a version, and each
@@ -724,30 +759,34 @@ test("a comment citing a node deleted in Graph draws it on a chip as in its word
         createElement(
           ReferenceNamesProvider,
           null,
-          createElement(Publish, {
-            lastHeld: targetLastHeld(targets),
-            names: targetNaming(reads).names,
-          }),
           createElement(
-            NoTooltips,
-            null,
-            createElement(NodeRow, {
-              author: {
-                kind: authorKind(undefined),
-                name: CONTROL_LABELS.unknown_author,
-                reader: false,
-              },
-              context: false,
-              focused: false,
-              isClosed: false,
-              level: 1,
-              node: drawn,
-              onFocus: () => {},
-              onToggle: () => {},
-              ownAnswer: false,
-              rowKey: "row",
-              tabStop: false,
-            })
+            Publish,
+            {
+              lastHeld: targetLastHeld(targets),
+              // Every reference the tree cites, as the page asks its names read for them.
+              published: publishedOf(reads, treeReferences(root)),
+            },
+            createElement(
+              NoTooltips,
+              null,
+              createElement(NodeRow, {
+                author: {
+                  kind: authorKind(undefined),
+                  name: CONTROL_LABELS.unknown_author,
+                  reader: false,
+                },
+                context: false,
+                focused: false,
+                isClosed: false,
+                level: 1,
+                node: drawn,
+                onFocus: () => {},
+                onToggle: () => {},
+                ownAnswer: false,
+                rowKey: "row",
+                tabStop: false,
+              })
+            )
           )
         )
       )

@@ -476,19 +476,31 @@ func (w *treeWalk) facts(ctx context.Context, q Queryer, nodes []refs.Target) (m
 // It reads as the server sees the store: no ask, comment or message is a node the store takes
 // reserved for its author (graphstore.AdmitAuthorOnly), so no reader's predicate leaves one out,
 // and the empty actor is the reader.
+//
+// It cuts each excerpt with no deployment's URL (serverURL ""): the walk's excerpt of an ask is
+// bytes of a decisions rendering (version_render.go's renderDecisions prints an ask by it), and a
+// version's stored bytes must be the render of every process that reads the store, the census
+// command among them (ReadVersionRenderCensus), which holds no deployment's URL. So the walk's cut
+// reads no dashboard URL as a reference, and is the same cut wherever it runs. A reader's own
+// excerpts come from the read's loader with its server URL (refs.ExcerptedNodes). The tree read
+// takes a conversation node's words from its texts read where that read holds them, and this
+// excerpt where it holds none: a parent named outside the answer, which that read does not read,
+// and a comment, or a block of one, whose head row holds no text (api's issue_tree_read.go,
+// text(), whose loaded node of a conversation node is this walk's: readFacts). There the words
+// are cut as here, with no deployment's URL.
 func (w *treeWalk) readConversation(ctx context.Context, q Queryer) error {
 	var conversation []refs.ExcerptedNode
 	var err error
 	held := false
 	if w.skeleton != nil && w.heads != nil {
-		conversation, held, err = refs.ConversationPageNodesOfHeads(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, w.skeleton.Comments, w.heads)
+		conversation, held, err = refs.ConversationPageNodesOfHeads(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, w.skeleton.Comments, w.heads, "")
 	}
 	switch {
 	case err != nil || held:
 	case w.skeleton != nil:
-		conversation, err = refs.ConversationPageNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, w.skeleton.Comments)
+		conversation, err = refs.ConversationPageNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, w.skeleton.Comments, "")
 	default:
-		conversation, err = refs.ConversationNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At)
+		conversation, err = refs.ConversationNodes(ctx, q, model.Actor{}, w.issue.ID, w.cut.At, "")
 	}
 	if err != nil {
 		return fmt.Errorf("read the conversation of %s: %w", w.issue.ID, err)

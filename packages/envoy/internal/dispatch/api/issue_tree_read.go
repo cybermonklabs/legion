@@ -188,7 +188,7 @@ func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view s
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
 	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, kinds: kinds, before: before,
-		pageSize: cmp.Or(s.deps.IssueTreePageSize, issueTreePageSize)}
+		pageSize: cmp.Or(s.deps.IssueTreePageSize, issueTreePageSize), serverURL: s.deps.ServerURL}
 	if err := builder.build(version, cursor); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
@@ -250,8 +250,11 @@ type issueTreeBuilder struct {
 	kindContext map[refs.Target]bool
 	// pageSize is the most nodes one page answers (window).
 	pageSize int
-	cut      refs.TreeCut
-	tree     docs.IssueTree
+	// serverURL is the deployment the read is served from, whose dashboard URLs each node's
+	// excerpt is cut around as references (refs.ExcerptedNodes).
+	serverURL string
+	cut       refs.TreeCut
+	tree      docs.IssueTree
 	// heads is the issue's rows of the head projection a head read of a marked issue reads in
 	// place of the walk of the tuples (refs.HeadRows), nil for a read at a version and for an issue
 	// no mark names.
@@ -958,7 +961,7 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 			loaderTargets = append(loaderTargets, refs.Target{Kind: kind, ID: target.ID})
 		}
 	}
-	loaded, err := refs.ExcerptedNodes(b.ctx, b.q, b.who, loaderTargets)
+	loaded, err := refs.ExcerptedNodes(b.ctx, b.q, b.who, loaderTargets, b.serverURL)
 	if err != nil {
 		return err
 	}

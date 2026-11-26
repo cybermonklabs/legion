@@ -70,17 +70,18 @@ func addressByte(target Target, index int) byte {
 
 // refsSources is every kind of node a refs row's from_kind names: a document, an ask, a comment
 // and a message, the four sources whose text a write indexes into refs (Replacement) and whose
-// re-index it owes (queueSettleRefsGrammarOwed). None is a standing kind, so a predicate over a
+// re-index it owes (queueSettleSourceOwed). None is a standing kind, so a predicate over a
 // refs row's source binds no staleness test (VisibleEnd, NodeKinds).
 var refsSources = KindsOf("artifact", string(ItemAsk), string(ItemComment), string(ItemMessage))
 
 // EditedTargets is what an edit of an ask's question or a comment's body from previous to body
 // moves beside the edges it inserts or deletes, found being body's references. Every edge such a
-// source writes shows the head of its text as its excerpt (Edges, excerptRunes), so when the edit
-// moves that head, the panel of every target the source still cites changes although its edge
-// stays: those targets are named too. An edit that keeps the head moves none.
-func EditedTargets(previous, body string, found []text.Ref) []Target {
-	if text.HeadRunes(previous, excerptRunes) == text.HeadRunes(body, excerptRunes) {
+// source writes shows the head of its text as its excerpt (Edges, itemExcerpt), cut against the
+// deployment at serverURL, so when the edit moves that head, the panel of every target the source
+// still cites changes although its edge stays: those targets are named too. An edit that keeps
+// the head moves none.
+func EditedTargets(previous, body, serverURL string, found []text.Ref) []Target {
+	if itemExcerpt(previous, serverURL) == itemExcerpt(body, serverURL) {
 		return nil
 	}
 	kinds, ids := refTargets(found)
@@ -101,13 +102,22 @@ func EditedTargets(previous, body string, found []text.Ref) []Target {
 // an edge to a node kind it added is one this build cannot read out of the body, so it keeps that
 // edge.
 //
-// What it queues settles what the source owes the re-index queue (Replacement.Queue): this text
-// has now been read with the whole grammar, so a write this build makes costs the drain nothing
-// and only an older build's write stays owed.
-func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time) ([]Target, error) {
+// What it queues settles what the source owes the re-index queues (Replacement.Queue): the whole
+// grammar's always, since this text has now been read with the whole grammar, and the forms
+// queue only when whole says the write indexed the source's blocks in tx before this call, so the
+// text it read is the source's whole text and every delete that index made, its blocks' included,
+// came before this settle (Replacement.SettlingForms, RefsFormsOwed). A write that leaves the
+// blocks for later passes false and leaves the source owed until this build's own block index of
+// it, as rebuild-refs leaves each source it re-indexes (replaceInTx, which plans and queues its
+// replacement itself, without SettlingForms). So a write this build makes costs the drains
+// nothing, and only an older build's write stays owed.
+func replaceRefs(ctx context.Context, tx pgx.Tx, fromKind, fromID string, found []text.Ref, insertedAt *time.Time, whole bool) ([]Target, error) {
 	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, found, insertedAt)
 	if err != nil {
 		return nil, err
+	}
+	if whole {
+		replacement = replacement.SettlingForms()
 	}
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		replacement.Queue(b)
@@ -129,10 +139,9 @@ type Replacement struct {
 	insertedAt       *time.Time
 	changed          []Target
 	held             []Target
-	// owed is the source's id as the re-index queue keys it, "" for a from_id that is no uuid
-	// (a test's synthetic source), which owes nothing: what queueSettleRefsGrammarOwed deletes
-	// the row of.
-	owed string
+	// forms says the replacement's settle deletes the source's row of the forms queue as well as
+	// the whole grammar's (SettlingForms).
+	forms bool
 }
 
 // PlanReplace plans the reconciliation of fromKind/fromID's references with found against the
@@ -183,8 +192,7 @@ func PlanReplaceFrom(held []Target, fromKind, fromID string, found []text.Ref, i
 			changed = append(changed, target)
 		}
 	}
-	owed, _ := canonicalUUID(fromID)
-	return Replacement{fromKind: fromKind, fromID: fromID, kinds: kinds, ids: ids, insertedAt: insertedAt, changed: changed, held: after, owed: owed}
+	return Replacement{fromKind: fromKind, fromID: fromID, kinds: kinds, ids: ids, insertedAt: insertedAt, changed: changed, held: after}
 }
 
 // Changed is the targets whose inbound edges the replacement moves (PlanReplaceFrom).
@@ -294,10 +302,23 @@ func DocumentMentioning(ctx context.Context, q Queryer, artifactID string) (reco
 	return record, true, nil
 }
 
+// SettlingForms is the replacement settling the source's row of the forms queue too
+// (RefsFormsOwed), in the statement that settles the whole grammar's (queueSettleSourceOwed), so
+// the settle costs the write no statement of its own. A writer asks for it only where the
+// replacement is the last of the writes that index the source's whole text - the blocks it holds,
+// an ask's parts - queued after every delete that index makes, each of which owes that queue the
+// source (migrations 20261117025906-20261117025910): a comment's or a message's references after
+// its blocks, a document's after its block index, the question of an ask after its parts. A
+// write that leaves the blocks for later, or queues them after the replacement, settles them
+// there instead (ItemIndexing.SettlingForms) or leaves the source owed.
+func (r Replacement) SettlingForms() Replacement {
+	r.forms = true
+	return r
+}
+
 // Queue queues the replacement's writes on a write phase's batch: the delete of the edges found no
 // longer names, the insert of the new ones, and the settlement of what the source owes the
-// re-index queue (queueSettleRefsGrammarOwed). A surviving edge keeps its created_at and
-// source_seq.
+// re-index queues (queueSettleSourceOwed). A surviving edge keeps its created_at and source_seq.
 func (r Replacement) Queue(b *store.WriteBatch) {
 	b.Queue("clear references", `
 		delete from refs
@@ -315,39 +336,66 @@ func (r Replacement) Queue(b *store.WriteBatch) {
 			on conflict (from_kind, from_id, to_kind, to_id) do nothing
 		`, r.fromKind, r.fromID, r.kinds, r.ids, r.insertedAt)
 	}
-	r.queueSettleRefsGrammarOwed(b)
+	queueSettleSourceOwed(b, r.fromKind, r.fromID, r.forms)
 }
 
-// queueSettleRefsGrammarOwed queues the delete of the row one source owes the re-index queue
-// (refs_grammar_owed), in the write's own transaction, which holds that source's owner: every
-// write of the text was committed before this transaction read it, so whatever enqueued_at the
-// row holds, the text this write indexed is the text the row is owed for. It is the queue's four
-// source kinds that are settled this way - artifact, ask, comment and message, which are the
-// from_kind of every refs row too, so one delete serves them all. The fifth kind, `scope`, names
-// a document whose sources are owed a re-index, not a source whose refs this writes, and only
-// the scope drain settles it. A from_id that is no uuid owes nothing (owed).
-func (r Replacement) queueSettleRefsGrammarOwed(b *store.WriteBatch) {
-	if r.owed == "" {
+// queueSettleSourceOwed queues the delete of the row one source owes the whole grammar's
+// re-index queue (RefsGrammarOwed), which a write settles once it has read the source's own text
+// with the whole grammar, and, with forms, of the row it owes the forms queue (RefsFormsOwed) too,
+// in the same statement: a write passes forms only once it has indexed the source's whole text,
+// its blocks too, after every delete that index made, which is the statement order of its write
+// phase. It runs in the write's own transaction, which holds that source's owner: every write of
+// the text was committed before this transaction read it, so whatever enqueued_at a row holds,
+// the text this write indexed is the text the row is owed for. It is the queues' four source
+// kinds that are settled this way - artifact, ask, comment and message, which are the from_kind
+// of every refs row too, so one statement serves them all. The fifth kind of the whole grammar's
+// queue, `scope`, names a document whose sources are owed a re-index, not a source whose refs
+// this writes, and only the scope drain settles it. A from_id that is no uuid (a test's synthetic
+// source) owes nothing, since the queues key their id as one, and queues nothing.
+//
+// A build older than a queue's table settles nothing of it, so a text it indexes stays owed in
+// that table until a build that reads its grammar indexes it (RefsFormsOwed).
+func queueSettleSourceOwed(b *store.WriteBatch, fromKind, fromID string, forms bool) {
+	id, ok := canonicalUUID(fromID)
+	if !ok {
 		return
 	}
-	b.Queue(fmt.Sprintf("settle the index owed by %s %s", r.fromKind, r.fromID),
-		`delete from refs_grammar_owed where kind = $1 and id = $2::uuid`, r.fromKind, r.owed)
+	statement := `delete from refs_grammar_owed where kind = $1 and id = $2::uuid`
+	if forms {
+		statement = `
+			with grammar as (delete from refs_grammar_owed where kind = $1 and id = $2::uuid)
+			delete from refs_forms_owed where kind = $1 and id = $2::uuid`
+	}
+	b.Queue(fmt.Sprintf("settle the index owed by %s %s", fromKind, fromID), statement, fromKind, id)
 }
 
-// SettleOwedDocuments queues, on a write phase's batch, what queueSettleRefsGrammarOwed queues for
-// one source, for the documents of an issue room whose text one pass over the room read at their
+// SettleOwedDocuments queues, on a write phase's batch, what queueSettleSourceOwed queues for one
+// source, for the documents of an issue room whose text one pass over the room read at their
 // latest versions (docs' indexRenderedVersion and indexDeferredVersion): the room's references are
-// written under its tree artifact (Replacement.Queue), whose own row that write settles, and each
-// document whose fragment the pass read owes the queue nothing either. Left owed, its row would be
+// written under its tree artifact (Replacement.Queue), whose own rows that write settles, and each
+// document whose fragment the pass read owes the queues nothing either. The pass read every
+// document of the room with this build's whole grammar and its reference forms, under the issue's
+// owner lock, so each document's row of the whole grammar's queue is settled here, and with forms
+// its row of the forms queue (refs_forms_owed, RefsFormsOwed) too, in the same statement. A
+// caller passes forms only where the pass won the revision fence, and so wrote the documents'
+// blocks in this write, and queues the settle after that block index and every delete it made, as
+// a single document's reconciliation settles both queues only after its own block index won
+// (Replacement.SettlingForms): a pass that deferred the blocks or lost the fence leaves the forms
+// rows owed for the pass that writes them. Left owed, a row of the whole grammar's queue would be
 // drained after the pass by owing the document its block index again, which costs the room a
 // second pass for every version of it. documents is in ascending id, the order every writer of the
-// queue's rows of several documents takes.
-func SettleOwedDocuments(b *store.WriteBatch, documents []string) {
+// queues' rows of several documents takes.
+func SettleOwedDocuments(b *store.WriteBatch, documents []string, forms bool) {
 	if len(documents) == 0 {
 		return
 	}
-	b.Queue(fmt.Sprintf("settle the index owed by the documents %v", documents),
-		`delete from refs_grammar_owed where kind = 'artifact' and id = any($1::uuid[])`, documents)
+	statement := `delete from refs_grammar_owed where kind = 'artifact' and id = any($1::uuid[])`
+	if forms {
+		statement = `
+			with grammar as (delete from refs_grammar_owed where kind = 'artifact' and id = any($1::uuid[]))
+			delete from refs_forms_owed where kind = 'artifact' and id = any($1::uuid[])`
+	}
+	b.Queue(fmt.Sprintf("settle the index owed by the documents %v", documents), statement, documents)
 }
 
 func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
@@ -367,13 +415,16 @@ func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
 }
 
 // TargetOf is the graph target a parsed reference names, the kind and id refs and graph_edges
-// store an edge to it under; an external URL names none. A block of a comment, of a message or
+// store an edge to it under; an external URL names none, and neither does a party - an agent's
+// session, a role or a person. A party is a reader, not a record: the graph holds no node for
+// one, so no write stores an edge to one (refTargets drops it) and no read addresses one
+// (api.parseReferencesQuery refuses it). A block of a comment, of a message or
 // of an ask — a part of its question, its options and its answer — is stored under its item's
 // block kind, comment_block, message_block or ask_block (ItemKind.BlockKind), not block: a build
 // that predates item blocks skips a kind it does not know (resolveNodes), where it would count a
 // block row and resolve it through document_blocks.
 func TargetOf(ref text.Ref) (Target, bool) {
-	if ref.Kind == "url" {
+	if ref.Kind == "url" || ref.IsParty() {
 		return Target{}, false
 	}
 	kind := ref.Kind
@@ -926,9 +977,12 @@ func resolveBlockTargets(ctx context.Context, q Queryer, addresses []string) (ma
 // order). A citing document, comment, message or ask is listed itself, not by the block holding
 // its link: an ask that cites the document from one of its parts alone — an option, or the
 // answer it was given — is listed as that ask, once. A source who may not see is listed to
-// nobody but its author.
-func ReferencedBy(ctx context.Context, q Queryer, who model.Actor, refKey string) ([]model.ReferencedBy, error) {
-	edges, err := resolveEdges(ctx, q, who, Query{Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true})
+// nobody but its author. serverURL is the deployment the caller reads, whose dashboard URLs each
+// source's excerpt is cut around as references, as the graph read cuts them (Query.ServerURL).
+func ReferencedBy(ctx context.Context, q Queryer, who model.Actor, refKey, serverURL string) ([]model.ReferencedBy, error) {
+	edges, err := resolveEdges(ctx, q, who, Query{
+		ServerURL: serverURL, Direction: "in", Kind: "artifact", ID: refKey, Kinds: []string{"mentions"}, WholeDocuments: true,
+	})
 	if err != nil {
 		return nil, err
 	}

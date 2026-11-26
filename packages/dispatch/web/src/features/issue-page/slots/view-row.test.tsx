@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { api } from "../../../api/client";
 import { issueResultsQuery } from "../../../api/queries";
 import type { Comment, ReferenceTarget } from "../../../api/types";
+import * as viewport from "../../margin/margin-fixture";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
@@ -425,10 +426,6 @@ test("with no filter the view row draws the real counts while the names read is 
   }
 });
 
-/** A phone's width, the 390 px pictures', below the 1024 px from which the Contents pane stands
- *  beside the stage. */
-const PHONE = 390;
-
 /** The Outline control the row draws below 1024 px: the one control of the row that opens a
  *  dialog, the Outline sheet (`contents-frame.tsx`). */
 const OUTLINE_CONTROL = 'button[aria-haspopup="dialog"]';
@@ -461,7 +458,7 @@ function renderRowAt(client: QueryClient, preset: Preset) {
 // stands beside each of those views and the row draws no Outline control.
 test("below 1024 px the view row draws the Outline control in Conversation, each filter and Graph, and its sheet draws the Contents list", async () => {
   const user = userEvent.setup();
-  for (const width of [PHONE, DESKTOP_WIDTH]) {
+  for (const width of [viewport.PHONE_WIDTH, DESKTOP_WIDTH]) {
     const restoreMatchMedia = stubViewport(width);
     const reads = answerReads();
     try {
@@ -538,7 +535,14 @@ test("a filter loaded cold with no outline read draws its own count from its vie
   expect(
     viewRowSignals({ ...cold, preset: "spec", root: coldRoot(spec) }),
     "Spec loaded cold does not count its view answer's statements"
-  ).toEqual({ spec: { count: 2 } });
+  ).toEqual({
+    conversation: undefined,
+    decisions: undefined,
+    graph: undefined,
+    plan: undefined,
+    spec: { count: 2 },
+    verification: undefined,
+  });
   expect(
     viewRowSignals({ ...cold, preset: "spec", root: coldRoot() }),
     "Spec loaded cold draws a count before its view answer is held"

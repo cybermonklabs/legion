@@ -28,6 +28,7 @@ import { askQuery, commentQuery, messageQuery, referencesQuery } from "../refs/r
 import { buildDispatchReference, type IssueRoute, parseIssuePath } from "../refs/routes";
 import { prefixReference } from "../refs/text-references";
 import { lastHeldPath } from "./graph-edit/last-held";
+import { useKnownLastHeldReferences } from "./graph-edit/last-held-store";
 import {
   type AddressTarget,
   agentsOnlyItem,
@@ -36,7 +37,6 @@ import {
 } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { answerHolds } from "./presets";
-import { useKnownLastHeldReferences } from "./reference-names";
 import { useFollowing } from "./slots/following";
 import { lastHeldOf } from "./tree-drafts";
 import { nextTreeCursor } from "./tree-read/tree-nodes";

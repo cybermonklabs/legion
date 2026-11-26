@@ -650,11 +650,11 @@ func requireReadCostNodes(t *testing.T, arm *costArm, state string, named bool) 
 // load of this pod. Every line and every failure names the state.
 func readCostMeasure(t *testing.T, state string, head, base *costArm, shapes map[*costArm][]*readCostShape) {
 	t.Helper()
-	// No tick of either server's own runs inside a measured window. The lease goes back once
-	// this state's readings are taken, because the backfill between the two states leaves a
-	// mark that this child's own reconciliation drains.
+	// No tick of either server's block index and no pass of its forms drain runs inside a measured
+	// window. The leases go back once this state's readings are taken, because the backfill
+	// between the two states leaves a mark that this child's own reconciliation drains.
 	for _, arm := range []*costArm{head, base} {
-		defer costHoldBlockIndex(t, arm)()
+		defer costHoldBlockIndex(t, arm).giveBack()
 	}
 	headName := head.name + ", " + state
 	readings := []costReading{}

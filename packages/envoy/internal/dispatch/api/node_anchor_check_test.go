@@ -706,7 +706,7 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 			t.Errorf("%s answered %d, not 400: want 400 INVALID_ANCHOR: %s", refused.name, response.Code, response.Body.String())
 			continue
 		}
-		requireRefused(t, refused.name, response, http.StatusBadRequest, "INVALID_ANCHOR", refused.names...)
+		requireRefusedNaming(t, refused.name, response, http.StatusBadRequest, "INVALID_ANCHOR", refused.names...)
 	}
 	// Only the node's own text is quotable: a risk's early warning is no part of its text, which is
 	// its heading (R31).
@@ -716,7 +716,7 @@ func TestACommentOnANodesTextHangsUnderThatNode(t *testing.T) {
 	if warned.Code != http.StatusBadRequest {
 		t.Errorf("quote of the early_warning of %s answered %d, want 400 INVALID_ANCHOR: %s", risk.Address, warned.Code, warned.Body.String())
 	} else {
-		requireRefused(t, "quote of the early_warning of "+risk.Address, warned, http.StatusBadRequest, "INVALID_ANCHOR", "quote")
+		requireRefusedNaming(t, "quote of the early_warning of "+risk.Address, warned, http.StatusBadRequest, "INVALID_ANCHOR", "quote")
 	}
 	if after := len(commentsOnTextListed(t, handler, key)); after != before {
 		t.Errorf("the refused anchors wrote comments: the comments read of %s lists %d, want %d", key, after, before)

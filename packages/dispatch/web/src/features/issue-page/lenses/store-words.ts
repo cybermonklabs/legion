@@ -1,10 +1,11 @@
+import { referenceSpans } from "@legion/contracts";
+
 import type { DisplayTree } from "../../../api/types";
-import { referenceSpans } from "../../refs/reference-spans";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { storedReading } from "../stored-reading";
-import { addressesAsShortForms, type Draft, plainWords, storeKindWord } from "../tree-drafts";
+import type { Draft } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import {
@@ -22,6 +23,7 @@ import {
   storedFacts,
   storedRowWords,
 } from "./lens-drafts";
+import { addressesAsShortForms, plainWords, storeKindWord } from "./plain-words";
 import { outlineRowPath, type StoreKind } from "./store-link";
 
 /**
@@ -29,7 +31,7 @@ import { outlineRowPath, type StoreKind } from "./store-link";
  * `dispatch://risk/<uuid>`, `dispatch://constraint/<uuid>`, and a finding's
  * `dispatch://lens/<uuid>#b-<id>`. No route names one (`refs/store-address.ts`), and a uuid is
  * no word a reader reads, so every one-line words write one as its kind's word
- * (`tree-drafts.ts`'s `addressesAsShortForms`). Where the tree read holds the node and a step
+ * (`plain-words.ts`' `addressesAsShortForms`). Where the tree read holds the node and a step
  * drafted its row, a row's words read it by the node's name instead, linked to that row
  * (`?node=`). `storeWords` is the mark of `tree-read/tree-nodes.ts`'s `treeDraftMarks` that
  * writes them so, and `store-link.ts`'s `storeLinkPath` the check a row makes before it follows
@@ -68,8 +70,8 @@ const NO_MARKS: readonly DisplayTree[] = [];
  *   (`storeAddressesIn`).
  * - A draft with none whose text holds a store address: one paragraph of its text's plain words,
  *   named (`lineRuns`), which its row then draws its words from, the links with them. Its other
- *   addresses stay as written, which the row's link pass links as it links a text drawn as
- *   stored (`RowText.tsx`'s `StoredText`), and its line writes short as every line does.
+ *   addresses stay as written, which the row's link pass links as it links any reading
+ *   (`RowText.tsx`'s `DrawnText`), and its line names as every line does.
  * - A lens's, a risk's and a constraint's own draft, whose words `lensDrafts` read from their
  *   attributes (`storedRowWords`, `constraintRuns`, `storedFacts`): each attribute that holds a
  *   store address read again with its names (`nameStored`), an author's link to a node among
@@ -136,8 +138,10 @@ function storeIndex(answer: TreeAnswer, context: TreeDraftContext): StoreIndex {
 /** The name a row's words read `node` by, whole: a lens by its kind's words as its chip names it
  *  (`lensChipWords`), a risk by its heading, a constraint by its words (`constraintWords`), a
  *  finding by its row's line (`TreeDraftContext.lineOf`), and the page's word for its kind where
- *  those hold none. Each is read as the one-line words read it, so an address in it reads as its
- *  kind's word or its short form, and no name holds another node's. */
+ *  those hold none. Each is read as the one-line words of a lens read it, so an address in it
+ *  reads as its kind's word or its short form (`addressesAsShortForms`), and no name holds
+ *  another node's: a row's line holds each address as written, for the page's projection to
+ *  name (`issue-tree.ts`' `lineWordsRaw`), and a name is drawn by no projection. */
 function nameOf(node: TreeAnswerNode, type: StoreKind, context: TreeDraftContext): string {
   if (type === "lens") return lensChipWords(addressesAsShortForms(kindOf(node, context))).words;
   const words =
@@ -145,7 +149,7 @@ function nameOf(node: TreeAnswerNode, type: StoreKind, context: TreeDraftContext
       ? plainWords(storedRowWords(node, type))
       : type === "constraint"
         ? constraintWords(node)
-        : (context.lineOf(node.id) ?? "");
+        : addressesAsShortForms(context.lineOf(node.id) ?? "");
   return words === "" ? NODE_TYPE_NAMES[type] : words;
 }
 

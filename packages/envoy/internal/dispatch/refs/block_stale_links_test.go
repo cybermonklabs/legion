@@ -72,7 +72,7 @@ func TestAStaleIndexPassKeepsTheTuplesAnotherWriterStatesOutOfAKeptBlock(t *test
 	firstRecord := document.writeVersion(t, 1, first.markdown, writer)
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 		_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.markdown, first.blocks,
-			text.ExtractAt(first.markdown, "https://dispatch.example"), nil, TypedFacts{})
+			text.ExtractAt(first.markdown, "https://dispatch.example"), nil, "", TypedFacts{})
 		if err != nil || !won {
 			t.Fatalf("index version 1 (won %t): %v", won, err)
 		}

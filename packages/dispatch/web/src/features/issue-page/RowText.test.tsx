@@ -1,15 +1,19 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { api } from "../../api/client";
 import type { DisplayTree } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { ReferenceNamesProvider, usePublishReferenceNames } from "../refs/reference-names";
+import { outlineRowPath } from "./lenses/store-link";
 import { NoTooltips } from "./NoTooltips";
+import { waitInAct } from "./outline-fixtures";
+import { publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
-import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 
 /**
  * A row's words keep the link the reader is on through a read of the tree again. A later read
@@ -24,7 +28,16 @@ beforeAll(async () => {
 
 /** The names the page's one batched read brought, published as the page publishes them. */
 function Named({ children }: { children: ReactNode }): ReactNode {
-  const names = useMemo(() => new Map([["dispatch://CORE-2", "Draw the children"]]), []);
+  const names = useMemo(
+    () =>
+      publishedNames(
+        new Map([
+          ["dispatch://CORE-2", "Draw the children"],
+          ["dispatch://CORE-1/spec#b-r1", "Read the page first"],
+        ])
+      ),
+    []
+  );
   usePublishReferenceNames(names);
   return children;
 }
@@ -73,15 +86,6 @@ async function focusedLink(container: HTMLElement): Promise<HTMLAnchorElement> {
   return link;
 }
 
-/** Lets a task go by, in which anything a draw started late would land. */
-async function aTask(): Promise<void> {
-  await act(async () => {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    setTimeout(resolve, 0);
-    await promise;
-  });
-}
-
 test("a row's words drawn again from the same words in new objects keep the focused link", async () => {
   const text = "Draw the outline as CORE-2 says.";
   const reading = displayTree(text);
@@ -91,7 +95,7 @@ test("a row's words drawn again from the same words in new objects keep the focu
     // A later read of the tree answers the same reading in objects of its own. Each reading the
     // test's engine makes gives its blocks ids of their own, so the copy is of the one reading.
     view.redraw(row(text, structuredClone(reading)));
-    await aTask();
+    await waitInAct(0);
     expect(link.isConnected, "the same words drawn again replaced the link").toBe(true);
     expect(document.activeElement, "the same words drawn again took the focus").toBe(link);
   } finally {
@@ -107,7 +111,7 @@ test("a row whose words change keeps the focus on the link of the same address",
     await focusedLink(view.container);
     view.redraw(row(changed, displayTree(changed)));
     await waitFor(() => expect(view.container.textContent).toContain("Then draw the margin."));
-    await aTask();
+    await waitInAct(0);
     const focused = document.activeElement;
     expect(focused?.isConnected, "the focus is on a link the paint removed").toBe(true);
     expect(view.container.contains(focused), "the focus left the row's words").toBe(true);
@@ -125,13 +129,13 @@ test("a reader who put the focus on nothing is given none by a paint of other wo
     const link = await focusedLink(view.container);
     // The reader leaves the link for nothing, as a press on the page's blank space does.
     act(() => link.blur());
-    await aTask();
+    await waitInAct(0);
     expect(document.activeElement, "the link kept the focus the reader took off it").toBe(
       document.body
     );
     view.redraw(row(changed, displayTree(changed)));
     await waitFor(() => expect(view.container.textContent).toContain("Then draw the margin."));
-    await aTask();
+    await waitInAct(0);
     expect(document.activeElement, "a paint of other words gave the focus back").toBe(
       document.body
     );
@@ -217,11 +221,10 @@ test("a link to a store address opens no path an author wrote as its title", asy
         anchor.textContent,
         anchor.getAttribute("href"),
       ]);
-      expect(hrefs).toEqual([
-        ["Failover takes minutes", path],
-        ["Approve", ""],
-        ["Approve here", ""],
-      ]);
+      // A link whose title is no row's path is placed as no link: the body draws it as its
+      // words, as it draws any link to an address no route names.
+      expect(hrefs).toEqual([["Failover takes minutes", path]]);
+      expect(view.container.textContent).toBe("Failover takes minutes, Approve, Approve here");
     });
   } finally {
     view.unmount();
@@ -234,9 +237,8 @@ test("a link to a store address opens no path an author wrote as its title", asy
 test("a store link to a finding opens its row by either form of its read id", async () => {
   const lens = "c3000000-0000-4000-8000-000000000003";
   const address = `dispatch://lens/${lens}#b-first`;
-  const pathOf = (readId: string) => `/issues/CORE-1?node=${encodeURIComponent(readId)}`;
   const linked = (text: string, readId: string): DisplayTree => ({
-    marks: [{ attrs: { href: address, title: pathOf(readId) }, type: "link" }],
+    marks: [{ attrs: { href: address, title: outlineRowPath("CORE-1", readId) }, type: "link" }],
     text,
     type: "text",
   });
@@ -263,10 +265,12 @@ test("a store link to a finding opens its row by either form of its read id", as
         anchor.getAttribute("href"),
       ]);
       expect(hrefs).toEqual([
-        ["By its block", pathOf("first")],
-        ["By its lens and block", pathOf(`lens/${lens}#first`)],
-        ["By another lens", ""],
+        ["By its block", outlineRowPath("CORE-1", "first")],
+        ["By its lens and block", outlineRowPath("CORE-1", `lens/${lens}#first`)],
       ]);
+      expect(view.container.textContent).toBe(
+        "By its block, By its lens and block, By another lens"
+      );
     });
   } finally {
     view.unmount();
@@ -297,6 +301,9 @@ test("a block address beside a named store address is linked by the row's link p
     ],
     type: "doc",
   };
+  // The row names the block address by its own read in the commit before the page's names reach
+  // the store, which reads the spec's blocks.
+  const blocks = spyOn(api, "getReferences").mockResolvedValue({ edges: [] } as never);
   const view = draw(row(`See ${address} and ${block} first.`, reading));
   try {
     await waitFor(() => {
@@ -309,5 +316,6 @@ test("a block address beside a named store address is linked by the row's link p
     });
   } finally {
     view.unmount();
+    blocks.mockRestore();
   }
 });

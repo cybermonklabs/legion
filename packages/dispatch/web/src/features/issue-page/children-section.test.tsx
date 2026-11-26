@@ -5,19 +5,27 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { IssueChild, IssueDetails } from "../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { buildIssuePath, parseIssuePath } from "../refs/routes";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { CHILDREN_PAGE } from "./children-section";
+import { CHILDREN_PAGE, CHILDREN_SECTION, CHILDREN_TOGGLE } from "./children-section";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import { presetPath } from "./issue-address";
 import { TWO_THREADS } from "./outline-fixtures";
 import { PRESET_NAMES, PRESET_ORDER } from "./page-words";
 import { ProvidersSlot } from "./slots/providers";
 import { StageSlot } from "./slots/stage";
-import { AppProviders, commentNodes, stubReads, treeOf } from "./slots/stage-fixtures";
+import {
+  AppProviders,
+  commentNodes,
+  focusedRow,
+  rowTakesFocus,
+  stubReads,
+  treeOf,
+} from "./slots/stage-fixtures";
 import { ViewRowSlot } from "./slots/view-row";
 import { treeNode } from "./tree-read/tree-fixtures";
 import type { TreeAnswer } from "./tree-read/tree-read";
@@ -104,12 +112,12 @@ function drawFrame(issue: IssueDetails, address: string): RenderResult {
 
 /** The section, where the page draws one. */
 function section(view: RenderResult): HTMLElement | null {
-  return view.container.querySelector<HTMLElement>("[data-children-section]");
+  return view.container.querySelector<HTMLElement>(CHILDREN_SECTION);
 }
 
 /** The section's heading control, which opens and closes its list. */
 function toggle(view: RenderResult): HTMLButtonElement {
-  const found = view.container.querySelector<HTMLButtonElement>("[data-children-toggle]");
+  const found = view.container.querySelector<HTMLButtonElement>(CHILDREN_TOGGLE);
   if (found === null) throw new Error("the page drew no children's section");
   return found;
 }
@@ -134,21 +142,6 @@ function entryKey(view: RenderResult, key: string): HTMLElement | null {
   );
 }
 
-/** Waits for the section's heading control to hold the focus, saying what `what` left. */
-async function toggleTakesFocus(view: RenderResult, what: string): Promise<void> {
-  await waitFor(() =>
-    expect(
-      document.activeElement,
-      `${what} left the focus on ${document.activeElement?.outerHTML.slice(0, 80)}`
-    ).toBe(toggle(view))
-  );
-}
-
-/** The node id of the row of the outline that holds the focus, where one does. */
-function focusedRow(): string | undefined {
-  return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
-}
-
 /** Waits for the outline to draw the first thread's row: by then every read of the page has
  *  answered, who is reading among them, whose browser keeps the section's choice. */
 async function outlineDrawn(view: RenderResult): Promise<void> {
@@ -160,9 +153,7 @@ async function outlineDrawn(view: RenderResult): Promise<void> {
 /** Waits for the next frame and the one after it, where the page places a focus. */
 async function frames(): Promise<void> {
   for (let left = 2; left > 0; left -= 1) {
-    const { promise, resolve } = Promise.withResolvers<void>();
-    requestAnimationFrame(() => resolve());
-    await act(async () => promise);
+    await act(nextFrame);
   }
 }
 
@@ -357,7 +348,7 @@ test("/children puts the focus on the section, and the outline takes none of it"
   });
   const view = drawFrame(issue, buildIssuePath({ key: KEY, kind: "children" }));
   try {
-    await toggleTakesFocus(view, "/children");
+    await rowTakesFocus(view, CHILDREN_TOGGLE, "/children");
     await act(async () => tree.resolve());
     await waitFor(() =>
       expect(view.container.querySelector('[data-node-row][data-node-id="CORE-2"]')).not.toBeNull()
@@ -386,7 +377,7 @@ test("t h puts the focus on the section from any view, and again after the reade
   try {
     await waitFor(() => expect(view.container.querySelector(SLOT_MARKS)).not.toBeNull());
     await user.keyboard("th");
-    await toggleTakesFocus(view, "t h from Spec");
+    await rowTakesFocus(view, CHILDREN_TOGGLE, "t h from Spec");
     expect(at.address).toBe(buildIssuePath({ key: KEY, kind: "children" }));
 
     const row = await waitFor(() => {
@@ -401,7 +392,7 @@ test("t h puts the focus on the section from any view, and again after the reade
     await waitFor(() => expect(view.container.querySelector("[data-crumb]")).not.toBeNull());
     expect(focusedRow()).toBe("head-a");
     await user.keyboard("th");
-    await toggleTakesFocus(view, "t h from a zoom after the reader moved on");
+    await rowTakesFocus(view, CHILDREN_TOGGLE, "t h from a zoom after the reader moved on");
   } finally {
     view.unmount();
   }

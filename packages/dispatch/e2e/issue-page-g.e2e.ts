@@ -574,7 +574,8 @@ interface Jump {
 }
 
 /** Opens issue `key` at `size` and waits until it draws every long row `seedLongRows` wrote,
- *  with every branch open. */
+ *  with every branch open and every page of the head comment's replies drawn: an outline draws a
+ *  node's first 50 children, and a control after them that draws the next 50 (R15). */
 async function openLongRows(
   page: Page,
   key: string,
@@ -583,15 +584,20 @@ async function openLongRows(
 ): Promise<void> {
   await page.setViewportSize(size);
   await openIssue(page, key);
+  const nextPage = page.locator("[data-issue-page] [data-tree-page] button");
   await expect
     .poll(
       async () => {
         await unfoldEveryBranch(page);
+        // The poll reads the rows again after this press, so a control drawn after this count
+        // is pressed on the poll's next pass rather than missed.
+        if ((await nextPage.count()) > 0) await nextPage.first().click();
         return nodeRows(page).count();
       },
       { message: `${where} the page never drew every long row` }
     )
     .toBeGreaterThan(LONG_ROWS);
+  await expect(nextPage, `${where} a page of long rows is still held back`).toHaveCount(0);
 }
 
 /** Jumps the page, as a drag of the scrollbar does, to 40 px above the foot of the words of row
@@ -618,21 +624,26 @@ function jumpAbove(page: Page, crossing: string): Promise<Jump> {
   }, crossing);
 }
 
-/** Waits until row `above`, which a jump left above the view, draws its cut, and two frames
- *  more, and fails unless the first row wholly in view that `jump` read stands within a pixel of
- *  where it stood, and unless it and row `crossing`, which a jump left across the view's top,
- *  are still drawn whole: a row in view keeps its length (decision 261). */
+/** How many frames a jump's reading is held for: a second of the page's own frames, in which a
+ *  row that changes its height after the jump would move the rows under it. */
+const HELD_FRAMES = 60;
+
+/** Waits out `HELD_FRAMES` frames, and fails unless the first row wholly in view that `jump`
+ *  read stands within a pixel of where it stood, and unless it and row `crossing`, which the jump
+ *  left across the view's top, are drawn whole: a row in view keeps its length (decision 261). */
 async function expectFirstHeld(
   page: Page,
-  rows: { readonly above: string; readonly crossing: string },
+  crossing: string,
   jump: Jump,
   where: string
 ): Promise<void> {
-  await expect(
-    rowMore(nodeRow(page, rows.above)),
-    `${where} the row above the view was not cut`
-  ).toHaveCount(1);
-  await nextFrames(page);
+  await page.evaluate(async (count) => {
+    for (let frame = 0; frame < count; frame += 1) {
+      const next = Promise.withResolvers<void>();
+      requestAnimationFrame(() => next.resolve());
+      await next.promise;
+    }
+  }, HELD_FRAMES);
   const first = nodeRow(page, jump.first ?? "");
   const top = await first.evaluate((row) => row.getBoundingClientRect().top);
   expect(
@@ -641,7 +652,7 @@ async function expectFirstHeld(
   ).toBeLessThanOrEqual(1);
   await expect(rowMore(first), `${where} the first row wholly in view was cut`).toHaveCount(0);
   await expect(
-    rowMore(nodeRow(page, rows.crossing)),
+    rowMore(nodeRow(page, crossing)),
     `${where} the row across the view's top was cut`
   ).toHaveCount(0);
 }
@@ -663,39 +674,27 @@ async function middleRow(page: Page, rows: readonly string[], where: string): Pr
   return middle ?? "";
 }
 
-// Decision 252: a long jump into the middle of the page - a fast drag of the scrollbar - lands
-// on rows no batch measured, and the browser's own scroll anchoring holds the view only while
-// the rows that shrink are outside it. At each width the row scrolls a conversation of long rows
-// to its foot and waits there until the rows above the view are cut, then jumps to 40 px above
-// the foot of the words of the row that holds the page's middle: that row crosses the view's
-// top, and the one under it is the first row wholly in view. Once the row above them draws its
-// cut, the first row wholly in view stands where it stood, within a pixel, and both rows in view
-// are still whole (decision 261). It carries `@phone` because the phone project lays the page
-// out at three device pixels to the CSS pixel, where the scroll that holds the row snaps to a
-// device pixel.
-// SLOW(>=2s): sixty-six long rows seeded, loaded at two widths, scrolled to their foot and to
-// their middle, each scroll waited out until the rows above the view are cut.
-test("a long jump into the middle of the page keeps the first row wholly in view where it stood as the rows there are cut @phone", async ({
+// Decisions 252 and 260: a long jump into the middle of the page - a fast drag of the scrollbar -
+// lands on rows no frame has laid out yet, and the first row wholly in view stays where it stood.
+// At each width the row jumps to 40 px above the foot of the words of the row that holds the
+// page's middle: that row crosses the view's top, and the one under it is the first row wholly
+// in view. Then it jumps to 40 px above the foot of the words of the planner's row right above
+// the reader's own run of long rows: the planner's row crosses the view's top, and the reader's
+// rows alone stand in view under it. After each jump the first row wholly in view stands where
+// it stood, within a pixel, for a second of frames, and both rows are drawn whole (decision
+// 261). It carries `@phone` because the phone project lays the page out at three device pixels
+// to the CSS pixel, where the scroll that holds the row snaps to a device pixel.
+// SLOW(>=2s): sixty-six long rows seeded, loaded at two widths, and two jumps into them at each,
+// each held for a second of frames.
+test("a long jump into the middle of the page keeps the first row wholly in view where it stood @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedLongRows, async (page, seeded) => {
+    const mine = seeded.own[0] ?? "";
     for (const size of [DESKTOP, PHONE]) {
       const where = `at ${size.width} px`;
       await openLongRows(page, seeded.key, size, where);
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await expect
-        .poll(
-          () =>
-            page.evaluate(() =>
-              [...document.querySelectorAll("[data-node-row]")].some((row) => {
-                const box = row.getBoundingClientRect();
-                return box.bottom <= 0 && row.querySelector("[data-node-more]") !== null;
-              })
-            ),
-          { message: `${where} no row above the view at the page's foot was cut` }
-        )
-        .toBe(true);
       const crossing = await middleRow(page, seeded.rows, where);
       const jump = await jumpAbove(page, crossing);
       const at = seeded.rows.indexOf(crossing);
@@ -704,46 +703,19 @@ test("a long jump into the middle of the page keeps the first row wholly in view
         `${where} the jump did not land with a whole row crossing the view's top above the first row wholly in view`
       ).toMatchObject({ cut: false, first: seeded.rows[at + 1] });
       expect(jump.crossingTop, `${where} the crossing row's words start in view`).toBeLessThan(0);
-      await expectFirstHeld(page, { above: seeded.rows[at - 1] ?? "", crossing }, jump, where);
-    }
-  });
-});
+      await expectFirstHeld(page, crossing, jump, where);
 
-// Decision 260: the row a slice holds is the first row wholly in view of any kind, not only one
-// that can be cut. At each width the row jumps from the page's top to 40 px above the foot of the
-// words of the planner's row right above the reader's own run of long rows, which no cut ever
-// shortens: the planner's row crosses the view's top, and the reader's rows alone stand in view
-// under it. Once the planner's row above it draws its cut, the reader's first row stands where
-// it stood, within a pixel, and both rows are whole. It carries `@phone` for the reason the row
-// above gives.
-// SLOW(>=2s): sixty-six long rows seeded, loaded at two widths, and each jump into them waited
-// out until the planner's row above the view is cut.
-test("a long jump that lands on the reader's own rows keeps the first of them where it stood as the row above them is cut @phone", async ({
-  browser,
-}) => {
-  test.setTimeout(120_000);
-  await phase(browser, seedLongRows, async (page, seeded) => {
-    const mine = seeded.own[0] ?? "";
-    const above = seeded.rows[seeded.rows.indexOf(seeded.aboveOwn) - 1] ?? "";
-    for (const size of [DESKTOP, PHONE]) {
-      const where = `at ${size.width} px`;
-      await openLongRows(page, seeded.key, size, where);
-      // The rows drawn at load are cut before the jump, so no cut of theirs lands after it.
-      await expect(
-        rowMore(nodeRow(page, seeded.rows[0] ?? "")),
-        `${where} the first row was not cut`
-      ).toHaveCount(1);
-      const jump = await jumpAbove(page, seeded.aboveOwn);
+      const own = await jumpAbove(page, seeded.aboveOwn);
       expect(
-        jump,
+        own,
         `${where} the jump did not land with the planner's whole row across the view's top`
       ).toMatchObject({ cut: false, first: mine });
-      expect(jump.crossingTop, `${where} the planner's row's words start in view`).toBeLessThan(0);
+      expect(own.crossingTop, `${where} the planner's row's words start in view`).toBeLessThan(0);
       expect(
-        jump.inView,
+        own.inView,
         `${where} a row other than the reader's own stands in view under the planner's`
-      ).toEqual([seeded.aboveOwn, ...seeded.own.slice(0, jump.inView.length - 1)]);
-      await expectFirstHeld(page, { above, crossing: seeded.aboveOwn }, jump, where);
+      ).toEqual([seeded.aboveOwn, ...seeded.own.slice(0, own.inView.length - 1)]);
+      await expectFirstHeld(page, seeded.aboveOwn, own, `${where}, landing on the reader's rows,`);
     }
   });
 });
@@ -757,19 +729,18 @@ interface FirstViewFrame {
   readonly view: number;
 }
 
-// Decision 263: a row that stands in view as the page opens is cut before the page paints it, so
-// the reader never sees it whole and it never shrinks in view. At each width a script that runs
-// before the page's own reads the planner's long statement, the body's first row, which a check
-// nothing proves keeps open in an outline folded to what is open, at each animation frame from
-// the first one it is drawn in: it is cut on that first frame, and its height is the same 60
-// frames later. The row is drawn from the spec's blocks before the coverage read brings its
-// words, and a row with no words has nothing to cut, so it is read from the first frame it draws
-// its words in: CI run 44547033390 read it at 390 px with none for two frames, and then whole,
-// 472 px tall, for the 59 after. It carries `@phone` because the phone's first view is another
-// set of rows, laid out at three device pixels to the CSS pixel.
+// Decision 263, as R11 leaves it: a row that stands in view as the page opens is drawn whole on
+// the first frame it is drawn in, and never changes its height in view after. At each width a
+// script that runs before the page's own reads the planner's long statement, the body's first
+// row, at each animation frame from the first one it is drawn in: it draws no control for more
+// words on that first frame, and its height is the same 60 frames later. The row is drawn from
+// the spec's blocks before the reads that bring its words, and a row with no words has no height
+// of its words yet, so it is read from the first frame it draws its words in. It carries
+// `@phone` because the phone's first view is another set of rows, laid out at three device
+// pixels to the CSS pixel.
 // SLOW(>=2s): sixty-six long rows seeded, and the page loaded at two widths, each watched over
 // 61 frames.
-test("a long row in the first view is drawn cut on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
+test("a long row in the first view is drawn whole on the first frame it is drawn in, and its height holds 60 frames later @phone", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -806,9 +777,10 @@ test("a long row in the first view is drawn cut on the first frame it is drawn i
       expect(first.top, `${where} the row was drawn outside the first view`).toBeLessThan(
         first.view
       );
-      expect(first.cut, `${where} the row was drawn whole on the first frame it was drawn in`).toBe(
-        true
-      );
+      expect(
+        first.cut,
+        `${where} the row was drawn cut on the first frame it was drawn in, not whole`
+      ).toBe(false);
       expect(
         frames.map((frame) => frame.height).filter((height) => height !== first.height),
         `${where} the row's height changed in the 60 frames after its first`

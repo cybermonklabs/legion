@@ -16,7 +16,7 @@ import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";
 import { IssueThreeThings } from "./IssueThreeThings";
-import { issueAddress } from "./issue-address";
+import { presetOf } from "./issue-address";
 import { useIssueNames } from "./one-line";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS, type Preset } from "./page-words";
@@ -53,7 +53,7 @@ export function drawsContents(preset: Preset): boolean {
  */
 export function IssueContentsPane(props: SlotProps): ReactNode {
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
-  const preset = issueAddress(props.route, "", "", undefined).preset;
+  const preset = presetOf(props.route);
   if (!paned || !drawsContents(preset)) return null;
   return (
     <aside
@@ -100,7 +100,7 @@ export function OutlineSheet({
     open,
   });
   const startOutline = useStartOutlineRead(slot.issue.key);
-  const preset = issueAddress(slot.route, "", "", undefined).preset;
+  const preset = presetOf(slot.route);
   const readsConversation = outlineOf(preset) === "conversation";
   return (
     <>
@@ -179,7 +179,7 @@ export function ThreeThingsAbove({
   readonly view: boolean;
 }): ReactNode {
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
-  const preset = issueAddress(props.route, "", "", undefined).preset;
+  const preset = presetOf(props.route);
   if (paned || !drawsContents(preset) || (preset === "spec" && view)) return null;
   return <ThreeThingsOf issue={props.issue} />;
 }

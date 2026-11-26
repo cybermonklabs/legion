@@ -126,6 +126,12 @@ interface TreePair {
  *  draws as nothing: a tree that holds no node answers a text that holds one with nothing, which
  *  is the row reading its own parse under another name.
  *
+ *  A list of texts declares its trees as a list beside it, `_trees` on the end - an answer's
+ *  chosen labels and `selected_trees` - one tree for each text at its own index. A body that
+ *  answers a list holding a text must answer that list of trees, each holding content. That
+ *  each text has its own tree at its own index is the Go rows' to hold
+ *  (`api/chosen_label_trees_test.go`): a schema cannot compare two lists' lengths.
+ *
  *  Every pair demanded is appended to `demanded`, named by the node that declared it, which for
  *  every pair this contract holds today is a schema of `components.schemas`. The canary below
  *  asserts that list, so what the rows validate against and what a reader is told they cover are
@@ -143,24 +149,32 @@ function demandingTrees(node: unknown, name: string, demanded: TreePair[]): unkn
   if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
     return copied;
   }
+  const holdingContent = {
+    properties: { content: { type: "array", minItems: 1 } },
+    required: ["content"],
+  };
   const demands: unknown[] = [];
   for (const field of Object.keys(properties)) {
-    if (!Object.hasOwn(properties, `${field}_tree`)) continue;
+    const one = Object.hasOwn(properties, `${field}_tree`);
+    if (!one && !Object.hasOwn(properties, `${field}_trees`)) continue;
     demanded.push({ schema: name, field });
+    const trees = one ? `${field}_tree` : `${field}_trees`;
     demands.push({
-      if: { properties: { [field]: { type: "string", minLength: 1 } }, required: [field] },
+      if: {
+        properties: {
+          [field]: one ? { type: "string", minLength: 1 } : { type: "array", minItems: 1 },
+        },
+        required: [field],
+      },
       // `then` here is JSON Schema's own keyword beside `if`, and this object is handed to ajv
       // rather than awaited: the rule guards against an object a `await` would mistake for a
       // promise, which nothing here does.
       // biome-ignore lint/suspicious/noThenProperty: the JSON Schema keyword, never a thenable
       then: {
         properties: {
-          [`${field}_tree`]: {
-            properties: { content: { type: "array", minItems: 1 } },
-            required: ["content"],
-          },
+          [trees]: one ? holdingContent : { type: "array", minItems: 1, items: holdingContent },
         },
-        required: [`${field}_tree`],
+        required: [trees],
       },
     });
   }
@@ -194,7 +208,12 @@ ajv.addSchema({ $id: "dispatch", ...document });
  *  132 recordings committed today, that wider reading demands a tree in six places - the body of
  *  a `comment.created`, a `message.created` and a `message.answered`, and an `ask.opened`'s
  *  question and its two option labels - and every one of them is answered, so it is kept as it
- *  stands rather than narrowed to the families that file names. */
+ *  stands rather than narrowed to the families that file names.
+ *
+ *  A member holding a list of texts - an answer's `selected` - is no string, and demands nothing
+ *  here: an event carries the trees of the labels a replaced answer chose, which the Activity
+ *  tab's `was:` line draws, and not those of the current answer, whose options the payload's
+ *  own option trees draw; the Go rows hold which (`api/chosen_label_trees_test.go`). */
 const storedTextFields = new Set(demandedPairs.map(({ field }) => field));
 
 /** Whether this schema is an event's: one that declares a `payload` beside the `trees` map
@@ -381,10 +400,12 @@ describe("every committed recording answers the display tree of every stored tex
     expect(demandedPairs.map(({ schema, field }) => `${schema}.${field}`).sort()).toEqual([
       "AcceptSuggestionResponse.body",
       "ArchitectureComponentRead.prose",
+      "ArchitectureTreeNoneRead.reason",
       "ArtifactApprovalWithTrees.reason",
       "ArtifactReviewRead.reason",
       "ArtifactText.markdown",
       "ArtifactVersionText.markdown",
+      "AskAnswerWithTrees.selected",
       "AskAnswerWithTrees.text",
       "AskEditPreviousWithTrees.question",
       "AskOptionWithTrees.description",
@@ -403,6 +424,7 @@ describe("every committed recording answers the display tree of every stored tex
       "Decision.text",
       "DecisionEntry.answer",
       "DecisionEntry.text",
+      "GraphExcerptWithTrees.text",
       "GraphNodeRead.text",
       "InboxRow.question",
       "IssueAskRow.question",
@@ -413,8 +435,10 @@ describe("every committed recording answers the display tree of every stored tex
       "MessageWithTrees.body",
       "MyAnswerReply.body",
       "MyAnswerRow.question",
+      "MyReplyRow.subject",
       "Priority.description",
       "PriorityRow.description",
+      "ReferenceLink.name",
       "ReplyBlockWithTrees.text",
       "RequirementCoverage.text",
       "SearchResult.snippet",

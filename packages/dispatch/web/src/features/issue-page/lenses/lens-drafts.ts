@@ -2,9 +2,10 @@ import type { DisplayTree } from "../../../api/types";
 import { storeAddressReference } from "../../refs/store-address";
 import { wordsOf } from "../../refs/tree-fragment";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
-import { blank, type Draft, plainWords, withShortAddresses } from "../tree-drafts";
+import { blank, type Draft } from "../tree-drafts";
 import type { TreeDraftContext } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
+import { plainWords, withShortAddresses } from "./plain-words";
 import { type StoreKind, storeAddressOf, storeKindOf } from "./store-link";
 
 /**
