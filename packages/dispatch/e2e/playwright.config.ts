@@ -527,6 +527,14 @@ const parallelProjects = [
   // `credential-expired`'s row of two Dismiss presses, `artifacts`' row of two Remove presses,
   // `inbox-read-state`'s row of two Mark read presses and `issue-page-h`'s row of the removal of
   // an issue's last priority.
+  // The same timers across a held read's caller drawn again, or a second form's press: the
+  // tester's round-22 rows `issue-page-q`'s Send change on two decisions' forms, `followers`' two
+  // Unfollow rows (the reading view opened again, the window narrowed below 1280 px),
+  // `inbox-read-state`'s Mark read in the Peek drawer opened again, `artifacts`' Remove with the
+  // Artifacts tab left and opened again, `issue-page-i`'s Rebuild with the row's editor opened
+  // again, `table-controls`' Take out of epic with the List drawn again after the Board,
+  // `document-way-back`'s two rows of a Remove on a document's own page, and `issue-page-h`'s
+  // row of the first priority added.
   // Where the engine moves the focus on Tab from a link to the next stop: `priorities`' row of a
   // priority's title reached by the keyboard.
   // The phone-width `textarea` font-size rule against the heading's `text-[22px]`: `priorities`'

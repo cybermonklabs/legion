@@ -906,9 +906,11 @@ test("a live document refuses a rebuild", async ({ page }) => {
 });
 
 /** What a row holds of the reads the page makes of one route: `hold` keeps every later GET the
- *  route names unanswered, and `out` counts how many are kept. A kept GET is never answered, so
- *  the page gives it up at its own 30 s deadline. */
+ *  route names unanswered, `out` counts how many it kept, and `answer` sends on to Dispatch each
+ *  kept GET the page still waits on and lets every later one through. A kept GET is answered by
+ *  nothing else, so the page gives it up at its own 30 s deadline and asks again. */
 interface BoundReads {
+  readonly answer: () => Promise<void>;
   readonly hold: () => void;
   readonly out: () => number;
 }
@@ -917,12 +919,19 @@ interface BoundReads {
 async function routeBoundReads(page: Page, matches: (url: URL) => boolean): Promise<BoundReads> {
   let holding = false;
   let kept = 0;
+  const waiting: Route[] = [];
   await page.route(matches, async (route: Route) => {
     if (!holding || route.request().method() !== "GET") return route.fallback();
     kept += 1;
+    waiting.push(route);
     return undefined;
   });
   return {
+    // A GET the page gave up has no answer left to take, and its route refuses the fallback.
+    answer: async () => {
+      holding = false;
+      for (const route of waiting.splice(0)) await route.fallback().catch(() => undefined);
+    },
     hold: () => {
       holding = true;
     },
@@ -1008,4 +1017,86 @@ test("a Remove of a second document takes away the line the first Remove left fo
       "the first document's row loses its line as the second removal lands and a new read of the list begins."
     )
   ).toHaveCount(0);
+});
+
+// The tester's red row of round 22 (B2 (3): a hold's reason dropped when its caller is drawn
+// again while its read is still out; the architect's ruling of 2026-11-26T23:11Z). The Artifacts
+// tab holds its rows' Remove through the document list's read with one hold of its own
+// (ArtifactsTab.tsx:467), and the issue page draws the tab only on its own address
+// (ArtifactRoutePanel.tsx:46-47), so a switch to the Spec tab and back mounts a new tab whose
+// hold knows nothing of the removal. At e4ece294 the row of the removed document says "Could not
+// load artifacts. Dispatch did not answer within 30 seconds." at the bound, and says nothing once
+// the reader is back on the tab, though the read is still out and no later removal began.
+// Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): one document seeded, one Artifacts tab open, one removal written, the page's clock
+// moved once past the 30 s bound, and two tab switches.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a Remove on the Artifacts tab whose list read the bound ended still says why once the reader is back on the tab @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) => `Remove on the Artifacts tab, to Spec and back: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", spec: "The spec itself.", title: "One note" });
+  const notes = (await createIssueArtifact(issue.key, { name: "Draft notes" })).artifact;
+  const listReads = await routeBoundReads(
+    page,
+    (url) => url.pathname === `/api/v1/issues/${issue.key}/artifacts`
+  );
+  await page.clock.install();
+  // A removal's live event would read the list beside the read the press holds through, so the
+  // page has no live feed for the row.
+  await page.routeWebSocket(/\/ws\/live$/u, (route) =>
+    route.close({ code: 1011, reason: "test network drop" })
+  );
+  await page.goto(`/issues/${issue.key}/artifacts`);
+  const row = page.getByTestId(`artifact-${notes.slug}`);
+  const remove = row.getByRole("button", { exact: true, name: "Remove" });
+  await expect(remove, step("the document is listed with its Remove.")).toBeVisible();
+  const unreadLine = row.getByRole("alert").filter({ hasText: /did not answer within 30 seconds/ });
+  const unreadWords = "Could not load artifacts. Dispatch did not answer within 30 seconds.";
+
+  listReads.hold();
+  const removal = page.waitForResponse(
+    (response) =>
+      response.request().method() === "DELETE" &&
+      new URL(response.url()).pathname === `/api/v1/artifacts/${notes.id}`
+  );
+  await remove.click();
+  expect((await removal).status(), step("the removal lands at Dispatch.")).toBe(204);
+  await expect
+    .poll(listReads.out, { message: step("the list read the removal starts is out.") })
+    .toBeGreaterThan(0);
+  await page.clock.fastForward(30_000);
+  await expect(
+    unreadLine,
+    step("at the 30 s bound the document's row says why the list is not read.")
+  ).toHaveText([unreadWords]);
+
+  const spec = page.getByRole("tab", { name: "Spec" });
+  const artifacts = page.getByRole("tab", { name: /^Artifacts\b/ });
+  await spec.click();
+  await expect(spec, step("the Spec tab is the one shown.")).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await artifacts.click();
+  await expect(artifacts, step("the Artifacts tab is the one shown again.")).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await expect(
+    row,
+    step("back on the Artifacts tab the removed document is listed still, its list read out.")
+  ).toBeVisible();
+  await expect(
+    unreadLine,
+    step(
+      "back on the Artifacts tab, with the list read still out and no later removal, the document's row still says why the list is not read."
+    )
+  ).toHaveText([unreadWords]);
+
+  await listReads.answer();
+  await page.clock.runFor(1_000);
+  await expect(row, step("the list read answered takes the removed document away.")).toHaveCount(0);
 });

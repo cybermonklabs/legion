@@ -11,7 +11,7 @@ import {
   STATE_LINES,
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
-import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
+import { getArtifact, getAsk, getIssueDecisions, listComments, listIssueArtifacts } from "./api";
 import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
@@ -1338,6 +1338,134 @@ test("a Change whose document read the bound ended loses that read's line at the
       ).toHaveCount(0, { timeout: 2_000 });
     } finally {
       await held[0]?.abort("internetdisconnected").catch(() => undefined);
+    }
+  });
+});
+
+// The tester's red row of round 22 (B1: a line a form left for its document read stays when
+// another form's press reads the same document again; the architect's ruling of
+// 2026-11-26T23:11Z). Each decision's Change form holds its own `useUnsettledRead`
+// (DecisionActions.tsx:374), though every form's Send change reads the one decisions document
+// (`api.getArtifactText`), so a press of Send change on a second form begins a new read of that
+// document and takes nothing away from the line the first form left for the read before it. At
+// e4ece294 the first form still says "Could not load the decisions document. Dispatch did not
+// answer within 30 seconds." for the whole 15 s the row waits after the second form's read was
+// answered and its change went out. Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): a seeded issue's Decisions view, two Change forms opened, the first form's document
+// read held past the 30 s bound on the page's clock, and two changes sent.
+// @firefox: the bound and the read's own deadline are two timers, which each engine runs.
+test("a Change whose document read the bound ended loses that read's line when another decision's Send change reads the document again @firefox", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedReviewList, async (page, seeded) => {
+    const step = (text: string) => `Send change on two decisions' forms: ${text}`;
+    const first = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedNewer)).first();
+    const second = nodeRow(page, blockNodeId(seeded.decisionsSlug, seeded.tiedOlder)).first();
+    const decisions = (await listIssueArtifacts(seeded.key)).find(
+      (artifact) => artifact.slug === seeded.decisionsSlug
+    );
+    expect(decisions, step("the issue holds its decisions document.")).toBeDefined();
+    const textPath = `/api/v1/artifacts/${decisions?.id ?? ""}/text`;
+    const commentsPath = `/api/v1/issues/${seeded.key}/comments`;
+    await page.setViewportSize(DESKTOP);
+    await page.clock.install();
+    await openPreset(page, seeded.key, "decisions");
+    for (const [which, row] of [
+      ["the first", first],
+      ["the second", second],
+    ] as const) {
+      await row.locator('button[data-row-action="change"]').click();
+      await row
+        .getByLabel(CONTROL_LABELS.your_change)
+        .fill("Tie it to the first statement instead.");
+      await expect(
+        row.getByLabel(CONTROL_LABELS.your_change),
+        step(`${which} decision's Change form is open and written in.`)
+      ).toHaveValue("Tie it to the first statement instead.");
+    }
+    await expect(
+      first.getByLabel(CONTROL_LABELS.your_change),
+      step("the first form is still open beside the second: two Change forms are open at once.")
+    ).toBeVisible();
+    // Each change is refused as a quote that stands in two places, so each form stays drawn.
+    let posts = 0;
+    await page.route(
+      (url) => url.pathname === commentsPath,
+      (route) => {
+        if (route.request().method() !== "POST") return route.fallback();
+        posts += 1;
+        return route.fulfill({
+          body: JSON.stringify({ code: "TARGET_AMBIGUOUS", error: '"Tie it" matches 2 places' }),
+          contentType: "application/json",
+          status: 409,
+        });
+      }
+    );
+    // The first press's reads of the document are held until the row lets them go; every later
+    // read goes through.
+    const held: Route[] = [];
+    let holding = true;
+    await page.route(
+      (url) => url.pathname === textPath,
+      (route) => {
+        if (!holding || route.request().method() !== "GET") return route.fallback();
+        held.push(route);
+        return undefined;
+      }
+    );
+    const sendOf = (row: Locator) =>
+      row.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change });
+    const unread = STATE_LINES.decisions_document_unreadable;
+    const lineOf = (row: Locator) => row.getByRole("alert").filter({ hasText: unread });
+
+    await sendOf(first).click();
+    await expect
+      .poll(() => held.length, { message: step("the first form's document read is out.") })
+      .toBe(1);
+    // Answered "no route" 26 s on, which restarts the read's own 30 s silence deadline at the
+    // answer (`retryNoRoute`), so its next attempt is out still when the press's 30 s bound ends.
+    await page.clock.fastForward(26_000);
+    await held[0]?.fulfill({
+      body: JSON.stringify({ code: "NOT_FOUND", error: `no route for GET ${textPath}` }),
+      contentType: "application/json",
+      status: 404,
+    });
+    await page.clock.runFor(1_500);
+    await expect
+      .poll(() => held.length, {
+        message: step("the first form's read is asked again after its no-route answer, and held."),
+      })
+      .toBe(2);
+    await page.clock.fastForward(4_000);
+    await expect(
+      lineOf(first),
+      step("at the 30 s bound the first form says why its document read has not settled.")
+    ).toHaveText([`${unread} Dispatch did not answer within 30 seconds.`]);
+    await expect
+      .poll(() => posts, { message: step("the first form's change goes out at the bound.") })
+      .toBe(1);
+
+    holding = false;
+    await sendOf(second).click();
+    await expect
+      .poll(() => posts, {
+        message: step("the second form's change goes out once its read is answered."),
+      })
+      .toBe(2);
+    await expect(
+      lineOf(second),
+      step("the second form, whose read was answered, says nothing of a read.")
+    ).toHaveCount(0);
+    try {
+      await expect(
+        lineOf(first),
+        step(
+          "the second form's Send change, which read the same document again and was answered, takes the first form's line away."
+        )
+      ).toHaveCount(0);
+    } finally {
+      await held[1]?.abort("internetdisconnected").catch(() => undefined);
     }
   });
 });

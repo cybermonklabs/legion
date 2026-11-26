@@ -13757,3 +13757,108 @@ test("with Take out of epic's writes held and both marks then unticked, the proj
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// The tester's red row of round 22 (B2 (5): a hold's reason dropped when its caller is drawn
+// again while its read is still out; the architect's ruling of 2026-11-26T23:11Z). The project
+// page draws the List only while its List view is picked (ProjectPage.tsx:261-263), and the
+// List's actions hold through its read with a hold of the table's own
+// (issues-table-actions.ts:202), so the view switched to the Board and back draws a new List
+// whose notice knows nothing of the action. At e4ece294 the List says "Took 2 issues out of their
+// epics. Could not load issues. Dispatch did not answer within 30 seconds." at the bound, and
+// nothing once the List is drawn again, though its read is still out and no later action began.
+// Measured in Chromium and Firefox, twice each.
+// SLOW(>=2s): an epic of two issues seeded, one project List open, two writes of one action, the
+// page's clock moved once past the 30 s bound, and two view switches.
+// @firefox: the timers of a read's own deadline and of the bound a held control waits on, which
+// each engine runs.
+test("a Take out of epic whose List read the bound ended still says why once the List is drawn again after the Board @firefox", async ({
+  page,
+}) => {
+  const step = (text: string) =>
+    `Take out of epic on the project List, to the Board and back: ${text}`;
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Table epic" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const keys: string[] = [];
+  for (let index = 0; index < 2; index++) {
+    keys.push(
+      (await createIssue({ parent: epic.key, project: "CORE", title: `Epic row ${index}` })).key
+    );
+  }
+  let holding = false;
+  const held: Route[] = [];
+  await page.route(
+    (url) => url.pathname === "/api/v1/issues",
+    (route) => {
+      if (!holding || route.request().method() !== "GET") return route.fallback();
+      held.push(route);
+      return undefined;
+    }
+  );
+  await page.clock.install();
+  await openIssuesTab(page, "CORE", "List");
+  const table = page.getByRole("region", { name: "Project issues" });
+  const bar = page.getByRole("toolbar", { name: "Selected issues" });
+  const markOf = (key: string) =>
+    page.getByRole("checkbox", { exact: true, name: `Select ${key}` });
+  for (const key of [...keys].reverse()) {
+    await expect(markOf(key), step(`${key} is listed with its checkbox.`)).toBeVisible();
+    await markOf(key).focus();
+    await page.keyboard.press("Space");
+    await expect(markOf(key), step(`Space marks ${key}.`)).toBeChecked();
+  }
+  await expect(bar, step("the bar counts the two marked.")).toContainText("2 selected");
+  const unreadLine = table
+    .getByRole("alert")
+    .filter({ hasText: /did not answer within 30 seconds/ });
+  const unreadWords =
+    "Took 2 issues out of their epics. Could not load issues. Dispatch did not answer within 30 seconds.";
+  const answered = keys.map((key) =>
+    page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${key}`
+    )
+  );
+
+  holding = true;
+  await bar.getByRole("button", { exact: true, name: "Take out of epic" }).click();
+  for (const [at, answer] of answered.entries()) {
+    expect((await answer).ok(), step(`the write of ${keys[at]} lands at Dispatch.`)).toBe(true);
+  }
+  await expect
+    .poll(() => held.length, { message: step("the List read the action starts is out.") })
+    .toBeGreaterThan(0);
+  await page.clock.fastForward(30_000);
+  await expect(
+    unreadLine,
+    step("at the 30 s bound the List says why its read has not settled.")
+  ).toHaveText([unreadWords]);
+
+  const listView = page.getByRole("button", { exact: true, name: "List" });
+  const boardView = page.getByRole("button", { exact: true, name: "Board" });
+  await boardView.click();
+  await expect(boardView, step("the view switch shows the Board.")).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  await expect(table, step("the List is off the page while the Board shows.")).toHaveCount(0);
+  await listView.click();
+  await expect(listView, step("the view switch shows the List again.")).toHaveAttribute(
+    "aria-pressed",
+    "true"
+  );
+  await expect(table, step("the List is drawn again.")).toBeVisible();
+  await expect(
+    unreadLine,
+    step(
+      "the List drawn again, with its read still out and no later action, still says why its read has not settled."
+    )
+  ).toHaveText([unreadWords]);
+
+  holding = false;
+  // A read the page gave up has no answer left to take, and its route refuses the fallback.
+  for (const route of held.splice(0)) await route.fallback().catch(() => undefined);
+  await page.clock.runFor(1_000);
+  await expect(unreadLine, step("the List read answered takes the line away.")).toHaveCount(0);
+});
