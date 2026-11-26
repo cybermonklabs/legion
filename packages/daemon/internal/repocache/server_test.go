@@ -735,12 +735,12 @@ func TestEachTickFetchesWithTheTokenFileAsItIsThen(t *testing.T) {
 		t.Errorf("the transfers presented %q, want ghs_first first and the rotated ghs_rotated last", tokens)
 	}
 	for i, transfer := range run.transfers()[1:] {
-		want := "--git-dir=" + c.dir() + " fetch"
-		if i%2 == 1 {
-			want = "--git-dir=" + c.dir() + " ls-remote"
+		want := "--git-dir=" + c.dir() + " ls-remote"
+		if i%3 == 1 {
+			want = "--git-dir=" + c.dir() + " fetch"
 		}
 		if transfer != want {
-			t.Errorf("a later tick's transfer %d is %q, want %q: each tick fetches into the cache's clone, then reads GitHub's HEAD", i+1, transfer, want)
+			t.Errorf("a later tick's transfer %d is %q, want %q: each tick reads GitHub's HEAD, fetches that branch, then follows GitHub's HEAD", i+1, transfer, want)
 		}
 	}
 }
@@ -770,14 +770,16 @@ func TestAFailedFetchKeepsTheCacheReady(t *testing.T) {
 	}) {
 		t.Fatalf("no failed fetch was logged: %q", c.log.all())
 	}
-	// Serve logs the failure and only then takes its next tick, so the health is read with that
-	// tick's fetch held: whatever Serve does after the failure it logged, a publish among them,
-	// has happened by then, and no fetch publishes until the release. The fetch holds the clone's
-	// write lock, which /tar waits on, so it is released before /tar is asked.
-	started, release = run.hold()
-	testwait.Receive(t, "the fetch of the tick after the failed one", started)
+	// The next tick reads GitHub's default branch before it fetches. That read fails after the remote
+	// is removed, so the fetch does not run. It still proves that Serve scheduled another tick before
+	// the cache's last good state is read.
+	next := make(chan struct{})
+	run.instead("ls-remote", func(context.Context, workspace.Command) (workspace.Result, error) {
+		close(next)
+		return workspace.Result{ExitCode: 128, Stderr: "fatal: the remote is gone\n"}, nil
+	})
+	testwait.Receive(t, "the default-branch read of the tick after the failed one", next)
 	status, health := c.health(t)
-	release()
 	if status != http.StatusOK || !health.Ready || health.Head != before.Head || health.LastFetchAt != before.LastFetchAt {
 		t.Fatalf("/healthz after a failed fetch answers %d %+v, want ready on %+v", status, health, before)
 	}
@@ -814,8 +816,8 @@ func TestARestartOnAVolumeThatHoldsTheCloneFetchesIntoIt(t *testing.T) {
 	if health := again.ready(t); health.Head != moved {
 		t.Errorf("the restarted cache serves %s, want what its fetch brought, %s", health.Head, moved)
 	}
-	if transfers := run.transfers(); !slices.Equal(transfers, []string{"clone --bare", "--git-dir=" + again.dir() + " fetch", "--git-dir=" + again.dir() + " ls-remote"}) {
-		t.Errorf("the cache ran %q, want a clone, then the restart's fetch and its read of GitHub's HEAD", transfers)
+	if transfers := run.transfers(); !slices.Equal(transfers, []string{"clone --bare", "--git-dir=" + again.dir() + " ls-remote", "--git-dir=" + again.dir() + " fetch", "--git-dir=" + again.dir() + " ls-remote"}) {
+		t.Errorf("the cache ran %q, want a clone, then the restart's read of GitHub's HEAD, fetch and final read", transfers)
 	}
 	again.cancel()
 	if err := <-again.done; err != nil {
@@ -2305,6 +2307,7 @@ func TestCacheRefusesToMarkACloneWhoseHeadRefIsMissing(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	opts := testOptions(t, run)
+	opts.Log = func(string) {}
 	c := cacheOn(t, opts)
 	if err := c.refresh(context.Background()); err != nil {
 		t.Fatalf("making the cache clone: %v", err)
@@ -2327,6 +2330,7 @@ func TestCacheFetchRepairsACloneWhoseHeadRefIsMissing(t *testing.T) {
 	remote := newRemote(t)
 	run := newTestRunner(t, remote)
 	opts := testOptions(t, run)
+	opts.Log = func(string) {}
 	dir, err := workspace.CacheRepository(opts.Root, opts.Repo)
 	if err != nil {
 		t.Fatal(err)
@@ -2589,7 +2593,11 @@ func oldCache(t *testing.T, opts Options, remote string) {
 
 func cacheRefs(t *testing.T, dir string) []string {
 	t.Helper()
-	return strings.Fields(git(t, dir, "--git-dir="+dir, "for-each-ref", "--format=%(refname)"))
+	refs := strings.TrimSuffix(fixturegit.Isolated(t, t.TempDir()).Raw(dir, "git", "--git-dir="+dir, "for-each-ref", "--format=%(refname)"), "\n")
+	if refs == "" {
+		return nil
+	}
+	return strings.Split(refs, "\n")
 }
 
 func assertDefaultBranchOnly(t *testing.T, dir string) {
