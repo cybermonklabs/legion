@@ -6,7 +6,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -19,7 +18,7 @@ import (
 func TestAStartRowNamesTheFirstFenceItFailsAndReadsThePhasesRowsForTheEntryAlone(t *testing.T) {
 	t.Parallel()
 	checking := record.Issue{Key: "LEGION-208", Phase: phase.Step, Generation: 2, Running: []record.RunningStep{
-		{Task: plan.DefaultTask, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: "checker", Phase: phase.Step}}}
+		{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}, Role: "checker", Phase: phase.Step}}}
 	rows := []record.PhaseRow{{Issue: "LEGION-208", Role: "checker", Entry: 5}}
 	for _, tc := range []struct {
 		name      string
