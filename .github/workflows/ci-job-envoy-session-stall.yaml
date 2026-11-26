@@ -1,15 +1,16 @@
 name: CI job envoy-session-stall
 
-# The steps of `.github/workflows/ci.yaml#envoy-session-stall` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#envoy-session-stall` job, in a file of its own, and the
+# rows of the artifact dry run in a second job beside them (artifact-dry-run, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
-# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
+# Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
+# it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -137,6 +138,80 @@ jobs:
       # It needs the same Postgres and Go this job already has.
       - name: A refused keyed write resent under its key against a real Dispatch
         run: bun test src/__tests__/dispatch-keyed-resend-live.test.ts
+        working-directory: packages/envoy-client
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: envoy-session-stall
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The rows of packages/envoy-client/src/__tests__/artifact-dry-run.live.test.ts, in a leg of
+  # this job of their own: `dispatch artifact --dry-run` held to the call over every text an
+  # upload refuses for the text alone (packages/envoy/internal/dispatch/api/testdata/text-refusals.json),
+  # each run the real CLI, its own process, against a real Dispatch of this tree, in every
+  # combination of the way the text is given, --force and the name (dispatch://INFRA-983 moved
+  # these rows here from the browser suite, where they drove no browser). A leg beside the job
+  # above rather than a step of it, so the job's time on a pull request stays under the
+  # 10-minute line.
+  # why: .github/ci-notes/ci.md#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack
+  artifact-dry-run:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 12 # 2 x (69 s of setup + 30 s to build and boot the server + 239 s of rows) = 676 s, up to the next whole minute
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      JOB_TIMEOUT_MINUTES: 12 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      LEGION_E2E_DISPATCH_STACK: "1"
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          go-download-base-url: https://go.dev/dl
+          token: ''
+          cache: false
+      # go-envoy, as the job above restores it: test/dispatch-stack.ts builds ./cmd/dispatch
+      # over the module cache and the build cache it holds.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # No commit, checkpoint or database copy here waits for the runner's disk: why every
+      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
+      - name: Turn crash safety off on the service
+        timeout-minutes: 2
+        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+      - name: Build contracts for the artifact dry run
+        run: bun run build
+        working-directory: packages/contracts
+      # Through the package's own test script, so each row gets the one --timeout
+      # packages/envoy-client/package.json sets.
+      - name: The artifact dry run held to the call against a real Dispatch
+        run: bun run test src/__tests__/artifact-dry-run.live.test.ts
         working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

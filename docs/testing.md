@@ -346,6 +346,11 @@ Two rules set the edges of those layers:
 
 - A row that drives no browser is no browser row. A command-line row goes to the tests of the
   client package, a row about the Go reader to the Go tests, a server timing to a Go benchmark.
+  A command-line row whose claim needs the command and a real Dispatch together is a live test of
+  the client package, on `packages/envoy-client/test/dispatch-stack.ts`, which builds the server
+  from the checkout; the `envoy-session-stall` job of `.github/workflows/ci.yaml` runs each such
+  file, `packages/envoy-client/src/__tests__/artifact-dry-run.live.test.ts` in a leg of its own,
+  `artifact-dry-run` of `.github/workflows/ci-job-envoy-session-stall.yaml`.
   `e2e/__tests__/no-browser-rows.test.ts` fails a browser row that drives no browser, unless
   `exemptions` in `e2e/no-browser-rows.ts` names the row with its reason.
 

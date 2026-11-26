@@ -673,21 +673,6 @@ Those three are named rather than cited by line: a citation into this file moves
 with every comment added above it, and one entry's line number took four values in
 two rounds that way.
 
-## dispatch_browser: The list of the texts an upload refuses for the text alone,
-
-The list of the texts an upload refuses for the text alone, which
-`packages/dispatch/e2e/artifact-dry-run.e2e.ts#rows` reads, from the new URL
-`packages/dispatch/e2e/artifact-dry-run.e2e.ts#textRefusalsFile` holds: that
-spec runs each row of the list in each combination it runs, so a change to the
-list changes the spec's rows. This entry alone selects the list for this job:
-the `*dispatch_server` anchor this filter takes holds
-'packages/envoy/internal/dispatch/api/*', which matches the files of that
-directory and none of its testdata/ directory, and no other pattern of this
-filter matches the list. Measured with ci_filter_coverage.changes_filters and
-workflow_paths.PathsFilter under some-with-excludes, the quantifier the changes
-job reads this file under: this filter covers the list with the entry and not
-without it.
-
 ## dispatch_browser: What stood here was the file store's own image declaration
 
 What stood here was the file store's own image declaration and the
@@ -2890,6 +2875,40 @@ so it needs a PostgreSQL and a Go, which this job is the only envoy-client lane 
 envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK would skip
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
+
+The rows of packages/envoy-client/src/__tests__/artifact-dry-run.live.test.ts run on that stack
+here too (dispatch://INFRA-983): `dispatch artifact --dry-run` held to the call over every text
+of packages/envoy/internal/dispatch/api/testdata/text-refusals.json, 228 rows, which the browser
+suite ran before and which drove no browser there. They run once per change of what they read,
+here, and not in the harness lane of packages/dispatch, which the weekly
+.github/workflows/dispatch-unit-repeat.yaml runs 20 times a leg. Measured in a builds pod of 4
+CPUs on 2026-11-26, the file took 105.9 s and 109.7 s, its rows 97.6 s and 101.5 s of it; the
+browser suite's own table gave these rows 1.05 s each on main's CI
+(packages/dispatch/e2e/shard-weights.json), 239 s a run. 20 runs of that, 2,120 s to 4,780 s,
+in the harness lane's second leg, whose worst order is 6,732 s of a 13,500 s deadline, would
+have made it 7,261 s to 7,949 s by that file's own formula, past the half of its deadline that
+the budget rule keeps, and every leg would have needed a Go and a PostgreSQL with pgvector it
+does not set up. This job has both, and took 536 s to 596 s of its 20 minutes in the twelve
+merge-group runs of 2026-11-26 read for this.
+
+The rows run in a second job of the file this job calls, artifact-dry-run: a leg beside the
+stall suites, not a step after them. The job took 558 s, 564 s, 571 s and 594 s on the four
+pull-request runs of 2026-11-26 (CI runs 45750707056, 45739294535, 45759095380 and
+45768587967), at the 10-minute line that keeps a job on the pull request
+(.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue), and the
+rows as one more step would have added about 106 s and taken it past the line. As a leg they add
+the leg's own setup to the runner time and nothing to the job's time, which runs from its first
+leg's start to its last leg's end. The leg repeats what the rows need of the job's setup: the
+checkout, Bun and the install, Go and the go-envoy cache, the Postgres service with its sizing
+and crash-safety steps, and the contracts build. It reports ci-ok under the job's id, as the
+job does, so ci.yaml, its outputs and ci-ok's map are as they were. Its timeout, 12 minutes, is
+twice its slowest measured parts, up to the next whole minute: the setup through the contracts
+build, 69 s at most over those four runs and the twelve merge-group runs; the job's first live
+Dispatch step, which builds ./cmd/dispatch and boots it, 30 s at most over the same runs; and
+the rows at the browser suite's CI rate, 239 s; 338 s in all, twice that 676 s. The rows read
+the list through the new URL
+`packages/envoy-client/src/__tests__/artifact-dry-run.live.test.ts#textRefusalsFile` holds,
+which this filter's own entry declares, as packages/envoy/** already selected it.
 
 ## What the ci-filters job holds every filter and every workflow file to
 

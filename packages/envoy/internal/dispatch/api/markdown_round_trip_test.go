@@ -294,10 +294,11 @@ type roundTripReplaced struct {
 }
 
 // textRefusalsFile is the list of the texts an upload refuses for the text alone, one JSON object
-// a row in a JSON array. roundTripRefusals reads it for the route tests here, and the end-to-end
-// spec packages/dispatch/e2e/artifact-dry-run.e2e.ts reads it by a relative path against a
-// running Dispatch, so both take their rows from one list. JSON takes no comments, so this is its
-// description. A row is a roundTripRefusal, its members named as that type's fields: name; text, a
+// a row in a JSON array. roundTripRefusals reads it for the route tests here, and the live client
+// test packages/envoy-client/src/__tests__/artifact-dry-run.live.test.ts reads it by a relative
+// path, running the real CLI against a running Dispatch, so both take their rows from one list.
+// JSON takes no comments, so this is its description.
+// A row is a roundTripRefusal, its members named as that type's fields: name; text, a
 // list of parts joined in order; sent, ["inline", "file"] or ["file"]; status; code; words, ""
 // where the row names none; scope; and replaced, absent where it is the zero value, with
 // {status, code, words} or {rendering}, each id the parse mints written "minted". Every member but

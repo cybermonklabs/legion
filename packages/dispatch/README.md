@@ -388,8 +388,10 @@ or unset is refused.
 The rules a row follows:
 
 - A row binds `page`, `browser` or `context`, and a file it writes goes under
-  `testInfo.outputPath()`. A claim that needs no browser goes in `e2e/__tests__/` or a Go test
-  (`e2e/no-browser-rows.ts`).
+  `testInfo.outputPath()`. A claim that needs no browser goes in `e2e/__tests__/`, a Go test, or,
+  for a command, the client package's tests, whose live files run the real command against a real
+  Dispatch (`packages/envoy-client/test/dispatch-stack.ts`); `e2e/no-browser-rows.ts` holds the
+  rule.
 - A row takes under 2 s, or carries `// SLOW(>=2s): <why>` directly above it;
   `bun e2e/tools/check-slow-rows.ts <report.json>` checks a run's report for both.
 - A helper whose next step depends on what the page shows reads it with `settledState`

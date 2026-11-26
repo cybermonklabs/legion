@@ -73,8 +73,6 @@ export const realStackReasons: Record<string, string> = {
   "architecture-sources.e2e.ts": "fake GitHub import, saves and a reload",
   "architecture.e2e.ts":
     "a status write must move the server-computed bar; the server's import refusal is the assertion",
-  "artifact-dry-run.e2e.ts":
-    "runs the real `dispatch artifact` with `--dry-run` and without against the server over every text an upload refuses for the text alone, and compares the two answers with what the server stored",
   "artifacts.e2e.ts": "uploads, version compare, document sockets and a 503 refetch",
   "ask-blocks.e2e.ts":
     "decision answers the server records, and pastes in the live document editor",
