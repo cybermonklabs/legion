@@ -25,20 +25,29 @@ const tupleColumns = `seq, from_kind, from_id, kind, to_kind, to_id, at, who, so
 // counts' test of one tuple - and the rule written out in each of them was several readings to
 // keep in step, as prioritystore.AdvancesTupleRead's own store found.
 //
-// It reads graph_tuples as t. relation is the columns of t that tell one relation from another
-// among the rows narrow keeps - the relation's key, (from_kind, from_id, kind, to_kind, to_id),
-// less the columns narrow binds to one value - written in the order of the index the read walks:
-// graph_tuples_current's for a read out of a node, whose last column is the seq the order by
-// ends at, so the planner takes the newest row of each relation off the index and sorts
-// nothing, where narrow proves the index's predicate; a read that cannot, and a read into a
-// node, which graph_tuples_as_of_in serves, sort the node's tuples the index condition reaches.
-// columns is what each row answers, t.asserted among it for the cut. narrow is the predicate that
-// bounds the read, written inside the `where` so it cuts the rows the `distinct on` sorts rather
-// than its answer. The caller writes all three from its own text and never from a value a request
-// carried.
+// It reads graph_tuples as t (CurrentTupleReadIn). relation is the columns of t that tell one
+// relation from another among the rows narrow keeps - the relation's key, (from_kind, from_id,
+// kind, to_kind, to_id), less the columns narrow binds to one value - written in the order of the
+// index the read walks: graph_tuples_current's for a read out of a node, whose last column is the
+// seq the order by ends at, so the planner takes the newest row of each relation off the index
+// and sorts nothing, where narrow proves the index's predicate; a read that cannot, and a read
+// into a node, which graph_tuples_as_of_in serves, sort the node's tuples the index condition
+// reaches. columns is what each row answers, t.asserted among it for the cut. narrow is the
+// predicate that bounds the read, written inside the `where` so it cuts the rows the `distinct on`
+// sorts rather than its answer. The caller writes all three from its own text and never from a
+// value a request carried.
 func CurrentTupleRead(relation, columns, narrow string) string {
+	return CurrentTupleReadIn(`graph_tuples`, relation, columns, narrow)
+}
+
+// CurrentTupleReadIn is CurrentTupleRead over table, read as t: graph_tuples under the name the
+// calling statement gives it, which a statement that names the schema of every table it reads
+// qualifies by that schema (loadtest's servedAnswersQuery reads public.graph_tuples, through
+// asks.NodeAnswerTuplesIn). table is a constant of the caller's own text, never a request's value,
+// as relation, columns and narrow are.
+func CurrentTupleReadIn(table, relation, columns, narrow string) string {
 	return `select distinct on (` + relation + `) ` + columns + `
-			from graph_tuples t
+			from ` + table + ` t
 			where ` + narrow + `
 			order by ` + relation + `, t.seq desc`
 }

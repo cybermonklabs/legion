@@ -13,7 +13,7 @@ import (
 // typedSources is what the typed-node pass over a version of artifactID reads from this service,
 // in tx, the transaction that writes the version (refs.TypedSources): who introduced each of its
 // decisions and readings (blockAuthors), and the ask each ask block holding a reading shows
-// (shownAsks, over tree, the tree the version was rendered from). settled is what a settlement read
+// (readingShownAsks, over tree, the tree the version was rendered from). settled is what a settlement read
 // of the document's credited blocks (settlementReconciliation.sources), nil for any other writer.
 func typedSources(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node, settled *askBlockSources) refs.TypedSources {
 	return refs.TypedSources{
@@ -21,7 +21,7 @@ func typedSources(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc
 			return blockAuthors(ctx, tx, artifactID, ids, settled)
 		},
 		Shown: func(ids []string) (map[string]refs.ShownAsk, error) {
-			return shownAsks(ctx, tx, artifactID, tree, ids)
+			return readingShownAsks(ctx, tx, artifactID, tree, ids)
 		},
 	}
 }

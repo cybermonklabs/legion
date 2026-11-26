@@ -1634,7 +1634,7 @@ type commentStoreWrite struct {
 	// pointersStored is whether the write states the comment's pointers (statePointers), which
 	// is what the row's tuples_stored holds from its insert: graph_edges answers the pointers of
 	// a row that holds true from the tuples, and of any other row from the old arms over comments
-	// (migration 20261116124448).
+	// (migration 20261126045002).
 	pointersStored bool
 }
 

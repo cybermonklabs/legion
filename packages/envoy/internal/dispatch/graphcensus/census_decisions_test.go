@@ -280,12 +280,12 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 // census holds it to (graphEdgesOut) is read node by node, through exactly two probes of
 // graph_tuples, each keyed by the node's id: the view's tuple arm on graph_tuples_as_of_out, keyed
 // by the node's kind and its id, and the arm over an item's blocks on graph_tuples_current, keyed
-// by (block, the node's id, the tie's kind). That second arm is migration 20261116140008's: it
+// by (block, the node's id, the tie's kind). That second arm is migration 20261126045003's: it
 // answers a block at an item's address under a from_kind it reads off the address
 // (comment_block, message_block, ask_block), and PostgreSQL drops an arm from a plan only where
 // the read's value and the arm's are both constants, so a read that binds from_kind as each node's
-// kind keeps it; the reply arms render their kind as the constant replies_to (20261116114517,
-// 20261116124448), and every other kind's read drops them. A third probe, or one not keyed by the
+// kind keeps it; the reply arms render their kind as the constant replies_to (20261126045001,
+// 20261126045002), and every other kind's read drops them. A third probe, or one not keyed by the
 // node's id, fails this; so does the item block arm's probe answering a row for a node that is no
 // block, which it cannot, no block's address being an ask's id. A plan that keys the kind alone
 // reads every tuple of that kind, and reads them again for each node. The census holds the view's

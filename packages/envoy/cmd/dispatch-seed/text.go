@@ -87,7 +87,7 @@ func (p *seedPlan) mentionText(kindIndex, nth int) string {
 // message, the one reference that names a session, an agent's session by its address
 // (`dispatch://agent/<id>`). The item index reads that reference as a mention of an identity and
 // appends a `mentions` tuple out of the message's node to the session (refs.IndexItem), which
-// graph_edges' identity arm answers (migration 20261120090001) and the backlink count of a session
+// graph_edges' identity arm answers (migration 20261126045004) and the backlink count of a session
 // reads. A message is where the seed names a party because no other writer of its source owes
 // more: the server delivers a message or a comment to a person it names, and a comment's session
 // or role is a delivery route its comment_mentions row holds, neither of which the seed writes.
@@ -104,9 +104,9 @@ func (p *seedPlan) messageMention(index int) string {
 }
 
 // firstParagraphBlock is the block id of the first paragraph of every latest version. Every
-// latest version is built to one shape (documentMarkdown) and the block ids are minted in
-// document order from a counter restarted for each document (blockIDs), so b1 is the heading of
-// every document and b2 its first paragraph: a mention naming `#b-b2` of a document names a
+// latest version is built to one shape (documentMarkdown) and its render mints the block ids in
+// document order from a counter of its own (renderVersion), so b1 is the heading of every
+// document and b2 its first paragraph: a mention naming `#b-b2` of a document names a
 // block that document holds. The id of a table's body row, which an anchor on a table row names,
 // is read off the rendered tree instead (renderVersion), because a table's rows carry ids the
 // renderer reports no offset for.

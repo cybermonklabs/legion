@@ -1,7 +1,7 @@
 kind: Added
 body: |-
     `document.retired` is a member of the `DispatchEvent` union and of `DISPATCH_EVENT_TYPES`, with its payload `DocumentRetiredEventPayload` (`DocumentRetiredEventPayloadSchema`): the document (`artifact_id`, `ref_key`, `name`), the `role` its retirement cleared (absent where it had none), the `reason`, and `superseded_approval`, the approval the retirement ended (the review, the version it approved, who gave it and its kind) or null. `internal/contracts` lists the type in `DispatchEventTypes`.
-    `askOpenerAttributes(line)` reads the quoted attributes of an ask block's opening line, where a Dispatch of the release before writes the block's state and answer, with each value's numeric character references (`&#x22;`, `&#xA;`, `&#xD;`, `&#34;`) and the five named ones (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`) read back in one pass. The CLI's reader of such an opener reads its attributes here, and so will the web's, so the two read one opener alike.
+    `askOpenerAttributes(line)` and `askOpenerBlockId(line)` read each quoted value of an ask block's opening line, where a Dispatch of the release before writes the block's state and answer, with every numeric character reference (`&#x22;`, `&#xA;`, `&#xD;`, `&#34;`) and the five named ones (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`) read back in one pass, as pmdoc's directive reader reads them; before, they read back only the references the renderer writes. The CLI and the page read such an opener through them, so the two read one opener alike.
 time: 2026-11-26T02:34:47.000000000Z
 custom:
     Issue: pr4173

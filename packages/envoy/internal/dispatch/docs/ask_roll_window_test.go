@@ -187,16 +187,24 @@ func TestSettlementWithholdsOnlyTheAnswerWordsItsRepairsWrite(t *testing.T) {
 // answer's state, answerer, time, options and words, and then left the fleet; the decisions step
 // has not yet stated the answer on the ask's node. The ask is one that release made, whose row
 // names no node and whose answer no tuple states; one this build opened, whose node holds no
-// answer state; or one the step's backfill stated open on its node at this build's boot. A change
-// of the document's prose settles into a version whose opener of ship keeps the state, the
-// answerer and the time of the row, which that release's CLI and pages read off the version
-// (R10), and neither the options nor the words; and the write states nothing on the node, which
-// only the catch-up brings up to the row (R3).
+// answer state; one the step's backfill stated open on its node at this build's boot; or one this
+// build answered, whose answer that release then changed - the ask stays answered, with another
+// answerer and time in its row, and its node holds the answer it changed. A change of the
+// document's prose settles into a version whose opener of ship keeps the state, the answerer and
+// the time of the row, which that release's CLI and pages read off the version (R5), and neither
+// the options nor the words; and the write states nothing on the node, which only the catch-up
+// brings up to the row (R3).
 func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoTheRow(t *testing.T) {
 	words := "Ship it on Monday."
 	answer := model.AskAnswer{User: "bob", Selected: []string{"Yes"}, Text: &words, At: time.Date(2026, 11, 20, 9, 0, 0, 123456000, time.UTC)}
-	for name, behind := range map[string]func(t *testing.T, service *Service, askID string){
-		"the release before made it: its row names no node and no tuple states its answer": func(t *testing.T, service *Service, askID string) {
+	changed := model.AskAnswer{User: "alice", Selected: []string{"No"}, At: time.Date(2026, 11, 20, 8, 30, 0, 0, time.UTC)}
+	for name, test := range map[string]struct {
+		behind func(t *testing.T, service *Service, askID string)
+		// node is the answer the ask's node holds as the window left it, nil for none, which the
+		// write leaves as it is.
+		node *model.AskAnswer
+	}{
+		"the release before made it: its row names no node and no tuple states its answer": {behind: func(t *testing.T, service *Service, askID string) {
 			ctx := context.Background()
 			if _, err := service.store.Pool.Exec(ctx, `update asks set node_kind = null, node_address = null where id = $1`, askID); err != nil {
 				t.Fatalf("leave the ask's row naming no node: %v", err)
@@ -204,13 +212,16 @@ func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoT
 			if _, err := service.store.Pool.Exec(ctx, `delete from graph_tuples where from_kind = 'ask' and from_id = $1 and kind = any($2)`, askID, asks.AnswerKinds()); err != nil {
 				t.Fatalf("take the answer's tuples off the ask's node: %v", err)
 			}
-		},
-		"this build opened it: its node holds no answer state": func(*testing.T, *Service, string) {},
-		"the backfill stated it open on its node": func(t *testing.T, service *Service, askID string) {
+		}},
+		"this build opened it: its node holds no answer state": {behind: func(*testing.T, *Service, string) {}},
+		"the backfill stated it open on its node": {behind: func(t *testing.T, service *Service, askID string) {
 			change := asks.Recorded(asks.StateOpen, nil, nil)
 			change.Who, change.At = model.Actor{Kind: "user", ID: "seed"}, time.Date(2026, 11, 20, 8, 0, 0, 0, time.UTC)
 			settleAskOnItsNode(t, service, askID, change)
-		},
+		}},
+		"this build answered it, and the release before changed the answer in its row alone": {behind: func(t *testing.T, service *Service, askID string) {
+			answerAskOnItsNode(t, service, askID, changed)
+		}, node: &changed},
 	} {
 		t.Run(name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
@@ -219,7 +230,7 @@ func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoT
 			seedServiceText(t, service, artifactID, "Context\n\n"+shipBlock)
 			settleCurrentGeneration(t, service, artifactID)
 			ask := blockAskOn(t, service, artifactID, "ship")
-			behind(t, service, ask.ID)
+			test.behind(t, service, ask.ID)
 
 			stored, err := json.Marshal(answer)
 			if err != nil {
@@ -233,7 +244,7 @@ func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoT
 			// The release before's settlement of its answer, onto the live block; then the change of
 			// prose, this build's first write of the document on a fleet of one build.
 			editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
-				if !rollWindowAskAttributes(answered, "")(firstAsk(tree)) {
+				if !rollWindowAskAttributes(true, answered, "")(firstAsk(tree)) {
 					t.Fatal("the release before's settlement wrote nothing onto the block")
 				}
 				return tree
@@ -266,12 +277,12 @@ func TestAVersionWrittenBeforeTheCatchUpKeepsTheAnswerTheReleaseBeforeWroteIntoT
 			if err != nil {
 				t.Fatalf("read the ask's node: %v", err)
 			}
-			if held := nodes[ask.ID]; held.State != nil && *held.State == asks.StateAnswered {
-				answeredBy := ""
-				if held.AnsweredBy != nil {
-					answeredBy = *held.AnsweredBy
-				}
-				t.Errorf("the ask's node holds it answered by %q after the write, want it as the window left it, for the catch-up to state", answeredBy)
+			switch held, want := nodes[ask.ID], test.node; {
+			case want == nil && held.State == asks.StateAnswered:
+				t.Errorf("the ask's node holds it answered by %q after the write, want it as the window left it, for the catch-up to state", held.AnsweredBy)
+			case want != nil && (held.State != asks.StateAnswered || held.AnsweredBy != want.User || held.AnsweredAt == nil || !held.AnsweredAt.Equal(want.At)):
+				t.Errorf("the ask's node holds it %s by %q at %v after the write, want it as the window left it, answered by %q at %s, for the catch-up to state",
+					held.State, held.AnsweredBy, held.AnsweredAt, want.User, want.At)
 			}
 		})
 	}

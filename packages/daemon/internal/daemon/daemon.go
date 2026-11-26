@@ -986,7 +986,7 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 		return nil, fmt.Errorf("dispatch_token_broker: the daemon's Dispatch credential, a token of the session %s, cannot be traded at %s: %w", session, broker, err)
 	}
 	transport := cipherclient.NewTokenTransport(client, http.DefaultTransport)
-	daemonDispatch := dispatch.New(cfg.DispatchURL, transport)
+	daemonDispatch := daemonDispatchClient(cfg, transport)
 	var caller dispatch.Caller
 	err = bootprobe.Run(ctx, "Dispatch whoami of the daemon's credential", readinessRetry, log, readinessAttempt(func(ctx context.Context) error {
 		var err error
@@ -1006,6 +1006,20 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken st
 	}
 	log.Info(dispatchCredentialLine, attrs...)
 	return transport, nil
+}
+
+// daemonDispatchClient is the daemon's Dispatch client of cfg, whose every request goes through
+// transport (dispatchCredential). Under dispatch_token_broker every write names the session the
+// daemon's broker token proves, legion-daemon:<its own project> (dispatch.WritesAs). Dispatch
+// refuses a write whose actor names another session (403 ACTOR_SESSION_MISMATCH), and the daemon
+// writes the issues of other projects too, when it runs a claim on one (legion claims spawn). With
+// the setting off the bearer proves no session, and each write names the session of the daemon of
+// the issue's project (dispatch.DaemonSession), as it did before the setting.
+func daemonDispatchClient(cfg config.Config, transport http.RoundTripper) *dispatch.HTTPClient {
+	if !cfg.DispatchTokenBroker {
+		return dispatch.New(cfg.DispatchURL, transport)
+	}
+	return dispatch.New(cfg.DispatchURL, transport, dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
 }
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,
@@ -1074,12 +1088,14 @@ func tradeTransient(err error) bool {
 	return !(errors.As(err, &refused) && refused.Permanent())
 }
 
-// checkDaemonCaller refuses a broker token Dispatch takes for a caller whose every write it would
-// refuse: another session than the daemon's (403 ACTOR_SESSION_MISMATCH, every write of the
-// daemon's naming its own session as the actor), another project than the daemon's (403
-// PROJECT_SCOPE) or no person (SIGN_IN_REQUIRED). The outbox reads a 401 and a 403 as an outage
-// (dispatch.PermanentRefusal), so it would wait on each such write for ever; each is a fault of
-// the secrets broker's exchange entry for the daemon's own account, which the refusal names.
+// checkDaemonCaller refuses a broker token that is not the daemon's own, as GET /api/v1/whoami
+// reads it. Dispatch refuses every write of a token whose session is not the daemon's (403
+// ACTOR_SESSION_MISMATCH, every write of the daemon's naming its own session as the actor). The
+// outbox reads a 401 and a 403 as an outage (dispatch.PermanentRefusal), so it would wait on each
+// such write for ever. A token whose project is not the daemon's, and one that names no owner (an
+// exchange entry that names a project names the person it acts for), are not the daemon's own
+// either. Each of the three is a fault of the secrets broker's exchange entry for the daemon's own
+// account, which the refusal names.
 func checkDaemonCaller(caller dispatch.Caller, project string) error {
 	session := dispatch.DaemonSession(project)
 	const entry = "the deployment must fix the secrets broker's exchange entry for the daemon's own account (BROKER_EXCHANGE_ACCOUNTS)"
@@ -1088,10 +1104,10 @@ func checkDaemonCaller(caller dispatch.Caller, project string) error {
 		return fmt.Errorf("GET /api/v1/whoami answers the session %s for the daemon's broker token, not %s, and Dispatch refuses every write the daemon makes as %s with it (403 ACTOR_SESSION_MISMATCH): %s so that it fixes the session %s",
 			whoamiValue(caller.Session), session, session, entry, session)
 	case caller.Project == nil || *caller.Project != project:
-		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s, and Dispatch refuses every write of the daemon's to %s with it (403 PROJECT_SCOPE): %s so that it names the project %s",
-			whoamiValue(caller.Project), project, project, entry, project)
+		return fmt.Errorf("GET /api/v1/whoami answers the project %s for the daemon's broker token, not %s: the token's project is not the daemon's, which is a fault of the exchange entry that gave it, and %s so that it names the project %s",
+			whoamiValue(caller.Project), project, entry, project)
 	case caller.Owner == nil:
-		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, and Dispatch refuses every write of a token that acts for no person (SIGN_IN_REQUIRED): %s so that it names the person the daemon acts for",
+		return fmt.Errorf("GET /api/v1/whoami answers the owner null for the daemon's broker token, which names the daemon's project, and an exchange entry that names a project names the person it acts for: %s so that it names the person the daemon acts for",
 			entry)
 	}
 	return nil

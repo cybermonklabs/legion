@@ -1405,7 +1405,7 @@ type itemBlockRow struct {
 //
 // Each written and kept row names its node in the statement that writes it where the block is a
 // node (itemBlockRow.named), and names none where it is not, so the row says which arm of
-// graph_edges answers it (migration 20261116140008); the node is already written, queued before
+// graph_edges answers it (migration 20261126045003); the node is already written, queued before
 // these statements (Queue), since the foreign key is checked inside the statement. A removed row
 // keeps the node columns it had.
 func (i ItemIndexing) queueBlocks(b *store.WriteBatch) error {

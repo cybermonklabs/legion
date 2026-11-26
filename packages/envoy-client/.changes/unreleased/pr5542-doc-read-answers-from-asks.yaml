@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `dispatch doc-read` of a live document sends `Dispatch-Asks: 1`, so Dispatch serves the text with none of an ask block's server-owned attributes, and the text it prints uploads back unchanged. Beside `Document token:` it prints one line for each answered ask of the text's `asks`, `Answered <block id> by <answerer> at <time>: <answer>`, the answer's words quoted as JSON, with the options chosen beside them where the answer chose any. A read of a version prints the stored bytes and names no answer. Against a Dispatch of the release before, which answers no `asks`, it reads the answers off the opening lines of the ask blocks, where that release writes them. `DispatchClient.docRead` of a live document and `docReadWithBlocks` send the same header; a read of a version sends none.
+time: 2026-11-26T03:00:05Z
+custom:
+    Issue: pr5542

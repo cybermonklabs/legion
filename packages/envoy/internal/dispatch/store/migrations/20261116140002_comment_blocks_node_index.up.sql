@@ -7,7 +7,7 @@
 --
 -- The same index serves two reads of this release. graph_edges' arm over a comment's blocks, and
 -- refs.BacklinkCounts beside it, answer a block's part_of only while a comment_blocks row names
--- the block's node (migration 20261116140008), one probe of this index per edge. And a btree holds
+-- the block's node (migration 20261126045003), one probe of this index per edge. And a btree holds
 -- the rows whose columns are null, so the walk over the rows that name no node, the rows the old
 -- arm still answers, reads them through it rather than through every row of comment_blocks.
 --

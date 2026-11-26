@@ -30,7 +30,7 @@ const (
 // of far more tuples than any arm answers - a delivered_to for each of their mail, an authored_by
 // for each of their writes - so an arm that reads every tuple into the person and filters them
 // costs a read of the list their whole history, and an arm that reads its tuples by another key and
-// tests the person's address on each costs it every tuple of that key (migration 20261120090001
+// tests the person's address on each costs it every tuple of that key (migration 20261126045004
 // says how each arm avoids both). Over a store holding many deliveries into one person, many
 // tuples out of a document's blocks and three comments mentioning that person, whose rows carry
 // the marker, the list answers the three mentions, and its plan - sequential scans off, as every

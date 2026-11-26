@@ -7,7 +7,7 @@
 --
 -- The same index serves two reads of this release. graph_edges' tuple arm, and refs.BacklinkCounts
 -- beside it, answer a message's replies_to only while a messages row names the message's node
--- (migration 20261116114517), one probe of this index per edge. And a btree holds the rows whose
+-- (migration 20261126045001), one probe of this index per edge. And a btree holds the rows whose
 -- columns are null, so the walk over the rows that name no node, the rows the old arms still
 -- answer, reads them through it rather than through every row of messages.
 --

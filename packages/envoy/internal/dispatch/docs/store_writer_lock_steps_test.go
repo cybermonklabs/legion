@@ -47,7 +47,7 @@ const storeStepWait = 30 * time.Second
 //     the artifact.version event, and then what the index stated under it (appendEvents);
 //   - a settlement that opens an ask a session wrote as a block (createAskBlock, then
 //     appendEvents): the owner lock, the fence row, the document's asks rows in ascending id
-//     (loadAskBlocks), the ask's node and its asker's node, the session's, in one statement in
+//     (lockAskBlocksForWrite), the ask's node and its asker's node, the session's, in one statement in
 //     ascending (kind, id) and marked for their cause before the asks row that carries the ask's id
 //     (graphstore.AskFacts, which states the ask's author beside it), that row, the session's
 //     follow of the ask, which finds the session's node there (asks.PlanFollowNewAsk), the
@@ -123,7 +123,7 @@ const (
 	// docsItemRowsStep is the stored rows of the items a write moves, which it locks before any
 	// store write of those items, the place the writers' lock order gives the item rows: after the
 	// owner, the project and the document's own fence row, before the item's own store writes.
-	// A settlement locks its document's asks rows so, in ascending id (loadAskBlocks), the order a
+	// A settlement locks its document's asks rows so, in ascending id (lockAskBlocksForWrite), the order a
 	// move of who open asks wait on locks them in before it writes their tuples
 	// (inboxwrite.QueueMoveWaiting).
 	docsItemRowsStep
@@ -244,7 +244,7 @@ const (
 	// docsAskRowStatement is createAskBlock's insert of the asks row of a new ask block.
 	docsAskRowStatement = "insert into asks ("
 	// docsAskRowsStatement is a settlement's lock of its document's asks rows in ascending id, the
-	// statement loadAskBlocks queues ahead of every write of them.
+	// statement lockAskBlocksForWrite queues ahead of every write of them.
 	docsAskRowsStatement = "select 1 from asks a where a.block_artifact_id = $1 and a.block_id is not null order by a.id for no key update"
 	// docsEventStatement is events.Broker's append, after its owner row's lock.
 	docsEventStatement = "with appended as ( insert into events ("
@@ -637,7 +637,7 @@ func settlementFenceStep() docsStep {
 }
 
 // docsAskRowsStep is the document's asks rows, which a settlement locks `for no key update` in
-// ascending id in its write phase, after the fence row and before any store write (loadAskBlocks).
+// ascending id in its write phase, after the fence row and before any store write (lockAskBlocksForWrite).
 // It belongs to the path as the item rows of the writers' lock order, which come after the owner,
 // the project and the document's fence row and before the items' own store writes: a move of who
 // open asks wait on locks the asks it may move in ascending id and only then writes their tuples

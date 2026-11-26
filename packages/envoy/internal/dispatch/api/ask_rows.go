@@ -107,17 +107,23 @@ end`
 // (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
 const askedOfPersonExpression = asks.AskedOfPersonExpression
 
+// ownerProjectJoin attaches the projects row as p for a row already joined to its issue as i and
+// its document as ar. Both askedOfPersonJoins, through asks.AskedOfPersonJoins, and projectOfComment
+// (api/project_scope.go) append it, so the join has one spelling across the module, the one in
+// asks (asks.OwnerProjectJoin).
+const ownerProjectJoin = asks.OwnerProjectJoin
+
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a (asks.AskedOfPersonJoins): its issue as i, its own document as ar, and the project of
-// whichever of the two owns it as p. Six FROM clauses of this package carry them - askReadFrom
+// whichever of the two owns it as p. Seven FROM clauses of this package carry them - askReadFrom
 // and askWaitingOnPerson below, the opened-since read of listOpenAsks (api/asks.go), the
 // not-exists subquery of myRepliesOwner (api/replies.go), the read putAskAskedOf takes before it
-// writes (api/ask_asked_of.go) and the Inbox page's ask rows (meInboxPageRows in
-// api/me_inbox.go) - and each builds them from this one text, so the rule and the tables it names
-// move together. askReadFrom serves three of the seven reads, askReadColumns and the two person
-// filters, the Inbox's and the open-asks read's, each in the statement that selects
-// askReadColumns. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
-// expression to its own.
+// writes (api/ask_asked_of.go), the Inbox page's ask rows (meInboxPageRows in api/me_inbox.go)
+// and projectOfAsk (api/project_scope.go) - and each builds them from this one text, so the rule
+// and the tables it names move together. askReadFrom serves three of the eight reads,
+// askReadColumns and the two person filters, the Inbox's and the open-asks read's, each in the
+// statement that selects askReadColumns. TestOneExpressionDecidesWhoWaits holds them to this one
+// spelling as it holds the expression to its own.
 //
 // The project is reached through either owner the way this repository already reads a
 // question's project (api/inbox.go, api/asks.go, projectListQuery in api/projects.go).
