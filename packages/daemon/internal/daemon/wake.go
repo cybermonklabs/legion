@@ -75,7 +75,7 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 	if w.idlePeriod <= 0 || w.idleStore == nil {
 		return
 	}
-	ticks := newPassTimer(w.timers(), w.passes, passWakes, wakeTickInterval)
+	ticks := newPassTimer(w.timers(), w.passes, passWakes, wakeTickInterval, wakeTickInterval)
 	defer ticks.stop()
 	for pass := uint64(1); ticks.next(ctx); pass = passEnded(w.observe, passWakes, pass) {
 		now := w.timers().Now().UTC()

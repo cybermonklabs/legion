@@ -1622,7 +1622,7 @@ func (w *workflowRuntime) pollHoldRelease(ctx context.Context) {
 }
 
 func (w *workflowRuntime) pollHoldReleaseWith(ctx context.Context, reader positionReader) {
-	polls := newPassTimer(w.timers(), w.passes, passHoldRelease, defaultHoldPollInterval)
+	polls := newPassTimer(w.timers(), w.passes, passHoldRelease, defaultHoldPollInterval, defaultHoldPollInterval)
 	defer polls.stop()
 	var last intake.DispatchConsumerPosition
 	var lastHold uint64
@@ -1719,7 +1719,7 @@ func (w *workflowRuntime) reconnectWatchdog(ctx context.Context) {
 }
 
 func (w *workflowRuntime) reconnectWatchdogWith(ctx context.Context, conn connStatus) {
-	polls := newPassTimer(w.timers(), w.passes, passReconnect, defaultReconnectPollInterval)
+	polls := newPassTimer(w.timers(), w.passes, passReconnect, defaultReconnectPollInterval, defaultReconnectPollInterval)
 	defer polls.stop()
 	var disconnectedSince, warnedAt time.Time
 	for pass := uint64(1); polls.next(ctx); pass = passEnded(w.observe, passReconnect, pass) {
@@ -1756,9 +1756,8 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 	if interval <= 0 {
 		interval = time.Hour
 	}
-	ticks := newPassTimer(w.timers(), w.passes, passControllerTick, interval)
+	ticks := newPassTimer(w.timers(), w.passes, passControllerTick, min(firstControllerTick, interval), interval)
 	defer ticks.stop()
-	ticks.firstAfter(min(firstControllerTick, interval))
 	for pass := uint64(1); ticks.next(ctx); pass = passEnded(w.observe, passControllerTick, pass) {
 		w.applyControllerTick(ctx, w.timers().Now())
 	}
@@ -1778,7 +1777,7 @@ const entrySweepInterval = time.Minute
 // project, this boot and the run's time — since processed_events is shared by every project's
 // daemon. A failed apply is logged, and the next run tries again, as applyControllerTick does.
 func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
-	sweeps := newPassTimer(w.timers(), w.passes, passEntrySweep, entrySweepInterval)
+	sweeps := newPassTimer(w.timers(), w.passes, passEntrySweep, entrySweepInterval, entrySweepInterval)
 	defer sweeps.stop()
 	for pass := uint64(1); sweeps.next(ctx); pass = passEnded(w.observe, passEntrySweep, pass) {
 		w.applyEntrySweep(ctx, w.timers().Now())

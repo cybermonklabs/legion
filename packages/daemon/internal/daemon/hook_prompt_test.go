@@ -274,7 +274,7 @@ func parkTheWake(t *testing.T, payload record.OutboxPayload, role claim.Role) *p
 	runner, sup, pool := hookRunner(t, publisher)
 	// A machine takes its deps where it is built, so the clock and the pacing go in before the
 	// claim is created.
-	clock := &heldClock{}
+	clock := newHeldClock()
 	sup.deps.Clock = clock
 	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(parkedTurn) }}
 	topic := notify.RoleTopicPrefix + string(mustClaimToken(t, "LEGION-208", role))

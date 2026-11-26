@@ -120,7 +120,7 @@ func (w *workflowRuntime) mergeStateEnds(ctx context.Context, issue string) bool
 // it ends too, leaving nothing queued or armed behind it. A failed read ends the climb: the
 // issue's next event, its next handoff and the daemon's next start all read again.
 func (w *workflowRuntime) climbMergeState(ctx context.Context, issue string) {
-	reads := newPassTimer(w.timers(), w.passes, passMergeState, mergeStateLadderWait)
+	reads := newPassTimer(w.timers(), w.passes, passMergeState, mergeStateLadderWait, mergeStateLadderWait)
 	defer reads.stop()
 	for read := 1; ; read++ {
 		state, err := w.readMergeState(ctx, issue)

@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -487,8 +488,8 @@ func baselineRootLaunches(t *testing.T) []time.Duration {
 //     after the moment it would run with no stale claim in the rig (baselineRootLaunches).
 //  4. The whole wave is refreshed within about the number of stale claims divided by the rate,
 //     counted in rounds of the gate (refreshWaveRounds, which states the margin and why).
-//  5. A credit the killed claim's own death relaunch took away is back within one sweep, with the
-//     wave still draining.
+//  5. A credit an operator's suspension of a claim holding an admitted refresh wake takes away is
+//     back by the sweep after the next one, with the wave still draining.
 //  6. `claimsToRefresh` of the state body equals the stale set at every reading, leaves out the
 //     claim in a round and the claim no install reaches, and is zero when the wave has drained.
 //
@@ -664,10 +665,11 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 		// without running it (letGo), and an operator's suspension of such a claim is one of
 		// them: it ends the very process the refresh wake was parked over. The credit comes
 		// back inside that same decision, which ends with no refresh wake of this machine's own
-		// waiting (supervise's endRefreshLane, Machine.unlock), and the next sweep's pass is
-		// what spends it, posting another stale claim on it. The correction stays the backstop
-		// for the losses no decision of a machine reaches (the correction refreshStalePlugins
-		// makes, supervise.RefreshGate.Correct; decision P2 of
+		// waiting (supervise's endRefreshLane, Machine.unlock), and here the next sweep's pass
+		// is what spends it, posting another stale claim on it: a turn's end asks the gate too
+		// (afterTurn), but every turn of this case has ended by now. The correction stays the
+		// backstop for the losses no decision of a machine reaches (the correction
+		// refreshStalePlugins makes, supervise.RefreshGate.Correct; decision P2 of
 		// dispatch://INFRA-2712/artifact/plan-md).
 		//
 		// It reads a full gate too, and waits for one in the same way, for the same reason: a
@@ -697,18 +699,45 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 
 			// The credit the dropped wake gives back, and the sweep that spends it on another
 			// claim: what this segment measures is the release inside the suspension's own
-			// decision followed by the next sweep's admission. The sweeps are this test's own,
-			// counted from the moment the wake is seen gone, each read once its posts have
-			// settled, since a pass posts its round over one goroutine per claim.
+			// decision followed by the next sweep's admission. The operator suspends the first
+			// claim whose refresh wake waits. The suspension is decided where it arrives, so its
+			// 200 answers a decision that has ended: the claim is suspended by the operator, and
+			// its wake has gone with the process the suspension ended (letGo). Both are read as
+			// facts once the request has returned, the wake from a settled reading, rather than
+			// waited for: a suspension that left its wake in the pacing took no credit out, and
+			// the count below would then measure nothing.
+			status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(drained)+"/suspend", nil, true)
+			if status != http.StatusOK {
+				t.Fatalf("the suspend of %s, which holds an admitted refresh wake, = %d; body %s", drained, status, body)
+			}
+			if c := d.claim(drained); c.State != string(supervise.StateSuspended) || c.SuspendedBy != string(supervise.SuspendedByOperator) {
+				t.Fatalf("the claim %s is %s suspended by %q once its suspension was answered, want %s by the operator",
+					drained, c.State, c.SuspendedBy, supervise.StateSuspended)
+			}
+			held := settledRefreshes(t, d, "the suspension of a claim holding a refresh wake")
+			if claimsOfWakes(held)[drained] || len(held) != len(after)-1 {
+				t.Fatalf("the lane holds %d refreshes after the suspension of %s, and its wake is %v, want the %d it held less that wake: the suspension ends the process the wake was parked over and drops the wake with it (letGo)",
+					len(held), drained, claimsOfWakes(held)[drained], len(after)-1)
+			}
+
+			// The sweeps are this test's own, counted from the moment the wake is seen gone. Each
+			// runs only once the reading before it has settled, since a pass posts its round over
+			// one goroutine per claim, and a sweep run while those posts are being decided would
+			// correct the gate from views that lack their wakes (the drain loop's fill).
 			sweptAt := len(rt.fake().CallsOf("ReconcileOrphans"))
 			for range 3 {
-				if len(settledRefreshes(t, d, "the credit coming back")) == testWakeRate {
+				if len(held) == testWakeRate {
 					break
 				}
 				passes.pass(t, passOrphans)
+				held = settledRefreshes(t, d, "the credit coming back")
 			}
 			creditBackIn = len(rt.fake().CallsOf("ReconcileOrphans")) - sweptAt
-			if creditBackIn > 2 || len(settledRefreshes(t, d, "the credit coming back")) != testWakeRate {
+			if len(held) != testWakeRate {
+				t.Fatalf("the credit the suspension of %s took away had not come back %d sweeps after the wake was seen gone: the lane holds %d refreshes, want the rate, %d, by the next sweep and no later than the one after it: the suspension's own decision gives the credit back, and the pass that follows the drop admits another claim on it",
+					drained, creditBackIn, len(held), testWakeRate)
+			}
+			if creditBackIn > 2 {
 				t.Fatalf("the credit the suspension of %s took away came back %d sweeps after the wake was seen gone, want the next sweep and no later than the one after it: the pass that follows the drop corrects the gate from the wakes the machines hold and admits another claim on it",
 					drained, creditBackIn)
 			}
@@ -788,7 +817,7 @@ func TestTheRefreshLaneHoldsOneMinuteOfThePacingWhileAWholeFleetsWaveDrains(t *t
 	// The four counts, recorded, and a zero of any of them failing: the stale claims the lane read
 	// at the boot, the roots whose first launch was measured, the turns that ended during the
 	// wave, and the claims refreshed.
-	t.Logf("check c-bound: %d stale claims at the boot, %d roots measured, %d turns ended during the wave, %d claims refreshed in %d rounds of the gate (%d admissions); the killed claim's credit came back in %d sweep(s), and the latest root launch ran %s behind the same launch with no stale claim, within the %s this case allows",
+	t.Logf("check c-bound: %d stale claims at the boot, %d roots measured, %d turns ended during the wave, %d claims refreshed in %d rounds of the gate (%d admissions); the suspended claim's credit came back in %d sweep(s), and the latest root launch ran %s behind the same launch with no stale claim, within the %s this case allows",
 		staleAtBoot, len(rootMoments), turnsEnded, len(refreshed), rounds, admitted, creditBackIn, worst, behind)
 	for _, count := range []struct {
 		what string

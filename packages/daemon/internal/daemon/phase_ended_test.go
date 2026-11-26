@@ -267,7 +267,7 @@ func parkedOverItsProcess(t *testing.T, sup *supervisor, issue string, role clai
 	ctx := context.Background()
 	// A machine takes its deps where it is built, so the clock and the pacing go in before the
 	// claim is created.
-	sup.deps.Clock = &heldClock{}
+	sup.deps.Clock = newHeldClock()
 	sup.deps.WakePace = supervise.WakePace{Rate: 1, Burst: 1, Reserve: func(now time.Time) time.Time { return now.Add(time.Hour) }}
 	token := mustClaimToken(t, issue, role)
 	live := liveClaim(1, token, sup.deps.PluginContract-1)

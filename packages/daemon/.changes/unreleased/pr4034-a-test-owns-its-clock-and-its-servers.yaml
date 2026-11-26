@@ -3,5 +3,6 @@ body: |-
   The daemon's periodic passes, boot probes, app mints, mapping refresher, claim-write deadline,
   review-permission window, state route bound and idle, unowned and wake decisions read one module
   clock (the real clock in production), and each pass also runs on a trigger only a test fires.
+  The controller arms its timer at the first tick's deadline without first arming it for the full interval.
   The daemon reports its readiness, each pass's end and each outbox settlement through one observer,
   which is nil in production. The sandbox and tmux runtimes take a clock in their options.

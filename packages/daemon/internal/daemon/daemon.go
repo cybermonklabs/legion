@@ -2350,7 +2350,7 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 		if reconciled {
 			tokens = s.launchUnfinished(relaunching, tokens)
 		}
-		sweeps := newPassTimer(s.plan.clock, s.plan.passes, passUnfinished, orphanSweepInterval)
+		sweeps := newPassTimer(s.plan.clock, s.plan.passes, passUnfinished, orphanSweepInterval, orphanSweepInterval)
 		defer sweeps.stop()
 		for pass := uint64(1); len(tokens) > 0 && sweeps.next(s.supervisor.ctx); pass = passEnded(s.plan.observe, passUnfinished, pass) {
 			if !reconciled {
@@ -2374,7 +2374,7 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 // the smallest backstop bound a configuration can hold, and far below the floor under
 // `worker_silence_minutes`.
 func (s *supervision) reconcileOrphans(ctx context.Context) {
-	sweeps := newPassTimer(s.plan.clock, s.plan.passes, passOrphans, orphanSweepInterval)
+	sweeps := newPassTimer(s.plan.clock, s.plan.passes, passOrphans, orphanSweepInterval, orphanSweepInterval)
 	defer sweeps.stop()
 	for pass := uint64(1); sweeps.next(ctx); pass = passEnded(s.plan.observe, passOrphans, pass) {
 		claims, err := s.supervisor.Claims(ctx)

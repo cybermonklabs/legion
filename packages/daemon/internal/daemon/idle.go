@@ -44,7 +44,7 @@ func (w *workflowRuntime) tickIdle(ctx context.Context) {
 	if w.idlePeriod <= 0 || w.idleStore == nil || w.idleRuntime == nil {
 		return
 	}
-	ticks := newPassTimer(w.timers(), w.passes, passIdle, idleTickInterval)
+	ticks := newPassTimer(w.timers(), w.passes, passIdle, idleTickInterval, idleTickInterval)
 	defer ticks.stop()
 	for pass := uint64(1); ticks.next(ctx); pass = passEnded(w.observe, passIdle, pass) {
 		// The release of a pod no claim owns runs first, and outside the gate the idle

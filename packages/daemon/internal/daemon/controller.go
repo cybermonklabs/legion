@@ -85,7 +85,7 @@ func (k *controllerKeeper) token() claim.Token { return claim.ControllerToken(k.
 // run keeps the controller at once and then every interval, or whenever a test runs its pass,
 // until ctx is done.
 func (k *controllerKeeper) run(ctx context.Context, every time.Duration) {
-	looks := newPassTimer(k.clock, k.passes, passControllerKeeper, every)
+	looks := newPassTimer(k.clock, k.passes, passControllerKeeper, every, every)
 	defer looks.stop()
 	for pass := uint64(1); ; pass++ {
 		if err := k.keep(); err != nil && ctx.Err() == nil {
@@ -262,7 +262,7 @@ func watchController(ctx context.Context, st *store.Store, cfg config.Config, p 
 	prober := controller.NewProber(controller.ProberOptions{
 		EnvoyURL: cfg.EnvoyURL, EnvoyToken: p.secrets["ENVOY_TOKEN"], Project: p.project, Log: log,
 	})
-	sweeps := newPassTimer(p.clock, p.passes, passControllerWatch, orphanSweepInterval)
+	sweeps := newPassTimer(p.clock, p.passes, passControllerWatch, orphanSweepInterval, orphanSweepInterval)
 	defer sweeps.stop()
 	var logged time.Time
 	for pass := uint64(1); ; pass++ {

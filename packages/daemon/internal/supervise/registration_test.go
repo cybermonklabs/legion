@@ -392,6 +392,44 @@ func TestARegisteredAgentThatNeverSaysReadyIsRelaunchedAtTheDeadline(t *testing.
 	}
 }
 
+// A daemon-launched controller that registers but does not report ready must not stay
+// registered indefinitely. The registration deadline suspends its process, charges one
+// launch failure, and resumes the same session in the next generation.
+func TestADaemonLaunchedControllerThatNeverSaysReadyIsRelaunchedAtTheDeadline(t *testing.T) {
+	h := newHarnessOf(t, controllerClaim())
+	h.launch()
+	h.advance(testBoot)
+	h.connect()
+	h.advance(testBoot)
+	h.register()
+	h.wantState(StateRegistered)
+	alive := h.locator()
+
+	// Just short of the registration plus the deadline, and past any deadline armed before the
+	// registration: left alone.
+	h.advance(deadline - time.Nanosecond)
+	h.wantCalls("Suspend", 0)
+	h.wantState(StateRegistered)
+
+	h.advance(time.Nanosecond)
+	if suspends := h.wantCalls("Suspend", 1); suspends[0].Locator != alive {
+		t.Errorf("suspended %+v, want the live process whose controller never said ready", suspends[0].Locator)
+	}
+	h.wantCalls("Release", 0)
+	if resumed := h.wantCalls("Resume", 1)[0]; resumed.Spec.ResumeSessionFile != sessionFile || resumed.Spec.Generation != 2 {
+		t.Errorf("resumed %+v, want the registered session at generation 2", resumed.Spec)
+	}
+	h.wantBudgets(Budgets{LaunchFailures: 1})
+	h.wantState(StateLaunching)
+	h.wantPrompts(0)
+	if lines := h.logs.lines("the agent registered and never said it was ready"); len(lines) != 1 {
+		t.Errorf("logged %q, want one line naming the controller that never said ready", lines)
+	}
+
+	h.relaunched()
+	h.wantBudgets(Budgets{})
+}
+
 // A daemon restart does not end the wait: a claim restored registered is watched again from the
 // restart, as a booting claim is, and relaunched at the deadline.
 func TestARegisteredClaimIsWatchedAgainAfterARestart(t *testing.T) {
