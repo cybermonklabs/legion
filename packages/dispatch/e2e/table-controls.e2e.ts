@@ -12870,3 +12870,159 @@ test("a j while the selection bar's landing is owed leaves the focus on a contro
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
+
+// INFRA-3135, round 29 (the tester's), by the architect's ruling of 2026-11-26 14:10Z: the design of
+// the selection bar's return (dispatch://INFRA-3135/artifact/bar-return-design-md version 7, approved
+// on the condition that the scroll anchor and the hand-off read one predicate of the rows leaving)
+// and the rules of 2026-11-25 05:3xZ (the least scroll, then nothing moves) and 2026-11-21 17:0xZ (a
+// bulk action the reader pressed frees the whole height of the rows it takes). Measured at b04db619
+// in builds Job infra-3135-i-h5-g6tnd, at 1440x900, Chromium once and WebKit three times, flat and
+// grouped: with two asks marked above the reader's row and the pointer travelling over the list, the
+// bar's Snooze lands the focus on the checkbox of the row now at the place, and 11 to 16 ms later the
+// scroll anchor (`ViewportAnchor.contentResized`, features/shell/ViewportAnchor.tsx:453-470) scrolls
+// the list's box back by the 134 px the snoozed rows freed, so the landed row and the reader's row
+// move 134 px down after the landing. The Inbox names a snoozed row to the anchor only while its write
+// is out (`snoozing.has(id) || bulkSnoozing.has(id)`, features/inbox/Inbox.tsx:2757-2764), where the
+// hand-off reads the Snooze name, which lasts until the row has gone (`snoozedHere`). At 53f87411
+// the same scroll-back happens and the focus is lost to the body (infra-3135-i-b5-fkz95).
+// Its engines: the clause of the `webkit` and `firefox` projects that names the rows
+// INFRA-3135's round-29 tester pinned (e2e/playwright.config.ts).
+// SLOW(>=2s): sixty asks seeded, and one bar Snooze read for two seconds after its landing.
+test("after the Inbox bar's Snooze lands with the pointer travelling over the list, the list's box scrolls by nothing and the landed row and the reader's row stay where the landing left them @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await createProject({ key: "CORE", name: "Core" });
+  for (let index = 0; index < 60; index++) {
+    const owner = await createIssue({ force: true, project: "CORE", title: `Ask owner ${index}` });
+    await createAsk(owner.key, { question: `Ask ${index}: which way?` }, SURFACE_SESSION);
+  }
+  const bar = page.getByRole("toolbar", { name: "Selected rows" });
+  const list = page.getByTestId("inbox-list");
+  await page.goto("/?group=none");
+  await expect.poll(() => page.locator("[data-inbox-row]").count()).toBeGreaterThanOrEqual(20);
+  // The rows read once the poll above found the list drawn; they only name the rows marked, the row
+  // after them and the reader's own row further down.
+  const ids = await page
+    .locator("[data-inbox-row]")
+    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
+  const upper = ids[12] ?? "";
+  const lower = ids[13] ?? "";
+  const after = ids[14] ?? "";
+  const reader = ids[17] ?? "";
+  for (const id of [lower, upper]) {
+    const mark = inboxRow(page, id).getByRole("checkbox").first();
+    await mark.evaluate((node) => (node as HTMLInputElement).click());
+    await expect(mark).toBeChecked();
+  }
+  await expect(bar).toBeVisible();
+  // The row marked last's checkbox a fifth of the way down the list's box, the reader's row below it.
+  await list.evaluate((box, id) => {
+    const mark = box.querySelector(`[data-inbox-row="${id}"] input[type="checkbox"]`);
+    if (mark === null) return;
+    const frame = box.getBoundingClientRect();
+    box.scrollTop += mark.getBoundingClientRect().top - (frame.top + frame.height * 0.2);
+  }, upper);
+  await settledScrollTop(list);
+  // The pointer rests on the reader's row, at its right edge clear of every control, and then
+  // travels over the list: a pointermove on the list's root every 40 ms, which the Inbox's motion
+  // hold answers by keeping the read the list draws.
+  const readerBox = await inboxRow(page, reader).boundingBox();
+  expect(readerBox, "the reader's row is drawn").not.toBeNull();
+  await page.mouse.move(
+    (readerBox?.x ?? 0) + (readerBox?.width ?? 0) - 8,
+    (readerBox?.y ?? 0) + 10
+  );
+  await list.evaluate((box) => {
+    const w = window as unknown as { __travelTimer?: number };
+    window.clearInterval(w.__travelTimer);
+    w.__travelTimer = window.setInterval(() => {
+      const root = box.firstElementChild;
+      const target = root?.querySelector("ul") ?? root;
+      if (target === null || target === undefined) return;
+      const rect = target.getBoundingClientRect();
+      target.dispatchEvent(
+        new PointerEvent("pointermove", {
+          bubbles: true,
+          clientX: rect.left + 3,
+          clientY: rect.top + 3,
+          pointerType: "mouse",
+        })
+      );
+    }, 40);
+  });
+  // Every frame from the pick on, the page records the box's scroll and the two rows' tops at the
+  // first frame the focus stands on the landed checkbox with the bar gone, and again at the last.
+  await list.evaluate(
+    (box, rows) => {
+      const w = window as unknown as {
+        __afterLanding?: { first: number[] | null; last: number[] | null; on: boolean };
+      };
+      const record = { first: null as number[] | null, last: null as number[] | null, on: true };
+      w.__afterLanding = record;
+      const top = (id: string) =>
+        box.querySelector(`[data-inbox-row="${id}"]`)?.getBoundingClientRect().top ?? Number.NaN;
+      const step = () => {
+        if (!record.on) return;
+        const landedMark = box.querySelector(
+          `[data-inbox-row="${rows.after}"] input[type="checkbox"]`
+        );
+        const barGone =
+          document.querySelector('[role="toolbar"][aria-label="Selected rows"]') === null;
+        if (barGone && landedMark !== null && document.activeElement === landedMark) {
+          const now = [box.scrollTop, top(rows.after), top(rows.reader)];
+          if (record.first === null) record.first = now;
+          record.last = now;
+        }
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+    },
+    { after, reader }
+  );
+  const trigger = listTrigger(bar, "Snooze selected asks");
+  await trigger.focus();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("tom");
+  await expect(listOf(trigger).getByRole("option")).toHaveText(["Tomorrow"]);
+  await page.keyboard.press("Enter");
+  await expect(bar).toHaveCount(0, { timeout: 15_000 });
+  // The pointer goes on travelling for a second and a half after the bar has gone, as a reader's
+  // hand moving over the list does, which keeps the snoozed rows drawn that long.
+  await page.waitForTimeout(1500);
+  await list.evaluate(() => {
+    const w = window as unknown as { __travelTimer?: number };
+    window.clearInterval(w.__travelTimer);
+  });
+  await expect(inboxRow(page, upper)).toHaveCount(0, { timeout: 15_000 });
+  await expect(inboxRow(page, lower)).toHaveCount(0, { timeout: 15_000 });
+  // A second after the rows have gone, which is past the 11 to 16 ms the scroll-back took, so the
+  // page's record holds every frame the landing could still be moved in.
+  await page.waitForTimeout(1000);
+  await settledScrollTop(list);
+  // One read is the answer: the rows have gone, the pointer rests and the box holds still, so the
+  // record's first and last frames on the landed checkbox are final.
+  const seen = await page.evaluate(() => {
+    const w = window as unknown as {
+      __afterLanding?: { first: number[] | null; last: number[] | null; on: boolean };
+    };
+    const record = w.__afterLanding;
+    if (record !== undefined) record.on = false;
+    return { first: record?.first ?? null, last: record?.last ?? null };
+  });
+  const [scrollAt, landedAt, readerAt] = seen.first ?? [Number.NaN, Number.NaN, Number.NaN];
+  const [scrollNow, landedNow, readerNow] = seen.last ?? [Number.NaN, Number.NaN, Number.NaN];
+  const text =
+    seen.first === null
+      ? "the focus never stood on the checkbox of the row now at the place once the bar had gone"
+      : `from the landing on, the box scrolled ${Math.round(scrollNow - scrollAt)} px, the landed row moved ` +
+        `${Math.round(landedNow - landedAt)} px and the reader's row ${Math.round(readerNow - readerAt)} px`;
+  expect(
+    seen.first !== null &&
+      Math.abs(scrollNow - scrollAt) <= 1 &&
+      Math.abs(landedNow - landedAt) <= 1 &&
+      Math.abs(readerNow - readerAt) <= 1,
+    text
+  ).toBe(true);
+});
