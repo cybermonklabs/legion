@@ -48,7 +48,9 @@
 #      conflict markers, and below git's 50% likeness git takes the rename for a delete and an
 #      add; so where step 3 does not pass, it runs once more with renames found at 1% likeness
 #      (`-X find-renames=1%`). That second run can only pass where its result is step 1's own, so a
-#      looser pairing of files cannot hide a conflict step 1 has. A conflict git writes no markers
+#      looser pairing of files cannot hide a conflict step 1 has; where it fails too, the files the
+#      first run named are reported, since a looser pairing can match files that merely share a
+#      line. A conflict git writes no markers
 #      for (a binary file's, modify/delete, file/directory, by git's own messages) is the change's
 #      too where step 1 lists other stages for it, each with its mode and blob, than step 2 lists
 #      for the same path and for the file the change renamed it from, where it did.
@@ -430,9 +432,9 @@ compare() {
 
 # judge <number> <head>: whether the change adds a conflict to priority pull request <number> at
 # <head>, by the three steps of the header. Sets `verdict` to `clean` or `conflict`, and on a
-# conflict leaves in $work/caused the paths git names for it, NUL-separated, none where git names
-# none. Fails the check where git cannot answer. Called bare, never as a condition, so `set -e`
-# holds inside it.
+# conflict leaves in $work/caused the paths git names for it (where step 3 runs, those of its first
+# try), NUL-separated, none where git names none. Fails the check where git cannot answer. Called
+# bare, never as a condition, so `set -e` holds inside it.
 judge() {
   local pull=$1 pull_head=$2 status landed attempt options=() stale
   verdict=clean
@@ -454,7 +456,9 @@ judge() {
   stale=$(unaside < "$work/before.paths" | tr -cd '\0' | wc -c)
   echo "#$pull already conflicts with the base of $change in $stale file(s): those are its own to resolve, and count against $change only where $change adds a conflict."
   # 3. The change's own edits applied to step 2's result, over the base; where that does not pass,
-  # once more with renames found at 1% likeness.
+  # once more with renames found at 1% likeness. The second try can only clear the verdict: a
+  # looser pairing can match files that merely share a line, so where it fails too, the paths of
+  # the first try name the conflict.
   landed=$(git -C "$repo" commit-tree -p "$base" -m "#$pull merged into $base" "$(cat "$work/before.tree")") ||
     fail "git could not write a commit of #$pull merged into the base of $change, $unread"
   for attempt in default loose; do
@@ -471,7 +475,9 @@ judge() {
       verdict=clean
       return 0
     fi
+    [ "$attempt" = loose ] || cp "$work/caused" "$work/caused.first"
   done
+  cp "$work/caused.first" "$work/caused"
 }
 
 # In a merge group, the priority pull requests of the groups in front of this one, which land

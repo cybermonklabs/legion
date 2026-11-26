@@ -405,10 +405,11 @@ check "it merged #60 through both renames" "$(contains "$out" "$(clean_line 60 "
 
 echo "case: an edit of a small renamed file inside a stale priority pull request's conflict fails"
 # The pull request edits n2, the line #60 already conflicts with main on: the looser try finds the
-# rename and git still cannot apply the edit.
+# rename and git still cannot apply the edit. The error names n.txt, the file the first try found
+# the conflict in, not p.txt, the file the looser try paired it with.
 run_pr "$m_shortinside"
 check "it fails" "$(is "$status" 1)"
-check "it names #60" "$(contains "$err" "^::error::pull request #20 conflicts with priority pull request #60 (priority work 60 at 100%25) in ")"
+check "it names #60 and the first try's file" "$(has_line "$err" "$(conflict_line 60 n.txt)")"
 check "it names no other" "$(is "$(grep -c '^::error::' <<<"$err")" 1)"
 
 echo "case: an edit of a file a stale priority pull request deletes fails, though the file reads like it holds a marker"
