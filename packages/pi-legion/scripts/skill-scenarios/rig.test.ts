@@ -3740,6 +3740,127 @@ esac
   return { repo: realpathSync(repo), work, run };
 }
 
+/** A repository that stands for the texts pull request at a control label's head: a base commit,
+ * the three commits of C2 under their own subjects, and the control files of C6, with a planted
+ * rig.sh and bun beside them. `plant` is the fault put into the committed patch of ctl-main-texts:
+ * none, empty, one file short, one file more, or the diff of a file the texts list leaves out. */
+function plantedTextsJob(plant: "none" | "empty" | "short" | "long" | "other-file") {
+  const repo = freshDir("texts-job-repo");
+  const here = path.join(repo, "packages/pi-legion/scripts/skill-scenarios");
+  mkdirSync(path.join(here, "controls/patches"), { recursive: true });
+  cpSync(path.join(scenarios, "scored-job.sh"), path.join(here, "scored-job.sh"));
+  writeFileSync(
+    path.join(here, "rig.sh"),
+    String.raw`#!/usr/bin/env bash
+work=$SKILL_SCENARIOS_WORK
+printf '%s\n' "$*" >>"$work/rig-calls"
+case $1 in
+batch-scored)
+  mkdir -p "$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1"
+  echo '{"outcome":"scored"}' >"$work/runs/$2-$SKILL_SCENARIOS_FORWARD_WORLD-$4-1/row.json"
+  ;;
+forward-cell) echo "CONTROL BIT: $3 $4 1/5, 4 failed runs noticed" && echo "head Job of $4: may start" ;;
+esac
+`
+  );
+  // Three of these four texts are ones the implementer in retro or the merger reads, which
+  // ctl-main-texts takes out; the architect's part is outside that list, so its own commit's diff
+  // is a file the texts patch must not hold.
+  const texts = {
+    common: "packages/daemon/internal/prompts/roles/core/common.md",
+    merger: "packages/daemon/internal/prompts/roles/merger.md",
+    implementer: "packages/daemon/internal/prompts/roles/implementer.md",
+    architect: "packages/daemon/internal/prompts/go/architect-common.md",
+  };
+  const write = (file: string, text: string) => {
+    mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+    writeFileSync(path.join(repo, file), text);
+  };
+  for (const [name, file] of Object.entries(texts)) write(file, `# ${name}\n\nOne line of ${name}.\n`);
+  git(repo, "init", "-q");
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "the texts at the base");
+  const base = git(repo, "rev-parse", "HEAD").trim();
+  const commit = (subject: string, files: Record<string, string>) => {
+    for (const [file, text] of Object.entries(files)) write(file, text);
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", subject);
+  };
+  commit("docs(prompts): the retro and the merger report a defect after the last step and go on", {
+    [texts.common]: "# common\n\nOne line of common.\nA finding after the last step goes to report_defect.\n",
+    [texts.merger]: "# merger\n\nOne line of merger.\nA defect you see in the change goes to report_defect.\n",
+  });
+  commit("docs(prompts): at the retro, a review thread that needs a fix is reported, not sent back", {
+    [texts.implementer]: "# implementer\n\nOne line of implementer.\nAt the retro a thread is reported, never sent back.\n",
+  });
+  commit("docs(prompts): the architect asks no role to move reviewed work back past the last step", {
+    [texts.architect]: "# architect\n\nOne line of architect.\nNo role takes an ancestor back for a child.\n",
+  });
+  const owner = git(repo, "rev-parse", "HEAD").trim();
+  const diff = (...args: string[]) =>
+    git(
+      repo,
+      "diff",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-renames",
+      "--unified=3",
+      "--diff-algorithm=myers",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      ...args
+    );
+  // The patch the pull request's own commits make: every text of the list, from the parent of the
+  // first group commit to the head.
+  const made = diff(base, owner, "--", texts.common, texts.merger, texts.implementer);
+  const other = diff(`${owner}^`, owner);
+  const committed =
+    plant === "none"
+      ? made
+      : plant === "empty"
+        ? ""
+        : plant === "short"
+          ? made.slice(0, made.lastIndexOf("diff --git"))
+          : plant === "long"
+            ? made + other
+            : other;
+  writeFileSync(
+    path.join(here, "controls/forward-only-main-texts.txt"),
+    "unpatch controls/patches/forward-only-texts.patch\n"
+  );
+  writeFileSync(path.join(here, "controls/patches/forward-only-texts.patch"), committed);
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "the control files of the scored runs");
+  const head = git(repo, "rev-parse", "HEAD").trim();
+  const bin = freshDir("texts-job-bin");
+  writeFileSync(
+    path.join(bin, "bun"),
+    String.raw`#!/bin/sh
+case "$1 $2" in
+"install --frozen-lockfile") exit 0 ;;
+*) echo "the planted bun has no answer to $*" >&2; exit 9 ;;
+esac
+`,
+    { mode: 0o755 }
+  );
+  const work = freshDir("texts-job-work");
+  const run = (args: string[], env: Record<string, string> = {}) => {
+    const result = childSpawn(["bash", path.join(here, "scored-job.sh"), ...args], {
+      PATH: `${bin}:${callerPath}`,
+      SKILL_SCENARIOS_WORK: work,
+      ...env,
+    });
+    const calls = path.join(work, "rig-calls");
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+      calls: existsSync(calls) ? readFileSync(calls, "utf8") : "",
+    };
+  };
+  return { repo: realpathSync(repo), head, run };
+}
+
 // A world whose world.json names `daemon: label` runs its agent as a real pane of the label's whole
 // daemon (C4 of dispatch://INFRA-5581's plan): the rig runs the label's `label-texts.sh daemon`,
 // and starts neither the daemon stand-in nor an Oh My Pi of its own.
@@ -4221,6 +4342,32 @@ describe("a control cell", () => {
       expect(run.calls).not.toContain("batch-scored");
       expect(run.calls).not.toContain("profile");
     }
+  });
+
+  // Catches: a committed control patch that is not the diff of the pull request's own commits,
+  // which the manifest and unpatch-holds both take, because they only ask that the patch applies
+  // and that the tree differs in its lines. A patch one file short takes out less than the change
+  // added, one file longer takes out what the change never added, and either cell then measures
+  // another change.
+  test("a control patch that is not the diff of the pull request's own commits takes row 1 and starts no run", () => {
+    for (const plant of ["empty", "short", "long", "other-file"] as const) {
+      const job = plantedTextsJob(plant);
+      const run = job.run(["forward-only", "ctl-main-texts", "--world", "retro-defect"], {
+        SKILL_SCENARIOS_MODEL: "standin",
+      });
+      expect({ plant, code: run.code }).toEqual({ plant, code: 3 });
+      expect(run.stdout.split("\n")).toContain(
+        `UNKNOWN: controls/patches/forward-only-texts.patch is not the pull request's diff at ${job.head}`
+      );
+      expect(run.calls).not.toContain("batch-scored");
+    }
+    // The same job with the patch the commits make: the check says nothing and the runs start.
+    const held = plantedTextsJob("none");
+    const run = held.run(["forward-only", "ctl-main-texts", "--world", "retro-defect"], {
+      SKILL_SCENARIOS_MODEL: "standin",
+    });
+    expect(run.stdout).not.toContain("UNKNOWN: controls/patches/forward-only-texts.patch");
+    expect(run.calls).toContain("batch-scored");
   });
 
   // Catches: a cell short of its count, after the limit of launches, decided as if it were whole.
