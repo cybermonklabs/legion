@@ -17,8 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/legionagents"
 )
 
-const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
-
 // An issue's role holders are the sessions that hold its Legion roles, one session for each role
 // (issue_role_holders, migration 20261116163813_issue_role_holders). The Legion daemon is the one
 // party that gives a session a role. It publishes the live set of each issue here: when a claim
@@ -134,6 +132,10 @@ func legionProjectOf(key string) string {
 	project, _, _ := strings.Cut(key, "-")
 	return project
 }
+
+// legionDaemonSessionPrefix is the broker's spelling, so the session a daemon's token proves and
+// the one putIssueRoleHolders compares are one string.
+const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
 
 // legionDaemonSessionOf is the session the Legion daemon writes the issue key's project as:
 // legion-daemon:<legionProjectOf(key)>, the daemon's own rule (packages/daemon's

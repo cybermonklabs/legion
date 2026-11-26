@@ -135,7 +135,7 @@ func readSessionIssues(ctx context.Context, pool *store.Pool, issues []string) (
 		if err := rows.Scan(&one.issue, &one.session); err != nil {
 			return nil, nil, fmt.Errorf("scan a session that wrote on an issue: %w", err)
 		}
-		// The daemon's own session has no title and cannot be a Legion role.
+		// The daemon's own session has no title and cannot be a Legion role (DaemonSession).
 		if DaemonSession(one.session) {
 			continue
 		}
