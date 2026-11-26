@@ -2840,7 +2840,7 @@ func TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery(t *testing.T) {
 
 // TestATakeOverDuringAHoldReplaysOnlyTheMessagesSinceTheHolder: while a message holds its
 // project's owed read, the durable's ack floor stays just below it, and a take-over creates the
-// durable again at that floor (delivery's takeOverConfig). So the next intake is delivered the
+// durable again at that floor (delivery's takeOverStart). So the next intake is delivered the
 // holder again and the messages after it, LINUX's two that the first intake had applied and
 // acknowledged, and none of the messages before it. Those it replays write nothing and make no
 // read: each is at or below its project's cursor. stateMaxHolds bounds the replay, since it bounds

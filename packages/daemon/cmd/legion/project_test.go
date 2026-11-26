@@ -159,6 +159,7 @@ func stateLines(out, prefix string) []string {
 // ended it while it runs; and `legion config check` names each setting under which a daemon cannot
 // hold a pause.
 func TestPauseCommands(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	t.Run("pause, state, resume, state", func(t *testing.T) {
 		d := newPauseCommandDaemon(t)
 		// A live role of the project, whose stop the pause asks and waits on.

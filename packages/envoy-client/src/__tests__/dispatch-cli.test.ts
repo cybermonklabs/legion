@@ -1735,9 +1735,10 @@ describe("the dispatch CLI", () => {
   });
 });
 
-// `dispatch api`: one GET of a route under /api/v1, with the session's own credential, Dispatch's
-// JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each request
-// carried, which the server above does not, and a broker of its own answers a pod's trade.
+// `dispatch api`: one request of a route under /api/v1 (a GET here; its writes, its answers and
+// the rest of its refusals are in dispatch-api.test.ts), with the session's own credential,
+// Dispatch's JSON answer printed as `jq` reads it. Its own Dispatch records the Authorization each
+// request carried, which the server above does not, and a broker of its own answers a pod's trade.
 describe("dispatch api", () => {
   interface Asked {
     readonly method: string;
@@ -1760,18 +1761,6 @@ describe("dispatch api", () => {
           key: "DSP-1",
           claim: { actor: { kind: "session", id: "ses-architect" }, at: "2026-11-18T05:00:00Z" },
         });
-      }
-      // Dispatch's own answer to a path no build of it serves (the router's `staticHandler`): it
-      // names the route and where every route is listed.
-      if (pathname.startsWith("/api/v1/issuez/")) {
-        return Response.json(
-          {
-            code: "NOT_FOUND",
-            error: `no route for ${request.method} ${pathname}`,
-            hint: "GET /api/v1 lists every route",
-          },
-          { status: 404 }
-        );
       }
       return Response.json(
         { code: "NOT_FOUND", error: `issue ${pathname.split("/")[4]} not found` },
@@ -1843,15 +1832,10 @@ describe("dispatch api", () => {
     ]);
   });
 
+  // Two paths dispatch-api.test.ts's refusals hold no row of: an encoded dot segment in mixed
+  // case, and a backslash after /api/v1.
   test("refuses a path outside /api/v1, naming it, exit 2, and sends nothing", async () => {
-    const outside = [
-      "https://dispatch.internal.example/api/v1/issues/DSP-1",
-      "//dispatch.internal.example/api/v1/issues/DSP-1",
-      "/api/v2/issues/DSP-1",
-      "/api/v1/../../healthz",
-      "/api/v1/%2E%2e/healthz",
-      "/api/v1/issues\\..\\..\\healthz",
-    ];
+    const outside = ["/api/v1/%2E%2e/healthz", "/api/v1/issues\\..\\..\\healthz"];
     for (const path of outside) {
       const { code, stdout } = await run(["api", "--path", path], session);
       expect(code, path).toBe(2);
@@ -1859,39 +1843,6 @@ describe("dispatch api", () => {
       expect(stdout, path).toContain(`path ${JSON.stringify(path)} `);
     }
     expect(asked).toEqual([]);
-  });
-
-  test("exits 1 on Dispatch's 404, printing its error and code", async () => {
-    const { code, stdout } = await run(["api", "--path", "/api/v1/issues/DSP-404"], session);
-    expect(code).toBe(1);
-    expect(stdout).toBe("NOT_FOUND: issue DSP-404 not found\n");
-    expect(asked).toEqual([
-      { method: "GET", path: "/api/v1/issues/DSP-404", authorization: `Bearer ${TOKEN}` },
-    ]);
-  });
-
-  // The help of `dispatch api` promises Dispatch's error with its code on a refused read. A path
-  // the caller wrote reaches no route far more often because the path is wrong than because a
-  // release is in progress, so the words that a release is in progress and to try again in one
-  // minute, which send an agent to wait and ask again, are not Dispatch's answer: its answer names
-  // the route. The timeout leaves room for the client's waits between no-route attempts.
-  test("exits 1 on a path Dispatch has no route for, printing Dispatch's own error", async () => {
-    const { code, stdout } = await run(["api", "--path", "/api/v1/issuez/DSP-1"], session);
-    expect(code).toBe(1);
-    expect(stdout).toContain("no route for GET /api/v1/issuez/DSP-1");
-    expect(stdout).not.toContain("a new release of Dispatch is in progress");
-  }, 20_000);
-
-  // Dispatch's no-route answer carries a `hint` beside its error, saying where every route is
-  // listed, and a caller who wrote a wrong path needs that line most. The read is one GET, not
-  // sent again.
-  test("prints the hint Dispatch gives beside its no-route error", async () => {
-    const { code, stdout } = await run(["api", "--path", "/api/v1/issuez/DSP-1"], session);
-    expect(code).toBe(1);
-    expect(stdout).toContain("GET /api/v1 lists every route");
-    expect(asked).toEqual([
-      { method: "GET", path: "/api/v1/issuez/DSP-1", authorization: `Bearer ${TOKEN}` },
-    ]);
   });
 });
 

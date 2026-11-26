@@ -680,10 +680,9 @@ func main() {
 	//     never arrived, a delivery that failed: the delivery reconcile and the architecture
 	//     import every 5 minutes, each starting after a random delay within one interval
 	//     (duty.RunJittered), and the webhook redelivery sweep every 2, sweeping at start
-	//     (redeliver.Sweeper.Run). While delivery settings are saved, a push of a source's branch
-	//     imports that source at once (delivery.PushImports, architecture.Importer.Pushed; the
-	//     delivery intake runs only then), so the architecture import's timer repairs a push that
-	//     never arrived, and is the only automatic import where no settings are saved. Each then
+	//     (redeliver.Sweeper.Run). A push of a source's branch imports that source at once
+	//     (delivery.PushImports, architecture.Importer.Pushed), so the architecture import's
+	//     timer repairs a push that never arrived. Each then
 	//     waits its interval less up to a tenth of it, drawn afresh every time
 	//     (duty.JitteredWithin), so no wait is longer than
 	//     the interval and two processes' ticks drift apart rather than staying in step. Under
@@ -1205,13 +1204,13 @@ func main() {
 		// intake a third, so each takes a client of its own (delivery.StartIntakes,
 		// legion.StartIntake). Their Runs begin stopping at the signal beside the HTTP drain and
 		// document shutdown, and return once a message in a handler has been acknowledged or given
-		// up at its stop budget and handed back. StartIntakes and legion.StartIntake then close their
-		// clients, wait for each pending hand-back's finalizer to release the hold through the pool,
-		// and return. Each connects in the background as the publisher does, and its poll takes the
-		// durable's hold once it has. While delivery settings are saved (the intake runs only then),
-		// the intake hands each push of a branch to the architecture importer the ticker and the
-		// routes share, which imports the enabled sources on that repository and branch at once; a
-		// push it hands over once the importer's Close has begun starts nothing
+		// up at its stop budget and handed back. StartIntakes and legion.StartIntake then close
+		// their clients, wait for each pending hand-back's finalizer to release the hold through
+		// the pool, and return. Each connects in the background as the publisher does, and its poll
+		// takes the durable's hold once it has, whether or not delivery settings are saved. The
+		// intake hands each push of a branch to the architecture importer the ticker and the routes
+		// share, which imports the enabled sources on that repository and branch at once; a push it
+		// hands over once the importer's Close has begun starts nothing
 		// (architecture.Importer.Pushed). Each intake's client writes with the deadline
 		// delivery.IntakeWriteDeadline, which says how long a write to a frozen link holds the
 		// client's Close and why no fixed time bounds that Close. No other client of the server

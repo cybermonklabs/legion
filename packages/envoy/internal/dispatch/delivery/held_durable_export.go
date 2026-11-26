@@ -59,7 +59,7 @@ func NewHeldDurable(natsClient *bus.Client, leases DurableLeases, config func() 
 // otherwise, until ctx ends; then it stops delivering and releases the hold under intakeStopBudget
 // from ctx's end, as the intakes' Runs do (heldDurable.run), and returns.
 func (h *HeldDurable) Run(ctx context.Context) {
-	h.run(ctx, nil, func() bool { return true })
+	h.run(ctx)
 }
 
 // Stop, called once Run has returned, closes the durable's NATS client and then waits for any

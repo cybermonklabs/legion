@@ -81,7 +81,7 @@ const (
 // state lane, acknowledged by hand, delivering new messages at its first creation, since a whole
 // read of each configured project is the starting point and a message older than the durable says
 // nothing that read does not. A take-over of a durable that exists creates it again at its ack
-// floor (delivery's takeOverConfig), so a stopped process's messages are replayed.
+// floor (delivery's takeOverStart), so a stopped process's messages are replayed.
 //
 // Three settings hold the rule of an owed read (cursor.readFor), by which the message that holds
 // the read goes back to the stream unacknowledged (delivery.HeldMessage.HandBackAfter) until the
