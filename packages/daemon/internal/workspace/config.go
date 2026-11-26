@@ -242,6 +242,10 @@ var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "
 var transportEnvironment = []string{"GIT_ALLOW_PROTOCOL=https"}
 
 type execRunner struct {
+	// start starts each command (procgroup.Starter, never nil): the daemon's is procgroup.NoReaper,
+	// and a shim's is its subreaper.Guard's, which holds the child out of the reaper of the shim's
+	// orphans until Run's own wait has read its exit.
+	start   procgroup.Starter
 	timeout time.Duration
 	// tools maps each command's name to the executable boot resolved for it.
 	tools map[string]string
@@ -252,16 +256,19 @@ type execRunner struct {
 
 // NewRunner returns the production process runner. The supplied timeout is applied to every
 // command separately, rather than bounding the whole provisioning sequence. Each child's
-// environment is built from this process's own.
-func NewRunner(timeout time.Duration, tools map[string]string) Runner {
-	return execRunner{timeout: timeout, tools: tools}
+// environment is built from this process's own. start starts each command (procgroup.Starter
+// says why there is no default). It is the caller's to name, not this package's, so the start
+// that reaps nothing never flows into a runner of a process that reaps (internal/shim's
+// TestEveryChildTheShimWaitsForStartsThroughItsGuard).
+func NewRunner(start procgroup.Starter, timeout time.Duration, tools map[string]string) Runner {
+	return execRunner{start: start, timeout: timeout, tools: tools}
 }
 
 // NewRunnerIn is NewRunner whose children's environments are built from environ instead of this
 // process's: the environment `legion workspace-init` was handed, which a test of the command run
 // inside its test process hands it without changing that process's own.
-func NewRunnerIn(environ []string, timeout time.Duration, tools map[string]string) Runner {
-	return execRunner{timeout: timeout, tools: tools, environ: slices.Clone(environ)}
+func NewRunnerIn(start procgroup.Starter, environ []string, timeout time.Duration, tools map[string]string) Runner {
+	return execRunner{start: start, timeout: timeout, tools: tools, environ: slices.Clone(environ)}
 }
 
 func (r execRunner) Timeout() time.Duration {
@@ -346,7 +353,7 @@ func (r execRunner) Run(ctx context.Context, command Command) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	child.Stdout = &stdout
 	child.Stderr = &stderr
-	err = child.Run()
+	err = procgroup.Run(child, r.start)
 	if hook := exitedHook.Load(); hook != nil && child.ProcessState != nil {
 		(*hook)(command, child.ProcessState)
 	}

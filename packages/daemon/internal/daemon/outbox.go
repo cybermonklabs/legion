@@ -281,7 +281,7 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
 		// test injects its own `provision`, so only this production closure starts codegraph.
 		provision: func(ctx context.Context, request workspace.Request) (workspace.Workspace, error) {
-			provisioned, err := workspace.Provision(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), request)
+			provisioned, err := workspace.Provision(ctx, workspace.NewRunner(procgroup.NoReaper, workspace.CommandTimeout, tools), request)
 			if err != nil {
 				return workspace.Workspace{}, err
 			}
@@ -289,10 +289,10 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 			return provisioned, nil
 		},
 		remove: func(ctx context.Context, working workspace.Workspace, store sync.Locker) error {
-			return workspace.Remove(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), working, store)
+			return workspace.Remove(ctx, workspace.NewRunner(procgroup.NoReaper, workspace.CommandTimeout, tools), working, store)
 		},
 		checkedOut: func(ctx context.Context, working workspace.Workspace) (bool, error) {
-			return workspace.CheckedOut(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), working)
+			return workspace.CheckedOut(ctx, workspace.NewRunner(procgroup.NoReaper, workspace.CommandTimeout, tools), working)
 		},
 	}
 }

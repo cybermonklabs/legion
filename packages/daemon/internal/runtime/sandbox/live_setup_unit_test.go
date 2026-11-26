@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testport"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -1090,7 +1091,7 @@ func (r *setupRig) poisons() map[string]map[string]string {
 func (r *setupRig) configuredClone() string {
 	r.t.Helper()
 	clone := r.plainClone()
-	if _, err := workspace.ConfigureRepositoryCredential(context.Background(), workspace.NewRunner(time.Minute, map[string]string{"git": r.realGit}), clone); err != nil {
+	if _, err := workspace.ConfigureRepositoryCredential(context.Background(), workspace.NewRunner(procgroup.NoReaper, time.Minute, map[string]string{"git": r.realGit}), clone); err != nil {
 		r.t.Fatalf("configure repository credential: %v", err)
 	}
 	return clone
