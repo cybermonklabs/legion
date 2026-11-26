@@ -115,6 +115,53 @@ until_true() {
 
 # shellcheck source-path=SCRIPTDIR source=port-file.sh
 . "$root/scripts/e2e/lib/port-file.sh"
+# A setting a start gives a service through that start's own arguments (`env -i NAME=value`,
+# `python3 held-port.py … -- env NAME=value`) is in /proc/<pid>/cmdline, which every user of the
+# machine reads for as long as the process runs, and in the helper's too until it execs. A
+# password, a token or a key goes through the environment instead: start_with_settings below
+# starts a service with exactly the settings it names and nothing else of this shell's, and
+# held-port.py's --pass names the ones it hands on. packages/envoy/scripts/lib/exec-env.sh holds
+# the exec, which the brokers of packages/envoy/scripts use too.
+# shellcheck source-path=SCRIPTDIR source=../../../packages/envoy/scripts/lib/exec-env.sh
+. "$root/packages/envoy/scripts/lib/exec-env.sh"
+
+# start_with_settings NAME NAME=value... -- COMMAND... starts COMMAND as the service NAME
+# (start_process: its log, <NAME>_pid, its own process group) with exactly the settings given as
+# its environment, exported rather than written on any command line, so no value of theirs is in
+# /proc/<pid>/cmdline of COMMAND or of anything that execs it. PATH is not given for free: name it
+# where COMMAND needs one.
+#
+# A service on a held socket names its settings here and the ones held-port.py must hand on with
+# --pass, so the values are in no process's arguments and the names alone are:
+#   start_with_settings dispatch PATH="$PATH" DATABASE_URL="$database_url" … -- \
+#     python3 "$root/scripts/e2e/lib/held-port.py" exec --port-file … --fd-env DISPATCH_LISTEN_FD \
+#     --pass PATH --pass DATABASE_URL … -- "$work/envoy-dispatch"
+# start_held and start_kept do that themselves from a --setting list (see each).
+start_with_settings() {
+  local _name=$1
+  shift
+  # The settings are this function's arguments, which live in this shell's memory and in no
+  # process's. The subshell exports them and execs COMMAND in place, as exec-env.sh's header
+  # says, so <NAME>_pid is COMMAND's own pid. start_process cannot run this: its arguments would
+  # be a command line holding every value.
+  set -m
+  (exec_with_env "$@") </dev/null >>"$evidence/logs/$_name.log" 2>&1 &
+  printf -v "${_name}_pid" '%s' "$!"
+  set +m
+  record_start "$!" || started_at[$!]=gone
+}
+
+# setting_flags NAME=value... sets the array `setting_flags` to `--setting NAME=value` for each,
+# for a caller that keeps its settings in an array of its own:
+#   setting_flags "${dispatch_settings[@]}"
+#   start_held dispatch dispatch_port DISPATCH_LISTEN_FD "${setting_flags[@]}" -- "$work/dispatch"
+# A value is never a word of its own here either: the array lives in this shell.
+setting_flags() {
+  local _setting
+  setting_flags=()
+  for _setting in "$@"; do setting_flags+=(--setting "$_setting"); done
+}
+
 
 # await_port_file NAME FILE VAR waits, bounded (read_port_file, lib/port-file.sh), for FILE, the
 # port file held-port.py writes before it runs the service NAME, while NAME's process (<NAME>_pid)
@@ -130,33 +177,59 @@ await_port_file() {
   esac
 }
 
-# start_held NAME PORT_VAR FD_ENV [--env K=V]... -- COMMAND... starts COMMAND as the service NAME on
-# a listening socket held-port.py opens on 127.0.0.1:0 and hands over as the descriptor FD_ENV
-# names (DISPATCH_LISTEN_FD, ENVOY_LISTEN_FD, LEGION_LISTEN_FD), and assigns PORT_VAR its port, read
-# back before COMMAND runs. {port} in an --env value or in COMMAND is that port. The helper executes
-# COMMAND in place, so <NAME>_pid is the service's own pid. A COMMAND that clears its environment
-# (`env -i`) names FD_ENV=3 itself: held-port.py always hands the socket over as descriptor 3.
+# start_held NAME PORT_VAR FD_ENV [--setting K=V]... [--env K=V]... -- COMMAND... starts COMMAND as
+# the service NAME on a listening socket held-port.py opens on 127.0.0.1:0 and hands over as the
+# descriptor FD_ENV names (DISPATCH_LISTEN_FD, ENVOY_LISTEN_FD, LEGION_LISTEN_FD), and assigns
+# PORT_VAR its port, read back before COMMAND runs. {port} in an --env value or in COMMAND is that
+# port. The helper executes COMMAND in place, so <NAME>_pid is the service's own pid.
+#
+# Each --setting K=V is COMMAND's environment and nothing else's (start_with_settings), and
+# held-port.py hands K on by name (--pass), so no value is in any process's arguments and the
+# names alone are. A start that names one gives COMMAND exactly those settings, each --env pair
+# and FD_ENV=3, so it needs no `env -i` of its own, and a COMMAND that keeps one must name PATH
+# among them. Each --env K=V is held-port.py's own argument, for a value that holds the port, and
+# so is on a command line: name no secret there.
 start_held() {
   _held_exec start_held "$1" "$3" --port-file "$work/$1.port" "${@:4}"
   await_port_file "$1" "$work/$1.port" "$2"
 }
 
-# _held_exec CALLER NAME FD_ENV SOURCE_FLAG SOURCE_VALUE [--env K=V]... -- COMMAND... starts
-# held-port.py exec as the service NAME, its socket from SOURCE_FLAG SOURCE_VALUE (--port-file, a
-# fresh one whose port it writes there, removed first; --from, a keeper's), handed over as FD_ENV.
-# A missing COMMAND is refused naming CALLER.
+# _held_exec CALLER NAME FD_ENV SOURCE_FLAG SOURCE_VALUE [--setting K=V]... [--env K=V]... --
+# COMMAND... starts held-port.py exec as the service NAME, its socket from SOURCE_FLAG
+# SOURCE_VALUE (--port-file, a fresh one whose port it writes there, removed first; --from, a
+# keeper's), handed over as FD_ENV. A missing COMMAND is refused naming CALLER.
 _held_exec() {
-  local _caller=$1 _name=$2 _fd_env=$3 _flag=$4 _value=$5 _options=()
+  local _caller=$1 _name=$2 _fd_env=$3 _flag=$4 _value=$5 _options=() _settings=() _passed=()
   shift 5
   while [ $# -gt 0 ] && [ "$1" != -- ]; do
+    if [ "$1" = --setting ]; then
+      [ $# -gt 1 ] || fail "$_caller $_name: --setting takes K=V"
+      case $2 in
+        *=*) ;;
+        *) fail "$_caller $_name: --setting takes K=V, not $2" ;;
+      esac
+      _settings+=("$2")
+      _passed+=(--pass "${2%%=*}")
+      shift 2
+      continue
+    fi
     _options+=("$1")
     shift
   done
   [ $# -gt 1 ] || fail "$_caller $_name: no command after --"
   shift
   [ "$_flag" != --port-file ] || rm -f "$_value"
-  start_process "$_name" python3 "$root/scripts/e2e/lib/held-port.py" exec "$_flag" "$_value" \
-    --fd-env "$_fd_env" "${_options[@]}" -- "$@"
+  if [ "${#_settings[@]}" -eq 0 ]; then
+    start_process "$_name" python3 "$root/scripts/e2e/lib/held-port.py" exec "$_flag" "$_value" \
+      --fd-env "$_fd_env" "${_options[@]}" -- "$@"
+    return
+  fi
+  # python3 itself runs with exactly the settings, since the first python3 on PATH can be a
+  # version manager's shim that reads HOME and PATH; the helper hands COMMAND the ones --pass
+  # names, and nothing Python added to its own environment.
+  start_with_settings "$_name" "${_settings[@]}" -- \
+    python3 "$root/scripts/e2e/lib/held-port.py" exec "$_flag" "$_value" \
+    --fd-env "$_fd_env" "${_options[@]}" "${_passed[@]}" -- "$@"
 }
 
 # keep_port NAME PORT_VAR starts the keeper NAME, a held-port.py keep that holds one listening
@@ -174,8 +247,9 @@ keep_port() {
   await_port_file "$_name" "$work/$_name.port" "$_port_var"
 }
 
-# start_kept NAME KEEPER FD_ENV [--env K=V]... -- COMMAND... starts COMMAND as the service NAME, as
-# start_held does, on a copy of the socket the keeper KEEPER (keep_port) holds.
+# start_kept NAME KEEPER FD_ENV [--setting K=V]... [--env K=V]... -- COMMAND... starts COMMAND as
+# the service NAME, as start_held does and with the same settings, on a copy of the socket the
+# keeper KEEPER (keep_port) holds.
 start_kept() {
   _held_exec start_kept "$1" "$3" --from "$work/$2.sock" "${@:4}"
 }

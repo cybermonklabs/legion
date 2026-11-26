@@ -246,7 +246,10 @@ begin dispatch
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
+# Its settings are this shell's and reach the server through the environment
+# (start_with_settings), so the database password, the agent token and the throwaway App key are
+# in no process's arguments, which every user of the machine reads while it runs.
+start_with_settings dispatch \
   PATH="$PATH" \
   TMPDIR="$work" \
   HOME=/nonexistent \
@@ -270,7 +273,7 @@ start_process dispatch env -i \
   DISPATCH_WEB_DIST="$work/web-dist" \
   ENVOY_URL="http://127.0.0.1:$envoy_port" \
   NATS_URLS="$nats_url" \
-  "$dispatch_bin"
+  -- "$dispatch_bin"
 await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
   curl -fsS --max-time 2 "$dispatch_url/healthz"
 note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"

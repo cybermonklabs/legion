@@ -39,8 +39,12 @@ export function scriptAssignments(path: string): (name: string) => string {
 
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
-// A library of scripts/e2e/lib a script sources, as every stage script and library writes it.
-const sourced = /^\s*\. ".*\/lib\/([A-Za-z0-9_.-]+\.sh)"\s*$/gm;
+// A library a script sources, as every stage script and library writes it: `. "$root/<path>"`,
+// whose path is the checkout's, or the older `. "…/lib/<name>.sh"`, which names a library of
+// scripts/e2e/lib alone.
+const sourced = /^\s*\. "(?:\$root\/([^"]+\.sh)|.*\/lib\/([A-Za-z0-9_.-]+\.sh))"\s*$/gm;
+/** The checkout, from this file in scripts/e2e/lib. */
+const checkout = join(import.meta.dir, "..", "..", "..");
 
 /**
  * Every script among `paths`, and every library under scripts/e2e/lib one of them sources
@@ -54,7 +58,12 @@ export function sourcedLibraries(...paths: string[]): string[] {
     if (read.has(path)) continue;
     read.add(path);
     for (const found of readFileSync(path, "utf8").matchAll(sourced)) {
-      pending.push(join(import.meta.dir, found[1]));
+      const [, fromCheckout, inLib] = found;
+      pending.push(
+        fromCheckout === undefined
+          ? join(import.meta.dir, inLib ?? "")
+          : join(checkout, fromCheckout)
+      );
     }
   }
   return [...read];

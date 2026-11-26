@@ -163,7 +163,10 @@ begin dispatch
 # caller's is read. Sessions authenticate with a token minted for this run.
 agent_token=$(openssl rand -hex 24)
 dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
+# Its settings are this shell's and reach the server through the environment
+# (start_with_settings), so the database password and the agent token are in no process's
+# arguments, which every user of the machine reads while it runs.
+start_with_settings dispatch \
   PATH="$PATH" \
   TMPDIR="$work" \
   HOME=/nonexistent \
@@ -181,7 +184,7 @@ start_process dispatch env -i \
   DISPATCH_WEB_DIST="$work/web-dist" \
   ENVOY_URL="http://127.0.0.1:$envoy_port" \
   NATS_URLS="$nats_url" \
-  "$dispatch_bin"
+  -- "$dispatch_bin"
 await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
   curl -fsS --max-time 2 "$dispatch_url/healthz"
 note "envoy-dispatch on $dispatch_url, NATS on, outbox publishing to $nats_url"

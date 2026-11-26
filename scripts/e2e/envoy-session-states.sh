@@ -739,14 +739,17 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 # what lets a listener of the run's own move it under them. Each listener of the run gets a machine
 # id of its own, because the durable consumer a listener binds is named after it and a second
 # listener of the same name is refused the bind and shuts itself down.
+# Each setting is a --setting, so it is the listener's environment and nothing else's: its bearer
+# token is in no process's arguments, where every user of the machine would read it.
 start_listener() {
-  start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-    ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
-    ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
-    ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
-    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "${dispatch_identity_listener_env[@]}" \
-    "$work/bin/envoy-listener"
+  local -a settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+    ENVOY_API_TOKEN="$(cat "$work/envoy-token")"
+    ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url"
+    ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon"
+    ENVOY_SESSION_REAP_INTERVAL="$reap_interval"
+    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "${dispatch_identity_listener_env[@]}")
+  setting_flags "${settings[@]}"
+  start_kept "$1" "$2" ENVOY_LISTEN_FD "${setting_flags[@]}" -- "$work/bin/envoy-listener"
 }
 
 serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
@@ -765,10 +768,12 @@ note "listener A on 127.0.0.1:$port_a, listener B on 127.0.0.1:$port_b"
 # without restarting the listeners whose /healthz it then reads.
 set_max_age() {
   rm -f "$work/maxage.port"
-  start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-    ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
-    NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
+  local -a settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+    ENVOY_API_TOKEN="$(cat "$work/envoy-token")"
+    ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1
+    NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1")
+  setting_flags "${settings[@]}"
+  start_held maxage maxage_port ENVOY_LISTEN_FD "${setting_flags[@]}" -- "$work/bin/envoy-listener"
   await_start maxage "$maxage_pid" 60 "the maximum-age listener to serve" serving "$maxage_port"
   stop_pid "$maxage_pid"
   maxage_pid=
@@ -798,15 +803,18 @@ if [ -n "$needs_dispatch" ]; then
   # (roleHolderWindows, roles.NewBuckets), and at its own five-minute default it would call a
   # holder live that both listeners already read unresponsive and forward a role-routed event at a
   # session that answers nothing.
-  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-    XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent DISPATCH_LISTEN_FD=3 \
-    DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
-    DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
-    DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" \
-    DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
-    DISPATCH_WEB_DIST="$work/web-dist" ENVOY_URL="http://127.0.0.1:$port_a" \
-    ENVOY_TOKEN="$(cat "$work/envoy-token")" ENVOY_SESSION_LIVE_WINDOW="$live_window" \
-    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+  dispatch_settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+    XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent
+    DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")"
+    DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1
+    DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port"
+    DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    DISPATCH_WEB_DIST="$work/web-dist" ENVOY_URL="http://127.0.0.1:$port_a"
+    ENVOY_TOKEN="$(cat "$work/envoy-token")" ENVOY_SESSION_LIVE_WINDOW="$live_window"
+    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url"
+    "${dispatch_identity_dispatch_env[@]}")
+  setting_flags "${dispatch_settings[@]}"
+  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD "${setting_flags[@]}" -- \
     "$work/bin/envoy-dispatch"
   dispatch_url=http://127.0.0.1:$dispatch_port
   await_start dispatch "$dispatch_pid" 120 "Dispatch to serve" \
@@ -852,15 +860,18 @@ dispatch_person() { # dispatch_person METHOD PATH [BODY]
 # dispatch_cli SESSION ARGS… runs the branch's own `dispatch` command as SESSION: the CLI the
 # pi-envoy pack ships, against the run's Dispatch, with nothing of the caller's environment but a
 # home and a state directory of the run's own, which the command makes its session state under.
+# Its settings reach the command through the environment (exec_with_env, in a subshell so this
+# shell goes on), so its token is in no process's arguments.
 dispatch_cli() {
   local session=$1
   shift
   mkdir -p "$work/cli-home" "$work/cli-state"
-  env -i PATH="$PATH" HOME="$work/cli-home" LEGION_E2E_RUN="$work" XDG_CONFIG_HOME="$work/cli-home/config" \
-    XDG_STATE_HOME="$work/cli-state" XDG_DATA_HOME="$work/cli-home/data" \
-    XDG_CACHE_HOME="$work/cli-home/cache" DISPATCH_STATE_DIR="$work/cli-state/dispatch" \
-    DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN="$(cat "$work/dispatch-token")" \
-    DISPATCH_SESSION_ID="$session" DISPATCH_HOST=omp "$work/pi-envoy/bin/dispatch" "$@"
+  (exec_with_env PATH="$PATH" HOME="$work/cli-home" LEGION_E2E_RUN="$work" \
+    XDG_CONFIG_HOME="$work/cli-home/config" XDG_STATE_HOME="$work/cli-state" \
+    XDG_DATA_HOME="$work/cli-home/data" XDG_CACHE_HOME="$work/cli-home/cache" \
+    DISPATCH_STATE_DIR="$work/cli-state/dispatch" DISPATCH_URL="$dispatch_url" \
+    DISPATCH_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_SESSION_ID="$session" \
+    DISPATCH_HOST=omp -- "$work/pi-envoy/bin/dispatch" "$@")
 }
 
 # make_issue SESSION TITLE creates the run's project when Dispatch does not hold it yet and one
@@ -1044,17 +1055,22 @@ claude_start() { # claude_start SESSION [--resume]
   rm -f "$work/claude.in" "$work/claude.pid"
   mkfifo "$work/claude.in"
   touch "$work/claude.out"
-  own_session "$work/claude.pid" \
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" CLAUDE_CONFIG_DIR="$work/claude-config" LEGION_E2E_RUN="$work" \
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ANTHROPIC_BASE_URL="$model_base_url" \
-    ANTHROPIC_MODEL="$claude_model" ANTHROPIC_API_KEY="$(cat "$work/model-key")" \
-    DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
-    ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token" \
-    ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
-    ENVOY_MACHINE_ID="envoy-session-states-$$" \
+  # Its settings reach Claude Code through the environment (exec_with_env, in a subshell so this
+  # shell goes on), so the model key is in no process's arguments; the subshell execs own_session's
+  # one line, which gives the session of its own and the pid file.
+  local -a claude_settings=(PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp"
+    CLAUDE_CONFIG_DIR="$work/claude-config" LEGION_E2E_RUN="$work"
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ANTHROPIC_BASE_URL="$model_base_url"
+    ANTHROPIC_MODEL="$claude_model" ANTHROPIC_API_KEY="$(cat "$work/model-key")"
+    DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token"
+    ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token"
+    ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms"
+    ENVOY_MACHINE_ID="envoy-session-states-$$")
+  (exec_with_env "${claude_settings[@]}" -- \
+    setsid --fork sh -c "$record_pid_sh" record-pid "$work/claude.pid" \
     "$claude_bin" -p --input-format stream-json --output-format stream-json --verbose \
     --permission-mode bypassPermissions --strict-mcp-config --mcp-config "$work/claude-mcp.json" \
-    --plugin-dir "$work/claude-envoy" --plugin-dir "$work/claude-envoy/legion" "$flag" "$session" \
+    --plugin-dir "$work/claude-envoy" --plugin-dir "$work/claude-envoy/legion" "$flag" "$session") \
     <"$work/claude.in" >>"$work/claude.out" 2>>"$evidence/logs/claude.stderr.log" &
   exec {claude_fd}<>"$work/claude.in"
   agent_pid "$work/claude.pid" claude_pid
@@ -1626,11 +1642,14 @@ check_gone_only_past_the_horizon() {
   # 10s — the session reaper, which deletes the dead holder's record, and the role claim reaper,
   # which then releases its claim.
   rm -f "$work/shortlistener.port"
-  start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-    ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-    ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
-    NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s \
-    ENVOY_SESSION_REAP_INTERVAL=10s ENVOY_ROLE_CLAIM_REAP_INTERVAL=10s "$work/bin/envoy-listener"
+  local -a short_settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+    ENVOY_API_TOKEN="$(cat "$work/envoy-token")"
+    ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1
+    NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s
+    ENVOY_SESSION_REAP_INTERVAL=10s ENVOY_ROLE_CLAIM_REAP_INTERVAL=10s)
+  setting_flags "${short_settings[@]}"
+  start_held shortlistener short_port ENVOY_LISTEN_FD "${setting_flags[@]}" -- \
+    "$work/bin/envoy-listener"
   await_start shortlistener "$shortlistener_pid" 60 "the short-horizon listener to serve" serving "$short_port"
   exec {victim_fd}>&-
   kill -KILL "$victim_pid" || refuse "could not kill the victim session" || return 1

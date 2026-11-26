@@ -799,11 +799,15 @@ nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
 
 keep_port listener_keeper listener_port
-start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
-  ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
-  ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
-  ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
-  ENVOY_SESSION_REAP_INTERVAL="$reap_interval" "$work/bin/envoy-listener"
+# Each setting is a --setting, so it is the listener's environment and nothing else's: its bearer
+# token is in no process's arguments, where every user of the machine would read it.
+listener_settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+  ENVOY_API_TOKEN="$(cat "$work/envoy-token")"
+  ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url"
+  ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon"
+  ENVOY_SESSION_REAP_INTERVAL="$reap_interval")
+setting_flags "${listener_settings[@]}"
+start_kept listener listener_keeper ENVOY_LISTEN_FD "${setting_flags[@]}" -- "$work/bin/envoy-listener"
 await_start listener "$listener_pid" 60 "the Envoy listener to serve" serving "$listener_port"
 note "the listener on 127.0.0.1:$listener_port judges records with a ${live_window} live window and a ${gone_horizon} gone horizon, against sessions that heartbeat every ${heartbeat_ms}ms"
 

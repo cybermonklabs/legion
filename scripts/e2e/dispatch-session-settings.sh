@@ -237,15 +237,22 @@ listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
 # holding legion/envoy.json would hand Dispatch a production configuration. Dispatch has an identity
 # of its own at the listener (lib/dispatch-identity.sh), as a deployment gives it. Each serves on a
 # port the kernel chose, held from that choice until it serves on it (lib/rig.sh's start_held), so
-# no other process can take the port in between; `env -i` clears the descriptor's variable the
-# helper sets, so each names its own: the helper hands the socket over as descriptor 3. start_held
-# assigns each port once it is held.
+# no other process can take the port in between; the helper hands the socket over as descriptor 3
+# and names it. start_held assigns each port once it is held.
+#
+# Each setting is a --setting, so it is the service's environment and nothing else's: its value is
+# in no process's arguments, where every user of the machine would read it (the bearer tokens
+# here, and Dispatch's database password and signing key below). PORT and the two URLs holding
+# {port} are --env, which held-port.py substitutes the port into.
 envoy_port="" dispatch_port=""
 dispatch_identity_start
-start_held listener envoy_port ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
-  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
+listener_settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+  ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1
+  ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url"
+  "${dispatch_identity_listener_env[@]}")
+setting_flags "${listener_settings[@]}"
+start_held listener envoy_port ENVOY_LISTEN_FD "${setting_flags[@]}" \
+  --env 'PORT={port}' -- "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
 # Its DATABASE_URL is the connection string run_database_url_env rebuilt, which carries the DSN's
 # password, so xtrace is off while the start line is expanded and put back as it was after it: a
@@ -253,13 +260,18 @@ until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/ses
 # no expansion here needs one either.
 case $- in *x*) dispatch_start_traced=1 ;; *) dispatch_start_traced=0 ;; esac
 set +x
-start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
-  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
-  DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
-  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+dispatch_settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+  XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent
+  DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")"
+  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1
+  DISPATCH_LISTEN_HOST=127.0.0.1
+  DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port"
+  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url"
+  "${dispatch_identity_dispatch_env[@]}")
+setting_flags "${dispatch_settings[@]}"
+start_held dispatch dispatch_port DISPATCH_LISTEN_FD "${setting_flags[@]}" \
+  --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
   "$work/dispatch"
 ((dispatch_start_traced == 0)) || set -x
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"

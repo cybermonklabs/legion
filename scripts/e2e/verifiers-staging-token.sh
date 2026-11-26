@@ -166,8 +166,12 @@ shared_listener_token="listener-shared-$RANDOM$RANDOM"
 # credentials land there and never in the box's ~/.local/share/dispatch, and the working
 # directory is the scratch dir so no repo .envoy/envoy.json is picked up. Neither names a port:
 # the half-pair refusals below exit before any bind, and the boots serve on held sockets.
+#
+# Each is a settings array, not a command: a value of it is this shell's and reaches the binary
+# through the environment (exec_with_env), so the database password and the two bearer tokens are
+# in no process's arguments, which every user of the machine reads while it runs.
 dispatch_env=(
-  env -i PATH="$PATH" HOME="$work/home"
+  PATH="$PATH" HOME="$work/home"
   DATABASE_URL="$database_url"
   DISPATCH_AGENT_TOKEN="$shared_dispatch_token"
   DISPATCH_IDENTITY=header:X-Dispatch-User
@@ -176,21 +180,31 @@ dispatch_env=(
   NATS_URLS="nats://127.0.0.1:$nats_port"
 )
 listener_env=(
-  env -i PATH="$PATH" HOME="$work/home"
+  PATH="$PATH" HOME="$work/home"
   ENVOY_MACHINE_ID=verifiers-e2e
   NATS_URLS="nats://127.0.0.1:$nats_port"
   ENVOY_LISTEN_HOST=127.0.0.1
   ENVOY_API_TOKEN="$shared_listener_token"
 )
+# shellcheck source-path=SCRIPTDIR source=../../packages/envoy/scripts/lib/exec-env.sh
+. "$root/packages/envoy/scripts/lib/exec-env.sh"
+# pass_flags NAME=value... sets `passed` to `--pass NAME` for each, the names held-port.py hands
+# on from its own environment to the binary. Only names travel; the values stay in this shell.
+passed=()
+pass_flags() {
+  local _setting
+  passed=()
+  for _setting in "$@"; do passed+=(--pass "${_setting%%=*}"); done
+}
 
 echo "== the boot refusals"
 cd "$work"
 # Half a pair is a refusal naming the variable that is missing, before any network read.
-"${dispatch_env[@]}" DISPATCH_OIDC_ISSUER="$issuer" "$work/dispatch" >"$work/refusal-dispatch-pair.log" 2>&1 &&
+(exec_with_env "${dispatch_env[@]}" DISPATCH_OIDC_ISSUER="$issuer" -- "$work/dispatch") >"$work/refusal-dispatch-pair.log" 2>&1 &&
   fail "dispatch booted with DISPATCH_OIDC_ISSUER and no DISPATCH_OIDC_AUDIENCE"
 expect_refusal "dispatch, issuer without audience" "$work/refusal-dispatch-pair.log" \
   "DISPATCH_OIDC_AUDIENCE is required when DISPATCH_OIDC_ISSUER is set"
-"${listener_env[@]}" ENVOY_OIDC_AUDIENCE=envoy "$work/listener" >"$work/refusal-listener-pair.log" 2>&1 &&
+(exec_with_env "${listener_env[@]}" ENVOY_OIDC_AUDIENCE=envoy -- "$work/listener") >"$work/refusal-listener-pair.log" 2>&1 &&
   fail "the listener booted with ENVOY_OIDC_AUDIENCE and no ENVOY_OIDC_ISSUER"
 expect_refusal "listener, audience without issuer" "$work/refusal-listener-pair.log" \
   "ENVOY_OIDC_ISSUER is required when ENVOY_OIDC_AUDIENCE is set"
@@ -229,10 +243,13 @@ echo "== dispatch serves against an issuer that does not answer"
 # INFRA-555: Dispatch reads no issuer at boot. It migrates, binds and serves, discovers the issuer
 # in the background, and until it has, /healthz reports service_tokens false and a JWT-shaped
 # bearer is 503 OIDC_ISSUER_UNAVAILABLE — never a 401, since the token was not judged.
-python3 "$held_port" exec --port-file "$work/dispatch-absent-issuer.port" --fd-env DISPATCH_LISTEN_FD -- \
-  "${dispatch_env[@]}" DISPATCH_LISTEN_FD=3 DISPATCH_PORT='{port}' \
-  DISPATCH_OIDC_ISSUER="$absent_issuer" DISPATCH_OIDC_AUDIENCE=dispatch \
-  "$work/dispatch" >"$work/dispatch-absent-issuer.log" 2>&1 &
+dispatch_absent_settings=("${dispatch_env[@]}"
+  DISPATCH_OIDC_ISSUER="$absent_issuer" DISPATCH_OIDC_AUDIENCE=dispatch)
+pass_flags "${dispatch_absent_settings[@]}"
+(exec_with_env "${dispatch_absent_settings[@]}" -- \
+  python3 "$held_port" exec --port-file "$work/dispatch-absent-issuer.port" \
+  --fd-env DISPATCH_LISTEN_FD --env 'DISPATCH_PORT={port}' "${passed[@]}" -- \
+  "$work/dispatch") >"$work/dispatch-absent-issuer.log" 2>&1 &
 dispatch_pid=$!
 dispatch_port=''
 port_of "dispatch against an issuer that does not answer" "$work/dispatch-absent-issuer.port" "$dispatch_pid" \
@@ -267,10 +284,13 @@ echo "== the listener serves against an issuer that does not answer"
 # envoy_listener_oidc_issuer_discovered reads 0 for the cluster's issuer, and a JWT-shaped bearer
 # is 503 with Retry-After: 1 — never a 401, since the token was not judged — while the shared
 # token is served.
-python3 "$held_port" exec --port-file "$work/listener-absent-issuer.port" --fd-env ENVOY_LISTEN_FD -- \
-  "${listener_env[@]}" ENVOY_LISTEN_FD=3 PORT='{port}' \
-  ENVOY_OIDC_ISSUER="$absent_issuer" ENVOY_OIDC_AUDIENCE=envoy \
-  "$work/listener" >"$work/listener-absent-issuer.log" 2>&1 &
+listener_absent_settings=("${listener_env[@]}"
+  ENVOY_OIDC_ISSUER="$absent_issuer" ENVOY_OIDC_AUDIENCE=envoy)
+pass_flags "${listener_absent_settings[@]}"
+(exec_with_env "${listener_absent_settings[@]}" -- \
+  python3 "$held_port" exec --port-file "$work/listener-absent-issuer.port" \
+  --fd-env ENVOY_LISTEN_FD --env 'PORT={port}' "${passed[@]}" -- \
+  "$work/listener") >"$work/listener-absent-issuer.log" 2>&1 &
 listener_pid=$!
 listener_port=''
 port_of "the listener against an issuer that does not answer" "$work/listener-absent-issuer.port" "$listener_pid" \
@@ -338,17 +358,23 @@ esac
 
 echo "== boot both binaries against the staging issuer"
 # Each serves on a port the kernel chose, held from that choice until it serves on it: the helper
-# opens the socket on 127.0.0.1:0, writes its port and becomes the binary (lib/held-port.py).
-# `env -i` clears the descriptor's variable the helper sets, so each names its own: the helper
-# hands the socket over as descriptor 3.
-python3 "$held_port" exec --port-file "$work/dispatch.port" --fd-env DISPATCH_LISTEN_FD -- \
-  "${dispatch_env[@]}" DISPATCH_LISTEN_FD=3 DISPATCH_PORT='{port}' \
-  DISPATCH_OIDC_ISSUER="$issuer" DISPATCH_OIDC_AUDIENCE=dispatch \
-  "$work/dispatch" >"$work/dispatch.log" 2>&1 &
+# opens the socket on 127.0.0.1:0, writes its port and becomes the binary (lib/held-port.py). It
+# runs with exactly the settings (exec_with_env) and hands the binary the ones --pass names, so
+# the database password and the bearer tokens are in no process's arguments; the helper hands the
+# socket over as descriptor 3 and names it.
+dispatch_issuer_settings=("${dispatch_env[@]}"
+  DISPATCH_OIDC_ISSUER="$issuer" DISPATCH_OIDC_AUDIENCE=dispatch)
+pass_flags "${dispatch_issuer_settings[@]}"
+(exec_with_env "${dispatch_issuer_settings[@]}" -- \
+  python3 "$held_port" exec --port-file "$work/dispatch.port" --fd-env DISPATCH_LISTEN_FD \
+  --env 'DISPATCH_PORT={port}' "${passed[@]}" -- "$work/dispatch") >"$work/dispatch.log" 2>&1 &
 dispatch_pid=$!
-python3 "$held_port" exec --port-file "$work/listener.port" --fd-env ENVOY_LISTEN_FD -- \
-  "${listener_env[@]}" ENVOY_LISTEN_FD=3 PORT='{port}' ENVOY_OIDC_ISSUER="$issuer" ENVOY_OIDC_AUDIENCE=envoy \
-  "$work/listener" >"$work/listener.log" 2>&1 &
+listener_issuer_settings=("${listener_env[@]}"
+  ENVOY_OIDC_ISSUER="$issuer" ENVOY_OIDC_AUDIENCE=envoy)
+pass_flags "${listener_issuer_settings[@]}"
+(exec_with_env "${listener_issuer_settings[@]}" -- \
+  python3 "$held_port" exec --port-file "$work/listener.port" --fd-env ENVOY_LISTEN_FD \
+  --env 'PORT={port}' "${passed[@]}" -- "$work/listener") >"$work/listener.log" 2>&1 &
 listener_pid=$!
 dispatch_port='' listener_port=''
 port_of dispatch "$work/dispatch.port" "$dispatch_pid" dispatch_port "$work/dispatch.log"
