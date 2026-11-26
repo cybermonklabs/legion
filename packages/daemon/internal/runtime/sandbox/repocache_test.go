@@ -1559,6 +1559,33 @@ func TestTheCachePodMayBeMovedByTheClusterAutoscaler(t *testing.T) {
 	}
 }
 
+// The goldens pin every byte of a repository cache's Sandbox as the runtime creates it
+// (cacheManifest), its pod template whole, under goldenOptions with every other pod on
+// otherAccount: cache with the cache's bucket off, its pod on that account and told no bucket, and
+// cache-bucket with it on, its pod on the cache's own account and its container told the bucket
+// (repocache.BucketEnv). Each holds the pod's annotations, safe-to-evict among them, its account,
+// its container's argv, variables, mounts and probe, its Secret's projection, its volume claim
+// template and its Service. A change of the cache pod's template shows here as a diff to read, as
+// an issue pod's does in TestManifestGoldens.
+func TestRepositoryCacheGoldens(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		golden     string
+		configured func(*Options)
+	}{
+		{"cache", sharedAccount},
+		{"cache-bucket", withBucket(testBucket, cacheAccount)},
+	} {
+		t.Run(tc.golden, func(t *testing.T) {
+			u, err := encodeSandbox(sandboxRuntime(t, SandboxConfig{}, tc.configured).cacheManifest(cacheRepo))
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkGolden(t, tc.golden, wire(t, u.Object))
+		})
+	}
+}
+
 // A repository of the cache set whose cache cannot be made — its token cannot be minted — is logged
 // as the sweep's warning naming the cache and tried at the next sweep; ReconcileOrphans answers
 // nil, since its error holds the claims' launches back at boot and each launch ensures its own
