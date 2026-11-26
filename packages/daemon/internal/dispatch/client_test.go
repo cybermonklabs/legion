@@ -41,7 +41,7 @@ func TestListIssuesFiltersStatusesWithoutChangingDispatchOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	issues, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ListIssues(context.Background(), "LEGION", []string{"todo"})
+	issues, err := New(server.URL, BearerTransport(dispatchToken, nil)).ListIssues(context.Background(), "LEGION", []string{"todo"})
 	if err != nil {
 		t.Fatalf("list issues: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 	}))
 	defer server.Close()
 
-	issue, err := New(server.URL, BearerTransport(dispatchToken, nil), "").GetIssue(context.Background(), "LEGION-8")
+	issue, err := New(server.URL, BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "LEGION-8")
 	if err != nil {
 		t.Fatalf("get issue: %v", err)
 	}
@@ -115,18 +115,21 @@ func TestGetIssueReturnsWorkflowFields(t *testing.T) {
 
 // Every request names the daemon and the build it runs in its User-Agent, a read and a write
 // alike, so Dispatch's access log tells the daemon's calls apart: the release or the commit the
-// caller names, and `(devel)` where it names neither, which is what a build linked with neither
-// a release nor a revision hands it. Its paths stay on /api/v1.
+// caller names (Release), and `(devel)` where it names neither, which is what a build linked with
+// neither a release nor a revision hands it, and what a client made with no Release option sends.
+// Its paths stay on /api/v1.
 func TestTheClientNamesItself(t *testing.T) {
 	for _, tc := range []struct {
-		release string
+		name    string
+		options []Option
 		want    string
 	}{
-		{release: "v4.2.0", want: "legion-daemon/v4.2.0"},
-		{release: "0123456789abcdef0123456789abcdef01234567", want: "legion-daemon/0123456789abcdef0123456789abcdef01234567"},
-		{release: "", want: "legion-daemon/(devel)"},
+		{name: "a release", options: []Option{Release("v4.2.0")}, want: "legion-daemon/v4.2.0"},
+		{name: "a commit", options: []Option{Release("0123456789abcdef0123456789abcdef01234567")}, want: "legion-daemon/0123456789abcdef0123456789abcdef01234567"},
+		{name: "an empty release", options: []Option{Release("")}, want: "legion-daemon/(devel)"},
+		{name: "no release option", want: "legion-daemon/(devel)"},
 	} {
-		t.Run(tc.want, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			var sent []string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				sent = append(sent, r.Method+" "+r.URL.Path+" "+r.UserAgent())
@@ -138,7 +141,7 @@ func TestTheClientNamesItself(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := New(server.URL, BearerTransport(dispatchToken, nil), tc.release)
+			client := New(server.URL, BearerTransport(dispatchToken, nil), tc.options...)
 			if _, err := client.ListIssues(context.Background(), "LEGION", nil); err != nil {
 				t.Fatalf("list issues: %v", err)
 			}
@@ -170,7 +173,7 @@ func TestListAndDetailCarryTheResolvedRepository(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	issues, err := client.ListIssues(context.Background(), "LEGION", nil)
 	if err != nil {
@@ -203,7 +206,7 @@ func TestWebhookAppInstalledReadsDispatchsAnswer(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	for repo, want := range map[string]bool{"acme/widgets": true, "acme/gadgets": false} {
 		installed, err := client.WebhookAppInstalled(context.Background(), repo)
@@ -242,7 +245,7 @@ func TestHandOverWritesTheStatusAndTheLabelsInOnePatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, BearerTransport(dispatchToken, nil), "").HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "in_progress", Labels: []string{"repo:x"}, LastSeq: 7}, "todo"); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "in_progress", Labels: []string{"repo:x"}, LastSeq: 7}, "todo"); err != nil {
 		t.Fatalf("hand over: %v", err)
 	}
 }
@@ -262,7 +265,7 @@ func TestHandOverOfALabelledIssueWritesTheStatusAtItsSequence(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, BearerTransport(dispatchToken, nil), "").HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "testing", Labels: []string{"Legion"}, HandedOver: true, LastSeq: 9}, "todo"); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).HandOver(context.Background(), Issue{Key: "LEGION-4", Status: "testing", Labels: []string{"Legion"}, HandedOver: true, LastSeq: 9}, "todo"); err != nil {
 		t.Fatalf("hand over: %v", err)
 	}
 }
@@ -295,7 +298,7 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	written, err := New(server.URL, BearerTransport(dispatchToken, nil), "").SetStatus(context.Background(), "LEGION-4", "testing")
+	written, err := New(server.URL, BearerTransport(dispatchToken, nil)).SetStatus(context.Background(), "LEGION-4", "testing")
 	if err != nil {
 		t.Fatalf("set status: %v", err)
 	}
@@ -337,7 +340,7 @@ func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, BearerTransport(dispatchToken, nil), "").ReleaseClaim(context.Background(), "LEGION-4"); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).ReleaseClaim(context.Background(), "LEGION-4"); err != nil {
 		t.Fatalf("release claim: %v", err)
 	}
 
@@ -346,7 +349,7 @@ func TestReleaseClaimDeletesTheClaimUnderTheDaemonSession(t *testing.T) {
 	}))
 	defer claimed.Close()
 
-	err := New(claimed.URL, BearerTransport(dispatchToken, nil), "").ReleaseClaim(context.Background(), "LEGION-4")
+	err := New(claimed.URL, BearerTransport(dispatchToken, nil)).ReleaseClaim(context.Background(), "LEGION-4")
 	var dispatchErr *Error
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("release claim error = %T %v, want *dispatch.Error", err, err)
@@ -401,7 +404,7 @@ func TestGatedStepsPublishSendsTheListUnderTheDaemonSession(t *testing.T) {
 			}))
 			defer server.Close()
 
-			if err := New(server.URL, BearerTransport(dispatchToken, nil), "").PutGatedSteps(context.Background(), "LEGION", tc.steps); err != nil {
+			if err := New(server.URL, BearerTransport(dispatchToken, nil)).PutGatedSteps(context.Background(), "LEGION", tc.steps); err != nil {
 				t.Fatalf("publish the gated steps: %v", err)
 			}
 		})
@@ -440,7 +443,7 @@ func TestPostMessageSendsBodyWithoutAnUnsupportedIdempotencyKey(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if err := New(server.URL, BearerTransport(dispatchToken, nil), "").PostMessage(context.Background(), "LEGION-5", "Pull request checks are blocked."); err != nil {
+	if err := New(server.URL, BearerTransport(dispatchToken, nil)).PostMessage(context.Background(), "LEGION-5", "Pull request checks are blocked."); err != nil {
 		t.Fatalf("post message: %v", err)
 	}
 }
@@ -459,7 +462,7 @@ func TestArtifactsReadsTheSlugOfEveryArtifactOfTheIssue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil), "").Artifacts(context.Background(), "LEGION-5")
+	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil)).Artifacts(context.Background(), "LEGION-5")
 	if err != nil {
 		t.Fatalf("artifact slugs: %v", err)
 	}
@@ -498,7 +501,7 @@ func TestArtifactsReadsWhatEachArtifactIsOnTheIssueAndItsLatestVersion(t *testin
 	}))
 	defer server.Close()
 
-	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil), "").Artifacts(context.Background(), "LEGION-5")
+	artifacts, err := New(server.URL, BearerTransport(dispatchToken, nil)).Artifacts(context.Background(), "LEGION-5")
 	if err != nil {
 		t.Fatalf("artifacts: %v", err)
 	}
@@ -544,7 +547,7 @@ func TestReviewsReadsEveryReviewOfADocumentNewestFirst(t *testing.T) {
 		})
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	reviews, err := client.Reviews(context.Background(), "artifact-6")
 	if err != nil {
@@ -590,7 +593,7 @@ func TestDocumentVersionReadsTheMarkdownOfOneVersion(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	got, err := client.DocumentVersion(context.Background(), "artifact-6", 3)
 	if err != nil || got != markdown {
@@ -667,7 +670,7 @@ func TestUploadArtifactSendsTheDocumentUnderTheDaemonSessionAndReadsItsSlug(t *t
 	}))
 	defer server.Close()
 
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	slug, err := client.UploadArtifact(context.Background(), "LEGION-5", "rescue-pod-9d3f0c7a", content)
 	if err != nil || slug != "rescue-pod-9d3f0c7a" {
 		t.Fatalf("upload = %q, %v; want the slug Dispatch filed the document under", slug, err)
@@ -704,7 +707,7 @@ func TestApprovalReturnsCurrentDocumentApproval(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	approval, err := client.Approval(context.Background(), "artifact-6")
 	if err != nil {
@@ -748,7 +751,7 @@ func TestApprovalNamesOnlyAnOpenRequest(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	awaiting, err := client.Approval(context.Background(), "artifact-7")
 	if err != nil {
 		t.Fatalf("read awaiting approval: %v", err)
@@ -790,7 +793,7 @@ func TestReadsCarryTheClaimHolder(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 	listed, err := client.ListIssues(context.Background(), "LEGION", nil)
 	if err != nil {
@@ -858,7 +861,7 @@ func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	handoff, err := client.Handoff(context.Background(), id)
 	if err != nil {
 		t.Fatalf("read handoff: %v", err)
@@ -902,7 +905,7 @@ func TestAskReadsTheStateAndWhoClosedIt(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	resolved, err := client.Ask(context.Background(), "ask-resolved")
 	if want := (Ask{State: "resolved", ClosedBy: Actor{Kind: "session", ID: "ses_architect"}}); err != nil || resolved != want {
 		t.Fatalf("the resolved ask = %#v, %v; want %#v", resolved, err, want)
@@ -929,7 +932,7 @@ func TestClientReturnsDispatchErrorForCoded4xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, BearerTransport(dispatchToken, nil), "").GetIssue(context.Background(), "LEGION-9")
+	_, err := New(server.URL, BearerTransport(dispatchToken, nil)).GetIssue(context.Background(), "LEGION-9")
 	var dispatchErr *Error
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("get issue error = %T %v, want *dispatch.Error", err, err)
@@ -945,7 +948,7 @@ func TestClientReturnsDispatchErrorFor5xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, BearerTransport(dispatchToken, nil), "").SetStatus(context.Background(), "LEGION-10", "testing")
+	_, err := New(server.URL, BearerTransport(dispatchToken, nil)).SetStatus(context.Background(), "LEGION-10", "testing")
 	var dispatchErr *Error
 	if !errors.As(err, &dispatchErr) {
 		t.Fatalf("set status error = %T %v, want *dispatch.Error", err, err)
@@ -963,7 +966,7 @@ func TestClientBoundsEveryCall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+	client := New(server.URL, BearerTransport(dispatchToken, nil))
 	client.timeout = 20 * time.Millisecond
 	_, err := client.GetIssue(context.Background(), "LEGION-11")
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -1011,7 +1014,7 @@ func TestTheBearerReachesNoOtherHostARedirectNames(t *testing.T) {
 	}}
 	defer base.CloseIdleConnections()
 
-	client := New(server.URL, BearerTransport(dispatchToken, base), "")
+	client := New(server.URL, BearerTransport(dispatchToken, base))
 	for _, key := range []string{"LEGION-12", "LEGION-13"} {
 		if _, err := client.GetIssue(context.Background(), key); err != nil {
 			t.Fatalf("get %s through its redirect: %v", key, err)
@@ -1100,7 +1103,7 @@ func TestMessageBodiesSincePagesNewestFirstUntilTheOutboxWindow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil), "").MessageBodiesSince(context.Background(), "LEGION-5", since)
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -1135,7 +1138,7 @@ func TestMessageBodiesSinceReadsACutBodyFromItsMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil), "").MessageBodiesSince(context.Background(), "LEGION-5", since)
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err != nil {
 		t.Fatalf("list messages: %v", err)
 	}
@@ -1167,7 +1170,7 @@ func TestMessageBodiesSincePassesOverADeletedMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil), "").MessageBodiesSince(context.Background(), "LEGION-5", since)
+	bodies, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err != nil {
 		t.Fatalf("list messages beside a deleted one: %v", err)
 	}
@@ -1190,7 +1193,7 @@ func TestMessageBodiesSinceStillRefusesAStandingMessageWithNoBody(t *testing.T) 
 	}))
 	defer server.Close()
 
-	_, err := New(server.URL, BearerTransport(dispatchToken, nil), "").MessageBodiesSince(context.Background(), "LEGION-5", since)
+	_, err := New(server.URL, BearerTransport(dispatchToken, nil)).MessageBodiesSince(context.Background(), "LEGION-5", since)
 	if err == nil || !strings.Contains(err.Error(), "payload body is required") {
 		t.Fatalf("err = %v, want the refusal of a message.created event with no body", err)
 	}
@@ -1258,7 +1261,7 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 	}))
 	defer server.Close()
 
-	events, err := New(server.URL, BearerTransport(dispatchToken, nil), "").EventsAfter(context.Background(), "LEGION-1", 7)
+	events, err := New(server.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7)
 	if err != nil {
 		t.Fatalf("read events: %v", err)
 	}
@@ -1276,7 +1279,7 @@ func TestEventsAfterPagesTheIssuesEventLogInOrder(t *testing.T) {
 		writeJSON(t, w, []map[string]any{{"seq": 7, "type": "comment.created"}})
 	}))
 	defer stuck.Close()
-	if _, err := New(stuck.URL, BearerTransport(dispatchToken, nil), "").EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
+	if _, err := New(stuck.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7); err == nil || !strings.Contains(err.Error(), "non-ascending") {
 		t.Fatalf("a page at the sequence already read = %v, want refused", err)
 	}
 }
@@ -1426,13 +1429,13 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 			}{
 				{
 					name:   "a client made with no option",
-					client: func(url string) *HTTPClient { return New(url, BearerTransport(dispatchToken, nil), "") },
+					client: func(url string) *HTTPClient { return New(url, BearerTransport(dispatchToken, nil)) },
 					body:   write.body,
 				},
 				{
 					name: "a client made WritesAs legion-daemon:EXAMPLE",
 					client: func(url string) *HTTPClient {
-						return New(url, BearerTransport(dispatchToken, nil), "", WritesAs("legion-daemon:EXAMPLE"))
+						return New(url, BearerTransport(dispatchToken, nil), WritesAs("legion-daemon:EXAMPLE"))
 					},
 					body: strings.Replace(write.body, daemonOfOther, `{"kind":"session","id":"legion-daemon:EXAMPLE"}`, 1),
 				},
@@ -1537,7 +1540,7 @@ func TestEventsAfterNamesTheEventOfAPageItCannotRead(t *testing.T) {
 			}))
 			defer server.Close()
 
-			events, err := New(server.URL, BearerTransport(dispatchToken, nil), "").EventsAfter(context.Background(), "LEGION-1", 7)
+			events, err := New(server.URL, BearerTransport(dispatchToken, nil)).EventsAfter(context.Background(), "LEGION-1", 7)
 			var unread *EventLogError
 			if !errors.As(err, &unread) || unread.Event != 203 || unread.Seq != tc.seq || err.Error() != tc.text || events != nil {
 				t.Fatalf("EventsAfter = %d events, %#v; want an *EventLogError naming event 203, seq %d, with the text %q", len(events), err, tc.seq, tc.text)

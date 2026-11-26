@@ -749,7 +749,7 @@ func (r *dispatchBrokerRig) otherProjectDaemonClient() *dispatch.HTTPClient {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return dispatch.New(r.url, cipherclient.NewTokenTransport(client, http.DefaultTransport), "", dispatch.WritesAs(ciphertest.OtherProjectSession))
+	return dispatch.New(r.url, cipherclient.NewTokenTransport(client, http.DefaultTransport), dispatch.WritesAs(ciphertest.OtherProjectSession))
 }
 
 // rigClients is scripts/e2e/dispatch-broker-clients.ts running in a role's environment: the
@@ -1395,7 +1395,7 @@ func TestTheDaemonWritesAsItselfOnlyInItsProject(t *testing.T) {
 		return err
 	})
 	outside := r.daemonCall("PostMessage on "+r.pIssue+", sent to an origin DISPATCH_PROOF_ORIGINS does not name", false, func() error {
-		return dispatch.New(r.outside, transport, "", dispatch.WritesAs(dispatch.DaemonSession(rigP))).PostMessage(ctx, r.pIssue, "The daemon's notice at an address Dispatch was not told of.")
+		return dispatch.New(r.outside, transport, dispatch.WritesAs(dispatch.DaemonSession(rigP))).PostMessage(ctx, r.pIssue, "The daemon's notice at an address Dispatch was not told of.")
 	})
 	role := r.registeredRole("k2")
 	on := r.environment(role, "")

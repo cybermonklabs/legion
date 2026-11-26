@@ -472,7 +472,7 @@ func newWebhookDispatch(t *testing.T, route bool, installed map[string]bool) *we
 
 // serve is the rig option that has the runtime read Dispatch from d, through the real client.
 func (d *webhookDispatch) serve(w *workflowRuntime) {
-	w.dispatch = dispatch.New(d.url, dispatch.BearerTransport("dispatch-test-token", nil), "")
+	w.dispatch = dispatch.New(d.url, dispatch.BearerTransport("dispatch-test-token", nil))
 }
 
 // install has the check answer that Dispatch's GitHub App is installed on repo.

@@ -863,6 +863,15 @@ function noAnswer(request: string, failure: Error): string {
   return `${request} failed on its last attempt (${failure.message})`;
 }
 
+/**
+ * The first clause of the `DispatchWriteUnsettledError` of a write the deadline ended with no
+ * definitive answer, a keyed write's (`#endWrite`) and one of `#send`'s (`#sendOnce`, before its
+ * answer came or while its body was read) alike.
+ */
+function deadlineEnded(request: string): string {
+  return `${request} had no definitive answer when its deadline ended it`;
+}
+
 /** What a write's attempts have shown, apart from its table state (`WriteState`): what the
  *  pacing and the unsettled message read. */
 interface WriteProgress {
@@ -1151,6 +1160,28 @@ function stoppedEvent(
   if (name === "TimeoutError") return inFlight ? "deadline-in-flight" : "deadline";
   if (limit.aborted || name === "AbortError") return inFlight ? "cancelled-in-flight" : "cancelled";
   return undefined;
+}
+
+/**
+ * The table's event for an attempt whose answer's headers came and whose body did not, whole, and
+ * what ended it, a keyed write's attempt (`#write`) and one of `#send`'s (`#sendOnce`) alike: the
+ * request reached whatever answered, and whether the write ran was the body's to say. A deadline
+ * or a stop that ended the read is that stop (`stoppedEvent`), with the read's own error; any other
+ * failure is the body breaking off (`body-broken`), an error naming `request`, the answer's
+ * `status` and the failure's class, which is also the unsettled write's first clause.
+ */
+function bodyInterruption(
+  limit: AbortSignal,
+  error: unknown,
+  request: string,
+  status: number
+): { readonly event: WriteEvent; readonly failure: unknown } {
+  const stop = stoppedEvent(limit, true, error);
+  if (stop !== undefined) return { event: stop, failure: error };
+  return {
+    event: "body-broken",
+    failure: new Error(`${request} lost the body of its ${status} answer (${errorClass(error)})`),
+  };
 }
 
 /**
@@ -2854,15 +2885,15 @@ export class DispatchClient {
    * `#write` instead.
    *
    * A PUT, a DELETE or `sendRoute`'s write (any method but GET, a POST or a PATCH among them) is
-   * a write all the same, with no key to ask again under, so each ending after which it may have
-   * taken effect is a `DispatchWriteUnsettledError` of one attempt and no key: Dispatch's own
-   * 5xx, which it sends when a write fails and which can come after the write committed; no
-   * answer once the request went out (`#sendOnce`), where its transport failed after it went out
-   * or the call's deadline ended it in flight; and an answer whose body broke off after its status
-   * came, or whose body the deadline ended, since `#sendOnce` reads a write's body whole and the
-   * request reached whatever answered. Two endings with no definitive answer are thrown as they
-   * are: the caller's own stop in flight, before the answer or during its body, and a transport
-   * failure that reached no server (`reachedNothing`). A gateway's 5xx stays its
+   * a write all the same, with no key to ask again under, so the following endings, after which
+   * it may have taken effect, are each a `DispatchWriteUnsettledError` of one attempt and no key:
+   * Dispatch's own 5xx, which it sends when a write fails and which can come after the write
+   * committed; no answer once the request went out (`#sendOnce`), where its transport failed after
+   * it went out or the call's deadline ended it in flight; and an answer whose body broke off after
+   * its status came, or whose body the deadline ended, since `#sendOnce` reads a write's body whole
+   * and the request reached whatever answered. Two endings with no definitive answer are thrown as
+   * they are: the caller's own stop in flight, before the answer or during its body, and a
+   * transport failure that reached no server (`reachedNothing`). A gateway's 5xx stays its
    * `DispatchGatewayError`, whose advice already says the write may or may not have reached
    * Dispatch. A GET is never unsettled: each of its endings is thrown as it came.
    */
@@ -2947,9 +2978,7 @@ export class DispatchClient {
         last,
         1,
         undefined,
-        stop === "deadline-in-flight"
-          ? `${request()} had no definitive answer when its deadline ended it`
-          : noAnswer(request(), last)
+        stop === "deadline-in-flight" ? deadlineEnded(request()) : noAnswer(request(), last)
       );
     }
     // A read's body is its caller's to read, a file version's bytes among them. A status that
@@ -2962,23 +2991,20 @@ export class DispatchClient {
     }
     // The answer's headers came and its body may not, whole: the request reached whatever
     // answered, and whether the write ran was the body's to say, as for a keyed write
-    // (`body-broken`, write-outcome.ts). Its callers read an answer made from the bytes read here.
+    // (`bodyInterruption`). Its callers read an answer made from the bytes read here.
     let bytes: ArrayBuffer;
     try {
       bytes = await answer.arrayBuffer();
     } catch (error) {
-      const stop = stoppedEvent(limit, true, error);
-      if (stop === "cancelled-in-flight") throw error;
-      if (stop === "deadline-in-flight") {
-        throw new DispatchWriteUnsettledError(
-          error instanceof Error ? error : new Error(String(error)),
-          1,
-          undefined,
-          `${request()} had no definitive answer when its deadline ended it`
-        );
-      }
-      const lost = `${request()} lost the body of its ${status} answer (${errorClass(error)})`;
-      throw new DispatchWriteUnsettledError(new Error(lost), 1, undefined, lost);
+      const { event, failure } = bodyInterruption(limit, error, request(), status);
+      if (event === "cancelled-in-flight") throw error;
+      const last = failure instanceof Error ? failure : new Error(String(failure));
+      throw new DispatchWriteUnsettledError(
+        last,
+        1,
+        undefined,
+        event === "deadline-in-flight" ? deadlineEnded(request()) : last.message
+      );
     }
     return {
       answer: new Response(bytes, { status, statusText, headers: answerHeaders }),
@@ -3131,18 +3157,9 @@ export class DispatchClient {
       try {
         answer = await writeAnswer(response);
       } catch (error) {
-        // The answer's headers came and its body did not, whole: the request reached whatever
-        // answered, and whether the write ran was the body's to say. A deadline or a stop that
-        // ended the read is that stop; any other failure, the body breaking off.
-        const stop = stoppedEvent(limit, true, error);
+        // The answer's headers came and its body did not, whole (`bodyInterruption`).
         return {
-          event: stop ?? "body-broken",
-          failure:
-            stop === undefined
-              ? new Error(
-                  `${write.request} lost the body of its ${response.status} answer (${errorClass(error)})`
-                )
-              : error,
+          ...bodyInterruption(limit, error, write.request, response.status),
           presented,
           sent,
           heard,
@@ -3403,7 +3420,7 @@ export class DispatchClient {
           break;
         case "deadline":
         case "deadline-in-flight":
-          unanswered = `${request} had no definitive answer when its deadline ended it`;
+          unanswered = deadlineEnded(request);
           break;
         case "cancelled":
         case "cancelled-in-flight":

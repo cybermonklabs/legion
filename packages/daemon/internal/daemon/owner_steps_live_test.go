@@ -187,7 +187,7 @@ func (l *ownerStepsLive) planWritten(steps []string) string {
 	if id == "" {
 		t.Fatalf("the documents of %s are %+v, want one of the slug plan-md", l.key, summary.Documents)
 	}
-	read, err := dispatch.New(l.dispatch.base, dispatch.BearerTransport(l.dispatch.token, nil), "").PlanDocument(context.Background(), id, 1)
+	read, err := dispatch.New(l.dispatch.base, dispatch.BearerTransport(l.dispatch.token, nil)).PlanDocument(context.Background(), id, 1)
 	if err != nil {
 		t.Fatalf("read %s at version 1 as the daemon: %v", id, err)
 	}

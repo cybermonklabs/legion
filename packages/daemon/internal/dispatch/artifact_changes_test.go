@@ -46,7 +46,7 @@ func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 	}))
 	defer server.Close()
 
-	changes, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ArtifactChanges(context.Background(), "doc-7", 3, 5)
+	changes, err := New(server.URL, BearerTransport(dispatchToken, nil)).ArtifactChanges(context.Background(), "doc-7", 3, 5)
 	if err != nil {
 		t.Fatalf("read the change set: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestArtifactChangesReadsAnUnchangedPair(t *testing.T) {
 			}))
 			defer server.Close()
 
-			changes, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ArtifactChanges(context.Background(), "doc-7", 4, 5)
+			changes, err := New(server.URL, BearerTransport(dispatchToken, nil)).ArtifactChanges(context.Background(), "doc-7", 4, 5)
 			if err != nil {
 				t.Fatalf("read the change set: %v", err)
 			}
@@ -116,7 +116,7 @@ func TestArtifactChangesReadsADecisionOnlyChange(t *testing.T) {
 	}))
 	defer server.Close()
 
-	changes, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ArtifactChanges(context.Background(), "doc-7", 4, 5)
+	changes, err := New(server.URL, BearerTransport(dispatchToken, nil)).ArtifactChanges(context.Background(), "doc-7", 4, 5)
 	if err != nil {
 		t.Fatalf("read the change set: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestArtifactChangesNamesADispatchWithoutTheRoute(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ArtifactChanges(context.Background(), "doc-7", 3, 5)
+			_, err := New(server.URL, BearerTransport(dispatchToken, nil)).ArtifactChanges(context.Background(), "doc-7", 3, 5)
 			if err == nil {
 				t.Fatalf("read the change set against a %d = no error, want one", tc.status)
 			}
@@ -209,7 +209,7 @@ func TestApprovedVersionBeforeReadsTheHighestApprovalBelowTheVersion(t *testing.
 			}))
 			defer server.Close()
 
-			got, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ApprovedVersionBefore(context.Background(), "doc-7", tc.version)
+			got, err := New(server.URL, BearerTransport(dispatchToken, nil)).ApprovedVersionBefore(context.Background(), "doc-7", tc.version)
 			if err != nil {
 				t.Fatalf("read the review history: %v", err)
 			}
@@ -228,7 +228,7 @@ func TestApprovedVersionBeforeReportsAFailedRead(t *testing.T) {
 	}))
 	defer server.Close()
 
-	if got, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ApprovedVersionBefore(context.Background(), "doc-7", 5); err == nil {
+	if got, err := New(server.URL, BearerTransport(dispatchToken, nil)).ApprovedVersionBefore(context.Background(), "doc-7", 5); err == nil {
 		t.Fatalf("approved version before 5 against a 503 = %d with no error, want the failure", got)
 	}
 }
@@ -254,7 +254,7 @@ func TestApprovedVersionBeforeNamesADocumentDispatchNoLongerHolds(t *testing.T) 
 			}))
 			defer server.Close()
 
-			_, err := New(server.URL, BearerTransport(dispatchToken, nil), "").ApprovedVersionBefore(context.Background(), "doc-7", 5)
+			_, err := New(server.URL, BearerTransport(dispatchToken, nil)).ApprovedVersionBefore(context.Background(), "doc-7", 5)
 			if err == nil {
 				t.Fatalf("read the review history against a %d = no error, want one", tc.status)
 			}

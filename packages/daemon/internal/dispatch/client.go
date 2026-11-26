@@ -19,9 +19,9 @@ import (
 
 const requestTimeout = 10 * time.Second
 
-// unstampedRelease is the release the client names when its caller names none: a build linked
-// with neither a release nor a revision (cmd/legion's dispatchRelease), and a test.
-const unstampedRelease = "(devel)"
+// unstampedUserAgent is the User-Agent of a client given no release (Release): a build linked with
+// neither a release nor a revision (cmd/legion's dispatchRelease), and a test.
+const unstampedUserAgent = "legion-daemon/(devel)"
 
 // HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
 // transport it was made with (New). Every write names as its actor the session actor answers.
@@ -45,20 +45,28 @@ func WritesAs(session string) Option {
 	return func(c *HTTPClient) { c.session = session }
 }
 
+// Release makes every request of the client name release, the build the daemon runs, in its
+// User-Agent (`legion-daemon/<release>`), so Dispatch's access log tells the daemon's calls from
+// every other client's. An empty release names none, and the client keeps `legion-daemon/(devel)`,
+// as a client made without this option does.
+func Release(release string) Option {
+	return func(c *HTTPClient) {
+		if release != "" {
+			c.userAgent = "legion-daemon/" + release
+		}
+	}
+}
+
 // New creates a client for one Dispatch server whose every request goes through transport, which
 // presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
 // under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
-// client sets no Authorization of its own. Every request names the daemon and release, the build it
-// runs, in its User-Agent (`legion-daemon/<release>`), so Dispatch's access log tells the daemon's
-// calls from every other client's; a caller that names no release sends `legion-daemon/(devel)`.
-// Each option sets one thing of the client (WritesAs).
-func New(baseURL string, transport http.RoundTripper, release string, options ...Option) *HTTPClient {
-	if release == "" {
-		release = unstampedRelease
-	}
+// client sets no Authorization of its own. Every request names the daemon in its User-Agent,
+// `legion-daemon/(devel)` unless Release names the build it runs. Each option sets one thing of the
+// client (WritesAs, Release).
+func New(baseURL string, transport http.RoundTripper, options ...Option) *HTTPClient {
 	c := &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
-		userAgent:  "legion-daemon/" + release,
+		userAgent:  unstampedUserAgent,
 		timeout:    requestTimeout,
 		httpClient: &http.Client{Transport: transport},
 	}

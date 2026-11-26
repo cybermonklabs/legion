@@ -315,7 +315,7 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": stepRecordID})
 	}))
 	t.Cleanup(server.Close)
-	rig.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil), "")
+	rig.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil))
 
 	const tries = waitWarnAttempts + 1
 	for try := 1; try <= tries; try++ {
@@ -485,7 +485,7 @@ func TestAStepRecordLandsWhileItsVariantWaitsForItsRoute(t *testing.T) {
 		board.ServeHTTP(w, req)
 	}))
 	t.Cleanup(server.Close)
-	rig.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil), "")
+	rig.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil))
 	held := func() map[string]any {
 		board.mu.Lock()
 		defer board.mu.Unlock()

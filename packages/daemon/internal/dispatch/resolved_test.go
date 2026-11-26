@@ -157,7 +157,7 @@ func TestTheClientReadsResolvedPriorityFromEachBodyDispatchServes(t *testing.T) 
 					_, _ = w.Write(body)
 				}))
 				defer server.Close()
-				client := New(server.URL, BearerTransport(dispatchToken, nil), "")
+				client := New(server.URL, BearerTransport(dispatchToken, nil))
 
 				var got Issue
 				var err error

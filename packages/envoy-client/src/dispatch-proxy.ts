@@ -570,7 +570,12 @@ async function serve(
   const body = method === "GET" ? undefined : await wholeBody(request);
   // One URL for the proof and for the fetch.
   const url = outbound.href;
-  const headers = forwardedHeaders(request.headers);
+  // The tool's headers over the command's User-Agent, so a tool's own wins: every send, the resend
+  // after a dead token among them, sends these beneath the credential's fresh presentation.
+  const headers = {
+    ...(run.userAgent === undefined ? {} : { "user-agent": run.userAgent }),
+    ...forwardedHeaders(request.headers),
+  };
   // A tool that hangs up stops the trade it waits on, and Dispatch's answer on its way.
   const upstream = new AbortController();
   response.once("close", () => {
@@ -594,13 +599,7 @@ async function serve(
     tally.tokens.add(token);
     const answer = await fetch(url, {
       method,
-      headers: {
-        ...(run.userAgent === undefined || "user-agent" in headers
-          ? {}
-          : { "user-agent": run.userAgent }),
-        ...headers,
-        ...presented,
-      },
+      headers: { ...headers, ...presented },
       ...(body === undefined ? {} : { body }),
       redirect: "manual",
       decompress: false,

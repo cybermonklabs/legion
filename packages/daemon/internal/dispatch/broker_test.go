@@ -127,7 +127,7 @@ func TestTheDaemonCallsDispatchWithItsOwnBrokerToken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := New(server.URL, cipherclient.NewTokenTransport(client, http.DefaultTransport), "").PostMessage(context.Background(), key, notice); err != nil {
+	if err := New(server.URL, cipherclient.NewTokenTransport(client, http.DefaultTransport)).PostMessage(context.Background(), key, notice); err != nil {
 		t.Fatalf("post the notice under the broker's token: %v", err)
 	}
 	brokered := server.last(t)
@@ -146,7 +146,7 @@ func TestTheDaemonCallsDispatchWithItsOwnBrokerToken(t *testing.T) {
 
 	// The control: the setting off, and the bearer dispatch_token_file names.
 	const fileToken = "dispatch-file-token"
-	if err := New(server.URL, BearerTransport(fileToken, http.DefaultTransport), "").PostMessage(context.Background(), key, notice); err != nil {
+	if err := New(server.URL, BearerTransport(fileToken, http.DefaultTransport)).PostMessage(context.Background(), key, notice); err != nil {
 		t.Fatalf("post the notice under the file's bearer: %v", err)
 	}
 	bearer := server.last(t)

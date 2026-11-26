@@ -370,7 +370,7 @@ func TestTheDaemonNeverSendsTheTransitionToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dispatchCredential: %v", err)
 	}
-	client := dispatch.New(cfg.DispatchURL, transport, "")
+	client := dispatch.New(cfg.DispatchURL, transport)
 	issue := cfg.Project + "-1"
 	if _, err := client.ListIssues(context.Background(), cfg.Project, nil); err != nil {
 		t.Fatalf("list the project's issues: %v", err)
@@ -490,7 +490,7 @@ func TestTheDaemonRenewsItsDispatchTokenOffTheRequestPath(t *testing.T) {
 	// the renewal has until the call, less the second exp rounds to, to land: 8 s for the timer's
 	// wake and one trade, whatever boot's own trade took.
 	booted := time.Now()
-	client := dispatch.New(dispatchServer.URL, transport, "")
+	client := dispatch.New(dispatchServer.URL, transport)
 	// presented makes one Dispatch call, answering the token it carried and when it was sent.
 	presented := func() (string, time.Time) {
 		t.Helper()

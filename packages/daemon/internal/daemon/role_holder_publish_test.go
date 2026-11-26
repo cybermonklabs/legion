@@ -610,7 +610,7 @@ func TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt(t *testing.
 		_ = json.NewEncoder(w).Encode(map[string]any{"issue": issue, "holders": body.Holders})
 	}))
 	t.Cleanup(server.Close)
-	r.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil), "")
+	r.runner.dispatch = dispatch.New(server.URL, dispatch.BearerTransport("agent-token", nil))
 	run := func() {
 		t.Helper()
 		if drained, _ := r.runner.drain(r.ctx, "", []record.OutboxKind{record.OutboxKindRoleHoldersPublish}); !drained {

@@ -968,7 +968,7 @@ const dispatchCredentialLine = "legion daemon's Dispatch credential"
 // trade is a failed Dispatch call that sent nothing (dispatch.TransientError), which the outbox
 // waits out as it waits out a Dispatch outage.
 //
-// release is the build the whoami's client names itself by (dispatch.New), as openWorkflow's
+// release is the build the whoami's client names itself by (dispatch.Release), as openWorkflow's
 // client does; empty names none.
 //
 // The transition token dispatch_token_transition_file holds (sandbox.DispatchCredential.Transition)
@@ -1029,9 +1029,9 @@ func dispatchCredential(ctx context.Context, cfg config.Config, dispatchToken, r
 // the daemon runs, which every request names in its User-Agent.
 func daemonDispatchClient(cfg config.Config, transport http.RoundTripper, release string) *dispatch.HTTPClient {
 	if !cfg.DispatchTokenBroker {
-		return dispatch.New(cfg.DispatchURL, transport, release)
+		return dispatch.New(cfg.DispatchURL, transport, dispatch.Release(release))
 	}
-	return dispatch.New(cfg.DispatchURL, transport, release, dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
+	return dispatch.New(cfg.DispatchURL, transport, dispatch.Release(release), dispatch.WritesAs(dispatch.DaemonSession(cfg.Project)))
 }
 
 // renewDispatchCredential renews the daemon's Dispatch token off the request path until ctx ends,

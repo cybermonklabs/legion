@@ -705,7 +705,7 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // nil while the operator paces nothing, which is the engine's reading of the pacing off — the
 // catch-up is then due at once, as it always was.
 //
-// release is the build the daemon's Dispatch client names itself by (dispatch.New); empty names
+// release is the build the daemon's Dispatch client names itself by (dispatch.Release); empty names
 // none.
 //
 // clock is the daemon's one clock (the machines', overrides.clock), which the engine and this
