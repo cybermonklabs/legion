@@ -305,7 +305,8 @@ type podClass int
 const (
 	releaseReads podClass = iota
 	// releaseByLauncher is a pod in which no role process runs, so no shim reads it: the release
-	// reads it through its launcher before its delete (launcherRead) and asks none of its roles.
+	// reads it through its launcher before its delete (launcherRead), and a dry run reads it so at
+	// once (readAll), and asks none of its roles.
 	releaseByLauncher
 	releaseLeaves
 )
@@ -385,9 +386,13 @@ func (r *projectReleaser) Start(ctx context.Context, bound time.Duration, dryRun
 	// of a replacement after the settle has read the records of its pod, and then end as a
 	// replacement made over the pod the release deleted. So the release waits here for that pass to
 	// end those acts, before it records, reads, asks or deletes anything; every pass after reads
-	// the mark set and skips them (projectRelease.sweep). A dry run sets no mark and waits for no
-	// pass.
-	r.mark.awaitSweep()
+	// the mark set and skips them (projectRelease.sweep). A request that ends first ends the wait:
+	// nothing of the release ran, so the mark is cleared, as a record that fails clears it below,
+	// and the start answers that end. A dry run sets no mark and waits for no pass.
+	if err := r.mark.awaitSweep(ctx); err != nil {
+		r.mark.unmark()
+		return api.ProjectReleaseResponse{}, false, err
+	}
 	// The store runs the record's write again until one run commits or its context ends, and the
 	// request's context ends only when the command stops waiting, long after the bound. A run whose
 	// reply was lost keeps the start it wrote while the store asks whether it committed, and all

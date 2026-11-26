@@ -2997,15 +2997,16 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 // start, the pass skips each act of it that makes a pod or starts a role: the orphan
 // reconciliation, which makes and repairs the repository caches as it sweeps them, the
 // stale-plugin refresh, which relaunches, and the pod update sweep, which replaces pods. It reads
-// the mark and runs those acts under the mark's sweep lock (projectRelease.sweep), which the
+// the mark and runs those acts holding the mark's sweep turn (projectRelease.sweep), which the
 // release takes once it has set the mark (projectRelease.awaitSweep), so the release waits for a
 // pass in flight that read the mark clear, and records, reads, asks and deletes nothing until that
 // pass has ended those acts: a pod update round of it writes no record of a replacement after the
 // release's settle read the records of its pod, and ends no round as a replacement made over the
-// pod the release deleted. The stall backstop and the silence report run outside that lock, and
-// still run while the mark holds: neither makes a pod itself, and what each starts is held where
-// it starts — the launch check refuses the backstop's relaunch, and the outbox holds the starts
-// the silence report's facts queue.
+// pod the release deleted. A release whose request ends while it waits clears the mark and records
+// nothing, and every pass after runs those acts again. The stall backstop and the silence
+// report run outside that turn, and still run while the mark holds: neither makes a pod itself,
+// and what each starts is held where it starts — the launch check refuses the backstop's
+// relaunch, and the outbox holds the starts the silence report's facts queue.
 func (s *supervision) sweepOnce(ctx context.Context) {
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {

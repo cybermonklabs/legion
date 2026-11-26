@@ -37,18 +37,20 @@ import (
 // transaction reads the claims it stops, and every role start reads it once more after its
 // claim's `launching` write, just before the launcher starts the role (the Sandbox runtime's
 // launch), so a launch either sees the mark or is among the claims the release stops. It clears
-// the mark only when that commit fails; otherwise only the process's end clears it, and the next
-// boot, which ends the record, starts the claims the release stopped. The zero value holds
-// nothing, and so does a nil mark: a test that builds a part of the daemon by hand reads every
-// start as free.
+// the mark only when its start answers an error before that commit: its request ended while it
+// waited for a pass of the sweep (awaitSweep), or the commit failed. Otherwise only the process's
+// end clears it, and the next boot, which ends the record, starts the claims the release stopped.
+// The zero value holds nothing, and so does a nil mark: a test that builds a part of the daemon by
+// hand reads every start as free.
 //
-// A pass of the sweep reads the mark, and runs the acts it holds, under sweeping (sweep), and the
-// release takes sweeping once it has set the mark (awaitSweep): a pass that read the mark clear
-// before it was set finishes those acts before the release records itself, reads, asks or deletes
-// anything, and every pass after reads the mark set and skips them. So no pod update round writes
-// the record of a replacement (recordRoundReplacement) after the release's settle has read the
-// records of its pod (projectReleaser.settleReplacements), and none ends as a replacement made
-// over a pod the release deleted.
+// A pass of the sweep reads the mark, and runs the acts it holds, holding the sweep's turn
+// (sweep), and the release takes that turn once it has set the mark (awaitSweep): a pass that read
+// the mark clear before it was set finishes those acts before the release records itself, reads,
+// asks or deletes anything, and every pass after reads the mark set and skips them. So no pod
+// update round writes the record of a replacement (recordRoundReplacement) after the release's
+// settle has read the records of its pod (projectReleaser.settleReplacements), and none ends as a
+// replacement made over a pod the release deleted. A release whose request ends while it waits
+// for that turn clears the mark and records nothing (projectReleaser.Start).
 type projectRelease struct {
 	marked atomic.Bool
 	// hook is the release once its record has committed (recorded), nil before and once unmark
@@ -65,10 +67,14 @@ type projectRelease struct {
 	// held back (supervisor.sendHeldTasks). openSupervision sets it once, at boot, before anything
 	// can set the mark; nil runs nothing.
 	unmarked func()
-	// sweeping is held by a pass of the supervision's sweep across its read of the mark and the
-	// acts the mark holds (sweep), and taken once by the release once it has set the mark
-	// (awaitSweep).
-	sweeping sync.Mutex
+	// sweeping is the sweep's turn, a one-slot semaphore that sweepingOnce makes at its first use
+	// (sweepTurn), so the zero value needs none of its own. A pass of the supervision's sweep holds
+	// it across its read of the mark and the acts the mark holds (sweep), and the release takes it
+	// and gives it back once it has set the mark (awaitSweep). It is a semaphore rather than a
+	// mutex so the release waits for it only while its request lives; a pass waits for it as long
+	// as it takes.
+	sweepingOnce sync.Once
+	sweeping     chan struct{}
 }
 
 // mark sets the mark and reports whether this call set it: a process runs one release, so a mark
@@ -156,28 +162,43 @@ func (r *projectRelease) held() bool {
 }
 
 // sweep runs acts, the acts of a pass of the supervision's sweep that the mark holds
-// (supervision.sweepOnce), unless the mark is held: it reads the mark and runs acts under
-// sweeping, so a release that sets the mark while acts run waits for them (awaitSweep). A nil mark
-// holds nothing, and acts run.
+// (supervision.sweepOnce), unless the mark is held: it reads the mark and runs acts holding the
+// sweep's turn (sweepTurn), so a release that sets the mark while acts run waits for them
+// (awaitSweep). A nil mark holds nothing, and acts run.
 func (r *projectRelease) sweep(acts func()) {
 	if r == nil {
 		acts()
 		return
 	}
-	r.sweeping.Lock()
-	defer r.sweeping.Unlock()
+	turn := r.sweepTurn()
+	turn <- struct{}{}
+	defer func() { <-turn }()
 	if !r.marked.Load() {
 		acts()
 	}
 }
 
 // awaitSweep waits for a pass of the sweep that runs the acts the mark holds to finish them
-// (sweep): the release calls it once it has set the mark (projectReleaser.Start), so the pass that
-// read the mark clear has ended its acts when it returns, and every pass after reads the mark set.
-// The section it holds is empty: taking sweeping is the wait.
-func (r *projectRelease) awaitSweep() {
-	r.sweeping.Lock()
-	r.sweeping.Unlock()
+// (sweep), or for ctx, the release's request, to end, and answers ctx's error then: the release
+// calls it once it has set the mark (projectReleaser.Start), so when it answers nil the pass that
+// read the mark clear has ended its acts, and every pass after reads the mark set. It gives the
+// sweep's turn back as soon as it has taken it: taking it is the wait.
+func (r *projectRelease) awaitSweep(ctx context.Context) error {
+	turn := r.sweepTurn()
+	select {
+	case turn <- struct{}{}:
+		<-turn
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// sweepTurn is the sweep's turn (sweeping), made at its first use: a send takes the turn, and a
+// receive gives it back.
+func (r *projectRelease) sweepTurn() chan struct{} {
+	r.sweepingOnce.Do(func() { r.sweeping = make(chan struct{}, 1) })
+	return r.sweeping
 }
 
 // ownRound is the round the release of this process asks its roles under (projectReleaseRound),

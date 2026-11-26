@@ -363,8 +363,10 @@ func TestProjectReleaseWaitsForAPodUpdateSweepInFlight(t *testing.T) {
 		started <- err
 	}()
 	testwait.Eventually(t, "the release to set its mark", mark.held)
-	if testwait.Holds(sweepInFlightWindow, 10*time.Millisecond, func() bool { return len(rig.rt.CallsOf("EndIssuePod")) > 0 }) {
-		t.Errorf("the release deleted the pod while a pass of the sweep that read its mark clear was still in flight, want it to wait for that pass")
+	// The release's first act once it has waited is its record, which its start's answer follows,
+	// and its last is the pod's delete; with the wait, neither comes while the pass is held.
+	if testwait.Holds(sweepInFlightWindow, testwait.Poll, func() bool { return len(started) > 0 || len(rig.rt.CallsOf("EndIssuePod")) > 0 }) {
+		t.Errorf("the release recorded itself or deleted the pod while a pass of the sweep that read its mark clear was still in flight, want it to wait for that pass")
 	}
 	letGo()
 	testwait.Receive(t, "the pass of the sweep to end", swept)
@@ -376,10 +378,7 @@ func TestProjectReleaseWaitsForAPodUpdateSweepInFlight(t *testing.T) {
 	if line.Outcome != api.ReleaseDeletedLost {
 		t.Errorf("the pod's line is %s, want deleted_lost by what its launcher read", lineJSON(line))
 	}
-	var methods []string
-	for _, call := range rig.rt.Calls() {
-		methods = append(methods, call.Method)
-	}
+	methods := rig.rt.Methods()
 	replaced := slices.IndexFunc(methods, func(method string) bool { return strings.HasPrefix(method, "ReplaceIssuePod") })
 	if ended := slices.Index(methods, "EndIssuePod"); replaced < 0 || ended < 0 || replaced > ended {
 		t.Errorf("the runtime was called %v, want the round's replacement by issue asked before the release's delete of the pod", methods)
@@ -391,4 +390,66 @@ func TestProjectReleaseWaitsForAPodUpdateSweepInFlight(t *testing.T) {
 		t.Errorf("the outbox holds the notices %+v, want none: no replacement took the pod the release deleted", told)
 	}
 	rig.wantNoNoticeAtTheNextBoot()
+}
+
+// A release whose request is cancelled while a pass of the sweep is held in flight ends its wait
+// on the sweep's turn at once (projectRelease.awaitSweep), answers the cancellation, clears the
+// mark so a later pass runs the acts the mark holds, and records no release.
+func TestProjectReleaseCancelsItsWaitForASweepInFlight(t *testing.T) {
+	t.Parallel()
+	rig := podlessBreakingRound(t)
+	mark := &projectRelease{}
+	rig.s.plan.release = mark
+
+	letGo := rig.holdRecordWrites()
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		rig.s.sweepOnce(store.ForConcurrentWorker(context.Background()))
+	}()
+	t.Cleanup(func() { letGo(); <-swept })
+	rig.awaitRecordWriteHeld()
+
+	releaseCtx, cancelRelease := context.WithCancel(context.Background())
+	t.Cleanup(cancelRelease)
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	t.Cleanup(cancelReq)
+	type startAnswer struct {
+		started bool
+		err     error
+	}
+	answered := make(chan startAnswer, 1)
+	go func() {
+		_, ok, err := rig.roundReleaser(releaseCtx, mark).Start(reqCtx, time.Second, false)
+		answered <- startAnswer{started: ok, err: err}
+	}()
+	testwait.Eventually(t, "the release to set its mark", mark.held)
+
+	cancelReq()
+	// The pass stays held across this wait, so Start answers only if awaitSweep ends on reqCtx.
+	if !testwait.Holds(sweepInFlightWindow, testwait.Poll, func() bool { return len(answered) > 0 }) {
+		t.Fatalf("Start did not answer while the sweep pass stayed held in flight after its request was cancelled")
+	}
+	got := <-answered
+	if got.started || !errors.Is(got.err, context.Canceled) {
+		t.Fatalf("Start = started %t, %v; want started false, %v", got.started, got.err, context.Canceled)
+	}
+	if mark.held() {
+		t.Errorf("the project release mark stayed held after the cancelled start answered, want it cleared")
+	}
+
+	letGo()
+	testwait.Receive(t, "the held pass of the sweep to end", swept)
+	// A later pass runs the acts the mark holds (ReconcileOrphans among them) only if the
+	// cancelled start cleared the mark.
+	rig.s.sweepOnce(store.ForConcurrentWorker(context.Background()))
+	if reconciled := len(rig.rt.CallsOf("ReconcileOrphans")); reconciled != 2 {
+		t.Errorf("the sweep called ReconcileOrphans %d time(s) across the held pass and the pass after, want 2: the cancelled start clears the mark", reconciled)
+	}
+	if _, found, err := rig.st.ReadProjectRelease(context.Background(), podUpdateProject); err != nil || found {
+		t.Errorf("ReadProjectRelease = found %t, %v; want no release recorded", found, err)
+	}
+	if ended := rig.rt.CallsOf("EndIssuePod"); len(ended) != 0 {
+		t.Errorf("the cancelled release ended pods %+v, want none", ended)
+	}
 }
