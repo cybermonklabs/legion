@@ -267,9 +267,15 @@ function useWaitingChoice({
 }): ChoiceView & { readonly read: readonly ThreadRecord[] } {
   const asked = (rows ?? []).slice(0, shown);
   const unheld = on ? asked.filter((row) => !held.has(row.thread_id)) : [];
+  // Each read is Dashboard's thread read, under its key, so the page sends one read for both
+  // (R6). Dashboard's `select` answers only the thread's texts, and Threads draws the whole read,
+  // so the read is taken without it: a `select` is the observer's own, and the key stays shared.
   const reads = useQueries({
     queries: on
-      ? unheld.map((row) => ({ ...threadQuery(issueKey, row), enabled: heldSettled }))
+      ? unheld.map((row) => {
+          const { select: _texts, ...read } = threadQuery(issueKey, row);
+          return { ...read, enabled: heldSettled };
+        })
       : [],
   });
   // Each unheld row's records: from its own read once that answered, an empty list where that
