@@ -23,10 +23,24 @@ export async function connectedToServer(
   })
 }
 
+/** How far past the row's deadline an MCP request's own timeout lands (`pastTheDeadline`). */
+const PAST_THE_DEADLINE_MS = 1_000
+
+/**
+ * The timeout to give an MCP request that a shared wait (`until`'s probe, or `settled`) waits on:
+ * a second past the row's deadline, so the wait gives up first and names its fact. A request whose
+ * timeout is the deadline itself (`timeLeft()`) races it, and when the SDK's timer wins the row
+ * fails naming only "MCP error -32001: Request timed out". The SDK's own default, 60 s, would end
+ * a request that a loaded host still answers inside the row's deadline.
+ */
+export function pastTheDeadline(): number {
+  return timeLeft() + PAST_THE_DEADLINE_MS
+}
+
 /**
  * `connectedToServer` for a row that waits through `@legion/test-fixtures/wait`: the wait for the
- * answer to `initialize` ends at the row's deadline (`settled`), which is the request's own timeout
- * too (`timeLeft`) in place of the MCP SDK's 60 s.
+ * answer to `initialize` ends at the row's deadline (`settled`), naming it, with the request's own
+ * timeout just past that deadline (`pastTheDeadline`) in place of the MCP SDK's 60 s.
  */
 export async function connectedBeforeTheDeadline(
   client: Client,
@@ -35,7 +49,7 @@ export async function connectedBeforeTheDeadline(
 ): Promise<void> {
   await settled(
     "the channel server's answer to initialize",
-    client.connect(transport, { timeout: timeLeft() }),
+    client.connect(transport, { timeout: pastTheDeadline() }),
   ).catch((error: unknown) => {
     throw new Error(
       `the channel server did not answer initialize: ${String(error)}; its stderr: ${stderr()}`,

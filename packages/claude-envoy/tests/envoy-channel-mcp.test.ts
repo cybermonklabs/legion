@@ -5,14 +5,14 @@ import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
-import { timeLeft, until } from "@legion/test-fixtures/wait"
+import { settled, until } from "@legion/test-fixtures/wait"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { modSocketPath } from "../hooks/mod-protocol"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
-import { connectedBeforeTheDeadline, connectedToServer } from "./mcp-connect"
+import { connectedBeforeTheDeadline, connectedToServer, pastTheDeadline } from "./mcp-connect"
 import { natsGate } from "./nats-gate"
 import { ROW_TIMEOUT_MS } from "./reopen-server"
 import { rowStarted, untilTheGuard } from "./row-deadline"
@@ -50,7 +50,8 @@ afterEach(() => {
  * The SDK owns the child; its close callback reports when the transport is gone. `untilServed` is
  * `until` for a wait on this server: a failure of it also says what the server wrote to stderr.
  * The close's own reason already says so. `untilStarted` waits for the channel session to start:
- * the server answers tool calls only once it has.
+ * the server answers tool calls only once it has. Each of its calls times out just past the row's
+ * deadline (`pastTheDeadline`), so a session that never starts fails the wait naming that fact.
  */
 function observeServer(client: Client, transport: StdioClientTransport) {
   let stderr = ""
@@ -75,7 +76,9 @@ function observeServer(client: Client, transport: StdioClientTransport) {
   const untilStarted = (): Promise<void> =>
     untilServed("the channel session to start", () =>
       client
-        .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
+        .callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
+          timeout: pastTheDeadline(),
+        })
         .then(
           () => true,
           (error: unknown) => {
@@ -190,7 +193,10 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     await connectedBeforeTheDeadline(client, transport, stderr)
     await untilStarted()
 
-    const { tools } = await client.listTools(undefined, { timeout: timeLeft() })
+    const { tools } = await settled(
+      "the server's tool list",
+      client.listTools(undefined, { timeout: pastTheDeadline() }),
+    )
     expect(tools.map(({ name }) => name)).toEqual(envoyToolSpecs.map(({ name }) => name))
     // Nothing until the mod connects: without one no message reaches the model at all.
     expect(advertised.length).toBeGreaterThan(0)
@@ -217,10 +223,13 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     expect(instructions).not.toContain("Dispatch tools")
 
     await expect(
-      client.callTool(
-        { name: "dispatch_ask", arguments: { issue: "DSP-3", question: "Ship?" } },
-        undefined,
-        { timeout: timeLeft() },
+      settled(
+        "the server's answer to dispatch_ask",
+        client.callTool(
+          { name: "dispatch_ask", arguments: { issue: "DSP-3", question: "Ship?" } },
+          undefined,
+          { timeout: pastTheDeadline() },
+        ),
       ),
     ).rejects.toThrow("Unsupported Envoy tool: dispatch_ask")
     expect(dispatchRequests).toEqual([])
@@ -363,14 +372,17 @@ test("a tool call while the start waits for its broker token says what the start
   try {
     await connectedBeforeTheDeadline(client, transport, stderr)
     await untilServed("the start's wait for the token", () => stderr().includes("trading again"))
-    const said = await client
-      .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
-      .then(
-        () => {
-          throw new Error("the session started though its broker answers every trade 503")
-        },
-        (error: unknown) => String(error),
-      )
+    const said = await settled(
+      "the server's answer to envoy_whoami",
+      client.callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
+        timeout: pastTheDeadline(),
+      }),
+    ).then(
+      () => {
+        throw new Error("the session started though its broker answers every trade 503")
+      },
+      (error: unknown) => String(error),
+    )
     expect(said).toContain(
       "Envoy channel server is still starting: it waits for this session's broker token, and its stderr says what each trade came to",
     )
@@ -569,12 +581,15 @@ test("a broker token keeper's warning while the start registers leaves the tool 
     await untilServed("the keeper's warning", () =>
       stderr().includes("envoy-channel: the NATS connection's broker token"),
     )
-    const answer = await client
-      .callTool({ name: "envoy_whoami", arguments: {} }, undefined, { timeout: timeLeft() })
-      .then(
-        () => "answered",
-        (error: unknown) => String(error),
-      )
+    const answer = await settled(
+      "the server's answer to envoy_whoami",
+      client.callTool({ name: "envoy_whoami", arguments: {} }, undefined, {
+        timeout: pastTheDeadline(),
+      }),
+    ).then(
+      () => "answered",
+      (error: unknown) => String(error),
+    )
     expect(answer).toContain(
       "Envoy channel server is still starting: it registers this session with Envoy",
     )
