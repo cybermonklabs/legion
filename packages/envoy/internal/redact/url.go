@@ -284,22 +284,15 @@ func (c *called) Unwrap() error { return c.err }
 // otherwise that text, or the class alone where printable does not pass err, unwrapping to err.
 // A context's end (contextEnd) printable does not pass prints its own fixed text in place of its
 // class, beside any URL, so a call its context's cancel, its context's deadline or its client's
-// Timeout ended says which.
+// Timeout ended says which. A context cancelled with a cause of its own (context.WithCancelCause)
+// ends net/http's call with that cause (context.Cause), which is none of the three, and prints as
+// its class.
 func Cause(err error, raw string) error {
 	if err == nil {
 		return nil
 	}
-	ue, checked, printable := printable(err, raw)
-	switch {
-	case !printable:
-		return withheld(err, "the broker")
-	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
-		return ue.Err
-	case ue == nil && err.Error() == checked:
-		return err
-	default:
-		return &classified{checked, err}
-	}
+	ue, checked, ok := printable(err, raw)
+	return causeOf(err, ue, checked, ok, "the broker")
 }
 
 // CauseAt is Cause for a client that calls one fixed URL of its own, callURL, built from raw (the
@@ -313,12 +306,25 @@ func CauseAt(err error, raw, callURL string) error {
 	if err == nil {
 		return nil
 	}
-	ue, checked, printable := printableAt(err, raw, func(named string) bool {
+	ue, checked, ok := printableAt(err, raw, func(named string) bool {
 		return callClean(raw, named) || named == callURL && ownCall(raw, callURL)
 	})
+	return causeOf(err, ue, checked, ok, "the endpoint")
+}
+
+// causeOf is what Cause and CauseAt answer for err, given what printable or printableAt read of
+// it: the *url.Error it holds (ue), the text that may print (checked) and whether any may (ok).
+// Where ok is false it prints a context's end's fixed text (contextEnd), and otherwise the class
+// (class), server being who answered an HTTP status; where ok is true, the error the *url.Error
+// wraps, or err itself, when its own text is checked, and checked over err otherwise. It unwraps
+// to err.
+func causeOf(err error, ue *url.Error, checked string, ok bool, server string) error {
 	switch {
-	case !printable:
-		return withheld(err, "the endpoint")
+	case !ok:
+		if text, ended := contextEnd(err); ended {
+			return &classified{text, err}
+		}
+		return &classified{class(err, server), err}
 	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
 		return ue.Err
 	case ue == nil && err.Error() == checked:
@@ -326,16 +332,6 @@ func CauseAt(err error, raw, callURL string) error {
 	default:
 		return &classified{checked, err}
 	}
-}
-
-// withheld is what Cause and CauseAt print of err where printable passes none of its text: a
-// context's end's fixed text (contextEnd), and otherwise its class, server being who answered an
-// HTTP status (class). It unwraps to err.
-func withheld(err error, server string) error {
-	if text, ok := contextEnd(err); ok {
-		return &classified{text, err}
-	}
-	return &classified{class(err, server), err}
 }
 
 // clientTimeoutText is net/http's whole text for a call its client's Timeout ended on the
