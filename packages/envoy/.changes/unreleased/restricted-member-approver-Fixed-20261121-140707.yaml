@@ -17,7 +17,10 @@ body: |-
   for a service's machine login. The broker's approval page, which signs in only the deployment's
   domain, now shows a restricted member no request (`403`) and refuses their decision, saying why.
   Their own machine logins, and the grants of their own sessions, which they end as the session's
-  operator, stay theirs whatever Dispatch answers. While Dispatch cannot say what kind of member a
+  operator, stay theirs whatever Dispatch answers. The broker keeps the kind Dispatch last
+  answered for each person, and while Dispatch does not answer a person it last answered a full
+  member is read as one on every route here; what follows holds of a person it last answered a
+  restricted member, or of whom it keeps no kind. While Dispatch cannot say what kind of member a
   person is, their lists leave those rows out, logged once per person per 30 seconds (`an
   approver's list leaves out every row it holds the person as an approver of`), their
   machine-login list and revoke hold them to their own logins, logged at WARN once per person per

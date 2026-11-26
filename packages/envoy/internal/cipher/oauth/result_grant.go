@@ -25,14 +25,17 @@ const resultGrantMaxLifetime = 15 * time.Minute
 const resultValueSlot = "value"
 
 // AirlockSettings is what a result entry's run is handed beside its placeholder: where the
-// broker's airlock proxy is, the certificate authority to trust it by, and the hosts the proxy
-// block of the results profile DISPATCH_RESULTS_TOKEN binds, which the command keeps off its
-// NO_PROXY; and the results entry the run's grant is made under, which the grant records.
+// broker's airlock proxy is, the roots to trust it by, and the hosts the proxy block of the
+// results profile DISPATCH_RESULTS_TOKEN binds, which the command keeps off its NO_PROXY; and the
+// results entry the run's grant is made under, which the grant records.
 type AirlockSettings struct {
 	// ProxyURL is BROKER_AIRLOCK_PROXY_URL.
 	ProxyURL string
-	// CACertificatePEM is the airlock authority's own certificate, as every release hands it over.
-	CACertificatePEM string
+	// ProxyRoots answers the roots the proxy's certificates chain to, PEM blocks one after the
+	// other, read at each trade as a release of names reads them (requests.Machine.ProxyRoots): a
+	// pod on a pool learns its root from its first intermediate, after the start, and a rollout
+	// carries two roots. nil, or an answer of "", hands the run no root.
+	ProxyRoots func() string
 	// ResultHosts are the hosts DISPATCH_RESULTS_TOKEN's entry binds.
 	ResultHosts []string
 	// EntryDigest is this broker's results entry: config.MintedEntryDigest of the profile
@@ -48,6 +51,15 @@ type AirlockSettings struct {
 	// GrantLifetime is BROKER_RESULT_GRANT_TEST_SECONDS, a local stack's own grant lifetime in
 	// place of resultGrantLifetime's; zero for every production start, which refuses the setting.
 	GrantLifetime time.Duration
+}
+
+// proxyRoots is the roots a run's release hands over, and "" where the settings answer none, as
+// a deployment whose pod holds no intermediate yet does (ApproveSettings.proxyRoots).
+func (s *AirlockSettings) proxyRoots() string {
+	if s.ProxyRoots == nil {
+		return ""
+	}
+	return s.ProxyRoots()
 }
 
 // asksForPlaceholder reports whether form asks for the proxy placeholder, the one type a trade
@@ -137,7 +149,7 @@ func (p *Provider) grantResult(ctx context.Context, request oauth2.Requester, se
 		"expires_in":           int64(time.Until(grant.ExpiresAt).Round(time.Second) / time.Second),
 		oauthwire.ExtraGrantID: oauthwire.AirlockResultsWord + ":" + grant.ID,
 		oauthwire.ExtraProxy: oauthwire.AirlockRelease{
-			ProxyURL: p.airlock.ProxyURL, CACertificate: p.airlock.CACertificatePEM, ProxyPassword: held,
+			ProxyURL: p.airlock.ProxyURL, CACertificate: p.airlock.proxyRoots(), ProxyPassword: held,
 			Names: map[string]oauthwire.AirlockName{oauthwire.AirlockResultsName: {
 				Value: held, Slots: map[string]string{resultValueSlot: held}, Hosts: p.airlock.ResultHosts,
 			}},

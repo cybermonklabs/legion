@@ -97,6 +97,7 @@ const POLICY_SENTINELS = {
   projectsFixed: "exchange: the request names projects other than the one its entry gives",
   projectsNoPerson: "exchange: a token that names no person names no project",
   twoEntries: "exchange: two entries list this identity",
+  restrictedOneProject: "exchange: a restricted member's machine login names exactly one project",
 } as const;
 
 function policy(sentinel: keyof typeof POLICY_SENTINELS, format: string, ...slots: string[]) {
@@ -265,6 +266,12 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
     JOB_LIST,
     PROJECT_SLOT
   ),
+  policy(
+    "restrictedOneProject",
+    "%s is a restricted member, who sees only the projects that name them, and the trade asked for %d; set AGENT_SECRETS_PROJECTS to the one project this session works on",
+    PERSON_SLOT,
+    NUMBER
+  ),
   // The broker's own audience check (`oauth/exchange.go`, `audience`), which wraps no sentinel.
   `${escapeRegExp("The subject token was refused: ")}${formatPattern("the subject token was not minted for %s, which is the audience this broker accepts from %s", [URI, URI])}\\.`,
 ];
@@ -279,16 +286,19 @@ const POLICY_REFUSAL_PATTERNS: readonly string[] = [
 const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `${PERSON_SLOT} revoked this machine's sign-in, so the key this proof was signed with trades nothing\\. Sign in again with \`agent-secrets login\`\\.`,
   `${PERSON_SLOT}'s sign-in on this box key was made on another machine, and a sign-in belongs to the machine it was made on\\. Sign in again with \`agent-secrets login\`\\.`,
+  `${PERSON_SLOT}'s sign-in on this box key was made by another Google account, and a sign-in belongs to the account that made it\\. Sign in again with \`agent-secrets login\`\\.`,
+  // A sign-in nothing on this box cures: Google gave the person's address to another account.
+  `The Google account this token was minted for no longer holds ${PERSON_SLOT}: another account holds that address now, and the broker takes no sign-in of the account it replaced\\.`,
   "The machine login the subject token belongs to has ended\\.",
   "The machine login has ended\\.",
   "Another live machine login holds the key this proof was signed with\\. A (?:machine makes a key of its own|sign-in makes a box key of its own)\\.",
   // The same two trades refused a key a live read token is bound to.
   "A live read token is bound to the key this proof was signed with\\. Make a new key\\.",
-  `${PERSON_SLOT} is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on\\.`,
   `The token names a project its person cannot see: ${PROJECT_SLOT}\\.`,
   `The subject token was refused: its entry names the project ${PROJECT_SLOT}, which its person ${PERSON_SLOT} cannot see\\.`,
   `The subject token was refused: its entry names no project, and its person ${PERSON_SLOT} is a restricted member, who sees only the projects that name them\\.`,
   "Dispatch could not be asked whether the token's person sees the projects it names; try again\\.",
+  "Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again\\.",
   `The session name '${SESSION_SLOT}' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last [0-9]{1,4} days\\. Ask under a name of your own\\.`,
   `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
   `Refused: this pod's registration for session '${SESSION_SLOT}' is bound to another key; a role trades only for its own session\\.`,
@@ -301,9 +311,11 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   // trade a session narrowed to reading made (`exchange.go`): it approves nothing.
   "Only a person's sign-in is traded for the approve capability's proxy placeholder, on a broker that serves it\\.",
   "A trade for the approve capability's proxy placeholder asks for the scope read, and a trade narrowed to reading approves nothing: trade for the placeholder without the scope, a cut or a DPoP-Holder proof\\.",
-  // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentence writes it:
-  // the same person each time.
+  // Dispatch's hold of a person (`membership_held`), as the wire corpus's own sentences write it:
+  // the same person each time. The second is an Identity-Aware Proxy deployment's broker's
+  // (`BROKER_HOLD_REQUIRES_DEADLINE`), where the Workspace Directory, not a sign-in, ends the hold.
   `${PERSON_SLOT}'s credentials are held by Dispatch; they work again when \\k<person> signs in to Dispatch, or when Dispatch can confirm \\k<person> with Google again`,
+  `Google's Workspace Directory no longer confirms ${PERSON_SLOT}; their credentials work again once it does`,
   // A read trade's own refusals: the cut (`as_of`), the launcher credential a read trade never
   // makes or moves, the holder's proof (`DPoP-Holder`), the key a read token may not share
   // with a launcher credential, and a job entry's read trade, whose token is minted whole.

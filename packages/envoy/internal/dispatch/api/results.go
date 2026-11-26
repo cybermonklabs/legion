@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/text/unicode/norm"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -255,17 +256,20 @@ func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resu
 	// seventeen seconds the lock was held (store/pool.go). Nothing the lock protects is settled
 	// here — the check's words and its `when` are the document's, not the issue's — and what it
 	// does protect, the block's indexed version and digest, is read again under it below with
-	// the text whose digest that is.
-	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
+	// the text whose digest that is. A credential scoped to one project does not see a check of
+	// a private project that it does not name, which resolveCheck leaves out before it counts the
+	// matches: a private check alone is 400 UNKNOWN_CHECK there, the answer of a check that does
+	// not exist.
+	callerProject, _ := s.callerProject(r)
+	check, err := s.resolveCheck(r.Context(), pool, issueKey, callerProject, input.Check)
 	if err != nil {
 		return refused(err)
 	}
 	// The check may be on an issue of another project, which a parent of another project puts
 	// above the recording issue, and the result is appended to that issue. The pre-handler
-	// check read only the path's issue, so a credential scoped to one project is refused such a
-	// check here, before anything is written.
-	callerProject, _ := s.callerProject(r)
-	if err := refuseCheckOutsideCallerProject(r.Context(), pool, callerProject, check.IssueKey); err != nil {
+	// check read only the path's issue, so a credential scoped to one project is asked about
+	// such a check here, before anything is written (refuseUncoveredCheck).
+	if err := refuseUncoveredCheck(r.Context(), pool, callerProject, check.IssueKey, input.Check); err != nil {
 		return refused(err)
 	}
 	// A CI job's check run, read once and before the transaction opens for the reason the check
@@ -375,6 +379,43 @@ type resultRecorder struct {
 	attempt    int
 	principal  string
 }
+
+// refuseUncoveredCheck asks, for a result on a check of the issue checkIssue, whether the
+// request's credential covers that issue's project, with the visibility of that project read in
+// the same statement (checkIssueProject). caller is the one project the credential names, empty
+// for a credential that names none, which is refused nothing here. A credential that names one
+// project records on the check of every project that access.CredentialCovers covers. A check of a
+// private project that the credential does not name answers as a check that does not exist,
+// unknownCheck of check, the value the body names, for the record and its dry run. resolveCheck
+// has left out such a check already, so this check refuses one only where its project became
+// private between the two reads.
+func refuseUncoveredCheck(ctx context.Context, q queryer, caller, checkIssue, check string) error {
+	if caller == "" {
+		return nil
+	}
+	project, private, err := checkIssueProject(ctx, q, caller, checkIssue)
+	if err != nil {
+		return err
+	}
+	if !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return unknownCheck(check)
+	}
+	return nil
+}
+
+// checkContended is the code of a results write whose check a document version moved at every
+// attempt. Nothing is recorded, and the caller's retry resolves the check again.
+const checkContended = "CHECK_CONTENDED"
+
+// checkContendedRetryAfter is the Retry-After, in whole seconds, that refusal carries. What the
+// caller waits for is another writer's document version landing on the check's block - a
+// transaction already committing, not a budget this caller has spent - so the wait is the
+// shortest whole second HTTP can ask for, which is what Dispatch already answers a caller whose
+// write another transaction is in the middle of (writeKeyInFlight's 409 KEY_IN_FLIGHT,
+// request_keys.go). Nothing longer is honest here: this is no rate limit, so there is no budget
+// to refill and no burst to spread out, and a longer wait would only hold back a retry that can
+// land as soon as the version that moved the check has committed.
+const checkContendedRetryAfter = 1
 
 // recordedCheckResult is what one results write produces: the row it wrote, the event it
 // appended, and the check as the transaction that wrote them saw it. That check is not the one

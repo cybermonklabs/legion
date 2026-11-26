@@ -194,11 +194,14 @@ func (m *Machine) deleteSpentPlaceholders(ctx context.Context) (int64, error) {
 }
 
 // AirlockRelease is how a release tells a session to reach the values it did not hand over: the
-// proxy that holds them, the certificate authority to trust it by, the password every connection
-// to it opens with, and each name the airlock holds back.
+// proxy that holds them, the roots to trust it by, the password every connection to it opens
+// with, and each name the airlock holds back.
 type AirlockRelease struct {
-	ProxyURL      string
-	CACertificate string // PEM
+	ProxyURL string
+	// CACertificate is every root the session trusts the proxy by, PEM blocks one after the
+	// other: a client writes the whole string into its trust bundle, so a release that carries
+	// two roots during a rollout is trusted under either by a client of any release.
+	CACertificate string
 	ProxyPassword string
 	Names         map[string]AirlockName
 }
@@ -462,7 +465,10 @@ func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *t
 	if err != nil {
 		return nil, err
 	}
-	released := &AirlockRelease{ProxyURL: m.AirlockProxyURL, CACertificate: m.AirlockCACertificate, Names: map[string]AirlockName{}}
+	released := &AirlockRelease{ProxyURL: m.AirlockProxyURL, Names: map[string]AirlockName{}}
+	if m.ProxyRoots != nil {
+		released.CACertificate = m.ProxyRoots()
+	}
 	for name, split := range splits {
 		slots := map[string]string{}
 		for _, slot := range split.slots() {
@@ -524,6 +530,11 @@ type AirlockConnection struct {
 	Minted  bool
 	Expires *time.Time
 	Names   map[string]AirlockGrantName
+	// Operator is the enrollment's operator, the person its session acts for, whose hold the
+	// proxy asks about (proxy's holdRefusal), and "" for an enrollment that names none: a
+	// pod's own, or a machine's own session. It costs nothing either: the read below joins the
+	// enrollment row already.
+	Operator string
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
@@ -581,7 +592,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 	var live bool
 	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason, coalesce(r.decided_by, ''),
-		e.runtime_id, coalesce(e.session_id, ''),
+		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
 		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at),
 		e.kind, e.operator, e.subject, e.projects, c.service
 		from airlock_placeholders p
@@ -591,7 +602,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, presented string) (Airl
 		left join launcher_credentials c on c.id = e.launcher_credential_id
 		where p.placeholder_sha256 = $1`, placeholder.Hash(presented)).
 		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason, &decidedBy,
-			&conn.RuntimeID, &conn.SessionID, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
+			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live, &enr.Kind, &enr.Operator, &enr.Subject, &enr.Projects, &enr.Service)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}

@@ -210,8 +210,8 @@ test("the two shared sentences stand in both ask descriptions and in the dispatc
 // "the ask ... hand it to". The scan reads every file under skills/, every packages/*/AGENTS.md
 // and every dispatch_* tool description, which is every text that tells an agent how asks work.
 //
-// A hit is not a defect by itself: most of these lines say "hand the work over" or name an anchor
-// called `finding-asks.md#hand-over-a-clear-defect`. So the scan fails on a hit the allowlist
+// A hit is not a defect by itself: some of these lines hand back a turn inside one ask's thread,
+// or state who an ask waits on. So the scan fails on a hit the allowlist
 // below does not hold, each entry its source and the half-line that matched, so a later reader
 // judges the line rather than a count. An entry that matches nothing fails too: a line that moved
 // or changed its wording is re-read rather than left allowed. The shape follows the retired-phrase
@@ -223,21 +223,10 @@ const AN_ASK = /\basks?\b/gi;
 /** Every `[source, excerpt]` the scan may see, with why the line says nothing about who an ask
  *  goes to. The last two are this change's own sentences, which say it and say it right. */
 const ALLOWED: readonly (readonly [string, string])[] = [
-  // Handing over the *work*, never the ask.
-  [
-    "skills/legion-worker/references/findings.md",
-    "## Fix it where you are, else hand it over, and ask only for a",
-  ],
   // Handing a turn back inside one ask's thread, which moves nobody's list.
   [
     "skills/legion-architect/references/wake-routing.md",
     "request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`,",
-  ],
-  // A link to a section of a reference file, whose anchor holds the word.
-  ["skills/legion-controller/SKILL.md", "finding-asks.md#hand-over-a-clear-defect`"],
-  [
-    "skills/legion-controller/references/consolidation.md",
-    "finding-asks.md#hand-over-a-clear-defect`",
   ],
   // Tool descriptions that state who an ask waits on and what a hand-on moves.
   [

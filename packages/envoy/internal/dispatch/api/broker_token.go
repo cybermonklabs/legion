@@ -291,12 +291,14 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if caller.Service != "" {
 		actor.Service = &caller.Service
 	}
-	// Only a token an operator's entry mapped to one project names that project as the one it
-	// may write, which is today's named-scope rule, and a job's named token, whose entry names one
-	// project, names it the same way, so the project check judges the two alike; a named token
-	// naming none (the shared public-session account's, and an account entry's naming no person)
-	// writes, as a token naming no project does, wherever Dispatch's own rules let it, and
-	// ciphertoken refuses a named token naming two, and a named token naming no person, no
+	// Only a token an operator's entry mapped to one project names that project, and a job's
+	// named token, whose entry names one project, names it the same way, so the project check
+	// judges the two alike. Such a token writes every project's objects that a token naming no
+	// project may write. The one exception is a private project it does not name
+	// (access.CredentialCovers). A target that resolves to no project or to nothing is still
+	// refused it (withinProjectScope). A named token naming none (the shared public-session
+	// account's, and an account entry's naming no person) writes wherever Dispatch's own rules let
+	// it. ciphertoken refuses a named token naming two, and a named token naming no person, no
 	// project and a service that is no account. A token narrowed from a named one names its
 	// project too, as the project it reads as, and writes none.
 	// A results token names its one project too, whose results are the only thing it writes.

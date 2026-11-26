@@ -2736,7 +2736,7 @@ describe("the dispatch CLI", () => {
     expect(readFileSync(path).subarray(0, 4).toString("hex")).toBe("89504e47");
   });
 
-  test("every call that reaches Dispatch appends one ledger line naming its tool", async () => {
+  test("every spec command that reaches Dispatch appends one ledger line naming its tool", async () => {
     await run(["message", "--issue", "DSP-1", "--body", "Deliverable landed."], omp);
     await run(["read", "--message", "missing"], omp);
     expect(ledger("ses-1").map((entry) => entry.tool)).toEqual([
@@ -5766,7 +5766,7 @@ describe("the dispatch CLI's envoy.json", () => {
     expect(requests).toEqual([]);
   });
 
-  test("a checkout's .opencode/envoy.json is named on every call, and its server is never used", async () => {
+  test("a checkout's .opencode/envoy.json is named on every spec command's call, and its server is never used", async () => {
     serverConfig(join(stateDir, ".config", "legion"));
     const old = join(stateDir, ".opencode", "envoy.json");
     mkdirSync(join(stateDir, ".opencode"), { recursive: true });
@@ -6217,11 +6217,11 @@ describe("cliRefusals", () => {
     expect(cliRefusals(moved.stdout)).toEqual([]);
   });
 
-  // A refusal the CLI prints before it reaches Dispatch is logged too, whenever the call knows its
-  // session: a reader of the ledger (pi-envoy's run-end check, the skill-scenario rig) sees a call
-  // whose output a pipe, `$(…)` or another program swallowed. The host and the command need not be
-  // known for the session to be: a Python `subprocess.run(["dispatch", …])` inherits the session id
-  // without `DISPATCH_HOST`.
+  // A refusal the CLI prints before it reaches Dispatch, but `dispatch proxy`'s or
+  // `dispatch login`'s, is logged too, whenever the call knows its session: a reader of the ledger
+  // (pi-envoy's run-end check, the skill-scenario rig) sees a call whose output a pipe, `$(…)` or
+  // another program swallowed. The host and the command need not be known for the session to be:
+  // a Python `subprocess.run(["dispatch", …])` inherits the session id without `DISPATCH_HOST`.
   test("an early refusal is logged when the call knows its session, with no request", async () => {
     const cases: [string, readonly string[], Record<string, string | undefined>, string][] = [
       ["an unknown flag", ["message", "--issue", "X", "--isue", "Y"], omp, "dispatch_message"],
