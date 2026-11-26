@@ -1,5 +1,10 @@
 import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { dispatchWritingBox } from "@legion/contracts";
+import {
+  DISPATCH_WRITING_HINT_ASK,
+  DISPATCH_WRITING_HINT_DELIVERED,
+  DISPATCH_WRITING_HINT_QUIET,
+  dispatchWritingBox,
+} from "@legion/contracts";
 import { QueryClient } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste of a file into the box, which user-event's paste cannot carry
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -7,10 +12,17 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import { jump, onRealTurns, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
+import type {
+  Actor,
+  CommentWithTrees,
+  IssueAskRow,
+  MessageRead,
+  SearchResult,
+} from "../../api/types";
 import {
   pageFailedText,
   pageMutedText,
@@ -65,7 +77,15 @@ import {
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
 import type { OutlineWriter } from "./outline-writer";
-import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
+import { AUTHOR_TEXT_ATTRIBUTE } from "./page-structure";
+import {
+  ANSWER_LINES,
+  ANSWER_PHRASES,
+  AUTHOR_KIND_WORDS,
+  COMPOSER_ANSWER_WORDS,
+  CONTROL_LABELS,
+  UNASKED_SOURCES,
+} from "./page-words";
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -2217,4 +2237,337 @@ test("the rows above a folded-away point carry the path's ring, and its own row 
   await toggle(CONTROL_LABELS.unfold);
   await waitFor(() => expect(drawnPoint()).toEqual(pointOn("comment-1b")));
   expect(dotOf("comment-1b")).toHaveClass(pagePointRing);
+});
+
+/** Every string `value` holds, however deeply, in the order it holds them. */
+function stringsOf(value: unknown): readonly string[] {
+  if (typeof value === "string") return [value];
+  if (typeof value === "object" && value !== null) return Object.values(value).flatMap(stringsOf);
+  return [];
+}
+
+/** Each string of a list the page declares: the tables it draws unasked and those it draws in
+ *  answer to the reader's act (`page-words.ts`), and the hints of the writing list, which the
+ *  contracts package declares for every box and the field draws as its description. */
+const LISTED: readonly string[] = [
+  ...UNASKED_SOURCES.flatMap(stringsOf),
+  ...ANSWER_PHRASES,
+  DISPATCH_WRITING_HINT_ASK,
+  DISPATCH_WRITING_HINT_DELIVERED,
+  ...Object.values(DISPATCH_WRITING_HINT_QUIET),
+];
+
+/** Whether `text` is nothing but `pieces`, one after another, with white space between them. */
+function madeOf(text: string, pieces: readonly string[]): boolean {
+  const reached = new Set([0]);
+  for (let at = 0; at < text.length; at += 1) {
+    if (!reached.has(at)) continue;
+    if (/\s/u.test(text.charAt(at))) reached.add(at + 1);
+    for (const piece of pieces) {
+      if (piece !== "" && text.startsWith(piece, at)) reached.add(at + piece.length);
+    }
+  }
+  return reached.has(text.length);
+}
+
+/** What the case below draws the box's words around: the issue's key, the session a draft
+ *  mentions by its title, the reader's own words drawn beside the box - a kept draft and an edit -
+ *  and what the server said of a refused send and upload. No list of the page holds them, nor
+ *  should. */
+const DRAWN_DATA = [
+  KEY,
+  "Planner",
+  KEPT_WORDS,
+  "My own words and more",
+  "The comment was refused.",
+  "The file is not allowed.",
+] as const;
+
+/** Each text the box draws now that is neither a word or a sentence of the page's lists nor
+ *  made of them and of `DRAWN_DATA`, each named with `state`. The box is marked whole as words
+ *  the page did not write (`AUTHOR_TEXT_ATTRIBUTE`), since its field holds the reader's; a name
+ *  something inside it marks so, the field's own text, a part of it that is hidden and the
+ *  addresses of the sessions the draft mentions, listed off screen, are not the page's words,
+ *  and none is read. */
+function unlisted(state: string): string[] {
+  const box = composerBox();
+  const pieces = [...LISTED, ...DRAWN_DATA];
+  const found: string[] = [];
+  const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+  for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+    const said = text.nodeValue ?? "";
+    const holder = text.parentElement;
+    const skipped =
+      holder === null ||
+      holder.closest('[hidden], textarea, [aria-label="Mention targets"]') !== null ||
+      holder.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) !== box;
+    if (said.trim() === "" || skipped) continue;
+    if (!madeOf(said, pieces)) found.push(`${state}: "${said}"`);
+  }
+  return found;
+}
+
+/** Waits until the box draws `words`, the sign that it has reached the state a case drives it
+ *  to, so no state is read before it is drawn. */
+async function drawn(words: string): Promise<void> {
+  await waitFor(() => expect(composerBox().textContent ?? "").toContain(words));
+}
+
+/** The planner's thread as the issue's messages read sends it: bob's message to the session the
+ *  registry lists as Planner, so a reply to it goes to that session in its thread's mode. */
+function plannerThread(): MessageRead {
+  return {
+    message: {
+      ...messageCorrectionFields(),
+      author: BOB,
+      body: "A message",
+      broadcast_id: null,
+      created_at: "2026-11-05T00:00:00Z",
+      deliveries: [],
+      id: "message-1",
+      in_reply_to: null,
+      issue_key: KEY,
+      reply_block: null,
+      target: `session:${PLANNER.id}`,
+    },
+    replies: [],
+  };
+}
+
+// What the box says in answer to the reader's act is a sentence of a list the page declares, and
+// so is every other string it draws. The case drives the box through each state that draws words
+// - at rest, writing a question, aimed at a reply with a draft kept on the issue, drafts kept for
+// a comment, a message and a statement, those drafts once their targets are gone, a reply whose
+// post is deleted while it is open, each delivery notice for a mention of a session, a delivery
+// command with nothing after it, a refused send and the same held for the issue while the box
+// replies elsewhere, a statement held twice, an edit and one over a newer comment, an upload out,
+// refused, failed and stored with no answer, and a send past its deadline, stopping, stopped and
+// carried to the issue - and reads every text the box draws in each. The lists are the page's
+// tables (`UNASKED_SOURCES`, `ANSWER_PHRASES`) and the writing list's hints, which the contracts
+// package declares for every box (`DISPATCH_WRITING_HINT_*`). A text that is in no list, nor made
+// of the lists' parts around the names and words the case drew it with, fails the case by its
+// words.
+test("every string the box draws, in each of its states, is a word or sentence of the page's lists", async () => {
+  const found: string[] = [];
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The comment was refused." })
+    )
+  );
+  const composer = COMPOSER_ANSWER_WORDS.composer;
+
+  // At rest, writing a question, and aimed at bob's comment with a comment kept on the issue.
+  let page = renderPage();
+  await drawn(composer.refusals.empty);
+  found.push(...unlisted("at rest"));
+  const question = composerBox().querySelector<HTMLElement>('[data-composer-kind="ask"]');
+  if (question === null) throw new Error("the box drew no Question chip");
+  await user.click(question);
+  await drawn(composer.refusals.emptyQuestion);
+  found.push(...unlisted("writing a question"));
+  await user.click(writeField());
+  await user.keyboard("Half a thought");
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(keptLines()).toEqual([KEPT_FOR_ISSUE]));
+  found.push(...unlisted("a reply, with a draft kept on the issue"));
+  cleanup();
+
+  // Drafts kept for a comment, a message and a statement; then those targets gone - the comment
+  // no longer listed, the message deleted, the statement rewritten - with Use it here, and with
+  // Use it here waiting for the field to be empty.
+  page = renderPage({}, messageOutline());
+  await keepFor(user, page, "comment-1", KEPT_WORDS);
+  await keepFor(user, page, "message-1", KEPT_WORDS);
+  await keepFor(user, page, "spec#b-r1", KEPT_WORDS);
+  await waitFor(() => expect(keptLines()).toHaveLength(3));
+  found.push(...unlisted("drafts kept for a comment, a message and a statement"));
+  const gone = outlineRewritten(STATEMENT_REWRITTEN, outlineWithout("comment-1", messageOutline()));
+  page.redrawOutline({
+    ...gone,
+    children: gone.children.map((child) =>
+      child.id === "message-1" ? { ...child, deletedAt: hour(4), deletedBy: BOB } : child
+    ),
+  });
+  await waitFor(() => expect(goneDrafts()).toHaveLength(3));
+  found.push(...unlisted("drafts whose targets are gone"));
+  await user.click(writeField());
+  await user.keyboard("Words of my own");
+  await drawn(COMPOSER_ANSWER_WORDS.gone_reply.waits);
+  found.push(...unlisted("drafts whose targets are gone, over words of the field's own"));
+  cleanup();
+
+  // A reply open when its comment is deleted.
+  page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Ship it.");
+  reads.comments = [
+    commentRecord("comment-1", BOB, "", { deleted_at: hour(4), deleted_by: BOB }),
+    commentRecord("comment-2", ALICE, "My own words"),
+  ];
+  const drawnNow = outline();
+  page.redrawOutline({
+    ...drawnNow,
+    children: drawnNow.children.map((child) =>
+      child.id === "comment-1" ? { ...child, deletedAt: hour(4), deletedBy: BOB } : child
+    ),
+  });
+  await act(() => page.client.invalidateQueries({ queryKey: ["comments", KEY] }));
+  await drawn(composer.deletedReply.comment);
+  found.push(...unlisted("a reply to a deleted comment"));
+  cleanup();
+  reads.comments = [
+    commentRecord("comment-1", BOB, "Earlier words"),
+    commentRecord("comment-2", ALICE, "My own words"),
+  ];
+
+  // A mention of the planner while it advertises Aside alone, which a plain message goes in; BTW
+  // alone, which takes no plain message; nothing; and nothing this page knows. Then the message
+  // in BTW while it advertises Aside alone.
+  page = renderPage();
+  const advertises = (capabilities: string[]) =>
+    act(() => page.client.setQueryData(["agents"], [plannerAgent({ capabilities })]));
+  await advertises(["aside"]);
+  await user.click(writeField());
+  await user.paste(`${PLANNER_SEED} status please`);
+  await drawn(composer.delivery.plain.before);
+  found.push(...unlisted("a mention of a session that takes Aside alone"));
+  await advertises(["btw"]);
+  await drawn(composer.delivery.unsupported.instead.before);
+  found.push(...unlisted("a mention of a session that takes BTW alone"));
+  await advertises([]);
+  await drawn(COMPOSER_ANSWER_WORDS.no_delivery.unlisted);
+  found.push(...unlisted("a mention of a session that advertises nothing"));
+  await advertises(["telepathy"]);
+  await drawn(COMPOSER_ANSWER_WORDS.no_delivery.unknown.before);
+  found.push(...unlisted("a mention of a session that advertises no mode this page knows"));
+  await advertises(["aside"]);
+  await user.keyboard("{Control>}a{/Control}{Backspace}");
+  await user.paste(`/btw ${PLANNER_SEED} status please`);
+  await drawn(`${composer.delivery.unsupported.instead.before}/aside`);
+  found.push(...unlisted("a mention of a session in a mode it does not advertise"));
+  cleanup();
+
+  // A reply in the planner's thread that holds a delivery command and nothing after it.
+  page = renderPage({}, messageOutline());
+  await act(() => page.client.setQueryData(["issue-messages", KEY], [plannerThread()]));
+  await page.press(user, "message-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("/btw ");
+  await drawn(composer.refusals.afterCommand.before);
+  found.push(...unlisted("a reply in a thread with a command and nothing after it"));
+  cleanup();
+
+  // A comment Dispatch refused, then held for the issue while a Reply aims the box at bob's
+  // comment; and a comment on a statement refused because its words stand twice.
+  page = renderPage();
+  await user.click(writeField());
+  await user.keyboard("Agreed{Enter}");
+  await drawn(composer.refused.before);
+  found.push(...unlisted("a refused comment"));
+  await page.press(user, "comment-1", "r");
+  await drawn(COMPOSER_ANSWER_WORDS.elsewhere.address.before);
+  found.push(...unlisted("a refused comment held for the issue"));
+  cleanup();
+  createComment.mockRejectedValue(
+    new ApiError(409, { code: "TARGET_AMBIGUOUS", error: "matches 2 places" })
+  );
+  page = renderPage();
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Agreed{Enter}");
+  await drawn(ANSWER_LINES.statement_twice);
+  found.push(...unlisted("a statement held twice"));
+  cleanup();
+
+  // The reader's own comment edited, and edited again once the comment reads other words than
+  // the edit was written over.
+  page = renderPage();
+  await editHoldingFrames(page, "comment-2", "My own words");
+  await waitFor(() => expect(targetWords()).not.toBeNull());
+  found.push(...unlisted("an edit"));
+  await user.keyboard(" and more");
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(page.writer().editing).toBeUndefined());
+  await editHoldingFrames(page, "comment-2", "My newer words");
+  await drawn(COMPOSER_ANSWER_WORDS.changed_edit);
+  found.push(...unlisted("an edit over a newer comment"));
+  cleanup();
+
+  // A file pasted into the draft: out, refused with the server's words, failed with none, and
+  // stored with no answer.
+  let refuseUpload: ((refusal: Error) => void) | undefined;
+  stub(
+    spyOn(api, "uploadArtifact")
+      .mockImplementationOnce(() => {
+        const { promise, reject } = Promise.withResolvers<UploadResult>();
+        refuseUpload = reject;
+        return promise;
+      })
+      .mockRejectedValueOnce(new Error("the page broke"))
+      .mockRejectedValueOnce(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }))
+  );
+  page = renderPage();
+  await user.click(writeField());
+  const file = new File(["# Notes"], "notes.md", { type: "text/markdown" });
+  // user-event's paste carries text, never files.
+  fireEvent.paste(writeField(), { clipboardData: { files: [file] } });
+  await drawn(ANSWER_LINES.uploading);
+  found.push(...unlisted("an upload out"));
+  await waitFor(() => expect(refuseUpload).toBeDefined());
+  await act(async () =>
+    refuseUpload?.(new ApiError(400, { code: "INVALID_INPUT", error: "The file is not allowed." }))
+  );
+  await drawn("The file is not allowed.");
+  found.push(...unlisted("an upload refused"));
+  await user.click(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.retry }));
+  await drawn(COMPOSER_ANSWER_WORDS.upload_failed);
+  found.push(...unlisted("an upload failed"));
+  await user.click(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.retry }));
+  await drawn(ANSWER_LINES.uploaded_unanswered);
+  found.push(...unlisted("an upload stored with no answer"));
+  cleanup();
+
+  // A reply past its deadline, its attempt unanswered; stopping while that attempt is out;
+  // stopped once the attempt ends with no verdict of Dispatch's; and carried to the issue by the
+  // target line's control.
+  const attempts: ((refusal: Error) => void)[] = [];
+  createComment.mockImplementation(() => {
+    const { promise, reject } = Promise.withResolvers<CommentWithTrees>();
+    attempts.push(reject);
+    return promise;
+  });
+  page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob");
+  jest.useFakeTimers();
+  const clocked = userOnFakeClock();
+  try {
+    await clocked.keyboard("{Enter}");
+    await jump(SEND_DEADLINE_MS);
+    await drawn(composer.late);
+    found.push(...unlisted("a late send"));
+    await clocked.click(
+      within(composerBox()).getByRole("button", { name: CONTROL_LABELS.stop_trying })
+    );
+    await drawn(ANSWER_LINES.stopping);
+    found.push(...unlisted("a send stopping"));
+    await act(async () =>
+      attempts.at(-1)?.(new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" }))
+    );
+    await jump(0);
+    await drawn(COMPOSER_ANSWER_WORDS.stopped_send.unconfirmed);
+    found.push(...unlisted("a stopped send"));
+    await clocked.click(
+      within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+    );
+    await drawn(COMPOSER_ANSWER_WORDS.moved_send.what);
+    found.push(...unlisted("a stopped send carried to the issue"));
+  } finally {
+    realClock();
+  }
+
+  expect(found).toEqual([]);
 });
