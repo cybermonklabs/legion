@@ -143,6 +143,20 @@ STACK=$ROOT/stack.json
 SEED_META=$ROOT/seed.meta.json
 STACK_HOME=$ROOT/home
 PGSERVER_VERSION=0.1.4
+# btree_gin is a contrib extension Dispatch's migrations create (20261125125703_btree_gin.up.sql),
+# and the pgserver wheel builds its Postgres with pgvector and no contrib. So setup builds it from
+# PostgreSQL's own source of the wheel's version (16.2, tag REL_16_2), each file checked against
+# the sha256 below, with the wheel's compiler, flags and server headers (install_btree_gin).
+PGSERVER_POSTGRES='postgres (PostgreSQL) 16.2'
+BTREE_GIN_SOURCE=https://raw.githubusercontent.com/postgres/postgres/REL_16_2/contrib/btree_gin
+BTREE_GIN_FILES=(
+  "btree_gin.c 658f37a03f5cfafec49b8989deead8596a0decf95d9517592352502168373469"
+  "btree_gin.control ba6ceeda8de05adc0145a152178fc96a84ef7d21b4347af36f8c644542c94bcd"
+  "btree_gin--1.0.sql 0c5440a89f33c953fd0217d273a3ad6816ae32eeea8bcadbc8951ea6688756e3"
+  "btree_gin--1.0--1.1.sql c81798c7433e3286af13d5b876c0640e0f6cbe7fae25275b86511500ba5d8879"
+  "btree_gin--1.1--1.2.sql 6a3c43f4d8e91802f205b1c0ee330eadbb23372b1ff86e2954bb1ea3dd412f42"
+  "btree_gin--1.2--1.3.sql 7a159af1a74eb2202be19c5a6383720a08e65ded58d4b2393cca56fe8c34cd35"
+)
 PPROF_OVERLAY=$here/zz_loadtest_pprof.go.txt
 # The binaries a dispatch process may run: the stack's own and the replay seed's two builds.
 DISPATCH_BINARIES=("$BIN/envoy-dispatch" "$BIN/dispatch-seed" "$BIN/dispatch-seed-stock")
@@ -770,6 +784,33 @@ build_dispatch_at() {
     "$patch_name" "$patch_sha" "$overlay"
 }
 
+# install_btree_gin builds btree_gin into the pgserver install where it is not there yet (the
+# comment on BTREE_GIN_FILES says why), and refuses a Postgres of another version, whose
+# headers the pinned source does not match.
+install_btree_gin() {
+  local share lib cc src entry name sum
+  share=$("$PGBIN/pg_config" --sharedir)/extension
+  lib=$("$PGBIN/pg_config" --pkglibdir)
+  [ -f "$share/btree_gin.control" ] && [ -f "$lib/btree_gin.so" ] && return 0
+  [ "$("$PGBIN/postgres" --version)" = "$PGSERVER_POSTGRES" ] ||
+    die "btree_gin's pinned source is for $PGSERVER_POSTGRES, and $PGBIN/postgres is $("$PGBIN/postgres" --version)"
+  cc=$("$PGBIN/pg_config" --cc)
+  command -v "$cc" >/dev/null || die "$cc is required (btree_gin is built from PostgreSQL's source)"
+  src=$PGDIR/btree_gin-16.2
+  mkdir -p -- "$src"
+  for entry in "${BTREE_GIN_FILES[@]}"; do
+    read -r name sum <<<"$entry"
+    curl -fsSL --max-time 60 -o "$src/$name" "$BTREE_GIN_SOURCE/$name" || die "fetch $BTREE_GIN_SOURCE/$name"
+    printf '%s  %s\n' "$sum" "$src/$name" | sha256sum -c --quiet - || die "$src/$name does not match its pinned sha256"
+  done
+  note "building btree_gin from PostgreSQL 16.2's source into $lib"
+  # shellcheck disable=SC2046 # pg_config prints the wheel's flags as one list of words.
+  "$cc" $("$PGBIN/pg_config" --cflags) $("$PGBIN/pg_config" --cflags_sl) -I"$("$PGBIN/pg_config" --includedir-server)" \
+    -shared -o "$lib/btree_gin.so" "$src/btree_gin.c" >"$LOGS/btree_gin.out" 2>&1 ||
+    die "building btree_gin failed; see $LOGS/btree_gin.out"
+  cp -- "$src/btree_gin.control" "$src"/btree_gin--*.sql "$share/"
+}
+
 # ---- commands ----------------------------------------------------------------------------------------
 
 cmd_setup() {
@@ -826,6 +867,7 @@ cmd_setup() {
     uv pip install -q --python "$PGDIR/venv/bin/python" "pgserver==$PGSERVER_VERSION"
     [ -x "$PGBIN/postgres" ] || die "pgserver $PGSERVER_VERSION installed no $PGBIN/postgres"
   fi
+  install_btree_gin
   note "$("$PGBIN/postgres" --version)"
 
   if [ ! -f "$PGDATA/PG_VERSION" ]; then

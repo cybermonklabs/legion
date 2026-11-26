@@ -132,6 +132,9 @@ same step before and after its change, and compares the two rows.
   `loadgen tables` uses `go tool pprof`.
 - `uv`. `stack.sh setup` installs Python 3.12 and the `pgserver` wheel (0.1.4) with it. The wheel
   holds Postgres 16.2 and pgvector. The harness uses no Docker.
+- `gcc`, the compiler the wheel's `pg_config` names. The wheel holds no contrib extension, and
+  Dispatch's migrations create `btree_gin`, so `stack.sh setup` builds it from PostgreSQL 16.2's
+  source (each file checked against a pinned sha256) into the wheel's Postgres.
 - `jq`, `curl` and `flock` (util-linux), and `taskset` (util-linux) when a CPU list is set
   (Environment, below).
 - `git` is optional. Without it, `meta.json` and `seed.meta.json` record the build commit as
@@ -799,7 +802,7 @@ packages/envoy/loadtest/run-step.sh editors-10x-over-0.25x --events 1 --sessions
 
 | Command | What it does |
 | --- | --- |
-| `stack.sh setup` | Builds `envoy-dispatch` (from `LOADTEST_DISPATCH_SRC`, or `LOADTEST_DISPATCH_COMMIT`'s commit), `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`, with `bin/envoy-dispatch.json`, the build's record. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel. Runs `initdb`. Writes `stack.json`. Each run does it again, incrementally. |
+| `stack.sh setup` | Builds `envoy-dispatch` (from `LOADTEST_DISPATCH_SRC`, or `LOADTEST_DISPATCH_COMMIT`'s commit), `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`, with `bin/envoy-dispatch.json`, the build's record. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel, and builds `btree_gin` into it. Runs `initdb`. Writes `stack.json`. Each run does it again, incrementally. |
 | `stack.sh start` | Starts Postgres, the proxy, NATS and the listener. It keeps a process that already runs. It refuses a port that another process holds, and names that process when this PID namespace can see it. Dispatch (and the listener's latency proxy) start only in `seed` and `reset`. |
 | `stack.sh seed [--force] [--min-events N]` | Makes the seed template `dispatch_seed` (The seed, below). It does nothing when `dispatch_seed` and `seed.meta.json` exist. `--force` drops the old seed and seeds again. `--min-events N` extends the event log to N rows (The seed, below); on an existing seed with fewer rows, it extends that seed in place, in seconds, without seeding again. |
 | `stack.sh reset [LOG]` | Resets the stack to the seed and starts Dispatch, with its log in `LOG` (default `$LOADTEST_ROOT/logs/dispatch.log`). `run-step.sh` does this before each step. |
@@ -819,8 +822,8 @@ run at a time, above).
 
 The processes:
 
-- **Postgres** 16.2 with pgvector, from the `pgserver` wheel. `initdb` adds the root report's
-  settings: `max_connections 800`, `shared_buffers 1GB`, `fsync on`,
+- **Postgres** 16.2 with pgvector, from the `pgserver` wheel, and `btree_gin` built from
+  PostgreSQL 16.2's source. `initdb` adds the root report's settings: `max_connections 800`, `shared_buffers 1GB`, `fsync on`,
   `log_min_duration_statement 50ms`, `log_lock_waits on`. It also adds
   `track_commit_timestamp = on`, for the delivery latency from commit, and
   `unix_socket_directories = ''`, for TCP only. Its logs are in `$LOADTEST_ROOT/pg/log`.
