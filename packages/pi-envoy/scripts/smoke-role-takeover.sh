@@ -81,7 +81,11 @@
 # has carried that change since, so `--base-rev main@origin` is no longer a negative control for
 # them. The INFRA-2747 row passes there too: with nothing taken out of its copy, that listener's
 # copy names the restarted holder's role as the claim record does. That row's negative control is
-# SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below.
+# SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below. The revision must be a5f0cf479ba
+# (2026-10-27) or newer: the listener is run with PORT=0 and its port is read from the `addr` of
+# its "envoy-listener listening" line (local-stack.sh's listener_addr), which an older listener
+# logs as the address it was configured with, `127.0.0.1:0`, rather than the one it bound. Such a
+# run waits out the 90 s and refuses with "the listener reported no address it serves on".
 #
 # `--listener-bin <path>` runs that built listener in place of building one, so a control can run
 # a scratch build; natsd is still built from this checkout. A path that is not an executable file

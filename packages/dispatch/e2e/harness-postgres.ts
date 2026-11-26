@@ -173,6 +173,10 @@ const readyMs = 120_000;
 /** The port a stack's server is told, which names its socket file (`.s.PGSQL.5432`) in the
  *  stack's own socket directory and binds nothing: each server listens on no TCP address. */
 const socketPort = 5432;
+/** The longest socket path a server can bind: `sun_path` of `struct sockaddr_un` holds 108 bytes
+ *  including its terminator, so 107 bytes of path. Measured on this Linux: a 107-byte path binds
+ *  and a 108-byte one is refused with EINVAL, "AF_UNIX path too long". */
+const socketPathLimit = 107;
 
 /** One stack's Postgres. */
 export interface StackDatabase {
@@ -207,13 +211,27 @@ export interface StackPostgres {
  *  its query, the form libpq and pgx both read as a unix socket there. The directory is
  *  percent-encoded whole, so neither reads a space, a `+` or a `/` in it as anything else. A
  *  directory holding a comma is refused: pgx and libpq read `host` as a comma-separated list of
- *  hosts however the comma is encoded, so no URL can name that directory to them. */
+ *  hosts however the comma is encoded, so no URL can name that directory to them. A directory
+ *  whose socket file would pass `socketPathLimit` is refused too, naming the path and its length:
+ *  the binaries provider's own `pg_ctl` says so at once, but the image provider's server binds
+ *  the path inside its container, where nothing this process reads says why, so the run would
+ *  otherwise spend `ready`'s {@link readyMs} on a server that can never answer and then show
+ *  psql's "too long" from the host side. */
 function socketUrl(user: string, database: string, socketDirectory: string): string {
   if (socketDirectory.includes(",")) {
     throw new Error(
       `The Dispatch e2e harness cannot start: the stack's socket directory ${socketDirectory} ` +
         "holds a comma, which pgx and libpq read as a list of hosts: run it with a TMPDIR whose " +
         "path holds none."
+    );
+  }
+  const socketPath = join(socketDirectory, `.s.PGSQL.${socketPort}`);
+  const length = Buffer.byteLength(socketPath);
+  if (length > socketPathLimit) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: the stack's socket ${socketPath} is ${length} ` +
+        `bytes, past the ${socketPathLimit} a unix socket path holds, so no server could bind ` +
+        "it: run it with a shorter TMPDIR."
     );
   }
   return (
@@ -446,14 +464,18 @@ function imageProvider(
   stall: Stall | undefined
 ): StackPostgres {
   // Each stack's server answers on a unix socket in a directory of this machine that docker mounts
-  // into its container. Docker Desktop runs containers in a VM whose file sharing carries no unix
-  // socket, so on macOS the socket would never answer: the run is refused here, by name, before
-  // any container starts.
+  // into its container. A docker engine that runs its containers in a VM carries no unix socket
+  // across that mount, so the socket would never answer: on macOS, where every engine is such a
+  // VM (Docker Desktop, colima), the run is refused here, by name, before any container starts.
+  // The same holds for a VM-backed engine on Linux, which this cannot read from the platform:
+  // such a run fails at the ready wait with psql finding no socket, and the refusal below names
+  // the variable that runs a local Postgres instead.
   if (process.platform === "darwin") {
     throw new Error(
       `The Dispatch e2e harness cannot start: ${pgImageVariable} serves each stack's Postgres on ` +
-        "a unix socket in a directory docker mounts into the container, and Docker Desktop on " +
-        "macOS cannot carry a unix socket out of its VM. Name a local Postgres installation's " +
+        "a unix socket in a directory docker mounts into the container, and a docker engine in a " +
+        "VM (Docker Desktop, colima, and every engine on macOS) carries no unix socket out of " +
+        "that VM. Name a local Postgres installation's " +
         `directory, the one holding initdb and pg_ctl, in ${pgBinVariable} instead, and unset ` +
         `${pgImageVariable}.`
     );

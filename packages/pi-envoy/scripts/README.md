@@ -313,8 +313,8 @@ when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`) an
 reports it bound (`natsd_port`, `listener_addr`). Each service binds port 0 and names the port the
 kernel gave it: no port is picked free and handed to a service, since another process can take
 such a port before the service binds it. It is sourced, never run: it starts no process, so every
-script keeps its own isolation, logs, traps, timeouts, messages and exit codes. A caller defines
-`refuse`. `packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
+script keeps its own isolation, logs, traps, timeouts, messages and exit codes.
+`packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
 
 ## listener-api.sh
 
