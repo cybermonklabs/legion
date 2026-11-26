@@ -92,7 +92,7 @@ func TestAPausedWakeTaskIsTheTaskOfAWakeOfARoleThePauseStopped(t *testing.T) {
 	}
 }
 
-// A woken role's wake text is true (dispatch://INFRA-3589, R3): a wake of a role that a project's
+// A woken role's wake text is true (dispatch://INFRA-3589, R4): a wake of a role that a project's
 // pause stopped, taken while a release that recorded the role still stood, is told the pause's
 // words, and the release's record then takes the pod. The record retells that wake's start as
 // the task WakeTask writes for a session the release stopped: the same wake and detail under the
@@ -130,7 +130,7 @@ func TestAReleasedWakeTaskIsTheInverseOfAPausedWakeTask(t *testing.T) {
 	}
 }
 
-// A woken role's wake text is true (dispatch://INFRA-3589, R3): a cancel of an idle release keeps
+// A woken role's wake text is true (dispatch://INFRA-3589, R4): a cancel of an idle release keeps
 // the wake's start of a role whose claim a close, a linger or an operator took over, and the role
 // reads that start's task when the operator resumes it. The release took no pod. So the task
 // becomes the same wake and detail under a cancelled release's words: its preamble says that the

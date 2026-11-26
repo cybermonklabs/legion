@@ -592,8 +592,8 @@ func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
 	case <-watched.asked:
 	case err := <-answered:
 		t.Fatalf("control: the publish answered %v before it read the connection's state", err)
-	case <-time.After(30 * time.Second):
-		t.Fatal("control: the publish did not reach its read of the connection's state within 30 s")
+	case <-testwait.Context(t).Done():
+		t.Fatal("control: the publish had not reached its read of the connection's state by the test's deadline")
 	}
 	cancel()
 	hold.Release()
