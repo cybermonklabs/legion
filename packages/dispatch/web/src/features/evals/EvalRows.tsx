@@ -14,8 +14,9 @@ import {
 } from "../../theme/classes";
 import type { EvalsScope } from "./useEvalsViews";
 
-/** The row kinds Dispatch computes behind a number (the items route's `evalRow*` kinds); a row of
- *  any other kind is a reading as its writer logged it. */
+/** The row kinds Dispatch computes behind a number (the items route's `evalRow*` kinds): among
+ *  them a code eval's changes, pairs and absent rows (dispatch://INFRA-3206 R13). A row of any
+ *  other kind is a reading as its writer logged it. */
 const COMPUTED_ROW_KINDS: ReadonlySet<string> = new Set([
   "issue",
   "pull_request",
@@ -23,6 +24,9 @@ const COMPUTED_ROW_KINDS: ReadonlySet<string> = new Set([
   "run",
   "job",
   "day",
+  "change",
+  "pair",
+  "absent",
 ]);
 
 /** A row's own number column `name`, null where it holds none. */

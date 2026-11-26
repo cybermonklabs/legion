@@ -25,7 +25,7 @@ import type { EvalKind } from "../../api/queries";
 import type { EvalListItem, EvalListResponse, LegionSetting } from "../../api/types";
 import { successText } from "../../theme/classes";
 import { EvalsTab } from "./EvalsTab";
-import { LoggedEvals } from "./EveryEval";
+import { LoggedEvals, UnnamedEvals } from "./EveryEval";
 import type { EvalsScope } from "./useEvalsViews";
 
 // Every registered eval on the tab (dispatch://INFRA-2918/artifact/plan-md, D7, T17; spec R19,
@@ -334,4 +334,31 @@ test("every eval of the list read appears on the tab, counted against the read's
   expect(listed("Legion measures").at(-1)).toBe("legion-new-measure");
   // The Logged section: every logged eval of every view, and every experiment, by slug.
   expect(listed("Logged")).toEqual(["ab-uplift", "flaky-tests", "release-notes", "widget-size"]);
+});
+
+// dispatch://INFRA-3206: the two code evals draw as the cards of Deploys and lead time, so the
+// section's evals no section draws by name hold neither (NAMED.delivery).
+test("UnnamedEvals draws neither code eval", async () => {
+  render(
+    <MemoryRouter>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <UnnamedEvals
+          kind="delivery"
+          scope={SCOPE}
+          views={[
+            evalsView("delivery", [
+              evalItem("code-survival-30d", "delivery", [WIDGETS]),
+              evalItem("hotfix-share", "delivery", [WIDGETS]),
+              evalItem("post-merge-rework-30d", "delivery", [WIDGETS]),
+            ]),
+          ]}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  expect(
+    [...document.querySelectorAll("[data-eval]")].map((box) => box.getAttribute("data-eval"))
+  ).toEqual(["hotfix-share"]);
 });

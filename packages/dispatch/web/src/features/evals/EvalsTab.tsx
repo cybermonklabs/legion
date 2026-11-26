@@ -11,6 +11,7 @@ import {
 import type { EvalListResponse } from "../../api/types";
 import { linkText, textMutedOnCanvas } from "../../theme/classes";
 import { CiHealth } from "./CiHealth";
+import { CODE_SURVIVAL, CodeSurvivalCard } from "./CodeSurvivalCard";
 import { DeploysSection } from "./DeploysSection";
 import { EvalPanelHost } from "./EvalPanel";
 import { EvalsHeader } from "./EvalsHeader";
@@ -18,6 +19,7 @@ import { EvalsSection } from "./EvalsSection";
 import { keepLogged, LoggedEvals, UnnamedEvals } from "./EveryEval";
 import { type EvalsUrlState, useEvalsUrlState } from "./evals-url";
 import { LegionSection } from "./LegionSection";
+import { POST_MERGE_REWORK, PostMergeReworkCard } from "./PostMergeReworkCard";
 import { TargetCards } from "./TargetCards";
 import { TimelineSection } from "./TimelineSection";
 import { narrowingQuery, useSettledSearch, useTimelineUrlState } from "./timeline-url";
@@ -158,10 +160,44 @@ function LiveHeader({
   );
 }
 
+/**
+ * The two code cards of Deploys and lead time (dispatch://INFRA-3206 R14), after its charts and
+ * so beside its Rework share chart, side by side where the section is wide enough: code
+ * survival and post-merge rework at 30 days, each drawn from the section's delivery view. None
+ * until that view holds either eval.
+ */
+function CodeCards({
+  project,
+  scope,
+  views,
+}: {
+  project: string;
+  scope: EvalsScope;
+  views: readonly EvalsViewState[];
+}): ReactNode {
+  const view = views.find((candidate) => candidate.kind === "delivery");
+  if (
+    view?.answer === undefined ||
+    !view.items.some(
+      (item) => item.definition.slug === CODE_SURVIVAL || item.definition.slug === POST_MERGE_REWORK
+    )
+  ) {
+    return null;
+  }
+  return (
+    <div className="@container">
+      <div className="grid grid-cols-1 gap-2 @min-[42rem]:grid-cols-2">
+        <CodeSurvivalCard project={project} scope={scope} view={view} />
+        <PostMergeReworkCard project={project} scope={scope} view={view} />
+      </div>
+    </div>
+  );
+}
+
 /** What a section draws of its views: its own charts and lists, then, for a kind's section, the
  *  computed evals of that kind it does not draw by name; the Logged section, every logged eval.
  *  The target cards name the brushed days they read, while the merge timeline's brush is set
- *  (`days`). */
+ *  (`days`). Deploys and lead time draws the two code cards after its charts. */
 function drawSection(
   id: Exclude<Section["id"], "timeline">,
   project: string,
@@ -192,6 +228,7 @@ function drawSection(
       return (views) => (
         <>
           <DeploysSection project={project} views={views} />
+          <CodeCards project={project} scope={scope} views={views} />
           <UnnamedEvals kind="delivery" scope={scope} views={views} />
         </>
       );

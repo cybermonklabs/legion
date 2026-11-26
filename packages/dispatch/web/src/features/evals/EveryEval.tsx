@@ -12,6 +12,7 @@ import {
 } from "../../theme/classes";
 import { targetLabel } from "../delivery/lib/target";
 import { CI_CHARTS } from "./CiHealth";
+import { CODE_SURVIVAL } from "./CodeSurvivalCard";
 import { evalName, everyEvalModel, targetOf } from "./chart-model";
 import { PerDayLine } from "./chart-renderers";
 import { DeclaredEval, declaredCharts } from "./DeclaredEval";
@@ -20,6 +21,7 @@ import { EvalChart } from "./EvalChart";
 import { EvalTitle } from "./EvalPanel";
 import { EvalRows } from "./EvalRows";
 import { LEGION_CHARTS } from "./LegionSection";
+import { POST_MERGE_REWORK } from "./PostMergeReworkCard";
 import { TARGET_CARDS } from "./TargetCards";
 import type { EvalsScope, EvalsViewState } from "./useEvalsViews";
 
@@ -32,15 +34,18 @@ export function isLogged(item: EvalListItem): boolean {
   return item.definition.source === "logged";
 }
 
-/** The evals each kind's section draws by name: its own charts, and the target cards of its kind.
- *  No section draws an experiment by name; the Logged section draws every one. */
+/** The evals each kind's section draws by name: its own charts, and the target cards of its kind;
+ *  Deploys and lead time's, the two code cards too. No section draws an experiment by name; the
+ *  Logged section draws every one. */
 const NAMED: Readonly<Record<EvalKind, ReadonlySet<string>>> = {
   ci: new Set(CI_CHARTS.map((chart) => chart.slug)),
-  delivery: new Set(
-    [...TARGET_CARDS.filter((card) => card.kind === "delivery"), ...DEPLOY_CHARTS].map(
+  delivery: new Set([
+    ...[...TARGET_CARDS.filter((card) => card.kind === "delivery"), ...DEPLOY_CHARTS].map(
       (chart) => chart.slug
-    )
-  ),
+    ),
+    CODE_SURVIVAL,
+    POST_MERGE_REWORK,
+  ]),
   experiment: new Set(),
   legion: new Set(
     [...TARGET_CARDS.filter((card) => card.kind === "legion"), ...LEGION_CHARTS].map(
