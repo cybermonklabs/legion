@@ -17,7 +17,7 @@ import (
 // bounded by LogJudged's context: an approval that holds past it gets a row saying applied
 // "unknown", never false. testHoldCommit holds the approval with every row written.
 func TestLogJudgedWaitsForAnApprovalStillCommitting(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it holds LogJudged's row to the half of a one-second context that approvalLanded's wait leaves it (landedWait), a product latency the load of the package's parallel tests could push past (LogJudged on the subtest's one-second context); the bound is a context's deadline, not a measured time.
 	const reason = "INFRA-12: rotate the deploy key"
 	failureRow := map[string]any{"verdict": "approve", "applied": AppliedUnknown, "not_applied": "the decision's COMMIT failed: unexpected EOF"}
 	type logged struct {

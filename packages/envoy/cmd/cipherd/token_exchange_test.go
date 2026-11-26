@@ -814,6 +814,7 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 // test's own key, and no person and no OAuth scope. Nothing was registered for the pod, since the
 // entry fixes the session.
 func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
+	t.Parallel()
 	const (
 		jobAccount = "system:serviceaccount:example-ns:example-sweeper"
 		jobSession = "example-sweeper"

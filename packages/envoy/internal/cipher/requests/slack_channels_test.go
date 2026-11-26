@@ -136,6 +136,7 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 // it project-channels-need-airlock. A list of public projects alone leaves it unlimited, as for a
 // person's pod of a public project.
 func TestAJobPodsSlackTokenIsLimitedByItsList(t *testing.T) {
+	t.Parallel()
 	privateLists := []string{privProject, "public," + privProject}
 	// released grants the Slack token to pod and reads it as the proxy does.
 	released := func(t *testing.T, m *Machine, pod jobPod) AirlockSecret {

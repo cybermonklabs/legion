@@ -151,6 +151,7 @@ func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
 // the names their registrar gives them, and the registration is stored; one that fixes a session
 // is refused 409 SESSION_FIXED naming that session, and nothing is written for its pod.
 func TestThePodSessionRouteRegistersAJobAccountsPod(t *testing.T) {
+	t.Parallel()
 	job := func(text string) exchange.JobProjects {
 		t.Helper()
 		list, err := exchange.ParseJobProjects(text)

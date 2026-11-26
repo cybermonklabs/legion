@@ -268,6 +268,7 @@ func TestAPodOfThePrivateProjectGetsItsSecret(t *testing.T) {
 // and none asks whether nobody may see PRIV, whose answer a credential naming no person holds
 // already.
 func TestAJobPodGetsNoSecretOfAPrivateProjectItsListNames(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	retag(t, m, taggedSecret("TEAM_SHARED", policy.OwnerShared, policy.TierAgent, teamProject, "team-shared-v1"))
 	dispatch := m.Projects
