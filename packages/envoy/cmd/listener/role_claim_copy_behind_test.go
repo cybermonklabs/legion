@@ -47,6 +47,7 @@ func (kv *staleClaimKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // up while the handover was still resolving would let a handover that reads it pass. Control: with
 // a current copy the message reaches the new holder, and not the previous one.
 func TestARoleMessageForThePreviousHolderReachesTheNewHolderWhileTheClaimsCopyIsBehind(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		behind bool
