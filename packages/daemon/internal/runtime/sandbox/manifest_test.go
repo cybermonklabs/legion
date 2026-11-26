@@ -2413,11 +2413,16 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondTheOperatorsScheduling(t *
 // cluster's general nodes. A gVisor pod's selector and tolerations are the operator's scheduling
 // exactly as configured, and a microVM pod's are those and its ComputeClass's label and the
 // toleration of the taint GKE puts on that class's nodes, and nothing else. Each pod runs under
-// its sandbox's RuntimeClass, gVisor's or the microVM one.
+// its sandbox's RuntimeClass, gVisor's or the microVM one, and building it writes nothing into the
+// operator's scheduling.
 // The pods are an issue's, fresh and resumed, the controller's of a gVisor project, a repository
 // cache's, the image probe's, an issue's whose issue runs in a microVM and the controller's of a
 // microVM project, each built under no scheduling at all and under an operator's selector and
-// toleration of keys other than the pool's.
+// toleration of keys other than the pool's. A microVM project's runtime also builds its cache and
+// probe pods, which run in gVisor whatever the sandbox block says, so a microVM pod that wrote its
+// class into that runtime's selector would show in them. Each runtime is configured with a
+// scheduling of its own, and every expectation is written out, so no map or slice of a pod, the
+// configuration or an expectation is another's.
 func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 	t.Parallel()
 	// poolLabel is the Legion pool's node label and the key of its taint, written out so the test
@@ -2426,15 +2431,28 @@ func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 	resume := manifestCases(t)["resume"].spec
 	block := testMicroVM()
 	dedicated := corev1.Toleration{Key: "example.com/dedicated", Operator: corev1.TolerationOpEqual, Value: "builds", Effect: corev1.TaintEffectNoSchedule}
-	for name, scheduling := range map[string]Scheduling{
-		"no scheduling":             {},
-		"the operator's scheduling": {NodeSelector: map[string]string{"kubernetes.io/arch": "amd64"}, Tolerations: []corev1.Toleration{dedicated}},
+	for name, operator := range map[string]struct {
+		// scheduling is the operator's scheduling, made afresh at each call.
+		scheduling func() Scheduling
+		// selector and tolerations are what a gVisor pod selects and tolerates under it.
+		selector    map[string]string
+		tolerations []corev1.Toleration
+	}{
+		"no scheduling": {func() Scheduling { return Scheduling{} }, map[string]string{}, nil},
+		"the operator's scheduling": {
+			func() Scheduling {
+				return Scheduling{NodeSelector: map[string]string{"kubernetes.io/arch": "amd64"}, Tolerations: []corev1.Toleration{dedicated}}
+			},
+			map[string]string{"kubernetes.io/arch": "amd64"}, []corev1.Toleration{dedicated},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			configured := func(o *Options) { o.Scheduling = scheduling }
-			gVisor := sandboxRuntime(t, SandboxConfig{}, configured)
-			microVM := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block}, configured)
-			probe := gVisor.probeManifest(probeSandboxName, ImageProbe{Contract: 3, RoleReferences: testRoleReferences}, time.Now())
+			gVisorScheduling, microVMScheduling := operator.scheduling(), operator.scheduling()
+			gVisor := sandboxRuntime(t, SandboxConfig{}, func(o *Options) { o.Scheduling = gVisorScheduling })
+			microVM := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block}, func(o *Options) { o.Scheduling = microVMScheduling })
+			probe := func(r *Runtime) corev1.PodSpec {
+				return r.probeManifest(probeSandboxName, ImageProbe{Contract: 3, RoleReferences: testRoleReferences}, time.Now()).Spec.PodTemplate.Spec
+			}
 			for what, tc := range map[string]struct {
 				pod corev1.PodSpec
 				// class is the ComputeClass a microVM pod runs on, and "" for a gVisor pod.
@@ -2444,9 +2462,11 @@ func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 				"a resumed issue pod":                       {podOf(t, gVisor, resume), ""},
 				"the controller's pod of a gVisor project":  {podOf(t, gVisor, controllerSpec(t)), ""},
 				"a repository cache pod":                    {gVisor.cacheManifest(cacheRepo).Spec.PodTemplate.Spec, ""},
-				"the image probe pod":                       {probe.Spec.PodTemplate.Spec, ""},
+				"the image probe pod":                       {probe(gVisor), ""},
 				"a microVM issue pod":                       {podOf(t, microVM, rootSpec(t)), block.ComputeClass},
 				"the controller's pod of a microVM project": {podOf(t, microVM, controllerSpec(t)), block.ComputeClass},
+				"a microVM project's repository cache pod":  {microVM.cacheManifest(cacheRepo).Spec.PodTemplate.Spec, ""},
+				"a microVM project's image probe pod":       {probe(microVM), ""},
 			} {
 				t.Run(what, func(t *testing.T) {
 					if value, ok := tc.pod.NodeSelector[poolLabel]; ok {
@@ -2457,8 +2477,8 @@ func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 							t.Errorf("the pod tolerates the Legion pool's taint %+v, want no toleration of %s", toleration, poolLabel)
 						}
 					}
-					wantSelector, wantTolerations, runtimeClass := map[string]string{}, slices.Clone(scheduling.Tolerations), gvisor
-					maps.Copy(wantSelector, scheduling.NodeSelector)
+					wantSelector, wantTolerations, runtimeClass := map[string]string{}, slices.Clone(operator.tolerations), gvisor
+					maps.Copy(wantSelector, operator.selector)
 					if tc.class != "" {
 						wantSelector[computeClassKey] = tc.class
 						wantTolerations = append(wantTolerations, computeClassToleration(tc.class))
@@ -2474,6 +2494,11 @@ func TestNoLegionPodCarriesThePoolPlacement(t *testing.T) {
 						t.Errorf("the pod runs under the RuntimeClass %s, want %s", runtimeClassText(got), runtimeClass)
 					}
 				})
+			}
+			for kind, scheduling := range map[string]Scheduling{"gVisor": gVisorScheduling, "microVM": microVMScheduling} {
+				if !maps.Equal(scheduling.NodeSelector, operator.selector) || !slices.Equal(scheduling.Tolerations, operator.tolerations) {
+					t.Errorf("building the %s runtime's pods left the operator's scheduling selecting %v and tolerating %+v, want %v and %+v as configured", kind, scheduling.NodeSelector, scheduling.Tolerations, operator.selector, operator.tolerations)
+				}
 			}
 		})
 	}
