@@ -256,10 +256,8 @@ func checkRoleConfigFiles(cfg config.Config) error {
 // cannot read, and one whose default_query_exec_mode the store's text rule cannot run in. pgx
 // fills what the DSN leaves unset from the process's own PG* environment variables, whatever
 // lookup holds, as it does at boot. Each such refusal is store.ConnectError, as store.Open wraps
-// it: the DSN's address and the driver's detail, never the DSN's password. The driver's detail of
-// a DSN pgx cannot parse quotes the DSN with its user name and its query, which
-// `legion config check` and `legion start` both remove when they write the refusal (printRefusal,
-// the URL rule).
+// it: the DSN's address and the driver's detail, never the DSN's password, and for a DSN pgx
+// cannot parse fixed words in place of the driver's, which quote the DSN's user name and query.
 func CheckStart(cfg config.Config, lookup func(string) (string, bool)) (paneNatsUser, daemonNatsUser string, err error) {
 	r, err := readBoot(cfg, lookup, os.Getenv, true, slog.New(slog.DiscardHandler))
 	if err != nil {

@@ -1053,8 +1053,9 @@ func TestConfigCheckWarnsOnAnAcceptedKeyAndExitsZero(t *testing.T) {
 // operator bearer's file, the Dispatch bearer's file, the instructions file, the OMP invocation, the
 // real gh every pane's `legion gh` runs, which a script heading PATH (a gh wrapper) is not, and a
 // postgres_dsn pgx cannot parse. Each is refused in boot's words, written through the URL rule boot
-// writes its own refusals through (printRefusal), so the refusal of such a DSN names neither the
-// DSN's user name nor its query. No App key command runs, and no state directory is made.
+// writes its own refusals through (printRefusal); the refusal of such a DSN is the store's fixed
+// words, which name neither the DSN's user name nor its query. No App key command runs, and no
+// state directory is made.
 func TestConfigCheckRefusesWhatBootRefuses(t *testing.T) {
 	legionState(t)
 	for _, tc := range []struct {
