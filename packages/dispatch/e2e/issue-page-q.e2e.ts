@@ -207,9 +207,9 @@ test("the Decisions filter draws its four parts and quotes the person's answer",
       // The answered ask draws its question and options; with the focus on it, the person's
       // answer as the store holds it, by who answered. The answer is drawn by the renderer, a
       // paragraph to each block of its words, so it is read paragraph by paragraph (`drawnRows`'
-      // `answerText`): each paragraph's words and inner spaces as stored, and only the
-      // indentation a paragraph's first line may carry, up to three spaces, which markdown reads
-      // as no part of it, left out, as the outline's answer row reads it (part Q's decision 416).
+      // `answerText`): each paragraph's words and inner spaces as stored, and only the indentation
+      // a paragraph's first line may carry, up to three spaces, which markdown reads as no part of
+      // it, left out, as the outline's answer row reads it (part Q's decision 416).
       const asked = nodeRow(page, seeded.optionedAskId).first();
       await asked.focus();
       await expect

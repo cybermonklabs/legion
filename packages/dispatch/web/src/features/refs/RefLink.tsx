@@ -84,9 +84,7 @@ export interface ReferenceLinking {
  * there to say. A reference the reader may not see is the same case as the words themselves:
  * the words the writer wrote, with no title drawn over them. A reference whose target Dispatch
  * answered does not exist is its words with no link at all (R8), as the document editor draws
- * it: the element it renders into stops being a link (`unlinkMissingReference`). A post its
- * author deleted is no such target: a reference to it, or to a block that went with it, stays a
- * link, and its hover card says the post is deleted (`ReferenceData.missing`).
+ * it: the element it renders into stops being a link (`unlinkMissingReference`).
  *
  * A search hit's marks follow the same rule (`marked`). Wherever the words are drawn, the server's
  * marks stay on them exactly as it sent them; only a title drawn in their place is marked, whole,
@@ -119,6 +117,8 @@ export function RefLink({
 }): ReactNode {
   const target = useReferenceTarget(route, { text: false });
   const { known, missing, picture } = target;
+  // A link whose words its author wrote keeps them; every other reads by the naming rule
+  // (`useReferenceLabel`).
   const label = useReferenceLabel(route, target);
   // A reference opening no page of this dashboard - a person, whom nothing shows (R5), and any
   // path the gate refuses - gets no href: its element stays no link.

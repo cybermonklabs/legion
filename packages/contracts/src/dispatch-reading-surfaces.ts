@@ -853,11 +853,11 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // A decision's heading, where it names a write, a form or a card, or words a link: on the
   // Decisions panel, on a margin card, and in the Keep and the Change of a decision's row on the
-  // new issue page. Each reads it through the plain-text projection under this surface
-  // (`usePlainHeadline`, and the panel's link through `PlainText`), and a test drives each of
-  // them.
+  // new issue page. All three read it through one hook (`useDecisionHeadingWords`), and a test
+  // drives each of them.
   {
     files: [
+      "packages/dispatch/web/src/features/issue/decision-heading.ts",
       "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       "packages/dispatch/web/src/features/margin/DecisionCard.tsx",
       "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",

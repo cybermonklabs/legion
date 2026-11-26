@@ -645,17 +645,24 @@ test("a parent's line and a statement's line are cut from the node's first block
     const parent = entry(block)?.parent;
     return parent === undefined
       ? undefined
-      : { id: parent.id, line: parentLinkWords(parent), reference: parent.reference };
+      : {
+          id: parent.id,
+          line: parentLinkWords(parent),
+          reference: parent.reference,
+          type: parent.type,
+        };
   };
   expect(parentLine("headed")).toEqual({
     id: "q1",
     line: "Where the box sits",
     reference: `dispatch://${KEY}/ask/q1`,
+    type: "ask",
   });
   expect(parentLine("wordless")).toEqual({
     id: "q2",
     line: NODE_TYPE_NAMES.ask,
     reference: `dispatch://${KEY}/ask/q2`,
+    type: "ask",
   });
   expect(entry("headed")?.shapes.map((one) => parentLinkWords(one.node))).toEqual([
     "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",

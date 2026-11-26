@@ -16,7 +16,7 @@ import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
-import { deletedLineText, type PostDeletion } from "../refs/post-marks";
+import { deletedLineText } from "../refs/post-marks";
 import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
@@ -57,7 +57,7 @@ import { titleReading } from "./tree-drafts";
  * targets answer to names no one of them: the page publishes it as ambiguous, apart from the
  * names (`KnownReferences.ambiguous`), and it is drawn as its author wrote it, with no link
  * (decisions 62 and 89). A reference with no name yet - one the read has not answered, a gone
- * one - keeps its link and reads as the words its author wrote (R8, INFRA-1196 decision 350).
+ * one - keeps its link and reads as the words its author wrote (R8, issue page decision 350).
  * The row asks the server nothing for a reference the page reads (R21), so the body's own link
  * pass, which reads one target for each reference, is given nothing to link.
  *
@@ -65,8 +65,9 @@ import { titleReading } from "./tree-drafts";
  * R3): a post its author edited by its words, cut, then ` · edited` (`rowReferenceWords`,
  * `KnownReferences.edited`); one its author deleted by the deleted line without its time, in
  * the deleted line's italic as a link to it is (`RefLink`), its actor named as the page names an
- * author (`AgentText.author`), as the row's own deleted line names it (`NodeRow.tsx`), by
- * INFRA-1196's decision 342, and not as the published name holds it (`KnownReferences.deleted`).
+ * author (`AgentText.author`), as the row's own deleted line names it (`node-line.tsx`'s
+ * `DeletedLine`), by issue page decision 342, and not as the published name holds it
+ * (`KnownReferences.deleted`).
  *
  * The words are a reading of the text: an `ask` block in a document is a node of the tree of its
  * own, where a reader answers it, so the text draws its question and options rather than a
@@ -165,14 +166,14 @@ function ParsedText({
 /** What a row draws the references of its words by (`useRowNames`). */
 interface RowNames {
   readonly ambiguous: ReadonlySet<string>;
-  /** The references whose comment or message its author deleted, which a row draws in the
+  /** The references among `names` whose post its author deleted, which a row draws in the
    *  deleted line's italic (`KnownReferences.deleted`). */
-  readonly deleted: ReadonlyMap<string, PostDeletion>;
+  readonly deleted: ReadonlySet<string>;
   /** The words each reference is drawn in, as one key, which changes only where one of them
    *  does. */
   readonly drawn: string;
-  /** The references whose post its author edited, which a row marks ` · edited` after the name
-   *  it cut (`KnownReferences.edited`, `rowReferenceWords`). */
+  /** The references whose post its author edited, which a row marks ` · edited` after the cut
+   *  (`KnownReferences.edited`). */
   readonly edited: ReadonlySet<string>;
   /** The keys the page's batched read named an issue for: a row links one where it stands bare. */
   readonly issues: readonly string[];
@@ -195,13 +196,10 @@ interface RowNames {
  * document by the page's word for it alone, since a chip never draws a document's name, which a
  * link and every plain line read it by (decision 39). Until the store has that line, a document
  * is drawn by the word the store's rule gives it by its address and `issue`
- * (`rowReferenceWords`). A post the page named that its author deleted
- * (`KnownReferences.deleted`) is named by its deleted line with the actor named by
- * `AgentText.author`, the page's rule for an author, in place of the published line, which
- * names the actor as no registry knows it.
+ * (`rowReferenceWords`).
  */
 function useRowNames(words: string, issue: string | undefined): RowNames {
-  const { ambiguous, deleted, edited, lines, names: known } = useKnownReferences();
+  const { ambiguous, deleted: deletions, edited, lines, names: known } = useKnownReferences();
   const { author } = useAgentText();
   const issues = useMemo(() => knownIssueKeys(known), [known]);
   const found = useMemo(() => rowReferences(words, issues, ambiguous), [ambiguous, issues, words]);
@@ -217,10 +215,13 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
     [found, issue]
   );
   const { names: named, reads } = useReferenceNames(addresses, issue);
+  // A post the page read as deleted is named by its deleted line, the actor named by the page's
+  // rule for an author, in place of the published name, which names the actor as no registry
+  // knows it.
   const names = useMemo(() => {
     const byReference = new Map<string, string>();
     for (const one of found) {
-      const deletion = known.has(one.reference) ? deleted.get(one.reference) : undefined;
+      const deletion = deletions.get(one.reference);
       const name =
         deletion !== undefined
           ? deletedLineText(deletion, { label: author })
@@ -231,7 +232,11 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
       if (name !== undefined) byReference.set(one.reference, name);
     }
     return byReference;
-  }, [author, deleted, found, issue, known, lines, named]);
+  }, [author, deletions, found, issue, lines, named]);
+  const deleted = useMemo(
+    () => new Set(found.map((one) => one.reference).filter((one) => deletions.has(one))),
+    [deletions, found]
+  );
   const drawn = useMemo(
     () =>
       found
@@ -533,8 +538,7 @@ function DrawnText({
       const reference = anchor.getAttribute("data-row-reference") ?? "";
       const route = parseNodeReference(reference);
       if (route !== undefined && route.kind !== "issue") anchor.setAttribute(ROW_CHIP, "");
-      // A deleted post's line is in the deleted line's italic, as a link to it draws it
-      // (`RefLink`).
+      // A deleted post's line is in the deleted line's italic, as a link to it is (`RefLink`).
       if (deleted.has(reference)) {
         anchor.classList.add("italic");
         anchor.setAttribute(POST_DELETED, "");

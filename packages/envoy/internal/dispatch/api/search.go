@@ -539,11 +539,6 @@ func searchKindsCTE(arms, exclude string, seen int) string {
 `
 }
 
-// searchParam is the placeholder of a numbered parameter, as the query bodies name theirs.
-func searchParam(number int) string {
-	return "$" + strconv.Itoa(number)
-}
-
 // searchIndexedKinds are the five kinds the search index holds, spelled as every keyword arm and
 // every meaning_* CTE spells its own kind column: the whole vocabulary of the route's kind
 // parameter. A party, a component or any other node of the reference graph is read from its own
@@ -644,6 +639,11 @@ func (k searchKinds) statements() *searchStatements {
 		pair.meaningJoined = meaning(meaningOneProjectJoined)
 	})
 	return pair
+}
+
+// searchParam is the placeholder of a numbered parameter, as the query bodies name theirs.
+func searchParam(number int) string {
+	return "$" + strconv.Itoa(number)
 }
 
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the

@@ -19,7 +19,7 @@ import { Timestamp } from "./Timestamp";
  * inside it would be a link inside a link. A host that names the actors it draws by a rule of its
  * own passes the name that rule gives (`actorName`), and the line draws it in place of
  * `AgentName`: the new issue page's rows name the actor as the page names an author
- * (`AgentText.author`), by INFRA-1196's decision 342, so a session nothing names reads as the
+ * (`AgentText.author`), by issue page decision 342, so a session nothing names reads as the
  * page's word for an agent and never as its short id. A host that divides its own words from its
  * authors' passes the attributes it marks each with (`marks`): the line's words are the host's,
  * and the actor's name and the time are not.

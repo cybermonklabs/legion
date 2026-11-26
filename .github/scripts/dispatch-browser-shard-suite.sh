@@ -174,11 +174,11 @@ esac
 # `filterProjects` reads `default` only where the command line named no project
 # (`projects.filter((project) => includeNonDefault || project.default)` at
 # Playwright 1.64.1's runner, lib/runner/index.js in its package, under its
-# `if (!projectNames)`), and every lane above names its own: four in the pull-request
-# lane, ten in the full one and one in the references one. The `default: false` each
-# `-alone` project carries (the three entries of `packages/dispatch/e2e/playwright.config.ts#aloneProjects`) is
-# what keeps them out of a run that names no project, which this is not. The alone job
-# names them, one machine each.
+# `if (!projectNames)`), and every lane above names its own: four in
+# the pull-request lane, ten in the full one and one in the references one. The
+# `default: false` each `-alone` project carries (the three entries of
+# `packages/dispatch/e2e/playwright.config.ts#aloneProjects`) is what keeps them out of a run
+# that names no project, which this is not. The alone job names them, one machine each.
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge

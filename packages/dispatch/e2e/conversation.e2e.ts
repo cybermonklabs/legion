@@ -343,9 +343,10 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
     await expect(composer.getByRole("link", { exact: true, name: "planner" })).toBeVisible();
     await expect(composer.getByRole("link", { name: "— Can this ship?" })).toBeVisible();
     const field = composer.getByLabel("Comment");
-    await expect(field).toHaveValue("[@planner](dispatch://agent/s1)");
+    // The prefill ends in one space, so the reply's first word is a word of its own.
+    await expect(field).toHaveValue("[@planner](dispatch://agent/s1) ");
     await field.press("End");
-    await field.pressSequentially(" It is green now - ship it.");
+    await field.pressSequentially("It is green now - ship it.");
     const response = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&

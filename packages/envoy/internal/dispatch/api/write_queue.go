@@ -206,11 +206,13 @@ func (s *server) queueEditedItemReferences(ctx context.Context, tx pgx.Tx, ledge
 // (clearDeletedPostBody). writer is the author the item's row records, whom its short ids
 // resolve for (refs.NewReader). Both kinds it rewrites cite what they mention, and the counted
 // targets also name every target the item still cites when the rewrite moves the head of its
-// text, which each of its edges shows (refs.EditedTargets). The caller queues the rewrite on
-// the comment's ledger (queueEditedItemReferences, or clearDeletedPostBody for a delete) or on
-// the message's batch (editMessage, or clearDeletedPostBody for a delete).
-// The item's node is the one the store holds, and what the index and the citations state is
-// answered for the caller to queue under the event it appends (graphstore.QueueCaused).
+// text, which each of its edges shows (refs.EditedTargets, which reads both texts with the shared
+// grammar against this server's deployment). It is the one plan of every such rewrite, which its
+// caller queues where it makes the write: on a comment's ledger (queueEditedItemReferences, and
+// deleteComment's through clearDeletedPostBody) or on the batch a message's route runs itself
+// (editMessage, and deleteMessage's through clearDeletedPostBody). The item's node is the one the
+// store holds, and what the index and the citations state is answered for the caller to queue
+// under the event it appends (graphstore.QueueCaused).
 func (s *server) planEditedItem(
 	ctx context.Context, tx pgx.Tx, writer model.Actor, kind refs.ItemKind, itemID, previous, body string, at time.Time, carried *refs.CarriedEdit,
 ) (model.ReferenceChanges, docs.WriteStep, graphstore.Uncaused, error) {

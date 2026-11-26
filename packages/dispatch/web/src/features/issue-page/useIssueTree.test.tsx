@@ -25,8 +25,9 @@ import type {
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { PostDeletion } from "../refs/post-marks";
 import {
-  type PublishedReferences,
   ReferenceNamesProvider,
+  useKnownDeletedReferences,
+  useKnownEditedReferences,
   useKnownReferences,
 } from "../refs/reference-names";
 import type { TreeNode } from "./issue-tree";
@@ -591,16 +592,15 @@ test("the page publishes an edited post a comment cites by its words, among the 
       () => {
         useIssueTree(issue);
         return {
-          edited: useKnownReferences().edited,
+          edited: useKnownEditedReferences(),
           name: useKnownReferenceName(cited),
           task: useKnownReferenceName(TASK_REF),
         };
       },
       { wrapper }
     );
-    // The store projects the name from the reading the page published beside the mark.
-    await waitFor(() => expect(view.result.current.name).toBe("Hold it."));
-    expect([...view.result.current.edited]).toEqual([cited]);
+    await waitFor(() => expect([...view.result.current.edited]).toEqual([cited]));
+    expect(view.result.current.name).toBe("Hold it.");
     // A target nobody edited is published by its name and left out of the set.
     expect(view.result.current.task).toBe(NODE_TYPE_NAMES.plan_task);
     view.unmount();
@@ -643,16 +643,15 @@ test("the page publishes a deleted post a comment cites by its deleted line, amo
       () => {
         useIssueTree(issue);
         return {
-          deleted: useKnownReferences().deleted,
+          deleted: useKnownDeletedReferences(),
           name: useKnownReferenceName(cited),
           task: useKnownReferenceName(TASK_REF),
         };
       },
       { wrapper }
     );
-    // The store projects the name from the reading the page published beside the delete.
-    await waitFor(() => expect(view.result.current.name).toBe("Deleted by alice"));
-    expect([...view.result.current.deleted]).toEqual([[cited, deletion]]);
+    await waitFor(() => expect([...view.result.current.deleted]).toEqual([[cited, deletion]]));
+    expect(view.result.current.name).toBe("Deleted by alice");
     // A target nobody deleted is published by its name and left out of the map.
     expect(view.result.current.task).toBe(NODE_TYPE_NAMES.plan_task);
     view.unmount();
@@ -755,15 +754,13 @@ test("one publisher leaving keeps the names and ambiguous references another pub
 test("the edited mark a link reads is the one of the publisher whose name stands", () => {
   const deleted = `dispatch://${KEY}/comment/c0ffee00`;
   const edited = `dispatch://${KEY}/comment/c0ffee01`;
-  const page: PublishedReferences = {
-    ...publishedNames(
-      new Map([
-        [deleted, "Hold the deploy."],
-        [edited, "Ship it."],
-      ])
-    ),
-    edited: new Set([deleted, edited]),
-  };
+  const page = publishedNames(
+    new Map([
+      [deleted, "Hold the deploy."],
+      [edited, "Ship it."],
+    ]),
+    { edited: new Set([deleted, edited]) }
+  );
   const sheet = publishedNames(new Map([[deleted, "Deleted by alice"]]));
   const seen: Seen = {};
   const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
@@ -798,24 +795,20 @@ test("the delete a link reads is the one of the publisher whose name stands", ()
   const deleted = `dispatch://${KEY}/comment/c0ffee00`;
   const restored = `dispatch://${KEY}/comment/c0ffee01`;
   const deletion = { at: "2026-11-05T02:00:00Z", by: { id: "alice", kind: "user" } };
-  const page: PublishedReferences = {
-    ...publishedNames(
-      new Map([
-        [deleted, "Hold the deploy."],
-        [restored, "Deleted by alice"],
-      ])
-    ),
-    deleted: new Map([[restored, deletion]]),
-  };
-  const sheet: PublishedReferences = {
-    ...publishedNames(
-      new Map([
-        [deleted, "Deleted by alice"],
-        [restored, "Ship it."],
-      ])
-    ),
-    deleted: new Map([[deleted, deletion]]),
-  };
+  const page = publishedNames(
+    new Map([
+      [deleted, "Hold the deploy."],
+      [restored, "Deleted by alice"],
+    ]),
+    { deleted: new Map([[restored, deletion]]) }
+  );
+  const sheet = publishedNames(
+    new Map([
+      [deleted, "Deleted by alice"],
+      [restored, "Ship it."],
+    ]),
+    { deleted: new Map([[deleted, deletion]]) }
+  );
   const seen: Seen = {};
   const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
     <ReferenceNamesProvider>
@@ -2039,7 +2032,7 @@ async function openCorrectedPage(stored: Comment[]) {
         useEventFeed();
         const { namesFailure } = useIssueTree(issue);
         return {
-          edited: useKnownReferences().edited,
+          edited: useKnownEditedReferences(),
           name: useKnownReferenceName(CITED),
           namesFailed: namesFailure !== undefined,
         };

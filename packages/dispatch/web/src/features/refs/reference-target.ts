@@ -163,9 +163,8 @@ export interface ReferenceTarget {
   readonly known: boolean;
 }
 
-/** What a target shows of itself, which each kind reads its own way; `missing` and `known` are
- *  answered once for every kind (`useReferenceTarget`). */
-type ShownTarget = Omit<ReferenceTarget, "missing" | "known">;
+/** What each kind shows of itself, without the marks and status assigned once at the return. */
+type ShownTarget = Omit<ReferenceTarget, "deleted" | "edited" | "missing" | "known">;
 
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
  *  comment's body. Long enough to recognise, short enough for a link inside a sentence. */
@@ -468,12 +467,10 @@ export interface ReferenceData {
    *  name an artifact reference writes (`artifactAtAddress`), a project's architecture without the
    *  component, Dispatch's record of sessions without the session (one the registry lists, and
    *  one that ended, are both known), the registry without a session that holds the role and the
-   *  record's issue's collaborators without it. A block gone with a post its author deleted is no
-   *  such answer: it names a deleted post, which stays a link whose card says the post is deleted
-   *  (`blockDeletion`). False while loading and for any other failure, so a reference that names
-   *  a real target never loses its link to a slow or dropped read. The document editor reads the
-   *  same answer (`document-references.tsx`, through `useReferenceTarget`), so a comment and the
-   *  editor cannot disagree. */
+   *  record's issue's collaborators without it. False while loading and for any other failure, so
+   *  a reference that names a real target never loses its link to a slow or dropped read. The
+   *  document editor reads the same answer (`document-references.tsx`, through
+   *  `useReferenceTarget`), so a comment and the editor cannot disagree. */
   readonly missing: boolean;
   /** The deletion of the comment or message a block reference's block belongs to: its graph
    *  node's mark, or - where the read answers that the block is gone, which leaves no node -
@@ -816,25 +813,22 @@ export function useReferenceData(
   const personKnown =
     personRoute !== undefined &&
     (people?.data ?? []).some((person) => person.login === personRoute.login);
-  // The post a gone block was in, once its read answers, and its deletion. A block gone with a
-  // post its author deleted names that deleted post, which stays a reference: linked, its card
-  // saying the post is deleted (INFRA-1523). So the block's 404 says the target does not exist
-  // only where no post is read for it - a document's block, an ask's part - or where the post's
-  // read answered and the post stands; a post Dispatch answers does not exist says so by its own
-  // read's 404, and a post read still out leaves the reference linked, as every other read does.
-  const gonePost =
+  const textRead = text?.data;
+  const post =
     goneBlockPost === undefined
       ? undefined
       : goneBlockPost.kind === "comment"
         ? comment?.data?.comment
         : messageQueryResult?.data?.message;
   const blockDeletion =
-    goneBlockPost === undefined ? postDeletion(blockData?.node) : postDeletion(gonePost);
-  const missingBlock =
-    goneBlockPost === undefined || (gonePost !== undefined && blockDeletion === null)
-      ? block
-      : undefined;
-  const textRead = text?.data;
+    goneBlockPost === undefined ? postDeletion(blockData?.node) : postDeletion(post);
+  // A block a delete took with its comment or message is no missing target: the post stands,
+  // marked deleted, so the link stays and its card says the post was deleted (deleted-post R3).
+  // A gone block of a post is missing only once the post's own read has answered with no delete
+  // - until then it is not yet known missing - and any other gone block is missing at once.
+  const blockMissing =
+    answeredNotFound(block?.error) &&
+    (goneBlockPost === undefined || (post !== undefined && blockDeletion === null));
   return {
     issue: issue?.data,
     artifact,
@@ -852,12 +846,12 @@ export function useReferenceData(
     missing:
       (unlisted && recorded?.data?.known === false) ||
       roleUnknown ||
+      blockMissing ||
       [
         issue,
         messageQueryResult,
         projectDocument,
         sessionArtifact,
-        missingBlock,
         ask,
         comment,
         architecture,
@@ -1005,8 +999,6 @@ export function useReferenceTarget(
     shown = {
       title: headline?.text,
       description: message?.message.body,
-      deleted,
-      edited,
       descriptionTree: message?.message.body_tree,
       picture: undefined,
     };
@@ -1015,8 +1007,6 @@ export function useReferenceTarget(
     shown = {
       title: sessionTitle,
       description: undefined,
-      deleted,
-      edited,
       descriptionTree: undefined,
       picture: undefined,
     };
@@ -1027,8 +1017,6 @@ export function useReferenceTarget(
     shown = {
       title: component?.title,
       description: component?.prose,
-      deleted,
-      edited,
       descriptionTree: component?.prose_tree,
       picture: undefined,
     };
@@ -1036,8 +1024,6 @@ export function useReferenceTarget(
     shown = {
       title: headline?.text,
       description: headline?.cut === true ? authored : undefined,
-      deleted,
-      edited,
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
     };
@@ -1049,8 +1035,6 @@ export function useReferenceTarget(
     shown = {
       title: roleKnown ? route.role : undefined,
       description: undefined,
-      deleted,
-      edited,
       descriptionTree: undefined,
       picture: undefined,
     };
@@ -1060,8 +1044,6 @@ export function useReferenceTarget(
     shown = {
       title: personKnown ? route.login : undefined,
       description: undefined,
-      deleted,
-      edited,
       descriptionTree: undefined,
       picture: undefined,
     };
@@ -1071,8 +1053,6 @@ export function useReferenceTarget(
     shown = {
       title: issueOrDocumentTitle(route, issue, artifact),
       description: text ?? (artifact === undefined ? issue?.status : undefined),
-      deleted,
-      edited,
       descriptionTree: text === undefined ? undefined : markdownTree,
       picture: named === undefined ? undefined : picturePath(named, artifact),
     };
@@ -1080,6 +1060,8 @@ export function useReferenceTarget(
   // Only a session can exist with no title of its own: every other target's title says it does.
   return {
     ...shown,
+    deleted,
+    edited,
     missing,
     known: kind === "session" && sessionKnown && sessionTitle === undefined,
   };
@@ -1089,8 +1071,9 @@ export function useReferenceTarget(
  *  read (`useReferenceLabel`). */
 export interface ReferenceLabel {
   /** The words, or undefined where the written words stand: while the target loads, for a
-   *  target that never resolves, and for a block of a deleted post. An issue's text is its title
-   *  alone, which each surface prefixes with the key in its own way. */
+   *  target that never resolves, and for a block of a deleted post that its author named in words
+   *  of their own. An issue's text is its title alone, which each surface prefixes with the key
+   *  in its own way. */
   readonly text: string | undefined;
   /** Whether `text` is the deleted line, which a link drawn as markup writes in the deleted
    *  line's italic (`DeletedBody`). */
@@ -1104,8 +1087,9 @@ export interface ReferenceLabel {
  *
  * - a comment or an issue message its author deleted reads as the deleted line's words
  *   (`deletedLineText`), never as the headline of its emptied body, which is no words at all;
- * - a block of a deleted post keeps the words its author wrote: the block is gone with the
- *   post's text, and the hover card says the post is deleted;
+ * - a block of a deleted post keeps the words its author wrote - a bare address its own address -
+ *   and never reads as the deleted line, which is the post's own link's text: the block is gone
+ *   with the post's text, and the hover card says the post is deleted;
  * - a comment, a message or a block of either that its author edited reads as its title then
  *   ` · edited`, as the post's byline writes it (`EditedMark`): the title is cut first
  *   (`TITLE_HEADLINE_MAX`), then marked (`editedName`), so no cut takes the mark;

@@ -132,12 +132,11 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "The conversation: dispatch://CORE-47/conversation, dispatch://CORE-48/log and https://dispatch.test/issues/CORE-54/conversation.",
     refs: ["dispatch://CORE-47", "dispatch://CORE-48", "dispatch://CORE-54"],
   },
-  // The Decisions tab reads the issue's decision nodes, so its reference and its page name the
-  // issue, as both readers read them; the reference keeps its tab, which is how the dashboard
-  // writes it and what the Go reader parses as the issue.
+  // The Decisions tab reads the issue's decision nodes, so its address reads as the issue, as a
+  // reference and as the dashboard's page alike.
   {
-    body: "The decisions: dispatch://CORE-49/decisions and https://dispatch.test/issues/CORE-55/decisions.",
-    refs: ["dispatch://CORE-49/decisions", "dispatch://CORE-55/decisions"],
+    body: "The decisions: dispatch://CORE-55/decisions and https://dispatch.test/issues/CORE-56/decisions.",
+    refs: ["dispatch://CORE-55", "dispatch://CORE-56"],
   },
   {
     body: "No tab: https://dispatch.test/issues/CORE-49/log, dispatch://CORE-49/plan/, dispatch://CORE-49/Plan and https://dispatch.test/issues/CORE-49/plan/.",
@@ -318,6 +317,22 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
     body: "![shot.png](dispatch://LEGION-1/artifact/shot-png@v1)",
     refs: ["dispatch://LEGION-1/artifact/shot-png@v1"],
   },
+  // A link's or a picture's address ends at the link's own `)`, the first that no `(` in the
+  // address opened, as CommonMark reads it: a word typed straight after the link is the link's
+  // next word, as every renderer draws it, and never more of its address. So a mention followed
+  // by a word names its party, a worded link and a picture name their targets, and a pair of
+  // parentheses the address balances stays in it.
+  { body: "[@Bob](dispatch://agent/abc)hello", refs: ["dispatch://agent/abc"] },
+  { body: "[w](dispatch://CORE-24)word", refs: ["dispatch://CORE-24"] },
+  {
+    body: "![shot](dispatch://LEGION-1/artifact/shot-png)word",
+    refs: ["dispatch://LEGION-1/artifact/shot-png"],
+  },
+  { body: "[w](dispatch://agent/a(b)c)tail", refs: ["dispatch://agent/a(b)c"] },
+  // A bare address keeps its own reading: a `)` it ends in that opens nowhere in it is dropped,
+  // and one a word follows is part of the address, which then names nothing.
+  { body: "(see dispatch://CORE-1)", refs: ["dispatch://CORE-1"] },
+  { body: "dispatch://CORE-1)word", refs: [] },
   // A block of a document: its id is read with any percent-encoding and written as
   // `encodeBlockId` writes it.
   {
@@ -935,21 +950,22 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
  * it names can change on one side only.
  *
  * A reference ends at whitespace (Unicode space separators included, a vertical tab and U+FEFF
- * not), an angle or square bracket, a quote, a backtick or a pipe; the sentence punctuation,
- * emphasis and strikethrough delimiters and unbalanced closing parenthesis after it are dropped.
- * External URLs cite nothing, and neither does a reference whose target id, as the server stores
- * the edge to it, is past MAX_REFERENCE_TARGET_BYTES. A block reference is its document's, ask's,
- * comment's or issue message's reference, `#b-` and the block id as `encodeBlockId` writes it
- * (readers take any percent-encoding; an id past MAX_BLOCK_ID_BYTES names nothing), optionally
- * pinned to version N of the document, or to revision N of the comment or of the ask's parts, by
- * a trailing `@v<N>` (a message records no revisions, so a pinned message block names nothing);
- * each `refs` entry for one is written that canonical way. An issue's address reads as the issue
- * with nothing after its key, with a trailing slash and nothing after it, and with a tab of its
- * page whose route is the tab itself after it (`PLAIN_ISSUE_TABS`, and the conversation: `log` or
- * `conversation` in a reference, `conversation` in the dashboard's path), so `dispatch://CORE-1/`,
- * `dispatch://CORE-1/plan` and `https://dispatch.test/issues/CORE-1/plan` each cite
- * `dispatch://CORE-1`; a document's page reads the same at `artifacts/<slug>` and at
- * `artifact/<slug>`.
+ * not), an angle or square bracket, a quote, a backtick or a pipe, and one that stands as a
+ * link's or a picture's address, right after `](`, ends at the first `)` in it that no `(` in it
+ * opened; the sentence punctuation, emphasis and strikethrough delimiters and unbalanced closing
+ * parenthesis after it are dropped. External URLs cite nothing, and neither does a reference whose
+ * target id, as the server stores the edge to it, is past MAX_REFERENCE_TARGET_BYTES. A block
+ * reference is its document's, ask's, comment's or issue message's reference, `#b-` and the block
+ * id as `encodeBlockId` writes it (readers take any percent-encoding; an id past
+ * MAX_BLOCK_ID_BYTES names nothing), optionally pinned to version N of the document, or to
+ * revision N of the comment or of the ask's parts, by a trailing `@v<N>` (a message records no
+ * revisions, so a pinned message block names nothing); each `refs` entry for one is written that
+ * canonical way. An issue's address reads as the issue with nothing after its key, with a
+ * trailing slash and nothing after it, and with a tab of its page whose route is the tab itself
+ * after it (`PLAIN_ISSUE_TABS`, and the conversation: `log` or `conversation` in a reference,
+ * `conversation` in the dashboard's path), so `dispatch://CORE-1/`, `dispatch://CORE-1/plan` and
+ * `https://dispatch.test/issues/CORE-1/plan` each cite `dispatch://CORE-1`; a document's page
+ * reads the same at `artifacts/<slug>` and at `artifact/<slug>`.
  *
  * A text also cites what it writes bare: an issue key (`CORE-12`) that names an existing issue,
  * as `dispatch://CORE-12`, and `#` with the id of a question block of the text's document, as

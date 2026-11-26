@@ -70,14 +70,15 @@ export function DocumentRefPicker({
   issueKey?: string;
   /** The project a document of a project belongs to, whose components it offers. */
   project?: string;
-  /** The box's row of the writing list, whose words the line under the editor says: a
-   *  document's body where it is left out. */
+  /** The box's row of the writing list, whose words the line under the editor says and whose
+   *  write says which parties a pick may name: a document's body where it is left out. */
   writing?: DispatchWritingBoxRow;
 }): ReactNode {
   const tooltips = useTooltips();
   const [caret, setCaret] = useState<ReferencePickerCaret | undefined>(undefined);
   const picker = useRefPicker({
     caret: caret?.text.length ?? 0,
+    delivers: writing.delivers,
     enabled: caret !== undefined,
     issueKey,
     links: "marks",

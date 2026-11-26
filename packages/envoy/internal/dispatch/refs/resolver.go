@@ -3,11 +3,8 @@ package refs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -70,8 +67,8 @@ type sourceReads struct {
 	pending *PendingDocument
 }
 
-// prefixKey is one short id as ResolvePrefix is asked it: the kind of item it names, the owner it
-// is resolved within, and the prefix itself.
+// prefixKey is one short id as the resolver reads its candidates (readPrefixCandidates): the kind
+// of item it names, the owner it is resolved within, and the prefix itself.
 type prefixKey struct {
 	kind   string
 	scope  Scope
@@ -83,13 +80,13 @@ type prefixKey struct {
 // for writer, the source's author: a comment's, a message's or an ask's author, and a document
 // version's writer, the first author its row records (IndexedVersion). A short id the text writes
 // resolves only among the items writer may see, through the predicate every read of the graph
-// binds (ResolvePrefix, VisibleKind): an answer that counted an item writer may not see - a prefix
-// it shares with a visible one, left ambiguous - would tell the writer that item exists (R9,
-// R19). The writer is the author the source records and not the credential that made the write,
-// so every path that indexes the stored text again (RebuildAll, ReindexOwed) resolves it for the
-// same person the write did. A source that records no author resolves for the zero actor, which
-// proves nobody and so sees no item reserved for its author. An ask's answer part is the one text
-// of a source that another person wrote, and it resolves for its answerer (writtenBy).
+// binds (readPrefixCandidates, VisibleKind): an answer that counted an item writer may not see -
+// a prefix it shares with a visible one, left ambiguous - would tell the writer that item exists
+// (R9, R19). The writer is the author the source records and not the credential that made the
+// write, so every path that indexes the stored text again (RebuildAll, ReindexOwed) resolves it
+// for the same person the write did. A source that records no author resolves for the zero actor,
+// which proves nobody and so sees no item reserved for its author. An ask's answer part is the one
+// text of a source that another person wrote, and it resolves for its answerer (writtenBy).
 func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID, serverURL string) *Reader {
 	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, serverURL: serverURL, source: &sourceReads{}}
 }
@@ -250,12 +247,12 @@ func (r *Reader) scope() (string, error) {
 
 // Items is the whole id of each short id the text writes, resolved within the owner the reference
 // itself names and not across the whole kind, among the items the reader's writer may see
-// (ResolvePrefix, for the writer and as the zero Viewer: the index writes the graph every
-// authenticated caller reads, so it reads no direct message's first line). An item the writer may
-// not see is no candidate, so a prefix it alone carries names nothing and one it shares with a
-// visible item names that item, as ResolvePrefix answers the writer. A prefix that names nothing,
-// one two items or more carry, and one whose owner no Scope holds are all left out of the answer,
-// which leaves the mention as the text wrote it.
+// (resolveItem, which reads them as ResolvePrefix does, for the writer and as the zero Viewer: the
+// index writes the graph every authenticated caller reads, so it reads no direct message's first
+// line). An item the writer may not see is no candidate, so a prefix it alone carries names
+// nothing and one it shares with a visible item names that item, as ResolvePrefix answers the
+// writer. A prefix that names nothing, one two items or more carry, and one whose owner no Scope
+// holds are all left out of the answer, which leaves the mention as the text wrote it.
 func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 	resolved := make(map[int]string, len(prefixes))
 	for index, prefix := range prefixes {
@@ -284,16 +281,19 @@ func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 }
 
 // resolveItem is the whole id key names for the reader's writer, "" where it names nothing or two
-// items or more. An error is a failure reaching the database alone.
+// items or more. It is ResolvePrefix's two halves read apart: the candidates as that function
+// reads them (readPrefixCandidates) and the item among them by value (pickPrefixCandidate), so its
+// one error is a candidate reader's failure reaching the database, and no refusal that quotes the
+// prefix a body wrote is built on the way to the log (Reader.failed).
 func (r *Reader) resolveItem(key prefixKey) (string, error) {
-	candidate, err := ResolvePrefix(r.ctx, r.q, r.writer, key.kind, key.scope, key.prefix, Viewer{})
-	switch {
-	case err == nil:
-		return candidate.ID, nil
-	case errors.Is(err, pgx.ErrNoRows), errors.As(err, new(*ErrPrefixAmbiguous)):
-		return "", nil
+	found, err := readPrefixCandidates(r.ctx, r.q, r.writer, key.kind, key.scope, key.prefix, Viewer{})
+	if err != nil {
+		return "", err
 	}
-	return "", err
+	if candidate, ok := pickPrefixCandidate(key.kind, key.prefix, found); ok {
+		return candidate.ID, nil
+	}
+	return "", nil
 }
 
 // PrefixScope is what one short id asks ResolvePrefix: the kind the reference names, the owner

@@ -3,6 +3,7 @@ import { render, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import type { ArtifactBlock, IssueDetails } from "../../api/types";
+import type { PostDeletion } from "../refs/post-marks";
 import {
   type KnownReferences,
   type PublishedReferences,
@@ -64,18 +65,22 @@ export function Publisher({ published }: { published: PublishedReferences }): Re
 /** What a page publishes of its one batched read (`useIssueTree.ts`), made anew on every call
  *  as the page's read makes it: each of `names`' targets named by words the store draws as they
  *  stand (`ReferenceNameReading.words`), the references it answered ambiguous, gone or with no
- *  words, and every reference it asks for, which is every one of those unless `asked` names
- *  more. */
+ *  words, those among the names whose post its author edited or deleted, and every reference it
+ *  asks for, which is every one of those unless `asked` names more. */
 export function publishedNames(
   names: ReadonlyMap<string, string>,
   {
     ambiguous = new Set(),
     asked = [],
+    deleted = new Map(),
+    edited = new Set(),
     gone = new Set(),
     unnamed = new Set(),
   }: {
     ambiguous?: ReadonlySet<string>;
     asked?: readonly string[];
+    deleted?: ReadonlyMap<string, PostDeletion>;
+    edited?: ReadonlySet<string>;
     gone?: ReadonlySet<string>;
     unnamed?: ReadonlySet<string>;
   } = {}
@@ -83,6 +88,8 @@ export function publishedNames(
   return {
     ambiguous,
     asked: new Set([...names.keys(), ...ambiguous, ...gone, ...unnamed, ...asked]),
+    deleted,
+    edited,
     gone,
     readings: new Map([...names].map(([reference, words]) => [reference, { words }])),
     unnamed,
@@ -134,6 +141,8 @@ function projectedKnown(readings: ReadonlyMap<string, ReferenceNameReading>): Kn
   const published: PublishedReferences = {
     ambiguous: new Set(),
     asked: new Set(readings.keys()),
+    deleted: new Map(),
+    edited: new Set(),
     gone: new Set(),
     readings,
     unnamed: new Set(),

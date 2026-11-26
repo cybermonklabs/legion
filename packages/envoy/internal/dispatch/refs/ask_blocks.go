@@ -303,9 +303,9 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // parts than the ask holds now, and the reconciliation of the question's own references with
 // them, dated the time the ask was last written, which the repair queues after the parts
 // (ItemRepair.Queue): so it settles the ask's row of the forms queue after the ask's whole text
-// (Replacement.SettlingForms). The caller holds the ask's owner. The question's and the options'
-// short ids resolve for the ask's author, whom its row records (NewReader), and the answer's for
-// its answerer (askPartPairs).
+// (Replacement.SettlingForms). The question's and the options' short ids resolve for the ask's
+// author, whom its row records (NewReader), and the answer's for its answerer (askPartPairs).
+// The caller holds the ask's owner.
 func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (ItemRepair, error) {
 	var stated, owed bool
 	var sum *string

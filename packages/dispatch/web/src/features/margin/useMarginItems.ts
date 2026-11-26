@@ -77,9 +77,9 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: DecisionEntry;
-  /** The artifact id of the document the entry's node stands in, the record the decision's text
-   *  is, which a `#id` in that text names a question block of; undefined for an ask on the issue
-   *  itself. */
+  /** The artifact id of the document the decision is written in (`DecisionEntry.document`), the
+   *  record its text is, which a `#id` in that text names a question block of; undefined for an
+   *  entry that names no document. */
   readonly documentId: string | undefined;
   /** `decision:<node id>:<spec node id>`: the node that holds the entry, and the spec node it
    *  shaped, so two documents' decisions under one block id are two items. */

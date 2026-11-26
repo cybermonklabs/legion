@@ -242,17 +242,13 @@ type decisionEntry struct {
 	// AnswerTree is Answer read as the tree a reader is shown, present only for a caller that
 	// sent `Dispatch-Trees: 1` and only where the ask holds an answer's text: the Decisions tab
 	// draws a person's decision by that text.
-	AnswerTree model.DisplayTree `json:"answer_tree,omitempty"`
-	Selected   []string          `json:"selected"`
-	// SelectedTrees is the tree of each label of Selected at that label's own index, present only
-	// for a caller that sent `Dispatch-Trees: 1` (chosenLabelTrees): the Decisions tab draws each
-	// chosen label from it, as every read of an answer gives it (registerChosenLabels).
-	SelectedTrees []model.DisplayTree  `json:"selected_trees,omitempty"`
-	AnsweredBy    *string              `json:"answered_by"`
-	AnsweredAt    *time.Time           `json:"answered_at"`
-	Resolution    *model.AskResolution `json:"resolution"`
-	Declined      bool                 `json:"declined"`
-	DeclinedNote  *string              `json:"declined_note"`
+	AnswerTree   model.DisplayTree    `json:"answer_tree,omitempty"`
+	Selected     []string             `json:"selected"`
+	AnsweredBy   *string              `json:"answered_by"`
+	AnsweredAt   *time.Time           `json:"answered_at"`
+	Resolution   *model.AskResolution `json:"resolution"`
+	Declined     bool                 `json:"declined"`
+	DeclinedNote *string              `json:"declined_note"`
 
 	Uncertainty       *string          `json:"uncertainty"`
 	UncertaintyReason *string          `json:"uncertainty_reason"`
@@ -585,7 +581,6 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 	for index := range entries {
 		reader.text(&entries[index].TextTree, entries[index].Text)
 		reader.textOf(&entries[index].AnswerTree, entries[index].Answer)
-		entries[index].SelectedTrees = chosenLabelTrees(reader, entries[index].Selected)
 	}
 	// kept for one release: compat-objects
 	for index := range decisions {

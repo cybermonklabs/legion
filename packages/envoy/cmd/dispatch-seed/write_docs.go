@@ -106,7 +106,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 	// write phase of anyone's, so the plan's statements run at once, as a batch of their own
 	// (refs.IndexBlocks). The targets the plan moves are counted by nobody: the seed appends no
 	// event for a document write, which is what names them.
-	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, refs.TypedFacts{}, serverURL)
+	_, _, blockWrite, err := refs.IndexBlocks(ctx, tx, document.ID, document.Versions, versionAt, latest, blocks, located, nil, serverURL, refs.TypedFacts{})
 	if err != nil {
 		return fmt.Errorf("index blocks: %w", err)
 	}

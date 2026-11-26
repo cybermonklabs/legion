@@ -8,7 +8,7 @@ import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
 import { realClock, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { answerQuestionOf, NAMED_QUESTION } from "../../__tests__/question-answers";
+import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, NetworkError } from "../../api/client";
@@ -587,26 +587,17 @@ test("a person's answer is drawn from the reading the server sent with it, parsi
   }
 });
 
-// An answer that chose options and wrote nothing holds no text of its own: the tab draws the
-// labels chosen, each from the reading of its own label the server sends beside it
-// (`selected_trees`), as the Answers page draws a chosen label, and parses nothing. So a label
-// that holds markdown reads as it is drawn: `A **bold** name` is `A bold name`, its `bold` strong.
-test("an answer of chosen options alone is drawn from its labels' readings, parsing nothing", async () => {
-  const selected = ["Notices", "A **bold** name"];
-  const trees = selected.flatMap((label) => {
-    const tree = displayTree(label);
-    return tree === undefined ? [] : [tree];
-  });
+// An answer that chose options and wrote nothing holds no stored text: the tab draws the labels
+// chosen as the words they are, as the Answers page draws a chosen label, and parses nothing.
+test("an answer of chosen options alone is drawn as their labels' words, parsing nothing", async () => {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
-    answeredView({ answer: null, selected, selected_trees: trees })
+    answeredView({ answer: null, selected: ["Notices", "A **bold** name"] })
   );
   const parse = countParses();
   try {
     renderPanel();
     const mine = await screen.findByRole("region", { name: "Your decisions" });
-    const chosen = await within(mine).findByTestId("decision-chosen");
-    await waitFor(() => expect(chosen.textContent).toBe("Notices, A bold name"));
-    expect(within(chosen).getByText("bold").tagName).toBe("STRONG");
+    expect(await within(mine).findByText("Notices, A **bold** name")).toBeDefined();
     expect(parse).not.toHaveBeenCalled();
   } finally {
     parse.mockRestore();
@@ -617,8 +608,8 @@ test("an answer of chosen options alone is drawn from its labels' readings, pars
 // Two places of the panel hold no markup and draw their text's plain-text projection: an open
 // question's link, and the name the Keep and the Change are given (the Change's form here). Each
 // drops the formatting and reads a `dispatch://` address as its target's name - the reading
-// list's `issue-open-question` and `decision-heading-words`. Drawn as the characters they are,
-// each would hold `**` and the address.
+// list's `issue-open-question` and `issue-decision`. Drawn as the characters they are, each would
+// hold `**` and the address.
 test("an open question and the Change's name read their text's plain-text projection", async () => {
   const user = userEvent.setup();
   const question = "**Which** index does dispatch://CORE-2 need?";
@@ -634,7 +625,6 @@ test("an open question and the Change's name read their text's plain-text projec
         question,
         ref: `dispatch://CORE-1/ask/${questionId}`,
         text: question,
-        text_tree: undefined,
       }),
       entry({
         block: "only",
@@ -663,7 +653,7 @@ test("an open question and the Change's name read their text's plain-text projec
     const waiting = list("Waiting for your review");
     await user.click(within(waiting).getByRole("button", { name: "Change" }));
     expect(
-      within(waiting).getByRole("form", { name: "Change Warm CORE-2 Cut the release first" })
+      await within(waiting).findByRole("form", { name: "Change Warm CORE-2 Cut the release first" })
     ).toBeDefined();
   } finally {
     read.mockRestore();
@@ -898,61 +888,6 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
   }
 });
 
-// An open question is its ask's record, and a decision's heading is a record of the document its
-// node stands in: a `#id` in either names the question of that record's document, so the
-// question's link, the heading's link and the Change's form read it as the question it names.
-// Handed no record, each keeps `#q2`.
-test("a #id in an open question and in a decision's heading names the question of its record", async () => {
-  const question = "Decide #q2 now?";
-  const view: IssueDecisions = {
-    decisions: [],
-    document: null,
-    entries: [
-      entry({
-        answer_state: "open",
-        block: "q1",
-        kind: "person",
-        node: { id: questionId, kind: "ask" },
-        question,
-        ref: `dispatch://CORE-1/ask/${questionId}`,
-        text: question,
-        text_tree: undefined,
-      }),
-      entry({ block: "only", text: "## Settle #q2 first\n\nIt is cheap.", waiting_review: true }),
-    ],
-    open_questions: [],
-  };
-  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
-  for (const [kind, id, words] of [
-    ["ask", questionId, `Decide ${NAMED_QUESTION} now?`],
-    ["artifact", documentId, `Change Settle ${NAMED_QUESTION} first`],
-  ] as const) {
-    const answers = answerQuestionOf(kind, id);
-    const user = userEvent.setup();
-    const panel = renderPanel();
-    try {
-      if (kind === "ask") {
-        const open = await screen.findByRole("region", { name: "Open questions" });
-        expect(await within(open).findByRole("link", { name: words })).toBeDefined();
-      } else {
-        const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
-        // The heading links the node that holds the decision, worded with its plain words.
-        expect(
-          await within(waiting).findByRole("link", { name: `Settle ${NAMED_QUESTION} first` })
-        ).toBeDefined();
-        await user.click(within(waiting).getByRole("button", { name: "Change" }));
-        await waitFor(() =>
-          expect(within(waiting).getByRole("form", { name: words })).toBeDefined()
-        );
-      }
-    } finally {
-      panel.unmount();
-      answers.restore();
-    }
-  }
-  read.mockRestore();
-});
-
 // The conversion of a decisions document moves a decision's `Unsure:` paragraph into its node's
 // `uncertainty` and `uncertainty_reason`, so its words hold that paragraph no more. The tab draws
 // the doubt where the paragraph drew, with the paragraph's words, and once.
@@ -1156,6 +1091,62 @@ test("a decision with no reading whose first paragraph holds a link keeps that p
   }
 });
 
+// An open question is its ask's record, and a decision is a block of the document it is written
+// in: a `#id` in either names the question of that record's document, so the question's link and
+// the Change's name read it as the question it names, and the decision's body links it. Handed no
+// record, each keeps `#q2`.
+test("a #id in an open question and in a decision's name names the question of its record", async () => {
+  const view: IssueDecisions = {
+    decisions: [],
+    document: null,
+    entries: [
+      entry({
+        answer_state: "open",
+        block: "q1",
+        kind: "person",
+        node: { id: questionId, kind: "ask" },
+        question: "Decide #q2 now?",
+        ref: `dispatch://CORE-1/ask/${questionId}`,
+        text: "Decide #q2 now?",
+      }),
+      entry({
+        block: "only",
+        text: ":::decision{#only}\nSettle #q2 first\n\nIt is cheap.\n:::\n",
+        waiting_review: true,
+      }),
+    ],
+    open_questions: [],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  for (const [kind, id, words] of [
+    ["ask", questionId, `Decide ${NAMED_QUESTION} now?`],
+    ["artifact", documentId, `Change Settle ${NAMED_QUESTION} first`],
+  ] as const) {
+    const answers = answerQuestionOf(kind, id);
+    const user = userEvent.setup();
+    const panel = renderPanel();
+    try {
+      if (kind === "ask") {
+        const open = await screen.findByRole("region", { name: "Open questions" });
+        expect(await within(open).findByRole("link", { name: words })).toBeDefined();
+      } else {
+        const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+        await waitFor(() =>
+          expect(waiting.querySelector(`[data-dispatch-ref="${NAMED_ASK}"]`)).not.toBeNull()
+        );
+        await user.click(within(waiting).getByRole("button", { name: "Change" }));
+        await waitFor(() =>
+          expect(within(waiting).getByRole("form", { name: words })).toBeDefined()
+        );
+      }
+    } finally {
+      panel.unmount();
+      answers.restore();
+    }
+  }
+  read.mockRestore();
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the
@@ -1242,9 +1233,9 @@ function refusedTree(text: string): DisplayTree {
 
 // A block whose tree cannot be drawn shows the text that body was handed, so each body is
 // handed its own block's text and no more: the decision's whole text in every one of them
-// would draw that text once per block, heading line and all. The heading is the link to the node
-// that holds the decision, worded from its own node of the same tree, so it reads its own words
-// when that node is refused.
+// would draw that text once per block, heading line and all. The heading links the node that
+// holds the decision by its plain words, read from its own node of the same tree, so it shows
+// its own words when that node is refused.
 test("a block whose tree the engine refuses shows its own text alone", async () => {
   const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
@@ -1264,7 +1255,7 @@ test("a block whose tree the engine refuses shows its own text alone", async () 
       "A log is enough.",
       "Unsure: the index may be slow.",
     ]);
-    expect(await within(waiting).findByRole("link", { name: "Keep a log" })).toBeDefined();
+    expect(within(waiting).getByRole("heading", { level: 3 }).textContent).toBe("Keep a log");
     // The heading is the card's own line, never a line of a body, and the text below it is
     // drawn once however many blocks it holds.
     expect(waiting.textContent).not.toContain("#");

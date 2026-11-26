@@ -109,7 +109,12 @@ test("the decision behind a node is the first that names it, whatever version it
 // that question. A question still open, or one closed without an answer, decided nothing, so a
 // chip it carries puts no decision behind anything.
 test("the decision behind a node may be the answered question that shaped it", () => {
-  const shaped = { answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1" };
+  const shaped = {
+    answered: true,
+    gone: false,
+    reading: { words: "R1" },
+    ref: "dispatch://CORE-1/spec#b-r1",
+  };
   const root = node("CORE-1", "issue", [
     node("spec#b-open", "ask", [], { chips: [shaped], question: true, state: "open" }),
     node("spec#b-declined", "ask", [], { chips: [shaped], state: "declined" }),

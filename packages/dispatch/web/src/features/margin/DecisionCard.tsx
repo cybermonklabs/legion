@@ -13,46 +13,20 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import {
-  decisionName,
-  holdsUnsureParagraph,
-  ownTree,
-  plainParagraph,
-  unsureWords,
-  wordsOf,
-} from "../issue/decision-text";
+import { decisionHeading, useDecisionHeadingWords } from "../issue/decision-heading";
+import { holdsUnsureParagraph, plainParagraph, unsureWords } from "../issue/decision-text";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { usePlainHeadline } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { useCardStack } from "./card-stack";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
-/** The name a card gives an entry: an ask's question, else the decision's name as the server and
- *  the Decisions tab read it (`decisionName`), a heading by its words and not by its `#`. */
-export function entryHeading(decision: DecisionEntry): string {
-  return decision.question ?? decisionName(decision.text_tree, decision.text);
-}
-
-/** The reading `entryHeading`'s name is the words of: the first block of a decision's own
- *  content that holds any (`decisionName`), alone in its tree; for an ask, named by its question,
- *  which is the entry's own text, the reading of that text (`text_tree`). None for an answer that
- *  carried no reading, whose name is then parsed. */
-function entryHeadingTree(decision: DecisionEntry): DisplayTree | undefined {
-  if (decision.node.kind === "ask") return decision.text_tree;
-  const tree = ownTree(decision.text_tree);
-  const content = tree?.content;
-  if (tree === undefined || !Array.isArray(content)) return undefined;
-  const named = (content as DisplayTree[]).find((node) => wordsOf(node).trim() !== "");
-  return named === undefined ? undefined : { ...tree, content: [named] };
-}
-
-/** What a card previews of a decision after its words: the doubt its node holds
- *  (`unsureWords`) where those words hold no `Unsure:` paragraph, as the paragraph it was moved
- *  from ran on in the preview, and the reading of the words with that paragraph after them. The
- *  mount writes the words and the doubt into the preview's `markdown` itself, so the stored text
- *  is handed to the renderer where the reading list's walk sees it (`surface-lists.test.ts`). */
+/** What a card previews of a decision beside its words: the doubt its node holds (`unsureWords`)
+ *  where those words hold no `Unsure:` paragraph, as the paragraph it was moved from ran on in
+ *  the preview, and the reading of the words with that paragraph after its blocks. The card hands
+ *  the renderer (`MarkdownPreview`) both, and the words with the doubt as their last block for a
+ *  card whose decision carries no reading. */
 function previewOf(decision: DecisionEntry): {
   doubt: string | undefined;
   tree: DisplayTree | undefined;
@@ -74,10 +48,10 @@ function previewOf(decision: DecisionEntry): {
 
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
  *  unsure, its name as a link to the node that holds it, and the head of its text. Selecting the
- *  card lights up the block, as selecting an anchored comment lights up its text. The heading
+ *  card lights up the block, as selecting an anchored comment lights up its text. The name
  *  names the card and words a link, neither of which holds markup, so there it is read as its
- *  plain words; with no page to link to it is drawn by the renderer, as the passage is. Both
- *  are the record of the document the decision's node stands in. */
+ *  plain words (`useDecisionHeadingWords`); with no page to link to it is drawn by the renderer,
+ *  as the passage is. Both are the record of the document the decision is written in. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -95,24 +69,17 @@ export function DecisionCard({
   // person (R5) - leaves the heading as plain words.
   const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
-  const name = entryHeading(decision);
   const unsure = decision.uncertainty === "high";
-  // One reading per answer: a fresh tree every render would be a fresh text to draw.
-  const headingTree = useMemo(() => entryHeadingTree(decision), [decision]);
+  // Read once per decision, so a repaint of the card repaints no preview it already drew.
+  const preview = useMemo(() => previewOf(decision), [decision]);
   const source = textSourceOf(
     "artifact",
     item.documentId,
     route !== undefined && "key" in route ? route.key : undefined
   );
-  const { reads, text } = usePlainHeadline(headingTree, name, {
-    source,
-    surface: "decision-heading-words",
-  });
-  // Until the engine has answered, the heading as written, which the reading list's
-  // `decision-heading-words` says is a load state: a card is never left with no name.
-  const heading = text?.text ?? name;
-  // Read once per decision, so a repaint of the card repaints no preview it already drew.
-  const preview = useMemo(() => previewOf(decision), [decision]);
+  // The heading's plain words name the card and word its link (the reading list's
+  // `decision-heading-words`); the heading's reading draws it where there is no link.
+  const { reads, tree: headingTree, words: heading } = useDecisionHeadingWords(decision, source);
   return (
     <article
       aria-current={selected ? "true" : undefined}
@@ -146,7 +113,7 @@ export function DecisionCard({
         {reads}
         {href === undefined ? (
           <MarkdownBody
-            markdown={name}
+            markdown={decisionHeading(decision)}
             source={source}
             surface="margin-decision-passage"
             tree={headingTree}

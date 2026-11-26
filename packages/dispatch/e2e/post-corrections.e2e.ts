@@ -29,7 +29,7 @@ import { asUser } from "./users";
  * What a reader meets on a page once a post's author corrected it: an edited post carries
  * ` · edited` on its byline, and a deleted one carries the line `Deleted by <author> · <time>`
  * (`data-post-deleted`) where its text was, with no part of that text anywhere on the page
- * (`web/src/features/refs/PostMarks.tsx`).
+ * (`web/src/features/refs/PostBody.tsx`).
  *
  * Six rows. Three read the four pages chk-pages names: the issue's Conversation and the margin
  * of its spec in one row, which read one deleted comment two ways from one seeding; the Inbox

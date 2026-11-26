@@ -1,6 +1,8 @@
 import { beforeAll, expect, test } from "bun:test";
 import { referenceReading } from "@legion/contracts";
 
+import { replyPrefill, seededDraft } from "../conversation/composer-draft";
+
 import { loadedEngine, warmMarkdownRenderer } from "./markdown-engine";
 import { draftReading, parsedLinkWords } from "./parsed-references";
 import {
@@ -103,12 +105,9 @@ test("a party written only in code is mentioned nowhere", () => {
   );
 });
 
-// A reference names an agent by the wider rule the Agents page shows session ids under, where a
-// delivery route is `session:[A-Za-z0-9_-]+` (the server's `model.ParseRoute`). A body can
-// therefore write an agent address no route reaches, and the server refuses such a write
-// (`api.checkMentionRoute`): the composer says the same of the draft in front of the reader
-// rather than listing a party who is told and then showing a refusal that says otherwise.
-test("an agent address no delivery route reaches names the draft and is delivered to nobody", () => {
+// The draft reader recognizes a session reference even when it cannot become a delivery target.
+// This says nothing about whether the server accepts a new comment carrying that reference.
+test("a non-routable agent reference names a party in the draft but gives no delivery target", () => {
   expect(draftParties("[x](dispatch://agent/a.b) please look.")).toEqual({
     named: true,
     targets: [],
@@ -141,6 +140,40 @@ test("a party's mention is written as the mention sign and its name", () => {
   expect(partyMention("role:reviewer", " reviewer ")).toBe("[@reviewer](dispatch://role/reviewer)");
   // A party with no name that fits on one line is mentioned by its address.
   expect(partyMention(`session:${SESSION}`, "two\nlines")).toBe(`[@session:${SESSION}](${AGENT})`);
+});
+
+// What the composer writes in front of the reader - a channel's seed into an empty draft, and a
+// new reply's prefill - ends in one space after its last mention (`composer-draft.ts`), so a word
+// the reader types at once is a word of its own after the mention, as a renderer draws it, rather
+// than joined to the link's words; the mention still names its party alone. A seed that mentions
+// nobody writes nothing, and the reader's own words under a seed are kept as they stand.
+test("a seed and a reply's prefill end in one space, so a word typed at once names no other party", () => {
+  const owner = { issueKey: "CORE-1", kind: "issue" } as const;
+  const reviewer = { target: "role:reviewer", title: "reviewer" };
+  const planner = { target: `session:${SESSION}`, title: "Planner" };
+  const prefill = (mentions: readonly { target: string; title: string }[]) =>
+    replyPrefill({
+      actor: { id: "alice", kind: "user" },
+      excerpt: "Can this ship?",
+      id: "comment-1",
+      mentions,
+      parentKind: "comment",
+    }).body;
+  const both = `[@reviewer](dispatch://role/reviewer) [@Planner](${AGENT}) `;
+
+  expect(prefill([planner])).toBe(`[@Planner](${AGENT}) `);
+  expect(prefill([reviewer, planner])).toBe(both);
+  expect(seededDraft([reviewer, planner], "", owner)).toBe(both);
+  expect(prefill([])).toBe("");
+  expect(seededDraft([], "", owner)).toBe("");
+  expect(seededDraft([planner], "hello", owner)).toBe(`[@Planner](${AGENT}) hello`);
+  for (const [seed, carried] of [
+    [prefill([planner]), [planner]],
+    [prefill([reviewer, planner]), [reviewer, planner]],
+    [seededDraft([reviewer, planner], "", owner), [reviewer, planner]],
+  ] as const) {
+    expect(draftParties(`${seed}hello`).targets).toEqual(carried.map((party) => party.target));
+  }
 });
 
 // A worded link reads as a party's current name only where its words start with the mention
@@ -243,6 +276,19 @@ test("a link with a title after its address is read to its closing parenthesis",
   const body = `Ask [@Alice](${AGENT} "the planner") now.`;
   expect(pill(body).words).toBe("@Alice");
   expect(mentionTaken(body)).toBe(`[@Alice](${AGENT} "the planner")`);
+});
+
+// A link's address read as any span is, its sentence punctuation dropped, is still the address of
+// the link it stands in: the pill reads the link's words, as the stored record draws them (R8),
+// and taking the mention out takes the whole link.
+test("a link whose address ends in sentence punctuation is read around its address", () => {
+  expect(linkAt("See [the plan](dispatch://CORE-1.) now.")).toEqual({
+    markdown: "[the plan](dispatch://CORE-1.)",
+    picture: false,
+  });
+  const body = `Ask [@Alice](${AGENT}.) now.`;
+  expect(pill(body)).toEqual({ picture: false, reads: "mention", words: "@Alice" });
+  expect(mentionTaken(body)).toBe(`[@Alice](${AGENT}.)`);
 });
 
 test("a link whose address stands in angle brackets is read whole", () => {

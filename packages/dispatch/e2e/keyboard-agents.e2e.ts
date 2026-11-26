@@ -279,7 +279,7 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await toggle.click();
       await picker.selectOption("CORE-1");
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
       await pasteFile(field, "notes.md", "# Notes\n");
       await expect(row.getByRole("button", { name: "Uploading file…" })).toBeDisabled();
       await toggle.click();
@@ -332,9 +332,9 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await row.getByRole("button", { name: "Choose issue" }).click();
       await row.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
       await field.press("End");
-      await page.keyboard.type(" see attached");
+      await page.keyboard.type("see attached");
       await pasteFile(field, "notes.md", "# Notes\n");
       await expect(uploadRetry).toBeVisible();
 
@@ -484,7 +484,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
 
       // That issue re-confirmed: nothing changes, and the reader is still handed on.
       await field.fill("");
@@ -536,7 +536,7 @@ test.describe("agents page", () => {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
     } finally {
       await context.close();
     }
@@ -566,7 +566,7 @@ test.describe("agents page", () => {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
     } finally {
       await context.close();
     }
@@ -595,7 +595,7 @@ test.describe("agents page", () => {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
     } finally {
       await context.close();
     }
@@ -632,7 +632,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
     } finally {
       await context.close();
     }
@@ -758,7 +758,7 @@ test.describe("agents page", () => {
       await toggle.click();
       await row.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
       await expect(toggle).toContainText("CORE-1");
-      await expect(field).toHaveValue(plannerMention);
+      await expect(field).toHaveValue(`${plannerMention} `);
     } finally {
       await context.close();
     }

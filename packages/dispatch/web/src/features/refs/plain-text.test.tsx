@@ -47,6 +47,8 @@ function publication({
   return {
     ambiguous: new Set(),
     asked: new Set([...names.keys(), ...unnamed]),
+    deleted: new Map(),
+    edited: new Set(),
     gone: new Set(),
     readings: new Map([...names].map(([reference, words]) => [reference, { words }])),
     unnamed: new Set(unnamed),
@@ -219,6 +221,8 @@ test("a name past a link's room reads the same from the page's batch, from its o
   const published: PublishedReferences = {
     ambiguous: new Set(),
     asked: new Set([LONG_ASK]),
+    deleted: new Map(),
+    edited: new Set(),
     gone: new Set(),
     readings: new Map([[LONG_ASK, { tree }]]),
     unnamed: new Set(),

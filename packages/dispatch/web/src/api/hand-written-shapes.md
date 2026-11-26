@@ -2,9 +2,9 @@
 
 The Dispatch HTTP API's request and response shapes are generated: `envoy-dispatch openapi`
 reflects the Go route table and the Go types each row takes and answers into
-`packages/contracts/schemas/dispatch-openapi.json`, and `bun run gen:api` renders that into
-`packages/contracts/src/dispatch-api.generated.ts`, which `@legion/contracts` re-exports
-(dispatch://INFRA-1406).
+`packages/contracts/schemas/dispatch-openapi.json`, and every `bun install` renders that into
+`packages/contracts/src/dispatch-api.generated.ts` (`bun run gen:api` in packages/contracts does
+it again), which `@legion/contracts` re-exports (dispatch://INFRA-1406).
 
 So a request or response shape written by hand here is a finding. This file is the list of what
 is left and why each one is not a shape of that kind, so a reader checks the grep's answer rather

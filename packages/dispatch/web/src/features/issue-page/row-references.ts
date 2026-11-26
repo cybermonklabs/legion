@@ -26,7 +26,7 @@ import { documentWord } from "./node-row-chip";
  * are. A short reference the read answered ambiguous links nothing either and is drawn as
  * written (`KnownReferences.ambiguous`). A reference with no name yet - its target has not
  * answered, or Dispatch answered it has none - reads as the words its author wrote (R8,
- * INFRA-1196 decision 350).
+ * issue page decision 350).
  *
  * A party - an agent's session, a role or a person - is never asked of the batched read: the
  * graph holds no node for one, so the batched read refuses the whole request that names one
@@ -243,7 +243,7 @@ export function rowReferences(
  * `KnownReferences.edited`), after the cut as a link's title takes it (`editedName`), so no cut
  * takes the mark. A reference with no name - its target has not answered yet, or Dispatch
  * answered it has none - reads as the words its author wrote, as a link of any other body reads
- * until its title resolves (R8, INFRA-1196 decision 350, which replaces decision 95's short
+ * until its title resolves (R8, issue page decision 350, which replaces decision 95's short
  * form).
  */
 export function rowReferenceWords(

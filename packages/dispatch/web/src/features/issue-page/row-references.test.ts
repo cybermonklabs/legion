@@ -96,7 +96,7 @@ function partyLinks(text: string, names: ReadonlyMap<string, string> = NAMES): (
 
 // A row links a party from its address alone, as every other sink of a reference does
 // (`referenceHref`). The batched read brings no name for one: its own read does, and until it
-// has the link keeps its writer's words (R8, INFRA-1196 decision 350).
+// has the link keeps its writer's words (R8, issue page decision 350).
 test("an agent's session links to its live view, in the words its writer wrote", () => {
   const agent = "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce";
   expect(partyLinks(`Ask ${agent}.`)).toEqual([
@@ -145,7 +145,7 @@ test("an issue reads as its key and title, and anything else as its target's own
     words: "The header draws the approval of each step",
   });
   // An issue the read has not named yet reads as the words its writer wrote, and so does any
-  // other target, as a link of any body does until its title resolves (R8, INFRA-1196 decision
+  // other target, as a link of any body does until its title resolves (R8, issue page decision
   // 350, which replaces decision 95's short form).
   expect(rowReferenceWords(unnamed, NAMES, ISSUE)).toEqual({
     key: undefined,
@@ -236,34 +236,34 @@ test("the pass draws an ambiguous reference as written, and a link it made for o
 
 // R2 of dispatch://INFRA-1523: a row names a post its author edited by its words then
 // ` · edited`, as a link to it reads (`useReferenceLabel`). The page publishes the words alone and
-// the edited references beside them, and a row cuts the words as a chip in place cuts them
-// (`chipName`) before it marks what the cut left: a mark written at the end of the name was cut
-// off a name longer than that, and a long edited post read as one nobody edited.
+// the edited references beside them, and a row cuts the words to its 60 characters before it
+// marks what the cut left: a mark written at the end of the name was cut off a name longer than
+// that, and a long edited post read as one nobody edited.
 const EDITED = "dispatch://CORE-1/comment/comment-9";
 const LONG_WORDS = "Hold the deploy until the plan lands and the reviewer has signed off on it";
+const LONG_HEAD = chipWords(LONG_WORDS);
 
 test("an edited post whose words are longer than the cut keeps ` · edited` after the cut", () => {
-  const head = chipWords(LONG_WORDS);
-  expect(head.length).toBeLessThan(LONG_WORDS.length);
+  expect(LONG_HEAD.length).toBeLessThan(LONG_WORDS.length);
   const [link] = rowReferences(`see ${EDITED}`, []);
   if (link === undefined) throw new Error("the text holds one reference");
   const names = new Map([[EDITED, LONG_WORDS]]);
-  expect(rowReferenceWords(link, names, ISSUE, new Set([EDITED]))).toEqual({
+  expect(rowReferenceWords(link, names, undefined, new Set([EDITED]))).toEqual({
     key: undefined,
-    words: `${head} · edited`,
+    words: `${LONG_HEAD} · edited`,
   });
   // A post nobody edited is cut the same way and takes no mark.
-  expect(rowReferenceWords(link, names, ISSUE)).toEqual({ key: undefined, words: head });
-  // A target the read has not named reads as the words its author wrote, unmarked (R8).
-  expect(rowReferenceWords(link, new Map(), ISSUE, new Set([EDITED]))).toEqual({
+  expect(rowReferenceWords(link, names, undefined)).toEqual({ key: undefined, words: LONG_HEAD });
+  // A target the read has not named reads as the words its writer wrote, unmarked (R8).
+  expect(rowReferenceWords(link, new Map(), undefined, new Set([EDITED]))).toEqual({
     key: undefined,
     words: EDITED,
   });
   // The pass draws the same words.
   const root = document.createElement("div");
   root.innerHTML = `<p>See ${EDITED} today</p>`;
-  linkRowReferences(root, names, [], ISSUE, new Set(), new Set([EDITED]));
-  expect(root.textContent).toBe(`See ${head} · edited today`);
+  linkRowReferences(root, names, [], undefined, undefined, new Set([EDITED]));
+  expect(root.textContent).toBe(`See ${LONG_HEAD} · edited today`);
 });
 
 // Each row's words were read again on every draw. A text is read once for each list

@@ -89,6 +89,8 @@ function ReferenceTitle({
 }): null {
   const target = useReferenceTarget(route, { text: false });
   const { known } = target;
+  // The editor titles a reference standing as its own address alone, which reads by the naming
+  // rule (`useReferenceLabel`).
   const { text: title } = useReferenceLabel(route, target);
   useEffect(() => {
     onName(reference, title === undefined && !known ? undefined : { known, title });

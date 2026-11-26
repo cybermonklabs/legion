@@ -1293,7 +1293,7 @@ function withoutIds(ids: ReadonlySet<string>, drop: readonly string[]): Readonly
  *  reference in it read as its target's current name (R8) - and its kind's word where its words
  *  hold none (`lineOrKindWord`), with the marks of a post its author corrected, since a crumb
  *  draws a node's one line where its own row is not drawn, as a filter's parent line does
- *  (`node-line.tsx`'s `ParentLink`, INFRA-1523 R2 and R3). A deleted comment or message is drawn
+ *  (`node-line.tsx`'s `ParentLink`, deleted-post R2 and R3). A deleted comment or message is drawn
  *  as its deleted line, from the delete (`DeletedLine`) and never from the node's text, which
  *  names the actor as no registry knows it and the time as stored; an edited one says
  *  ` · edited` after its line (`EditedMark`). */

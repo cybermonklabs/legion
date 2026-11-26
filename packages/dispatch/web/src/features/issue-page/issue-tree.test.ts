@@ -729,7 +729,7 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
 // a reading for neither (`targetNaming`'s `readings`); it publishes the ambiguous one among the
 // references it read as ambiguous (its `ambiguous`) and the gone one among those it read as gone
 // (its `gone`), by the chip's own rule, so a surface draws each as written, links nothing for
-// the first, and reads no target of its own for either (INFRA-1196 decision 350).
+// the first, and reads no target of its own for either (issue page decision 350).
 test("the page publishes an ambiguous short reference as ambiguous, and a gone target as gone", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
@@ -1286,7 +1286,7 @@ test("a node's line from a stored heading leaves out its marker once", () => {
 // node's line keeps it there too, the projection naming none in code: in a reading, a text run
 // marked as inline code and a code block's text keep their address, and in a stored text a code
 // span keeps its address. A bare address outside code reads as the words its author wrote until
-// it is named, and as its target's name once it is (INFRA-1196 decision 350, which replaces
+// it is named, and as its target's name once it is (issue page decision 350, which replaces
 // decision 95's short form). The reading the read sent is left as it was, and the node's words
 // keep every address.
 test("an address in code stays as written in a node's line, from a reading and from stored text", async () => {
@@ -1476,7 +1476,7 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
 });
 
 /** Titles as an issue stores them, each with the words its line is projected to, every address
- *  in them as written until it is named (INFRA-1196 decision 350), and, where they differ from
+ *  in them as written until it is named (issue page decision 350), and, where they differ from
  *  those, the words it is named by elsewhere, which read each address as its short form, since a
  *  name is a title over one record and reads no other name (`ReferenceNaming.readsNone`). */
 const TITLES: readonly (readonly [title: string, line: string, name?: string])[] = [
@@ -1510,7 +1510,7 @@ function childIssue(key: string, title: string): IssueChild {
 // children each child's (`slots/header.tsx`, `ChildrenTab.tsx`). The line of the issue and of a
 // child issue is projected from its text read as one text run (`titleReading`), so it is its
 // text as written, each run of white space one space, and a bare address in it reads as the
-// words its author wrote until it is named (INFRA-1196 decision 350, which replaces decisions 95
+// words its author wrote until it is named (issue page decision 350, which replaces decisions 95
 // and 327). Read as markdown, `1. Migrate the table` would be a list item with no label,
 // ``Add `x` flag`` would lose its backticks and `Fix <script> handling` its tag, and a title with
 // a line feed or a blank line would lose what follows it.
@@ -1550,7 +1550,7 @@ test("the issue's own line reads a label after its key, and names nothing in its
 // naming the issue or a child of it, the name the page publishes for it and the link a row draws
 // for it by that name read the whole title the issue read holds, as a title over one record: its
 // white space collapses and a bare address in it reads as its target's short form, since a name
-// reads no other name (INFRA-1196 decision 350), so a comment citing `dispatch://CORE-2`, titled
+// reads no other name (issue page decision 350), so a comment citing `dispatch://CORE-2`, titled
 // `Follow dispatch://CORE-3 up`, links `CORE-2` and `Follow CORE-3 up`. A title longer than that
 // cut is named whole too, so an address the cut would end inside, and one past it, read short.
 test("a chip, a published name and a row's link name a child issue by its whole title", () => {
@@ -2263,8 +2263,7 @@ const DELETION: Pick<Comment, "deleted_at" | "deleted_by"> = {
 const DELETED_WORDS = "Hold the deploy until Friday.";
 
 /** What a node of a turn holds that a view draws: its marks, its text and reading, and the line
- *  and the words every place that reads a node reads from it (`nodeLineOf`, the one line every
- *  place that draws one projects, and `nodeWords`). */
+ *  and the words every place that reads a node reads from it (`nodeLineOf`, `nodeWords`). */
 function turnMarks(node: TreeNode | undefined) {
   return {
     deletedAt: node?.deletedAt,
@@ -2443,13 +2442,13 @@ test("a chip naming a deleted comment or message draws the deleted line and carr
     };
 
     const chips = nodeOf(buildIssueTree(reads), blockNodeId(SPEC, "d1"))?.chips;
-    expect(chips, kind).toEqual([
+    expect(chips?.map(drawnChip), kind).toEqual([
       {
         answered: true,
         deletedAt: "2026-11-05T12:00:00Z",
         deletedBy: { id: "alice", kind: "user" },
         gone: false,
-        reading: { words: "Deleted by alice" },
+        name: "Deleted by alice",
         ref,
         stale: false,
       },
@@ -2497,7 +2496,7 @@ test("the page publishes a deleted comment or message by its delete, and no post
       [ref, "Deleted by alice"],
       [standing, "Ship it."],
     ]);
-    expect([...(naming.deleted ?? [])], kind).toEqual([[ref, deletion]]);
+    expect([...naming.deleted], kind).toEqual([[ref, deletion]]);
   }
 });
 
@@ -2536,29 +2535,28 @@ test("a chip naming an edited comment, message or block of one carries its words
 
     const chips = nodeOf(buildIssueTree(reads), blockNodeId(SPEC, "d1"))?.chips;
     expect(
-      chips?.map(({ editedAt, ref }) => ({ editedAt, ref })),
+      chips?.map((chip) => ({ editedAt: chip.editedAt, name: nameOf(chip), ref: chip.ref })),
       kind
     ).toEqual([
-      { editedAt: "2026-11-05T11:00:00Z", ref },
-      { editedAt: "2026-11-05T11:00:00Z", ref: block },
-      { editedAt: undefined, ref: unedited },
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold it.", ref },
+      { editedAt: "2026-11-05T11:00:00Z", name: "Hold the deploy.", ref: block },
+      { editedAt: undefined, name: "Ship it.", ref: unedited },
     ]);
     expect(
       chips?.some((chip) => chip.ref === unedited && "editedAt" in chip),
       kind
     ).toBe(false);
     const naming = targetNaming(reads);
-    const names = namesOf(reads);
-    expect([...names], kind).toEqual([
+    expect([...namesOf(reads)], kind).toEqual([
       [ref, "Hold it."],
       [block, "Hold the deploy."],
       [unedited, "Ship it."],
     ]);
-    expect([...(naming.edited ?? [])], kind).toEqual([ref, block]);
+    expect([...naming.edited], kind).toEqual([ref, block]);
     // A row's link draws the published words, then the mark (`rowReferenceWords`).
     const [link] = rowReferences(`see ${ref}`, [], naming.ambiguous);
     if (link === undefined) throw new Error("the text holds one reference");
-    expect(rowReferenceWords(link, names, KEY, naming.edited).words, kind).toBe(
+    expect(rowReferenceWords(link, namesOf(reads), undefined, naming.edited).words, kind).toBe(
       "Hold it. · edited"
     );
   }
@@ -3781,7 +3779,7 @@ function planTasks(words: readonly string[], read: boolean): TreeNode {
   });
 }
 
-// R8 and INFRA-1196 decision 350, which replaces decision 95's short form: the server's reading
+// R8 and issue page decision 350, which replaces decision 95's short form: the server's reading
 // keeps a bare `dispatch://` address in a node's words as a plain text run, and a node's one
 // line reads it as the projection reads one: as the words its author wrote until it is named, and
 // as its target's name once it is, from the reading and, where the read sent none, from the
@@ -3831,7 +3829,7 @@ test("a bare address in a node's line reads as written until it is named, from a
   }
 });
 
-// R22 and INFRA-1196 decision 350: a comment's body is stored markdown, which a chip naming the
+// R22 and issue page decision 350: a comment's body is stored markdown, which a chip naming the
 // comment draws as the plain-text projection of its reading, a name and so a title over one
 // record: a bare address in the body reads as its target's short form in the chip's name and in
 // the name the page publishes for it (`targetNaming`), since a name reads no other name. A link
@@ -3910,7 +3908,7 @@ test("a stored text read to plain words holds the words of the server's reading 
 // The body draws a node's whole words, the words filter matches them and the batched reference
 // read is asked to name each address they cite (`useIssueTree.ts`), so a node's words
 // (`nodeWords`) keep every address as written, from a reading and from stored text alike, as its
-// line beside them does until the address is named (INFRA-1196 decision 350).
+// line beside them does until the address is named (issue page decision 350).
 test("a node's words keep the bare address its line reads", () => {
   const words = "Do it as dispatch://CORE-2 says. Then more.";
   for (const [sent, read] of [

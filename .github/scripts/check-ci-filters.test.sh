@@ -120,7 +120,16 @@ def refused(root, spelling):
     return ""
 
 
-questions = {"derived": derived, "listed": listed, "refused": refused}
+def legs_held(text):
+    import yaml
+    try:
+        reads.hold_daemon_legs(yaml.safe_load(text))
+    except ValueError as refusal:
+        return f"RAISED: {refusal}"
+    return "held"
+
+
+questions = {"derived": derived, "listed": listed, "refused": refused, "legs_held": legs_held}
 
 
 def field():
@@ -5922,6 +5931,29 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says the reading was empty rather than passing over it" \
   "$(contains "$out" '^::error::this check could not read the files of the tree it checks (git lists none), so whether this run changed one is unknown')"
+
+# ci_job_reads.py's hold on .github/go-legs.yaml's entry for packages/daemon: go_legs.py, in each
+# leg, sees only its own job's legs, so a package filed under a job key no matrix job runs would be
+# in the file once, pass every leg, and run in no job. The import refuses that entry, and with it
+# the changes job's filters. Each case hands the hold an entry and reads what it answered.
+legs_held() { ask legs_held "$1"; }
+real_legs=$(cd "$script_dir/../.." && python3 -c 'import json, yaml; print(json.dumps(yaml.safe_load(open(".github/go-legs.yaml"))["packages/daemon"]))')
+echo "case: the repository's go-legs.yaml entry for the daemon is held"
+check "passes" "$(is "$(legs_held "$real_legs")" held)"
+
+echo "case: a go-legs.yaml job key no matrix job runs"
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["daemon-go-typo"] = {"1": [e["daemon-go"]["2"].pop()]}; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$typo")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the key and the jobs whose legs run" \
+  "$(contains "$out" "its keys are daemon-go, daemon-go-race, daemon-go-typo, elsewhere, and the jobs whose legs ci-job-daemon-go.yaml runs are daemon-go and daemon-go-race, beside elsewhere: a package under daemon-go-typo runs in no job")"
+
+echo "case: a go-legs.yaml entry with no race legs"
+norace=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); del e["daemon-go-race"]; print(json.dumps(e))' "$real_legs")
+out=$(legs_held "$norace")
+check "is refused" "$(contains "$out" '^RAISED: ')"
+check "names the missing key and the race set it lost" \
+  "$(contains "$out" "its keys are daemon-go, elsewhere, .*a package under a missing key runs in no job, so file it under one of those; its daemon-go-race legs run \[\]")"
 
 # The header's run recipe, run as the header writes it, from a fixture's root and over a module
 # cache that holds no toolchain, with GOPROXY=off so that go can fetch none. Where the go PATH

@@ -524,7 +524,10 @@ test("the Change's box is the shared field, in the page's shape inside NoTooltip
 // named after the heading's plain words, as the Decisions panel names its own (the reading
 // list's `decision-heading-words`), and never after its markdown.
 test("the Change form is named after the heading's plain words", async () => {
-  const text = "## **One** tree, five presets\n\nThe presets are queries over the one tree.";
+  const text = decisionText(
+    "d1",
+    "## **One** tree, five presets\n\nThe presets are queries over the one tree."
+  );
   const marked: Decision = {
     ...decision,
     heading: "**One** tree, five presets",
@@ -740,12 +743,12 @@ test("a decision whose answer carried no reading quotes its first paragraph's ma
 // R6, R8 and the reading list's `decision-change-quote`: the Change quotes the words it is
 // anchored to as the reader reads the decision - the plain-text projection of its first block,
 // a reference in it read as its target's name - while the change it sends is still anchored to
-// the decisions document's own words, which the server matches (`pmdoc.FindQuote`).
+// the own words of the document the decision's block stands in, which the server matches
+// (`pmdoc.FindQuote`).
 test("the Change quotes its block's plain-text projection and anchors to the document's own words", async () => {
   const written = "The presets read dispatch://CORE-7 first.";
-  const text = `## One tree, five presets\n\n${written}`;
+  const text = decisionText("d1", `## One tree, five presets\n\n${written}`);
   const cited: Decision = { ...decision, text, text_tree: displayTree(text) };
-  // The read's entry for the decision, which is what the controls read (`readOf`).
   const answer = readOf([cited]);
   // What the page's batched read publishes for the quote's row: the issue `CORE-7`, named.
   const names = publishedNames(new Map([["dispatch://CORE-7", "Draw the rows"]]));
@@ -755,7 +758,7 @@ test("the Change quotes its block's plain-text projection and anchors to the doc
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], answer);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
-  const documentText = spyDocumentText(`# Decisions of CORE-1\n\n${text}`);
+  const documentText = spyDocumentText(`# Spec of CORE-1\n\n## Decisions\n\n${text}`);
   const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={client}>

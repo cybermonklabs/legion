@@ -18,6 +18,7 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
+import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "./ref-preview-card";
@@ -1675,5 +1676,78 @@ test("a block card marks its post's edit, and a block of a deleted post says the
     getReferences.mockRestore();
     getComment.mockRestore();
     getIssue.mockRestore();
+  }
+});
+
+/** A body that cites one block of `comment` by a worded link, drawn through the renderer, with
+ *  the block's own read answering 404 `NOT_FOUND` - what a block whose post's delete took it
+ *  answers, and what a block id the post never held answers. The post's read decides which. */
+function drawGoneBlock(comment: CommentRead) {
+  const getIssue = mockIssues();
+  const getComment = spyOn(api, "getComment").mockResolvedValue(comment);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: "block gone" })
+  );
+  const view = render(
+    <Harness>
+      <MarkdownBody
+        markdown={`See [the second step](dispatch://CORE-1/comment/${comment.comment.id}#b-b3) first.`}
+      />
+    </Harness>
+  );
+  return {
+    getComment,
+    view,
+    restore() {
+      view.unmount();
+      getReferences.mockRestore();
+      getComment.mockRestore();
+      getIssue.mockRestore();
+    },
+  };
+}
+
+// A block of a post its author deleted is no missing target: Dispatch resolves the post and
+// knows the delete, so the reference keeps its link and its author's words, and its card says
+// the post was deleted (deleted-post R3; R8's state with no link is for a target Dispatch cannot
+// resolve). Drawn as missing, the link would be gone.
+test("a reference to a block of a deleted post keeps its link and its card says the post was deleted", async () => {
+  const deleted = "55555555-5555-4555-8555-555555555555";
+  const drawn = drawGoneBlock(
+    commentRead({
+      body: "",
+      deleted_at: "2026-09-09T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      id: deleted,
+    })
+  );
+  try {
+    await waitFor(() => expect(drawn.getComment).toHaveBeenCalledWith(deleted));
+    const link = await screen.findByRole("link", { name: "the second step" });
+    act(() => {
+      link.focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Deleted by alice"));
+    expect(screen.getByRole("link", { name: "the second step" })).toBe(link);
+    expect(drawn.view.container.querySelector("[data-dispatch-missing]")).toBeNull();
+  } finally {
+    drawn.restore();
+  }
+});
+
+// A block id a standing post never held is a target that does not exist: the words its writer
+// wrote stand, with no link (R8). Drawn as a deleted post's block is, it would keep a link to
+// nothing.
+test("a reference to a block a standing post never held reads as the words written, with no link", async () => {
+  const standing = "66666666-6666-4666-8666-666666666666";
+  const drawn = drawGoneBlock(commentRead({ id: standing }));
+  try {
+    await waitFor(() =>
+      expect(drawn.view.container.querySelectorAll("[data-dispatch-missing]")).toHaveLength(1)
+    );
+    expect(screen.queryByRole("link", { name: "the second step" })).toBeNull();
+    expect(drawn.view.container.textContent).toContain("See the second step first.");
+  } finally {
+    drawn.restore();
   }
 });
