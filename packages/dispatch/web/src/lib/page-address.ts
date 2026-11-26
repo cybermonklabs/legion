@@ -6,7 +6,14 @@ import type {
   SortingState,
 } from "@tanstack/react-table";
 import { createElement, type ReactElement, useCallback, useMemo } from "react";
-import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import {
+  Navigate,
+  type NavigationType,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+  useSearchParams,
+} from "react-router-dom";
 
 /**
  * The one module that reads and writes the page address.
@@ -42,7 +49,8 @@ import { Navigate, useLocation, useNavigate, useSearchParams } from "react-route
  *   picking an artifact's version, so Back returns to the version the reader came from, the
  *   move off a document the reader has just removed, taking off the List's chip of the issues a
  *   link names (`only=`), so Back gives that narrowing back, and taking off the Inbox's agent
- *   chip, so Back gives the agent's asks back.
+ *   chip, so Back gives the agent's asks back. A whole page load (`loadWholePage`) leaves an
+ *   entry behind as following a link does, so Back returns to the page the reader left.
  * - **A parameter is absent until the reader sets it.** A control at its default writes nothing,
  *   so a shared link carries only what was changed and an address that arrives naming nothing is
  *   the page as it opens.
@@ -78,6 +86,40 @@ export function usePageAddress(): PageAddress {
  *  so that no page binds the router for itself. */
 export function useNavigationState(): unknown {
   return useLocation().state;
+}
+
+/** The history entry the page stands on, as the last render read it, and the way back off it. */
+export interface HistoryEntry {
+  /** One step back through the history, as the browser's Back takes it (`navigate(-1)`): below
+   *  1280 px the Inbox's reading view leaves through the entry `open` pushed over the list's own,
+   *  rather than writing the list a second entry the next Back would only land on again. */
+  readonly back: () => void;
+  /** The entry's own key, a new one for every entry the history is given: the reading view
+   *  tells by it whether the back step it started has landed yet, since until it does the
+   *  address still names the row the reader closed. */
+  readonly key: string;
+  /** How the page came onto this entry: `POP` for the browser's Back or Forward and for the
+   *  first load, `PUSH` or `REPLACE` for a navigation of the page's own. A `POP` answers the
+   *  browser's Back: beside the list, the Inbox's column reads one onto an entry that names no
+   *  row as the reader's own way back, and takes its first row by itself. */
+  readonly navigationType: NavigationType;
+  /** What the entry holds besides its address, as `useNavigationState` reads it: the Inbox's
+   *  marks on its open row (`features/inbox/pane-selection.ts`, `inboxEntryState`). */
+  readonly state: unknown;
+}
+
+/**
+ * The history entry the page stands on, for a page that keeps something of its own in the entry
+ * and steps back through the history itself: the Inbox's reading selection
+ * (`features/inbox/pane-selection.ts`). A page that needs only what a navigation carried reads
+ * `useNavigationState`. The object's identity changes only when one of its fields does.
+ */
+export function useHistoryEntry(): HistoryEntry {
+  const { key, state } = useLocation();
+  const navigationType = useNavigationType();
+  const navigate = useNavigate();
+  const back = useCallback(() => navigate(-1), [navigate]);
+  return useMemo(() => ({ back, key, navigationType, state }), [back, key, navigationType, state]);
 }
 
 /** The one write: `rewrite` is handed a copy of the live parameters and returns what the
@@ -122,6 +164,19 @@ export function useAddressNavigate(): (path: string, options?: AddressNavigateOp
     },
     [navigate]
   );
+}
+
+/**
+ * Leaving the app for `href` with a whole page load (`window.location.assign`), as the browser
+ * follows a plain link the router does not handle. Below 1280 px the Inbox's `o` on a thread row
+ * goes to the thread's own page this way (`features/inbox/Inbox.tsx`): the row's title is a
+ * plain `<a href>` whose plain click opens the row in place instead (`ThreadTitle`'s `onOpen`),
+ * and a script's click is a plain one, so `o` follows the link itself, as a modified click
+ * would. Held here with every other move off the address, so no page reaches for the browser's
+ * location of its own.
+ */
+export function loadWholePage(href: string): void {
+  window.location.assign(href);
 }
 
 /** Where `AddressRedirect` sends the page, and whether the page's own query goes with it. */

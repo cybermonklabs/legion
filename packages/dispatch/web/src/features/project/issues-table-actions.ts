@@ -201,6 +201,21 @@ export function useIssueTableActions({
   // action takes it away as its hold begins (`useReadBound`).
   const [unsettled, holdThrough] = useReadBound();
   const [moved, setMoved] = useState<ReadonlySet<string>>(new Set());
+  // The issues the action in hand is taking out of the view, which `leaving` names: each issue its
+  // writes are for, from the reader's press that began it (`perform`, and `askTarget` while its dry
+  // run is out), and an issue the action finds only as it runs - a merge's issues as its own read
+  // finds them - from its write's send at the latest (`apply`). An issue whose write is refused or
+  // stopped stays where it is, so its name ends at once (`apply`, and `finish` for the writes it
+  // waits on or sends again).
+  const [taking, setTaking] = useState<ReadonlySet<string>>(new Set());
+  /** Ends the name of `key` at once (`taking`): a write for it was refused or stopped. */
+  const release = (key: string) =>
+    setTaking((current) => {
+      if (!current.has(key)) return current;
+      const kept = new Set(current);
+      kept.delete(key);
+      return kept;
+    });
   const [duplicateEpic, setDuplicateEpic] = useState<DuplicateEpic>();
   const [unansweredEpic, setUnansweredEpic] = useState<string>();
   const [naming, setNaming] = useState<EpicNaming>();
@@ -250,6 +265,13 @@ export function useIssueTableActions({
     // its whole batch once rather than re-serialising the store on every step.
     if (minted === undefined)
       recovery.record(Object.fromEntries(sends.map(({ key, write }) => [key, write])), id);
+    // Each issue is named from its write's send at the latest (`taking`): a merge finds its issues
+    // only once its own read of the listing has answered.
+    setTaking((current) =>
+      operations.every(({ key }) => current.has(key))
+        ? current
+        : new Set([...current, ...operations.map(({ key }) => key)])
+    );
     const results = await settledWithLimit(
       sends,
       WRITES_IN_FLIGHT,
@@ -259,7 +281,11 @@ export function useIssueTableActions({
           `Update ${key} from the issues table`,
           key,
           write
-        );
+        ).catch((error: unknown) => {
+          // Refused or stopped, the write leaves its issue where it is, so the name ends now.
+          release(key);
+          throw error;
+        });
         if (answer !== null) mergeIssue(client, answer);
         setMoved((current) => new Set([...current, key]));
         return key;
@@ -309,8 +335,11 @@ export function useIssueTableActions({
     }
     return operations.map(({ key }) => key);
   };
+  /** Runs `action`, which the reader's press began and whose writes are for the issues `sends`
+   *  as the table lists them: those are named as leaving from the press (`taking`). */
   const perform = async (
     said: string,
+    sends: readonly string[],
     action: () => Promise<readonly string[] | undefined>,
     duplicate?: (error: ApiError) => void
   ) => {
@@ -324,6 +353,7 @@ export function useIssueTableActions({
     setRunning((count) => count + 1);
     setNotice(undefined);
     setMoved(new Set());
+    setTaking(new Set(sends));
     // Whether the action may have changed what the list draws: it answered what it changed, or a
     // write landed while it ran, or ended without Dispatch's verdict (the reader stopped it) and
     // so may have landed. A write Dispatch refused (`ApiError`) changed nothing.
@@ -513,6 +543,7 @@ export function useIssueTableActions({
     }
     setRunning((count) => count + 1);
     setNotice(undefined);
+    setTaking(new Set(moving));
     targetQuestion(target, rows, action).then(
       (question) => {
         setRunning((count) => count - 1);
@@ -611,7 +642,7 @@ export function useIssueTableActions({
         ? `Took ${named(open)} out of ${open.length === 1 ? "its epic" : "their epics"}.`
         : `Moved ${named(open)} to the epic “${titleOf(epic)}”.`) + skipped;
     const move = (intoWork: boolean) =>
-      void perform(said, async () => {
+      void perform(said, open, async () => {
         if (intoWork && epic !== null) await moveIntoWork(epic);
         return apply(open.map((key) => ({ key, input: { parent: epic } })));
       });
@@ -667,6 +698,7 @@ export function useIssueTableActions({
     const record = recovery.begin({ kind: "startNext", keys: queued });
     void perform(
       `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
+      queued,
       async () => {
         const ran = await runStartNext(record, items, (remaining, error) => {
           // One step goes at a time, so the first of `remaining` is the one `apply` wrote. One
@@ -746,6 +778,7 @@ export function useIssueTableActions({
     recovery.record({ create: key }, record.id);
     await perform(
       `Made the epic “${title}” from ${named(open)}.${skipped}`,
+      open,
       async () => {
         const creation = writes.run({
           kind: tableEpicWrite,
@@ -807,7 +840,9 @@ export function useIssueTableActions({
     const title = chosenTitle.trim();
     setNaming(undefined);
     if (title && title !== titleOf(key))
-      void perform(`Renamed the epic to “${title}”.`, () => apply([{ key, input: { title } }]));
+      void perform(`Renamed the epic to “${title}”.`, [key], () =>
+        apply([{ key, input: { title } }])
+      );
   };
   /**
    * Refuses the close of a merge's source `source` while an issue the merge does not move is open
@@ -914,7 +949,10 @@ export function useIssueTableActions({
   };
   const mergeEpic = (from: string, into: string, intoWork = false) => {
     if (!canBegin()) return;
-    return perform(`Merged “${titleOf(from)}” into “${titleOf(into)}”.`, async () => {
+    // The issues under the source as the table lists them, and the source, which closes: the run
+    // reads the listing afresh and names any other issue it moves as it sends its write (`apply`).
+    const sends = [...mergeMembers(issues, from), from];
+    return perform(`Merged “${titleOf(from)}” into “${titleOf(into)}”.`, sends, async () => {
       const descendants = await listAll();
       const members = mergeMembers(descendants, from);
       const record = recovery.begin({ kind: "merge", keys: members, source: from, target: into });
@@ -1082,7 +1120,23 @@ export function useIssueTableActions({
   const finish = () => {
     const interrupted = recovery.current.current;
     if (!interrupted) return;
-    void perform("Finished the interrupted action.", async () => {
+    // A write of the interrupted action that Finish waits on or sends again (`recovery.settle`)
+    // and that is refused or stopped again leaves its issue where it is, so that issue's name ends
+    // at once, as `apply` ends the name of a write it sends: those writes are Pending changes' own
+    // and never pass through `apply`. Each is known by its row there, the step it is for read off
+    // the key the record holds: a write sent again keeps its row, and can be sent under a new key.
+    const steps = new Map(Object.entries(interrupted.writes).map(([step, key]) => [key, step]));
+    const stepOfRow = new Map(
+      writes.rows().flatMap((row) => {
+        const step = steps.get(row.key);
+        return step === undefined ? [] : [[row.id, step] as const];
+      })
+    );
+    const unwatch = writes.onOutcome((outcome) => {
+      const step = outcome.kind === "refused" ? stepOfRow.get(outcome.write.id) : undefined;
+      if (step !== undefined) release(step);
+    });
+    void perform("Finished the interrupted action.", interrupted.keys, async () => {
       await recovery.settle(interrupted, () => false, waitOn);
       // The record while it is still the one in hand, as the writes waited on left it: a create
       // that landed names its epic.
@@ -1109,7 +1163,7 @@ export function useIssueTableActions({
       recovery.dismiss();
       setUnansweredEpic(undefined);
       return record.keys;
-    });
+    }).finally(unwatch);
   };
   // An action holds the List's controls from its press through the read of the list after it,
   // that read's hold bounded by the request deadline (`useReadBound`), but not while every write
@@ -1132,18 +1186,21 @@ export function useIssueTableActions({
             text: `${notice === undefined ? "" : `${notice.text} `}${ISSUES_NOT_LOADED} ${unsettled}.`,
           },
     moved,
-    // Whether the press of this action is taking row `key` out of the view: a row the action
-    // changed, while the action is out (`running`), and while the list read after it is still
-    // out once its hold ran out (`unsettled`). The commit that lets the action go draws that read
-    // at the latest, and a read that outlived the hold is drawn in the commit that ends
-    // `unsettled`, unless a later action ended it as its hold began, with that read still out.
-    // That read is then drawn while the later action is out (`running`) or while the later
-    // action's own `unsettled` stands, since the later action's read waits for it
-    // (`DispatchQueryClient`). Once a later action begins (`perform`), the rows named are that
-    // action's (`moved`). The List's anchor asks the render before a commit as well
+    // Whether the press of this action is taking row `key` out of the view: an issue the action's
+    // writes are for (`taking`), from the reader's press, not from its write's answer, so a row is
+    // named while its write is still out, as the bar's hand-off and the List's anchor read it. The
+    // name ends at once where that write is refused or stopped, and for every row once the action
+    // is over (`running`) and the list read after it has settled (`unsettled`): the commit that
+    // lets the action go draws that read at the latest, and a read that outlived the hold is drawn
+    // in the commit that ends `unsettled`, unless a later action ended it as its hold began, with
+    // that read still out. That read is then drawn while the later action is out (`running`) or
+    // while the later action's own `unsettled` stands, since the later action's read waits for it
+    // (`DispatchQueryClient`). So by then each row the press took away has left the list and each
+    // row still listed stays. Once a later action begins (`perform`), the rows named are that
+    // action's (`taking`). The List's anchor asks the render before a commit as well
     // (`ViewportAnchor`'s `leaving`), so the rows are named in that commit. A row a later live
     // update takes away is not named. With no action out, `leaving` is undefined and names no row.
-    leaving: running > 0 || unsettled !== undefined ? (key: string) => moved.has(key) : undefined,
+    leaving: running > 0 || unsettled !== undefined ? (key: string) => taking.has(key) : undefined,
     duplicateEpic,
     setDuplicateEpic,
     unansweredEpic,

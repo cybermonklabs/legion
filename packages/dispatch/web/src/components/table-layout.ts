@@ -111,11 +111,11 @@ export interface TableLayoutModel {
   readonly boxHeight: number;
   readonly boxWidth: number;
   /** Gives the box the height the page lays out for it now (`boxHeight`), at once, as its
-   *  `ResizeObserver` does a frame after any change of the page. A host that hands the focus on
-   *  calls it right before, so the box the focus lands against is the box the reader will see
-   *  (`features/project/IssuesTable.tsx`'s `returnFocus`). The widths are left to that observer:
-   *  a change of them can draw the rows anew, which would take the focus the host is about to
-   *  hand on. */
+   *  `ResizeObserver` does a frame after any change of the page. The selection bar's hand-off
+   *  calls it right before each landing, once the foot's pass has given the page its room, so the
+   *  box the focus lands against is the box the reader keeps (`MarkedList`'s `fit`, given by
+   *  `features/project/IssuesTable.tsx`). The widths are left to that observer: a change of them
+   *  can draw the rows anew, which would take the focus the hand-off is about to land. */
   readonly fitHeight: () => void;
   /** The narrowest each column is drawn at, from the caller (`LayoutColumns.minimums`). */
   readonly minimums: Readonly<Partial<Record<string, number>>>;
@@ -445,9 +445,9 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     const box = scrollRef.current;
     if (!box) return;
     const height = boxHeightNow(box);
-    // The box takes the height at once as well as in the render its state draws next, so a host
-    // that fits it right before it hands the focus on lands against the box the reader will see
-    // (`features/project/IssuesTable.tsx`'s `returnFocus`). That render writes the same value.
+    // The box takes the height at once as well as in the render its state draws next, so a
+    // landing made right after lands against the box the reader will see (`MarkedList`'s `fit`).
+    // That render writes the same value.
     if (box.style.maxHeight !== "") box.style.maxHeight = `${height}px`;
     else if (box.style.height !== "") box.style.height = `${height}px`;
     setBoxHeight(height);

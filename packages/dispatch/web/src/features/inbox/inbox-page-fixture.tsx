@@ -7,12 +7,12 @@ import { spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { type ComponentProps, type ReactNode, useState } from "react";
-import { MemoryRouter, useNavigate } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 
 import type { Commits } from "../../__tests__/commits";
 import { api } from "../../api/client";
 import type { InboxRow, Issue, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
-import { usePageAddress } from "../../lib/page-address";
+import { useHistoryEntry, usePageAddress } from "../../lib/page-address";
 import { DocumentRuntime, type DocumentRuntimeValue } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -73,12 +73,12 @@ export function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
 
 /** The address the Inbox is on, and a way back through the history it has written. */
 export function RouteProbe() {
-  const address = usePageAddress();
-  const navigate = useNavigate();
+  const { pathname, search } = usePageAddress();
+  const { back } = useHistoryEntry();
   return (
     <>
-      <output data-testid="location">{`${address.pathname}${address.search}`}</output>
-      <button onClick={() => navigate(-1)} type="button">
+      <output data-testid="location">{`${pathname}${search}`}</output>
+      <button onClick={back} type="button">
         History back
       </button>
     </>
