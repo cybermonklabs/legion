@@ -368,7 +368,7 @@ describe("dispatch plans", () => {
     const { result } = await readPlans({ project: "INFRA" }, answer);
 
     expect(result.text.split("\n")).toEqual([
-      "INFRA: 2 finished issues",
+      defaultHeader("INFRA", 2, 2, 2),
       'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1 variant planning/b',
       "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
     ]);
