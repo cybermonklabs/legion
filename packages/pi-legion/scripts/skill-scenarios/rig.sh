@@ -365,13 +365,21 @@ add_host_args() {
 # collector's variables, one a line: `-e NAME` for each of spend_variables, so that docker takes
 # each value from its own environment and no value stands in its arguments; and the collector's
 # host (add_host_args), once though both endpoint variables name it, as cmd_judge_omp passes the
-# model endpoint's.
+# model endpoint's. An http:// or https:// endpoint names its host through url_hostport, which
+# drops the user info: a credential is never taken for a host, so it is neither looked up nor
+# printed. The port is cut here. An endpoint of another scheme, one with no host, and one whose
+# host is an address (IPv4, or a bracketed IPv6 literal) needs no alias and gets none.
 spend_docker_args() {
   local name url host seen=
   for name in $(spend_variables); do printf '%s\n%s\n' -e "$name"; done
   for url in "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" "${OTEL_EXPORTER_OTLP_ENDPOINT:-}"; do
-    host=$(printf '%s\n' "$url" | sed -n 's#^ *https\{0,1\}://\([^/:]*\).*#\1#p')
-    [ -n "$host" ] && [ "$host" != "$seen" ] || continue
+    url=${url#"${url%%[! ]*}"}
+    case $url in http://* | https://*) ;; *) continue ;; esac
+    host=$(url_hostport "$url")
+    case $host in \[*) continue ;; esac
+    host=${host%%:*}
+    [[ $host =~ ^[0-9.]*$ ]] && continue
+    [ "$host" != "$seen" ] || continue
     seen=$host
     add_host_args "$host"
   done
@@ -986,7 +994,8 @@ pg_sql() {
 # nats.go parses a server URL with: the authority runs from past the `://` (from the start, in a
 # URL with none, which nats.go reads as nats://) to the path, the query or the fragment, and the
 # user info in it to its last `@`, whatever its form: a token (nats.go reads a user with no
-# password as one), user:password or :password.
+# password as one), user:password or :password. spend_docker_args reads a collector's HTTP(S) URL
+# with it, which Go's net/url reads the same way.
 url_hostport() {
   local authority=${1#*://}
   authority=${authority%%[/?#]*}

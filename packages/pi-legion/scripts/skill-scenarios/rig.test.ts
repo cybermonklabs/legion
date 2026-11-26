@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
@@ -1404,7 +1405,7 @@ sleep() { command sleep 0.05; }`;
   // Catches: a judge's container given no spend variable, one beyond the six, or a value in its
   // `docker run` arguments, which any process of the machine can read.
   test("a judge's docker run names the six, each as `-e NAME` alone, and no other OTEL_* variable", () => {
-    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("spend_docker_args")}\nspend_docker_args`;
+    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("spend_docker_args")}\nspend_docker_args`;
     const result = bash(script, [], { ...SPEND, ...OTHER_OTEL });
     expect(result.code).toBe(0);
     holdsNoSpendValue(result.stdout + result.stderr);
@@ -1416,6 +1417,138 @@ sleep() { command sleep 0.05; }`;
     );
     // A caller with none of them gives the container none.
     expect(bash(script)).toMatchObject({ code: 0, stdout: "" });
+  });
+
+  // Catches: a judge's container given no address for its collector, or one for a name that is no
+  // host. spend_docker_args read `https://<user>:<password>@<host>:<port>/…` as the host `<user>`:
+  // it looked the user name up, left the collector unmapped, and printed `--add-host <user>:<ip>`
+  // into the `docker run` arguments, which any process of the machine can read; it read a
+  // bracketed IPv6 literal as `[2001`. The resolver is deterministic: getent is a function here
+  // that logs each name it is asked for to $LOOKUPS, answers the two collector hosts with fixed
+  // documentation addresses and every other name, a credential or `[2001` among them, with a trap
+  // address, so a wrong name shows in the lookups and in the --add-host words alike. Each row
+  // names the endpoint variables it sets and the hosts the resolver must be asked for, in order.
+  test("a collector endpoint's host alone is looked up and mapped, once, and no credential is looked up or printed", () => {
+    const user = fixtureSecret("user");
+    const pass = fixtureSecret("pass");
+    const real = "collector-real.example";
+    const other = "collector-other.example";
+    const address: Record<string, string> = { [real]: "192.0.2.10", [other]: "192.0.2.11" };
+    const resolver = `: >"$LOOKUPS"
+getent() {
+  printf '%s\\n' "$2" >>"$LOOKUPS"
+  case $2 in
+  ${real}) echo '${address[real]} ${real}' ;;
+  ${other}) echo '${address[other]} ${other}' ;;
+  *) echo "192.0.2.99 $2" ;;
+  esac
+}`;
+    const script = `${fn("spend_variables")}\n${fn("add_host_args")}\n${fn("url_hostport")}\n${fn("spend_docker_args")}\n${resolver}\nspend_docker_args`;
+    interface Row {
+      name: string;
+      /** OTEL_EXPORTER_OTLP_TRACES_ENDPOINT, when the row sets it. */
+      traces?: string;
+      /** OTEL_EXPORTER_OTLP_ENDPOINT, when the row sets it. */
+      base?: string;
+      /** The names the resolver is asked for, in order. */
+      lookups: string[];
+    }
+    const rows: Row[] = [
+      { name: "http, a port and a path", traces: `http://${real}:4318/v1/traces`, lookups: [real] },
+      {
+        name: "https with user:password",
+        traces: `https://${user}:${pass}@${real}:4318/v1/traces`,
+        lookups: [real],
+      },
+      { name: "a user with no password", base: `https://${user}@${real}`, lookups: [real] },
+      { name: "a password with no user", base: `http://:${pass}@${real}:4318`, lookups: [real] },
+      {
+        name: "a percent-encoded @ in the password, a query and a fragment",
+        traces: `https://${user}:${pass}%40x@${real}?a=1#f`,
+        lookups: [real],
+      },
+      {
+        name: "leading spaces",
+        base: `  http://${user}:${pass}@${real}:4318`,
+        lookups: [real],
+      },
+      {
+        name: "both variables name one host, one with credentials and one without",
+        traces: `https://${user}:${pass}@${real}:4318/v1/traces`,
+        base: `http://${real}`,
+        lookups: [real],
+      },
+      {
+        name: "two hosts: the traces endpoint's first",
+        traces: `https://${user}:${pass}@${other}:4318/v1/traces`,
+        base: `http://${user}@${real}:4318`,
+        lookups: [other, real],
+      },
+      {
+        name: "a bracketed IPv6 address with credentials and a port",
+        traces: `https://${user}:${pass}@[2001:db8::1]:4318/v1/traces`,
+        lookups: [],
+      },
+      { name: "a bracketed IPv6 address alone", base: "http://[2001:db8::1]", lookups: [] },
+      {
+        name: "an IPv4 address with credentials and a port",
+        base: `http://${user}:${pass}@192.0.2.7:4318`,
+        lookups: [],
+      },
+      {
+        name: "no host, with credentials",
+        base: `https://${user}:${pass}@:4318`,
+        lookups: [],
+      },
+      {
+        name: "a scheme that is not HTTP",
+        traces: `grpc://${user}:${pass}@${real}:4317`,
+        lookups: [],
+      },
+      { name: "no scheme", base: `${user}:${pass}@${real}:4318`, lookups: [] },
+    ];
+    const dir = freshDir("spend-lookups");
+    const seen = rows.map((row, index) => {
+      const lookups = path.join(dir, `names-${index}`);
+      const result = bash(script, [], {
+        LOOKUPS: lookups,
+        ...(row.base === undefined ? {} : { OTEL_EXPORTER_OTLP_ENDPOINT: row.base }),
+        ...(row.traces === undefined ? {} : { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: row.traces }),
+      });
+      return {
+        name: row.name,
+        code: result.code,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        lookups: readFileSync(lookups, "utf8").split("\n").filter(Boolean),
+      };
+    });
+    // Per row: `-e NAME` for each variable set, in spend_variables' order, then one --add-host
+    // word pair for each name the resolver is asked for.
+    expect(seen).toEqual(
+      rows.map((row) => ({
+        name: row.name,
+        code: 0,
+        stdout:
+          [
+            ...(row.base === undefined ? [] : ["OTEL_EXPORTER_OTLP_ENDPOINT"]),
+            ...(row.traces === undefined ? [] : ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]),
+          ]
+            .map((name) => `-e\n${name}\n`)
+            .join("") +
+          row.lookups.map((host) => `--add-host\n${host}:${address[host]}\n`).join(""),
+        stderr: "",
+        lookups: row.lookups,
+      }))
+    );
+    for (const row of seen) {
+      const shown = `${row.stdout}${row.stderr}${row.lookups.join("\n")}`;
+      expect({ name: row.name, user: shown.includes(user), pass: shown.includes(pass) }).toEqual({
+        name: row.name,
+        user: false,
+        pass: false,
+      });
+    }
   });
 });
 
