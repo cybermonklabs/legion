@@ -388,7 +388,7 @@ func notAnID(node any) (member, value string, found bool) {
 		places = []place{{"id", n.ID, false}}
 	}
 	for _, p := range places {
-		if (p.entry || p.value != "") && !slug.MatchString(p.value) {
+		if (p.entry || p.value != "") && !isIDShape(p.value) {
 			return p.member, p.value, true
 		}
 	}

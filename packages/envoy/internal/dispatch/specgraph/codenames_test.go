@@ -1,8 +1,12 @@
 package specgraph
 
 import (
+	"bytes"
+	"encoding/json"
 	"slices"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // CodeNames finds each sign of code in a text (level_check.py's code_signs and the level format's
@@ -83,6 +87,41 @@ func TestIsID(t *testing.T) {
 	} {
 		if got := IsID(row.id); got != row.want {
 			t.Errorf("IsID(%q) = %t, want %t", row.id, got, row.want)
+		}
+	}
+}
+
+// The id rule has one source, the pattern of the schema's id ($defs/id): slug, the Go form of the
+// rule that Validate, IsID and the approved reader read, is compiled from it, so the schema and Go
+// cannot refuse two sets of values, and Validate, which leaves a value that is no id to the
+// schema, gives one problem for it. Each value of the table, the edges of the pattern, gets the
+// same verdict from slug and from the schema's validator over a term of that id.
+func TestSlugIsTheSchemasIDPattern(t *testing.T) {
+	t.Parallel()
+	var schema struct {
+		Defs struct {
+			ID struct {
+				Pattern string `json:"pattern"`
+			} `json:"id"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil || schema.Defs.ID.Pattern == "" {
+		t.Fatalf("the schema gives no pattern of $defs/id: %v", err)
+	}
+	if slug.String() != schema.Defs.ID.Pattern {
+		t.Errorf("slug is %q, and the schema's id pattern %q", slug.String(), schema.Defs.ID.Pattern)
+	}
+	for _, value := range []string{"a", "a1", "a-b", "a-b-c", "1-2", "", "-a", "a-", "a--b", "A", "a_b", "a b", "a.b", "\u00e9", "a\n", "\na"} {
+		document, err := json.Marshal(map[string]any{"type": "term", "id": value, "name": "a term", "definition": []string{"A term is a word."}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(document))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if schemaTakes := nodeSchema().Validate(inst) == nil; slug.MatchString(value) != schemaTakes {
+			t.Errorf("%q: slug takes it %t, and the schema %t", value, slug.MatchString(value), schemaTakes)
 		}
 	}
 }
