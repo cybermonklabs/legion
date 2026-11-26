@@ -465,7 +465,13 @@ func TestNoFixOpensWhileTheWayOfTheLastIsPending(t *testing.T) {
 			return r.engine.fixRule(ctx, tx, issue.Key)
 		})
 
-		r.assertWayTaken(wayOn)
+		onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+			fix, err := r.engine.store.FixAt(ctx, tx, issue.Key, issue.Generation, "a", 1)
+			if err == nil && (fix == nil || fix.Way != wayOn) {
+				err = fmt.Errorf("fix 1 after the tester's end = %+v, want way %d taken", fix, wayOn)
+			}
+			return err
+		})
 		assertStrings(t, "the fixes after the tester's end", r.fixes(), []string{fixOf(1, "ended", "k-ci"), "2 reading k-ci2@" + fixHead + " place 1"})
 		assertStrings(t, "the deletions", r.deletions(), nil)
 	})
