@@ -301,6 +301,69 @@ func TestAKindFilterPutsEachContextNodeOnTheFirstPageThatNamesIt(t *testing.T) {
 	}
 }
 
+// TestAnIssueConstraintAStatementNamesStandsOnThatStatementsPage holds window's placement of the
+// context (R8) for a node of the walk that the read with kind answers as context (kindOrder): on
+// a server whose pages hold at most contextPageNodes nodes, alice's issue, born converted, holds
+// six requirements, r1 first, and then a constraint of the issue, written last, that r1's
+// constrained_by names. Read with the conversation's kinds page by page from each cursor, the page
+// that holds r1 and its constrained_by holds the constraint, as context, and no other page holds
+// it, so a page that draws r1 can draw the constraint's words beside it.
+func TestAnIssueConstraintAStatementNamesStandsOnThatStatementsPage(t *testing.T) {
+	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{issueTreePageSize: contextPageNodes})
+	createReferenceAPIProject(t, handler, "CPAGE")
+	spec := ""
+	for index := 1; index <= 6; index++ {
+		spec += fmt.Sprintf(":::requirement{#r%d}\nRequirement %d holds.\n:::\n\n", index, index)
+	}
+	key := createDigestIssue(t, handler, database, "CPAGE", "A statement and the constraint it names", spec, false).Key
+	r1 := readDecisionDocument(t, database, key, "spec").address("r1")
+	rig := reasoningRig{t: t, handler: handler, database: database, issue: key}
+	constraint := decodeBody[constraintRead](t, created(t, "the constraint", rig.post("/constraints",
+		map[string]any{"standard": "RFC 9110", "reference": "section 9.2.2"}, "alice")))
+	if pointed := rig.post(nodePath(r1, "pointers"), map[string]any{"kind": graphstore.TupleConstrainedBy, "action": pointerAppend,
+		"to": constraint.Address}, "alice"); pointed.Code != http.StatusOK {
+		t.Fatalf("point r1 at the constraint: status=%d body=%s", pointed.Code, pointed.Body.String())
+	}
+
+	query := kindFilterQuery(kindFilterConversation...)
+	var pages []treeAnswer
+	for target := query; len(pages) < 20; {
+		read := treeRead(t, handler, key, target, "alice", false)
+		pages = append(pages, read)
+		if read.Cursor == nil {
+			break
+		}
+		target = query + "&cursor=" + url.QueryEscape(*read.Cursor)
+	}
+	if len(pages) < 2 {
+		t.Fatalf("the tree of %s with the conversation's kinds reads as %d page, want several of at most %d nodes: this case proves nothing",
+			key, len(pages), contextPageNodes)
+	}
+	statement := -1
+	var holding []int
+	for index, page := range pages {
+		if len(page.nodesNamed(refs.BlockNodeKind, r1)) > 0 {
+			statement = index
+		}
+		for _, node := range page.nodesNamed(graphstore.KindConstraint, constraint.ID) {
+			holding = append(holding, index+1)
+			if node.Role != treeRoleContext {
+				t.Errorf("page %d of %s answers the constraint as %q, want context", index+1, key, node.Role)
+			}
+		}
+	}
+	if statement < 0 {
+		t.Fatalf("no page of %s with the conversation's kinds answers r1 %s: this case proves nothing", key, r1)
+	}
+	if !pages[statement].holdsTuple(graphstore.TupleConstrainedBy, treeEnd(refs.BlockNodeKind, r1), treeEnd(graphstore.KindConstraint, constraint.ID)) {
+		t.Fatalf("page %d of %s holds r1 and no constrained_by from it to the constraint: this case proves nothing", statement+1, key)
+	}
+	if len(holding) != 1 || holding[0] != statement+1 {
+		t.Errorf("the constraint r1's constrained_by names stands on page %v of %s, want page %d alone, the page that holds r1 and the tuple: %v",
+			holding, key, statement+1, pages[statement].addresses())
+	}
+}
+
 // TestATreePageEndsAtItsBoundOfBytes holds the tree read's bound of size (R8): a page whose JSON
 // holds more than issueTreePageBytes is cut at the longest prefix of its walk that holds within
 // it, with the context nodes that prefix places, and answers the cursor of the first node it

@@ -532,3 +532,32 @@ test("an ordered list from 3 reads its start as the server's reading does, and o
   expect(fromOne?.type).toBe("ordered_list");
   expect(orderOf(fromOne)).toBeUndefined();
 });
+
+// A link's mark holds its target, as the server's reading holds it, so a place that reads the
+// node a link addresses reads it from either reading: the page's reading of each fixture's text
+// is the server's. An autolink's target is its address, and a link by reference's is its
+// definition's url, which the definition may give after the link.
+test("a link's mark holds its target as the server's reading does", () => {
+  for (const name of ["a-link", "a-marked-link"]) {
+    const { latest, markdown } = serverReading(name);
+    expect(storedReading(markdown), name).toEqual(latest);
+  }
+  const link = (href: string) => [{ attrs: { href }, type: "link" }];
+  expect(
+    storedReading("See [the plan][p] and <dispatch://CORE-1>.\n\n[p]: https://example.com/p")
+  ).toEqual({
+    content: [
+      {
+        content: [
+          { text: "See ", type: "text" },
+          { marks: link("https://example.com/p"), text: "the plan", type: "text" },
+          { text: " and ", type: "text" },
+          { marks: link("dispatch://CORE-1"), text: "dispatch://CORE-1", type: "text" },
+          { text: ".", type: "text" },
+        ],
+        type: "paragraph",
+      },
+    ],
+    type: "doc",
+  });
+});

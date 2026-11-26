@@ -50,6 +50,7 @@ import { IssueThreeThings } from "../IssueThreeThings";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { CLEARANCE } from "../identity-block";
 import type { TreeNode } from "../issue-tree";
+import { LensLines } from "../lenses/LensLines";
 import { NodeGlyph } from "../NodeGlyph";
 import { MoreWords, NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
 import { shortDay } from "../node-time";
@@ -1378,6 +1379,9 @@ function Statement({
           </p>
         ) : null}
         <Because decision={decision} statement={statement} />
+        {/* The constraints the statement names, as the outline draws them: out of the tab
+            order, as the row's other controls are. */}
+        <LensLines node={node} tabStops={false} />
         <RowReport line={report} />
       </div>
       {/* No mark until its reads hold an answer; the row's third column keeps its width, so
