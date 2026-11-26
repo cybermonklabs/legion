@@ -113,7 +113,11 @@ const (
 // fused CTE reads to weigh this leg's score against the meaning leg's; in the keyword-only query
 // it is the only value the column ever takes. Every arm carries q's three filters
 // (searchRowFilters) in the arm itself, so a filtered search reads its own matches as deep as
-// any other search reads, rather than a page of unfiltered ones with the rest struck out.
+// any other search reads, rather than a page of unfiltered ones with the rest struck out. Every
+// arm carries the project rule (searchProjectVisible) in the arm itself too, over the project its
+// own row belongs to, so a row of a project the reader does not see is in no arm: not ranked, not
+// counted in matches or the total, and never on the page. That is why the legs are rendered per
+// statement, for seen, the parameter the statement binds the acting credential at.
 //
 // The issue arm is two arms, not one: the issues q.tsq finds, and the issues the query names by
 // key (q.own_keys, searchOwnIssueKeys). A key is indexed with its project ('infra' <-> '-1042'),
@@ -810,7 +814,7 @@ func (scope meaningProjectScope) candidateProject(column string) string {
 // fused (searchFusedSQL or relatedFusedSQL, as searchQueryBody takes it), without or with an
 // exclusion (searchKindsCTE), and scoped to one project - on the row's own column or on the
 // owner each arm joins - or to every one. seen is the parameter the acting credential is bound
-// at.
+// at, and keywordLegs are rendered for it.
 //
 // Each candidate CTE binds the predicate of its own node kind besides the one searchKindsCTE
 // binds over every arm, and the project rule over its own row's project (searchProjectVisible):
@@ -847,6 +851,7 @@ meaning_document_candidates as (
     join projects p on p.key = a.project_key
     join lateral (select created_at from artifact_versions v where v.artifact_id = a.id order by v.number desc limit 1) v on true, q
    where e.kind = 'document_block' and a.kind = 'doc' and e.embedding is not null and e.model = $11` + scope.candidateProject("p.key") + `
+     and ` + searchProjectVisible("p.key", seen) + `
      and ` + refs.VisibleKind("artifact", "a.ref_key", searchParam(seen)) +
 		searchRowFilters("i.status", "a.created_by", "v.created_at") + `
    order by e.embedding <=> $9::vector
@@ -872,6 +877,7 @@ meaning_ask_candidates as (
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $11` + scope.candidateProject("coalesce(i.project_key, p.key)") + `
+     and ` + searchProjectVisible("coalesce(i.project_key, p.key)", seen) + `
      and ` + refs.VisibleKind("ask", "k.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
    order by e.embedding <=> $9::vector
@@ -893,6 +899,7 @@ meaning_message_candidates as (
     join messages m on m.id = ` + windowItemUUID + `
     join issues i on i.key = m.issue_key, q
    where e.kind = 'message_block' and e.embedding is not null and e.model = $11` + scope.candidateProject("i.project_key") + `
+     and ` + searchProjectVisible("i.project_key", seen) + `
      and ` + refs.VisibleKind("message", "m.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)") + `
    order by e.embedding <=> $9::vector
@@ -1008,7 +1015,11 @@ totals as (
 // predicate inside its candidate CTE, over the comment the window belongs to
 // (windowItemUUID), because the CTE cuts to its limit by distance before the join above it
 // ever sees a row, so a comment the acting person may not see would otherwise take a place in
-// that cut and hide one they may.
+// that cut and hide one they may. The project rule (searchProjectVisible) is bound twice for that
+// reason: inside the cut over the project the window is labelled with, the one column of the
+// comment's project the cut has, which passes a window the fill has not labelled yet; and above
+// it over the project the joined comment belongs to, which every row has, so no unlabelled window
+// of a hidden project reaches kinds.
 func searchMeaningCommentArm(scope meaningProjectScope, seen int) string {
 	if scope == meaningOneProjectJoined {
 		return searchMeaningCommentArmJoined(seen)
@@ -1019,6 +1030,7 @@ func searchMeaningCommentArm(scope meaningProjectScope, seen int) string {
     from embeddings e
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		scope.candidateProject(searchMeaningCommentProject) + `
+     and ` + searchProjectVisible("e.project_key", seen) + `
      and ` + refs.VisibleKind("comment", windowItemUUID+`::text`, searchParam(seen)) + `
    order by e.embedding <=> $9::vector
    ` + searchWindowLimit + `
@@ -1034,7 +1046,9 @@ meaning_comment as (
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where meaning_comment_candidates.r >= $10` + searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
+   where meaning_comment_candidates.r >= $10
+     and ` + searchProjectVisible(searchMeaningCommentProject, seen) +
+		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by c.id, meaning_comment_candidates.r desc, meaning_comment_candidates.window_id
 )`
 }
@@ -1082,9 +1096,10 @@ const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
 // author or updated_since keeps it for good, since those three filters are inside this arm's
 // limit and above the other's.
 //
-// seen is the parameter the acting credential is bound at, and the comment predicate rides
-// inside this arm's candidate limit beside the project one, for the reason every other
-// candidate CTE binds its own: the limit is spent before anything above it filters.
+// seen is the parameter the acting credential is bound at, and the comment predicate and the
+// project rule (searchProjectVisible) ride inside this arm's candidate limit beside the project
+// filter, for the reason every other candidate CTE binds its own: the limit is spent before
+// anything above it filters.
 func searchMeaningCommentArmJoined(seen int) string {
 	return `meaning_comment_candidates as (
   select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
@@ -1097,6 +1112,7 @@ func searchMeaningCommentArmJoined(seen int) string {
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
 		meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) + `
+     and ` + searchProjectVisible(searchMeaningCommentProject, seen) + `
      and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by e.embedding <=> $9::vector
@@ -1248,7 +1264,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
 // page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
-	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
+	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope(), parameters.who)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
