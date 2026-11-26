@@ -128,22 +128,25 @@ merge_of() {
 # it (a rename needs half the file alike); for a small file the check errs toward failing, as the
 # script's header says. k.txt starts with a line that reads like a conflict marker.
 rp=r-a-line-of-the-file-two-sides-rename-long-enough-for-git-to-find-the-rename-
-for prefix in s t o q w; do
+for prefix in s t o q w x y; do
   body "$prefix" > "$fixture/$prefix.txt"
 done
 body "$rp" > "$fixture/r.txt"
 body k 1 '<<<<<<< fixture' > "$fixture/k.txt"
 binary 0 none > "$fixture/b.bin"
+binary 0 none > "$fixture/v.bin"
 git_fixture -C "$fixture" add -A
 git_fixture -C "$fixture" commit -q -m "the first commit"
 root=$(git_fixture -C "$fixture" rev-parse HEAD)
 # main's tip: later commits of main that edit t2, which two stale priority pull requests edit too,
-# set w5 as one of them, #16, also does, and edit r2, k3 and line 100 of b.bin.
+# set w5 as one of them, #16, also does, and edit r2, k3, y2 and line 100 of b.bin and v.bin.
 main=$(commit_on "$root" "main edits t2" t.txt "$(body t 2 't2 main')")
 main=$(commit_on "$main" "main sets w5 as #16 does" w.txt "$(body w 5 'w5 shared')")
 main=$(commit_on "$main" "main edits r2" r.txt "$(body "$rp" 2 "${rp}2 main")")
 main=$(commit_on "$main" "main edits k3" k.txt "$(body k 1 '<<<<<<< fixture' 3 'k3 main')")
+main=$(commit_on "$main" "main edits y2" y.txt "$(body y 2 'y2 main')")
 main=$(binary_on "$main" "main edits b" b.bin 100 main)
+main=$(binary_on "$main" "main edits v" v.bin 100 main)
 
 # The priority pull requests' heads. #12 forked before main's t2 and edits t2 and t5, so it
 # conflicts with main at t2 and lands t5 cleanly. #16 forked there too, edits t2, and sets w5 as
@@ -162,6 +165,14 @@ p17=$(commit_on "$p17" "stale priority edits r2" g.txt "$(body "$rp" 2 "${rp}2 s
 # there too and edits line 300 of b.bin, which main edits too: a binary conflict.
 p18=$(delete_on "$root" "stale priority deletes k" k.txt)
 p19=$(binary_on "$root" "stale priority edits b" b.bin 300 nineteen)
+# #40 is stacked on x_one, a branch of the root that a pull request of its own lands (m_dep): it
+# edits x2 on top of x_one's x2, and y2, which main edits too. #41 forked there too, renames v.bin
+# to z.bin and edits its line 300, a binary conflict with main at z.bin.
+x_one=$(commit_on "$root" "a change #40 is stacked on edits x2" x.txt "$(body x 2 'x2 one')")
+p40=$(commit_on "$x_one" "stacked priority edits x2" x.txt "$(body x 2 'x2 two')")
+p40=$(commit_on "$p40" "stacked priority edits y2" y.txt "$(body y 2 'y2 forty')")
+p41=$(rename_on "$root" "stale priority renames v to z" v.bin z.bin)
+p41=$(binary_on "$p41" "stale priority edits z" z.bin 300 forty-one)
 
 # Pull request #20's heads, one per case, and the run commit of each: its merge into main.
 m_conflict=$(merge_of "$main" "$(commit_on "$main" "edit s5" s.txt "$(body s 5 's5 mine')")")
@@ -179,6 +190,8 @@ m_queue=$(merge_of "$main" "$(commit_on "$main" "edit q5" q.txt "$(body q 5 'q5 
 m_samename=$(merge_of "$main" "$(rename_on "$main" "rename r to g, as #17 does" r.txt g.txt)")
 m_literal=$(merge_of "$main" "$(commit_on "$main" "edit k5" k.txt "$(body k 1 '<<<<<<< fixture' 3 'k3 main' 5 'k5 mine')")")
 m_binary=$(merge_of "$main" "$(rename_on "$main" "rename b to c" b.bin c.bin)")
+m_dep=$(merge_of "$main" "$x_one")
+m_binsame=$(merge_of "$main" "$(rename_on "$main" "rename v to z, as #41 does" v.bin z.bin)")
 
 # Merge groups: squash commits on the group's base. q11 is #11's squash in a group in front, whose
 # queue branch the origin holds, and g30 and g31 are one group of two pull requests.
@@ -189,9 +202,10 @@ g22=$(commit_on "$main" "a commit that names no pull request" new.txt "new")
 g30=$(commit_on "$main" "add a file (#30)" thirty.txt "thirty")
 g31=$(commit_on "$g30" "edit s5 (#31)" s.txt "$(body s 5 's5 mine')")
 
-for sha in "$p11" "$p12" "$p13" "$p14" "$p15" "$p16" "$p17" "$p18" "$p19" "$m_conflict" "$m_new" \
-  "$m_far" "$m_apart" "$m_inside" "$m_moved" "$m_shared" "$m_rename" "$m_file" "$m_unapproved" \
-  "$m_queue" "$m_samename" "$m_literal" "$m_binary" "$g20" "$g21" "$g22" "$g31"; do
+for sha in "$p11" "$p12" "$p13" "$p14" "$p15" "$p16" "$p17" "$p18" "$p19" "$p40" "$p41" "$m_conflict" \
+  "$m_new" "$m_far" "$m_apart" "$m_inside" "$m_moved" "$m_shared" "$m_rename" "$m_file" \
+  "$m_unapproved" "$m_queue" "$m_samename" "$m_literal" "$m_binary" "$m_dep" "$m_binsame" "$g20" \
+  "$g21" "$g22" "$g31"; do
   git_fixture -C "$fixture" push -q "$origin" "$sha:refs/fixture/$sha"
 done
 git_fixture -C "$fixture" push -q "$origin" "$q11:refs/heads/gh-readonly-queue/main/pr-11-$main"
@@ -234,7 +248,8 @@ standard=("$(pull 11 "$p11" '"APPROVED"' false)" "$(pull 12 "$p12" '"APPROVED"' 
   "$(pull 13 "$p13" '"REVIEW_REQUIRED"' false)" "$(pull 14 "$p14" null true)"
   "$(pull 15 "$p15" '"APPROVED"' false)" "$(pull 16 "$p16" '"APPROVED"' false)"
   "$(pull 17 "$p17" '"APPROVED"' false)" "$(pull 18 "$p18" '"APPROVED"' false)"
-  "$(pull 19 "$p19" '"APPROVED"' false)")
+  "$(pull 19 "$p19" '"APPROVED"' false)" "$(pull 40 "$p40" '"APPROVED"' false)"
+  "$(pull 41 "$p41" '"APPROVED"' false)")
 
 pr_event() {
   jq -n --argjson number "$1" '{pull_request: {number: $number, base: {ref: "main"}}}' > "$work/event.json"
@@ -302,8 +317,8 @@ echo "case: a pull request that edits no file a priority pull request edits pass
 run_check pull_request "$m_new"
 check "it passes" "$(is "$status" 0)"
 check "it merged each" "$(contains "$out" "$(clean_line 11 "pull request #20")")"
-check "it counts the eight it checked" \
-  "$(has_line "$out" "pull request #20 lands no conflict on an approved or queued priority pull request: 8 checked.")"
+check "it counts the ten it checked" \
+  "$(has_line "$out" "pull request #20 lands no conflict on an approved or queued priority pull request: 10 checked.")"
 check "it writes no error" "$(is "$err" "")"
 
 echo "case: a pull request that edits a priority pull request's file away from its lines passes"
@@ -363,6 +378,20 @@ echo "case: a rename of a binary file a stale priority pull request conflicts on
 run_check pull_request "$m_binary"
 check "it passes" "$(is "$status" 0)"
 check "it merged #19 through the rename" "$(contains "$out" "$(clean_line 19 "pull request #20")")"
+
+echo "case: a rename of a binary file to where a stale priority pull request renamed it is not a conflict"
+# #41 renames v.bin to z.bin and edits it, a binary conflict with main; the pull request renames it
+# to z.bin too.
+run_check pull_request "$m_binsame"
+check "it passes" "$(is "$status" 0)"
+check "it merged #41 through both renames" "$(contains "$out" "$(clean_line 41 "pull request #20")")"
+
+echo "case: the change a stale priority pull request is stacked on is not its conflict"
+# #40 is stacked on x_one and conflicts with main at y2; the pull request lands x_one, whose x2
+# #40 already holds and edits again.
+run_check pull_request "$m_dep"
+check "it passes" "$(is "$status" 0)"
+check "it merged #40 from what the two share" "$(contains "$out" "$(clean_line 40 "pull request #20")")"
 
 echo "case: a file where a priority pull request adds a directory fails"
 run_check pull_request "$m_file"

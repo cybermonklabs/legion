@@ -36,8 +36,10 @@
 #      one approved, #4156, did with main in 304 files. Every change built on the base carries those
 #      into step 1, and they are P's to resolve when it merges the base, whatever lands next. So
 #      the change's own edits are applied to step 2's result, over the base (`--merge-base=<base>
-#      <change's commit> <a commit of step 2's tree>`): that is what step 1 gives when the change
-#      adds no conflict. Where git cannot apply them, each file it names is the change's
+#      <change's commit> <a commit of step 2's tree>`; where P is stacked on commits of the
+#      change, over the base merged with their merge base, so edits P already holds are not the
+#      change's): that is what step 1 gives when the change adds no conflict. Where git cannot
+#      apply them, each file it names is the change's
 #      conflict; where it can, each file whose result differs from step 1's, the labels of
 #      conflict markers aside. Either way the change's edits reach something P changes: inside one
 #      of P's conflicts with the base, beside one, at text the base and P each added alike, or
@@ -436,10 +438,32 @@ for candidate in "${candidates[@]}"; do
       GIT_COMMITTER_NAME=priority-conflicts GIT_COMMITTER_EMAIL=priority-conflicts@localhost \
       git -C "$repo" commit-tree -m "#$pull merged into $base" "$(cat "$work/before.tree")") ||
       fail "git could not write a commit of $name merged into the base of $change, $unread"
+    # The change's own edits are those from what it shares with the priority pull request: the
+    # base, or, where the priority pull request holds commits of the change (it is stacked on
+    # them, so their merge base is no ancestor of the base), the base merged with that merge
+    # base, so edits the priority pull request already holds are not applied as the change's.
+    # Where git cannot merge those two cleanly, the base, which errs toward failing.
+    shared=$(git -C "$repo" merge-base "$head" "$pull_head") ||
+      fail "$name shares no history with $change, so git cannot merge the two, $unread"
+    from=$base
+    if ! git -C "$repo" merge-base --is-ancestor "$shared" "$base"; then
+      git -C "$repo" update-ref refs/heads/change "$base"
+      git -C "$repo" update-ref refs/heads/landed "$shared"
+      status=0
+      merge "$work/shared" change landed || status=$?
+      [ "$status" -le 1 ] || fail "git could not merge the base of $change with what it shares with $name, $unread"
+      if [ "$status" -eq 0 ]; then
+        from=$(GIT_AUTHOR_NAME=priority-conflicts GIT_AUTHOR_EMAIL=priority-conflicts@localhost \
+          GIT_COMMITTER_NAME=priority-conflicts GIT_COMMITTER_EMAIL=priority-conflicts@localhost \
+          git -C "$repo" commit-tree -m "the base of $change with what it shares with #$pull" \
+          "$(cat "$work/shared.tree")") ||
+          fail "git could not write a commit of what $change shares with $name, $unread"
+      fi
+    fi
     git -C "$repo" update-ref refs/heads/landed "$landed"
     git -C "$repo" update-ref refs/heads/change "$head"
     status=0
-    merge "$work/applied" --merge-base="$base" change landed || status=$?
+    merge "$work/applied" --merge-base="$from" change landed || status=$?
     case $status in
       0)
         : > "$work/caused"
@@ -459,16 +483,16 @@ for candidate in "${candidates[@]}"; do
         done < "$work/differ"
         # A conflict with no markers (a binary file's, modify/delete, file/directory) leaves the
         # file of one side in the tree; it is the change's too where the change's merge lists other
-        # stages for it, each with its mode and blob, than the base's merge lists for the same
-        # file (the one the change renamed it from, where it did). Which conflicts have markers is
-        # git's own word, from its messages, never the file's text.
+        # stages for it, each with its mode and blob, than the base's merge lists for the same path
+        # and for the file the change renamed it from, where it did. Which conflicts have markers
+        # is git's own word, from its messages, never the file's text.
         [ -n "$renames_read" ] || read_renames
         while IFS= read -r -d '' path; do
           ! listed "$work/ours.marked" "$path" || continue
-          from=${renamed_from[$path]:-$path}
-          if [ "$(entries_of "$work/ours.entries" "$path")" != "$(entries_of "$work/before.entries" "$from")" ]; then
-            printf '%s\0' "$path" >> "$work/caused"
-          fi
+          stages=$(entries_of "$work/ours.entries" "$path")
+          [ "$stages" != "$(entries_of "$work/before.entries" "$path")" ] || continue
+          [ "$stages" != "$(entries_of "$work/before.entries" "${renamed_from[$path]:-$path}")" ] || continue
+          printf '%s\0' "$path" >> "$work/caused"
         done < "$work/ours.paths"
         [ -s "$work/caused" ] || found=''
         ;;
