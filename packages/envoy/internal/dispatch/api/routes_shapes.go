@@ -640,6 +640,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/markdown/round-trip": {
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
 	},
+	"POST /api/v1/markdown/file-round-trip": {
+		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: fileRoundTripInput{},
+	},
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
 	"POST /api/v1/projects": {Status: http.StatusCreated, Response: createdProject{}, Request: createProjectInput{}},
 	"GET /api/v1/projects/{key}/artifacts": {

@@ -1548,10 +1548,11 @@ func (r *dispatchBrokerRig) pluginScript(clients *rigClients, role *rigRole, run
 
 // daemonRefs are the objects the daemon's script reads that its run with a token of P made, or
 // that the role's did: the document it uploads, read back as an approval, the role's handoff
-// record, and the role's document that its plugin's doc-edit gave a second version, whose two
-// versions the script reads the changes between.
+// record, the role's document that its plugin's doc-edit gave a second version, whose two
+// versions the script reads the changes between, and the ask the role's plugin opened, which the
+// script reads by its id.
 type daemonRefs struct {
-	document, handoff, edited string
+	document, handoff, edited, ask string
 }
 
 // daemonScript is K4's script through the daemon's client: one call of each method of
@@ -1620,7 +1621,10 @@ func (r *dispatchBrokerRig) daemonScript(client *dispatch.HTTPClient, refs *daem
 			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}})
 	})
 	call("ReleaseClaim", false, func() error { return client.ReleaseClaim(ctx, issueKey) })
-	call("ArtifactSlugs", true, func() error { _, err := client.ArtifactSlugs(ctx, issueKey); return err })
+	call("Artifacts", true, func() error { _, err := client.Artifacts(ctx, issueKey); return err })
+	call("Ask", true, func() error { _, err := client.Ask(ctx, refs.ask); return err })
+	call("Reviews", true, func() error { _, err := client.Reviews(ctx, refs.document); return err })
+	call("DocumentVersion", true, func() error { _, err := client.DocumentVersion(ctx, refs.edited, 2); return err })
 	call("EventsAfter", true, func() error { _, err := client.EventsAfter(ctx, issueKey, 0); return err })
 	call("MessageBodiesSince", true, func() error { _, err := client.MessageBodiesSince(ctx, issueKey, since); return err })
 	call("Approval", true, func() error { _, err := client.Approval(ctx, refs.document); return err })
@@ -1660,7 +1664,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	var withP []rigWrite
 	withP = append(withP, r.commandScript(role, env, "P", refs, r.directMessage(role.session))...)
 	withP = append(withP, r.pluginScript(clients, role, "P", refs, role.session)...)
-	daemon := &daemonRefs{handoff: refs.handoff, edited: refs.documents["plugin"]}
+	daemon := &daemonRefs{handoff: refs.handoff, edited: refs.documents["plugin"], ask: refs.asks["plugin"]}
 	withP = append(withP, r.daemonScript(daemonClient, daemon, since)...)
 	// K4's words: with the daemon's token for P the script makes one of each kind of write the
 	// daemon's Dispatch client has a method for. A method the client gains and the script does not

@@ -13,7 +13,7 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { entryTextSource } from "../issue/decision-entries";
+import { entryTextSource, isPersonDecision } from "../issue/decision-entries";
 import { decisionHeading, useDecisionHeadingWords } from "../issue/decision-heading";
 import { holdsUnsureParagraph, plainParagraph, unsureWords } from "../issue/decision-text";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -51,8 +51,9 @@ function previewOf(decision: DecisionEntry): {
  *  card lights up the block, as selecting an anchored comment lights up its text. The name
  *  names the card and words a link, neither of which holds markup, so there it is read as its
  *  plain words (`useDecisionHeadingWords`); with no page to link to it is drawn by the renderer,
- *  as the passage is. Both are the record the decision's words are (`entryTextSource`): a
- *  person's decision is the ask's own, and an agent's the document it is written in. */
+ *  as the passage is. Both are the record the decision's words are (`entryTextSource`): an
+ *  answered ask's are the ask's own, and a `decision` block's, whoever decided it, the document
+ *  it is written in. */
 export function DecisionCard({
   hovered = false,
   item,
@@ -107,7 +108,7 @@ export function DecisionCard({
       }}
     >
       <p className={`flex flex-wrap gap-x-2 text-xs ${textMutedOnSelectedCard}`}>
-        <span>{decision.kind === "agent" ? "Agent's decision" : "A person's decision"}</span>
+        <span>{isPersonDecision(decision) ? "A person's decision" : "Agent's decision"}</span>
         {unsure ? <span className={`font-semibold ${decisionUnsureText}`}>Unsure</span> : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>

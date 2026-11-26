@@ -89,8 +89,9 @@ func (a *ActorAct) Holds(scope string) bool {
 }
 
 // Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
-// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
-// which this package's callers and its tests rely on.
+// agent it names, what a broker-issued token's project scope lets it write, and whether it may
+// only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
+// tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
@@ -103,13 +104,6 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// Projects are the projects the credential may use, sorted. Nothing in this tree sets it, so
-	// it is empty for every credential here: a later slice sets it from a personal token's
-	// agent_tokens.projects and from a broker token's list. Empty is a credential that names none.
-	// What a list decides is access.CredentialCovers': for a full member's credential, and one
-	// that names no person, only which private projects it reaches; for a restricted member's,
-	// every project it reaches.
-	Projects []string
 	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
 	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
@@ -125,15 +119,25 @@ type Credential struct {
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
-	// ProjectScope is a broker-issued token's project scope as the broker answered it, read as
-	// its base word (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry
-	// mapped, `person` for one acting as its person or for a machine nobody signed in on, `none`
-	// for the read entry's token; a token narrowed to reading carries the word it narrows, with
-	// ReadOnly beside it. It is what tells a token that names a service and no person apart: a
-	// `named` one is an account entry's that names no person, whose writes are recorded under its
-	// account (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in
-	// on, which writes nothing. Empty for every other credential.
+	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it, read as
+	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
+	// mapped to its one project, or to none for an account entry that names a person and no
+	// project or neither; `person`, a token held to no one project, a person's own or a
+	// machine's nobody signed in on; `none`, the read entry's token's; or `public`, a job's token
+	// that names no one project, which writes wherever a token naming no project may, since no
+	// write check reads its list (Projects) at this release. A token narrowed to reading carries
+	// the word it narrows, with ReadOnly beside it. Empty for every other credential. A
+	// broker-issued token that names a service and no person writes only under `named` or
+	// `public` — a job's two shapes, and under `named` an account entry's naming no person, whose
+	// writes are recorded under its account — and is refused every write under any other
+	// (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
+	// nil for every other credential until a later slice sets a personal token's
+	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
+	Projects []string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -1995,8 +1999,10 @@ type CheckResultRetracted struct {
 // artifact of an issue room, else the Verification document. A result CI derives (api's
 // results_ci.go) names the same one. CheckVersion and CheckSHA256 are the block's changed_version
 // and text_sha256 when the result was recorded, so a read can tell a result whose check has been
-// reworded since. CommitStands, CheckWordsMoved and Retracted are read when the results are read
-// and are absent from the record's own answer.
+// reworded since: one whose check's digest and version both moved, since a block respelled by
+// another renderer version takes a new digest and keeps its changed version
+// (refs.BlockIndexing.KeepRespelled). CommitStands, CheckWordsMoved and Retracted are read when
+// the results are read and are absent from the record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -2037,9 +2043,10 @@ type CheckResult struct {
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which
-	// CheckSHA256 beside the check's SHA256 decides. They are two facts and two fields: a
-	// result at the compared commit under an older wording is both, and one word for both
-	// would hide which.
+	// CheckSHA256 and CheckVersion beside the check's SHA256 and Version decide: the words moved
+	// where both differ (api's comparisonReader.answer says why). They are two facts and two
+	// fields: a result at the compared commit under an older wording is both, and one word for
+	// both would hide which.
 	CommitStands    *ResultCommitStands   `json:"commit_stands,omitempty"`
 	CheckWordsMoved *bool                 `json:"check_words_moved,omitempty"`
 	Retracted       *CheckResultRetracted `json:"retracted,omitempty"`
@@ -2768,17 +2775,17 @@ type AskEditEventPayload struct {
 	// that an earlier version already moved since it was opened or last handed back
 	// (requested_version below the version it named), which changes only the version the request
 	// names, and a settlement's move that keeps the request waiting on the human because the new
-	// version, which a settlement wrote, holds byte for byte the text of the version the request
-	// names, or differs from it only in the server-owned attributes of its ask blocks, each block
-	// agreeing with its ask, as the version a person's answer, resolve or decline writes when it
-	// is that version's whole change (docs.MoveApprovalAsk), which changes no text the person was
-	// asked about; a
-	// version a route writes moves the request to its agent whatever text it holds. Like a human's
-	// unnamed artifact.version, such a move wakes nobody (events.Broker.Notify) and reaches no
-	// follower (the outbox's follower routes), while the event log and the event feed carry it as
-	// they carry every event. The first move after an opening or a hand-back is not quiet, even
-	// when a thread reply left the request waiting on its agent, unless it keeps the request
-	// waiting on the human.
+	// version, which a settlement wrote, holds the text of the version the request names - byte
+	// for byte, or, for a version another renderer version stored or none stamped, as this build
+	// renders it - or differs from it only in the server-owned attributes of its ask blocks, each
+	// block agreeing with its ask, as the version a person's answer, resolve or decline writes when
+	// it is that version's whole change (docs.MoveApprovalAsk), which changes no text the person
+	// was asked about; a version a route writes moves the request to its agent whatever text it
+	// holds. Like a human's unnamed artifact.version, such a move wakes nobody
+	// (events.Broker.Notify) and reaches no follower (the outbox's follower routes), while the
+	// event log and the event feed carry it as they carry every event. The first move after an
+	// opening or a hand-back is not quiet, even when a thread reply left the request waiting on its
+	// agent, unless it keeps the request waiting on the human.
 	Quiet bool `json:"quiet,omitempty"`
 }
 
@@ -4649,8 +4656,9 @@ type DecisionLink struct {
 }
 
 // Decision is one decision node of an issue as decisionread.Decisions answers it, the one reader
-// of a decision (plan H1): an agent's `decision` block, Kind "agent", or a person's answered ask,
-// Kind "person". Heading is the ask's question or the decision's first paragraph; Unsure is true
+// of a decision (plan H1): a `decision` block, Kind "agent" whoever decided it, or a person's
+// answered ask, Kind "person"; Kind is the node's shape, and a block's decided_by names who
+// decided it. Heading is the ask's question or the decision's first paragraph; Unsure is true
 // where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the node.
 // ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is the
 // sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's

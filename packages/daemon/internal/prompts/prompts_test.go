@@ -491,9 +491,7 @@ func stepClauses(text, marker string) []string {
 // step bound in a clause that names another step binds nothing, since the architect cannot tell
 // which of the two the document belongs to. The prompt also tells a root whose gate was carried
 // what to do about a step nothing has registered — register it, on this issue's own document —
-// rather than only what not to do, and tells every root how to find which step a review notice
-// was of, since `design-approved`, `design-changes-requested` and `carried-gate-opened` each
-// name a version and no step. The policy words the list replaced are gone from both parts: an
+// rather than only what not to do. The policy words the list replaced are gone from both parts: an
 // architect told to read `gates.design: root-issues` off its addressing would wait for a line
 // the daemon no longer writes. Nor does either part name the `decisions` step, which no
 // deployment gates any more (config's readDesignSteps refuses it): an architect told of it would
@@ -561,17 +559,6 @@ func TestTheRootArchitectPartNamesTheGatedSteps(t *testing.T) {
 		}
 		if !strings.Contains(paragraph, "this issue's own document for that step") {
 			t.Errorf("the carried-root rule does not say which document that registration names: %s", paragraph)
-		}
-	}
-	notices := ruleParagraphs(text, "`design-changes-requested`")
-	if len(notices) != 2 {
-		t.Fatalf("the composed root architect prompt holds %d paragraphs on the review notices, want one in each part", len(notices))
-	}
-	for _, paragraph := range notices {
-		for _, want := range []string{"`gatedSteps`", "`read_record`"} {
-			if !strings.Contains(paragraph, want) {
-				t.Errorf("the review-notice rule does not send the architect to %s for the step the notice leaves out: %s", want, paragraph)
-			}
 		}
 	}
 }

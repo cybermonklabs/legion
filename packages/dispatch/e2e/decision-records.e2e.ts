@@ -9,7 +9,10 @@ import { expect, test } from "./test";
 // sees each block the decision has changed since marked out of date until that block changes too.
 //
 // Every block id comes from `GET /api/v1/artifacts/<id>/blocks` (`blockId`), never from a guess,
-// and every seed goes through the API the agent uses.
+// and every seed goes through the API the agent uses. Each write the agent makes goes over the
+// agent bearer (`{ as: "agent" }`), so a decision's `decided_by` names the seed's session and it
+// waits for the reader's review under "Waiting for your review": a decision alice wrote would be
+// hers, under "Your decisions", waiting for nobody's review.
 
 const STALE_TITLE = "A decision that shaped this block changed after it.";
 const DECISION = "Store notices in a table";
@@ -41,19 +44,23 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   const stored = await blockId(spec.id, "Store each notice.");
   const newest = await blockId(spec.id, "Show the newest first.");
   const reference = `dispatch://${issue.key}/spec`;
-  await editArtifact(spec.id, {
-    ops: [
-      {
-        after: "end",
-        markdown: decisionsPart("d1", DECISION, REASON, [
-          `${reference}#b-${stored}`,
-          `${reference}#b-${newest}`,
-        ]),
-        op: "insert",
-      },
-    ],
-    summary: "decided",
-  });
+  await editArtifact(
+    spec.id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: decisionsPart("d1", DECISION, REASON, [
+            `${reference}#b-${stored}`,
+            `${reference}#b-${newest}`,
+          ]),
+          op: "insert",
+        },
+      ],
+      summary: "decided",
+    },
+    { as: "agent" }
+  );
 
   // The Spec tab: the decision is a margin card beside each block it shaped, and no block is out
   // of date yet. A card is the margin item `decision:<node id>:<spec node id>`
@@ -83,20 +90,28 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
 
   // The agent changes the decision's text: both blocks it shaped are out of date, on the
   // Decisions tab and as a mark on the Spec tab.
-  await editArtifact(spec.id, {
-    ops: [{ find: REASON, op: "replace", with: `${REASON} Measured against the file store.` }],
-    summary: "measured",
-  });
+  await editArtifact(
+    spec.id,
+    {
+      ops: [{ find: REASON, op: "replace", with: `${REASON} Measured against the file store.` }],
+      summary: "measured",
+    },
+    { as: "agent" }
+  );
   await page.goto(`/issues/${issue.key}/decisions`);
   await expect(page.getByText("out of date")).toHaveCount(2);
   await page.goto(`/issues/${issue.key}/spec`);
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(2);
 
   // The agent changes one of those spec blocks: its mark goes and the other stays.
-  await editArtifact(spec.id, {
-    ops: [{ find: "Store each notice.", op: "replace", with: "Store each notice in a table." }],
-    summary: "stored",
-  });
+  await editArtifact(
+    spec.id,
+    {
+      ops: [{ find: "Store each notice.", op: "replace", with: "Store each notice in a table." }],
+      summary: "stored",
+    },
+    { as: "agent" }
+  );
   await page.goto(`/issues/${issue.key}/spec`);
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(1);
   await page.goto(`/issues/${issue.key}/decisions`);
@@ -144,16 +159,20 @@ test("a decision written as a list keeps its link and its key, and anchors its C
     `- A \`${issue.key}\`-style key names where each notice came from.`,
   ].join("\n");
   const words = `${LISTED_OPENING} the spec asks. A ${issue.key}-style key names where each notice came from.`;
-  await editArtifact(spec.id, {
-    ops: [
-      {
-        after: "end",
-        markdown: decisionsPart("d2", LISTED, `${list}\n\nNothing else about a notice changes.`),
-        op: "insert",
-      },
-    ],
-    summary: "decided",
-  });
+  await editArtifact(
+    spec.id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: decisionsPart("d2", LISTED, `${list}\n\nNothing else about a notice changes.`),
+          op: "insert",
+        },
+      ],
+      summary: "decided",
+    },
+    { as: "agent" }
+  );
   const listBlock = await blockId(spec.id, list);
 
   await page.goto(`/issues/${issue.key}/decisions`);
@@ -211,20 +230,24 @@ test("a decision whose answer carries no reading is drawn block by block @pr", a
     title: "Decisions with no reading",
   });
   const spec = await getArtifact(issue.primary_artifact_id ?? "");
-  await editArtifact(spec.id, {
-    ops: [
-      {
-        after: "end",
-        markdown: decisionsPart(
-          "d3",
-          LISTED,
-          "Notices live in a table.\n\nUnsure: the index may be slow."
-        ),
-        op: "insert",
-      },
-    ],
-    summary: "decided",
-  });
+  await editArtifact(
+    spec.id,
+    {
+      ops: [
+        {
+          after: "end",
+          markdown: decisionsPart(
+            "d3",
+            LISTED,
+            "Notices live in a table.\n\nUnsure: the index may be slow."
+          ),
+          op: "insert",
+        },
+      ],
+      summary: "decided",
+    },
+    { as: "agent" }
+  );
 
   await serveWithoutDisplayTrees(page);
 

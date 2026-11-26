@@ -76,6 +76,7 @@ func keptPodRows(t *testing.T, st *store.Store) []string {
 // launcher that recorded no pod of a kept volume would leave the next pod reading as holding
 // nothing from before it.
 func TestAKeptPodsStartRecordsThePodAndMarksTheNextPodOfItsVolume(t *testing.T) {
+	t.Parallel()
 	st := keptPodStore(t)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
 		o.KeptPodStart = keptPodStart(st)
@@ -122,6 +123,7 @@ func TestAKeptPodsStartRecordsThePodAndMarksTheNextPodOfItsVolume(t *testing.T) 
 // since nothing was issued; and the store holds no row of the pod. Once the store answers again,
 // the next launch starts the role and the row is written.
 func TestAKeptPodTheStoreCannotRecordStartsNoRoleUntilItCan(t *testing.T) {
+	t.Parallel()
 	st := keptPodStore(t)
 	faulted, fault := faultedStore(t, st)
 	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)), withOptions(func(o *Options) {
