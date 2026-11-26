@@ -406,9 +406,12 @@ func TestTheMergerTakesAStackApartOnceNothingBelowItsPullRequestIsOpen(t *testin
 // Past the review a conflict with the base is the merger's (cybermonklabs/legion#4979): the
 // merger merges the base forward itself, keeps both sides' intent, adapts in that merge what the
 // base's newer code breaks, has the reviewer read the merge's resolution and approve the new head
-// before it merges it, may ask the other workers, and sends the issue back when the fix is no merge
-// of the base. Its part says so, and no longer tells it to hand the conflict to the
-// implementer, to send a failed queue check back as a matter of course, or that it pushes nothing.
+// before it merges it, may ask the other workers, and sends the issue back to `implementing` when
+// the fix is no merge of the base. Its part says so, and no longer tells it to hand the conflict to
+// the implementer, to send a failed queue check back as a matter of course, or that it pushes
+// nothing. The send-back is the tool call itself: the daemon moves an issue to the phase the call's
+// `to` names, so a failed-check subsection that names the operation and no phase leaves the merger
+// nothing to call.
 func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	merger := rolePart(t, "merger.md")
 	for _, want := range []string{
@@ -436,6 +439,15 @@ func TestTheMergerResolvesAConflictItself(t *testing.T) {
 	} {
 		if strings.Contains(merger, gone) {
 			t.Errorf("roles/merger.md still says %q", gone)
+		}
+	}
+	// The design-gate section below also names the operation, so only the failed-check subsection
+	// is read.
+	_, failed, _ := strings.Cut(merger, "### A check that failed")
+	failed, _, _ = strings.Cut(failed, "\n## ")
+	for _, want := range []string{"request_backward_move", `to: "implementing"`} {
+		if !strings.Contains(failed, want) {
+			t.Errorf("roles/merger.md's failed-check subsection does not say %q", want)
 		}
 	}
 	goMerger, err := goParts.ReadFile("go/merger.md")

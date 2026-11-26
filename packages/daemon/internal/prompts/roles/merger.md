@@ -92,11 +92,9 @@ You may ask the implementer, the tester or the reviewer what they know, with `en
 
 ### A check that failed
 
-Read its log, and the same check on the base branch, and decide its cause. If the failure may be transient, re-run the check once at the same head. If it passes, continue the merge. Never re-run a merge-group check. When newer base code breaks this change, fix the change in the forward merge as above.
+Read its log, and the same check on the base branch, and decide its cause. If the failure may be transient, retry at the same head. If the queue removed the pull request for that failure (`failed_checks` in step 5), enqueue the same head again (step 4) instead. Continue if the retry passes. A failure the base's newer code causes, where the change no longer fits code that landed after it was reviewed, is part of the merge: fix it as above. Send the issue back with `request_backward_move` when the fix is a change to the change's own logic that no merge of the base resolves, and say in its reason why no merge resolves it.
 
-If the same failure occurs on the base and still blocks the merge, a forward merge cannot fix it. Move the issue back to implementation without changing the workspace. Wait only if the issue that tracks the failure is claimed and `in_progress`, and its holder said on Envoy that it works on it now. Tell the holder what you need and by when. Move the issue back when that time passes without a fix.
-
-If the fix needs changes outside a forward merge, call `request_backward_move` with `to: "implementing"`. In the reason, name the check and say why a forward merge cannot fix it. If the check fails on the base too, say so. The implementer fixes it in this same pull request, as `skill://legion-worker/references/findings.md` says.
+If a check still blocks the merge and also fails on the base, wait only if the issue that tracks it is claimed and `in_progress`, and its holder said on Envoy that they are working on it now. In that case, tell the holder what you need and by when. If their fix lands on the base before that time, merge the base forward as *A head that conflicts with its base* says. Otherwise, call `request_backward_move` once, with `to: "implementing"` and a reason that names the check and says it also fails on the base. The implementer puts the fix where `skill://legion-worker/references/findings.md`, step 1, says.
 
 ## A closed design gate
 

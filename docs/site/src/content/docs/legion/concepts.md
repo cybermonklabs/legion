@@ -632,12 +632,18 @@ uses, runs again what the merge can reach, and pushes. The daemon asks it when t
 head conflicting, and, where the task has a reviewer step, asks the reviewer to read the merge
 (`git show --remerge-diff`) and approve the new head; the merger merges that head once the
 approval is on the pull request. On a task with no reviewer step, the merger goes on at the new
-head. The merger can ask the other workers for evidence over Envoy. If a forward merge cannot fix
-a required check that still fails, the merger returns the issue to `implementing` with
-`request_backward_move`. Its reason identifies the check and explains why a forward merge cannot
-fix it, including whether the check fails on the base too. The implementer fixes it in the same
-pull request. The merger uses the same procedure if a merge queue removes the pull request after a
-failed check.
+head. The merger can ask the other workers for evidence over Envoy. It retries a transient check
+failure at the same head. If the queue removed the pull request for that failure, the merger
+enqueues the same head again. It fixes in the forward merge what newer base code breaks. If the
+fix is a change to the pull request's own logic and no forward merge resolves it, the merger
+returns the issue to `implementing` with `request_backward_move`.
+
+If a check still blocks the merge and also fails on the base, the merger waits only when the issue
+that tracks the failure is claimed and `in_progress` and its holder said on Envoy they are working
+on it now. It tells the holder what it needs and by when. If the fix reaches the base in time,
+the merger merges the base forward. Otherwise, it returns the issue to `implementing` and names
+the check and that it fails on the base. The implementer follows the worker's findings guide to
+choose where the fix goes.
 
 A merge queue that takes the pull request out for a conflict says which conflict it was in the
 pull request's merge state, which GitHub computes once the entry is no longer queued. A head
