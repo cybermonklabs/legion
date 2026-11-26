@@ -43,6 +43,7 @@ import type {
   Decision,
   DisplayTree,
   IDCandidate,
+  IssueCoverage,
   IssueDecisions,
   IssueDetails,
 } from "../../api/types";
@@ -9181,6 +9182,112 @@ test("with no filter the outline says the issue holds nothing while the names re
       "the names read is not out"
     ).toBe(1);
   } finally {
+    names.mockRestore();
+  }
+});
+
+/** The words of the spec's one statement, `t1` (`specBlock`). */
+const STATEMENT_WORDS = "The page draws the plan.";
+
+/** The coverage read's answer for the spec's one statement, `t1`: one check and no plan task
+ *  serve it, and nothing is missing. */
+const STATEMENT_COVERAGE: IssueCoverage = {
+  gaps: [],
+  has_plan: false,
+  issue: KEY,
+  requirements: [
+    { block_id: "t1", checks: 1, gaps: [], plan_tasks: 0, ref: SPEC_BLOCK, text: STATEMENT_WORDS },
+  ],
+  spec_artifact_id: specDocument.id,
+};
+
+/** What decides an element's height where nothing is laid out: its tag, its classes, its style,
+ *  and the same of each element it holds, but of `line`, whose own box alone is read, whatever it
+ *  holds. */
+interface Layout {
+  readonly className: string | null;
+  readonly inner: readonly Layout[];
+  readonly style: string | null;
+  readonly tag: string;
+}
+
+function layoutOf(element: Element, line: Element | null): Layout {
+  return {
+    className: element.getAttribute("class"),
+    inner: element === line ? [] : [...element.children].map((child) => layoutOf(child, line)),
+    style: element.getAttribute("style"),
+    tag: element.tagName,
+  };
+}
+
+// A statement's counts of what serves it come from the coverage read, which can answer after the
+// rows are drawn from the tree read. While it is out the statement's row draws the line the
+// counts go in, empty and one line of the counts' own type tall (`NodeRow`'s `countsHeld`), so
+// the counts arrive into that line and the row keeps its height. Happy-dom lays nothing out, so
+// the row's height is read as what decides it (`layoutOf`). The page is opened at the address of
+// a comment of the issue, so its focus lands there, and not on the row the case reads.
+test("while the coverage read is out a statement's row draws an empty counts line of the counts' type, and the row keeps its height when the counts arrive", async () => {
+  setViewport(1440);
+  const coverage = Promise.withResolvers<IssueCoverage>();
+  const coverageRead = spyOn(api, "getIssueCoverage").mockReturnValue(coverage.promise);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { view } = renderAddressedBody(
+      buildIssuePath({ id: "head-a", key: KEY, kind: "comment" }),
+      TWO_THREADS.slice(0, 2),
+      BodySlot,
+      {
+        issue: issueDetails(),
+        nodes: [specBlock("requirement", STATEMENT_WORDS)],
+        unread: [issueCoverageQuery(KEY).queryKey],
+      }
+    );
+    const row = await waitFor(() => {
+      const [drawn] = rowsFor(view.container, "spec#b-t1");
+      if (drawn === undefined) throw new Error("the statement's row was not drawn");
+      return drawn;
+    });
+    await nextFrame();
+    expect(coverageRead, "the coverage read was never sent").toHaveBeenCalled();
+    const line = row.querySelector<HTMLElement>("[data-node-counts]");
+    expect(
+      line,
+      "the statement's row drew no counts line with the coverage read out"
+    ).not.toBeNull();
+    expect(line?.textContent, "the counts line drew words with the coverage read out").toBe("");
+    expect(
+      [line?.classList.contains("min-h-4"), line?.classList.contains("text-xs")],
+      "the counts line is not one line of the counts' type tall (`text-xs`, 16 px)"
+    ).toEqual([true, true]);
+    const before = layoutOf(row, line);
+
+    await act(async () => coverage.resolve(STATEMENT_COVERAGE));
+    await waitFor(() =>
+      expect(line?.textContent, "the counts were not drawn once the coverage read answered").toBe(
+        `${CONTROL_LABELS.serving_checks}: 1, ${CONTROL_LABELS.serving_plan_tasks}: 0`
+      )
+    );
+    // The page lands on the address once every read the rows come from has answered.
+    await waitFor(() =>
+      expect(
+        focusedRow(view.container),
+        "the page opened on another row than the thread's head"
+      ).toBe(TWO_THREADS[0]?.id)
+    );
+    expect(
+      rowsFor(view.container, "spec#b-t1"),
+      "the statement's row was drawn again as another element"
+    ).toEqual([row]);
+    expect(
+      row.querySelector("[data-node-counts]"),
+      "the counts were drawn in another line than the one the row held for them"
+    ).toBe(line);
+    expect(
+      layoutOf(row, line),
+      "what decides the statement's row's height changed when the counts arrived"
+    ).toEqual(before);
+  } finally {
+    coverageRead.mockRestore();
     names.mockRestore();
   }
 });
