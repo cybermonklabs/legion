@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import type { CommentNodeAnchor } from "@legion/contracts";
 
 import type { DisplayTree } from "../../../api/types";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { node } from "../decisions-filter/decisions-fixtures";
-
 import { NODE_TYPE_NAMES } from "../page-words";
 import { GATES, type GateName } from "./gates";
 import { clearSelection, drawTree, recorded, rowOf, setSelection } from "./margin-fixtures";
@@ -25,6 +25,13 @@ import {
  * (G3a); a part of an ask, a comment and a message write a reply with a quote (G4); a lens, a
  * finding, a risk, a constraint and a result anchor on the node (G2).
  */
+
+// A row draws its words through the shared renderer, whose Markdown engine loads lazily: until
+// it has loaded, a row draws no words for `rangeOf` to find. The rows run in random order, so
+// the file loads the engine before its first row.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The kinds of 1253 R30, which the server's walk names; each is also a `NodeType`. */
 const R30_KINDS = [

@@ -774,8 +774,146 @@
       ]
     }
   ],
-  "gate": "B0",
-  "recordedOn": "296d5d0c29bb1b4362261e594ea69e92ecb0bfe7",
+  "gate": "G2",
+  "nodeCases": [
+    {
+      "item": "lens-anchor",
+      "node": "lens",
+      "plainText": "The verdict keeps the verdict near its source.",
+      "text": "The verdict keeps the verdict near its source.",
+      "text_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "The verdict keeps the verdict near its source.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "node_anchor": {
+              "node": {
+                "id": "lens",
+                "kind": "lens",
+                "state": "live"
+              },
+              "occurrence": 0,
+              "orphaned": false,
+              "quote": "verdict"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 11,
+              "start": 4
+            },
+            "quote": "verdict"
+          }
+        },
+        {
+          "answer": {
+            "node_anchor": {
+              "node": {
+                "id": "lens",
+                "kind": "lens",
+                "state": "live"
+              },
+              "occurrence": 1,
+              "orphaned": false,
+              "quote": "verdict"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": {
+              "end": 29,
+              "start": 22
+            },
+            "quote": "verdict"
+          }
+        }
+      ]
+    },
+    {
+      "item": "risk-anchor",
+      "node": "risk",
+      "plainText": "A delay hides the delay from the next reader.",
+      "text": "A delay hides the delay from the next reader.",
+      "text_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A delay hides the delay from the next reader.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "writes": [
+        {
+          "answer": {
+            "node_anchor": {
+              "node": {
+                "id": "risk",
+                "kind": "risk",
+                "state": "live"
+              },
+              "occurrence": 0,
+              "orphaned": false,
+              "quote": "delay"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 0,
+            "offsets": {
+              "end": 7,
+              "start": 2
+            },
+            "quote": "delay"
+          }
+        },
+        {
+          "answer": {
+            "node_anchor": {
+              "node": {
+                "id": "risk",
+                "kind": "risk",
+                "state": "live"
+              },
+              "occurrence": 1,
+              "orphaned": false,
+              "quote": "delay"
+            },
+            "status": 201
+          },
+          "selection": {
+            "occurrence": 1,
+            "offsets": {
+              "end": 23,
+              "start": 18
+            },
+            "quote": "delay"
+          }
+        }
+      ]
+    }
+  ],
+  "recordedOn": "12b95870e6dbaa7ac05ef5388cdd02c9f72ee6f9",
   "skipped": [
     {
       "gate": "REPLY_QUOTE",
@@ -784,14 +922,6 @@
     {
       "gate": "REPLY_QUOTE",
       "item": "message-block-reply"
-    },
-    {
-      "gate": "NODE_ANCHOR",
-      "item": "lens-anchor"
-    },
-    {
-      "gate": "NODE_ANCHOR",
-      "item": "risk-anchor"
     }
   ]
 }
