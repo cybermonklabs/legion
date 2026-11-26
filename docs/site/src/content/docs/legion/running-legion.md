@@ -455,7 +455,8 @@ What each part is for:
   ([Envoy](/legion/dispatch/envoy/#how-slack-mentions-arrive-and-how-an-agent-replies) says how
   the mentions arrive and where the controller's reply token is stored). A channel belongs to one
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
-  controller, which resumes its session hearing the new list.
+  controller, which resumes its session hearing the new list, unless the session is older than
+  `controller_session_max_age_hours`, when the relaunch starts a fresh session.
 - **`projects.<KEY>.production_check`** (optional) decides whether a merge that closes one of the
   project's issues opens a
   [production check](/legion/legion/concepts/#the-production-check), and which role works it. It
@@ -1223,11 +1224,15 @@ Set `controller: daemon` in `legion.yaml` (it needs `dispatch_url`) and restart 
 and supervises it the same way; the rest of this section is the Kubernetes runtime's.
 It launches the controller at boot as an Agent Sandbox pod, `legion-<project>-controller`, with the
 same model access as the workers and a volume of its own, which its Sandbox owns, relaunches it when it
-dies, and resumes the same session. You start nothing, and `legion controller start` against this
-daemon is refused: one controller runs per project. Nobody types into the pod: reach the controller
-through Dispatch (a message to its session on the Agents page, a reply to an ask it opened, a
-mention) and read its session with `kubectl logs <pod> -c controller`, its one container's log. A
-Send from the Agents page is answered in the conversation that page shows.
+dies, and resumes the same session, unless two launches of that session in a row end before it
+finishes another turn, or the session is older than `controller_session_max_age_hours` (72 by
+default) when the daemon relaunches it: then the daemon starts a fresh session instead. The
+daemon stops no live controller for its age. You start nothing, and
+`legion controller start` against this daemon is refused: one controller runs per project. Nobody
+types into the pod: reach the controller through Dispatch (a message to its session on the Agents
+page, a reply to an ask it opened, a mention) and read its session with
+`kubectl logs <pod> -c controller`, its one container's log. A Send from the Agents page is
+answered in the conversation that page shows.
 `legion claims list` shows its claim.
 Size its pod under `runtime.kubernetes.resources.controller`: with no requests it is the first pod
 the kubelet evicts under memory pressure.

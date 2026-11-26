@@ -125,7 +125,15 @@ type Settings struct {
 	PodUpdateRoundsPerMinute *int                    `json:"pod_update_rounds_per_minute"`
 	ReviewRoundCap           int                     `json:"review_round_cap"`
 	Controller               config.ControllerLaunch `json:"controller"`
-	Capabilities             CapabilitiesSettings    `json:"capabilities"`
+	// ControllerTurnBoundMinutes is `controller_turn_bound_minutes` and
+	// ControllerSessionMaxAgeHours `controller_session_max_age_hours`, decimals as the file takes
+	// them and 0 the rule off: how long a turn of the daemon's own controller may stay open before
+	// its keeper ends the launch, and how old its session may grow before a relaunch the daemon
+	// makes of it starts a fresh one (dispatch://INFRA-2045 R2 and R3). No reader types either
+	// (answers.go's typedSettings), so neither takes a contract number.
+	ControllerTurnBoundMinutes   float64              `json:"controller_turn_bound_minutes"`
+	ControllerSessionMaxAgeHours float64              `json:"controller_session_max_age_hours"`
+	Capabilities                 CapabilitiesSettings `json:"capabilities"`
 	// WorkerBackends is `worker_backends`, the roles that run on a backend other than Oh My Pi by
 	// role, `{}` while the file names none.
 	WorkerBackends map[string]string `json:"worker_backends"`
@@ -592,6 +600,8 @@ func SettingsOf(cfg config.Config) Settings {
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
 		Controller:                              cfg.ControllerLaunch,
+		ControllerTurnBoundMinutes:              cfg.ControllerTurnBound.Minutes(),
+		ControllerSessionMaxAgeHours:            cfg.ControllerSessionMaxAge.Hours(),
 		Capabilities:                            CapabilitiesSettings{Decided: make(map[string]string, len(cfg.Capabilities.Decided))},
 		WorkerBackends:                          make(map[string]string, len(cfg.WorkerBackends)),
 		RoleConfigFiles:                         make(map[string][]string, len(cfg.RoleConfigFiles)),

@@ -108,7 +108,7 @@ on:
       - 'packages/daemon/internal/redact/**'
       - 'packages/daemon/internal/registry/**'
       - 'packages/daemon/internal/replay/*'
-      - 'packages/daemon/internal/repocache/**'
+      - 'packages/daemon/internal/repocache/*'
       - 'packages/daemon/internal/reviewround/**'
       - 'packages/daemon/internal/rolefile/**'
       - 'packages/daemon/internal/runtime/*'
