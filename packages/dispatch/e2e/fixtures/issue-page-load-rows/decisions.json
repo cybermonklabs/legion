@@ -1,10 +1,10 @@
 {
-  "commit": "f7302478abd441fec1d8b78a4c11b36df2d82ee0",
+  "commit": "7ffcc8c781a141f869271070863a6985155a1fa1",
   "format": 4,
   "parts": [
     "4399514c57bbe180fe96d24cb8b7b3659bba7e37",
-    "e18d2df4f6b3213f7774eff779db623dc29f8062",
-    "f7302478abd441fec1d8b78a4c11b36df2d82ee0"
+    "7ffcc8c781a141f869271070863a6985155a1fa1",
+    "e18d2df4f6b3213f7774eff779db623dc29f8062"
   ],
   "view": "decisions",
   "widths": {
@@ -27,9 +27,36 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[11]",
+              "name": "children[6]",
               "ranks": {
                 "key": 0
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[6]}\":\n    - /url: /issues/{children[6]}\n  - text: \"Child 7: the reply line names the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[6]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[6]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[6]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[6]} Child 7: the reply line names the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[11]",
+              "ranks": {
+                "key": 1
               }
             }
           ],
@@ -56,7 +83,7 @@
             {
               "name": "children[10]",
               "ranks": {
-                "key": 1
+                "key": 2
               }
             }
           ],
@@ -81,60 +108,28 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[9]",
-              "ranks": {
-                "key": 2
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[9]}\":\n    - /url: /issues/{children[9]}\n  - text: \"Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[11]}\":\n    - /url: /issues/{children[11]}",
-          "hidden": [],
-          "key": "{children[9]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[9]}", "/issues/{children[11]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[9]}",
-              "role": null,
-              "tag": "a"
-            },
-            {
-              "name": "{children[11]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[9]} Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by {children[11]}"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[7]",
+              "name": "children[8]",
               "ranks": {
                 "key": 3
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[7]}\":\n    - /url: /issues/{children[7]}\n  - text: \"Child 8: the outline draws one row for each statement, with its checks under itTesting\"",
+          "aria": "- listitem:\n  - link \"{children[8]}\":\n    - /url: /issues/{children[8]}\n  - text: \"Child 9: the contents pane pages every node the answer holds, in the order the read givesDone\"",
           "hidden": [],
-          "key": "{children[7]}",
+          "key": "{children[8]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[7]}"],
+          "links": ["/issues/{children[8]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[7]}",
+              "name": "{children[8]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[7]} Child 8: the outline draws one row for each statement, with its checks under itTesting"
+          "words": "{children[8]} Child 9: the contents pane pages every node the answer holds, in the order the read givesDone"
         },
         {
           "address": null,
@@ -167,36 +162,9 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[17]",
-              "ranks": {
-                "key": 5
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[17]}\":\n    - /url: /issues/{children[17]}\n  - text: \"Child 18: the reply line reads every node the answer holds, in the order the read givesDone\"",
-          "hidden": [],
-          "key": "{children[17]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[17]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[17]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[17]} Child 18: the reply line reads every node the answer holds, in the order the read givesDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
               "name": "children[14]",
               "ranks": {
-                "key": 6
+                "key": 5
               }
             }
           ],
@@ -226,36 +194,9 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[12]",
-              "ranks": {
-                "key": 7
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[12]}\":\n    - /url: /issues/{children[12]}\n  - text: \"Child 13: a folded branch orders the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[12]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[12]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[12]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[12]} Child 13: a folded branch orders the next page only when the reader presses for itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
               "name": "children[16]",
               "ranks": {
-                "key": 8
+                "key": 6
               }
             }
           ],
@@ -280,9 +221,36 @@
           "address": null,
           "anchors": [
             {
+              "name": "children[17]",
+              "ranks": {
+                "key": 7
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[17]}\":\n    - /url: /issues/{children[17]}\n  - text: \"Child 18: the reply line reads every node the answer holds, in the order the read givesDone\"",
+          "hidden": [],
+          "key": "{children[17]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[17]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[17]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[17]} Child 18: the reply line reads every node the answer holds, in the order the read givesDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
               "name": "children[13]",
               "ranks": {
-                "key": 9
+                "key": 8
               }
             }
           ],
@@ -307,28 +275,55 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[2]",
+              "name": "children[12]",
+              "ranks": {
+                "key": 9
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[12]}\":\n    - /url: /issues/{children[12]}\n  - text: \"Child 13: a folded branch orders the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[12]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[12]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[12]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[12]} Child 13: a folded branch orders the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[0]",
               "ranks": {
                 "key": 10
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[2]}\":\n    - /url: /issues/{children[2]}\n  - text: \"Child 3: the first load holds every node the answer holds, in the order the read givesTriage\"",
+          "aria": "- listitem:\n  - link \"{children[0]}\":\n    - /url: /issues/{children[0]}\n  - text: \"Child 1: each page of comments pages the next page only when the reader presses for itIn progress\"",
           "hidden": [],
-          "key": "{children[2]}",
+          "key": "{children[0]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[2]}"],
+          "links": ["/issues/{children[0]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[2]}",
+              "name": "{children[0]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[2]} Child 3: the first load holds every node the answer holds, in the order the read givesTriage"
+          "words": "{children[0]} Child 1: each page of comments pages the next page only when the reader presses for itIn progress"
         },
         {
           "address": null,
@@ -361,9 +356,117 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[20]",
+              "name": "children[22]",
               "ranks": {
                 "key": 12
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[22]}\":\n    - /url: /issues/{children[22]}\n  - text: \"Child 23: each page of comments names one row for each statement, with its checks under itBacklog\"",
+          "hidden": [],
+          "key": "{children[22]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[22]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[22]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[22]} Child 23: each page of comments names one row for each statement, with its checks under itBacklog"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[23]",
+              "ranks": {
+                "key": 13
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[23]}\":\n    - /url: /issues/{children[23]}\n  - text: \"Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review\"",
+          "hidden": [],
+          "key": "{children[23]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[23]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[23]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[23]} Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[18]",
+              "ranks": {
+                "key": 14
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}\n  - text: \"Child 19: the outline holds the next page only when the reader presses for itIn progress\"",
+          "hidden": [],
+          "key": "{children[18]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[18]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[18]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[18]} Child 19: the outline holds the next page only when the reader presses for itIn progress"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[21]",
+              "ranks": {
+                "key": 15
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[21]}\":\n    - /url: /issues/{children[21]}\n  - text: \"Child 22: the tree read counts the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[21]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[21]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[21]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[21]} Child 22: the tree read counts the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[20]",
+              "ranks": {
+                "key": 16
               }
             }
           ],
@@ -393,144 +496,9 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[18]",
-              "ranks": {
-                "key": 13
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}\n  - text: \"Child 19: the outline holds the next page only when the reader presses for itIn progress\"",
-          "hidden": [],
-          "key": "{children[18]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[18]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[18]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[18]} Child 19: the outline holds the next page only when the reader presses for itIn progress"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[21]",
-              "ranks": {
-                "key": 14
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[21]}\":\n    - /url: /issues/{children[21]}\n  - text: \"Child 22: the tree read counts the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[21]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[21]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[21]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[21]} Child 22: the tree read counts the next page only when the reader presses for itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[22]",
-              "ranks": {
-                "key": 15
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[22]}\":\n    - /url: /issues/{children[22]}\n  - text: \"Child 23: each page of comments names one row for each statement, with its checks under itBacklog\"",
-          "hidden": [],
-          "key": "{children[22]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[22]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[22]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[22]} Child 23: each page of comments names one row for each statement, with its checks under itBacklog"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[23]",
-              "ranks": {
-                "key": 16
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[23]}\":\n    - /url: /issues/{children[23]}\n  - text: \"Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review\"",
-          "hidden": [],
-          "key": "{children[23]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[23]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[23]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[23]} Child 24: a folded branch draws every node the answer holds, in the order the read givesNeeds review"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[25]",
-              "ranks": {
-                "key": 17
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[25]}\":\n    - /url: /issues/{children[25]}\n  - text: \"Child 26: the children's section reads one row for each statement, with its checks under itTesting\"",
-          "hidden": [],
-          "key": "{children[25]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[25]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[25]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[25]} Child 26: the children's section reads one row for each statement, with its checks under itTesting"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
               "name": "children[24]",
               "ranks": {
-                "key": 18
+                "key": 17
               }
             }
           ],
@@ -555,28 +523,55 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[28]",
+              "name": "children[29]",
+              "ranks": {
+                "key": 18
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[29]}\":\n    - /url: /issues/{children[29]}\n  - text: \"Child 30: the outline counts every node the answer holds, in the order the read givesTriage\"",
+          "hidden": [],
+          "key": "{children[29]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[29]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[29]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[29]} Child 30: the outline counts every node the answer holds, in the order the read givesTriage"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[25]",
               "ranks": {
                 "key": 19
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[28]}\":\n    - /url: /issues/{children[28]}\n  - text: \"Child 29: the reply line orders one row for each statement, with its checks under itDone\"",
+          "aria": "- listitem:\n  - link \"{children[25]}\":\n    - /url: /issues/{children[25]}\n  - text: \"Child 26: the children's section reads one row for each statement, with its checks under itTesting\"",
           "hidden": [],
-          "key": "{children[28]}",
+          "key": "{children[25]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[28]}"],
+          "links": ["/issues/{children[25]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[28]}",
+              "name": "{children[25]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[28]} Child 29: the reply line orders one row for each statement, with its checks under itDone"
+          "words": "{children[25]} Child 26: the children's section reads one row for each statement, with its checks under itTesting"
         },
         {
           "address": "/issues/{key}#b-d1",
@@ -859,108 +854,12 @@
           "words": "decisionPlanner · 26 NovWaiting for reviewDecision 29: The outline holds each reply under the post it answersThe first load orders the first 50 children of a node and a control for the rest, since the tree read holds one row for each statement, with its checks under it. It changes mergeTreePages.informsEach page of comments keeps…KeepChangein the conversation ›"
         },
         {
-          "address": "/issues/{key}#b-q7",
-          "anchors": [
-            {
-              "name": "ask \"Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\"",
-              "ranks": {
-                "closed": 33,
-                "made": 222
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Does each page of comments reads a child''s status, what blocks it and who holds it on every issue? Yes No Answer Written by a person alice The plan''s chart draws the questions that wait on the reader before anything else. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The plan's chart draws the questions that wait on the reader before anything else.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\"}",
-          "hidden": [],
-          "key": "spec#b-q7",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes each page of comments reads a child's status, what blocks it and who holds it on every issue?○Yes○NoAnsweraliceThe plan's chart draws the questions that wait on the reader before anything else.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}#b-q10",
-          "anchors": [
-            {
-              "name": "ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"",
-              "ranks": {
-                "closed": 32,
-                "made": 222
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue? Yes No Answer Written by a person alice The tree read pages the 200 newest comments and the position of the oldest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}",
-          "hidden": [],
-          "key": "spec#b-q10",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the first load keeps the 200 newest comments and the position of the oldest on every issue?○Yes○NoAnsweraliceThe tree read pages the 200 newest comments and the position of the oldest.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}#b-q11",
-          "anchors": [
-            {
-              "name": "ask \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\"",
-              "ranks": {
-                "closed": 31,
-                "made": 222
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue? Yes No Answer Written by a person alice The children''s section keeps the next page only when the reader presses for it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\"}",
-          "hidden": [],
-          "key": "spec#b-q11",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the tree read reads the first 50 children of a node and a control for the rest on every issue?○Yes○NoAnsweraliceThe children's section keeps the next page only when the reader presses for it.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}#b-q9",
-          "anchors": [
-            {
-              "name": "ask \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\"",
-              "ranks": {
-                "closed": 30,
-                "made": 222
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue? Yes No Answer Written by a person alice The reply line counts each reply under the post it answers. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The reply line counts each reply under the post it answers.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\"}",
-          "hidden": [],
-          "key": "spec#b-q9",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the verification filter counts every node the answer holds, in the order the read gives on every issue?○Yes○NoAnsweraliceThe reply line counts each reply under the post it answers.in the conversation ›"
-        },
-        {
           "address": "/issues/{key}#b-q8",
           "anchors": [
             {
               "name": "ask \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\"",
               "ranks": {
-                "closed": 29,
+                "closed": 33,
                 "made": 222
               }
             }
@@ -979,76 +878,100 @@
           "words": "questionPlanner · 26 NovAnsweredDoes the contents pane draws the words of a row whole, with no cut at six lines on every issue?○Yes○NoAnsweraliceThe first load holds every node the answer holds, in the order the read gives.in the conversation ›"
         },
         {
-          "address": "/issues/{key}#b-q2",
+          "address": "/issues/{key}#b-q9",
           "anchors": [
             {
-              "name": "ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"",
+              "name": "ask \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\"",
               "ranks": {
-                "closed": 28,
+                "closed": 32,
                 "made": 222
               }
             }
           ],
-          "aria": "- 'treeitem \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue? Yes No Answer Written by a person alice Each page of comments pages the next page only when the reader presses for it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: Each page of comments pages the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}",
+          "aria": "- 'treeitem \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue? Yes No Answer Written by a person alice The reply line counts each reply under the post it answers. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The reply line counts each reply under the post it answers.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\"}",
           "hidden": [],
-          "key": "spec#b-q2",
+          "key": "spec#b-q9",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}"
+            "/issues/{key}/asks/{ask \"Does the verification filter counts every node the answer holds, in the order the read gives on every issue?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the view row keeps the first 50 children of a node and a control for the rest on every issue?○Yes○NoAnsweraliceEach page of comments pages the next page only when the reader presses for it.in the conversation ›"
+          "words": "questionPlanner · 26 NovAnsweredDoes the verification filter counts every node the answer holds, in the order the read gives on every issue?○Yes○NoAnsweraliceThe reply line counts each reply under the post it answers.in the conversation ›"
         },
         {
-          "address": "/issues/{key}#b-q4",
+          "address": "/issues/{key}#b-q7",
           "anchors": [
             {
-              "name": "ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"",
+              "name": "ask \"Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\"",
               "ranks": {
-                "closed": 27,
+                "closed": 31,
                 "made": 222
               }
             }
           ],
-          "aria": "- 'treeitem \"Does the plan''s chart draws the questions that wait on the reader before anything else on every issue? Yes No Answer Written by a person alice The Contents pane names a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The Contents pane names a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}",
+          "aria": "- 'treeitem \"Does each page of comments reads a child''s status, what blocks it and who holds it on every issue? Yes No Answer Written by a person alice The plan''s chart draws the questions that wait on the reader before anything else. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The plan's chart draws the questions that wait on the reader before anything else.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\"}",
           "hidden": [],
-          "key": "spec#b-q4",
+          "key": "spec#b-q7",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}"
+            "/issues/{key}/asks/{ask \"Does each page of comments reads a child's status, what blocks it and who holds it on every issue?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the plan's chart draws the questions that wait on the reader before anything else on every issue?○Yes○NoAnsweraliceThe Contents pane names a child's status, what blocks it and who holds it.in the conversation ›"
+          "words": "questionPlanner · 26 NovAnsweredDoes each page of comments reads a child's status, what blocks it and who holds it on every issue?○Yes○NoAnsweraliceThe plan's chart draws the questions that wait on the reader before anything else.in the conversation ›"
         },
         {
-          "address": "/issues/{key}#b-q5",
+          "address": "/issues/{key}#b-q11",
           "anchors": [
             {
-              "name": "ask \"Does the reply line counts each reply under the post it answers on every issue?\"",
+              "name": "ask \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\"",
               "ranks": {
-                "closed": 26,
+                "closed": 30,
                 "made": 222
               }
             }
           ],
-          "aria": "- 'treeitem \"Does the reply line counts each reply under the post it answers on every issue? Yes No Answer Written by a person alice A folded branch reads one row for each statement, with its checks under it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the reply line counts each reply under the post it answers on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: A folded branch reads one row for each statement, with its checks under it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the reply line counts each reply under the post it answers on every issue?\"}",
+          "aria": "- 'treeitem \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue? Yes No Answer Written by a person alice The children''s section keeps the next page only when the reader presses for it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\"}",
           "hidden": [],
-          "key": "spec#b-q5",
+          "key": "spec#b-q11",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Does the reply line counts each reply under the post it answers on every issue?\"}"
+            "/issues/{key}/asks/{ask \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the reply line counts each reply under the post it answers on every issue?○Yes○NoAnsweraliceA folded branch reads one row for each statement, with its checks under it.in the conversation ›"
+          "words": "questionPlanner · 26 NovAnsweredDoes the tree read reads the first 50 children of a node and a control for the rest on every issue?○Yes○NoAnsweraliceThe children's section keeps the next page only when the reader presses for it.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}#b-q10",
+          "anchors": [
+            {
+              "name": "ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"",
+              "ranks": {
+                "closed": 29,
+                "made": 222
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue? Yes No Answer Written by a person alice The tree read pages the 200 newest comments and the position of the oldest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}",
+          "hidden": [],
+          "key": "spec#b-q10",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredDoes the first load keeps the 200 newest comments and the position of the oldest on every issue?○Yes○NoAnsweraliceThe tree read pages the 200 newest comments and the position of the oldest.in the conversation ›"
         },
         {
           "address": "/issues/{key}#b-q3",
@@ -1056,7 +979,7 @@
             {
               "name": "ask \"Does a folded branch reads one row for each statement, with its checks under it on every issue?\"",
               "ranks": {
-                "closed": 25,
+                "closed": 28,
                 "made": 222
               }
             }
@@ -1080,7 +1003,7 @@
             {
               "name": "ask \"Does the children's section keeps the next page only when the reader presses for it on every issue?\"",
               "ranks": {
-                "closed": 24,
+                "closed": 27,
                 "made": 222
               }
             }
@@ -1097,6 +1020,78 @@
           "tabStop": false,
           "tabStops": [],
           "words": "questionPlanner · 26 NovAnsweredDoes the children's section keeps the next page only when the reader presses for it on every issue?○Yes○NoAnsweraliceThe Verification filter orders the words of a row whole, with no cut at six lines.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}#b-q4",
+          "anchors": [
+            {
+              "name": "ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"",
+              "ranks": {
+                "closed": 26,
+                "made": 222
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Does the plan''s chart draws the questions that wait on the reader before anything else on every issue? Yes No Answer Written by a person alice The Contents pane names a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The Contents pane names a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}",
+          "hidden": [],
+          "key": "spec#b-q4",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredDoes the plan's chart draws the questions that wait on the reader before anything else on every issue?○Yes○NoAnsweraliceThe Contents pane names a child's status, what blocks it and who holds it.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}#b-q5",
+          "anchors": [
+            {
+              "name": "ask \"Does the reply line counts each reply under the post it answers on every issue?\"",
+              "ranks": {
+                "closed": 25,
+                "made": 222
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Does the reply line counts each reply under the post it answers on every issue? Yes No Answer Written by a person alice A folded branch reads one row for each statement, with its checks under it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the reply line counts each reply under the post it answers on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: A folded branch reads one row for each statement, with its checks under it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the reply line counts each reply under the post it answers on every issue?\"}",
+          "hidden": [],
+          "key": "spec#b-q5",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Does the reply line counts each reply under the post it answers on every issue?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredDoes the reply line counts each reply under the post it answers on every issue?○Yes○NoAnsweraliceA folded branch reads one row for each statement, with its checks under it.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}#b-q2",
+          "anchors": [
+            {
+              "name": "ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"",
+              "ranks": {
+                "closed": 24,
+                "made": 222
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue? Yes No Answer Written by a person alice Each page of comments pages the next page only when the reader presses for it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: Each page of comments pages the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}",
+          "hidden": [],
+          "key": "spec#b-q2",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredDoes the view row keeps the first 50 children of a node and a control for the rest on every issue?○Yes○NoAnsweraliceEach page of comments pages the next page only when the reader presses for it.in the conversation ›"
         },
         {
           "address": "/issues/{key}#b-q1",
@@ -1123,28 +1118,52 @@
           "words": "questionPlanner · 26 NovAnsweredDoes the outline counts the 200 newest comments and the position of the oldest on every issue?○Yes○NoAnsweraliceThe outline counts the 200 newest comments and the position of the oldest.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}",
+          "address": "/issues/{key}/asks/{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}",
           "anchors": [
             {
-              "name": "ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"",
+              "name": "ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"",
               "ranks": {
                 "closed": 22,
-                "made": 22
+                "made": 19
               }
             }
           ],
-          "aria": "- 'treeitem \"Should each page of comments draws the questions that wait on the reader before anything else? Yes No in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should each page of comments draws the questions that wait on the reader before anything else?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}",
+          "aria": "- 'treeitem \"Should the tree read draws the words of a row whole, with no cut at six lines? Yes No in the conversation question question Written by an agent Reviewer · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the tree read draws the words of a row whole, with no cut at six lines?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}",
           "hidden": [],
-          "key": "{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}",
+          "key": "{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}"
+            "/issues/{key}/asks/{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionTester · 26 NovResolvedShould each page of comments draws the questions that wait on the reader before anything else?○Yes○Noin the conversation ›"
+          "words": "questionReviewer · 26 NovResolvedShould the tree read draws the words of a row whole, with no cut at six lines?○Yes○Noin the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"",
+              "ranks": {
+                "closed": 21,
+                "made": 20
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the view row keeps the 200 newest comments and the position of the oldest? in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the view row keeps the 200 newest comments and the position of the oldest?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionTester · 26 NovResolvedShould the view row keeps the 200 newest comments and the position of the oldest?in the conversation ›"
         },
         {
           "address": "/issues/{key}/asks/{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}",
@@ -1152,8 +1171,8 @@
             {
               "name": "ask \"Should the verification filter keeps the next page only when the reader presses for it?\"",
               "ranks": {
-                "closed": 21,
-                "made": 20
+                "closed": 20,
+                "made": 22
               }
             }
           ],
@@ -1176,7 +1195,7 @@
             {
               "name": "ask \"Should the reply line keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 20,
+                "closed": 19,
                 "made": 18
               }
             }
@@ -1195,76 +1214,28 @@
           "words": "questionReviewer · 26 NovResolvedShould the reply line keeps the first 50 children of a node and a control for the rest?in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
+          "address": "/issues/{key}/asks/{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}",
           "anchors": [
             {
-              "name": "ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"",
-              "ranks": {
-                "closed": 19,
-                "made": 19
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the view row keeps the 200 newest comments and the position of the oldest? in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the view row keeps the 200 newest comments and the position of the oldest?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionTester · 26 NovResolvedShould the view row keeps the 200 newest comments and the position of the oldest?in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}/asks/{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"",
+              "name": "ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"",
               "ranks": {
                 "closed": 18,
                 "made": 21
               }
             }
           ],
-          "aria": "- 'treeitem \"Should the tree read draws the words of a row whole, with no cut at six lines? Yes No in the conversation question question Written by an agent Reviewer · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the tree read draws the words of a row whole, with no cut at six lines?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}",
+          "aria": "- 'treeitem \"Should each page of comments draws the questions that wait on the reader before anything else? Yes No in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should each page of comments draws the questions that wait on the reader before anything else?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}",
           "hidden": [],
-          "key": "{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}",
+          "key": "{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"}"
+            "/issues/{key}/asks/{ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionReviewer · 26 NovResolvedShould the tree read draws the words of a row whole, with no cut at six lines?○Yes○Noin the conversation ›"
-        },
-        {
-          "address": "/issues/{key}/asks/{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"",
-              "ranks": {
-                "closed": 17,
-                "made": 16
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the contents pane keeps one row for each statement, with its checks under it? in the conversation question question Written by an agent Planner · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the contents pane keeps one row for each statement, with its checks under it?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovResolvedShould the contents pane keeps one row for each statement, with its checks under it?in the conversation ›"
+          "words": "questionTester · 26 NovResolvedShould each page of comments draws the questions that wait on the reader before anything else?○Yes○Noin the conversation ›"
         },
         {
           "address": "/issues/{key}/asks/{ask \"Should the first load draws each reply under the post it answers?\"}",
@@ -1272,8 +1243,8 @@
             {
               "name": "ask \"Should the first load draws each reply under the post it answers?\"",
               "ranks": {
-                "closed": 16,
-                "made": 15
+                "closed": 17,
+                "made": 17
               }
             }
           ],
@@ -1291,37 +1262,13 @@
           "words": "questionReviewer · 26 NovResolvedShould the first load draws each reply under the post it answers?○Yes○Noin the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"",
-              "ranks": {
-                "closed": 15,
-                "made": 17
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the outline keeps a child''s status, what blocks it and who holds it? in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the outline keeps a child's status, what blocks it and who holds it?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionTester · 26 NovResolvedShould the outline keeps a child's status, what blocks it and who holds it?in the conversation ›"
-        },
-        {
           "address": "/issues/{key}/asks/{ask \"Should a folded branch draws every node the answer holds, in the order the read gives?\"}",
           "anchors": [
             {
               "name": "ask \"Should a folded branch draws every node the answer holds, in the order the read gives?\"",
               "ranks": {
-                "closed": 14,
-                "made": 14
+                "closed": 16,
+                "made": 16
               }
             }
           ],
@@ -1344,8 +1291,8 @@
             {
               "name": "ask \"Should the children's section draws the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 13,
-                "made": 12
+                "closed": 15,
+                "made": 15
               }
             }
           ],
@@ -1363,13 +1310,61 @@
           "words": "questionTester · 26 NovResolvedShould the children's section draws the 200 newest comments and the position of the oldest?○Yes○Noin the conversation ›"
         },
         {
+          "address": "/issues/{key}/asks/{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"",
+              "ranks": {
+                "closed": 14,
+                "made": 14
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the outline keeps a child''s status, what blocks it and who holds it? in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the outline keeps a child's status, what blocks it and who holds it?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionTester · 26 NovResolvedShould the outline keeps a child's status, what blocks it and who holds it?in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"",
+              "ranks": {
+                "closed": 13,
+                "made": 13
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the contents pane keeps one row for each statement, with its checks under it? in the conversation question question Written by an agent Planner · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the contents pane keeps one row for each statement, with its checks under it?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovResolvedShould the contents pane keeps one row for each statement, with its checks under it?in the conversation ›"
+        },
+        {
           "address": "/issues/{key}/asks/{ask \"Should the plan's chart keeps the words of a row whole, with no cut at six lines?\"}",
           "anchors": [
             {
               "name": "ask \"Should the plan's chart keeps the words of a row whole, with no cut at six lines?\"",
               "ranks": {
                 "closed": 12,
-                "made": 13
+                "made": 12
               }
             }
           ],
@@ -1393,7 +1388,7 @@
               "name": "ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"",
               "ranks": {
                 "closed": 11,
-                "made": 10
+                "made": 11
               }
             }
           ],
@@ -1411,85 +1406,13 @@
           "words": "questionTester · 26 NovAnsweredShould the reply line draws a child's status, what blocks it and who holds it?●Yes○NoAnsweraliceEach page of comments reads a child's status, what blocks it and who holds it.The view row orders one row for each statement, with its checks under it.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"",
-              "ranks": {
-                "closed": 10,
-                "made": 11
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the verification filter draws the first 50 children of a node and a control for the rest? Yes No Answer Written by a person alice The Contents pane draws the words of a row whole, with no cut at six lines. A folded branch holds the questions that wait on the reader before anything else. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the verification filter draws the first 50 children of a node and a control for the rest?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The Contents pane draws the words of a row whole, with no cut at six lines.\n  - paragraph: A folded branch holds the questions that wait on the reader before anything else.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionReviewer · 26 NovAnsweredShould the verification filter draws the first 50 children of a node and a control for the rest?●Yes○NoAnsweraliceThe Contents pane draws the words of a row whole, with no cut at six lines.A folded branch holds the questions that wait on the reader before anything else.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should a folded branch keeps each reply under the post it answers?\"",
-              "ranks": {
-                "closed": 9,
-                "made": 8
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should a folded branch keeps each reply under the post it answers? Answer Written by a person alice The outline names the first 50 children of a node and a control for the rest. Each page of comments reads a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should a folded branch keeps each reply under the post it answers?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - paragraph: Each page of comments reads a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
-          "hidden": [],
-          "key": "{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionReviewer · 26 NovAnsweredShould a folded branch keeps each reply under the post it answers?AnsweraliceThe outline names the first 50 children of a node and a control for the rest.Each page of comments reads a child's status, what blocks it and who holds it.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"",
-              "ranks": {
-                "closed": 8,
-                "made": 9
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should each page of comments keeps every node the answer holds, in the order the read gives? Answer Written by a person alice The view row orders one row for each statement, with its checks under it. The Contents pane draws the words of a row whole, with no cut at six lines. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should each page of comments keeps every node the answer holds, in the order the read gives?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The view row orders one row for each statement, with its checks under it.\n  - paragraph: The Contents pane draws the words of a row whole, with no cut at six lines.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
-          "hidden": [],
-          "key": "{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredShould each page of comments keeps every node the answer holds, in the order the read gives?AnsweraliceThe view row orders one row for each statement, with its checks under it.The Contents pane draws the words of a row whole, with no cut at six lines.in the conversation ›"
-        },
-        {
           "address": "/issues/{key}/asks/{ask \"Should the view row draws the next page only when the reader presses for it?\"}",
           "anchors": [
             {
               "name": "ask \"Should the view row draws the next page only when the reader presses for it?\"",
               "ranks": {
-                "closed": 7,
-                "made": 7
+                "closed": 10,
+                "made": 8
               }
             }
           ],
@@ -1507,13 +1430,61 @@
           "words": "questionPlanner · 26 NovAnsweredShould the view row draws the next page only when the reader presses for it?●Yes○NoAnsweraliceThe Verification filter counts every node the answer holds, in the order the read gives.The plan's chart pages each reply under the post it answers.in the conversation ›"
         },
         {
+          "address": "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"",
+              "ranks": {
+                "closed": 9,
+                "made": 7
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should each page of comments keeps every node the answer holds, in the order the read gives? Answer Written by a person alice The view row orders one row for each statement, with its checks under it. The Contents pane draws the words of a row whole, with no cut at six lines. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should each page of comments keeps every node the answer holds, in the order the read gives?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The view row orders one row for each statement, with its checks under it.\n  - paragraph: The Contents pane draws the words of a row whole, with no cut at six lines.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
+          "hidden": [],
+          "key": "{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredShould each page of comments keeps every node the answer holds, in the order the read gives?AnsweraliceThe view row orders one row for each statement, with its checks under it.The Contents pane draws the words of a row whole, with no cut at six lines.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"",
+              "ranks": {
+                "closed": 8,
+                "made": 9
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the verification filter draws the first 50 children of a node and a control for the rest? Yes No Answer Written by a person alice The Contents pane draws the words of a row whole, with no cut at six lines. A folded branch holds the questions that wait on the reader before anything else. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the verification filter draws the first 50 children of a node and a control for the rest?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The Contents pane draws the words of a row whole, with no cut at six lines.\n  - paragraph: A folded branch holds the questions that wait on the reader before anything else.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionReviewer · 26 NovAnsweredShould the verification filter draws the first 50 children of a node and a control for the rest?●Yes○NoAnsweraliceThe Contents pane draws the words of a row whole, with no cut at six lines.A folded branch holds the questions that wait on the reader before anything else.in the conversation ›"
+        },
+        {
           "address": "/issues/{key}/asks/{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}",
           "anchors": [
             {
               "name": "ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 6,
-                "made": 6
+                "closed": 7,
+                "made": 10
               }
             }
           ],
@@ -1531,13 +1502,61 @@
           "words": "questionTester · 26 NovAnsweredShould the tree read keeps the questions that wait on the reader before anything else?AnsweraliceA folded branch holds the questions that wait on the reader before anything else.The Verification filter counts every node the answer holds, in the order the read gives.in the conversation ›"
         },
         {
+          "address": "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should a folded branch keeps each reply under the post it answers?\"",
+              "ranks": {
+                "closed": 6,
+                "made": 6
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should a folded branch keeps each reply under the post it answers? Answer Written by a person alice The outline names the first 50 children of a node and a control for the rest. Each page of comments reads a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should a folded branch keeps each reply under the post it answers?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - paragraph: Each page of comments reads a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
+          "hidden": [],
+          "key": "{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionReviewer · 26 NovAnsweredShould a folded branch keeps each reply under the post it answers?AnsweraliceThe outline names the first 50 children of a node and a control for the rest.Each page of comments reads a child's status, what blocks it and who holds it.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the outline draws one row for each statement, with its checks under it?\"",
+              "ranks": {
+                "closed": 5,
+                "made": 3
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the outline draws one row for each statement, with its checks under it? Yes No Answer Written by a person alice The children''s section keeps the next page only when the reader presses for it. The outline names the first 50 children of a node and a control for the rest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the outline draws one row for each statement, with its checks under it?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredShould the outline draws one row for each statement, with its checks under it?●Yes○NoAnsweraliceThe children's section keeps the next page only when the reader presses for it.The outline names the first 50 children of a node and a control for the rest.in the conversation ›"
+        },
+        {
           "address": "/issues/{key}/asks/{ask \"Should the plan's chart draws the questions that wait on the reader before anything else?\"}",
           "anchors": [
             {
               "name": "ask \"Should the plan's chart draws the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 5,
-                "made": 0
+                "closed": 4,
+                "made": 2
               }
             }
           ],
@@ -1560,8 +1579,8 @@
             {
               "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
               "ranks": {
-                "closed": 4,
-                "made": 1
+                "closed": 3,
+                "made": 4
               }
             }
           ],
@@ -1584,8 +1603,8 @@
             {
               "name": "ask \"Should the view row keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 3,
-                "made": 3
+                "closed": 2,
+                "made": 0
               }
             }
           ],
@@ -1603,61 +1622,13 @@
           "words": "questionReviewer · 26 NovAnsweredShould the view row keeps the first 50 children of a node and a control for the rest?AnsweraliceThe Verification filter orders the words of a row whole, with no cut at six lines.The plan's chart draws the questions that wait on the reader before anything else.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the outline draws one row for each statement, with its checks under it?\"",
-              "ranks": {
-                "closed": 2,
-                "made": 2
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the outline draws one row for each statement, with its checks under it? Yes No Answer Written by a person alice The children''s section keeps the next page only when the reader presses for it. The outline names the first 50 children of a node and a control for the rest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the outline draws one row for each statement, with its checks under it?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredShould the outline draws one row for each statement, with its checks under it?●Yes○NoAnsweraliceThe children's section keeps the next page only when the reader presses for it.The outline names the first 50 children of a node and a control for the rest.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}/asks/{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"",
-              "ranks": {
-                "closed": 1,
-                "made": 5
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the contents pane draws the words of a row whole, with no cut at six lines? Yes No Answer Written by a person alice The reply line counts each reply under the post it answers. The tree read pages the 200 newest comments and the position of the oldest. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the contents pane draws the words of a row whole, with no cut at six lines?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The reply line counts each reply under the post it answers.\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionReviewer · 26 NovAnsweredShould the contents pane draws the words of a row whole, with no cut at six lines?●Yes○NoAnsweraliceThe reply line counts each reply under the post it answers.The tree read pages the 200 newest comments and the position of the oldest.in the conversation ›"
-        },
-        {
           "address": "/issues/{key}/asks/{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}",
           "anchors": [
             {
               "name": "ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"",
               "ranks": {
-                "closed": 0,
-                "made": 4
+                "closed": 1,
+                "made": 5
               }
             }
           ],
@@ -1673,6 +1644,30 @@
           "tabStop": false,
           "tabStops": [],
           "words": "questionTester · 26 NovAnsweredShould the first load keeps the 200 newest comments and the position of the oldest?AnsweraliceThe tree read pages the 200 newest comments and the position of the oldest.The children's section keeps the next page only when the reader presses for it.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"",
+              "ranks": {
+                "closed": 0,
+                "made": 1
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the contents pane draws the words of a row whole, with no cut at six lines? Yes No Answer Written by a person alice The reply line counts each reply under the post it answers. The tree read pages the 200 newest comments and the position of the oldest. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the contents pane draws the words of a row whole, with no cut at six lines?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The reply line counts each reply under the post it answers.\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionReviewer · 26 NovAnsweredShould the contents pane draws the words of a row whole, with no cut at six lines?●Yes○NoAnsweraliceThe reply line counts each reply under the post it answers.The tree read pages the 200 newest comments and the position of the oldest.in the conversation ›"
         }
       ]
     },
@@ -2023,60 +2018,28 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[10]",
+              "name": "children[8]",
               "ranks": {
                 "key": 1
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[10]}\":\n    - /url: /issues/{children[10]}\n  - text: \"Child 11: the tree read holds one row for each statement, with its checks under itDone\"",
+          "aria": "- listitem:\n  - link \"{children[8]}\":\n    - /url: /issues/{children[8]}\n  - text: \"Child 9: the contents pane pages every node the answer holds, in the order the read givesDone\"",
           "hidden": [],
-          "key": "{children[10]}",
+          "key": "{children[8]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[10]}"],
+          "links": ["/issues/{children[8]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[10]}",
+              "name": "{children[8]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[10]} Child 11: the tree read holds one row for each statement, with its checks under itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[9]",
-              "ranks": {
-                "key": 2
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[9]}\":\n    - /url: /issues/{children[9]}\n  - text: \"Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[11]}\":\n    - /url: /issues/{children[11]}",
-          "hidden": [],
-          "key": "{children[9]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[9]}", "/issues/{children[11]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[9]}",
-              "role": null,
-              "tag": "a"
-            },
-            {
-              "name": "{children[11]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[9]} Child 10: the plan's chart reads the next page only when the reader presses for itIn progress · Blocked by {children[11]}"
+          "words": "{children[8]} Child 9: the contents pane pages every node the answer holds, in the order the read givesDone"
         },
         {
           "address": null,
@@ -2084,7 +2047,7 @@
             {
               "name": "children[11]",
               "ranks": {
-                "key": 3
+                "key": 2
               }
             }
           ],
@@ -2109,114 +2072,28 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[13]",
+              "name": "children[10]",
               "ranks": {
-                "key": 4
+                "key": 3
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[13]}\":\n    - /url: /issues/{children[13]}\n  - text: \"Child 14: the first load counts one row for each statement, with its checks under itBacklog\"",
+          "aria": "- listitem:\n  - link \"{children[10]}\":\n    - /url: /issues/{children[10]}\n  - text: \"Child 11: the tree read holds one row for each statement, with its checks under itDone\"",
           "hidden": [],
-          "key": "{children[13]}",
+          "key": "{children[10]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[13]}"],
+          "links": ["/issues/{children[10]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[13]}",
+              "name": "{children[10]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[13]} Child 14: the first load counts one row for each statement, with its checks under itBacklog"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[14]",
-              "ranks": {
-                "key": 5
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[14]}\":\n    - /url: /issues/{children[14]}\n  - text: \"Child 15: the children's section names every node the answer holds, in the order the read givesNeeds review · Blocked by\"\n  - link \"{children[16]}\":\n    - /url: /issues/{children[16]}",
-          "hidden": [],
-          "key": "{children[14]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[14]}", "/issues/{children[16]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[14]}",
-              "role": null,
-              "tag": "a"
-            },
-            {
-              "name": "{children[16]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[14]} Child 15: the children's section names every node the answer holds, in the order the read givesNeeds review · Blocked by {children[16]}"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[15]",
-              "ranks": {
-                "key": 6
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[15]}\":\n    - /url: /issues/{children[15]}\n  - text: \"Child 16: the view row draws the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[15]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[15]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[15]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[15]} Child 16: the view row draws the next page only when the reader presses for itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[12]",
-              "ranks": {
-                "key": 7
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[12]}\":\n    - /url: /issues/{children[12]}\n  - text: \"Child 13: a folded branch orders the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[12]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[12]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[12]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[12]} Child 13: a folded branch orders the next page only when the reader presses for itDone"
+          "words": "{children[10]} Child 11: the tree read holds one row for each statement, with its checks under itDone"
         },
         {
           "address": null,
@@ -2224,7 +2101,7 @@
             {
               "name": "children[16]",
               "ranks": {
-                "key": 8
+                "key": 4
               }
             }
           ],
@@ -2249,9 +2126,90 @@
           "address": null,
           "anchors": [
             {
+              "name": "children[12]",
+              "ranks": {
+                "key": 5
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[12]}\":\n    - /url: /issues/{children[12]}\n  - text: \"Child 13: a folded branch orders the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[12]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[12]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[12]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[12]} Child 13: a folded branch orders the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[13]",
+              "ranks": {
+                "key": 6
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[13]}\":\n    - /url: /issues/{children[13]}\n  - text: \"Child 14: the first load counts one row for each statement, with its checks under itBacklog\"",
+          "hidden": [],
+          "key": "{children[13]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[13]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[13]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[13]} Child 14: the first load counts one row for each statement, with its checks under itBacklog"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[15]",
+              "ranks": {
+                "key": 7
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[15]}\":\n    - /url: /issues/{children[15]}\n  - text: \"Child 16: the view row draws the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[15]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[15]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[15]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[15]} Child 16: the view row draws the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
               "name": "children[17]",
               "ranks": {
-                "key": 9
+                "key": 8
               }
             }
           ],
@@ -2271,6 +2229,38 @@
             }
           ],
           "words": "{children[17]} Child 18: the reply line reads every node the answer holds, in the order the read givesDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[14]",
+              "ranks": {
+                "key": 9
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[14]}\":\n    - /url: /issues/{children[14]}\n  - text: \"Child 15: the children's section names every node the answer holds, in the order the read givesNeeds review · Blocked by\"\n  - link \"{children[16]}\":\n    - /url: /issues/{children[16]}",
+          "hidden": [],
+          "key": "{children[14]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[14]}", "/issues/{children[16]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[14]}",
+              "role": null,
+              "tag": "a"
+            },
+            {
+              "name": "{children[16]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[14]} Child 15: the children's section names every node the answer holds, in the order the read givesNeeds review · Blocked by {children[16]}"
         },
         {
           "address": null,
@@ -2303,36 +2293,9 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[18]",
-              "ranks": {
-                "key": 11
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}\n  - text: \"Child 19: the outline holds the next page only when the reader presses for itIn progress\"",
-          "hidden": [],
-          "key": "{children[18]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[18]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[18]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[18]} Child 19: the outline holds the next page only when the reader presses for itIn progress"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
               "name": "children[20]",
               "ranks": {
-                "key": 12
+                "key": 11
               }
             }
           ],
@@ -2364,7 +2327,7 @@
             {
               "name": "children[22]",
               "ranks": {
-                "key": 13
+                "key": 12
               }
             }
           ],
@@ -2389,9 +2352,63 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[23]",
+              "name": "children[18]",
+              "ranks": {
+                "key": 13
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[18]}\":\n    - /url: /issues/{children[18]}\n  - text: \"Child 19: the outline holds the next page only when the reader presses for itIn progress\"",
+          "hidden": [],
+          "key": "{children[18]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[18]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[18]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[18]} Child 19: the outline holds the next page only when the reader presses for itIn progress"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[21]",
               "ranks": {
                 "key": 14
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[21]}\":\n    - /url: /issues/{children[21]}\n  - text: \"Child 22: the tree read counts the next page only when the reader presses for itDone\"",
+          "hidden": [],
+          "key": "{children[21]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[21]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[21]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[21]} Child 22: the tree read counts the next page only when the reader presses for itDone"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[23]",
+              "ranks": {
+                "key": 15
               }
             }
           ],
@@ -2418,7 +2435,7 @@
             {
               "name": "children[19]",
               "ranks": {
-                "key": 15
+                "key": 16
               }
             }
           ],
@@ -2443,63 +2460,9 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[21]",
-              "ranks": {
-                "key": 16
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[21]}\":\n    - /url: /issues/{children[21]}\n  - text: \"Child 22: the tree read counts the next page only when the reader presses for itDone\"",
-          "hidden": [],
-          "key": "{children[21]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[21]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[21]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[21]} Child 22: the tree read counts the next page only when the reader presses for itDone"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
-              "name": "children[25]",
-              "ranks": {
-                "key": 17
-              }
-            }
-          ],
-          "aria": "- listitem:\n  - link \"{children[25]}\":\n    - /url: /issues/{children[25]}\n  - text: \"Child 26: the children's section reads one row for each statement, with its checks under itTesting\"",
-          "hidden": [],
-          "key": "{children[25]}",
-          "kind": "child",
-          "level": null,
-          "links": ["/issues/{children[25]}"],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [
-            {
-              "name": "{children[25]}",
-              "role": null,
-              "tag": "a"
-            }
-          ],
-          "words": "{children[25]} Child 26: the children's section reads one row for each statement, with its checks under itTesting"
-        },
-        {
-          "address": null,
-          "anchors": [
-            {
               "name": "children[24]",
               "ranks": {
-                "key": 18
+                "key": 17
               }
             }
           ],
@@ -2524,28 +2487,60 @@
           "address": null,
           "anchors": [
             {
-              "name": "children[26]",
+              "name": "children[29]",
+              "ranks": {
+                "key": 18
+              }
+            }
+          ],
+          "aria": "- listitem:\n  - link \"{children[29]}\":\n    - /url: /issues/{children[29]}\n  - text: \"Child 30: the outline counts every node the answer holds, in the order the read givesTriage\"",
+          "hidden": [],
+          "key": "{children[29]}",
+          "kind": "child",
+          "level": null,
+          "links": ["/issues/{children[29]}"],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [
+            {
+              "name": "{children[29]}",
+              "role": null,
+              "tag": "a"
+            }
+          ],
+          "words": "{children[29]} Child 30: the outline counts every node the answer holds, in the order the read givesTriage"
+        },
+        {
+          "address": null,
+          "anchors": [
+            {
+              "name": "children[27]",
               "ranks": {
                 "key": 19
               }
             }
           ],
-          "aria": "- listitem:\n  - link \"{children[26]}\":\n    - /url: /issues/{children[26]}\n  - text: \"Child 27: the view row holds every node the answer holds, in the order the read givesDone\"",
+          "aria": "- listitem:\n  - link \"{children[27]}\":\n    - /url: /issues/{children[27]}\n  - text: \"Child 28: the verification filter keeps the next page only when the reader presses for itIn progress · Blocked by\"\n  - link \"{children[23]}\":\n    - /url: /issues/{children[23]}",
           "hidden": [],
-          "key": "{children[26]}",
+          "key": "{children[27]}",
           "kind": "child",
           "level": null,
-          "links": ["/issues/{children[26]}"],
+          "links": ["/issues/{children[27]}", "/issues/{children[23]}"],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [
             {
-              "name": "{children[26]}",
+              "name": "{children[27]}",
+              "role": null,
+              "tag": "a"
+            },
+            {
+              "name": "{children[23]}",
               "role": null,
               "tag": "a"
             }
           ],
-          "words": "{children[26]} Child 27: the view row holds every node the answer holds, in the order the read givesDone"
+          "words": "{children[27]} Child 28: the verification filter keeps the next page only when the reader presses for itIn progress · Blocked by {children[23]}"
         },
         {
           "address": "/issues/{key}#b-d1",
@@ -2828,28 +2823,28 @@
           "words": "decisionPlanner · 26 NovWaiting for reviewDecision 29: The outline holds each reply under the post it answersThe first load orders the first 50 children of a node and a control for the rest, since the tree read holds one row for each statement, with its checks under it. It changes mergeTreePages.informsEach page of comments keeps…KeepChangein the conversation ›"
         },
         {
-          "address": "/issues/{key}#b-q8",
+          "address": "/issues/{key}#b-q10",
           "anchors": [
             {
-              "name": "ask \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\"",
+              "name": "ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"",
               "ranks": {
                 "closed": 33,
                 "made": 222
               }
             }
           ],
-          "aria": "- 'treeitem \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue? Yes No Answer Written by a person alice The first load holds every node the answer holds, in the order the read gives. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The first load holds every node the answer holds, in the order the read gives.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\"}",
+          "aria": "- 'treeitem \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue? Yes No Answer Written by a person alice The tree read pages the 200 newest comments and the position of the oldest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}",
           "hidden": [],
-          "key": "spec#b-q8",
+          "key": "spec#b-q10",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\"}"
+            "/issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the contents pane draws the words of a row whole, with no cut at six lines on every issue?○Yes○NoAnsweraliceThe first load holds every node the answer holds, in the order the read gives.in the conversation ›"
+          "words": "questionPlanner · 26 NovAnsweredDoes the first load keeps the 200 newest comments and the position of the oldest on every issue?○Yes○NoAnsweraliceThe tree read pages the 200 newest comments and the position of the oldest.in the conversation ›"
         },
         {
           "address": "/issues/{key}#b-q9",
@@ -2900,12 +2895,36 @@
           "words": "questionPlanner · 26 NovAnsweredDoes each page of comments reads a child's status, what blocks it and who holds it on every issue?○Yes○NoAnsweraliceThe plan's chart draws the questions that wait on the reader before anything else.in the conversation ›"
         },
         {
+          "address": "/issues/{key}#b-q8",
+          "anchors": [
+            {
+              "name": "ask \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\"",
+              "ranks": {
+                "closed": 30,
+                "made": 222
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue? Yes No Answer Written by a person alice The first load holds every node the answer holds, in the order the read gives. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The first load holds every node the answer holds, in the order the read gives.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\"}",
+          "hidden": [],
+          "key": "spec#b-q8",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Does the contents pane draws the words of a row whole, with no cut at six lines on every issue?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredDoes the contents pane draws the words of a row whole, with no cut at six lines on every issue?○Yes○NoAnsweraliceThe first load holds every node the answer holds, in the order the read gives.in the conversation ›"
+        },
+        {
           "address": "/issues/{key}#b-q11",
           "anchors": [
             {
               "name": "ask \"Does the tree read reads the first 50 children of a node and a control for the rest on every issue?\"",
               "ranks": {
-                "closed": 30,
+                "closed": 29,
                 "made": 222
               }
             }
@@ -2924,76 +2943,28 @@
           "words": "questionPlanner · 26 NovAnsweredDoes the tree read reads the first 50 children of a node and a control for the rest on every issue?○Yes○NoAnsweraliceThe children's section keeps the next page only when the reader presses for it.in the conversation ›"
         },
         {
-          "address": "/issues/{key}#b-q10",
+          "address": "/issues/{key}#b-q3",
           "anchors": [
             {
-              "name": "ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"",
-              "ranks": {
-                "closed": 29,
-                "made": 222
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue? Yes No Answer Written by a person alice The tree read pages the 200 newest comments and the position of the oldest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}",
-          "hidden": [],
-          "key": "spec#b-q10",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Does the first load keeps the 200 newest comments and the position of the oldest on every issue?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the first load keeps the 200 newest comments and the position of the oldest on every issue?○Yes○NoAnsweraliceThe tree read pages the 200 newest comments and the position of the oldest.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}#b-q2",
-          "anchors": [
-            {
-              "name": "ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"",
+              "name": "ask \"Does a folded branch reads one row for each statement, with its checks under it on every issue?\"",
               "ranks": {
                 "closed": 28,
                 "made": 222
               }
             }
           ],
-          "aria": "- 'treeitem \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue? Yes No Answer Written by a person alice Each page of comments pages the next page only when the reader presses for it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: Each page of comments pages the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}",
+          "aria": "- 'treeitem \"Does a folded branch reads one row for each statement, with its checks under it on every issue? Yes No Answer Written by a person alice The view row keeps the first 50 children of a node and a control for the rest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does a folded branch reads one row for each statement, with its checks under it on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The view row keeps the first 50 children of a node and a control for the rest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does a folded branch reads one row for each statement, with its checks under it on every issue?\"}",
           "hidden": [],
-          "key": "spec#b-q2",
+          "key": "spec#b-q3",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}"
+            "/issues/{key}/asks/{ask \"Does a folded branch reads one row for each statement, with its checks under it on every issue?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the view row keeps the first 50 children of a node and a control for the rest on every issue?○Yes○NoAnsweraliceEach page of comments pages the next page only when the reader presses for it.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}#b-q4",
-          "anchors": [
-            {
-              "name": "ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"",
-              "ranks": {
-                "closed": 27,
-                "made": 222
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Does the plan''s chart draws the questions that wait on the reader before anything else on every issue? Yes No Answer Written by a person alice The Contents pane names a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The Contents pane names a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}",
-          "hidden": [],
-          "key": "spec#b-q4",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes the plan's chart draws the questions that wait on the reader before anything else on every issue?○Yes○NoAnsweraliceThe Contents pane names a child's status, what blocks it and who holds it.in the conversation ›"
+          "words": "questionPlanner · 26 NovAnsweredDoes a folded branch reads one row for each statement, with its checks under it on every issue?○Yes○NoAnsweraliceThe view row keeps the first 50 children of a node and a control for the rest.in the conversation ›"
         },
         {
           "address": "/issues/{key}#b-q1",
@@ -3001,7 +2972,7 @@
             {
               "name": "ask \"Does the outline counts the 200 newest comments and the position of the oldest on every issue?\"",
               "ranks": {
-                "closed": 26,
+                "closed": 27,
                 "made": 222
               }
             }
@@ -3018,6 +2989,30 @@
           "tabStop": false,
           "tabStops": [],
           "words": "questionPlanner · 26 NovAnsweredDoes the outline counts the 200 newest comments and the position of the oldest on every issue?○Yes○NoAnsweraliceThe outline counts the 200 newest comments and the position of the oldest.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}#b-q2",
+          "anchors": [
+            {
+              "name": "ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"",
+              "ranks": {
+                "closed": 26,
+                "made": 222
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue? Yes No Answer Written by a person alice Each page of comments pages the next page only when the reader presses for it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: Each page of comments pages the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}",
+          "hidden": [],
+          "key": "spec#b-q2",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Does the view row keeps the first 50 children of a node and a control for the rest on every issue?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredDoes the view row keeps the first 50 children of a node and a control for the rest on every issue?○Yes○NoAnsweraliceEach page of comments pages the next page only when the reader presses for it.in the conversation ›"
         },
         {
           "address": "/issues/{key}#b-q5",
@@ -3068,28 +3063,76 @@
           "words": "questionPlanner · 26 NovAnsweredDoes the children's section keeps the next page only when the reader presses for it on every issue?○Yes○NoAnsweraliceThe Verification filter orders the words of a row whole, with no cut at six lines.in the conversation ›"
         },
         {
-          "address": "/issues/{key}#b-q3",
+          "address": "/issues/{key}#b-q4",
           "anchors": [
             {
-              "name": "ask \"Does a folded branch reads one row for each statement, with its checks under it on every issue?\"",
+              "name": "ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"",
               "ranks": {
                 "closed": 23,
                 "made": 222
               }
             }
           ],
-          "aria": "- 'treeitem \"Does a folded branch reads one row for each statement, with its checks under it on every issue? Yes No Answer Written by a person alice The view row keeps the first 50 children of a node and a control for the rest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does a folded branch reads one row for each statement, with its checks under it on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The view row keeps the first 50 children of a node and a control for the rest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does a folded branch reads one row for each statement, with its checks under it on every issue?\"}",
+          "aria": "- 'treeitem \"Does the plan''s chart draws the questions that wait on the reader before anything else on every issue? Yes No Answer Written by a person alice The Contents pane names a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The Contents pane names a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}",
           "hidden": [],
-          "key": "spec#b-q3",
+          "key": "spec#b-q4",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Does a folded branch reads one row for each statement, with its checks under it on every issue?\"}"
+            "/issues/{key}/asks/{ask \"Does the plan's chart draws the questions that wait on the reader before anything else on every issue?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredDoes a folded branch reads one row for each statement, with its checks under it on every issue?○Yes○NoAnsweraliceThe view row keeps the first 50 children of a node and a control for the rest.in the conversation ›"
+          "words": "questionPlanner · 26 NovAnsweredDoes the plan's chart draws the questions that wait on the reader before anything else on every issue?○Yes○NoAnsweraliceThe Contents pane names a child's status, what blocks it and who holds it.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"",
+              "ranks": {
+                "closed": 22,
+                "made": 21
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the view row keeps the 200 newest comments and the position of the oldest? in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the view row keeps the 200 newest comments and the position of the oldest?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionTester · 26 NovResolvedShould the view row keeps the 200 newest comments and the position of the oldest?in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the verification filter keeps the next page only when the reader presses for it?\"",
+              "ranks": {
+                "closed": 21,
+                "made": 18
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the verification filter keeps the next page only when the reader presses for it? in the conversation question question Written by an agent Planner · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the verification filter keeps the next page only when the reader presses for it?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovResolvedShould the verification filter keeps the next page only when the reader presses for it?in the conversation ›"
         },
         {
           "address": "/issues/{key}/asks/{ask \"Should the reply line keeps the first 50 children of a node and a control for the rest?\"}",
@@ -3097,8 +3140,8 @@
             {
               "name": "ask \"Should the reply line keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 22,
-                "made": 22
+                "closed": 20,
+                "made": 19
               }
             }
           ],
@@ -3121,8 +3164,8 @@
             {
               "name": "ask \"Should each page of comments draws the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 21,
-                "made": 21
+                "closed": 19,
+                "made": 22
               }
             }
           ],
@@ -3145,8 +3188,8 @@
             {
               "name": "ask \"Should the tree read draws the words of a row whole, with no cut at six lines?\"",
               "ranks": {
-                "closed": 20,
-                "made": 19
+                "closed": 18,
+                "made": 20
               }
             }
           ],
@@ -3164,61 +3207,13 @@
           "words": "questionReviewer · 26 NovResolvedShould the tree read draws the words of a row whole, with no cut at six lines?○Yes○Noin the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the verification filter keeps the next page only when the reader presses for it?\"",
-              "ranks": {
-                "closed": 19,
-                "made": 18
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the verification filter keeps the next page only when the reader presses for it? in the conversation question question Written by an agent Planner · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the verification filter keeps the next page only when the reader presses for it?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the verification filter keeps the next page only when the reader presses for it?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovResolvedShould the verification filter keeps the next page only when the reader presses for it?in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"",
-              "ranks": {
-                "closed": 18,
-                "made": 20
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the view row keeps the 200 newest comments and the position of the oldest? in the conversation question question Written by an agent Tester · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the view row keeps the 200 newest comments and the position of the oldest?\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the view row keeps the 200 newest comments and the position of the oldest?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionTester · 26 NovResolvedShould the view row keeps the 200 newest comments and the position of the oldest?in the conversation ›"
-        },
-        {
           "address": "/issues/{key}/asks/{ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"}",
           "anchors": [
             {
               "name": "ask \"Should the outline keeps a child's status, what blocks it and who holds it?\"",
               "ranks": {
                 "closed": 17,
-                "made": 16
+                "made": 17
               }
             }
           ],
@@ -3242,7 +3237,7 @@
               "name": "ask \"Should the children's section draws the 200 newest comments and the position of the oldest?\"",
               "ranks": {
                 "closed": 16,
-                "made": 13
+                "made": 16
               }
             }
           ],
@@ -3260,13 +3255,37 @@
           "words": "questionTester · 26 NovResolvedShould the children's section draws the 200 newest comments and the position of the oldest?○Yes○Noin the conversation ›"
         },
         {
+          "address": "/issues/{key}/asks/{ask \"Should the first load draws each reply under the post it answers?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the first load draws each reply under the post it answers?\"",
+              "ranks": {
+                "closed": 15,
+                "made": 14
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the first load draws each reply under the post it answers? Yes No in the conversation question question Written by an agent Reviewer · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the first load draws each reply under the post it answers?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the first load draws each reply under the post it answers?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the first load draws each reply under the post it answers?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the first load draws each reply under the post it answers?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionReviewer · 26 NovResolvedShould the first load draws each reply under the post it answers?○Yes○Noin the conversation ›"
+        },
+        {
           "address": "/issues/{key}/asks/{ask \"Should a folded branch draws every node the answer holds, in the order the read gives?\"}",
           "anchors": [
             {
               "name": "ask \"Should a folded branch draws every node the answer holds, in the order the read gives?\"",
               "ranks": {
-                "closed": 15,
-                "made": 17
+                "closed": 14,
+                "made": 14
               }
             }
           ],
@@ -3289,8 +3308,8 @@
             {
               "name": "ask \"Should the contents pane keeps one row for each statement, with its checks under it?\"",
               "ranks": {
-                "closed": 14,
-                "made": 15
+                "closed": 13,
+                "made": 12
               }
             }
           ],
@@ -3308,37 +3327,13 @@
           "words": "questionPlanner · 26 NovResolvedShould the contents pane keeps one row for each statement, with its checks under it?in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the first load draws each reply under the post it answers?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the first load draws each reply under the post it answers?\"",
-              "ranks": {
-                "closed": 13,
-                "made": 12
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the first load draws each reply under the post it answers? Yes No in the conversation question question Written by an agent Reviewer · {day} Question: resolved Resolved\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: resolved\"'\n  - text: Resolved\n  - paragraph: Should the first load draws each reply under the post it answers?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the first load draws each reply under the post it answers?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the first load draws each reply under the post it answers?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the first load draws each reply under the post it answers?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionReviewer · 26 NovResolvedShould the first load draws each reply under the post it answers?○Yes○Noin the conversation ›"
-        },
-        {
           "address": "/issues/{key}/asks/{ask \"Should the plan's chart keeps the words of a row whole, with no cut at six lines?\"}",
           "anchors": [
             {
               "name": "ask \"Should the plan's chart keeps the words of a row whole, with no cut at six lines?\"",
               "ranks": {
                 "closed": 12,
-                "made": 14
+                "made": 13
               }
             }
           ],
@@ -3356,61 +3351,13 @@
           "words": "questionReviewer · 26 NovAnsweredShould the plan's chart keeps the words of a row whole, with no cut at six lines?AnsweraliceThe plan's chart pages each reply under the post it answers.The first load keeps the 200 newest comments and the position of the oldest.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"",
-              "ranks": {
-                "closed": 11,
-                "made": 10
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should each page of comments keeps every node the answer holds, in the order the read gives? Answer Written by a person alice The view row orders one row for each statement, with its checks under it. The Contents pane draws the words of a row whole, with no cut at six lines. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should each page of comments keeps every node the answer holds, in the order the read gives?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The view row orders one row for each statement, with its checks under it.\n  - paragraph: The Contents pane draws the words of a row whole, with no cut at six lines.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
-          "hidden": [],
-          "key": "{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredShould each page of comments keeps every node the answer holds, in the order the read gives?AnsweraliceThe view row orders one row for each statement, with its checks under it.The Contents pane draws the words of a row whole, with no cut at six lines.in the conversation ›"
-        },
-        {
-          "address": "/issues/{key}/asks/{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"",
-              "ranks": {
-                "closed": 10,
-                "made": 11
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should the tree read keeps the questions that wait on the reader before anything else? Answer Written by a person alice A folded branch holds the questions that wait on the reader before anything else. The Verification filter counts every node the answer holds, in the order the read gives. in the conversation question question Written by an agent Tester · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the tree read keeps the questions that wait on the reader before anything else?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: A folded branch holds the questions that wait on the reader before anything else.\n  - paragraph: The Verification filter counts every node the answer holds, in the order the read gives.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}",
-          "hidden": [],
-          "key": "{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionTester · 26 NovAnsweredShould the tree read keeps the questions that wait on the reader before anything else?AnsweraliceA folded branch holds the questions that wait on the reader before anything else.The Verification filter counts every node the answer holds, in the order the read gives.in the conversation ›"
-        },
-        {
           "address": "/issues/{key}/asks/{ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"}",
           "anchors": [
             {
               "name": "ask \"Should the reply line draws a child's status, what blocks it and who holds it?\"",
               "ranks": {
-                "closed": 9,
-                "made": 7
+                "closed": 11,
+                "made": 11
               }
             }
           ],
@@ -3433,8 +3380,8 @@
             {
               "name": "ask \"Should the verification filter draws the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 8,
-                "made": 8
+                "closed": 10,
+                "made": 7
               }
             }
           ],
@@ -3452,36 +3399,12 @@
           "words": "questionReviewer · 26 NovAnsweredShould the verification filter draws the first 50 children of a node and a control for the rest?●Yes○NoAnsweraliceThe Contents pane draws the words of a row whole, with no cut at six lines.A folded branch holds the questions that wait on the reader before anything else.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
-          "anchors": [
-            {
-              "name": "ask \"Should a folded branch keeps each reply under the post it answers?\"",
-              "ranks": {
-                "closed": 7,
-                "made": 6
-              }
-            }
-          ],
-          "aria": "- 'treeitem \"Should a folded branch keeps each reply under the post it answers? Answer Written by a person alice The outline names the first 50 children of a node and a control for the rest. Each page of comments reads a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should a folded branch keeps each reply under the post it answers?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - paragraph: Each page of comments reads a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
-          "hidden": [],
-          "key": "{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
-          "kind": "ask",
-          "level": 1,
-          "links": [
-            "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}"
-          ],
-          "parentKey": null,
-          "tabStop": false,
-          "tabStops": [],
-          "words": "questionReviewer · 26 NovAnsweredShould a folded branch keeps each reply under the post it answers?AnsweraliceThe outline names the first 50 children of a node and a control for the rest.Each page of comments reads a child's status, what blocks it and who holds it.in the conversation ›"
-        },
-        {
           "address": "/issues/{key}/asks/{ask \"Should the view row draws the next page only when the reader presses for it?\"}",
           "anchors": [
             {
               "name": "ask \"Should the view row draws the next page only when the reader presses for it?\"",
               "ranks": {
-                "closed": 6,
+                "closed": 9,
                 "made": 9
               }
             }
@@ -3500,76 +3423,76 @@
           "words": "questionPlanner · 26 NovAnsweredShould the view row draws the next page only when the reader presses for it?●Yes○NoAnsweraliceThe Verification filter counts every node the answer holds, in the order the read gives.The plan's chart pages each reply under the post it answers.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "address": "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
           "anchors": [
             {
-              "name": "ask \"Should the outline draws one row for each statement, with its checks under it?\"",
+              "name": "ask \"Should a folded branch keeps each reply under the post it answers?\"",
               "ranks": {
-                "closed": 5,
-                "made": 4
+                "closed": 8,
+                "made": 10
               }
             }
           ],
-          "aria": "- 'treeitem \"Should the outline draws one row for each statement, with its checks under it? Yes No Answer Written by a person alice The children''s section keeps the next page only when the reader presses for it. The outline names the first 50 children of a node and a control for the rest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the outline draws one row for each statement, with its checks under it?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "aria": "- 'treeitem \"Should a folded branch keeps each reply under the post it answers? Answer Written by a person alice The outline names the first 50 children of a node and a control for the rest. Each page of comments reads a child''s status, what blocks it and who holds it. in the conversation question question Written by an agent Reviewer · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Reviewer · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should a folded branch keeps each reply under the post it answers?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - paragraph: Each page of comments reads a child's status, what blocks it and who holds it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
           "hidden": [],
-          "key": "{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "key": "{ask \"Should a folded branch keeps each reply under the post it answers?\"}",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}"
+            "/issues/{key}/asks/{ask \"Should a folded branch keeps each reply under the post it answers?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredShould the outline draws one row for each statement, with its checks under it?●Yes○NoAnsweraliceThe children's section keeps the next page only when the reader presses for it.The outline names the first 50 children of a node and a control for the rest.in the conversation ›"
+          "words": "questionReviewer · 26 NovAnsweredShould a folded branch keeps each reply under the post it answers?AnsweraliceThe outline names the first 50 children of a node and a control for the rest.Each page of comments reads a child's status, what blocks it and who holds it.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+          "address": "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
           "anchors": [
             {
-              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
+              "name": "ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"",
               "ranks": {
-                "closed": 4,
-                "made": 3
+                "closed": 7,
+                "made": 8
               }
             }
           ],
-          "aria": "- 'treeitem \"Should the children''s section keeps the next page only when the reader presses for it? Answer Written by a person alice The first load holds every node the answer holds, in the order the read gives. The reply line counts each reply under the post it answers. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the children's section keeps the next page only when the reader presses for it?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The first load holds every node the answer holds, in the order the read gives.\n  - paragraph: The reply line counts each reply under the post it answers.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+          "aria": "- 'treeitem \"Should each page of comments keeps every node the answer holds, in the order the read gives? Answer Written by a person alice The view row orders one row for each statement, with its checks under it. The Contents pane draws the words of a row whole, with no cut at six lines. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should each page of comments keeps every node the answer holds, in the order the read gives?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The view row orders one row for each statement, with its checks under it.\n  - paragraph: The Contents pane draws the words of a row whole, with no cut at six lines.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
           "hidden": [],
-          "key": "{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+          "key": "{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}"
+            "/issues/{key}/asks/{ask \"Should each page of comments keeps every node the answer holds, in the order the read gives?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionPlanner · 26 NovAnsweredShould the children's section keeps the next page only when the reader presses for it?AnsweraliceThe first load holds every node the answer holds, in the order the read gives.The reply line counts each reply under the post it answers.in the conversation ›"
+          "words": "questionPlanner · 26 NovAnsweredShould each page of comments keeps every node the answer holds, in the order the read gives?AnsweraliceThe view row orders one row for each statement, with its checks under it.The Contents pane draws the words of a row whole, with no cut at six lines.in the conversation ›"
         },
         {
-          "address": "/issues/{key}/asks/{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}",
+          "address": "/issues/{key}/asks/{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}",
           "anchors": [
             {
-              "name": "ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"",
+              "name": "ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 3,
-                "made": 5
+                "closed": 6,
+                "made": 6
               }
             }
           ],
-          "aria": "- 'treeitem \"Should the first load keeps the 200 newest comments and the position of the oldest? Answer Written by a person alice The tree read pages the 200 newest comments and the position of the oldest. The children''s section keeps the next page only when the reader presses for it. in the conversation question question Written by an agent Tester · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the first load keeps the 200 newest comments and the position of the oldest?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}",
+          "aria": "- 'treeitem \"Should the tree read keeps the questions that wait on the reader before anything else? Answer Written by a person alice A folded branch holds the questions that wait on the reader before anything else. The Verification filter counts every node the answer holds, in the order the read gives. in the conversation question question Written by an agent Tester · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the tree read keeps the questions that wait on the reader before anything else?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: A folded branch holds the questions that wait on the reader before anything else.\n  - paragraph: The Verification filter counts every node the answer holds, in the order the read gives.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}",
           "hidden": [],
-          "key": "{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}",
+          "key": "{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}",
           "kind": "ask",
           "level": 1,
           "links": [
-            "/issues/{key}/asks/{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}"
+            "/issues/{key}/asks/{ask \"Should the tree read keeps the questions that wait on the reader before anything else?\"}"
           ],
           "parentKey": null,
           "tabStop": false,
           "tabStops": [],
-          "words": "questionTester · 26 NovAnsweredShould the first load keeps the 200 newest comments and the position of the oldest?AnsweraliceThe tree read pages the 200 newest comments and the position of the oldest.The children's section keeps the next page only when the reader presses for it.in the conversation ›"
+          "words": "questionTester · 26 NovAnsweredShould the tree read keeps the questions that wait on the reader before anything else?AnsweraliceA folded branch holds the questions that wait on the reader before anything else.The Verification filter counts every node the answer holds, in the order the read gives.in the conversation ›"
         },
         {
           "address": "/issues/{key}/asks/{ask \"Should the view row keeps the first 50 children of a node and a control for the rest?\"}",
@@ -3577,8 +3500,8 @@
             {
               "name": "ask \"Should the view row keeps the first 50 children of a node and a control for the rest?\"",
               "ranks": {
-                "closed": 2,
-                "made": 2
+                "closed": 5,
+                "made": 5
               }
             }
           ],
@@ -3601,7 +3524,7 @@
             {
               "name": "ask \"Should the contents pane draws the words of a row whole, with no cut at six lines?\"",
               "ranks": {
-                "closed": 1,
+                "closed": 4,
                 "made": 0
               }
             }
@@ -3620,13 +3543,61 @@
           "words": "questionReviewer · 26 NovAnsweredShould the contents pane draws the words of a row whole, with no cut at six lines?●Yes○NoAnsweraliceThe reply line counts each reply under the post it answers.The tree read pages the 200 newest comments and the position of the oldest.in the conversation ›"
         },
         {
+          "address": "/issues/{key}/asks/{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"",
+              "ranks": {
+                "closed": 3,
+                "made": 3
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the first load keeps the 200 newest comments and the position of the oldest? Answer Written by a person alice The tree read pages the 200 newest comments and the position of the oldest. The children''s section keeps the next page only when the reader presses for it. in the conversation question question Written by an agent Tester · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Tester · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the first load keeps the 200 newest comments and the position of the oldest?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The tree read pages the 200 newest comments and the position of the oldest.\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the first load keeps the 200 newest comments and the position of the oldest?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionTester · 26 NovAnsweredShould the first load keeps the 200 newest comments and the position of the oldest?AnsweraliceThe tree read pages the 200 newest comments and the position of the oldest.The children's section keeps the next page only when the reader presses for it.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the children's section keeps the next page only when the reader presses for it?\"",
+              "ranks": {
+                "closed": 2,
+                "made": 2
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the children''s section keeps the next page only when the reader presses for it? Answer Written by a person alice The first load holds every node the answer holds, in the order the read gives. The reply line counts each reply under the post it answers. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the children's section keeps the next page only when the reader presses for it?\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The first load holds every node the answer holds, in the order the read gives.\n  - paragraph: The reply line counts each reply under the post it answers.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the children's section keeps the next page only when the reader presses for it?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredShould the children's section keeps the next page only when the reader presses for it?AnsweraliceThe first load holds every node the answer holds, in the order the read gives.The reply line counts each reply under the post it answers.in the conversation ›"
+        },
+        {
           "address": "/issues/{key}/asks/{ask \"Should the plan's chart draws the questions that wait on the reader before anything else?\"}",
           "anchors": [
             {
               "name": "ask \"Should the plan's chart draws the questions that wait on the reader before anything else?\"",
               "ranks": {
-                "closed": 0,
-                "made": 1
+                "closed": 1,
+                "made": 4
               }
             }
           ],
@@ -3642,6 +3613,30 @@
           "tabStop": false,
           "tabStops": [],
           "words": "questionTester · 26 NovAnsweredShould the plan's chart draws the questions that wait on the reader before anything else?●Yes○NoAnsweraliceThe plan's chart draws the questions that wait on the reader before anything else.The first load holds every node the answer holds, in the order the read gives.in the conversation ›"
+        },
+        {
+          "address": "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "anchors": [
+            {
+              "name": "ask \"Should the outline draws one row for each statement, with its checks under it?\"",
+              "ranks": {
+                "closed": 0,
+                "made": 1
+              }
+            }
+          ],
+          "aria": "- 'treeitem \"Should the outline draws one row for each statement, with its checks under it? Yes No Answer Written by a person alice The children''s section keeps the next page only when the reader presses for it. The outline names the first 50 children of a node and a control for the rest. in the conversation question question Written by an agent Planner · {day} Question: answered Answered\" [level=1]':\n  - img \"question\"\n  - text: question\n  - img \"Written by an agent\"\n  - text: Planner · {day}\n  - 'img \"Question: answered\"'\n  - text: Answered\n  - paragraph: Should the outline draws one row for each statement, with its checks under it?\n  - list:\n    - listitem: \"Yes\"\n    - listitem: \"No\"\n  - paragraph:\n    - text: Answer\n    - img \"Written by a person\"\n    - text: alice\n  - paragraph: The children's section keeps the next page only when the reader presses for it.\n  - paragraph: The outline names the first 50 children of a node and a control for the rest.\n  - link \"in the conversation\":\n    - /url: /issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "hidden": [],
+          "key": "{ask \"Should the outline draws one row for each statement, with its checks under it?\"}",
+          "kind": "ask",
+          "level": 1,
+          "links": [
+            "/issues/{key}/asks/{ask \"Should the outline draws one row for each statement, with its checks under it?\"}"
+          ],
+          "parentKey": null,
+          "tabStop": false,
+          "tabStops": [],
+          "words": "questionPlanner · 26 NovAnsweredShould the outline draws one row for each statement, with its checks under it?●Yes○NoAnsweraliceThe children's section keeps the next page only when the reader presses for it.The outline names the first 50 children of a node and a control for the rest.in the conversation ›"
         }
       ]
     }
