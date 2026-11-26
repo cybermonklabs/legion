@@ -231,7 +231,7 @@ func testerReleaseRow(t *testing.T, r *podStopRig) record.OutboxRow {
 	t.Helper()
 	tester := mustClaimToken(t, pauseIssue, claim.RoleTester)
 	marked, err := r.st.ReleaseIdleIssue(context.Background(), "legion", pauseIssue, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Roles: []claim.Role{claim.RoleTester}, Claims: []claim.Token{tester}}, time.Now())
+		return idleReleaseRows(view, workflow.IdleDecision{Release: true, Claims: []store.ReleasedClaim{{Token: tester, Role: claim.RoleTester}}}, time.Now())
 	})
 	if err != nil || !marked {
 		t.Fatalf("mark the release of %s = %t, %v", pauseIssue, marked, err)
@@ -262,6 +262,8 @@ func podPauseRunner(p *pauseRig, sup *supervisor) *outbox {
 // its pod's gate acts within a second while another role of the pod loads, through the executor
 // that makes it.
 func TestAPodStartsItsRolesOneLoadAtATime(t *testing.T) {
+	// Not parallel: each stop must act within podStopBound (a second) of real time, which the load
+	// of the package's parallel tests on a 4-CPU runner can take from a row that does not wait.
 	for _, tc := range []struct {
 		name string
 		// lingers is whether the issue's tree lingers at generation 1, which a tree close is for.

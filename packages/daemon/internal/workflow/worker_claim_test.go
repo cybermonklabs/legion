@@ -127,6 +127,28 @@ func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
 		})
 	})
 
+	// Two claims of one issue can hold the tester's role, and a sweep's fact names the claim it
+	// read (intake.WorkerSilent.Claim): a fact of the tester's own claim, which works no step, is
+	// passed over, so its silence neither repairs key a's agent nor writes its last step into the
+	// notice of key a's. A fact that names no claim reads the step's worker, as before.
+	t.Run("a fact of another claim of the role is passed over", func(t *testing.T) {
+		pool := seed(t, "ready", "")
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		own := claim.Token(token(t, entryIssue, claim.RoleTester))
+		applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+			for swept, reads := range map[claim.Token]bool{own: false, "": true} {
+				read, err := engine.phaseWorkerRecord(ctx, tx, entryIssue, 1, claim.RoleTester, swept)
+				if err != nil {
+					return err
+				}
+				if (read != nil) != reads {
+					t.Errorf("the silence watch, for a fact of %q, read %+v; want a run %t", swept, read, reads)
+				}
+			}
+			return nil
+		})
+	})
+
 	t.Run("its ready is sent the entry it stands behind", func(t *testing.T) {
 		pool := seed(t, "ready", "")
 		if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:tester:2:ready",
@@ -143,7 +165,7 @@ func TestASuspendedAgentOnItsSecondRoleIsResumedAndWatched(t *testing.T) {
 // `tester`, so its agent `…-tester` works the reviewer's step, with the stored role reviewer, and
 // the reviewer's phases row names it. The pod was released, so both claims stand released, and
 // `…-reviewer` sorts first. A wake of the reviewer's worker wakes the claim that works the step and
-// names it on its start row: a CI settlement, and the backstop armed for the reviewer. The other
+// names it on its start row: a CI settlement, and the backstop armed for that agent. The other
 // claim of the role stays released with no row. While the step's agent runs, the settlement wakes
 // nothing, though a claim of the role stands released. A wake that took the first released claim
 // of the role would start `…-reviewer` with the settlement's task, take the role's wake and cancel
@@ -189,8 +211,7 @@ func TestAWakeStartsTheWorkerOfTheRolesStep(t *testing.T) {
 
 	t.Run("the reviewer's backstop", func(t *testing.T) {
 		rig := seed(t, "suspended")
-		id := armBackstop(t, rig.pool, claim.RoleReviewer, wakeAt.Add(-1))
-		rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleReviewer})
+		rig.apply("backstop", armBackstop(t, rig.pool, agent, claim.RoleReviewer, wakeAt.Add(-1)))
 		wokeTheAgent(t, rig, pods.WakeBackstop)
 	})
 

@@ -31,6 +31,7 @@ const reconnectBoot = 15 * time.Second
 // restarted reports no child; one whose connection alone dropped reports the generation it still
 // runs, which the launch stops first (TestANewGenerationStopsTheEarlierOneFirst).
 func TestALaunchStartsItsRoleOnALauncherThatReconnectsDuringIt(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// running is the generation the reconnected launcher's first state reports running, 0 for
@@ -93,6 +94,7 @@ func TestALaunchStartsItsRoleOnALauncherThatReconnectsDuringIt(t *testing.T) {
 // between the session's choice and the Start's write would run (this daemon reads no saved work
 // there): armed, it drops the connection and waits until the launcher has said hello again.
 func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTryStarts(t *testing.T) {
+	t.Parallel()
 	var g *rig
 	var armed atomic.Bool
 	dropped, redialed := make(chan struct{}), make(chan struct{})
@@ -101,7 +103,10 @@ func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTry
 	}))
 	g.r.launchers.beforeStart = func(ctx context.Context, _ claim.Token) {
 		if armed.CompareAndSwap(true, false) {
-			if session := launcherOf(g, workerToken); session != nil {
+			g.r.launchers.mu.Lock()
+			session := g.r.launchers.sessions[workerToken]
+			g.r.launchers.mu.Unlock()
+			if session != nil {
 				session.close()
 			}
 			close(dropped)
@@ -150,6 +155,7 @@ func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTry
 // its connection dropped does. The supervisor's next try, at the next generation, starts the role
 // on that launcher.
 func TestALaunchWhoseLauncherDropsAfterReadingItsStartFailsAndTheNextTryStarts(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.BootTimeout = reconnectBoot }))
 	first := g.spawn(workerSpec(t))
 	// The launcher process restarts: the connection of the one that ran generation 1 ends, and the
@@ -233,7 +239,7 @@ func awaitLaunch(t *testing.T, result <-chan launched) launched {
 // says hello again.
 func dropLauncher(t *testing.T, g *rig, token claim.Token) {
 	t.Helper()
-	session := launcherOf(g, token)
+	session := launcherSessionOf(g, token)
 	if session == nil {
 		t.Fatalf("no launcher of %s is connected to drop", token)
 	}
@@ -258,12 +264,11 @@ type redialedLauncher struct {
 // the test when the resolver refuses the hello.
 func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool) *redialedLauncher {
 	t.Helper()
-	_, agent, ok := token.Cut()
+	_, slot, ok := token.Cut()
 	if !ok {
 		t.Fatalf("%s names no role", token)
 	}
-	// The rig's tokens are role tokens, whose agent is their role.
-	role := claim.Role(agent)
+	role := launcherOf(slot)
 	name := SandboxName(token)
 	pod := g.pod(name)
 	if pod == nil || g.secret(roleSecretName(name, role)) == nil {

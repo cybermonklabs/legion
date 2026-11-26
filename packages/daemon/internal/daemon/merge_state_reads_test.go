@@ -469,8 +469,11 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 		state := "clean"
 		if reads.Add(1) == 1 {
 			// The first read is held until the second request has been queued, so the request
-			// lands while this ladder is reading rather than before or after it.
-			state = "blocked"
+			// lands while this ladder is reading rather than before or after it. It answers
+			// `behind`, which ends no round: `blocked` on this head, MERGEABLE with its checks
+			// concluded and no review asked for, would end the round on the first read, and the
+			// second read this test counts would race the move to accepting.
+			state = "behind"
 			<-release
 		}
 		w.Write([]byte(`{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"` + state + `"}`))
@@ -561,12 +564,12 @@ func TestAConditionalReadAnswered304LeavesTheRecordAsItWas(t *testing.T) {
 		pool := isolatedOutboxPool(t)
 		captureInTesting(t, pool)
 		w := readRuntime(pool, api, quietLogger())
-		state, _, err := w.readMergeState(context.Background(), record.PullRequestKey{Issue: "CAPTURE-1", Number: 86})
+		state, _, _, err := w.readMergeState(context.Background(), record.PullRequestKey{Issue: "CAPTURE-1", Number: 86})
 		if err != nil || state != record.MergeStateBlocked {
 			t.Fatalf("the first read answered %s, %v; want blocked", state, err)
 		}
 		first := recordedPull(t, pool, "CAPTURE-1")
-		state, pr, err := w.readMergeState(context.Background(), record.PullRequestKey{Issue: "CAPTURE-1", Number: 86})
+		state, _, pr, err := w.readMergeState(context.Background(), record.PullRequestKey{Issue: "CAPTURE-1", Number: 86})
 		if err != nil || state != record.MergeStateBlocked || pr == nil || pr.HeadSHA != "code" {
 			t.Fatalf("the read answered 304 answered %s of %+v, %v; want the blocked of the answer it kept, at code", state, pr, err)
 		}

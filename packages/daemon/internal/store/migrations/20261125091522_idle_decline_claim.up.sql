@@ -1,0 +1,18 @@
+-- 20261125091522_idle_decline_claim.up.sql records the claim told of unpushed workspace work.
+-- Two claims may hold one role; only the phases row's worker works its current step. A later
+-- worker must hear of the same work once, so recordDecline compares this claim as well as the
+-- role and work. Existing declines name no known recipient and take the empty string; the next
+-- successful read tells its worker once. A failed read preserves the last successful recipient.
+--
+-- Earlier releases name their read and write columns, so they ignore this additive column. A
+-- rollback that removes it stops every daemon sharing this database first: a current daemon
+-- reads and writes the column when recording a decline. The way back drops the column and its
+-- version together, so a roll-forward adds it again with no remembered recipient. Work and
+-- holds remain; the next successful read may repeat its notice once. Run the block below with
+-- psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 while every daemon is stopped.
+--
+-- begin;
+-- alter table idle_release_declines drop column if exists claim;
+-- delete from schema_version where version = 20261125091522;
+-- commit;
+alter table idle_release_declines add column claim text not null default '';

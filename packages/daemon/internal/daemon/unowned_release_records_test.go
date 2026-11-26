@@ -234,12 +234,12 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 	})
 
 	// One pass per hold this rule can reach on a pod that stands, and what each pass records.
-	// Three of them are a pod standing past the quiet period with 3 CPU and 19 GiB held by
-	// something that is not work, and each is recorded under its own name, so a deployment
-	// reading the records can tell which of the three it is paying for. The other three are no
-	// such pod — one whose Sandbox is already gone, one whose release is already running, and
-	// one that is simply not quiet yet — and a row for any of them would say a pod was kept
-	// where nothing was kept (recordableHold).
+	// Three of them are a pod standing past the quiet period with its reservation (2 CPU and
+	// 8 GiB at the defaults) held by something that is not work, and each is recorded under its
+	// own name, so a deployment reading the records can tell which of the three it is paying for.
+	// The other three are no such pod — one whose Sandbox is already gone, one whose release is
+	// already running, and one that is simply not quiet yet — and a row for any of them would say
+	// a pod was kept where nothing was kept (recordableHold).
 	//
 	// Every row reads the pass's own line as well, because the counts are where a hold the
 	// records do not carry is still readable: a pass that keeps a pod and records nothing is
@@ -402,9 +402,9 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 			t.Fatal("the cancelled release left its mark behind")
 		}
 		// The line and the attributes it has always carried: the hold that stopped the release
-		// and the claims its cancel resumed, by token, which is the empty set here because no
-		// claim's stop of it had run. The release of a pod no role can use carries no such attribute at all,
-		// since it suspends nothing there is to resume.
+		// and the roles its cancel resumed, which is the empty set here because no claim's stop of
+		// it had suspended anything. The release of a pod no role can use carries no such
+		// attribute at all, since it suspends nothing there is to resume.
 		line := releaseLogLine(t, logs, idleRigIdleCancel)
 		for _, want := range []string{"issue=" + rig.issue.Key,
 			"hold=" + workflow.IdleHoldOvertaken.String(), "resumed=[]"} {

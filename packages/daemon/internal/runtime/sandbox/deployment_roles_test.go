@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -140,6 +142,47 @@ func TestALauncherOfADeploymentRoleIsAccepted(t *testing.T) {
 	}
 }
 
+func TestALauncherOfADroppedRoleCanReconnectAndStop(t *testing.T) {
+	g := deploymentRig(t)
+	const checker claim.Role = "checker"
+	token, err := claim.NewToken(testProject, testTree, checker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loc := g.spawn(testSpec(t, token, checker, testTree))
+	logs := &lockedLog{}
+	restarted := secondRuntime(t, g, func(o *Options) {
+		*o = g.opts
+		o.DeploymentApps = appauth.DeploymentApps{"critic": appauth.Review}
+		o.Log = slog.New(slog.NewTextHandler(logs, nil))
+		withProjectTokens(refusingOwnerTokens{refuse: new(atomic.Bool)})(g, o)
+	})()
+	if slices.Contains(restarted.issueRoles, checker) {
+		t.Fatal("checker is still configured after restart")
+	}
+
+	hello := rigLauncherHello(g, loc.Sandbox.Name, loc.Sandbox.PodUID, checker)
+	hello.Token += "-wrong"
+	if handler, _, reason := restarted.LauncherResolver()(hello); handler != nil || reason != "launcher token is not current" {
+		t.Errorf("dropped role with a wrong token: accepted=%t, refusal=%q", handler != nil, reason)
+	}
+
+	restarted.refreshGitHubCredentials(g.ctx)
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "github credential refresh failed") && strings.Contains(line, "role=checker") {
+			t.Errorf("refresh tried the dropped role: %s", line)
+		}
+	}
+
+	launcher := redial(t, g, token, loc.Sandbox.Generation, false)
+	if err := restarted.Suspend(g.ctx, loc); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := launcher.commands(), fmt.Sprintf("stop %d", loc.Sandbox.Generation); got != want {
+		t.Errorf("dropped role's launcher received %q, want %q", got, want)
+	}
+}
+
 // A line of a pod's log that a role of the deployment wrote is that role's, never the launcher's
 // own, and the bound of a launch counts the calls of every role of the runtime's issue pods: a
 // runtime with one role more than Legion's six has a bound longer by that role's calls.
@@ -223,8 +266,8 @@ func TestTheReleaseOfAKeptVolumeDeletesEachDeploymentRolesSecret(t *testing.T) {
 			t.Fatalf("the running pod's Sandbox has no Secret %s", secret)
 		}
 	}
-	if err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
-		t.Fatalf("ReleaseIssue: %v", err)
+	if released, err := g.r.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+		t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 	}
 	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {
 		t.Fatalf("after the release the issue's Sandbox is %+v, want it kept with its volume", s)
@@ -263,8 +306,8 @@ func TestTheReleaseOfAKeptVolumeDeletesTheSecretOfARoleTheDeploymentLost(t *test
 		t.Fatalf("the restarted runtime's issue roles %v hold the checker, want it gone with the setting", restarted.issueRoles)
 	}
 
-	if err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized); err != nil {
-		t.Fatalf("ReleaseIssue: %v", err)
+	if released, err := restarted.ReleaseIssue(g.ctx, childIssue, testTree, authorized, nil); err != nil || !released {
+		t.Fatalf("ReleaseIssue = %t, %v; want the running kept Sandbox released", released, err)
 	}
 
 	if s := g.sandbox(name); s == nil || !ownsKeptVolume(s) {

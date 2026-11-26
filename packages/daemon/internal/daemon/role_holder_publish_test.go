@@ -154,6 +154,18 @@ func queuedRoleHolders(t *testing.T, pool *store.Pool) ([]string, int) {
 	return issues, len(issues)
 }
 
+// ownHolder is the holder the role's own claim of issue publishes with session: its role, its
+// token, and the worker on the role's step, which it is where no phases row names another claim
+// on that step (record.WorkerClaim).
+func ownHolder(t *testing.T, issue string, role claim.Role, session string) dispatch.RoleHolder {
+	t.Helper()
+	token, err := claim.NewToken("legion", issue, role)
+	if err != nil {
+		t.Fatalf("the token of %s's %s: %v", issue, role, err)
+	}
+	return dispatch.RoleHolder{Role: string(role), Session: session, Claim: string(token), WorksStep: true}
+}
+
 // The executor reads the issue's live set from the claims at run time and sends it whole: a claim
 // counts while it is registered, ready, working or idle and records a session. A retired, a
 // suspended and a failed claim leave the set, and so does a claim with no session yet. The set is
@@ -168,7 +180,7 @@ func TestTheExecutorPublishesTheLiveSetAtRunTime(t *testing.T) {
 	r.seedClaim(issue, claim.RolePlanner, "", supervise.StateQueued, time.Minute)
 
 	r.enqueue(issue)
-	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses-1"}}}}
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{ownHolder(t, issue, claim.RoleTester, "ses-1")}}}
 	if got := r.published(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("published %+v, want %+v", got, want)
 	}
@@ -196,7 +208,7 @@ func TestTheExecutorPublishesTheSessionOfARoleTheDeploymentDefines(t *testing.T)
 
 	r.enqueue(issue)
 	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{
-		{Role: "checker", Session: "ses-c"}, {Role: "tester", Session: "ses-t"},
+		ownHolder(t, issue, "checker", "ses-c"), ownHolder(t, issue, claim.RoleTester, "ses-t"),
 	}}}
 	if got := r.published(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("published %+v, want %+v", got, want)
@@ -257,7 +269,7 @@ func TestTheExecutorPublishesNoSessionItsClaimDoesNotHold(t *testing.T) {
 	}
 
 	r.enqueue(issue)
-	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses-own"}}}}
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{ownHolder(t, issue, claim.RoleTester, "ses-own")}}}
 	if got := r.published(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("published %+v, want %+v: only the tester holds the session it records", got, want)
 	}
@@ -311,7 +323,7 @@ func TestTheExecutorPublishesASessionOnlyWhileItsClaimHoldsEveryNameOfIt(t *test
 	}
 
 	r.enqueue(issue)
-	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "architect", Session: "ses-whole"}}}}
+	want := []roleHoldersPublished{{Issue: issue, Holders: []dispatch.RoleHolder{ownHolder(t, issue, claim.RoleArchitect, "ses-whole")}}}
 	if got := r.published(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("published %+v, want %+v: only the architect holds every name of the session it records", got, want)
 	}
@@ -468,7 +480,8 @@ func TestARepairedEndIsPublishedWhenItsWriteLands(t *testing.T) {
 			if err := booted.queueRoleHoldersPublish(rig.ctx); err != nil {
 				t.Fatalf("the boot's queue of the role-holder publications: %v", err)
 			}
-			live := []roleHoldersPublished{{Issue: owedIssue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses_tester"}}}}
+			live := []roleHoldersPublished{{Issue: owedIssue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses_tester",
+				Claim: string(rig.token(claim.RoleTester)), WorksStep: true}}}}
 			if got := published(); !reflect.DeepEqual(got, live) {
 				t.Fatalf("the booted tester published %+v, want %+v", got, live)
 			}
@@ -528,7 +541,7 @@ func TestRoleHoldersExecutorRetriesARefusal(t *testing.T) {
 	}
 	r.enqueue(issue)
 
-	sent := roleHoldersPublished{Issue: issue, Holders: []dispatch.RoleHolder{{Role: "tester", Session: "ses-1"}}}
+	sent := roleHoldersPublished{Issue: issue, Holders: []dispatch.RoleHolder{ownHolder(t, issue, claim.RoleTester, "ses-1")}}
 	for _, step := range []struct {
 		what    string
 		rows    int
@@ -664,7 +677,7 @@ func TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt(t *testing.
 	routed = true
 	mu.Unlock()
 	run()
-	if want := [][]dispatch.RoleHolder{{{Role: "tester", Session: "ses-1"}}}; !reflect.DeepEqual(landed, want) {
+	if want := [][]dispatch.RoleHolder{{ownHolder(t, issue, claim.RoleTester, "ses-1")}}; !reflect.DeepEqual(landed, want) {
 		t.Fatalf("once the route was served the stand-in took %+v, want %+v", landed, want)
 	}
 	if rows := outboxRows(t, r.pool); rows != 0 {

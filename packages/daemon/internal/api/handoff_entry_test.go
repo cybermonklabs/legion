@@ -69,14 +69,14 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 
 	// The implementer's second round ends and the issue is in testing again: the tester's second
 	// entry, which its first task's turn knows nothing of.
-	takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
+	implementing := takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "covered the empty list", Commit: "handoff-2",
 		HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
-	if secondStart.Entry != firstTesting+1 {
-		t.Fatalf("the second testing start is of entry %d, want the %d after the first: an entry is one above the highest entry of the step's claim, the tester's own here",
-			secondStart.Entry, firstTesting+1)
+	if secondStart.Entry <= implementing || secondStart.Entry <= firstTesting {
+		t.Fatalf("the second testing start is of entry %d, want above the implementer's entry %d and the tester's first entry %d",
+			secondStart.Entry, implementing, firstTesting)
 	}
 	if run := issueGeneration(t, h, "LEGION-208"); run != 1 {
 		t.Fatalf("the issue is on run %d, want 1: the run never moved, which is why it cannot refuse this completion", run)
@@ -93,7 +93,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	before := recordedCompletions(t, h, claim.RoleTester)
 	message := complete()
 	for _, want := range []string{
-		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, which is 1 behind the entry %d the phase is on",
+		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, not the phase's current entry %d",
 			firstTesting, secondStart.Entry),
 		"nothing was recorded",
 		// The second entry's task is queued and no delivery has carried it to this claim, which
@@ -182,7 +182,7 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"nothing was recorded",
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session",
 		"complete it with a handoff of its own, never this completion's record, commit or verdict",
@@ -217,8 +217,8 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 	// instruction is still the text the refusal ends with, whichever clause it carries.
 	decided := intake.BehindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
 	for clause, pending := range map[string]*supervise.Delivery{
-		"the entry 2 the phase is on, and " + decided + "; nothing was recorded":                nil,
-		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2, and " + decided + "; nothing was recorded": nil,
+		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session":                                                                       {ID: "outbox:78", Entry: 2},
 	} {
 		refusal := intake.StaleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending, decided)
 		if refusal.Code != intake.StaleEntryCode || !strings.HasSuffix(refusal.Message, clause+". "+intake.StaleEntryInstruction) {
@@ -249,7 +249,7 @@ func TestACompletionIsHeldToItsEntryOnlyWhenBothSidesNameOne(t *testing.T) {
 		{name: "both sides name the entry the phase is on", row: 1, serving: 1},
 		{
 			name: "the claim serves the entry before this phase's", row: 2, serving: 1, refused: true,
-			says: []string{"this completion is of entry 1, which is 1 behind the entry 2 the phase is on"},
+			says: []string{"this completion is of entry 1, not the phase's current entry 2"},
 		},
 		{
 			name: "the claim serves an entry the phase has not raised to", row: 1, serving: 2, refused: true,
@@ -419,7 +419,7 @@ func TestABehindCompletionWhoseEntryAMoveBackRaisedIsRefused(t *testing.T) {
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"this completion is at commit " + headSHA + " while the pull request the record holds is at head " + headSHA,
 		"the move that handed the phase out again moved the issue back, which asks for this phase's work to be done again, so no verdict on either head answers for it",
 		"nothing was recorded",
@@ -470,7 +470,7 @@ func TestABehindCompletionAwayFromTheRecordedHeadIsRefused(t *testing.T) {
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 				Commit: tc.commit, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
-				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+				"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 				tc.says,
 				"nothing was recorded",
 			} {
@@ -515,7 +515,7 @@ func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
 			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: worker.grant(t), Summary: "done", Commit: headSHA}),
 				http.StatusConflict, "HANDOFF_STALE_ENTRY")
 			for _, want := range []string{
-				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on", tc.role, tc.at),
+				fmt.Sprintf("LEGION-208 handed the %s phase %s again: this completion is of entry 1, not the phase's current entry 2", tc.role, tc.at),
 				"this phase ends with no handoff record this role writes, so nothing this completion names says which entry's work it is",
 				"nothing was recorded",
 			} {
@@ -732,8 +732,12 @@ func putEntry(t *testing.T, h *harness, issue string, role claim.Role, entry int
 	t.Helper()
 	ctx := context.Background()
 	if err := store.Transact(ctx, h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		task := ""
+		if entry > 0 {
+			task = "work this phase entry"
+		}
 		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: role,
-			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryMovedBack: movedBack})
+			Claim: claim.Token(string(role) + "-claim"), Entry: entry, EntryTask: task, EntryMovedBack: movedBack})
 	}); err != nil {
 		t.Fatalf("put the %s's row of %s on entry %d: %v", role, issue, entry, err)
 	}

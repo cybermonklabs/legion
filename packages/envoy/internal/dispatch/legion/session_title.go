@@ -3,7 +3,7 @@ package legion
 import (
 	"strings"
 
-	"github.com/sjawhar/envoy/internal/legionrole"
+	"github.com/sjawhar/envoy/internal/legionclaim"
 )
 
 // session_title.go holds the one reading of a Legion session's title. Both halves of the rule
@@ -34,7 +34,7 @@ type SessionTitle struct {
 
 // ParseSessionTitle reads a session title as Legion writes it: `Legion <role> · <KEY>` for a root
 // architect, a phase worker or a role the deployment defines, and `Legion controller · <PROJECT>`
-// for a controller. The role is a role of an issue by the one rule of Envoy (legionrole.IsRole:
+// for a controller. The role is a role of an issue by the one rule of Envoy (legionclaim.IsRole:
 // one of Legion's six, or a name of the role grammar but the controller's), so a deployment's
 // checker, or the owner's `acceptance`, is a Legion session as an implementer is. A title of any
 // other shape, or one naming no role of the grammar, is not a Legion session.
@@ -54,7 +54,7 @@ func ParseSessionTitle(title string) (SessionTitle, bool) {
 	if role == legionControllerTitle {
 		return SessionTitle{Role: legionControllerTitle, Project: subject, Controller: true}, true
 	}
-	if !legionrole.IsRole(role) {
+	if !legionclaim.IsRole(role) {
 		return SessionTitle{}, false
 	}
 	return SessionTitle{Role: role, Issue: subject}, true

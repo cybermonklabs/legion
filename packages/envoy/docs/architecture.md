@@ -45,7 +45,7 @@ Agent messages  --/       |
 - JetStream KV bucket `envoy_interests` for session subscriptions. A subscription too large for one NATS message (the server's max payload) is stored in chunks under `=chunk.<generation>.<index>` and a manifest under the session's id, written last; readers join and check the chunks, so they read the old subscription or the new one whole (`internal/kvchunk`). The known-session records of `envoy_known_sessions` are stored the same way
 - JetStream KV bucket `envoy_sessions` for session host data, plus the `plugin` and `plugin_version` each registration names (the npm package the session registers through and that plugin's build; absent for a session whose plugin predates them). `ENVOY_SESSION_MAX_AGE` sets the bucket's `MaxAge` at start; unset, the listener leaves the bucket as it is. That age bounds how long a record survives, not how long a session is alive: liveness is computed from each record's `UpdatedAt` (see “Session state”), never from the presence of a key
 - JetStream KV bucket `legion_agents`, no TTL and never deleted, for the Legion agent registry: one entry per Legion session the daemon ran, under `session.<id>` and the same entry under `issue.<ISSUE>.<id>` and `role.<role_token>.<id>` (`project.*` is the daemon's own and no listener read reaches it)
-- Each listener serves both buckets from an in-memory copy its watcher keeps (`internal/kvwatch`), and the role claims of `envoy_roles` too. A watcher reads its bucket again on a reconnect, a recreated bucket or a failed watch without emptying the copy: every row stays until the new read completes, each delivered record replaces its row as it arrives, and only the completed read removes the rows it did not find. An incomplete read removes nothing, and the listener reads again itself. The role claim watcher also reads its bucket in full one minute after each read that completed, by the same rules, so a claim the copy lost is put back and one the bucket no longer holds is taken out within 2 minutes. No act decides from that copy: each reads the role's claim record from the bucket when it acts.
+- Each listener serves `envoy_interests` and `envoy_sessions` from an in-memory copy its watcher keeps (`internal/kvwatch`), and the role claims of `envoy_roles` too; `legion_agents` it reads from the bucket itself at each request, never from a copy (`internal/legionagents`). A watcher reads its bucket again on a reconnect, a recreated bucket or a failed watch without emptying the copy: every row stays until the new read completes, each delivered record replaces its row as it arrives, and only the completed read removes the rows it did not find. An incomplete read removes nothing, and the listener reads again itself. The role claim watcher also reads its bucket in full one minute after each read that completed, by the same rules, so a claim the copy lost is put back and one the bucket no longer holds is taken out within 2 minutes. No act decides from that copy: each reads the role's claim record from the bucket when it acts.
 
 ## Listener API
 
@@ -122,7 +122,10 @@ then by its renewal exactly as it weighs any other; every grant writes a fresh r
 to the process the claim names clears the mark.
 
 No lookup, publish, role-lane delivery attempt, Dispatch outbox forward or daemon probe releases a
-role claim, whatever the holder's state. Only the role claim reaper does. A claim renewed inside
+role claim, whatever the holder's state. A claim is released only by the role claim reaper, by an
+unsubscribe of the process the claim names, and by a deregistration
+(`DELETE /v1/interests/{session_id}`), which forces the release of every claim the session holds
+(above). A claim renewed inside
 the live window is kept whatever the session bucket says of the id its holder registered under: a
 holder renews its claim by registering (`renewed_at`), and that is what keeps the role of a
 process whose session id a second process resumed and then deregistered, leaving the record gone
@@ -497,7 +500,9 @@ stream did not acknowledge storing the forward,
 forward as in process is answered instead `503` with `code: "maybe_stored"`, `Retry-After: 1` and
 the error `envoy: an earlier attempt of this message is still being stored: <reason>`, recorded
 `earlier_attempt_in_process`: the stream may yet store the earlier forward for the holder
-(`roleSend.endedInProcess`). The route publishes no exception: its sender has the answer.
+(`roleSend.endedInProcess`). The 504 and this 503 publish no exception, since their sender has
+the answer; the 404 raises one behind its answer, as this section's paragraph on exceptions says
+below.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of

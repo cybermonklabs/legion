@@ -158,7 +158,7 @@ func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 				Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: tc.at, Generation: 1, Status: "in_progress", Rank: "U"})
 			seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact", LatestVersion: 1, ApprovedVersion: new(1)})
 			token := seedPhaseWorker(t, pool, "LEGION-208", claim.RolePlanner, "")
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RolePlanner, Claim: token})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RolePlanner, Claim: token, Entry: 1, EntryTask: "plan this change"})
 
 			result, err := intake.ApplyFact(t.Context(), pool, "api", "planner-late", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
 				Role: claim.RolePlanner, Claim: token, Commit: "late", HandoffRecord: "plan", HandoffVersion: 2},
@@ -448,4 +448,78 @@ func TestAnImplementerHandoffAfterAMergeInImplementingMovesTheIssueToTesting(t *
 		t.Fatalf("handoff refused: %+v", *result.Refusal)
 	}
 	assertPhase(t, pool, phase.Testing)
+}
+
+// Two claims of one issue can hold the tester's role: key a's agent, `…-implementer`, which the
+// tester's row names on its step, and the tester's own claim of an earlier version of the plan. A
+// completion from the tester's own claim is no report of the step: it is refused, unspent, and
+// moves nothing; the row still names key a's agent, unreported, so later starts and messages of
+// the step still reach it. Key a's agent's own completion is not refused for it.
+func TestACompletionFromAClaimThatDoesNotWorkTheStepIsRefused(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	const keyed, own = claim.Token("legion-legion-legion-208-implementer"), claim.Token("legion-legion-legion-208-tester")
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 1})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	report := func(token claim.Token) intake.HandoffComplete {
+		return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: token, Summary: "tested", Verdict: "pass",
+			HandoffRecord: "test-1", HandoffVersion: 1}
+	}
+
+	result, err := intake.ApplyFact(ctx, pool, "api", "own", report(own), engine, admissionStub{})
+	if err != nil || result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_THE_STEPS_WORKER" || !result.Unspent {
+		t.Fatalf("the tester's own completion = %+v (unspent %t), %v; want HANDOFF_NOT_THE_STEPS_WORKER, unspent", result.Refusal, result.Unspent, err)
+	}
+	assertPhase(t, pool, phase.Testing)
+	if row := phaseRowOf(t, pool, claim.RoleTester); row.Claim != keyed || row.Completed() {
+		t.Fatalf("the tester's row = %+v, want it naming %s, unreported", row, keyed)
+	}
+
+	result, err = intake.ApplyFact(ctx, pool, "api", "keyed", report(keyed), engine, admissionStub{})
+	if err != nil || result.Refusal != nil && result.Refusal.Code == "HANDOFF_NOT_THE_STEPS_WORKER" {
+		t.Fatalf("key a's agent's completion = %+v, %v; want it not refused as another claim's", result.Refusal, err)
+	}
+}
+
+// testerCompletes seeds LEGION-208 in testing with the tester's row as row, and answers the
+// completion of the tester's report by token: the shape of a case of the step-worker fence.
+func testerCompletes(t *testing.T, row record.PhaseRow, token claim.Token) intake.Result {
+	t.Helper()
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPhase(t, pool, row)
+	result, err := intake.ApplyFact(context.Background(), pool, "api", "tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+		Role: claim.RoleTester, Claim: token, Summary: "tested", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1},
+		testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+	if err != nil {
+		t.Fatalf("apply the tester's completion: %v", err)
+	}
+	return result
+}
+
+// A row that names no claim on a step — an issue whose rows the release before wrote, or a row
+// that runs no step of the plan — names no worker, so the completion is judged by its role, as
+// before the fence: the tester's own claim completes testing.
+func TestACompletionOnARowThatNamesNoClaimIsJudgedByItsRole(t *testing.T) {
+	for name, row := range map[string]record.PhaseRow{
+		"a step row that names no claim": {Issue: "LEGION-208", Role: claim.RoleTester, StepTask: "a", StepPlace: 2, Entry: 1},
+		"a row that runs no step":        {Issue: "LEGION-208", Role: claim.RoleTester, Claim: "legion-legion-legion-208-implementer"},
+	} {
+		if result := testerCompletes(t, row, "legion-legion-legion-208-tester"); result.Refusal != nil {
+			t.Fatalf("%s: the tester's completion = %+v, want it taken by its role", name, result.Refusal)
+		}
+	}
+}
+
+// The role's own claim, where the row names it on its step, works the step: its completion is
+// not refused.
+func TestTheRolesOwnClaimTheRowNamesCompletesItsStep(t *testing.T) {
+	const own = claim.Token("legion-legion-legion-208-tester")
+	row := record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: own, StepTask: "a", StepPlace: 2, Entry: 1}
+	if result := testerCompletes(t, row, own); result.Refusal != nil {
+		t.Fatalf("the tester's own claim's completion of the step its row names it on = %+v, want it taken", result.Refusal)
+	}
 }

@@ -733,8 +733,24 @@ func (r *earlierReleaseRig) seedEarlierReleaseIssue(title, status, rank string, 
 		values ($1, 1, 1, 'owner', $2, $3, now() - interval '5 hours')`, key, "plan-"+key, string(r.token(claim.RoleArchitect)))
 	exec("the task a of "+key, `insert into plan_tasks (issue, generation, task, plan_version, block_text, state, running_kind, position)
 		values ($1, 1, 'a', 1, $2, 'running', 'step', 2)`, key, deploymentTaskText)
-	exec("the steps of task a of "+key, `insert into plan_steps (issue, generation, task, position, role, type)
-		values ($1, 1, 'a', 1, 'implementer', 'implementation'), ($1, 1, 'a', 2, 'tester', 'testing'), ($1, 1, 'a', 3, 'reviewer', 'review')`, key)
+	// The name of each step's agent (plan_steps.agent, the plan_step_agent migration) is written
+	// only where the release before holds the column: a release whose schema stops below that
+	// migration has none, and the migration names each step with no key for its role, the name
+	// written here where the column stands.
+	var agentColumn bool
+	if err := r.st.Pool().QueryRow(ctx, `select exists (select 1 from information_schema.columns
+		where table_schema = current_schema() and table_name = 'plan_steps' and column_name = 'agent')`).Scan(&agentColumn); err != nil {
+		t.Fatalf("read whether the release before holds plan_steps.agent: %v", err)
+	}
+	steps := `insert into plan_steps (issue, generation, task, position, role, type)
+		values ($1, 1, 'a', 1, 'implementer', 'implementation'), ($1, 1, 'a', 2, 'tester', 'testing'),
+		($1, 1, 'a', 3, 'reviewer', 'review')`
+	if agentColumn {
+		steps = `insert into plan_steps (issue, generation, task, position, role, type, agent)
+		values ($1, 1, 'a', 1, 'implementer', 'implementation', 'implementer'), ($1, 1, 'a', 2, 'tester', 'testing', 'tester'),
+		($1, 1, 'a', 3, 'reviewer', 'review', 'reviewer')`
+	}
+	exec("the steps of task a of "+key, steps, key)
 	exec("the implementer's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
 		last_handoff, completed_at, step_task, step_place) values ($1, 'implementer', $2, $3, 0, 0, '', 'implemented', $4,
 		now() - interval '2 hours', 'a', 1)`, key, implementer, stepRecordsHead, "implement-record-"+key)
@@ -781,7 +797,7 @@ func (r *earlierReleaseRig) resume(role claim.Role, kept earlierReleaseSession) 
 	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: r.key, tree: r.key, role: role, session: kept.id, model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s in its session %s = %d %s, want 200", token, kept.id, status, body)

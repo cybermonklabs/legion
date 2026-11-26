@@ -53,7 +53,7 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 			AgentKey: key, Type: roles[role].Type})
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps))
+		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps, nil))
 	})
 }
 
@@ -114,6 +114,28 @@ func taskOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) record
 		t.Fatalf("the plan of %s at generation %d = %+v, want one task", key, issue.Generation, stored)
 	}
 	return stored.Tasks[0]
+}
+
+// topEntryOf is the highest entry of every phases row of key, 0 for none: the one counter of the
+// issue's entries, which the next raise passes by one (Engine.enter).
+func topEntryOf(t *testing.T, pool *pgxpool.Pool, key string) int64 {
+	t.Helper()
+	var top int64
+	if err := pool.QueryRow(t.Context(), `select coalesce(max(entry), 0) from phases where issue = $1`, key).Scan(&top); err != nil {
+		t.Fatalf("read the highest entry of %s: %v", key, err)
+	}
+	return top
+}
+
+// topEntryOfOthers is the highest entry of the phases rows of key but role's, 0 for none: what a
+// raise of role's row, made last, stands one above (Engine.enter).
+func topEntryOfOthers(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) int64 {
+	t.Helper()
+	var top int64
+	if err := pool.QueryRow(t.Context(), `select coalesce(max(entry), 0) from phases where issue = $1 and role <> $2`, key, string(role)).Scan(&top); err != nil {
+		t.Fatalf("read the highest entry of %s's rows but %s's: %v", key, role, err)
+	}
+	return top
 }
 
 // roleRowOf is role's phases row of key as the store holds it now.
@@ -395,9 +417,10 @@ func TestAReturnWithNoImplementationStepStopsTheTask(t *testing.T) {
 // failedTest is the tester's completion of testing on key, generation 1, that fails its step and
 // names step returnTo of the task as the one the task returns to (0 names none), with handoff as
 // its handoff record.
-func failedTest(key string, returnTo int, handoff string) intake.HandoffComplete {
-	return intake.HandoffComplete{Generation: 1, Issue: key, Role: claim.RoleTester, Claim: "test-claim", Summary: "the widget does not render",
-		Verdict: "fail", HandoffRecord: handoff, HandoffVersion: 1, ReturnTo: returnTo}
+func failedTest(t *testing.T, pool *pgxpool.Pool, key string, returnTo int, handoff string) intake.HandoffComplete {
+	t.Helper()
+	return intake.HandoffComplete{Generation: 1, Issue: key, Role: claim.RoleTester, Claim: workerOr(t, pool, key, claim.RoleTester, "test-claim"),
+		Summary: "the widget does not render", Verdict: "fail", HandoffRecord: handoff, HandoffVersion: 1, ReturnTo: returnTo}
 }
 
 // recordAt is what a refused completion must leave as it found: the issue, its task where it has
@@ -458,7 +481,7 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		pool, engine, root := planned(t)
 		planners, implementers := roleStartsOf(t, pool, root.Key, claim.RolePlanner), len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 
-		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("fail-1", failedTest(t, pool, root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
 
@@ -500,12 +523,12 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 			before := standingOf(t, pool, engine, root.Key, true)
 			apply := applyFacts(t, pool, engine)
 
-			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, tc.returnTo, "test-1")), tc.want, before)
+			assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(t, pool, root.Key, tc.returnTo, "test-1")), tc.want, before)
 
 			// The refusal recorded nothing, its handoff record among it, so the tester reports
 			// again with the same record, and the report naming no step returns to the
 			// implementer, the step of the type implementation before it.
-			if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
+			if result := apply("fail-again", failedTest(t, pool, root.Key, 0, "test-1")); result.Refusal != nil {
 				t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
 			}
 			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
@@ -519,10 +542,10 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		before := standingOf(t, pool, engine, root.Key, false)
 		apply := applyFacts(t, pool, engine)
 
-		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(root.Key, 1, "test-1")),
+		assertRefusedReturnTo(t, pool, engine, root.Key, apply("fail-refused", failedTest(t, pool, root.Key, 1, "test-1")),
 			"returnTo is 1, and LEGION-208 has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded", before)
 
-		if result := apply("fail-again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
+		if result := apply("fail-again", failedTest(t, pool, root.Key, 0, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail sent again without returnTo was refused: %+v", result.Refusal)
 		}
 		if got := issueOf(t, pool, engine, root.Key); got.Phase != phase.Implementing || got.Hold != nil {
@@ -550,11 +573,12 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 	assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
-	// The claim the daemon started the tester under, which is what makes its fail the report of a
-	// run (record.Store.RoleRun).
+	// The claim the daemon started the tester under, the worker the tester's row names on its step,
+	// which is what makes its fail the report of a run (record.Store.RoleRun).
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ('test-claim', 'LEGION', 'LEGION-208', 'LEGION-208', 'tester', 1, 'ses-tester', '', 'working', 0, 0, 0, 0)`); err != nil {
+		values ($1, 'LEGION', 'LEGION-208', 'LEGION-208', 'tester', 1, 'ses-tester', '', 'working', 0, 0, 0, 0)`,
+		string(workerOr(t, pool, root.Key, claim.RoleTester, "test-claim"))); err != nil {
 		t.Fatalf("seed the tester's claim: %v", err)
 	}
 	apply := applyFacts(t, pool, engine)
@@ -570,11 +594,11 @@ func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
 	before := standingOf(t, pool, engine, root.Key, true)
 
-	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")),
+	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(t, pool, root.Key, 1, "test-1")),
 		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
 		before)
 
-	if result := apply("late fail again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
+	if result := apply("late fail again", failedTest(t, pool, root.Key, 0, "test-1")); result.Refusal != nil {
 		t.Fatalf("the tester's late fail sent again without returnTo was refused: %+v", result.Refusal)
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})

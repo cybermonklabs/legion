@@ -200,6 +200,26 @@ func TestPodUpdateBackgroundReadingOfEachClaimOfTheRound(t *testing.T) {
 			wait:  waitsForBackground,
 			named: map[string][]string{string(claim.RolePlanner): {"subagent"}},
 		},
+		{
+			// Two claims of one issue can hold one role: the agent implementer's claim on the
+			// tester's step, beside the tester's own claim. Each is named by its agent, which
+			// names one claim of the issue, so the one's kinds do not stand for the other's.
+			name: "two claims of one role that both report background work are each named by their agent",
+			group: func(t *testing.T) []supervise.Claim {
+				keyed := runningReport(roundMember(t, claim.RoleImplementer, podUpdatePod), "subagent")
+				keyed.Role = claim.RoleTester
+				return []supervise.Claim{
+					keyed,
+					runningReport(roundMember(t, claim.RoleTester, podUpdatePod), "async-job"),
+				}
+			},
+			now:  before,
+			wait: waitsForBackground,
+			named: map[string][]string{
+				string(claim.RoleImplementer): {"subagent"},
+				string(claim.RoleTester):      {"async-job"},
+			},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

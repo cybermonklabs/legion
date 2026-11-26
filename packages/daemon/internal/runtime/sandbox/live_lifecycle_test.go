@@ -770,7 +770,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 
 	// The worker is suspended, so the tarballs go where it will read them through the container
 	// every role shares: its state home is on the issue's volume.
-	dir := roleStateHome(worker.role) + "/stage4a-plugin-tarballs"
+	dir := roleStateHome(claim.Agent(worker.role)) + "/stage4a-plugin-tarballs"
 	if _, err := r.execPod(worker, "mkdir", "-p", dir); err != nil {
 		return err
 	}
@@ -816,7 +816,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	note("runtime", "Resume(prev %s, Plugins) returned %s in the unchanged issue pod uid %s (created %s), Sandbox Running",
 		short(old.Incarnation), short(loc.Incarnation), after.UID, after.CreationTimestamp)
 
-	genDir := pluginGenDir(roleStateHome(worker.role), installedGen)
+	genDir := pluginGenDir(roleStateHome(claim.Agent(worker.role)), installedGen)
 	envoyRoot, legionRoot := pluginRoots(genDir)
 	legionVersion, legionContract, err := r.pluginPackageInfo(worker, legionRoot+"/package.json")
 	if err != nil {
@@ -884,7 +884,7 @@ func (r *liveRig) checkStalePluginInstall() error {
 	}
 	note("operator", "pod %s is still uid %s after the negative control", name, final.UID)
 
-	oldGenDir := pluginGenDir(roleStateHome(worker.role), installedGen)
+	oldGenDir := pluginGenDir(roleStateHome(claim.Agent(worker.role)), installedGen)
 	if _, err := r.execPod(worker, "sh", "-c", `test ! -e "$1"`, "sh", oldGenDir); err != nil {
 		return fmt.Errorf("%s still exists after the negative control's own install ran rm -rf .../g* first: %w", oldGenDir, err)
 	}
@@ -1854,6 +1854,7 @@ func (r *liveRig) checkIssueSuspendResume() error {
 // operator's own values are GKE's to pick per pod (confirmed live, 2026-10-17: a six-role root pod
 // carried `["2500m", "X"]`, not a fixed literal), so any non-empty value list is tolerated.
 func TestIsGKEExtendedDurationAffinity(t *testing.T) {
+	t.Parallel()
 	key := "cloud.google.com/extended-duration-pods"
 	required := func(exprs ...corev1.NodeSelectorRequirement) *corev1.Affinity {
 		return &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
@@ -1898,6 +1899,7 @@ func TestIsGKEExtendedDurationAffinity(t *testing.T) {
 // extendedDurationAffinity parameter must gate on the matcher's real verdict, not merely on
 // whether the pod carries any NodeAffinity at all.
 func TestGuaranteedPodAffinity(t *testing.T) {
+	t.Parallel()
 	extended := &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{

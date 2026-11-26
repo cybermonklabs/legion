@@ -86,11 +86,12 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 		}
 		return nil
 	case failed == nil:
-		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State,
-			"mergeable", string(pull.mergeability()), "mergeState", string(pull.mergeState()))...)
-		if err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("merge-queue-mergeability:%s:%d:%d", row.Issue, row.ID, attempt)); err != nil {
+		applied, err := r.applyMergeability(ctx, github, *pr, pull, readAt, fmt.Sprintf("merge-queue-mergeability:%s:%d:%d", row.Issue, row.ID, attempt))
+		if err != nil {
 			return fmt.Errorf("apply the mergeability of %s's pull request #%d: %w", row.Issue, payload.Number, err)
 		}
+		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State,
+			"mergeable", string(applied.Mergeable), "mergeState", string(applied.MergeState))...)
 	case attempt < mergeStateLadderReads:
 		delay := r.readAgainAfter(failed)
 		r.log.Warn("outbox merge-queue read: the read of GitHub failed; it reads again",
@@ -138,7 +139,7 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	if r.supervisor == nil {
 		return errors.New("merge-queue removal executor has no claim supervisor")
 	}
-	token, err := r.workerToken(ctx, row, claim.RoleMerger, "")
+	token, err := r.workerToken(ctx, row.Issue, claim.RoleMerger, "")
 	if err != nil {
 		return err
 	}

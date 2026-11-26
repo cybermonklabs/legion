@@ -1455,7 +1455,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		entry = machine.Claim().ServingEntry()
 	}
 	s.applyFact(w, r, requestFactID("phase/backward"),
-		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo, PhaseEntry: entry, Task: task}, PhaseBackwardResponse{})
+		intake.BackwardMove{Issue: grant.Issue, Requester: grant.Role, To: req.To, Reason: req.Reason, ReturnTo: returnTo, By: grant.Claim, PhaseEntry: entry, Task: task}, PhaseBackwardResponse{})
 }
 
 // taskOfAgent is the task of the plan of issue key whose step the agent of token runs

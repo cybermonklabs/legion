@@ -292,8 +292,13 @@ type workflowRuntime struct {
 	refusedReviews map[int64]bool
 	// failed carries the first supervision terminal fact that could not be applied. serve stops
 	// the daemon with it: the claim's terminal state is durable, so the next boot's replay applies
-	// the fact the failed callback lost.
+	// the terminal fact the failed callback lost.
 	failed chan error
+	// stopped ends at the daemon's stop: the facts a machine reports on goroutines of their own and
+	// that are tried again until applied (podRefused) are tried until it ends (untilStop). run
+	// opens the runtime on its own context (openWorkflow), which the stop ends; a runtime a test
+	// builds by hand holds none.
+	stopped context.Context
 	// readied is the architects claimReady recorded whose waiting notices releaseReadied has not
 	// released yet.
 	readied *wakeSet[claim.Token]
@@ -749,6 +754,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		tokens: tokens, apps: tokens, deployed: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchTransport), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed:     make(chan error, 1),
+		stopped:    ctx,
 		rereadWake: make(chan struct{}, 1), recoverWake: make(chan struct{}, 1), heardWake: make(chan struct{}, 1),
 		heldWake: make(chan struct{}, 1), liveWake: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newHandedOffSet(), mergeStates: newPullRequestReadSet(),
@@ -1734,6 +1740,25 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 	return lease.Identity, nil
 }
 
+// knownIdentity is the bot identity role's App commits as where the token source already holds
+// it (appauth.KnownIdentities: the identity a lease of that App fetched), read with no mint and
+// no call to GitHub; false before that App's first lease, and for a token source that answers no
+// such read, a test's fake among them. A bot identity is the App's own and no owner's, so it
+// needs no repository. A launch's table of every role's identity reads it for the roles of the
+// other App than the claim's own (specs.knownIdentity), so it costs that App no mint while the
+// daemon knows its identity. A role that acts as no App (appauth.ErrRoleNotDefined) has none.
+func (w *workflowRuntime) knownIdentity(role claim.Role) (runtime.GitIdentity, bool) {
+	known, ok := w.tokens.(appauth.KnownIdentities)
+	if !ok {
+		return runtime.GitIdentity{}, false
+	}
+	app, err := appauth.AppRoleFor(role, w.deployed)
+	if err != nil {
+		return runtime.GitIdentity{}, false
+	}
+	return known.KnownIdentity(app)
+}
+
 // ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 // missing or not checked out (outbox.ensureWorkspace), through the outbox, which orders every
 // provision of the shared clones (provisionLocks). The outbox exists from attach on, and attach
@@ -1852,7 +1877,8 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // the base's rules read with it on a conflicting answer, and wait this runtime's wait before they
 // read again (readPullRequest, applyMergeability, mergeStateWait); a second read whose last
 // attempt read no answer hands the head to this runtime's merge-state reader to follow
-// (queueMergeStateFollow). All are set before the records' wake can reach the outbox
+// (queueMergeStateFollow). The outbox's branch create runs the private-name rules boot compiled
+// (privateNameRules). All are set before the records' wake can reach the outbox
 // (outboxWake). Whether an issue still holds its workspace, which a repository kept for an
 // unrecorded issue is answered while (keptRepository), is read from the runtime (workspaceHeldBy),
 // and so is the rule the end of an issue's pod runs the rename pass under, the outbox's podEnded,
@@ -1866,6 +1892,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow
 	w.outbox.deployment = supervision.cfg.Deployment()
+	w.outbox.privateNameRules = supervision.plan.privateNameRules
 	w.outbox.podEnded = w.podEndsOn(supervision.supervisor.deps.Runtime)
 	w.outbox.sweepEvery = w.outboxSweep
 	w.outboxWake.Store(w.outbox)
@@ -2019,25 +2046,72 @@ const (
 	bootRetryMax   = 30 * time.Second
 )
 
+// Each retry of a fact about a launch its issue's pod refused — the refusal's report
+// (workflowRuntime.podRefused) and the end of a start row of a refused claim (outbox's
+// startRowEnded) — waits twice the last, from refusalRetryFirst to at most refusalRetryMost
+// (applyRefusalFact), so a fact the store keeps refusing is logged at ERROR at least hourly for as
+// long as it fails, and the claim's machine shows it as not recorded meanwhile.
+const (
+	refusalRetryFirst = time.Second
+	refusalRetryMost  = time.Hour
+)
+
+// applyRefusalFact applies the fact id about a launch of machine's claim that the issue pod pod
+// refused — the refusal's report (workflowRuntime.podRefused) or its re-check at the end of a start
+// row (outbox's startRowEnded) — by apply, trying it again on a backoff (retryUntilApplied, from
+// refusalRetryFirst doubling to refusalRetryMost) until it is applied, the machine no longer
+// reports the refusal, or ctx ends. line is the ERROR line each failed try logs, with attrs.
+//
+// Each try first reads the claim's machine (supervise.Machine.RefusedPod). A fact applied after the
+// claim launched on the pod that replaced pod would tell the issue and the controller that it
+// cannot be started, which is no longer true, and its owed entry, resent, would hand a running
+// worker its task twice; so where the machine no longer reports pod's refusal the fact is not
+// applied, and a line at INFO says so. A refusal of another pod since has a report of its own.
+//
+// The tries go on, at least one an hour, for as long as the store refuses the fact, since the fact
+// is what queues the claim's start, and a cap would leave nothing to bring the claim back but a
+// restart, which recovers nothing a try does not. So while a try fails, the machine carries the
+// fact, by id, as not recorded (supervise.Machine.RefusalNotRecorded), which the operator's listing
+// shows (`legion claims list` prints `refusal-unrecorded`); a try of it taken, or the fact dropped,
+// clears that fact's mark, and the machine drops every mark of a refusal it drops or replaces.
+func applyRefusalFact(ctx context.Context, log *slog.Logger, machine *supervise.Machine, id, pod, line string, apply func(context.Context) error, attrs ...any) {
+	retryUntilApplied(ctx, log, line, refusalRetryFirst, refusalRetryMost, func(ctx context.Context) error {
+		if refused := machine.RefusedPod(); refused != pod {
+			log.Info("a fact of a refused launch is not applied: the claim's machine no longer reports that refusal",
+				append(attrs[:len(attrs):len(attrs)], "pod", pod, "refusedPod", refused)...)
+			machine.RefusalRecorded(id)
+			return nil
+		}
+		if err := apply(ctx); err != nil {
+			machine.RefusalNotRecorded(id, pod, err)
+			return err
+		}
+		machine.RefusalRecorded(id)
+		return nil
+	}, attrs...)
+}
+
 // runBooted applies this boot's fact (booted) beside the serving API, retrying every failure — a
 // timeout included — on a backoff, each logged at ERROR, until it lands or the daemon stops. The
 // fact is keyed by the boot, so a retry after a commit whose answer was lost is a duplicate, not a
 // second census. Only the daemon's stop leaves it unapplied, and the next boot applies its own.
 func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
-	retryUntilApplied(ctx, w.log, bootRetryFirst, bootRetryMax, func(ctx context.Context) error { return w.booted(ctx, bootID) })
+	retryUntilApplied(ctx, w.log, "legion daemon could not apply its boot; retrying", bootRetryFirst, bootRetryMax,
+		func(ctx context.Context) error { return w.booted(ctx, bootID) })
 }
 
 // retryUntilApplied runs apply until it succeeds or ctx ends, waiting first, then twice as long up
-// to most, between attempts, and logging each failure at ERROR. A failure once ctx has ended is the
-// stop, and logs nothing.
-func retryUntilApplied(ctx context.Context, log *slog.Logger, first, most time.Duration, apply func(context.Context) error) {
+// to most, between attempts, and logging each failure at ERROR as line, with attrs, the attempt,
+// the wait before the next and the error. A failure once ctx has ended is the stop, and logs
+// nothing.
+func retryUntilApplied(ctx context.Context, log *slog.Logger, line string, first, most time.Duration, apply func(context.Context) error, attrs ...any) {
 	wait := first
 	for attempt := 1; ; attempt++ {
 		err := apply(ctx)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
+		log.Error(line, append(attrs[:len(attrs):len(attrs)], "attempt", attempt, "retryIn", wait, "error", err)...)
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -2541,8 +2615,8 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 // entrySweepInterval is how often the daemon converges the phase entries with no fact of its
 // project arriving (tickEntrySweep). The difference a sweep closes is a role waiting for work
 // its record already names, so a minute is short enough that no worker waits long for it, and
-// each run is one admission read of the project's issues, slots and line facts, which the same
-// pass already makes on every fact.
+// each run is one admission read of the project's issues, slots and line facts, which every pass
+// already makes (the pass rule on admit's Admission.Apply).
 const entrySweepInterval = time.Minute
 
 // entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
@@ -2559,10 +2633,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 // tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
 // or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
 // row names is sent that entry's work, and the controller is woken for a stalled root architect,
-// even where nothing else happens in the project: an admission pass runs on a fact, and a quiet
-// project raises none. Each run's event id is its own — the word, the project, this boot and the
-// run's time — since processed_events is shared by every project's daemon. A failed apply is
-// logged, and the next run tries again, as applyControllerTick does.
+// even where nothing else happens in the project: an admission pass runs on the facts the pass
+// rule names (admit's Admission.Apply), and a quiet project raises none. Each run's event id is
+// its own — the word, the project, this boot and the run's time — since processed_events is
+// shared by every project's daemon. A failed apply is logged, and the next run tries again, as
+// applyControllerTick does.
 //
 // The same tick queues the reconcile of each tree's news of its approved design that
 // record.OwedNews owes and no queued row will reconcile (queueOwedDesignNews): the backstop for
@@ -2702,11 +2777,68 @@ func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a session store fault")
 }
 
-// applySessionFact applies one of the two session facts on a goroutine of its own, bounded by
-// readyReleaseTimeout: the machine calls both inside its own decision, so neither waits for the
-// database. A failure is logged and is not the daemon's end — the report is a report, and the
-// start it describes has already been decided. A claim on no issue, the daemon's own controller,
-// has nobody to tell.
+// podRefused applies the fact that a claim's launch was refused because its issue pod cannot run
+// it until that pod's update round or its release replaces it (supervise's Deps.PodRefused): the
+// workflow tells the issue and the controller, and queues a start of the claim wherever its outbox
+// holds none that brings the claim back, so whatever replaces the pod resumes it (workflow's
+// podRefusedLaunch). The machine decides how often this is called — at the first refusal, then
+// hourly — so each call is a report, and the event id names the moment.
+//
+// The fact is the one thing that queues that start, so it is never only logged: it is applied on
+// a goroutine of its own, since the machine calls this inside its own decision, each try with no
+// deadline, so a queue of facts ahead of it on the serializer is waited out rather than lost, and
+// a try that fails is logged at ERROR and tried again on a backoff until it is applied, the
+// claim's machine no longer reports pod's refusal, or the daemon stops (applyRefusalFact,
+// untilStop), as the end of a start row of a refused claim is (outbox's startRowEnded). While a try
+// fails the claim shows the fact as not recorded. The event id is kept across the tries, so a try
+// after a commit whose answer was lost is a duplicate. It does not stop the daemon, as a terminal
+// fact does (failed): the restart would recover nothing a try does not, since the boot's resume by
+// rule brings back only a claim that owns its issue's step, launches it into the same pod and is
+// refused and reported again, while every other claim of the deployment would be stopped and
+// started for it; and an hourly report, which finds the start the first one queued, would restart
+// the daemon for a fact that queues nothing.
+//
+// While a report of pod's refusal is still being tried, the machine's next report of it, the
+// hourly one, starts no tries of its own (supervise.Machine.BeginRefusalReport): the first is the
+// same fact in substance, and each that the store took would tell the issue and the controller
+// again. The fact carries the claim's generation at the refusal, which its apply judges the stored
+// claim by (workflow's refusalStands).
+func (w *workflowRuntime) podRefused(m *supervise.Machine, c supervise.Claim, pod, detail string) {
+	if c.Issue == "" || c.Role == claim.RoleController {
+		return
+	}
+	if !m.BeginRefusalReport(pod) {
+		w.log.Info("a report of a refused launch is not started: an earlier report of that refusal is still being tried", "claim", c.Token, "pod", pod)
+		return
+	}
+	id := fmt.Sprintf("pod-refused:%s:%d", c.Token, time.Now().UnixNano())
+	fact := intake.PodRefusedLaunch{Issue: c.Issue, Role: c.Role, Claim: c.Token, Pod: pod, Detail: detail, Generation: c.Generation}
+	go func() {
+		defer m.EndRefusalReport(pod)
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx := store.ForConcurrentWorker(w.untilStop())
+		applyRefusalFact(ctx, w.log, m, id, pod, "apply a launch its issue's pod refused", func(ctx context.Context) error {
+			_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
+			return err
+		}, "claim", c.Token, "issue", c.Issue, "role", c.Role)
+	}()
+}
+
+// untilStop is the context the runtime's retries of a fact run on, which ends at the daemon's
+// stop (stopped), or one that never ends for a runtime a test builds by hand without it.
+func (w *workflowRuntime) untilStop() context.Context {
+	if w.stopped == nil {
+		return context.Background()
+	}
+	return w.stopped
+}
+
+// applySessionFact applies one of the two session facts, a lost session and a session store
+// fault, on a goroutine of its own, bounded by readyReleaseTimeout: the machine calls both inside
+// its own decision, so neither waits for the database. A failure is logged and is not the
+// daemon's end — the report is a report, and the start it describes has already been decided. A
+// claim on no issue, the daemon's own controller, has nobody to tell.
 func (w *workflowRuntime) applySessionFact(c supervise.Claim, id string, fact intake.Fact, what string) {
 	if c.Issue == "" || c.Role == claim.RoleController {
 		return

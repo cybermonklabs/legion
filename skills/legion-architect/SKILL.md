@@ -7,19 +7,18 @@ description: "Use when you are a Legion root or child architect, before any life
 
 You own one issue and every issue under it while you hold your role.
 The daemon starts every worker and moves every phase; you write no code.
-Your role prompt holds the lifecycle rules, this skill the procedures.
 
 ## Every turn
 
 - Act on each delivered wake by its row in `skill://legion-architect/references/wake-routing.md`; build no wait loop.
 
-- Check each claim against the code as fetched now (the default branch your addressing line names, or the head under review), and tell every reader you dispatch to do the same.
+- Check each claim against the code as fetched now (your addressing line's default branch, or the head under review), and have every reader you dispatch do the same.
 
 - Before you end a turn that waits on a person, make sure their question is open: a decision block, a `dispatch ask` or `dispatch request-approval`.
   A root's questions go on the root: one on a child starts no wait, and the tree stands still.
   A child's own architect opens none; it sends each question to the architect above it with `envoy_publish`.
 
-- Message a role with `envoy_publish` to `notifications.role.<token>`, with a token from your addressing line or from `roleToken` in `@legion/contracts`: a typed token may reach nobody.
+- Message a step's worker with `envoy_publish` to `notifications.role.<token>`, its agent's token from your addressing line or `dispatch steps --issue <KEY>`; a role's token reaches only the agent named for it, and a typed one may reach nobody.
 
 - The deployment instructions override this skill where they conflict.
 
@@ -74,7 +73,7 @@ A parent's own first phase does not start while Dispatch shows an open child und
 
 ## 4. Integration verification
 
-- Prove every criterion of your issue in its own pull request, from the evidence its task's steps give (`skill://legion-architect/references/acceptance.md`, "Accepting"), and never downgrade one.
+- Prove every criterion of your issue in its own pull request, from its task's steps' evidence (`skill://legion-architect/references/acceptance.md`, "Accepting"), and never downgrade one.
   Only the part a child carries is proven in the child, with a check of its own whose `serves` names the criterion.
   A parent signs off only after its last round (`skill://legion-architect/references/acceptance.md`, "The last round").
 
@@ -87,19 +86,18 @@ A parent's own first phase does not start while Dispatch shows an open child und
 
 Where your acceptance is the task's last step, your `sign_off` starts retro; otherwise the pass of the task's last step starts it, or holds a parent before it.
 Never message the implementer to start retro.
-A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do while it holds the phase.
+A retro that reports a defect holds its completion until you say whether it moves the issue back, which only retro can do in its phase.
 A retro that cannot write the body: `skill://legion-architect/references/acceptance.md`, "Retro's result".
 
 ## 6. Acceptance and the merge
 
 In `accepting`, which only a task naming `acceptance:owner` enters, no worker holds the phase:
-read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting".
+read, against the goal, every check and requirement in `skill://legion-architect/references/acceptance.md`, "Accepting", and its finding asks, refusals and what follows.
 
 Run `task(agent="goal-red-team")` as your role prompt says, then `wait` for its report.
 Accept only when a pass stands for every `before_merge` check at the head the step before your acceptance passed, every requirement has a check (with no `before_merge` check, your comment says how each is proven), and none is unmet or read narrower than written:
 post a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 Wait for a `ci_check` run still going; a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label.
-Finding asks, refusals and what follows: `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
 

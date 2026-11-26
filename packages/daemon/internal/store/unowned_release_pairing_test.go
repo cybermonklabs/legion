@@ -28,6 +28,7 @@ import (
 // own moment to the moment of every later read, for ever, and count it as a release no wake ever
 // ended — the distortion the records exist to remove, moved onto the row beside it.
 func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
+	t.Parallel()
 	t.Run("a wake pairs with the release that suspended its role", func(t *testing.T) {
 		st := migratedStore(t)
 		ctx := context.Background()
@@ -75,7 +76,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 		}
 		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, _, err := RecordPodWakeTx(ctx, tx, PodResume{Release: idle, Project: "legion", Issue: rootIssue,
-				Role: "architect", Kind: pods.WakeDelivery, At: at.Add(time.Minute)})
+				Role: "architect", Claim: "legion-legion-legion-208-architect", Kind: pods.WakeDelivery, At: at.Add(time.Minute)})
 			return err
 		}); err != nil {
 			t.Fatalf("record the wake of the architect: %v", err)

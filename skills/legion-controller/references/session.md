@@ -12,10 +12,12 @@ The daemon runs you in a pod. When the pod dies, it relaunches it and resumes th
 
 ## The `legion` tool
 
-- `read_state`: the daemon's whole state: `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `tree`, `waitingOn`), `admission` (`cap`, `active`, `waiting`, `trees`, `blocked`, `held`), `capabilities`, `daemon.project`, and `settings`, the resolved `legion.yaml`.
+- `read_state` with no field: a summary of the daemon's whole state, one line per fact: the project, the pause that stands or the last one, admission (`cap`, `active`, `waiting`, `blocked`), the wakes the pacing holds, each capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's state with its last turn times.
+  With `issue`, `issues` or `phase` it returns those issues' full records, `issues.<KEY>` (`phase`, `holdReason`, `heldFrom`, `architect`, `workers`, `otherClaims`, `tree`, `waitingOn`), and with `settings: true` the resolved `legion.yaml`; it takes one of these at a time.
 - `set_status` (`issue`, `status`: `todo`, `backlog` or `icebox`). Each call mints its grant from the secret the session registered with. You cannot set `done`.
-- `compact` (`issue`, `role`): the daemon shortens that claim's session to a summary and sends it its task again; the claim keeps its session and workspace. It refuses a claim with no process (`CLAIM_NOT_RUNNING`).
-- `fresh_session` (`issue`, `role`): starts the claim again with its task in a new session; the old session, and all it knew, is left behind. It is the one door that brings back a dead role.
+- `compact` (`issue`, `role`, optional `claim`): the daemon shortens that claim's session to a summary and sends it its task again; the claim keeps its session and workspace. It refuses a claim with no process (`CLAIM_NOT_RUNNING`).
+- `fresh_session` (`issue`, `role`, optional `claim`): starts the claim again with its task in a new session; the old session, and all it knew, is left behind. It is the one door that brings back a dead role.
+- `issue` and `role` reach the claim that works the role's step. Two claims of one issue can hold one role; when a notice names a claim by its token, pass that token as `claim` so the call reaches that claim. Both refuse a token of another issue (`INVALID_CLAIM`) and a claim that holds another role (`CLAIM_NOT_OF_ROLE`).
 - Both refuse `CLAIM_IN_A_TURN` (a process in a turn, or a compaction) and `CLAIM_UNSETTLED` (the runtime did not answer, or the claim moved): ask again later. For a root with no architect claim both answer `NO_CLAIM`.
 
 ## `gh`
@@ -36,13 +38,13 @@ It answers `OPEN`, `MERGED` or `CLOSED`. When it fails, report `<KEY>: pull requ
 
 ## Reading Dispatch's API
 
-Each read of Dispatch's API in these references is a `curl` of a route under `DISPATCH_URL`, with the token of `DISPATCH_TOKEN_FILE` on standard input, so that no process's arguments hold it. Run it in bash:
+Each read of Dispatch's API in these references is a `dispatch api` of a route under `/api/v1`, which reads it with this session's own credential and prints Dispatch's JSON answer. Run it in bash:
 
 ```text
-printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL<route>"
+dispatch api --path '<route>'
 ```
 
-`legion controller start` sets `DISPATCH_URL` only when `controller.yaml` names `dispatch_url`, and `DISPATCH_TOKEN_FILE` beside it only with `dispatch_token_file`: under `dispatch_token_broker` it sets no token file. The daemon sets both for a controller it launches. Quote a route that carries a query, because the shell reads `?` and `&`. When the read fails, or the variables are unset, act on nothing the read would decide and name its first line in your summary.
+Quote a route that carries a query, because the shell reads `?` and `&`. When the read fails, act on nothing the read would decide and name its first line in your summary.
 
 ## Taking the controller over by hand
 

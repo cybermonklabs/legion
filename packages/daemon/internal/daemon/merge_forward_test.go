@@ -234,7 +234,9 @@ func TestAMergeForwardMessageWaitsForItsRoleAndEndsWithItsAsk(t *testing.T) {
 // restart whose settings no longer define that role, ends undelivered at the restarted daemon's
 // attempt, its released claim not woken: the boot stopped that role's task (the workflow's
 // stopLostRoles), so the message is no work of the issue's, and its wake would resume a claim
-// whose launch then fails for want of the role (specs' rolePromptPaths). The restarted daemon's
+// whose launch then fails for want of the role (specs' rolePromptPaths). So does a hold to the
+// tester whose claim runs in the checker's slot, a keyed agent named for the checker
+// (record.NameAgents): no pod of the restarted deployment has that slot. The restarted daemon's
 // outbox is built with the deployment its settings read (attach), which is what the restart
 // changes here; the row is in the store from before it. The control is the same row under the
 // deployment of the daemon before the restart, which defines the role: its attempt wakes the
@@ -250,6 +252,8 @@ func TestAMergeForwardMessageQueuedBeforeARestartThatDroppedItsRoleEndsUndeliver
 		Phase: phase.Step, PullRequest: 86, Why: record.ConflictCheckNotGreen}
 	told := record.MergeForwardMessage{Role: deploymentChecker, Step: record.MergeForwardLanded, Head: "sha-1", Landed: "sha-2",
 		Base: "main", Phase: phase.Step, PullRequest: 86, Why: record.ConflictCheckNotGreen}
+	keyed := record.MergeForwardMessage{Role: claim.RoleTester, Claim: mustClaimToken(t, "LEGION-208", deploymentChecker), Step: record.MergeForwardHold,
+		Head: "sha-1", Base: "main", Phase: phase.Testing, PullRequest: 86, Why: record.ConflictCheckNotGreen}
 	for _, tc := range []struct {
 		name      string
 		roles     []config.Role
@@ -259,8 +263,10 @@ func TestAMergeForwardMessageQueuedBeforeARestartThatDroppedItsRoleEndsUndeliver
 	}{
 		{name: "a hold to the checker the restart dropped ends undelivered", roles: withoutChecker, asked: asked, message: hold},
 		{name: "a landed to the checker the restart dropped ends undelivered", roles: withoutChecker, asked: &landed, message: told},
+		{name: "a hold to the tester in the checker's slot the restart dropped ends undelivered", roles: withoutChecker, asked: asked, message: keyed},
 		{name: "control: a hold to the checker the deployment defines wakes it", roles: roles, asked: asked, message: hold, delivered: true},
 		{name: "control: a landed to the checker the deployment defines wakes it", roles: roles, asked: &landed, message: told, delivered: true},
+		{name: "control: a hold to the tester in the checker's slot the deployment defines wakes it", roles: roles, asked: asked, message: keyed, delivered: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -84,7 +85,9 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 	// The whole sentence a child's planner is told, so nothing but the architect it names moved.
 	want := "Legion addressing: your role topic is `" + notify.RoleTopicPrefix + string(mustClaimToken(t, child, claim.RolePlanner)) + "`" + owns(child) +
 		"the project's controller is `" + notify.RoleTopicPrefix + string(claim.ControllerToken("legion")) + "`; " +
-		"a sibling role on your issue is your topic with the trailing `-<role>` replaced."
+		"your issue had no plan rows when you were started, so each of its roles is its own agent until it runs a plan: " +
+		"a sibling role on your issue is your topic with the trailing `-<role>` replaced, " +
+		"and once your issue runs a plan, `dispatch steps --issue " + child + "` gives the agent of each of its steps."
 	if got := addressing(child, claim.RolePlanner); got != want {
 		t.Errorf("the child's planner, while the child's architect works, is told %q; want %q", got, want)
 	}
@@ -104,4 +107,43 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 	told(grandchild, claim.RoleTester, owns(root))
 	told(child, claim.RoleArchitect, above(root))
 	told(root, claim.RolePlanner, owns(root))
+}
+
+// The plan `implementer:a tester:a reviewer` runs key a's agent, `…-implementer`, on the
+// implementer's step and on the tester's, so the addressing the reviewer is told names the
+// tester's step on `…-implementer`, each step on its agent's topic, and says what a role's own
+// topic reaches. The token is the one claim.AgentToken spells from the step's agent's name
+// (record.PlanStep.AgentName). An issue with no plan rows is told the rule it was always told,
+// with the case it holds in (each role its own agent until the issue runs a plan) and the read
+// that names the agent of each step of a plan it runs later.
+func TestTheAddressingNamesTheAgentOfEachStep(t *testing.T) {
+	t.Parallel()
+	steps := []record.PlanStep{
+		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation", AgentKey: "a", Agent: "implementer"},
+		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 2, Role: "tester", Type: "testing", AgentKey: "a", Agent: "implementer"},
+		{Issue: "LEGION-209", Generation: 1, Task: "a", Position: 3, Role: "reviewer", Type: "review", Agent: "reviewer"},
+	}
+	workers, err := stepWorkersOf("legion", "LEGION-209", "LEGION-208", &record.StoredPlan{Steps: map[string][]record.PlanStep{"a": steps}})
+	if err != nil {
+		t.Fatalf("the step agents: %v", err)
+	}
+	reviewer := supervise.Claim{Token: mustClaimToken(t, "LEGION-209", claim.RoleReviewer), Issue: "LEGION-209", Tree: "LEGION-208", Role: claim.RoleReviewer}
+	architect := mustClaimToken(t, "LEGION-208", claim.RoleArchitect)
+	told := addressingFragment("legion", reviewer, architect, workers, ghrepo.Repository{}, "", nil)
+	for _, want := range []string{
+		"step 1 of task a (implementer) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
+		"step 2 of task a (tester) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-implementer`",
+		"step 3 of task a (reviewer) `" + notify.RoleTopicPrefix + "legion-legion-legion-209-reviewer`",
+		"your topic with the trailing `-<role>` replaced reaches the agent named for that role",
+	} {
+		if !strings.Contains(told, want) {
+			t.Errorf("the reviewer is told %q; want it naming %q", told, want)
+		}
+	}
+	if bare := addressingFragment("legion", reviewer, architect, nil, ghrepo.Repository{}, "", nil); !strings.HasSuffix(bare,
+		"your issue had no plan rows when you were started, so each of its roles is its own agent until it runs a plan: "+
+			"a sibling role on your issue is your topic with the trailing `-<role>` replaced, "+
+			"and once your issue runs a plan, `dispatch steps --issue LEGION-209` gives the agent of each of its steps.") {
+		t.Errorf("an issue with no plan rows is told %q; want the rule it was always told, its case and where a later plan's agents are read", bare)
+	}
 }

@@ -6,6 +6,7 @@ import (
 )
 
 func TestTaskAgentPhaseRollbackRefusesLossAndPreservesASingleReconstructibleRow(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := t.Context()
 	openRunningTree(t, st)
@@ -45,44 +46,5 @@ func TestTaskAgentPhaseRollbackRefusesLossAndPreservesASingleReconstructibleRow(
 	var task, agent string
 	if err := st.Pool().QueryRow(ctx, `select task, agent from phases where issue = $1 and role = 'implementer'`, rootIssue).Scan(&task, &agent); err != nil || task != "a" || agent != "implementer" {
 		t.Fatalf("the roll forward restored task %q and agent %q, error %v; want a/implementer", task, agent, err)
-	}
-}
-
-func TestTaskReleaseClaimsCutoverAndRollbackRefuseAnUnfinishedSuspendedSet(t *testing.T) {
-	st := emptyStore(t)
-	ctx := t.Context()
-	migrateThrough(t, st, 20261125114614-1)
-	openRunningTree(t, st)
-	_, err := st.Pool().Exec(ctx, `insert into issue_releases (project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended)
-		values ('legion', $1, 1, 18, 20, 22, 0, 'architect', array['implementer'])`, rootIssue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "Finish in-flight pod releases") {
-		t.Fatalf("cut over a role-only suspended set: %v, want an explicit refusal", err)
-	}
-	if _, err := st.Pool().Exec(ctx, `delete from issue_releases where issue = $1`, rootIssue); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatalf("cut over after the earlier release ended: %v", err)
-	}
-	markRelease(t, st, 18, 20, 22, 0, "implementer")
-	back := heredocWayBackOf(t, 20261125114614)
-	if err := runWayBack(t, st, back); err == nil || !strings.Contains(err.Error(), "Finish in-flight pod releases") {
-		t.Fatalf("roll back an unfinished exact-claim set: %v, want a refusal", err)
-	}
-	if _, err := st.Pool().Exec(ctx, `delete from issue_releases where issue = $1`, rootIssue); err != nil {
-		t.Fatal(err)
-	}
-	if err := runWayBack(t, st, back); err != nil {
-		t.Fatalf("roll back after the release ended: %v", err)
-	}
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatalf("roll forward after the rollback: %v", err)
-	}
-	var hasColumn bool
-	if err := st.Pool().QueryRow(ctx, `select exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'issue_releases' and column_name = 'suspended_claims')`).Scan(&hasColumn); err != nil || !hasColumn {
-		t.Fatalf("restored exact-claim column = %t, error %v", hasColumn, err)
 	}
 }

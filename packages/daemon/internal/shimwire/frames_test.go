@@ -645,6 +645,31 @@ func TestAnAdoptionFrameRefusesABranchThatIsNoTasks(t *testing.T) {
 	}
 }
 
+// A start that names the credential its slot's gh files must hold names how long the launcher may
+// wait for them (waitMs): the daemon gives up on the start at a deadline of its own, and a wait
+// with no bound would hold the slot's launcher past it for good. A credential with no bound, or a
+// bound of no time, is refused; the same credential with a bound validates, as a start naming no
+// credential does.
+func TestALauncherStartNamingACredentialMustBoundItsWait(t *testing.T) {
+	start := LauncherStart{ID: "start-1", Generation: 7, Argv: []string{"omp", "--mode", "rpc"}}
+	if err := start.Validate(); err != nil {
+		t.Fatalf("a start naming no credential was refused: %v", err)
+	}
+	bounded := LauncherGitHubCredential{HostsFile: "acme/hosts.yml", TokenDigest: strings.Repeat("ab", 32), WaitMs: 110_000}
+	start.GitHubCredential = &bounded
+	if err := start.Validate(); err != nil {
+		t.Fatalf("a start naming a credential with a bound of %d ms was refused: %v", bounded.WaitMs, err)
+	}
+	for _, wait := range []int{0, -1} {
+		unbounded := bounded
+		unbounded.WaitMs = wait
+		start.GitHubCredential = &unbounded
+		if err := start.Validate(); !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), "waitMs") {
+			t.Errorf("a start naming a credential with waitMs %d validated as %v, want ErrMalformedFrame naming waitMs", wait, err)
+		}
+	}
+}
+
 func TestHello2RoundTripsWithAndWithoutAnIdentity(t *testing.T) {
 	identity := &AgentSecretsHello{Thumbprint: "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs", PodToken: "eyJhbGciOiJSUzI1NiJ9.e30.sig"}
 	for name, frame := range map[string]Hello2{

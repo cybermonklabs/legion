@@ -33,7 +33,7 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
                            'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/kubernetes.md")`'),
     ("docs/site/src/content/docs/**", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
                                       'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "docs/site/src/content/docs")`, '
-                                      "and `packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads the legion guides under it"),
+                                      "and `packages/pi-legion/src/skills-guard.test.ts#the guides say a review's request for changes or a review step's fail counts a round` reads the legion guides under it"),
     ("deploy/kubernetes/daemon/controller.yaml.example", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
                                                          'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "deploy/kubernetes/daemon/controller.yaml.example")`'),
     ("AGENTS.md", "`packages/pi-legion/src/skills-guard.test.ts#the controller skill reads pull requests as the review App, and nothing says the controller holds no GitHub credential`, "
@@ -42,4 +42,4 @@ GATE = gate("pi_legion_build", "pi-legion-build", reads=reads(
                   'a root of the list at `packages/pi-legion/src/skills-guard.test.ts#path.join(REPO_ROOT, "README.md")`'),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
-  + bun_job("pi-legion-build"))
+  + dispatch_api_types(at("pi-legion-build", "Typecheck pi-legion")) + bun_job("pi-legion-build"))

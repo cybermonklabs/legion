@@ -11,8 +11,8 @@ import (
 const releaseKindVersion = 20261111001612
 
 // A release's mark says which of the two rules wrote it. The idle rule releases a pod whose
-// roles are all quiet, checks the workspace through the named claim's shim and suspends
-// each live claim; the second rule (workflow.UnownedPodRelease)
+// roles are all quiet, checks the workspace through the shim of the claim the check row names,
+// and suspends each live claim; the second rule (workflow.UnownedPodRelease)
 // releases a pod whose every claim is already failed, retired or suspended, which suspends no
 // role and checks no workspace, so its mark has no role to name. role is not null under a check
 // naming the six workflow roles, so that mark could not be written at all before this
@@ -20,7 +20,7 @@ const releaseKindVersion = 20261111001612
 //
 // After the migration each kind's own shape is the only one the table takes. An idle mark names
 // a role and an unowned mark leaves it empty, the two wrong pairs are refused by the same
-// constraint — an idle release nobody could ask for a bundle, and an unowned release that claims
+// constraint — an idle release nobody could read a workspace through, and an unowned release that claims
 // a role it never stopped — and a kind that is neither rule is refused as well.
 //
 // The migration clears nothing, unlike the three earlier migrations of this table, so a release
@@ -29,6 +29,7 @@ const releaseKindVersion = 20261111001612
 // with nothing to read, its pod never torn down and the roles it had suspended `released` with
 // nothing to resume them.
 func TestAReleaseMarkNamesItsRuleWith20261111001612(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, releaseKindVersion-1)

@@ -228,8 +228,11 @@ func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.N
 // that carries the sentence of its untold record alone (RelaunchSentence), so the next prompted
 // turn of the new process reads what the last one ended at once, whatever the role: a root
 // architect's goal-red-team reading that died while it held nothing is the measured case
-// (dispatch://INFRA-3276 R3). A claim that holds a delivery needs none: its task carries the
-// sentence in front of it (Delivery.message).
+// (dispatch://INFRA-3276 R3). An untold role change gives it one as well, carrying that sentence
+// (roleChangedTask) in front of the record's, or alone where no record tells: a re-roled generation
+// that holds no task would otherwise run every turn another input starts in its new role before
+// any prompt says the earlier role's tokens are no longer its to use. A claim that holds a delivery
+// needs none: its task carries the sentences in front of it (Delivery.message).
 //
 // The delivery has no phase, no run, no entry and no look, so nothing holds it back
 // (phaseHolds, asksRoot), no working copy is adopted for it (adopts), and its confirmation and
@@ -253,11 +256,13 @@ func HoldsWork(pending *Delivery) bool { return HoldsTask(pending) && !pending.N
 // tells here is one of the fresh session's own processes (forgetSession), and the delivery carries
 // the abandoned session's sentence and then the record's (Delivery.message).
 func (m *Machine) queueRelaunch(ctx context.Context) error {
-	ended := m.claim.EndedWork
-	if !ended.Tells() || m.claim.Pending != nil || m.claim.Role == claim.RoleController {
+	ended, changed := m.claim.EndedWork, m.claim.RoleChange
+	if !(ended.Tells() || changed.Tells()) || m.claim.Pending != nil || m.claim.Role == claim.RoleController {
 		return nil
 	}
-	m.log.Info("supervise: the claim holds no task; a delivery of the daemon's own tells its agent what the relaunch ended",
-		"cause", ended.Cause, "ended", ended.Generation)
-	return m.queue(ctx, RequestDeliver{Claim: m.claim.Token, ID: relaunchTaskID(), Task: RelaunchSentence(ended)})
+	m.log.Info("supervise: the claim holds no task; a delivery of the daemon's own tells its agent what the relaunch ended or the role it took",
+		"cause", ended.Cause, "ended", ended.Generation, "roleChangedFrom", changed.From)
+	d := Delivery{ID: relaunchTaskID()}
+	task, _ := d.message(m.claim)
+	return m.queue(ctx, RequestDeliver{Claim: m.claim.Token, ID: d.ID, Task: task})
 }

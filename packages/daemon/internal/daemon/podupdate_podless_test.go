@@ -445,19 +445,25 @@ func pauseKeepsThePod(t *testing.T, check func(t *testing.T, rig *podUpdateRig))
 // recordPause records a project pause of the issue's pod as the daemon records it, for each role
 // of stopped, the roles the pause stopped. The pause held the pod and the launch of each stopped
 // role from twenty minutes before podUpdateStart: the hold of the pod (holdLegionPod) and the open
-// resume of each held wake (recordPodWake, pods.WakePause). The project's resume came a minute
-// before podUpdateStart (store.Store.Resume). It ended the pause and started the stuck clock of
-// each held launch at its own moment. The hold of the pod ended at that moment too, for the reason
-// end. So no hold stands, the pause still owes each stopped role a launch, and no held start has
-// run yet (heldStart runs one). It answers the pause's id.
+// resume of each held wake (recordPodWake, pods.WakePause), which names the claim the pause
+// stopped, the role's claim in the rig, as the pause's stop names it (projectPause's TakePodWake
+// of the stopped claim's token). The project's resume came a minute before podUpdateStart
+// (store.Store.Resume). It ended the pause and started the stuck clock of each held launch at its
+// own moment. The hold of the pod ended at that moment too, for the reason end. So no hold stands,
+// the pause still owes each stopped role a launch, and no held start has run yet (heldStart runs
+// one). It answers the pause's id.
 func (r *podUpdateRig) recordPause(end store.PausePodHoldEnd, stopped ...claim.Role) int64 {
 	r.t.Helper()
 	heldAt, resumedAt := podUpdateStart.Add(-20*time.Minute), podUpdateStart.Add(-time.Minute)
 	pause := openLegionPause(r.t, r.pool, heldAt)
 	holdLegionPod(r.t, r.st, pause, podUpdateIssue, heldAt)
 	for _, role := range stopped {
+		token, member := r.tokens[role]
+		if !member {
+			r.t.Fatalf("the pause stopped the %s, which is no member of the rig, so no claim of it holds a wake", role)
+		}
 		recordPodWake(r.t, r.st, store.PodResume{Project: podUpdateProject, Issue: podUpdateIssue, Role: string(role),
-			Kind: pods.WakePause, At: heldAt, Pause: pause})
+			Claim: string(token), Kind: pods.WakePause, At: heldAt, Pause: pause})
 	}
 	if _, err := r.st.Resume(r.ctx, store.ResumeRequest{Project: "LEGION",
 		By: store.PauseActor{Kind: store.PauseByOperator}, At: resumedAt}); err != nil {
@@ -490,7 +496,7 @@ func (r *podUpdateRig) heldStartRequest(role claim.Role) supervise.RequestRuleRe
 // it shows that a let-out decides no keep of the pod (podHolds.owes reads none).
 func (r *podUpdateRig) writeLetOut(role claim.Role, letOut time.Time) {
 	r.t.Helper()
-	if moved, err := r.st.SetResumeClock(r.ctx, podUpdateProject, podUpdateIssue, role, r.tokens[role], letOut); err != nil || !moved {
+	if moved, err := r.st.SetResumeClock(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role], letOut); err != nil || !moved {
 		r.t.Fatalf("write the let-out of the %s's launch = %t, %v; want the clock of its open resume moved", role, moved, err)
 	}
 }
@@ -559,7 +565,7 @@ func (r *podUpdateRig) stampsResumes() {
 func (r *podUpdateRig) awaitResumeReady(role claim.Role) {
 	r.t.Helper()
 	testwait.Eventually(r.t, fmt.Sprintf("the ready of the %s stamped on its open resume", role), func() bool {
-		id, _, open, err := r.st.OpenPodResume(r.ctx, podUpdateProject, podUpdateIssue, role, r.tokens[role])
+		id, _, open, err := r.st.OpenPodResume(r.ctx, podUpdateProject, podUpdateIssue, r.tokens[role])
 		if err != nil || !open {
 			r.t.Fatalf("read the open resume of the %s = %t, %v; want the resume of its held wake open", role, open, err)
 		}

@@ -328,6 +328,53 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 	}
 }
 
+// Two claims of one issue can hold one role: the agent implementer's claim on the tester's step,
+// beside the tester's own claim of an earlier version of the plan. An ask of the round still
+// queued for the one is no ask of the other, so the sweep asks the tester's own claim while the
+// keyed claim's ask waits in the outbox (store's QueuedUpdateAsks, read by the claim each row
+// names). A row the release before wrote names no claim and stands for each claim of its role, so
+// the sweep asks no claim of the tester while it waits.
+func TestPodUpdateAsksAClaimWhileAnotherClaimOfItsRoleHasAnAskQueued(t *testing.T) {
+	t.Parallel()
+	keyed := mustClaimToken(t, podUpdateIssue, claim.RoleImplementer)
+	for _, tc := range []struct {
+		name string
+		// queued is the claim the row already queued names, "" for a row the release before wrote.
+		queued claim.Token
+		// asked is how many asks the sweep writes the tester's own claim.
+		asked int
+	}{
+		{name: "a row naming the keyed claim", queued: keyed, asked: 1},
+		{name: "a row naming no claim", queued: "", asked: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleTester))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			rig.awaitRound(claim.RoleTester, podUpdateRound)
+			text := supervise.UpdateTask(claim.RoleTester, podUpdateRound, podUpdateDrift, podUpdateBound)
+			if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+				Role: claim.RoleTester, Claim: tc.queued, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
+			}); err != nil || !written {
+				t.Fatalf("queue the other claim's ask of the round = %t, %v; want it written", written, err)
+			}
+			rig.tick()
+
+			own := rig.tokens[claim.RoleTester]
+			n := 0
+			for _, ask := range rig.asks() {
+				if ask.Claim == own {
+					n++
+				}
+			}
+			if n != tc.asked {
+				t.Fatalf("the sweep wrote %d asks of the round to the tester's own claim %s while an ask naming %q waited, want %d",
+					n, own, tc.queued, tc.asked)
+			}
+		})
+	}
+}
+
 // The ask is published and marked under the claim's own lock, and that lock is taken without
 // waiting (supervise's Machine.PublishUpdateAsk). An issue's role-message lane runs one row at a
 // time (record.LaneKey), and a Sandbox relaunch holds a claim's lock for minutes while the runtime

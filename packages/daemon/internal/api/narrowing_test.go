@@ -443,8 +443,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// The tasks narrowing is a row of the table like every other, so the caller below it is told
 	// what it lost: a caller one contract below tasksContract, which states that contract in its
 	// header as every plugin from shapedAnswersContract on does, is served at the recorded contract
-	// at or below it. Tasks is the highest boundary, so only its row writes a line. The literal
-	// task-key check below also catches a strip moved outside the table.
+	// at or below it. That caller stands below the tasks row and below every entry's row above it,
+	// so the log holds the tasks row's line among those rows' lines. It counts no entry. The
+	// literal task-key check below also catches a strip moved outside the table.
 	t.Run("the tasks narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
 		below := entryNumber(tasksContract) - 1
@@ -457,19 +458,10 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 			}
 		}
 		want := narrowingsExpected(state, below)
-		if len(want) != 1 {
-			t.Fatalf("a caller at %d expects the lines %v, want the tasks row alone", below, want)
+		if !slices.Contains(want, droppedAt(t, entryNumber(tasksContract))) {
+			t.Fatalf("a caller at %d expects the lines %v, want the tasks row's among them", below, want)
 		}
-		if len(narrowings) != len(want) {
-			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-				len(narrowings), below, len(want), narrowings)
-		}
-		for i, line := range narrowings {
-			if line.Dropped != want[i] {
-				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
-					i, below, line.Dropped, want[i])
-			}
-		}
+		wantNarrowings(t, narrowings, below, want)
 	})
 
 	// The assignments' plan narrowing is a row of the table like every other, so the caller below

@@ -16,8 +16,7 @@ import (
 // claim leaves it open. Two claims can hold one role: the agent of key a, `…-implementer`, works
 // the tester's step, beside the tester's own claim of an earlier version of the plan. A paused
 // cancel of a release reads each released claim's resume (stopReleasedForPause), and a read by
-// role alone would mark the tester's own claim owed the launch the wake took for key a's agent. A
-// resume the release before wrote names no claim, and is still each claim of its role's.
+// role alone would mark the tester's own claim owed the launch the wake took for key a's agent.
 func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -33,14 +32,14 @@ func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, keyed, claim.RoleTester, pods.WakeDelivery, at, 0); err != nil || !taken {
 		t.Fatalf("take key a's wake on the tester's step = %t, %v; want it taken", taken, err)
 	}
-	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, keyed); err != nil || !found {
+	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, keyed); err != nil || !found {
 		t.Fatalf("key a's open resume = %t, %v; want the one its wake took", found, err)
 	}
-	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, own); err != nil || found {
+	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, own); err != nil || found {
 		t.Fatalf("the tester's own claim's open resume = %t, %v; want none: the wake brought key a's agent back", found, err)
 	}
 	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", rootIssue, claim.RoleTester, own, at)
+		closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", rootIssue, own, at)
 		if err == nil && closed {
 			t.Errorf("a close for the tester's own claim closed key a's resume")
 		}
@@ -48,15 +47,8 @@ func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, keyed); err != nil || !found {
+	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, keyed); err != nil || !found {
 		t.Fatalf("key a's open resume after the other claim's close = %t, %v; want it still open", found, err)
-	}
-
-	if _, err := st.Pool().Exec(ctx, `update pod_resumes set claim = '' where issue = $1`, rootIssue); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, own); err != nil || !found {
-		t.Fatalf("a resume the release before wrote, read for the tester's own claim = %t, %v; want it found: it names no claim", found, err)
 	}
 }
 
@@ -64,8 +56,7 @@ func TestAnOpenResumeIsTheClaimItsWakeBroughtBack(t *testing.T) {
 // other claim's, so another claim of the same role is not hidden from the stuck rule by a launch
 // that is not its own. The agent of key a, `…-implementer`, works the tester's step beside the
 // tester's own claim; key a's wake took the tester's open resume. A let-out of the tester's own
-// claim finds no resume of its own and moves nothing; key a's let-out moves its clock. A resume
-// the release before wrote names no claim, so any claim of its role's let-out moves it.
+// claim finds no resume of its own and moves nothing; key a's let-out moves its clock.
 func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -91,27 +82,17 @@ func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
 		return clockAt.UTC()
 	}
 
-	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, own, at.Add(5*time.Minute)); err != nil || set {
+	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, own, at.Add(5*time.Minute)); err != nil || set {
 		t.Errorf("the tester's own claim's let-out = %t, %v; want no resume of its own found", set, err)
 	}
 	if got := clock(); !got.Equal(at) {
 		t.Errorf("key a's clock after the tester's own claim's let-out = %s, want %s: that launch is not key a's", got, at)
 	}
-	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, keyed, at.Add(5*time.Minute)); err != nil || !set {
+	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, keyed, at.Add(5*time.Minute)); err != nil || !set {
 		t.Errorf("key a's let-out = %t, %v; want its resume found", set, err)
 	}
 	if got := clock(); !got.Equal(at.Add(5 * time.Minute)) {
 		t.Errorf("key a's clock after its own let-out = %s, want %s", got, at.Add(5*time.Minute))
-	}
-
-	if _, err := st.Pool().Exec(ctx, `update pod_resumes set claim = '' where issue = $1`, rootIssue); err != nil {
-		t.Fatal(err)
-	}
-	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, own, at.Add(10*time.Minute)); err != nil || !set {
-		t.Errorf("the tester's own claim's let-out over a resume that names no claim = %t, %v; want it found", set, err)
-	}
-	if got := clock(); !got.Equal(at.Add(10 * time.Minute)) {
-		t.Errorf("the clock of a resume that names no claim = %s, want %s", got, at.Add(10*time.Minute))
 	}
 }
 
@@ -119,8 +100,7 @@ func TestALetOutMovesTheStuckClockOfItsOwnClaimsResumeAlone(t *testing.T) {
 // key a, `…-implementer`, on the tester's step, and the tester's own claim of an earlier version
 // of the plan, both released. While key a's resume is open, a wake of the tester's own claim — a
 // message to its session, a pause's owed launch of it — still takes a resume of its own; a second
-// wake of key a's agent takes none. A resume the release before wrote names no claim and is each
-// claim of its role's, so while one is open no claim of its role takes a wake, as before.
+// wake of key a's agent takes none.
 func TestTwoClaimsOfOneRoleEachTakeAWakeOfTheirOwn(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -150,26 +130,15 @@ func TestTwoClaimsOfOneRoleEachTakeAWakeOfTheirOwn(t *testing.T) {
 	if take(keyed) {
 		t.Fatalf("a second wake of key a's agent was taken, want it refused: its own resume is open")
 	}
-	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, own); err != nil || !found {
+	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, own); err != nil || !found {
 		t.Fatalf("the tester's own claim's open resume = %t, %v; want the one its wake took", found, err)
-	}
-
-	if _, err := st.Pool().Exec(ctx, `update pod_resumes set closed_at = now() where issue = $1`, rootIssue); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-		values (0, 'legion', $1, 'tester', $2, now())`, rootIssue, pods.WakeChecks); err != nil {
-		t.Fatalf("seed a resume the release before wrote: %v", err)
-	}
-	if take(keyed) || take(own) {
-		t.Fatalf("a wake of a claim of the tester was taken while a resume naming no claim of that role is open, want it refused")
 	}
 }
 
 // The agent of a key takes the role of each step it works, so its role can change between its
 // wake and its first turn. Its resume is its own whatever role the claim holds now: key a's agent,
 // woken as the implementer, re-roled to the tester's step before its first turn, still finds,
-// stamps and closes the resume its wake took.
+// stamps and closes the resume its wake took, by its token alone.
 func TestAReRoledClaimStillReachesTheResumeItsWakeTook(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -181,16 +150,16 @@ func TestAReRoledClaimStillReachesTheResumeItsWakeTook(t *testing.T) {
 	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, keyed, claim.RoleImplementer, pods.WakeAgentMessage, at, 0); err != nil || !taken {
 		t.Fatalf("take key a's wake as the implementer = %t, %v; want it taken", taken, err)
 	}
-	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, claim.RoleTester, keyed); err != nil || !found {
-		t.Fatalf("key a's open resume, read as the tester = %t, %v; want the one its wake took", found, err)
+	if _, _, found, err := st.OpenPodResume(ctx, "legion", rootIssue, keyed); err != nil || !found {
+		t.Fatalf("key a's open resume after its re-role = %t, %v; want the one its wake took", found, err)
 	}
-	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleTester, keyed, at.Add(time.Minute)); err != nil || !set {
-		t.Fatalf("key a's let-out as the tester = %t, %v; want its resume found", set, err)
+	if set, err := st.SetResumeClock(ctx, "legion", rootIssue, keyed, at.Add(time.Minute)); err != nil || !set {
+		t.Fatalf("key a's let-out after its re-role = %t, %v; want its resume found", set, err)
 	}
 	if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", rootIssue, claim.RoleTester, keyed, at)
+		closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", rootIssue, keyed, at)
 		if err == nil && !closed {
-			t.Errorf("a close of key a's resume as the tester closed nothing, want the one its wake took")
+			t.Errorf("a close of key a's resume after its re-role closed nothing, want the one its wake took")
 		}
 		return err
 	}); err != nil {

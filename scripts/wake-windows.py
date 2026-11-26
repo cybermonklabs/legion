@@ -26,14 +26,16 @@ logger puts `claim` on every line it writes, and the outbox writes its wake line
 too, so the message is what selects a wake and not the fields.
 
 STATE_JSON is a saved body of `GET /legion/v1/state`. It maps each claim token to its session:
-`daemon.project` is the project token, `issues` is keyed by issue and each issue carries
-`architect` and `workers.<role>`, each of those a claim with `session` and, while it holds a
-process, `locator.claim`. A `locator.claim` is preferred where the state gives one; otherwise the
-token is composed as `legion-<project token>-<issue key, lower-cased>-<role>` (project `infra`,
-issue `INFRA-976`, role `implementer` gives `legion-infra-infra-976-implementer`). The project
-controller's own claim, `legion-<project token>-controller`, maps to `controllerLocator.sessionId`:
-its wake takes no token and never waits, but the session it starts reads its context like any
-other.
+`issues` is keyed by issue and each issue carries `architect`, `workers.<role>` and
+`otherClaims` (the claims of the issue neither of those shows, such as a role's own claim beside
+the agent of a key on that role's step), each of those a claim with `token` and `session`. The
+token is read from the claim, never composed from the issue and the role: two claims of one issue
+can hold one role, and a keyed agent's token ends in its agent's name, not in the role of its
+step. A state from a daemon below contract 222 names no `token`, and a claim there is mapped by
+`locator.claim` while it holds a process, and otherwise reported as unknown. The project
+controller's own claim, `legion-<project token>-controller`, maps to `controllerLocator.sessionId`
+(`daemon.project` is the project token): its wake takes no token and never waits, but the session
+it starts reads its context like any other.
 
 What counts where, and why the two differ:
 
@@ -102,9 +104,9 @@ def parse_time(text):
 
 
 def claim_of(entry):
-    """The claim record of an issue's architect or of one of its workers. The architect is the
-    claim itself and a worker is the phase that holds one, so the nested `claim` is taken where
-    the entry has one."""
+    """The claim record of an issue's architect, of one of its workers or of one of its other
+    claims. The architect is the claim itself, and a worker or another claim holds one under
+    `claim`, so the nested `claim` is taken where the entry has one."""
     if not isinstance(entry, dict):
         return {}
     nested = entry.get("claim")
@@ -112,24 +114,25 @@ def claim_of(entry):
 
 
 def sessions_by_claim(state):
-    """Each claim token of the state with the session it holds: every worker, every architect, and
-    the project controller. A claim with no session is left out — it woke nothing to read."""
+    """Each claim token of the state with the session it holds: every architect, every worker,
+    every other claim of an issue, and the project controller. A claim with no session is left
+    out — it woke nothing to read — and so is one whose state names no token."""
     project = (state.get("daemon") or {}).get("project", "").lower()
     by_claim = {}
-    for issue, record in (state.get("issues") or {}).items():
+    for record in (state.get("issues") or {}).values():
         if not isinstance(record, dict):
             continue
-        roles = [("architect", record.get("architect"))]
-        roles += list((record.get("workers") or {}).items())
-        for role, entry in roles:
+        entries = [record.get("architect")]
+        entries += list((record.get("workers") or {}).values())
+        entries += list(record.get("otherClaims") or [])
+        for entry in entries:
             held = claim_of(entry)
             session = held.get("session")
             if not session:
                 continue
-            token = (held.get("locator") or {}).get("claim")
+            token = held.get("token") or (held.get("locator") or {}).get("claim")
             if token:
                 by_claim[token] = session
-            by_claim.setdefault(f"legion-{project}-{issue.lower()}-{role}", session)
     controller = (state.get("controllerLocator") or {}).get("sessionId")
     if controller:
         by_claim.setdefault(f"legion-{project}-controller", controller)

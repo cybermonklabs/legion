@@ -257,7 +257,7 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	if got := rig.machine.Claim(); !got.Released() || got.UpdateTaskedAt != nil {
 		t.Errorf("the claim after the ask = %s by %s, asked at %v; want it still released and not asked", got.State, got.SuspendedBy, got.UpdateTaskedAt)
 	}
-	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer, rig.token); err != nil || open {
+	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, rig.token); err != nil || open {
 		t.Errorf("the role's open resume after the ask = %t, %v; want none", open, err)
 	}
 }

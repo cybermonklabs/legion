@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// PodRelease is one release of an issue pod: which roles were in it and when their claims were
-// suspended as released. It is the row every resume of that pod hangs from, so a reader can pair
-// a release with what woke it and how long the agent waited.
+// PodRelease is one release of an issue pod: which claims were in it and the roles they held, and
+// when their claims were suspended as released. It is the row every resume of that pod hangs from,
+// so a reader can pair a release with what woke it and how long the agent waited.
 type PodRelease struct {
 	// ID is the row's own id, which the store fills.
 	ID int64
@@ -21,8 +21,12 @@ type PodRelease struct {
 	Issue   string
 	// Generation is the issue's generation at the release.
 	Generation uint64
-	// Roles are the roles whose claims the release suspended, sorted.
+	// Roles are the roles of the claims the release suspended, each once, sorted.
 	Roles []string
+	// Claims are the tokens of the claims the release suspended, sorted (pod_releases.claims).
+	// Two claims can hold one role, so this names what Roles cannot. A record the release before
+	// 20261124213823 wrote names none.
+	Claims []string
 	// At is when the release completed.
 	At time.Time
 	// BundleBytes is the size of the git bundle of unpushed work an earlier release saved, which
@@ -48,8 +52,8 @@ type PodResume struct {
 	Issue   string
 	// Role is the role the wake was for.
 	Role string
-	// Claim is the token of the claim the wake brought back (pod_resumes.claim), "" for a resume
-	// the release before 20261121183336 wrote, which is each claim of its role's.
+	// Claim is the token of the claim the wake brought back (pod_resumes.claim). Every resume
+	// names one: 20261124213821 named the role's own claim on each resume the release before wrote.
 	Claim string
 	// Kind names the wake: a daemon delivery, a CI settlement, a role message, an agent message
 	// or the backstop.
@@ -129,10 +133,11 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (id int64,
 	}
 	err = Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
 		wrote = false
-		err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, at, bundle_bytes, issue_release_id)
-			values ($1, $2, $3, $4, $5, $6, nullif($7::bigint, 0))
+		err := tx.QueryRow(ctx, `insert into pod_releases (project, issue, generation, roles, claims, at, bundle_bytes, issue_release_id)
+			values ($1, $2, $3, $4, $5, $6, $7, nullif($8::bigint, 0))
 			on conflict (issue_release_id) where issue_release_id is not null do nothing returning id`,
-			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), rel.At, rel.BundleBytes, rel.Release).Scan(&id)
+			rel.Project, rel.Issue, int64(rel.Generation), strings.Join(rel.Roles, ","), strings.Join(rel.Claims, ","),
+			rel.At, rel.BundleBytes, rel.Release).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return tx.QueryRow(ctx, `select id from pod_releases where issue_release_id = $1`, rel.Release).Scan(&id)
 		}
@@ -240,7 +245,7 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 // over every resume of a project paused now: the pause holds the launch the resume waits for, and
 // its resume starts the clock again.
 func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string, before time.Time, unmarked bool) ([]PodResume, error) {
-	query := `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0), stuck
+	query := `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0), stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2
 		and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
 	if unmarked {
@@ -259,7 +264,7 @@ func podResumesWithoutAFirstTurn(ctx context.Context, tx pgx.Tx, project string,
 	var out []PodResume
 	for rows.Next() {
 		var r PodResume
-		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause, &r.Stuck); err != nil {
+		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Claim, &r.Kind, &r.At, &r.ClockAt, &r.Pause, &r.Stuck); err != nil {
 			return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 		}
 		out = append(out, r)
@@ -394,7 +399,7 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 
 func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since time.Time) (PodReleaseRecords, error) {
 	var out PodReleaseRecords
-	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, at, bundle_bytes, coalesce(issue_release_id, 0)
+	releases, err := tx.Query(ctx, `select id, project, issue, generation, roles, claims, at, bundle_bytes, coalesce(issue_release_id, 0)
 		from pod_releases where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
@@ -402,14 +407,17 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 	for releases.Next() {
 		var r PodRelease
 		var generation int64
-		var roles string
-		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &r.At, &r.BundleBytes, &r.Release); err != nil {
+		var roles, claims string
+		if err := releases.Scan(&r.ID, &r.Project, &r.Issue, &generation, &roles, &claims, &r.At, &r.BundleBytes, &r.Release); err != nil {
 			releases.Close()
 			return out, fmt.Errorf("read the release records of %s: %w", project, err)
 		}
 		r.Generation = uint64(generation)
 		if roles != "" {
 			r.Roles = strings.Split(roles, ",")
+		}
+		if claims != "" {
+			r.Claims = strings.Split(claims, ",")
 		}
 		out.Releases = append(out.Releases, r)
 	}
@@ -419,8 +427,9 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 	}
 
 	// Each resume carries the pause that held it (decision 15 of dispatch://INFRA-3759), so a
-	// reader of the window tells a held wake's wait from a released pod's.
-	resumes, err := tx.Query(ctx, `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0),
+	// reader of the window tells a held wake's wait from a released pod's, and the claim it brought
+	// back, since two claims of one role can each be woken.
+	resumes, err := tx.Query(ctx, `select id, release_id, project, issue, role, claim, kind, at, clock_at, coalesce(pause_id, 0),
 		pod_ready_at, first_turn_at, stuck
 		from pod_resumes where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
@@ -429,7 +438,7 @@ func podReleaseRecords(ctx context.Context, tx pgx.Tx, project string, since tim
 	for resumes.Next() {
 		var r PodResume
 		var ready, first *time.Time
-		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause,
+		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Claim, &r.Kind, &r.At, &r.ClockAt, &r.Pause,
 			&ready, &first, &r.Stuck); err != nil {
 			resumes.Close()
 			return out, fmt.Errorf("read the resume records of %s: %w", project, err)

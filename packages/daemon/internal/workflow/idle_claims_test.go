@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // A pod can hold two live claims of one stored role: a keyed agent on its tester step, whose claim
 // is the one it started on the implementer's step, and the fresh tester an earlier version of the
 // plan started. The release suspends each live claim by its token, so the decision names both
-// claims, in the order the view read them, beside their roles; a role names neither of them alone.
+// claims, in the order the view read them, each beside its role; a role names neither of them alone.
 func TestAReleaseSuspendsEachLiveClaimByItsToken(t *testing.T) {
 	const keyed claim.Token = "legion-legion-legion-209-implementer"
 	const fresh claim.Token = "legion-legion-legion-209-tester"
@@ -29,10 +30,8 @@ func TestAReleaseSuspendsEachLiveClaimByItsToken(t *testing.T) {
 	if !decision.Release {
 		t.Fatalf("the pod of two idle claims = %+v, want it released", decision)
 	}
-	if want := []claim.Token{keyed, fresh}; !slices.Equal(decision.Claims, want) {
-		t.Fatalf("the claims the release suspends = %v, want %v: each live claim by its token, the suspended one left out", decision.Claims, want)
-	}
-	if want := []claim.Role{claim.RoleTester, claim.RoleTester}; !slices.Equal(decision.Roles, want) {
-		t.Fatalf("the roles of the claims the release suspends = %v, want %v", decision.Roles, want)
+	want := []store.ReleasedClaim{{Token: keyed, Role: claim.RoleTester}, {Token: fresh, Role: claim.RoleTester}}
+	if !slices.Equal(decision.Claims, want) {
+		t.Fatalf("the claims the release suspends = %v, want %v: each live claim by its token beside its role, the suspended one left out", decision.Claims, want)
 	}
 }

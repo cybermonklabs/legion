@@ -432,6 +432,66 @@ func TestACheckLookBoundAfterAPauseCountsFromTheCheckRolesReady(t *testing.T) {
 	}
 }
 
+// Two claims of one issue can hold the check's role: the agent of a key, which the role's phases
+// row names on its step, beside the role's own claim. The look's claim is the one its start
+// reaches, the step's worker (the outbox's workerOf), so its bound after a pause counts from that
+// claim's ready: here eleven minutes after the pause's end, while the role's own claim was last
+// ready before the pause. Read by the role's own token, the bound would count from the pause's end
+// and end the look eleven minutes into the keyed claim's turn.
+func TestACheckLookBoundAfterAPauseCountsFromTheReadyOfTheLooksClaim(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	ctx := context.Background()
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	root := checkRoot()
+	putOutboxIssue(t, pool, records, root)
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ended := now.Add(-12 * time.Minute)
+	began := ended.Add(-3 * time.Hour)
+	endLegionPause(t, pool, openLegionPause(t, pool, began), ended)
+	lookAt := began.Add(time.Hour)
+	check := openCheck(root, "a1b2c3d4")
+	check.OpenedAt, check.BoundAt, check.LookWakeAt, check.LastWakeAt = lookAt, lookAt.Add(336*time.Hour), &lookAt, &lookAt
+	putProductionCheck(t, pool, records, check)
+	keyed := mustClaimToken(t, root.Key, claim.RoleTester)
+	own := mustClaimToken(t, root.Key, check.Role)
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: root.Key, Role: check.Role, Claim: keyed, StepTask: "t", StepPlace: 1, Entry: 1})
+	}); err != nil {
+		t.Fatalf("name the keyed claim on the check role's step: %v", err)
+	}
+	for token, ready := range map[claim.Token]time.Time{keyed: ended.Add(11 * time.Minute), own: ended.Add(-4 * time.Hour)} {
+		if err := st.PutClaim(ctx, supervise.Claim{Token: token, Project: "legion", Tree: root.Tree, Issue: root.Key, Role: check.Role,
+			Generation: 1, State: supervise.StateReady, LastReady: ready, Session: "ses_" + string(token)}); err != nil {
+			t.Fatalf("store the claim %s: %v", token, err)
+		}
+	}
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt}, lookAt.Add(workflow.CheckLookBound)))
+	engine := workflow.New(records, workflow.Config{Project: "legion", Linger: 24 * time.Hour}, quietLogger())
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{engine}, project: "legion",
+		log: quietLogger(), now: func() time.Time { return now }}
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if got := readProductionCheck(t, pool, records, root.Key); !got.LookOpen {
+		t.Fatal("look 1 ended twelve minutes after the pause's end, want it open: its claim was ready eleven minutes after the end")
+	}
+	var nextAt time.Time
+	if err := pool.QueryRow(ctx, `select next_at from outbox where issue = $1 and kind = 'check_look'`, root.Key).Scan(&nextAt); err != nil {
+		t.Fatalf("read the waiting check_look row: %v", err)
+	}
+	if want := ended.Add(11*time.Minute + workflow.CheckLookBound); !nextAt.Equal(want) {
+		t.Fatalf("the check_look row is due %s after the pause's end, want %s: the bound counts from the ready of the look's claim %s",
+			nextAt.Sub(ended), want.Sub(ended), keyed)
+	}
+}
+
 // sentStatements records every statement a pool's connections send (pgx.QueryTracer).
 type sentStatements struct {
 	mu  sync.Mutex

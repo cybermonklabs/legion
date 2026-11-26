@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -24,10 +25,27 @@ const (
 	ScopeApprove = "approve"
 )
 
-// Scopes is every OAuth scope this deployment knows, in the order a credential holding both
-// carries them: the whole set a person's own credential holds, and the set a mint gives a token
-// when its body names none. Read it, never write it — every such credential shares this one
-// slice, as every surface shares DISPATCH_SCOPES in @legion/contracts.
+// ScopeLegionStatus is the OAuth scope of a Legion daemon's own broker token. Where
+// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs it or ScopePerson to write a Legion
+// issue's status, to take the legion label off an issue, or to move a Legion issue out from
+// under every labelled issue, but for the status write of the architect of an issue above
+// (api's legion_status_scope.go). The secrets broker grants it to the daemon's token alone, and
+// Dispatch reads it from the broker's answer (brokerTokenActor).
+//
+// It is not in Scopes, and it must stay out. The browser's credential, the personal-token check
+// and a new token's default scopes all read Scopes, and none of them may hold this scope: it is
+// the daemon's broker token's alone. A person-scoped broker token holds ScopePerson alone
+// (brokerPersonScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
+// is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
+// one string.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// Scopes is every OAuth scope a person's own credential can hold (ScopeLegionStatus is not one),
+// in the order a credential holding both carries them: the whole set a person's own credential
+// holds, and the set a mint gives a token when its body names none. Read it, never write it —
+// every such credential shares this one slice, as every surface shares DISPATCH_SCOPES in
+// @legion/contracts.
 var Scopes = []string{ScopePerson, ScopeApprove}
 
 // ScopeRead is the word that marks a read-only credential. GET /api/v1/whoami lists it among such
@@ -41,7 +59,8 @@ const ScopeRead = "read"
 // ActorAct names the agent that acted when a credential acted for its person, so a write records
 // which credential made it and not only whom it was made for: Session is the session a
 // broker-issued token proved, TokenID and TokenName the personal token presented, and Scopes the
-// scopes that credential holds. A browser's cookie is the person themselves acting, so it names
+// scopes of Scopes that credential holds (api's actScopes: a Legion daemon's ScopeLegionStatus is
+// never recorded). A browser's cookie is the person themselves acting, so it names
 // no agent and carries none of this.
 //
 // Scopes is a snapshot of the credential as it stood at the act, and is never read back from the
@@ -69,10 +88,14 @@ func (a *ActorAct) Holds(scope string) bool {
 }
 
 // Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
-// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
-// which this package's callers and its tests rely on.
+// agent it names, what a broker-issued token's project scope lets it write, and whether it may
+// only read. A pointer, so Actor stays comparable with ==, which this package's callers and its
+// tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
+	// A named broker token (one the secrets broker scoped to a project) holds ScopeLegionStatus
+	// alone where the broker granted it, which the broker does for a Legion daemon's own token
+	// only (brokerTokenActor). No credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -80,13 +103,6 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// Projects are the projects the credential may use, sorted. Nothing in this tree sets it, so
-	// it is empty for every credential here: a later slice sets it from a personal token's
-	// agent_tokens.projects and from a broker token's list. Empty is a credential that names none.
-	// What a list decides is access.CredentialCovers': for a full member's credential, and one
-	// that names no person, only which private projects it reaches; for a restricted member's,
-	// every project it reaches.
-	Projects []string
 	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
 	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
@@ -102,15 +118,25 @@ type Credential struct {
 	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
-	// ProjectScope is a broker-issued token's project scope as the broker answered it, read as
-	// its base word (ciphertoken.Caller.ProjectScope): `named` for a token an operator's entry
-	// mapped, `person` for one acting as its person or for a machine nobody signed in on, `none`
-	// for the read entry's token; a token narrowed to reading carries the word it narrows, with
-	// ReadOnly beside it. It is what tells a token that names a service and no person apart: a
-	// `named` one is an account entry's that names no person, whose writes are recorded under its
-	// account (writeNeedsASignedInPerson), and a `person` one is a machine's that nobody signed in
-	// on, which writes nothing. Empty for every other credential.
+	// ProjectScope is a broker-issued token's `project_scope` as the broker answered it, read as
+	// its base word (ciphertoken.Caller.ProjectScope): `named`, a token an operator's entry
+	// mapped to its one project, or to none for an account entry that names a person and no
+	// project or neither; `person`, a token held to no one project, a person's own or a
+	// machine's nobody signed in on; `none`, the read entry's token's; or `public`, a job's token
+	// that names no one project, which writes wherever a token naming no project may, since no
+	// write check reads its list (Projects) at this release. A token narrowed to reading carries
+	// the word it narrows, with ReadOnly beside it. Empty for every other credential. A
+	// broker-issued token that names a service and no person writes only under `named` or
+	// `public` — a job's two shapes, and under `named` an account entry's naming no person, whose
+	// writes are recorded under its account — and is refused every write under any other
+	// (writeNeedsASignedInPerson).
 	ProjectScope string
+	// Projects is the credential's list, sorted: a broker token's ciphertoken.Caller.Projects, and
+	// nil for every other credential until a later slice sets a personal token's
+	// agent_tokens.projects. Empty is a credential that names none. What a list decides is
+	// access.CredentialCovers': for a full member's credential, and one that names no person, only
+	// which private projects it reaches; for a restricted member's, every project it reaches.
+	Projects []string
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -1089,15 +1115,20 @@ type SearchAsk struct {
 	Resolution *AskResolution     `json:"resolution,omitempty"`
 }
 
-// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
-// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
-// payload gains a tree field. A search hit's ask and a person's answer history both answer with
-// it.
+// AskAnswerWithTree is an answer a read gives with the trees of its texts: its own text, and the
+// label of each option it chose. It is the read's own shape rather than fields on AskAnswer
+// itself: the answer is an event payload's shape, and no payload gains a tree field. A search
+// hit's ask, a person's answer history, an ask's thread and the ask itself all answer with it.
 type AskAnswerWithTree struct {
 	AskAnswer
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
 	TextTree DisplayTree `json:"text_tree,omitempty"`
+	// SelectedTrees is the ProseMirror tree each label of Selected is shown as, at that label's
+	// own index, present only for a caller that sent `Dispatch-Trees: 1` and only where Selected
+	// holds a label. A label is the label of an option the ask held when it was answered, which
+	// the ask's write stored the tree of; it may be one the ask has since renamed or removed.
+	SelectedTrees []DisplayTree `json:"selected_trees,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -2645,7 +2676,15 @@ type MyReplyRow struct {
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
-	Subject string  `json:"subject"`
+	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
+	// Inbox draws for the row. SubjectTree is that line read as the document a reader is shown,
+	// present only for a caller that sent `Dispatch-Trees: 1` - the Inbox draws the row's line
+	// through the one renderer every body is drawn with, so without the tree beside it the
+	// browser would parse the line itself (web/src/features/inbox/ThreadTitle.tsx). The tree
+	// stands on this row rather than on a read shape of its own because no event payload
+	// carries a reply row: this shape is the replies read's alone.
+	Subject     string      `json:"subject"`
+	SubjectTree DisplayTree `json:"subject_tree,omitempty"`
 	// EditedAt is the time the author of the thread's root post last edited it, absent on a root
 	// never edited. An ask's thread has no such root and never carries it.
 	EditedAt *time.Time `json:"edited_at,omitempty"`
@@ -3326,7 +3365,7 @@ type Comment struct {
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
 // reference (none for a block of a direct message, which has no address), its id, its stored
-// excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
+// excerpt (its text as refs.BlockExcerpt cuts it, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 //
 // EditedAt, DeletedAt and DeletedBy are the marks of the quoted post, read from its own row, so a

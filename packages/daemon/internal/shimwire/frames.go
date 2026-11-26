@@ -666,10 +666,15 @@ type LauncherStart struct {
 
 // LauncherGitHubCredential names the credential a start's slot gh files must hold: HostsFile is
 // the default owner's hosts.yml, relative to the slot's gh directory, and TokenDigest the hex
-// SHA-256 of the token the daemon wrote into it.
+// SHA-256 of the token the daemon wrote into it. WaitMs bounds the launcher's wait for the files
+// to hold it, counted from the moment the start reaches the launcher: the daemon sets it to what
+// remains of its own wait on the start before the stop grace (runtime/sandbox's relaunch), so the
+// launcher answers its refusal before the daemon gives up on the start. Validate refuses a
+// credential with no bound.
 type LauncherGitHubCredential struct {
 	HostsFile   string `json:"hostsFile"`
 	TokenDigest string `json:"tokenDigest"`
+	WaitMs      int    `json:"waitMs"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's
@@ -833,9 +838,9 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
-// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
-// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// provider?, model?, httpStatus?, retryable, code?}`, the "Failure detail for a `prompt_result`
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts
+// of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
 // whose last assistant message ended with stopReason "error" — a provider request its own retries
 // could not get through, where Retryable says it may still succeed later — and for one it failed
 // outright before any turn.
@@ -1452,6 +1457,14 @@ func SequenceDigest(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// GitHubTokenDigest is the TokenDigest of a LauncherGitHubCredential that names token: the hex
+// SHA-256 of its bytes. The daemon names it for the token it writes into a slot's hosts.yml, and
+// the launcher compares it with the digest of the token that file holds.
+func GitHubTokenDigest(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // thumbprintShape is a base64url-encoded SHA-256: 43 characters, no padding (RFC 7638).
 var thumbprintShape = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
@@ -1504,9 +1517,11 @@ func (f LauncherHello) Validate() error {
 // sessions to resume, when the id is not a single path element (it holds `/` or NUL), which no
 // session file name ends in, or when its argv does not hold exactly one element
 // `--resume=<ResumeSession>`: the launcher resumes the file it finds for the id by replacing that
-// one element with the file's path, and with none or two there is nothing certain to replace. The
-// daemon is the frame's only sender, so each of these is a bug of the daemon's, which the refusal
-// names.
+// one element with the file's path, and with none or two there is nothing certain to replace. A
+// start that names a credential its slot's gh files must hold is refused when the credential
+// names no bound for that wait (WaitMs), which would hold the slot's launcher past the daemon's
+// own wait on the start for as long as the files never hold it. The daemon is the frame's only
+// sender, so each of these is a bug of the daemon's, which the refusal names.
 func (f LauncherStart) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1520,6 +1535,9 @@ func (f LauncherStart) Validate() error {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			return fmt.Errorf("%w: launcher_start file name %q is not a plain file name", ErrMalformedFrame, name)
 		}
+	}
+	if f.GitHubCredential != nil && f.GitHubCredential.WaitMs <= 0 {
+		return fmt.Errorf("%w: launcher_start gitHubCredential waitMs is %d", ErrMalformedFrame, f.GitHubCredential.WaitMs)
 	}
 	if f.ResumeSession != "" {
 		if f.ResumeFile != "" {

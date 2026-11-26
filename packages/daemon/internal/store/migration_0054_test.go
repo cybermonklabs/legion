@@ -10,6 +10,7 @@ import (
 // 0054 in both tables that keep a locator, and then loads (Validate refuses the old value). The
 // controller's locator, a tmux locator and a claim with no locator are left as they are.
 func TestIssuePodLocatorsStoredBefore0054NameTheRolesContainer(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, 53)

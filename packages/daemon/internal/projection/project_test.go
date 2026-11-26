@@ -291,12 +291,12 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 		t.Fatalf("operator-spawned issue key = %q, want %q", view.Key, issue)
 	}
 	// No round is open over either claim, which every claim view says of itself
-	// (api.UpdateStateOf).
-	architectView := api.ClaimView{Session: "session-1", State: string(supervise.StateReady), UpdateState: api.UpdateStateNone}
+	// (api.UpdateStateOf), and each view names its claim's token.
+	architectView := api.ClaimView{Token: architect, Session: "session-1", State: string(supervise.StateReady), UpdateState: api.UpdateStateNone}
 	if !reflect.DeepEqual(view.Architect, &architectView) {
 		t.Fatalf("operator-spawned architect = %#v, want %#v", view.Architect, &architectView)
 	}
-	implementerView := api.ClaimView{Session: "session-2", State: string(supervise.StateIdle), UpdateState: api.UpdateStateNone}
+	implementerView := api.ClaimView{Token: implementer, Session: "session-2", State: string(supervise.StateIdle), UpdateState: api.UpdateStateNone}
 	if got, want := view.Workers[claim.RoleImplementer], (api.PhaseView{Claim: implementerView}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("operator-spawned implementer = %#v, want %#v", got, want)
 	}
@@ -1193,11 +1193,12 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // An issue's view carries a mergeWait object for exactly the review rounds that wait on GitHub's
 // answer about merging the head (classify.RoundWaitsOnMergeState over a pull request the record
 // holds open), and for no other: an approval standing on a head GitHub has answered nothing for
-// yet (LEGION-208) and one standing on a head GitHub will not merge from, whose architect and
-// reviewer have been told (LEGION-209, which carries the told marks the first does not). A round
-// whose issue is not reviewing (LEGION-210), one no approval decided (LEGION-211), one whose
-// head GitHub reports mergeable (LEGION-212) and one whose pull request the record no longer
-// holds open (LEGION-213) carry none.
+// yet (LEGION-208) and one standing on a head GitHub will not merge from and the round does not
+// end on, `behind`, whose architect and reviewer have been told (LEGION-209, which carries the
+// told marks the first does not). A round whose issue is not reviewing (LEGION-210), one no
+// approval decided (LEGION-211), one whose head GitHub reports mergeable (LEGION-212), one whose
+// pull request the record no longer holds open (LEGION-213) and one whose `blocked` answer ends the
+// round (LEGION-215, classify.MergeOutcomeOf) carry none.
 //
 // checkRuns counts the fence's runs stamped with the current head alone: LEGION-209 counts the
 // two reported on its own head and not the third, of a name reported on the head before it, and
@@ -1205,7 +1206,7 @@ func TestProjectShowsTheFailureRecordAndTheHeldPhase(t *testing.T) {
 // has reported nothing yet. stateReadAt is absent for LEGION-208, whose pull request no read has
 // ever answered for: the zero instant is no time a read happened at. It is absent for LEGION-214
 // for a reason of its own: that row was written before the migration that added the stamp, so
-// the record holds a merge state GitHub gave — `blocked` — beside a zero moment, which is the
+// the record holds a merge state GitHub gave — `behind` — beside a zero moment, which is the
 // row `api.MergeWaitView.StateReadAt` and the schema's `stateReadAt` both describe. Such a view
 // carries the state and no `stateReadAt` at all, so a reader is never handed a read at the zero
 // instant for a state that was truly read.
@@ -1222,27 +1223,33 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 	approved := func() *record.ReviewDecision {
 		return &record.ReviewDecision{State: "approved", Body: "ship it", Head: "h2"}
 	}
-	blocked := func(key string, number int) *record.PullRequest {
+	behind := func(key string, number int) *record.PullRequest {
 		return &record.PullRequest{Issue: key, Repo: "acme/widgets", Number: number, HeadSHA: "h2",
-			State: record.PullRequestOpen, MergeState: record.MergeStateBlocked, StateReadAt: read, HeadUpdatedAt: updated,
+			State: record.PullRequestOpen, MergeState: record.MergeStateBehind, StateReadAt: read, HeadUpdatedAt: updated,
 			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 11, Head: "h2"}, {Name: "lint", ID: 12, Head: "h2"},
 				{Name: "e2e", ID: 13, Head: "h1"}}}
 	}
 	told := approved()
-	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBlocked
-	merged := blocked("LEGION-213", 47)
+	told.ToldStuckHead, told.ToldStuckState = "h2", record.MergeStateBehind
+	merged := behind("LEGION-213", 47)
 	merged.State = record.PullRequestMerged
-	mergeable := blocked("LEGION-212", 46)
+	mergeable := behind("LEGION-212", 46)
 	mergeable.MergeState = record.MergeStateClean
+	// The head GitHub holds `blocked` and MERGEABLE, nothing of it running, once both of its own
+	// check runs have concluded, with no review asked for: the merger's merge answers that state,
+	// so the approval ends the round.
+	concluded := behind("LEGION-215", 49)
+	concluded.Mergeability, concluded.MergeState = record.MergeabilityMergeable, record.MergeStateBlocked
+	concluded.ReviewsRequested, concluded.HeadChecks, concluded.EvidenceReadAt = new(0), record.HeadChecksConcluded, concluded.StateReadAt
 	// The row a daemon wrote before the migration that added the read stamp: GitHub's answer is
 	// recorded and the moment of the read is not, which no row written since can be.
-	premigration := blocked("LEGION-214", 48)
+	premigration := behind("LEGION-214", 48)
 	premigration.StateReadAt = time.Time{}
 	store := projectionStore{
 		issues: []record.Issue{
 			issue("LEGION-208", phase.Reviewing), issue("LEGION-209", phase.Reviewing), issue("LEGION-210", phase.Testing),
 			issue("LEGION-211", phase.Reviewing), issue("LEGION-212", phase.Reviewing), issue("LEGION-213", phase.Reviewing),
-			issue("LEGION-214", phase.Reviewing),
+			issue("LEGION-214", phase.Reviewing), issue("LEGION-215", phase.Reviewing),
 		},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-208": reviewer("LEGION-208", approved()),
@@ -1252,6 +1259,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-212": reviewer("LEGION-212", approved()),
 			"LEGION-213": reviewer("LEGION-213", approved()),
 			"LEGION-214": reviewer("LEGION-214", approved()),
+			"LEGION-215": reviewer("LEGION-215", approved()),
 		},
 		pullRequests: map[string]*record.PullRequest{
 			// The head a push has just moved to: GitHub has answered nothing for it, and the
@@ -1259,12 +1267,13 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 			"LEGION-208": {Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, HeadSHA: "h2",
 				State: record.PullRequestOpen, MergeState: record.MergeStateUnread, HeadUpdatedAt: updated,
 				CheckRuns: []record.AttemptRun{{Name: "unit", ID: 9, Head: "h1"}}},
-			"LEGION-209": blocked("LEGION-209", 43),
-			"LEGION-210": blocked("LEGION-210", 44),
-			"LEGION-211": blocked("LEGION-211", 45),
+			"LEGION-209": behind("LEGION-209", 43),
+			"LEGION-210": behind("LEGION-210", 44),
+			"LEGION-211": behind("LEGION-211", 45),
 			"LEGION-212": mergeable,
 			"LEGION-213": merged,
 			"LEGION-214": premigration,
+			"LEGION-215": concluded,
 		},
 	}
 	got, err := Project(context.Background(), Inputs{Store: store, Project: "LEGION", Claims: []supervise.Claim{}, Now: projectedAt})
@@ -1276,13 +1285,13 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		t.Fatalf("LEGION-208's mergeWait = %+v, want %+v: the round waits for GitHub's first answer about the head, which no read has given and no CI settlement has brought a run for",
 			wait, waiting)
 	}
-	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", StateReadAt: &read, HeadUpdatedAt: &updated,
-		CheckRuns: 2, ToldHead: "h2", ToldState: "blocked"}
+	stuck := &api.MergeWaitView{WaitsOn: "h2", MergeState: "behind", StateReadAt: &read, HeadUpdatedAt: &updated,
+		CheckRuns: 2, ToldHead: "h2", ToldState: "behind"}
 	if wait := got.Issues["LEGION-209"].MergeWait; !reflect.DeepEqual(wait, stuck) {
 		t.Fatalf("LEGION-209's mergeWait = %+v, want %+v: the stuck round carries the state read, when it was read, the head's own two check runs and the marks it was told by",
 			wait, stuck)
 	}
-	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "blocked", HeadUpdatedAt: &updated, CheckRuns: 2}
+	unstamped := &api.MergeWaitView{WaitsOn: "h2", MergeState: "behind", HeadUpdatedAt: &updated, CheckRuns: 2}
 	if wait := got.Issues["LEGION-214"].MergeWait; !reflect.DeepEqual(wait, unstamped) {
 		t.Fatalf("LEGION-214's mergeWait = %+v, want %+v: a row written before the migration holds the state GitHub gave with no moment of the read, and the view carries that state without a stateReadAt",
 			wait, unstamped)
@@ -1292,6 +1301,7 @@ func TestProjectShowsWhatAReviewRoundWaitsOnFromGitHub(t *testing.T) {
 		{"LEGION-211", "no approval decided the round"},
 		{"LEGION-212", "GitHub reports the head one the issue may advance on"},
 		{"LEGION-213", "the record no longer holds the pull request open"},
+		{"LEGION-215", "GitHub answers blocked with both of the head's own check runs concluded, which ends the round"},
 	} {
 		if wait := got.Issues[tc.key].MergeWait; wait != nil {
 			t.Fatalf("%s's mergeWait = %+v, want none: %s", tc.key, wait, tc.why)
@@ -1330,25 +1340,25 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 		issues: []record.Issue{issue("LEGION-70", phase.Step), held, atTesting, child, stopped},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-70": {
-				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: "legion-70-implementer", Entry: 2},
-				{Issue: "LEGION-70", Role: checker, Claim: "legion-70-checker", Entry: 3},
+				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: realToken("LEGION-70", claim.RoleImplementer), Entry: 2},
+				{Issue: "LEGION-70", Role: checker, Claim: realToken("LEGION-70", checker), Entry: 3},
 			},
-			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: "legion-71-checker", Entry: 4}},
-			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: "legion-72-tester", Entry: 2}},
-			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: "legion-73-checker", Entry: 2}},
+			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: realToken("LEGION-71", checker), Entry: 4}},
+			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: realToken("LEGION-72", claim.RoleTester), Entry: 2}},
+			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: realToken("LEGION-73", checker), Entry: 2}},
 		},
 		stopped: map[string]record.RunningStep{"LEGION-74": checkerStep},
 	}
 	claims := []supervise.Claim{
-		{Token: "legion-70-implementer", Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
+		{Token: realToken("LEGION-70", claim.RoleImplementer), Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
 			Session: "ses_implementer_70", GivenEntry: 2},
-		{Token: "legion-70-checker", Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-70", checker), Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
 			Session: "ses_checker_70", GivenEntry: 1},
-		{Token: "legion-71-checker", Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-71", checker), Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
 			Session: "ses_checker_71", GivenEntry: 1},
-		{Token: "legion-72-tester", Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
+		{Token: realToken("LEGION-72", claim.RoleTester), Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
 			Session: "ses_tester_72", GivenEntry: 2},
-		{Token: "legion-73-checker", Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
+		{Token: realToken("LEGION-73", checker), Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
 			Session: "ses_checker_73", GivenEntry: 2,
 			Handshake: supervise.EntryHandshake{Entry: 2, Generation: 1, QueuedAt: queuedAt, ConfirmedAt: confirmedAt}},
 	}

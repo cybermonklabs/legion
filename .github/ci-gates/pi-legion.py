@@ -64,7 +64,7 @@ GATE = gate("pi_legion", "pi-legion", runs=[
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies it beside rig.sh, and "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts#pgUrl` copies it into its scratch checkout beside rig.sh"),
     (".omp-pin", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#fails, naming the rig's root, when the root is no checkout` copies .omp-pin"),
-    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#runDaemonPane` writes the overlay and runs go run"),
+    ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts#goInDaemonModule` writes the overlay and runs go run or go test"),
 ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                      "import @legion/envoy-client/*")
   + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")

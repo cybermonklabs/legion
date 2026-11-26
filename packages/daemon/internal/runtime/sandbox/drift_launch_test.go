@@ -69,6 +69,7 @@ func microVMChanged(edit func(*MicroVM)) func(*Options) {
 // on the configuration its pod was built from replaces nothing — the failure that would matter
 // most here, since it would rebuild the controller's pod at every launch of it.
 func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
+	t.Parallel()
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
 		// was is the configuration the controller's pod is built on, testOptions' where nil, and
@@ -228,6 +229,7 @@ func TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted(t *testing.T) {
 // it, where the same launch into the controller's pod replaces that pod (podImageDrift,
 // TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted).
 func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
+	t.Parallel()
 	plugins := &runtime.PluginInstall{PiLegion: "9.7.0", PiEnvoy: "9.6.1", Contract: 24}
 	for name, tc := range map[string]struct {
 		now     func(*Options)
@@ -284,6 +286,7 @@ func TestALaunchKeepsAnIssuePodWhateverOfItsShapeMoved(t *testing.T) {
 // what the launch does with such a pod is keptBy's, which cannot read that record and replaces
 // the pod.
 func TestPodImageDriftReadsTheImageAPodWasBuiltFrom(t *testing.T) {
+	t.Parallel()
 	shapeOn := func(image, cpu string) string {
 		t.Helper()
 		encoded, err := json.Marshal(podShapeRecord{
@@ -353,6 +356,7 @@ func TestPodImageDriftReadsTheImageAPodWasBuiltFrom(t *testing.T) {
 // starts the role as the pod it is in was built (no new flag, no new overlay), or it does not
 // start that role in that pod at all.
 func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
+	t.Parallel()
 	const overlay = "/etc/legion-operator-roles/fallback.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: "legion-operator-roles"},
@@ -435,6 +439,7 @@ func TestARoleStartedInAKeptDriftedPodIsStartedAsItsPodWasBuilt(t *testing.T) {
 // the launch write one onto the pod: it patches no template, so the Sandbox still records the
 // gVisor pod it runs until the update round PodDrift opens over it replaces that pod.
 func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *testing.T) {
+	t.Parallel()
 	spec := workerSpec(t)
 	// resumed is a resume of the tester at generation 2 into its issue pod, built under no sandbox
 	// block, by a daemon restarted with move: what PodDrift read of the pod first, the start
@@ -461,6 +466,21 @@ func TestARoleStartedInAKeptPodWhoseSandboxMovedIsStartedAsItsPodWasBuilt(t *tes
 	drifted, start, writes, s := resumed(sandboxBlock(SandboxGVisor, testTree))
 	if want := "sandbox null, now " + testMicroVMSandboxShape; !slices.Equal(drifted, []string{want}) {
 		t.Fatalf("PodDrift = %q, want %q alone, or this case proves nothing", drifted, want)
+	}
+	// A start into a kept pod bounds its credential wait by what remains of the daemon's own wait
+	// on that start, read off the clock as the frame is built, so the two launches' bounds differ
+	// by the time between them: each is checked for a bound, and the two starts are compared
+	// without it.
+	for _, sent := range []*shimwire.LauncherStart{&start, &built} {
+		if sent.GitHubCredential == nil {
+			continue
+		}
+		if wait := time.Duration(sent.GitHubCredential.WaitMs) * time.Millisecond; wait <= 0 || wait > time.Hour {
+			t.Fatalf("the start into the kept pod bounds its credential wait at %s, want a bound above 0 and within its launch", wait)
+		}
+		credential := *sent.GitHubCredential
+		credential.WaitMs = 0
+		sent.GitHubCredential = &credential
 	}
 	if !reflect.DeepEqual(start, built) {
 		t.Errorf("the start into the kept gVisor pod is\n%+v\nwant the one a configuration naming no canary sends\n%+v", start, built)

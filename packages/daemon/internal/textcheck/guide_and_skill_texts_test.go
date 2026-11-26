@@ -23,10 +23,6 @@ func TestTheOperatorTextsSayWhereARoleWritesWhatTheImageCarriesAndWhereARoleRela
 			want: []string{
 				"A role's Secret therefore holds tokens to push to, open a pull request in and review a pull request of every repository its App reaches.",
 				"In an issue pod a role sees only the directories every role of the pod holds, as the projection below says.",
-				"A graceful stop of a role sends that role's launcher a stop frame for the recorded generation, with the runtime's stop grace",
-				"It ends that role's process alone: the issue's other roles run on in the pod, which stays.",
-				"Two generations of a role never run side by side",
-				"The relaunch starts only that role, through its launcher in the issue's one pod",
 			},
 			gone: []string{
 				"A role therefore pushes to, opens a pull request in and reviews a pull request of every repository its App reaches",

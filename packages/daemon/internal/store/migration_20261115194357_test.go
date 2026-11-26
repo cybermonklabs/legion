@@ -19,6 +19,7 @@ const projectPauseVersion = 20261115194357
 // must be a role token of the pause's project, while its issue, and a held pod's, may be another
 // project's.
 func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, projectPauseVersion-1)
@@ -57,11 +58,11 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	}
 	t.Logf("after the migration every resume's clock starts at its wake")
 
-	// A daemon of the earlier release names clock_at nowhere: its insert still writes a row, with
-	// the clock at the wake.
+	// An insert that names no clock_at, as a daemon of the earlier release wrote one, still writes
+	// a row, with the clock at the wake.
 	var clock time.Time
-	if err := store.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-		values (0, 'legion', 'LEGION-210', 'tester', 'checks', $1) returning clock_at`, at).Scan(&clock); err != nil {
+	if err := store.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at)
+		values (0, 'legion', 'LEGION-210', 'tester', 'legion-legion-legion-210-tester', 'checks', $1) returning clock_at`, at).Scan(&clock); err != nil {
 		t.Fatalf("insert a resume naming no clock: %v", err)
 	}
 	if !clock.Equal(at) {
@@ -146,10 +147,10 @@ func TestTheProjectPauseRecordsWith20261115194357(t *testing.T) {
 	refused("a hold of something that is not an issue key", "23514", holdRow, paused, "LEGION", "LEGION-x", at)
 
 	refused("a held resume that pairs with a release", "23514",
-		`insert into pod_resumes (release_id, project, issue, role, kind, at, pause_id) values (7, 'legion', 'LEGION-211', 'tester', 'pause', $1, $2)`, at, paused)
+		`insert into pod_resumes (release_id, project, issue, role, claim, kind, at, pause_id) values (7, 'legion', 'LEGION-211', 'tester', 'legion-legion-legion-211-tester', 'pause', $1, $2)`, at, paused)
 	refused("a resume held by a pause no row holds", "23503",
-		`insert into pod_resumes (release_id, project, issue, role, kind, at, pause_id) values (0, 'legion', 'LEGION-211', 'tester', 'pause', $1, $2)`, at, paused+100)
-	if err := exec(`insert into pod_resumes (release_id, project, issue, role, kind, at, pause_id) values (0, 'legion', 'LEGION-211', 'tester', 'pause', $1, $2)`, at, paused); err != nil {
+		`insert into pod_resumes (release_id, project, issue, role, claim, kind, at, pause_id) values (0, 'legion', 'LEGION-211', 'tester', 'legion-legion-legion-211-tester', 'pause', $1, $2)`, at, paused+100)
+	if err := exec(`insert into pod_resumes (release_id, project, issue, role, claim, kind, at, pause_id) values (0, 'legion', 'LEGION-211', 'tester', 'legion-legion-legion-211-tester', 'pause', $1, $2)`, at, paused); err != nil {
 		t.Fatalf("record a resume the pause holds: %v", err)
 	}
 

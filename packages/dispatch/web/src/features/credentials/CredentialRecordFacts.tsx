@@ -8,7 +8,7 @@ import {
   textPrimaryOnCanvas,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { machineName } from "./machineLogins";
+import { machineName } from "./logic/machineLogins";
 
 const LIFETIME_UNITS: ReadonlyArray<{ seconds: number; unit: string }> = [
   { seconds: 86400, unit: "day" },
@@ -87,6 +87,8 @@ export function CredentialRecordFacts({ record }: { record: RecordResponse }): R
           <blockquote
             className={`mt-1 border-l-2 pl-3 text-sm whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
           >
+            {/* The reason the agent typed, as it typed it: the reading list's
+                `credential-request-reason`. */}
             {record.reason}
           </blockquote>
         </div>

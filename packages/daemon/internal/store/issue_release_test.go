@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,8 +42,9 @@ func openRunningTree(t *testing.T, store *Store) {
 
 // markRelease is the mark ReleaseIdleIssue leaves, written by hand so a fence can be tested on
 // its own: the ids of the release's first row, of its boundary and of its last, the newest
-// start row the pod's claims held when the release was marked, and the roles whose claims the
-// release's own stops have suspended so far.
+// start row the pod's claims held when the release was marked, and the claims the release's own
+// stops have suspended so far, each named by the role whose own claim it is (its token,
+// issue_releases.suspended).
 func markRelease(t *testing.T, store *Store, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
 	markReleaseOf(t, store, rootIssue, first, boundary, last, started, suspended...)
@@ -51,10 +53,8 @@ func markRelease(t *testing.T, store *Store, first, boundary, last, started int6
 // markReleaseOf is markRelease for the pod of issue.
 func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
-	roles := make([]string, 0, len(suspended))
 	tokens := make([]string, 0, len(suspended))
 	for _, role := range suspended {
-		roles = append(roles, string(role))
 		token, err := claim.NewToken("legion", issue, role)
 		if err != nil {
 			t.Fatal(err)
@@ -62,8 +62,8 @@ func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, la
 		tokens = append(tokens, string(token))
 	}
 	_, err := store.Pool().Exec(context.Background(), `insert into issue_releases
-		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, suspended_claims, marked_at)
-		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, $7, now())`, issue, first, boundary, last, started, roles, tokens)
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
+		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, issue, first, boundary, last, started, tokens)
 	if err != nil {
 		t.Fatalf("mark the release of %s: %v", issue, err)
 	}
@@ -75,6 +75,7 @@ func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, la
 // unreserved, a wait while one of the release's own role stops is unrun or a stored claim may
 // still hold a process. It then makes the release-only wait while its own workspace check is queued.
 func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name      string
 		change    string
@@ -218,6 +219,7 @@ func TestIssueReleaseAuthorizesAnIssueInTheWorkflowAndWaitsForAllStoredRoles(t *
 // news in the pod that replaces this one. A phase start queued after it is the pod being used
 // again, and cancels the release as overtaken, as it does at a role stop.
 func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartOfNewsAlone(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -250,12 +252,13 @@ func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartO
 	}
 }
 
-// A start that waits because the issue's pod was built before its role, queued above the
-// release's rows, does not cancel the teardown either: the pod cannot run it, and the release is
-// one of the two things that let it start (idleWaitingRow, pods.StartWaitsForPodPrefix). A
-// teardown that read it as the pod being used again would cancel the very release it waits for,
-// and the start would wait on until the pod's update round. The control is the same start before
-// its first try, its last error empty: it is the pod being used again, and cancels the release.
+// A start that waits because the issue's pod lacks the slot of its claim or the role of its step,
+// queued above the release's rows, does not cancel the teardown either: the pod cannot run it, and
+// the release is one of the two things that let it start (idleWaitingRow,
+// pods.StartWaitsForPodPrefix). A teardown that read it as the pod being used again would cancel
+// the very release it waits for, and the start would wait on until the pod's update round. The
+// control is the same start before its first try, its last error empty: it is the pod being used
+// again, and cancels the release.
 func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -284,6 +287,7 @@ func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
 // what adding 'release' to both op fences buys. A release row below a close's own row makes the
 // close wait, exactly as one of its own suspends would.
 func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openLingeringTree(t, st)
@@ -315,6 +319,7 @@ func TestACloseWaitsForAReleasesRoleStops(t *testing.T) {
 // CancelIssueRelease, which queues the resumes and deletes the mark together, and a mark
 // deleted here would leave a cancel that did not finish unreadable by the row's own retry.
 func TestTheReleasesBoundaryCancelsOnWorkThePodWasGivenAfterTheMark(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	for _, tc := range []struct {
 		name      string
@@ -435,6 +440,7 @@ func releaseThroughTheStore(t *testing.T, st *Store, issue string) (first, bound
 // shows as a claim holding a process — cancels the whole release, because the check's read of the
 // workspace is older than what the pod has done since.
 func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		kind    string
@@ -504,6 +510,7 @@ func TestWorkThePodIsGivenAfterTheMarkCancelsTheReleaseAtItsBoundary(t *testing.
 // a claim whose last turn started after it cancels the release at the stop, as a turn in progress
 // does (releaseOvertaken). The control keeps the turn the mark was taken at, and the stop acts.
 func TestATurnBetweenTheMarkAndAStopCancelsTheRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		later time.Duration
@@ -556,6 +563,7 @@ func TestATurnBetweenTheMarkAndAStopCancelsTheRelease(t *testing.T) {
 // and a claim whose last turn started after it cancels the release before any read
 // (releaseOvertaken). The control keeps the turn the mark was taken at, and the check acts.
 func TestAWorkspaceCheckOfAReleaseGivenWorkSinceItsMarkIsCancelled(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		later time.Duration
@@ -602,6 +610,7 @@ func TestAWorkspaceCheckOfAReleaseGivenWorkSinceItsMarkIsCancelled(t *testing.T)
 // suspend a claim of the live release, or tear its pod down with the workspace on its disk. The
 // mark holds the ids of its own rows, and a row outside them does nothing at all.
 func TestARowOfACancelledReleaseNeitherActsNorCancelsTheReleaseRunningNow(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -713,6 +722,7 @@ func startRows(t *testing.T, st *Store) []string {
 // `released` in a pod that still stands, which is what a resume that fails, or a daemon that
 // stops between the two, produces.
 func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -776,6 +786,7 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 // already committed — writes nothing and answers Declined false, so no second row and no second
 // message is ever written for one release.
 func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -870,6 +881,7 @@ func TestADeclineWritesItsRowAndItsMessageOnceWithTheCancel(t *testing.T) {
 // (checked_at, started_row, pod_uid) and tells nobody. A check that finds other work replaces the
 // row at its own moment and tells the role again.
 func TestADeclineOfTheSameWorkKeepsItsMomentAndTellsNobody(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -946,6 +958,7 @@ func TestADeclineOfTheSameWorkKeepsItsMomentAndTellsNobody(t *testing.T) {
 // a check that declines it has nothing to cancel: DeclineLeftPodClose writes the decline row and
 // its message and touches no mark, under the same rule for the same work as a release's decline.
 func TestALeftPodCloseDeclineRecordsWithNoMark(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -1000,6 +1013,7 @@ func TestALeftPodCloseDeclineRecordsWithNoMark(t *testing.T) {
 // that finds that same work through that same role is no news: it keeps the moment, puts the
 // reason back and tells nobody.
 func TestADeclineToAnotherRoleIsToldAndAFailedReadKeepsTheWork(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
@@ -1089,6 +1103,7 @@ func TestADeclineToAnotherRoleIsToldAndAFailedReadKeepsTheWork(t *testing.T) {
 // keeps no work, so the idle view reads none (pods.IdleDecline.Work) and no rule holds the new pod
 // for it. A failed read in the same pod, or in a pod the runtime could not name, keeps the work.
 func TestAFailedReadInAnotherPodKeepsNoWork(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		pod  string
@@ -1135,6 +1150,7 @@ func TestAFailedReadInAnotherPodKeepsNoWork(t *testing.T) {
 // suspended set the teardown would wait on that claim for good — its stored claim may hold a
 // process, so the fence waits, and the mark it waits under keeps every idle tick off the pod.
 func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	for _, tc := range []struct {
 		name  string
@@ -1192,6 +1208,7 @@ func TestAClaimTheReleaseSuspendedThatSomethingResumedOvertakesIt(t *testing.T) 
 // can hold claims an earlier release left: resuming those puts a role back into a pod that has
 // no work for it, with no wake, no task and no record of why it is there.
 func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -1218,33 +1235,49 @@ func TestACancelResumesNoClaimAnEarlierReleaseSuspended(t *testing.T) {
 // claim, and a row of a release that is over writes nothing: it is the record of what this
 // release did, which the cancel and the release's own record are read from.
 func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
 	markRelease(t, st, first, boundary, last, 0)
 
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", boundary); err != nil {
 		t.Fatalf("record the architect's suspension: %v", err)
 	}
 	// The row ran twice: one claim, one entry.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", boundary); err != nil {
 		t.Fatalf("record the architect's suspension again: %v", err)
 	}
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary+1); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary+1); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
+	// A second claim of the implementer's role, the agent of a key on its step: a claim of its
+	// own, which the set names beside the role's own claim.
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-tester", boundary+2); err != nil {
+		t.Fatalf("record the keyed agent's suspension: %v", err)
+	}
 	// A row of a release this mark is not records nothing.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-tester", claim.RoleTester, last+5); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-reviewer", last+5); err != nil {
 		t.Fatalf("record a stale row's suspension: %v", err)
+	}
+	releasedClaim(t, st, claim.RoleArchitect)
+	releasedClaim(t, st, claim.RoleImplementer)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: rootIssue,
+		Issue: rootIssue, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
+		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		t.Fatalf("seed the keyed agent's claim: %v", err)
 	}
 
 	decision, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil {
 		t.Fatalf("read the release's mark through its workspace check: %v", err)
 	}
-	if len(decision.Suspended) != 2 || decision.Suspended[0] != claim.RoleArchitect || decision.Suspended[1] != claim.RoleImplementer {
-		t.Fatalf("the mark's suspended roles = %v, want the architect and the implementer in the order their stops ran", decision.Suspended)
+	want := []ReleasedClaim{{Token: "legion-legion-legion-208-architect", Role: claim.RoleArchitect},
+		{Token: "legion-legion-legion-208-implementer", Role: claim.RoleImplementer},
+		{Token: "legion-legion-legion-208-tester", Role: claim.RoleImplementer}}
+	if !slices.Equal(decision.Suspended, want) {
+		t.Fatalf("the mark's suspended claims = %v, want %v: each claim by its token, in the order their stops ran", decision.Suspended, want)
 	}
 	if decision.Release <= 0 {
 		t.Fatalf("the decision's release id = %d, want the id the mark carries", decision.Release)
@@ -1264,6 +1297,7 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 // The wake taken before the mark is the mark's own high-water, so a release is never cancelled
 // by a wake that was over before it began.
 func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// woken is a wake of the architect taken after this release's mark; late holds this
@@ -1308,7 +1342,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			if !tc.late && !tc.unrecorded {
 				recordRelease(t, st, at)
 			}
-			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary); err != nil {
+			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary); err != nil {
 				t.Fatalf("record the implementer's suspension: %v", err)
 			}
 			if tc.woken {
@@ -1356,12 +1390,13 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 // the root is parked while the check runs so the linger's rows are queued above the release's,
 // and the release's teardown is the next row of the lane.
 func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing.T) {
+	t.Parallel()
 	st := migratedStore(t)
 	ctx := context.Background()
 	openRunningTree(t, st)
 	releasedClaim(t, st, claim.RoleImplementer)
 	first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 

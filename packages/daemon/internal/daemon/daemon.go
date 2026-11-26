@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
@@ -240,6 +241,12 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// paneLegion is the legion executable a tmux daemon's boot hands workerbin.Install, which every
+	// script of the panes' launcher directory execs: bin/legion, bin/gh, bin/git and bin/jj. Empty,
+	// in production, is this process's own executable. A test whose panes run these scripts (a live
+	// proof over localRuntime, through its daemonOverrides) names the legion it built
+	// (buildProofLegion).
+	paneLegion string
 	// streamListen takes the worker stream's listener for the address the stream binds
 	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
 	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
@@ -513,9 +520,11 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
 		plan.identity = workflow.identity
+		plan.knownIdentity = workflow.knownIdentity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
+		plan.stepWorkers = workflow.stepWorkers
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
 		// configured, and the launch that follows it must honour the draw it made.
@@ -528,6 +537,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		plan.podRefused = workflow.podRefused
 		// From here on, a claim write that changes a role holder queues its issue's publication in
 		// its own transaction, and the store tells the issue once that commits, so its lane is woken
 		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
@@ -559,11 +569,14 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 	if cfg.Runtime.Name == "tmux" {
-		executable, err := os.Executable()
-		if err != nil {
-			workflow.stop()
-			st.Close()
-			return fmt.Errorf("resolve this daemon's executable for the pane legion launcher: %w", err)
+		executable := o.paneLegion
+		if executable == "" {
+			executable, err = os.Executable()
+			if err != nil {
+				workflow.stop()
+				st.Close()
+				return fmt.Errorf("resolve this daemon's executable for the pane legion launcher: %w", err)
+			}
 		}
 		// The panes inherit this daemon's PATH (tmux.PaneEnvironment), so Install reads its first
 		// git there to decide whether the launcher directory holds a git wrapper.
@@ -1025,9 +1038,9 @@ func daemonBrokerClient(cfg config.Config, getenv func(string) string, log *slog
 }
 
 // tradeTransient is every failed trade but a refusal no retry cures
-// (cipherclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, its 429, a
-// DPoP refusal, a pod session it holds no registration for yet, and an identity this pod could not
-// read yet, such as a projected token the kubelet has not written.
+// (cipherclient.RefusedError.Permanent): a broker that did not answer or answered 5xx, a 408 or its
+// 429, a DPoP refusal, a pod session it holds no registration for yet, and an identity this pod
+// could not read yet, such as a projected token the kubelet has not written.
 func tradeTransient(err error) bool {
 	var refused *cipherclient.RefusedError
 	return !(errors.As(err, &refused) && refused.Permanent())
@@ -1070,6 +1083,9 @@ type plan struct {
 	// repository it works, from the workflow's token source (workflowRuntime.identity, which maps
 	// the record's repository to the one GitHub serves); nil without one.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// knownIdentity is the bot identity of a role's App that the workflow's token source already
+	// holds, read with no mint (workflowRuntime.knownIdentity); nil without a workflow.
+	knownIdentity func(role claim.Role) (runtime.GitIdentity, bool)
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or, for an issue the workflow does not
 	// record, the one Dispatch resolves it to, read at the first launch and kept while the issue
@@ -1086,6 +1102,10 @@ type plan struct {
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
 	// launch's addressing names; nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
+	// stepWorkers is the agent of each step of the plan of a claim's issue, read from the plan rows
+	// the store records at each launch (workflowRuntime.stepWorkers), which the launch's addressing
+	// names; nil without a workflow.
+	stepWorkers func(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error)
 	// repositories is the repository state the workflow fills, empty until its preparations read
 	// GitHub: the rename rule every gh bundle resolves a configured pair against
 	// (repositories.servesRepository, appauth.GitHubCredential) and, under the Kubernetes runtime,
@@ -1149,6 +1169,11 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
+	// podRefused tells the workflow that a claim's launch was refused because its issue pod cannot
+	// run it until that pod is replaced, and the workflow queues a start of the claim wherever its
+	// outbox holds none that brings the claim back; nil without a workflow, where nobody is told and
+	// nothing is queued.
+	podRefused func(m *supervise.Machine, c supervise.Claim, pod, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -1158,6 +1183,10 @@ type plan struct {
 	project       string
 	operatorToken string
 	secrets       map[string]string
+	// privateNameRules is the deployment's private-name rule file as boot compiled it
+	// (bootReads.privateNameRules), which the outbox's branch create runs (ghbranch.Create); nil
+	// when the deployment names none, and the create then runs no private-name rule.
+	privateNameRules *leakguard.RuleSet
 	// nats is the user the daemon's own NATS connection authenticates as (natsConnection); no launch
 	// carries its seed unless it is the pane seed.
 	nats natsConnection
@@ -1319,17 +1348,27 @@ type runtimeFactory func(ctx context.Context, listener *stream.Listener, address
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
 // then what writes or runs something: the state directory, the instructions copy, and what the
-// runtime needs) — all before the plugin gate runs and before any agent can launch.
+// runtime needs) — all before the plugin gate runs and before any agent can launch. It logs the
+// boot's one line on the deployment's private-name rules: privateNameRulesNone before readBoot,
+// the first thing that can stop the boot, where the deployment names no rule file; and the file,
+// its sha256 and its number of rules once readBoot has compiled it where it names one, since a
+// file readBoot cannot use stops the boot with its own message instead.
 func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	getenv := o.getenv
 	if getenv == nil {
 		getenv = os.Getenv
+	}
+	if cfg.PrivateNameRulesFile == "" {
+		log.Info(privateNameRulesNone)
 	}
 	// A test that replaced the runtime runs no host Oh My Pi, so boot resolves no OMP invocation.
 	hostOMP := o.runtime == nil
 	reads, err := readBoot(cfg, environLookup(o.environment()), getenv, hostOMP, log)
 	if err != nil {
 		return plan{}, err
+	}
+	if reads.privateNameRules != nil {
+		logPrivateNameRules(log, cfg.PrivateNameRulesFile, reads.privateNameRules)
 	}
 	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
 		return plan{}, fmt.Errorf("create state directory %s: %w", cfg.StateDir, err)
@@ -1368,7 +1407,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
-		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
+		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, privateNameRules: reads.privateNameRules, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
@@ -2029,7 +2068,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			roles:    cfg.Roles,
-			identity: p.identity, repository: p.launchRepository, owner: p.owner,
+			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers, log: log,
 			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -2051,6 +2090,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
+		PodRefused:              p.podRefused,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),

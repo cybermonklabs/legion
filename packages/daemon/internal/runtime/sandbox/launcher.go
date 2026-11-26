@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -91,8 +92,9 @@ type launcherSession struct {
 	resumesBySession bool
 	// credentialWait is whether this launcher's hello said it starts a child only once its slot's
 	// gh files hold the credential the start names (shimwire.LauncherHello.CredentialWait). A
-	// launcher of an image before that wait says nothing, and a re-role into its slot waits for
-	// the pod's update round (Runtime.SlotWaitsForCredential).
+	// launcher of an image before that wait says nothing: a re-role into its slot waits for the
+	// pod's update round (Runtime.SlotWaitsForCredential), and relaunch refuses a start of another
+	// App into it (slotAppChanges).
 	credentialWait bool
 
 	mu      sync.Mutex
@@ -118,8 +120,9 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, keptStar
 
 // accept registers a launcher connection of the pod of issue, whose Sandbox owns the issue's kept
 // volume since keptSince (the zero time for a pod on a volume of its own). The newest
-// authenticated connection for a role wins: a half-open predecessor is closed so its pending
-// requests fail instead of waiting forever.
+// authenticated connection for a slot, by the slot's token, wins: two claims of one role run in
+// two slots, each with its own launcher. A half-open predecessor is closed so its pending requests
+// fail instead of waiting forever.
 func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
@@ -266,9 +269,10 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 
 // credentialWaits is the uid of the pod the launcher of token, a slot's token, connected from, and
 // whether its hello said it starts a child only once the slot's gh files hold the start's
-// credential (launcherSession.credentialWait). It answers "" and true where no launcher of the slot
-// is connected: the launch then builds or waits for a pod, and a pod this release builds runs
-// launchers that wait.
+// credential (launcherSession.credentialWait). It answers "" and true where no launcher of the
+// slot is connected, as for every slot right after a daemon restart, though a pod the release
+// before built may still stand: the launch itself then judges the launcher it reaches, and
+// refuses a start of another App into one that does not wait (relaunch, slotAppChanges).
 func (d *launchers) credentialWaits(token claim.Token) (string, bool) {
 	d.mu.Lock()
 	session := d.sessions[token]
@@ -329,9 +333,11 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 		return nil, nil, errors.New("launcher connection closed")
 	}
 	session.waiters[id] = waiter
+	// The write's deadline is apiTimeout's, or ctx's when ctx ends first (ctxBound).
 	deadline := time.Now().Add(apiTimeout)
+	ctxBound := false
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
-		deadline = until
+		deadline, ctxBound = until, true
 	}
 	err := session.conn.SetWriteDeadline(deadline)
 	if err == nil {
@@ -348,6 +354,16 @@ func (d *launchers) requestSession(ctx context.Context, session *launcherSession
 	}()
 	if err != nil {
 		session.close()
+		// A write the launcher never took ends at its deadline with the connection's timeout
+		// rather than ctx's error, and when that deadline is ctx's, ctx's own timer, set for the
+		// same instant, may not have ended ctx yet. Such a write ended because ctx did: it is
+		// reported as ctx's end, as the wait for the answer below reports it, so a caller telling
+		// its own bound from another (serveLeakCheck's hop, boundRanOut) reads the same error
+		// whichever of the two the bound caught.
+		if ctxBound && errors.Is(err, os.ErrDeadlineExceeded) {
+			<-ctx.Done()
+			return nil, nil, fmt.Errorf("%w: %w", ctx.Err(), err)
+		}
 		return nil, nil, err
 	}
 	select {
@@ -908,9 +924,10 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	files[bootTokenKey] = l.spec.BootToken
 	files[runtime.SystemPromptFile] = l.prompt
-	claudeDir, stateHome := "", roleStateHome(slotOf(l.spec.Claim))
+	slot, _ := l.spec.Claim.Slot()
+	claudeDir, stateHome := "", roleStateHome(slot)
 	if l.runsClaude() {
-		claudeDir = claudeConfigDir(slotOf(l.spec.Claim))
+		claudeDir = claudeConfigDir(slot)
 		files[claudeMCPFile] = l.claude.mcp
 	}
 	agent := l.agentArgv(r.agent)

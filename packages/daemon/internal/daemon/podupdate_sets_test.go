@@ -45,14 +45,14 @@ type roundShape struct {
 // suspension is in both, as dispatch://INFRA-2981 R5 made it.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
-// while the pause still owes its role a launch: the pause kept the pod for the work on its disk
-// (decision 12 of dispatch://INFRA-3759). The store reads what the pause owes role by role
-// (store.PausePodHold.Owed), and the daemon reads it for the claim's own role (podHolds.owes). So
+// while the pause still owes it a launch: the pause kept the pod for the work on its disk
+// (decision 12 of dispatch://INFRA-3759). The store reads what the pause owes claim by claim
+// (store.PausePodHold.Owed), and the daemon reads it for the claim itself (podHolds.owes). So
 // the claim is in both sets under a hold that stands, and under a hold that ended at the resume,
-// wherever the hold owes its role a launch. A hold that owes its role nothing keeps it in neither
-// set. No clock decides it: a let-out before the round opened changes nothing. The pause keeps no
-// other source in the round: a claim the daemon's own rule suspended is in neither set under a
-// hold that stands too.
+// wherever the hold owes it a launch. A hold that owes it nothing keeps it in neither set, and so
+// does a hold that owes a launch only to another claim of its role. No clock decides it: a
+// let-out before the round opened changes nothing. The pause keeps no other source in the round:
+// a claim the daemon's own rule suspended is in neither set under a hold that stands too.
 //
 // Each row is one shape of claim, with the membership the rule gives it, read at the round's
 // clock over the pause's holds the row names. The ask side is roundAsks: a claim the round asks,
@@ -108,10 +108,16 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 	letOutBeforeTheOpening := func(hold *store.PausePodHold) {
 		hold.LetOut = hold.EndedAt
 	}
-	// owingTheClaim is a hold whose pause still owes the row's claim's role, the implementer, a
+	// owingTheClaim is a hold whose pause still owes the row's claim, the implementer's own, a
 	// launch (store.PausePodHold.Owed).
 	owingTheClaim := func(hold *store.PausePodHold) {
-		hold.Owed = []claim.Role{claim.RoleImplementer}
+		hold.Owed = []claim.Token{token}
+	}
+	// owingAnotherClaimOfItsRole is a hold whose pause still owes a launch only to the agent of
+	// another key on the implementer's step, beside the row's claim: the launch it owes is no
+	// launch of the row's claim.
+	owingAnotherClaimOfItsRole := func(hold *store.PausePodHold) {
+		hold.Owed = []claim.Token{mustClaimToken(t, podUpdateIssue, claim.RoleReviewer)}
 	}
 
 	rows := []roundShape{
@@ -135,16 +141,21 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		// pause, whose clock is the moment of the stop.
 		{name: "suspended by released under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(owingTheClaim), want: inBoth},
-		{name: "suspended by released under an ended pause hold that still owes its role a launch", claim: suspendedBy(supervise.SuspendedByReleased),
+		{name: "suspended by released under an ended pause hold that still owes it a launch", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(resumed, owingTheClaim), want: inBoth},
 		// No clock decides whether the pause keeps the claim: a let-out before the round opened
-		// leaves the claim the pause's while the hold still owes its role a launch.
-		{name: "suspended by released under an ended pause hold that still owes its role a launch let out before the round opened",
+		// leaves the claim the pause's while the hold still owes it a launch.
+		{name: "suspended by released under an ended pause hold that still owes it a launch let out before the round opened",
 			claim: suspendedBy(supervise.SuspendedByReleased), holds: pauseHold(resumed, letOutBeforeTheOpening, owingTheClaim), want: inBoth},
-		// The store reads that the hold owes the role nothing (store.PausePodHold.Owed): the role
-		// became ready since the pause stopped it, or the pause held no launch of it.
-		{name: "suspended by released under an ended pause hold that owes its role nothing", claim: suspendedBy(supervise.SuspendedByReleased),
+		// The store reads that the hold owes the claim nothing (store.PausePodHold.Owed): the
+		// claim became ready since the pause stopped it, or the pause held no launch of it.
+		{name: "suspended by released under an ended pause hold that owes it nothing", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(resumed), want: inNeither},
+		// The hold owes a launch to another claim of the implementer's role alone, which the pause
+		// stopped on the implementer's step beside the row's claim: that launch keeps the pod for
+		// that claim, not for the row's.
+		{name: "suspended by released under an ended pause hold that owes another claim of its role a launch", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumed, owingAnotherClaimOfItsRole), want: inNeither},
 		{name: "suspended by released under a pause hold its pod's deletion ended", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(func(hold *store.PausePodHold) {
 				hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldDeleted, opened.Add(-time.Minute)
@@ -270,7 +281,7 @@ type owedLaunchState struct {
 //
 // Each row is one state of supervise.States(), and a suspended claim has one row for each source
 // of supervise.SuspendSources(). The pause's hold of the pod ended at the resume, before the round
-// opened, and it still owes the claim's role, the implementer, a launch. The claim is a member of
+// opened, and it still owes the claim, the implementer's own, a launch. The claim is a member of
 // the round that no ask reached. The other member is a tester that answered and that the daemon
 // then suspended, so no process runs in the pod. Each row is read with and without a locator in
 // the round's pod, with and without a session, and with and without an answer of the round. The
@@ -296,7 +307,7 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 	token := mustClaimToken(t, podUpdateIssue, claim.RoleImplementer)
 	clock := roundClock{now: now, grace: podUpdateGrace, holds: podHolds{{
 		ID: 1, Pause: 1, Project: "LEGION", Issue: podUpdateIssue, HeldAt: opened.Add(-time.Hour),
-		EndedAt: opened.Add(-time.Minute), End: store.PausePodHoldResumed, Owed: []claim.Role{claim.RoleImplementer},
+		EndedAt: opened.Add(-time.Minute), End: store.PausePodHoldResumed, Owed: []claim.Token{token},
 	}}}
 	tester := supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RoleTester), Project: podUpdateProject,
 		Tree: podUpdateIssue, Issue: podUpdateIssue, Role: claim.RoleTester, State: supervise.StateSuspended,

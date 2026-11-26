@@ -877,6 +877,10 @@ type startMarks struct {
 	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
 	// --fresh-session` asks for it, which reaches the retry of a held phase alone (restart).
 	freshSession bool
+	// refusedPod is the uid of the issue pod whose refusal of the claim's launch queued the start
+	// (record.SuperviseRequest.RefusedPod), which the send of an owed entry queueRefusedStart makes
+	// sets. Every other door leaves it empty.
+	refusedPod string
 	// reasserts says the start sends work the record already owes the role rather than carrying
 	// a fact new to the record, so it marks no movement of the issue (reassertion, startOrOwe). It
 	// rides on no request: started reads it to tell startOrOwe which movement the start is, and
@@ -945,7 +949,28 @@ func (e *Engine) startRequest(s TaskScope, role claim.Role, task string, entry i
 	issue := s.issue
 	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Claim: agent, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RoundNamed: marks.stored && NamesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, nil
+		RoundNamed: marks.stored && NamesTheRound(role), RuleResume: marks.ruleResume, FreshSession: marks.freshSession,
+		RefusedPod: marks.refusedPod, LeaveSession: leaveSession(s, role)}, nil
+}
+
+// leaveSession is the session a start of role's worker on s's step leaves
+// (record.PlanStep.LeaveSession): the one the stored step s's task stands at names, where that step
+// is role's, and "" for every other start. Only the default steps of a run name one, for an agent
+// that took a name a key's agent held (leaveKeySessions), so every start of that agent in the
+// generation carries it, and its claim leaves it where it still records it (supervise's revive). It
+// reads the step from s's walk, which its caller read.
+func leaveSession(s TaskScope, role claim.Role) string {
+	if !recordsSteps(s.issue) {
+		return ""
+	}
+	place, ok := s.walk.placeIn(record.StandsAt(s.issue))
+	if !ok {
+		return ""
+	}
+	if step, ok := s.walk.stepAt(place); ok && step.Role == string(role) {
+		return step.LeaveSession
+	}
+	return ""
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
@@ -1131,11 +1156,10 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
 // the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
-// The number counts the entries handed on this role's row of the issue, numbered across the rows
-// that name the step's claim (the higher of the row's own entry plus one and one above the highest
-// entry of each row of the issue that names that claim), which is why it is raised here: this is
-// the one place a claim is handed work it was not on. It needs to be unique among the entries of
-// that claim and no more, since it is only ever compared with a value the daemon itself wrote,
+// The number is one above every entry of the issue's phases rows (the counter below), which is why
+// it is raised here: this is the one place a claim is handed work it was not on. It needs to be
+// above every entry its claim was handed before and no more, since it is only ever compared with a
+// value the daemon itself wrote,
 // never read from a request — a completion carries no identity at all
 // (api.HandoffCompleteRequest). Nothing else at hand counts them: the issue's generation is one
 // run's whole life, and the round counts only returns to implementing.
@@ -1187,13 +1211,22 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // reads; EnterArchitect gives the root's no-plan scope, whose walk its raise does not read.
 //
 // A phase worker's raise writes the claim of the step's agent on the row (record.PhaseRow.Claim,
-// Engine.stepToken), which record.WorkerClaim reads back, and the entry rises across the rows of
-// that claim: it is the higher of the row's own entry plus one and one above the highest entry of
-// every row of the issue that names the claim. The steps of one key are one claim, whose given
-// entry is the last its agent was handed, so an entry numbered on the row alone would fall at or
-// below it and the queue would refuse the task of the agent's next step; and no entry falls below
-// its own row's, which a row the release before raised and no completion named a claim on keeps.
-// An issue with no plan rows has one row for each claim, so its entry is the row's own plus one.
+// Engine.rowClaim), which record.WorkerClaim reads back.
+//
+// Every entry of an issue is one above the highest entry of every phases row of the issue, read in
+// this transaction: one counter for the issue, whatever task, role, claim, version or generation a
+// row is of. Two tasks' steps of one role are two rows (record.PhaseKey), and both share the
+// counter. That is what makes each entry a claim is handed above every entry that claim was handed
+// before. No write lowers a row's entry or deletes a row (record.Store.ClearGeneration keeps the
+// number), and every entry a claim is handed is the entry of a row of its own issue at the moment
+// it was raised, so the highest entry of the issue's rows is at or above every entry any claim of
+// the issue holds, a start still queued or in flight included. A number counted on the role's row,
+// or across the rows that name the claim now, falls at or below a claim's given entry wherever a
+// version moves the row that held the claim's highest entry to another claim, and the claim's queue
+// then takes its next task as given already (supervise's given) and no sweep owes it. A role's
+// entries need not be consecutive because every role shares the issue's counter.
+// The facts that raise an entry are applied one at a time (intake.SerializeFacts), so two raises
+// of one issue never read the same highest entry.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.Role, task string, movedBack, verbatim bool) (int64, string, error) {
 	issue := s.issue
 	rows, err := e.store.Phases(ctx, tx, issue.Key)
@@ -1201,7 +1234,11 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.
 		return 0, "", err
 	}
 	row := record.PhaseRowAt(rows, s.PhaseKey(role))
-	entry := row.Entry + 1
+	var entry int64
+	for _, other := range rows {
+		entry = max(entry, other.Entry)
+	}
+	entry++
 	row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = verbatim, e.now(), movedBack
 	worker := role != claim.RoleArchitect
 	var agent claim.Token
@@ -1212,11 +1249,6 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, s *TaskScope, role claim.
 		if recordsSteps(issue) {
 			if agent, err = e.rowClaim(*s, role); err != nil {
 				return 0, "", err
-			}
-			for _, other := range rows {
-				if other.Claim == agent && other.Entry >= entry {
-					entry = other.Entry + 1
-				}
 			}
 			row.Claim = agent
 		}
@@ -1333,7 +1365,7 @@ func handoffReport(issue record.Issue, handoff record.PhaseRow) string {
 	}
 	switch {
 	case handoff.Verdict == "":
-	case handoff.Role != "" && !claim.IsBuiltin(handoff.Role):
+	case claim.IsDeploymentRole(handoff.Role):
 		text += fmt.Sprintf(" Step %d (%s) %s: %s.", handoff.StepPlace, handoff.Role, reportedLabel, handoff.Verdict)
 		if summary := strings.TrimSpace(handoff.Summary); summary != "" {
 			text += " " + sentence(summary)

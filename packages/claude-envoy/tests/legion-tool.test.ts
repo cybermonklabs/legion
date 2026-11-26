@@ -9,6 +9,7 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { withImageManifest } from "@legion/pi-shared/test/image-manifest"
 import pkg, { name, version } from "../package.json" with { type: "json" }
+import * as legionTool from "../src/legion-tool"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
 /** The contract this build speaks, as `legion-tool.ts` reads it (`daemonContract`): this
@@ -129,6 +130,7 @@ async function daemon(
         },
       })
     }
+    if (path === "/legion/v1/claims/ready-for-update") return new Response(null, { status: 204 })
     // One issue's record, as the daemon answers it, and its 404 for an issue it records
     // nothing of (dispatch://INFRA-2694).
     const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
@@ -177,6 +179,72 @@ const grantRequest = {
     issue: "LEGION-208",
   },
 }
+
+test("answerLegionTool closes only a step and answers an update without closing a look", async () => {
+  const { client } = await daemon({ state: stateAtPhase("testing") })
+  const calls: string[] = []
+  const runtime = {
+    daemon: client,
+    claim: () => implementer,
+    env: PANE_ENV,
+    handoffReport: async () => ({ commit: "c0ffee" }),
+    branchHead: async () => "",
+  }
+  const hook = {
+    phaseClosed: () => {
+      calls.push("closed")
+    },
+    updateAnswered: () => {
+      calls.push("update")
+    },
+  }
+  await legionTool.answerLegionTool(
+    runtime,
+    {
+      op: "handoff_complete",
+      summary: "looked",
+      verdict: "pass",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    },
+    hook,
+  )
+  expect(calls).toEqual([])
+  await legionTool.answerLegionTool(
+    runtime,
+    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    hook,
+  )
+  expect(calls).toEqual(["closed"])
+  await legionTool.answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
+  expect(calls).toEqual(["closed", "update"])
+})
+
+test("a named look of a running issue reaches the daemon through executeLegionTool", async () => {
+  const { client, requests } = await daemon({ state: stateAtPhase("implementing") })
+  const runtime = {
+    daemon: client,
+    claim: () => ({ ...implementer, role: "tester" as const }),
+    env: PANE_ENV,
+    handoffReport: async (): Promise<never> => {
+      throw new Error("look reads no handoff")
+    },
+    branchHead: noBranchHead,
+  }
+  await expect(
+    executeLegionTool(runtime, {
+      op: "handoff_complete",
+      summary: "checking",
+      verdict: "pending",
+      wake_at: "2026-10-19T09:00:00Z",
+      check_opened_at: "2026-10-19T06:00:00.123456Z",
+    }),
+  ).resolves.toEqual({})
+  expect(requests.map(({ path }) => path)).toEqual([
+    "/legion/v1/grants",
+    "/legion/v1/handoff/complete",
+  ])
+  expect(requests.at(-1)?.body).toMatchObject({ checkOpenedAt: "2026-10-19T06:00:00.123456Z" })
+})
 
 test("declares the six phase-worker operations under one op", () => {
   const definition = legionToolDefinition()
@@ -311,9 +379,9 @@ test("a tester's fail sends return_to as returnTo", async () => {
   })
 })
 
-// A role of the deployment runs on Claude Code as on Oh My Pi (contract 221): its claim reaches
-// the same phase ops, and its completion of the step it works carries its verdict and the commit
-// its workspace stands on, with no handoff record.
+// A role of the deployment runs on Claude Code as on Oh My Pi (the deployment roles' contract
+// entry): its claim reaches the same phase ops, and its completion of the step it works carries its
+// verdict and the commit its workspace stands on, with no handoff record.
 test("a role of the deployment's handoff_complete sends its verdict and commit", async () => {
   const { client, requests } = await daemon({
     state: stateAtPhase("step", { stepRole: "checker" }),

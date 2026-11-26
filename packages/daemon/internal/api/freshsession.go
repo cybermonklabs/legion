@@ -14,11 +14,19 @@ import (
 // of Issue, under the caller's controller grant. Role is a workflow role or `architect`; the
 // project controller is no role here, so the controller's own claim cannot be named at all
 // (claim.IsRole, which refuses the controller). The fresh session and the
-// compaction take the same three members, so they take one type (controllerClaim).
+// compaction take the same members, so they take one type (controllerClaim).
+//
+// Claim, from the stranded token's entry (strandedTokenContract), names the claim by its token:
+// two claims of one issue can hold one role — the agent of a key on a step of another role,
+// beside that role's own claim of an earlier version of the plan — and the issue and the role
+// reach the one that works the role's step, while a notice of provider errors can name the other.
+// It must be a claim of Issue that holds Role. Without it the request reaches the worker on the
+// role's step, as it did before that entry; a daemon below it refuses the member as unknown.
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
 	Issue   string `json:"issue"`
 	Role    string `json:"role"`
+	Claim   string `json:"claim,omitempty"`
 }
 
 // FreshSessionResponse confirms the claim left the session it recorded behind: the daemon
@@ -154,23 +162,32 @@ type controllerTarget struct {
 }
 
 // controllerClaim is the door both of the controller's claim recoveries come through
-// (claimFreshSession, claimCompact): the claim is named by its issue and role rather than by a
-// token the controller never sees, and the caller is its project's controller rather than the
-// operator. It answers every refusal of the body, the grant and the lookup itself, and reports
+// (claimFreshSession, claimCompact): the claim is named by its issue and role, and from the
+// stranded token's entry by its token too, and the caller is its project's controller rather than
+// the operator. It answers every refusal of the body, the grant and the lookup itself, and reports
 // false when it has; only the effect behind it differs between the two.
 //
 // The controller is refused its own claim here and nowhere else: the token is the claim of the
-// agent that works the role's step of the issue (workerToken), which the issue's role names, and
-// no issue's role spells the controller's token (claim.ControllerToken), so a role this check takes
-// can never name it.
+// agent that works the role's step of the issue (workerToken), which the issue's role names, or
+// the claim the body names, which must be an agent's claim of the issue (claim.AgentToken refuses
+// the controller's name); no issue's role spells the controller's token (claim.ControllerToken),
+// so neither can name it.
 //
-// That claim is read before any lock the effect's acts take, so the effect runs on a request
-// carrying its standing (worksStep, supervise.Standing): the effect's first act on the machine
-// judges again under the machine's lock that the record still names the claim on the role's step,
-// and a step that moved to another claim before it is refused there with nothing of the claim
-// changed (operatorFailure, compact's refusal of a claim not taken). A move after that act finds
-// the effect under way, and the phase's restart the fresh session applies names the claim, so a
-// step entered for another claim since is not restarted (restartWorkedPhase).
+// The worker's claim is read before any lock the effect's acts take, so the effect runs on a
+// request carrying its standing (worksStep, supervise.Standing): the effect's first act on the
+// machine judges again under the machine's lock that the record still names the claim on the
+// role's step, and a step that moved to another claim before it is refused there with nothing of
+// the claim changed (operatorFailure, compact's refusal of a claim not taken). A move after that
+// act finds the effect under way, and the phase's restart the fresh session applies names the
+// claim, so a step entered for another claim since is not restarted (restartWorkedPhase).
+//
+// A claim the body names must hold the role the body names (409 CLAIM_NOT_OF_ROLE), whether or not
+// it is the step's worker, so the log line's role is the claim's: the role's own token names a
+// claim that a re-role moved to another role's step, and that claim answers for the role it holds.
+// A named claim that is not the step's worker — another claim of the role, which two claims of one
+// issue can hold — runs on no standing, since no step's move changes which claim the body names.
+// Its phase's restart names it and is refused for a step that is another claim's, so the claim
+// comes back owing what it owed and the answer says so.
 func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op controllerOp) (controllerTarget, bool) {
 	var req ClaimRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r,
@@ -188,11 +205,22 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 			roleList(), op.notTheController))
 		return controllerTarget{}, false
 	}
-	token, err := s.workerToken(r.Context(), req.Issue, role)
+	worker, err := s.workerToken(r.Context(), req.Issue, role)
 	if err != nil {
 		s.logFailure("api: build the claim token of "+op.name, "issue", req.Issue, "role", req.Role, "error", err)
 		s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_TOKEN_FAILED", err.Error())
 		return controllerTarget{}, false
+	}
+	token := worker
+	if req.Claim != "" {
+		token = claim.Token(req.Claim)
+		_, agent, cut := token.Cut()
+		if of, err := claim.AgentToken(s.project, req.Issue, agent); !cut || err != nil || of != token {
+			s.writeFailure(w, r, http.StatusBadRequest, "INVALID_CLAIM", fmt.Sprintf(
+				"claim %s is no claim of %s: name the token of an agent of the issue, as a notice names it, or leave claim out to reach the claim that works the %s's step",
+				req.Claim, req.Issue, role))
+			return controllerTarget{}, false
+		}
 	}
 	grant, ok := s.redeem(w, r, req.GrantID)
 	if !ok {
@@ -207,8 +235,18 @@ func (s *server) controllerClaim(w http.ResponseWriter, r *http.Request, op cont
 		s.writeFailure(w, r, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return controllerTarget{}, false
 	}
-	judged := r.WithContext(supervise.Standing(r.Context(), s.worksStep(req.Issue, role, token)))
-	return controllerTarget{machine: m, token: token, issue: req.Issue, role: role, request: judged}, true
+	if req.Claim != "" {
+		if holds := m.Claim().Role; holds != role {
+			s.writeFailure(w, r, http.StatusConflict, "CLAIM_NOT_OF_ROLE", fmt.Sprintf(
+				"claim %s holds the role %s of %s, not %s: name the role it holds", token, holds, req.Issue, role))
+			return controllerTarget{}, false
+		}
+	}
+	if token == worker {
+		judged := r.WithContext(supervise.Standing(r.Context(), s.worksStep(req.Issue, role, token)))
+		return controllerTarget{machine: m, token: token, issue: req.Issue, role: role, request: judged}, true
+	}
+	return controllerTarget{machine: m, token: token, issue: req.Issue, role: role, request: r}, true
 }
 
 // claimFreshSession is the controller's door onto the fresh session (freshSession). The effect
@@ -350,8 +388,9 @@ func roleList() string {
 // the claim moved on. The refusal names that launch and stops there (refuseParkedRelaunch).
 // The project's controller is refused whatever state it is in: its keeper starts it, as that
 // keeper alone is told when it must (supervise's operatorRetry refuses the controller's retry
-// for the same reason), and the controller's own door cannot name it at all, since `controller`
-// is no role a claim token is built from (claimFreshSession).
+// for the same reason), and the controller's own door cannot name it at all, since that door
+// names a claim by an issue and a role of it, or by the token of an agent of that issue, and the
+// controller's claim belongs to no issue (controllerClaim).
 //
 // A claim stored working is in a turn, under a launch the wake pacing parks, being compacted,
 // or over no process at all, and one order tells them apart at both doors

@@ -33,7 +33,9 @@ func (r podRolesRuntime) PodLacksRole(_ string, role claim.Role) (string, bool) 
 
 // SlotWaitsForCredential answers that every launcher of the pod waits for a start's credential:
 // the pods of this fake are built by this release.
-func (podRolesRuntime) SlotWaitsForCredential(string, claim.Role) (string, bool) { return "", true }
+func (podRolesRuntime) SlotWaitsForCredential(string, claim.Agent) (string, bool, error) {
+	return "", true, nil
+}
 
 // podWaitRunner is the outbox over a real PostgreSQL with the issue LEGION-208 stored, the
 // supervisor reading the claims of that store and its runtime answering that its pod lacks the

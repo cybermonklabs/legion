@@ -3,9 +3,12 @@ package intake
 import (
 	"net/http"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -18,6 +21,7 @@ var inPlanningB = record.Assignment{Experiment: "planning", Unit: "issue", Varia
 // words: the route and the workflow name them through these constructors, so an owner reads the
 // same text whichever of the two refused, and a change of a word is a change of this test.
 func TestThePlanRefusalsSayWhy(t *testing.T) {
+	t.Parallel()
 	accepting := func(starts int64) record.StepEntry {
 		return record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}, Starts: starts}
 	}
@@ -117,6 +121,7 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 }
 
 func TestStaleEntryRefusalsNameARecordedCountZeroRun(t *testing.T) {
+	t.Parallel()
 	entry := record.StepEntry{Place: record.StepPlace{Task: "a", Kind: "step", Place: 2}}
 	for _, stale := range []struct {
 		name string
@@ -142,6 +147,7 @@ func TestStaleEntryRefusalsNameARecordedCountZeroRun(t *testing.T) {
 }
 
 func TestStaleEntryRefusalsNameAZeroEntryAsNoRun(t *testing.T) {
+	t.Parallel()
 	for _, stale := range []struct {
 		name string
 		make func(record.StepEntry) *Refusal
@@ -156,6 +162,44 @@ func TestStaleEntryRefusalsNameAZeroEntryAsNoRun(t *testing.T) {
 		t.Run(stale.name, func(t *testing.T) {
 			if refusal := stale.make(record.StepEntry{}); !strings.Contains(refusal.Message, "asked of no run of a step") {
 				t.Fatalf("zero entry is not described as absent: %s", refusal.Message)
+			}
+		})
+	}
+}
+
+// Entry numbers identify runs on the issue-wide counter. Their difference is not a count of
+// entries missed by this role, so a refusal reports the two identities without another number.
+func TestAStaleCompletionReportsItsTwoEntryIdentities(t *testing.T) {
+	refusal := StaleEntry("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, nil, "the completion was refused")
+	if refusal.Status != http.StatusConflict || refusal.Code != StaleEntryCode {
+		t.Fatalf("stale completion refusal = %+v, want 409 %s", refusal, StaleEntryCode)
+	}
+	for _, receiver := range []string{"LEGION-208", string(claim.RoleTester), string(phase.Testing)} {
+		if !strings.Contains(refusal.Message, receiver) {
+			t.Fatalf("stale completion refusal names no receiver %q: %s", receiver, refusal.Message)
+		}
+	}
+	clause := StaleEntryClause("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, "completion")
+	if !strings.HasPrefix(refusal.Message, clause+", and ") {
+		t.Fatalf("stale completion refusal does not use the shared entry clause %q: %s", clause, refusal.Message)
+	}
+}
+
+func TestAStaleEntryClauseReportsItsTwoEntryIdentities(t *testing.T) {
+	for _, report := range []string{"completion", "move back"} {
+		t.Run(report, func(t *testing.T) {
+			clause := StaleEntryClause("LEGION-208", claim.RoleTester, phase.Testing, 9, 2, report)
+			for _, receiver := range []string{"LEGION-208", string(claim.RoleTester), string(phase.Testing)} {
+				if !strings.Contains(clause, receiver) {
+					t.Fatalf("stale-entry clause names no receiver %q: %s", receiver, clause)
+				}
+			}
+			numbers := make(map[string]int)
+			for _, number := range regexp.MustCompile(`[0-9]+`).FindAllString(clause, -1) {
+				numbers[number]++
+			}
+			if want := (map[string]int{"208": 1, "2": 1, "9": 1}); !reflect.DeepEqual(numbers, want) {
+				t.Fatalf("stale-entry clause reports numeric values %v, want only receiver and entry identities %v: %s", numbers, want, clause)
 			}
 		})
 	}

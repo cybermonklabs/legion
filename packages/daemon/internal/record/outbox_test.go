@@ -495,6 +495,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a release's stop fenced on a turn start", payload: SuperviseRequest{Op: "release", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, TurnStart: new(now)}, reason: "only a left pod's close's suspend names one"},
 		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
 		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
+		{name: "a suspend naming a refused pod", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, RefusedPod: "pod-1"}, reason: "only a start a refused launch queued names one"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
 		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
 		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},

@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,11 +18,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// noPhaseRows is a record.PhaseReader of an issue that has no phases rows, whose every role's
+// worker is that role's own claim (record.WorkerClaim).
+type noPhaseRows struct{}
+
+func (noPhaseRows) Phases(context.Context, pgx.Tx, string) ([]record.PhaseRow, error) {
+	return nil, nil
+}
+
 // A phase worker holds a member's phase, and only a phase worker does (phaseHolder): admitted,
 // which phase.RoleFor answers the tree's architect for since #3711, has no phase holder, since a
 // member there has not started its work and its first phase's start carries its news; accepting,
 // which the owning architect holds, is named through newsClaims.holderOf and not here; a phase no
-// role works names none. A member in reviewing names its reviewer's claim.
+// role works names none. A member in reviewing names its reviewer's claim, the worker of its role
+// where the issue's phases rows name no step's agent.
 func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -33,7 +44,10 @@ func TestOnlyAPhaseWorkerHoldsAMembersPhase(t *testing.T) {
 		{phase.Reviewing, claim.RoleReviewer},
 		{phase.Merging, claim.RoleMerger},
 	} {
-		holder, held := phaseHolder("legion", record.Issue{Key: "LEGION-801", Phase: tc.phase})
+		holder, held, err := phaseHolder(context.Background(), nil, noPhaseRows{}, "legion", record.Issue{Key: "LEGION-801", Phase: tc.phase})
+		if err != nil {
+			t.Fatalf("the holder of a member in %s: %v", tc.phase, err)
+		}
 		if held != (tc.role != "") || held && holder.role != tc.role {
 			t.Fatalf("the holder of a member in %s = %+v (held %t), want role %q", tc.phase, holder, held, tc.role)
 		}
@@ -119,6 +133,77 @@ func TestAMemberInAcceptingIsHeldByItsParentsArchitectWhateverItsCallerHandedOve
 			t.Fatalf("the holder of %s in accepting, the facts handed over %t = %+v (held %t), want its parent's architect %s",
 				reconcileGrandchild, handed, holder, held, own)
 		}
+	}
+}
+
+// The claim that holds a member's phase is the claim of the agent that works the step of the
+// phase's role (record.WorkerClaim), not that role's own claim. Here the agent of a key, started
+// as the implementer, works the tester's step in its own claim, and the tester's own claim of an
+// earlier version of the plan stands beside it, given the same entry. The member is owed the
+// spec's news: the keyed agent's claim is named its holder, the reconcile queues the member's
+// news-only start, and that start hands the news to the keyed agent's claim. The tester's own
+// claim is told nothing.
+func TestADesignNewsOfAStepAKeyedAgentWorksReachesThatAgentsClaim(t *testing.T) {
+	t.Parallel()
+	r := newNewsReconcileRig(t)
+	root := r.member(reconcileRoot, "", phase.Testing)
+	r.told(reconcileRoot, record.AudienceHolder, 4)
+	own := r.holder(reconcileRoot, claim.RoleTester, supervise.StateIdle, "", 1)
+	keyed := mustClaimToken(t, reconcileRoot, claim.RoleImplementer)
+	r.inTx(func(tx pgx.Tx) error {
+		if err := r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: reconcileRoot, Role: claim.RoleTester, Claim: keyed, StepTask: "t",
+			StepPlace: 2, Entry: 1, EntryTask: "Work the phase.", EntryRaisedAt: time.Now().UTC()}); err != nil {
+			return err
+		}
+		_, err := tx.Exec(r.ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry, suspended_by)
+			values ($1, 'legion', $2, $3, $4, 1, 'ses-keyed', '/sessions/keyed.jsonl', $5, 1, 0, 0, 0, 0, 1, '')`,
+			string(keyed), reconcileRoot, reconcileRoot, string(claim.RoleTester), string(supervise.StateIdle))
+		return err
+	})
+
+	member := toldKey{reconcileRoot, record.AudienceHolder}
+	var holders map[toldKey]owedHolder
+	r.inTx(func(tx pgx.Tx) error {
+		var err error
+		holders, err = readOwedHolders(r.ctx, tx, r.records, newNewsClaims(root, nil), []toldKey{member})
+		return err
+	})
+	holder, held := holders[member]
+	if !held || holder.token != keyed || holder.role != claim.RoleTester || holder.entry != 1 {
+		t.Fatalf("the holder of %s in testing = %+v (held %t), want the keyed agent's claim %s on the tester's step at entry 1, not the tester's own claim %s",
+			reconcileRoot, holder, held, keyed, own)
+	}
+	if told := holderTold(holder.run, holder.entry); told != workflow.NewsSentNow {
+		t.Fatalf("the keyed agent's claim is told %q, want %q: it runs at its step's entry and holds no task", told, workflow.NewsSentNow)
+	}
+
+	if err := r.reconcile(0); err != nil {
+		t.Fatalf("reconcile the tree's news: %v", err)
+	}
+	starts := r.newsStarts()
+	want := record.SuperviseRequest{Op: "start", Tree: reconcileRoot, Role: claim.RoleTester, Generation: 1, Phase: phase.Testing, News: true}
+	if len(starts) != 1 || starts[0].row.Issue != reconcileRoot || !reflect.DeepEqual(starts[0].request, want) {
+		t.Fatalf("the news-only starts = %+v, want one %+v on %s", starts, want, reconcileRoot)
+	}
+
+	ownMachine := r.machine(reconcileRoot, claim.RoleTester, supervise.StateIdle, "", 1)
+	keyedMachine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: keyed, Project: "legion", Tree: reconcileRoot, Issue: reconcileRoot,
+		Role: claim.RoleTester, State: supervise.StateIdle, Generation: 1, Session: "ses-keyed", SessionFile: "/tmp/keyed.jsonl",
+		GivenEntry: 1}, "")
+	if err != nil {
+		t.Fatalf("create the keyed agent's claim: %v", err)
+	}
+	if err := r.runner.execute(r.ctx, starts[0].row); err != nil {
+		t.Fatalf("run the news-only start: %v", err)
+	}
+	if _, news := pendingNews(t, keyedMachine); !keyedMachine.Claim().Pending.NewsOnly ||
+		!reflect.DeepEqual(news.Items, []record.DeliveryNewsItem{heldItem(reconcileRoot, 4)}) {
+		t.Fatalf("the keyed agent's task carries %+v, want the news-only item of the spec from 4 to 5", news)
+	}
+	ownMachine.Wait()
+	if pending := ownMachine.Claim().Pending; pending != nil {
+		t.Fatalf("the tester's own claim holds %+v, want nothing: the keyed agent works the tester's step", pending)
 	}
 }
 

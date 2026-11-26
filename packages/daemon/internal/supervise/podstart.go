@@ -286,19 +286,11 @@ func (q *podQueue) next() (int, bool) {
 			}
 			continue
 		}
-		if roleRank(h.role) < roleRank(o.role) {
+		if claim.RoleRank(h.role) < claim.RoleRank(o.role) {
 			first = i
 		}
 	}
 	return first, false
-}
-
-// roleRank is role's place in claim.Roles; a role outside them goes after every one of them.
-func roleRank(role claim.Role) int {
-	if i := slices.Index(claim.Roles, role); i >= 0 {
-		return i
-	}
-	return len(claim.Roles)
 }
 
 // podAsk is what a start asks the gate with: its pod, its claim and role, the generation of the try

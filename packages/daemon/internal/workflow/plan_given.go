@@ -167,11 +167,15 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 	if err != nil {
 		return givenVersion{}, nil, err
 	}
-	given.steps = record.NameAgents(earlier, given.steps)
-	if unnamed := record.UnnamedAgents(given.steps); len(unnamed) > 0 {
+	held, err := e.store.KeyNames(ctx, tx, fact.Issue)
+	if err != nil {
+		return givenVersion{}, nil, err
+	}
+	given.steps = record.NameAgents(earlier, given.steps, held)
+	if unnamed := record.UnnamedAgents(earlier, given.steps, held); len(unnamed) > 0 {
 		reasons := make([]plan.Refusal, len(unnamed))
-		for i, step := range unnamed {
-			reasons[i] = intake.AgentUnnamed(step.Task, step.Position, string(record.RoleName(step.Role)))
+		for i, agent := range unnamed {
+			reasons[i] = intake.AgentUnnamed(agent.Step.Task, agent.Step.Position, string(agent.Name), agent.Holder)
 		}
 		return givenVersion{}, intake.PlanRefused(reasons), nil
 	}

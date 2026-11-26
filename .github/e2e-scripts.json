@@ -16,6 +16,16 @@
   ],
   "hosted": [
     {
+      "script": "look-names-its-check.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": true,
+      "evidence_variable": "LOOK_NAMES_ITS_CHECK_EVIDENCE_DIR",
+      "timeout_minutes": 30,
+      "why_hosted": "A Linux runner with go, git, jj, bun after bun install, awk, python3 and a loopback PostgreSQL server runs this proof. The script builds and starts Dispatch and the daemon itself on databases of its own and starts its own nats-server. It calls the plugin's real daemon client under bun and reaches no outside service.",
+      "jj": true
+    },
+    {
       "script": "behind-entry-fence.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
@@ -123,7 +133,8 @@
       "evidence_variable": "ROLES_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/roles.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
-      "jj": true
+      "jj": true,
+      "omp": false
     },
     {
       "script": "merge-wait-readable.sh",
@@ -223,7 +234,8 @@
       "evidence_variable": "AGENTS_EVIDENCE_DIR",
       "timeout_minutes": 25,
       "why_hosted": "Run it from a checkout on a Linux host with go, git, jj 0.38 or later, bun (after bun install), awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/agents.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to five minutes",
-      "jj": true
+      "jj": true,
+      "omp": false
     },
     {
       "script": "sub-architect.sh",

@@ -180,8 +180,8 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
-// which the transition raised on the role's phases row, numbered across the rows that name the
-// step's claim (the higher of the row's own next entry and one above that claim's highest): the
+// which the transition raised on the role's phases row, one above the highest entry of every row
+// of the issue (workflow's enter): the
 // record counts the entries, so two runs of the same events write the same number and a
 // comparison of two runs reads it like any other field.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {

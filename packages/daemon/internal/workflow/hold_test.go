@@ -144,6 +144,62 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	}
 }
 
+// Two claims of one issue can hold one role: key a's agent, `…-implementer`, which the tester's
+// phases row names on the tester's step, and the tester's own claim of an earlier version of the
+// plan, `…-tester`, live until the issue closes. Only the failure of the claim that works the
+// step holds the issue (intake.ClaimFailed.Claim): the tester's own claim failing is told in a
+// worker-died that names it and says it does not work the phase, and nothing is held, so the
+// working agent is not left running on a held issue. A fact that names no claim, from a daemon
+// before the claim was carried, keeps the role's rule and holds.
+func TestOnlyTheFailureOfTheStepsWorkerHoldsTheIssue(t *testing.T) {
+	const keyed, own = claim.Token("legion-legion-legion-209-implementer"), claim.Token("legion-legion-legion-209-tester")
+	root := "LEGION-208"
+	for _, tc := range []struct {
+		name   string
+		failed claim.Token
+		held   bool
+		want   []record.OutboxPayload
+	}{
+		{name: "the tester's own claim, which works no step", failed: own,
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleTester, Phase: phase.Testing,
+				Reason: "legion-legion-legion-209-tester, a claim of the tester, does not work LEGION-209's phase testing; legion-legion-legion-209-implementer does, and nothing is held"}}},
+		{name: "key a's agent, the step's worker", failed: keyed, held: true},
+		{name: "a failure that names no claim", failed: "", held: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			ctx := context.Background()
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION",
+				Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"})
+			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root,
+				Project: "LEGION", Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V"})
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: keyed, StepTask: "a", StepPlace: 2, Entry: 1})
+			}); err != nil {
+				t.Fatalf("name key a's agent on the tester's step: %v", err)
+			}
+
+			if _, err := intake.ApplyFact(ctx, pool, "supervise", "tester-failed", intake.ClaimFailed{Issue: "LEGION-209", Role: claim.RoleTester, Claim: tc.failed},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the failure of %q: %v", tc.failed, err)
+			}
+			var gotPhase phase.Phase
+			if err := pool.QueryRow(ctx, "select phase from issues where key = 'LEGION-209'").Scan(&gotPhase); err != nil {
+				t.Fatalf("read the child: %v", err)
+			}
+			if (gotPhase == phase.Held) != tc.held {
+				t.Fatalf("after the failure of %q the child is in %s, want held %t", tc.failed, gotPhase, tc.held)
+			}
+			if tc.held {
+				return
+			}
+			if got := noticeRows(t, pool); !sameNotices(got, tc.want) {
+				t.Fatalf("notice rows = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 // A phase worker's claim failing holds the issue, and the two notices that say so — the hold the
 // architect and the controller read, and the worker-died beside it — are all an agent has to
 // decide between retrying the phase and escalating it. So each names the failure the fact

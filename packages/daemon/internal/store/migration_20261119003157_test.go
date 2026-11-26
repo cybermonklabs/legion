@@ -30,6 +30,7 @@ const conflictReadsVersion = 20261119003157
 // phase ended on a conflict, a move this release no longer makes. A row of another kind queued
 // beside them stays.
 func TestTheOutboxTakesTheConflictConfirmAndMergeForwardKindsWith20261119003157(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, conflictReadsVersion-1)
@@ -106,6 +107,7 @@ func TestTheOutboxTakesTheConflictConfirmAndMergeForwardKindsWith20261119003157(
 // how the daemon clears them, stores SQL null, which is what the way back in the migration's
 // header sets and what a row written before it holds.
 func TestAPullRequestKeepsItsConflictReadAndMergeForwardFrom20261119003157(t *testing.T) {
+	t.Parallel()
 	store := emptyStore(t)
 	ctx := context.Background()
 	migrateThrough(t, store, conflictReadsVersion-1)

@@ -107,18 +107,21 @@ func committedLines() []committedLine {
 					Version: 1, Mark: record.EventMark{Seq: 4, At: reviewedAt}}, []intake.Handler{admission.engine, admission}
 			},
 			wrote: func(t *testing.T, pool *pgxpool.Pool) bool { return len(childrenFirstNotices(t, pool, cfRoot)) == 1 }},
-		{name: "an orphan the record holds as a child", line: `msg="admission orphan" issue=LEGION-260`,
+		// The orphan's key has Dispatch's shape, as every key the daemon records has (intake's
+		// decodeDispatchIssueEvent drops any other): the suspend of the claims of the tree it leaves
+		// builds each role's claim token from that key (workflow's claimTargets).
+		{name: "an orphan the record holds as a child", line: `msg="admission orphan" issue=LEGION-77`,
 			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {
 				admission := newAdmission(t, 1, log)
 				gone := "LEGION-GONE"
-				putIssue(t, pool, record.Issue{Key: "LEGION-260", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-					Project: testProject, Title: "LEGION-260", Tree: gone, Parent: &gone, Phase: phase.Admitted, Generation: 1,
+				putIssue(t, pool, record.Issue{Key: "LEGION-77", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+					Project: testProject, Title: "LEGION-77", Tree: gone, Parent: &gone, Phase: phase.Admitted, Generation: 1,
 					Status: "backlog", Rank: "B", LastDispatchSeq: 1})
-				return "dispatch", intake.DispatchIssue{Key: "LEGION-260", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
-					Status: "todo", Title: "LEGION-260", Parent: gone, Rank: "B", HandedOver: handed}, []intake.Handler{engineStub{}, admission}
+				return "dispatch", intake.DispatchIssue{Key: "LEGION-77", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+					Status: "todo", Title: "LEGION-77", Parent: gone, Rank: "B", HandedOver: handed}, []intake.Handler{engineStub{}, admission}
 			},
 			wrote: func(t *testing.T, pool *pgxpool.Pool) bool {
-				return issue(t, pool, "LEGION-260").Tree == "LEGION-260"
+				return issue(t, pool, "LEGION-77").Tree == "LEGION-77"
 			}},
 		{name: "an orphan the record does not hold", line: `msg="admission orphan" issue=LEGION-ORPHAN`,
 			seed: func(t *testing.T, pool *pgxpool.Pool, log *slog.Logger) (string, intake.Fact, []intake.Handler) {

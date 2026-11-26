@@ -44,7 +44,7 @@ func TestClaimReleaseRecordsServeAPodTheProjectsWindow(t *testing.T) {
 		var err error
 		resumeID, _, err = store.RecordPodWakeTx(h.ctx, tx, store.PodResume{
 			Release: releaseID, Project: testProject, Issue: "LEGION-208", Role: "implementer",
-			Kind: "delivery", At: woke,
+			Claim: "legion-legion-legion-208-implementer", Kind: "delivery", At: woke,
 		})
 		return err
 	}); err != nil {

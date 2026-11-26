@@ -232,24 +232,45 @@ type PlanStep struct {
 	Type       plan.Type
 	AgentKey   string
 	// Agent is the name of the step's agent, the last part of its claim token, which NameAgents
-	// gives before the step is written and nothing else writes. A step a release before the column
-	// wrote holds none.
+	// gives before the step is written and nothing else writes. A step of the key owner holds
+	// none (20261124213820 named every other step a release before the column wrote).
 	Agent claim.Agent
+	// LeaveSession is the session the claim of the step's agent recorded when the step was
+	// written, where that agent took a name a key's agent held in an earlier generation, so the
+	// claim's session is that key's: every start of the step's agent carries it
+	// (SuperviseRequest.LeaveSession), and the claim leaves it where it still records it
+	// (supervise's revive). Only the project's default steps set it (workflow's
+	// leaveKeySessions), since an owner's version that would give a key's name to another agent
+	// is refused (UnnamedAgents); every other step holds "".
+	LeaveSession string
+}
+
+// PlanAgent is the agent of the step (plan.AgentOf): the agent of its key, which every step of that
+// key shares in any task, or for a step with no key the agent of that step alone.
+func (s PlanStep) PlanAgent() plan.Agent {
+	return plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey})
 }
 
 // AgentName is the name of the step's agent: the last part of its claim token, and the one reader
 // of Agent. A step of the key owner has none, since its agent is the tree's architect, whose token
-// names the tree and no name on the issue. A step a release before the column wrote holds none and
-// reads as its role: that release ran each role at most once in a task and refused every key but
-// the owner's, so its role named its agent.
+// names the tree and no name on the issue.
 func (s PlanStep) AgentName() claim.Agent {
-	switch {
-	case plan.AgentOf(s.Task, s.Position, plan.Step{Role: s.Role, Key: s.AgentKey}).Owner():
+	if s.PlanAgent().Owner() {
 		return ""
-	case s.Agent != "":
-		return s.Agent
 	}
-	return claim.Agent(s.Role)
+	return s.Agent
+}
+
+// StepToken is the claim token of the agent of step, a step of issue, whose tree is tree, in
+// project (already a claim.ProjectToken): the one rule of a step's token, which the workflow writes
+// when the step starts and a launch's addressing names. A step of the key owner is the tree's
+// architect's, whose token names the tree and no name on the issue; every other step's is the token
+// of its agent's name (AgentName), so the steps of one key are one claim.
+func StepToken(project, issue, tree string, step PlanStep) (claim.Token, error) {
+	if step.PlanAgent().Owner() {
+		return claim.NewToken(project, tree, claim.RoleArchitect)
+	}
+	return claim.AgentToken(project, issue, step.AgentName())
 }
 
 // StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
@@ -490,12 +511,24 @@ func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks 
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	for _, step := range steps {
-		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
-			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, string(step.Agent)); err != nil {
+		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent, leave_session)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, string(step.Agent), step.LeaveSession); err != nil {
 			return fmt.Errorf("%s: step %d of task %s: %w", describe, step.Position, step.Task, err)
 		}
+		// The name a key's agent holds is kept in the lasting record too (KeyNames), with the
+		// latest generation that gave it: this write deletes the task's earlier rows, and the first
+		// step of a run deletes an earlier owner's plan, but the name's claim records the key's
+		// session in every later generation.
+		if name := step.AgentName(); step.AgentKey != "" && name != "" {
+			if _, err := tx.Exec(ctx, `insert into plan_key_names (issue, name, agent_key, generation) values ($1, $2, $3, $4)
+				on conflict (issue, name) do update set agent_key = excluded.agent_key,
+				generation = greatest(plan_key_names.generation, excluded.generation)`, v.Issue, string(name), step.AgentKey, int64(v.Generation)); err != nil {
+				return fmt.Errorf("%s: the name %s of key %s: %w", describe, name, step.AgentKey, err)
+			}
+		}
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -593,7 +626,7 @@ func plansOf(ctx context.Context, tx pgx.Tx, keys []string, generations []int64)
 		}
 	}
 	steps, err := tx.Query(ctx, `select plan_steps.issue, plan_steps.generation, plan_steps.task, plan_steps.position, plan_steps.role,
-		plan_steps.type, plan_steps.agent_key, plan_steps.agent from plan_steps
+		plan_steps.type, plan_steps.agent_key, plan_steps.agent, plan_steps.leave_session from plan_steps
 		join `+read+` on plan_steps.issue = read.key and plan_steps.generation = read.gen
 		order by plan_steps.issue, plan_steps.task, plan_steps.position`, keys, generations)
 	if err != nil {
@@ -603,7 +636,7 @@ func plansOf(ctx context.Context, tx pgx.Tx, keys []string, generations []int64)
 	for steps.Next() {
 		var step PlanStep
 		var generation int64
-		if err := steps.Scan(&step.Issue, &generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
+		if err := steps.Scan(&step.Issue, &generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent, &step.LeaveSession); err != nil {
 			return nil, err
 		}
 		step.Generation = uint64(generation)
@@ -623,7 +656,7 @@ func plansOf(ctx context.Context, tx pgx.Tx, keys []string, generations []int64)
 // version or generation gave it.
 func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]PlanStep, error) {
 	describe := fmt.Sprintf("read every step of the plans of %s", issue)
-	rows, err := tx.Query(ctx, `select generation, task, position, role, type, agent_key, agent
+	rows, err := tx.Query(ctx, `select generation, task, position, role, type, agent_key, agent, leave_session
 		from plan_steps where issue = $1 order by generation, task, position`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", describe, err)
@@ -633,7 +666,7 @@ func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]
 	for rows.Next() {
 		step := PlanStep{Issue: issue}
 		var generation int64
-		if err := rows.Scan(&generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent); err != nil {
+		if err := rows.Scan(&generation, &step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.Agent, &step.LeaveSession); err != nil {
 			return nil, fmt.Errorf("%s: %w", describe, err)
 		}
 		step.Generation = uint64(generation)
@@ -643,6 +676,32 @@ func (s *Postgres) PlanStepsOf(ctx context.Context, tx pgx.Tx, issue string) ([]
 		return nil, fmt.Errorf("%s: %w", describe, err)
 	}
 	return steps, nil
+}
+
+// KeyNames is every name a key's agent held on issue, by name (plan_key_names): the lasting record
+// PutPlan writes for each step of a key, which no deletion of a plan removes. No code removes a
+// row: the table names no issues row (a plan can be given before its issue is recorded), and a
+// stored claim keeps the
+// session it records across the issue's generations (supervise's launch resumes it), so a name a
+// key held names that key's session for as long as the issue does. NameAgents reserves each name it
+// answers for its key, beside the names the issue's plan_steps rows hold.
+func (s *Postgres) KeyNames(ctx context.Context, tx pgx.Tx, issue string) ([]KeyName, error) {
+	describe := fmt.Sprintf("read the names the keys of %s held", issue)
+	rows, err := tx.Query(ctx, `select name, agent_key, generation from plan_key_names where issue = $1 order by name`, issue)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (KeyName, error) {
+		var h KeyName
+		var generation int64
+		err := row.Scan(&h.Name, &h.AgentKey, &generation)
+		h.Generation = uint64(generation)
+		return h, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return held, nil
 }
 
 // PlanTasksOf is every task of the plan of each issue of the Dispatch project at the issue's
@@ -836,23 +895,30 @@ func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from,
 		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at, added)
 			select issue, $3, version, source, artifact_id, given_by, given_at, added from issue_plans where issue = $1 and generation = $2`,
 		tasks,
-		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
-			select issue, $3, task, position, role, type, agent_key, agent
+		// Every column of plan_steps but the generation, leave_session among them: a default step
+		// whose agent took a key's name carries the key's session to leave into the generation it is
+		// carried to, or that agent's first start there resumes the key's session
+		// (TestACarriedPlanHoldsEveryColumnOfItsSteps fails on a column the copy leaves out).
+		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent, leave_session)
+			select issue, $3, task, position, role, type, agent_key, agent, leave_session
 			from plan_steps where issue = $1 and generation = $2`,
 	}, names...) {
 		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
 		}
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
 // DeletePlan deletes the plan of issue at generation, every row of it in each of the three tables
 // (the tasks and the steps go with their versions, on delete cascade).
 func (s *Postgres) DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error {
-	if _, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
+	tag, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation))
+	if err != nil {
 		return fmt.Errorf("delete the plan of %s at generation %d: %w", issue, generation, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -964,6 +1030,7 @@ func (s *Postgres) PutReturnCounts(ctx context.Context, tx pgx.Tx, issue string,
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 

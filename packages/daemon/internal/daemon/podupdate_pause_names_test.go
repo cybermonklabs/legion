@@ -214,8 +214,8 @@ func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSessio
 	rig.clockAt(podUpdateBound)
 	replaced := rig.awaitReplacement(1, "through the tester's process at the bound")
 	rig.wantForgottenLaunch()
-	if through := replaced[0].Pod.Claim; through != rig.tokens[claim.RoleTester] {
-		t.Fatalf("the pod was replaced through %s, want the tester's claim, the one whose process runs in the pod", through)
+	if through, tester := replaced[0].Pod.Claim, rig.tokens[claim.RoleTester]; through != tester {
+		t.Fatalf("the pod was replaced through %s, want the tester's claim %s, the one claim whose process runs in the pod", through, tester)
 	}
 
 	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)

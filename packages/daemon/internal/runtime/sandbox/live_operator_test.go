@@ -173,7 +173,7 @@ func (r *liveRig) checkPodBaseline() error {
 	if err != nil {
 		return err
 	}
-	stateHome := roleStateHome(claim.RoleArchitect)
+	stateHome := roleStateHome(claim.Agent(claim.RoleArchitect))
 	want := map[string]string{
 		"PI_CONFIG_DIR":             ".omp",
 		ompsessions.StorageVariable: ompsessions.SQLStorage,

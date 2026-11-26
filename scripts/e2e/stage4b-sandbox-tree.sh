@@ -295,12 +295,13 @@ run_pods_at_once=$admission_cap
 # daemon's, config.DefaultResources() in packages/daemon/internal/config/kubernetes.go, written once
 # here as data. The override is this run's, chosen so that the issue pod's reservation comes from
 # both paths the loader has — its cpu and memory set, its ephemeral-storage limit and request the
-# defaults — while staying within the defaults' 3 CPU and 19 GiB. The controller's default is data
-# for the checks alone: the file names the controller only while controller_cpu is set
+# defaults — and so that each value it sets differs from the default's: a pod that carried the
+# default instead departs at pod-shape. The controller's default is data for the checks alone: the
+# file names the controller only while controller_cpu is set
 # (daemon-controller-liveness, under `controller: daemon`), and the image probe pod carries its own
 # fixed 500m / 1Gi (internal/daemon/kubernetes.go probeReservation), never the controller's — so
 # that checkpoint's restart with the controller at 100000 CPU still places its probe pod.
-declare -A default_issue=([cpu]=3 [memory]=19Gi [ephemeral_storage]=80Gi [ephemeral_storage_request]=6Gi)
+declare -A default_issue=([cpu]=2 [memory]=8Gi [ephemeral_storage]=80Gi [ephemeral_storage_request]=6Gi)
 declare -A default_controller=([cpu]=1 [memory]=4Gi [ephemeral_storage]=10Gi [ephemeral_storage_request]=1Gi)
 declare -A override_issue=([cpu]=2950m [memory]=16Gi)
 reservation_fields="cpu memory ephemeral_storage ephemeral_storage_request"
@@ -322,8 +323,9 @@ unset field
 # (internal/runtime/sandbox/issue_suspend.go).
 deleted_msg="sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned"
 # How long a planner the driver has told to plan gets to finish: before its handoff it runs its two
-# model-backed plan checks, the gap analyst and up to three plan-review rounds (each a subagent
-# call), so planning takes a whole loop of its own (wait_for_phase).
+# model-backed plan checks, the gap analyst and as many plan-review rounds as its plan needs (each a
+# subagent call; the planner's prompt sets no round limit), so planning takes a whole loop of its
+# own (wait_for_phase), and 2700 s is this proof's bound on it.
 plan_seconds=2700
 # One path for every run on the devbox holding this identity: today's single fixed path for the
 # default identity, so a default run collides with another default run exactly as before, and a
@@ -4803,6 +4805,10 @@ record_resident "$tree1" reviewer || fail "tree 1's reviewer has no session and 
 # The proof counts only messages the architect sent after the reviewer's completion. An architect acting on
 # the notice unprompted, as it must where no driver holds it, is not what this checkpoint proves
 # (LEGION-413).
+# The reviewer's record before its round, which the round's completion replaces: none, at the
+# reviewer's first round, and the completion below is the round's one, since the decision the
+# architect asks for writes no second handoff.
+before_review=$(role_handoff_record "$tree1" reviewer)
 send_agent "$tree1" reviewer "Stage 4b proof review operation: review pull request #$pr_number in $repo as your role requires, running the deep and code-quality review passes your instructions name as task subagents. This round deliberately proves what the daemon does with a round no review decides: submit your review as $review_app as a COMMENT review with no inline comment, never APPROVE or REQUEST_CHANGES, take the round's other steps in the order your role gives, and complete the reviewer handoff. Submit no other review until you are asked for the round's decision; when you are, your decision is REQUEST_CHANGES with exactly one inline comment, on the last line of $smoke_file, asking for the line \`$(round_line 1)\` to be appended below the lines already there. The spec permits that correction. Your completion is already recorded: submit that decision on the completed handoff's head without writing another handoff or calling handoff_complete again. This exact smoke instruction takes precedence over your own review."
 pair_session=$(claim_session_file "$tree1" reviewer) || fail "the reviewer on $tree1 has no session file"
 on_tree "$tree1" until_true 1800 "the reviewer's two thermonuclear dispatches to reach an outcome" pair_settled
@@ -4843,6 +4849,9 @@ notice_line "$tree1" reviewer "notifications.role.$(claim_token "$tree1" archite
 on_tree "$tree1" until_true 1800 "$review_app's round 1 decision on pull request #$pr_number" reviewer_decision 1
 [ "$(<"$work/review-decision")" = changes ] || fail "the reviewer approved pull request #$pr_number in round 1, which the proof asked to request changes"
 on_tree "$tree1" wait_for_phase "$tree1" implementing 1200
+# The request for changes ends the round whether or not the reviewer has completed (workflow's
+# roundRejected), so the reviewer's handoff record is waited for, within a turn's budget, first.
+on_tree "$tree1" until_true "$phase_seconds" "the reviewer's round 1 handoff record on $tree1" role_handoff_recorded "$tree1" reviewer "$before_review"
 assert_handoff_record "$tree1" reviewer reviewing 1
 assert_review_of_head "$tree1" 1 CHANGES_REQUESTED
 thread_id=$(reviewer_thread 2>"$work/reviewer-thread.err") ||
@@ -6495,9 +6504,9 @@ phase_change_logged "$tree1" merging "done" pull_request_merged ||
 waited=$(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | grep -c . || true)
 [ "$waited" = 0 ] ||
   fail "the daemon logged $tree1's merged close waiting for the issues beneath it $waited times, though $child3 and $child4 left the workflow at children-first-acceptance: $(log_lines "workflow: a merged issue's close waits for the issues beneath it" | jq -c --arg issue "$tree1" 'select(.issue == $issue)' | tail -1)"
-told=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged "$tree1")")
-[ "$told" = 0 ] ||
-  fail "$tree1's architect was told $told pr-merged notices, which only a close that waits for the issues beneath it sends: $(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")" | tail -1 | cut -c1-300)"
+merged_notice=$(notice_line "$tree1" architect "$(notice_needle pr-merged "$tree1")")
+[ -z "$merged_notice" ] ||
+  fail "$tree1's architect holds a pr-merged notice, want none, since the merge closed $tree1: $(cut -c1-300 <<<"$merged_notice")"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached

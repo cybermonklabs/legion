@@ -70,9 +70,12 @@ var contractComparisonRows = []contractComparisonRow{
 	{row: "The owner's plan", declares: []declarationSite{
 		{"internal/api/plan.go", "OwnerPlanContract"},
 	}},
+	// The release records' strip of the claims' tokens below the stranded token's entry is the
+	// same answer's own row of shapeAnswer as the pause's strip of a resume's `pause`.
 	{row: "The pause and plan refusals", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < pauseContract"),
 		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < OwnerPlanContract"),
+		comparedIn("internal/api/shaping.go", "shapeAnswer", "strip < entryNumber(strandedTokenContract)"),
 	}},
 	{row: "A caller's recorded contract", compares: []comparisonSite{
 		comparedIn("internal/api/shaping.go", "recordedContractAtOrBelow", "n >= DaemonAPIVersion()"),
@@ -165,6 +168,13 @@ var contractComparisonRows = []contractComparisonRow{
 		comparedIn("internal/api/controller.go", "server.controllerSecret", "req.PluginContract != 0"),
 		comparedIn("internal/api/controller.go", "server.registerController", "req.PluginContract != DaemonAPIVersion()"),
 		comparedIn("internal/api/controller.go", "server.refuseIfStaleController", "stored.PluginContract == DaemonAPIVersion()"),
+	}},
+	// A claim of a role the deployment defines that registers from a plugin below
+	// deploymentRolesContract's entry is refused, since the answer's role is read with an
+	// enumeration of Legion's six there (TestEachRoleRowIsTheSixBelowTheEntryAndOpenFromIt).
+	{row: "A deployment role's registration", compares: []comparisonSite{
+		comparedIn("internal/api/claims.go", "server.register",
+			"req.PluginContract < entryNumber(deploymentRolesContract)"),
 	}},
 	{row: "The idle rule", compares: []comparisonSite{
 		comparedIn("internal/workflow/idle.go", "IdleRelease", "c.PluginContract != contract"),

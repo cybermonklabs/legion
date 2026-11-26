@@ -31,6 +31,7 @@ import (
 // to, and only while that pod is the issue Sandbox's controller-owned pod: another role's token, a
 // token of an earlier pod, or a pod the binding does not name controls nothing.
 func TestTheLauncherResolverAcceptsOnlyTheBoundRoleOfTheCurrentPod(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	name := loc.Sandbox.Name
@@ -63,6 +64,7 @@ func TestTheLauncherResolverAcceptsOnlyTheBoundRoleOfTheCurrentPod(t *testing.T)
 // settings (Options.VolumeTrim), and a deployment that configured none hands none: the absence its
 // launcher reads as "run no trimmer" (INFRA-2009).
 func TestAnAcceptedIssueLaunchersResolverHandsItTheDeploymentsTrimmerSettings(t *testing.T) {
+	t.Parallel()
 	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
 		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
 		"a deployment that runs none":      nil,
@@ -99,6 +101,7 @@ func TestAnAcceptedIssueLaunchersResolverHandsItTheDeploymentsTrimmerSettings(t 
 // KernelKills alone, as every launcher is, since its pod runs in a microVM where the project's
 // sandbox is one.
 func TestAnAcceptedLaunchersAcknowledgementCarriesTheGuardsAndTheTrimmersSettingsTogether(t *testing.T) {
+	t.Parallel()
 	guard := shimwire.LauncherMemoryGuard{ActPercent: 70, FloorPercent: 20, WaitSeconds: 9, IntervalMilliseconds: 250}
 	trim := shimwire.LauncherVolumeTrim{HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60}
 	g := newRig(t, nil, withOptions(func(o *Options) { o.MemoryGuard, o.VolumeTrim = &guard, &trim }))
@@ -143,6 +146,7 @@ func conflictSecretUpdates(g *rig, name string, times int32, between func(*corev
 // launch passes, the Secret binds the new pod and keeps the refresher's gh files, and the pod's
 // launcher is accepted.
 func TestABindingWriteRefusedAsAConflictIsRetriedOnceOverAFreshRead(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	secret := roleSecretName(SandboxName(spec.Claim), claim.RoleTester)
@@ -175,6 +179,7 @@ func TestABindingWriteRefusedAsAConflictIsRetriedOnceOverAFreshRead(t *testing.T
 // the Running patch and the wait for the new pod, which a loaded machine spends more than the
 // second failedLaunch gives its own callers (relaunch_test.go).
 func TestABindingWriteConflictedTwiceFailsTheLaunch(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	spec := workerSpec(t)
 	secret := roleSecretName(SandboxName(spec.Claim), claim.RoleTester)
@@ -216,6 +221,7 @@ func TestABindingWriteConflictedTwiceFailsTheLaunch(t *testing.T) {
 // run's own dashed label while its claim tokens use the stripped form the same way, which is
 // this test's scenario (LEGION-462 e2e: scripts/e2e/stage4a-sandbox-runtime.sh's root-ready).
 func TestALauncherHelloIsAcceptedWhenTheConfiguredProjectCarriesCharactersAClaimTokenDrops(t *testing.T) {
+	t.Parallel()
 	dashed := "s4a-dashed-project"
 	normalized, err := claim.ProjectToken(dashed)
 	if err != nil {
@@ -245,6 +251,7 @@ func TestALauncherHelloIsAcceptedWhenTheConfiguredProjectCarriesCharactersAClaim
 // A start of a new generation while the role's launcher still runs an earlier one stops the
 // earlier one first: two generations of one role never run side by side in the issue pod.
 func TestANewGenerationStopsTheEarlierOneFirst(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.spawn(workerSpec(t))
 	spec := workerSpec(t)
@@ -274,6 +281,7 @@ func TestANewGenerationStopsTheEarlierOneFirst(t *testing.T) {
 // launching role's agent is told, in its start command, the default owner's directory as
 // GH_CONFIG_DIR, the volume as LEGION_GH_OWNERS_DIR and the image's real gh as LEGION_GH_PATH.
 func TestEveryRolesPrivateVolumesMountInItsContainerAlone(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
@@ -341,6 +349,7 @@ func TestEveryRolesPrivateVolumesMountInItsContainerAlone(t *testing.T) {
 }
 
 func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))
 	accept := g.r.LauncherResolver()
@@ -367,6 +376,7 @@ func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
 // directory. It travels in Files and not in the spec's secrets, which would point a `<NAME>_FILE`
 // variable at it and be refused for its name besides. An Oh My Pi launch carries no such file.
 func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -390,8 +400,8 @@ func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 	server, named := document.MCPServers[claudelaunch.MCPServer]
 	if !named || server.Command != "/usr/local/bin/bun" ||
 		!slices.Equal(server.Args, []string{"/opt/legion/claude-envoy/dist/envoy-channel.js"}) ||
-		server.Env["CLAUDE_PLUGIN_DATA"] != claudeConfigDir(spec.Role)+"/envoy-plugin-data" {
-		t.Errorf("the MCP document is %q, want the image's bun running the claude-envoy server with its data under %s", raw, claudeConfigDir(spec.Role))
+		server.Env["CLAUDE_PLUGIN_DATA"] != claudeConfigDir(claim.Agent(spec.Role))+"/envoy-plugin-data" {
+		t.Errorf("the MCP document is %q, want the image's bun running the claude-envoy server with its data under %s", raw, claudeConfigDir(claim.Agent(spec.Role)))
 	}
 	if got := slices.Index(start.Argv, "--mcp-config"); got < 0 || start.Argv[got+1] != generationDir(spec.Generation)+"/"+claudeMCPFile {
 		t.Errorf("the start command's argv %q does not read the document where the launcher writes it", start.Argv)
@@ -416,6 +426,7 @@ func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 // role, the prompt's size and the frame's, before anything of the pod is touched: a prompt whose
 // frame is MaxFrameBytes to the byte launches, and one byte more is refused.
 func TestAPromptWhoseStartFrameNoLauncherReadsIsRefused(t *testing.T) {
+	t.Parallel()
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)

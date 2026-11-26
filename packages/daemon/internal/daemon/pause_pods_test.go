@@ -114,10 +114,10 @@ func TestTheStuckWarningReadsTheStuckClockAndPassesOverAPausedProject(t *testing
 	woke := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
 	letOut := woke.Add(30 * time.Minute)
 	for _, issue := range []string{"LEGION-208", "OTHERPROJECT-5"} {
-		recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: issue,
-			Role: string(claim.RoleImplementer), Kind: pods.WakeBackstop, At: woke})
 		token := claim.Token("legion-legion-" + strings.ToLower(issue) + "-implementer")
-		if _, err := w.idleStore.SetResumeClock(ctx, "legion", issue, claim.RoleImplementer, token, letOut); err != nil {
+		recordPodWake(t, w.idleStore, store.PodResume{Project: "legion", Issue: issue,
+			Role: string(claim.RoleImplementer), Claim: string(token), Kind: pods.WakeBackstop, At: woke})
+		if _, err := w.idleStore.SetResumeClock(ctx, "legion", issue, token, letOut); err != nil {
 			t.Fatalf("start the stuck clock of %s at the let-out: %v", issue, err)
 		}
 	}
@@ -397,8 +397,8 @@ func (r *podUpdateRig) wantLaunchKeptForOwed(role, owed claim.Role) {
 }
 
 // dispatch://INFRA-4109 R1 with the project pause carried, as its architect set the rule in
-// review round 3: the round keeps the pod while the pause still owes a launch to any role it
-// stopped on the pod, read for each role from the store (store.PausePodHold.Owed, podHolds.owes),
+// review round 3: the round keeps the pod while the pause still owes a launch to any claim it
+// stopped on the pod, read for each claim from the store (store.PausePodHold.Owed, podHolds.owes),
 // never from the latest let-out of all the roles. The pause stopped the reviewer and the
 // implementer, suspended released, and held the launch of each. Its resume ended the hold a minute
 // before the round opened (recordPause). The tester answered the round, and the daemon then
@@ -861,7 +861,7 @@ func TestAPodlessRoundIsNotKeptForAPauseResumeWhoseRoleCameUp(t *testing.T) {
 		rig.awaitClaim(stopped, "the daemon's suspension to let its process go", func(c supervise.Claim) bool {
 			return c.State == supervise.StateSuspended && c.Locator == nil
 		})
-		if _, _, open, err := rig.st.OpenPodResume(rig.ctx, podUpdateProject, podUpdateIssue, stopped, rig.tokens[stopped]); err != nil || !open {
+		if _, _, open, err := rig.st.OpenPodResume(rig.ctx, podUpdateProject, podUpdateIssue, rig.tokens[stopped]); err != nil || !open {
 			t.Fatalf("the %s's resume is open = %t, %v; want it open: no first turn stamped it and nothing closed it", stopped, open, err)
 		}
 

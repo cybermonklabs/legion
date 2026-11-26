@@ -17,7 +17,8 @@ import (
 // a claim the daemon suspended behind it, a retired claim behind it, and a role the daemon holds
 // no claim row of at all, which was given nothing. The given number is the claim's and not the
 // phases row's: LEGION-30's row names a token of an earlier run, and the number served is the
-// one the claim of that issue and role holds, which is what the admission pass weighs
+// one held by the claim of the worker on that role's step (record.WorkerClaim), here the role's
+// own claim, since no row runs a step of a plan; that is the claim the admission pass weighs
 // (admit's resumeSlottedWorkers).
 //
 // The row of a role the issue has moved past is read by nothing: LEGION-20's planner stands on
@@ -38,27 +39,27 @@ func TestProjectShowsThePhaseEntryAndTheEntryTheRoleWasGiven(t *testing.T) {
 		},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-20": {
-				{Issue: "LEGION-20", Role: claim.RolePlanner, Claim: "legion-20-planner", Entry: 1},
-				{Issue: "LEGION-20", Role: claim.RoleImplementer, Claim: "legion-20-implementer", Entry: 4},
+				{Issue: "LEGION-20", Role: claim.RolePlanner, Claim: realToken("LEGION-20", claim.RolePlanner), Entry: 1},
+				{Issue: "LEGION-20", Role: claim.RoleImplementer, Claim: realToken("LEGION-20", claim.RoleImplementer), Entry: 4},
 			},
 			// The token of a claim an earlier run retired, which this tester's own claim has
 			// replaced: the given number below is read from the claim and not from this token.
 			"LEGION-30": {{Issue: "LEGION-30", Role: claim.RoleTester, Claim: "legion-30-tester-gone", Entry: 3}},
-			"LEGION-40": {{Issue: "LEGION-40", Role: claim.RoleReviewer, Claim: "legion-40-reviewer", Entry: 2}},
+			"LEGION-40": {{Issue: "LEGION-40", Role: claim.RoleReviewer, Claim: realToken("LEGION-40", claim.RoleReviewer), Entry: 2}},
 			"LEGION-50": {{Issue: "LEGION-50", Role: claim.RolePlanner, Entry: 1}},
-			"LEGION-60": {{Issue: "LEGION-60", Role: claim.RoleImplementer, Claim: "legion-60-implementer", Entry: 5}},
+			"LEGION-60": {{Issue: "LEGION-60", Role: claim.RoleImplementer, Claim: realToken("LEGION-60", claim.RoleImplementer), Entry: 5}},
 		},
 	}
 	claims := []supervise.Claim{
-		{Token: "legion-20-planner", Issue: "LEGION-20", Role: claim.RolePlanner, State: supervise.StateIdle,
+		{Token: realToken("LEGION-20", claim.RolePlanner), Issue: "LEGION-20", Role: claim.RolePlanner, State: supervise.StateIdle,
 			Session: "ses_planner_20", GivenEntry: 1},
-		{Token: "legion-20-implementer", Issue: "LEGION-20", Role: claim.RoleImplementer, State: supervise.StateWorking,
+		{Token: realToken("LEGION-20", claim.RoleImplementer), Issue: "LEGION-20", Role: claim.RoleImplementer, State: supervise.StateWorking,
 			Session: "ses_implementer_20", GivenEntry: 4},
-		{Token: "legion-30-tester", Issue: "LEGION-30", Role: claim.RoleTester, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-30", claim.RoleTester), Issue: "LEGION-30", Role: claim.RoleTester, State: supervise.StateSuspended,
 			Session: "ses_tester_30", GivenEntry: 2},
-		{Token: "legion-40-reviewer", Issue: "LEGION-40", Role: claim.RoleReviewer, State: supervise.StateRetired,
+		{Token: realToken("LEGION-40", claim.RoleReviewer), Issue: "LEGION-40", Role: claim.RoleReviewer, State: supervise.StateRetired,
 			Session: "ses_reviewer_40", GivenEntry: 1},
-		{Token: "legion-60-implementer", Issue: "LEGION-60", Role: claim.RoleImplementer, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-60", claim.RoleImplementer), Issue: "LEGION-60", Role: claim.RoleImplementer, State: supervise.StateSuspended,
 			Session: "ses_implementer_60", GivenEntry: 5},
 	}
 
@@ -111,7 +112,7 @@ func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 			Status: "in_progress", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key}
 	}
 	architectRow := func(key string, entry int64) record.PhaseRow {
-		return record.PhaseRow{Issue: key, Role: claim.RoleArchitect, Claim: claim.Token(key + "-architect"),
+		return record.PhaseRow{Issue: key, Role: claim.RoleArchitect, Claim: realToken(key, claim.RoleArchitect),
 			Entry: entry, EntryTask: "Claim " + key + " and write its spec.", EntryRaisedAt: queued}
 	}
 	store := projectionStore{
@@ -124,7 +125,7 @@ func TestProjectShowsARootsArchitectHandshake(t *testing.T) {
 		},
 	}
 	architect := func(key string, given int64, handshake supervise.EntryHandshake, pending *supervise.Delivery) supervise.Claim {
-		return supervise.Claim{Token: claim.Token(key + "-architect"), Issue: key, Tree: key, Role: claim.RoleArchitect,
+		return supervise.Claim{Token: realToken(key, claim.RoleArchitect), Issue: key, Tree: key, Role: claim.RoleArchitect,
 			State: supervise.StateIdle, Session: "ses_architect_" + key, GivenEntry: given, Handshake: handshake, Pending: pending}
 	}
 	taken := supervise.EntryHandshake{Entry: 1, Generation: 2, QueuedAt: queued, ConfirmedAt: confirmed}
@@ -202,11 +203,11 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 			Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: key}
 	}
 	row := func(key string, role claim.Role, entry int64) record.PhaseRow {
-		return record.PhaseRow{Issue: key, Role: role, Claim: claim.Token(key + "-" + string(role)),
+		return record.PhaseRow{Issue: key, Role: role, Claim: realToken(key, role),
 			Entry: entry, EntryTask: "Carry the work of " + key + " on.", EntryRaisedAt: projectedAt}
 	}
 	held := func(key string, role claim.Role, given int64, handshake supervise.EntryHandshake) supervise.Claim {
-		return supervise.Claim{Token: claim.Token(key + "-" + string(role)), Issue: key, Role: role,
+		return supervise.Claim{Token: realToken(key, role), Issue: key, Role: role,
 			State: supervise.StateIdle, Session: "ses_" + key + "_" + string(role), GivenEntry: given, Handshake: handshake}
 	}
 	architects := func(entry int64, generation uint64) supervise.EntryHandshake {
@@ -284,5 +285,59 @@ func TestARootCarriesItsArchitectHandshakeOfThisRunInEveryPhase(t *testing.T) {
 			t.Errorf("%s at %s at run %d is projected with its entry queued %v and confirmed %v, want %v and %v",
 				key, view.Phase, view.Generation, view.EntryQueuedAt, view.EntryConfirmedAt, want.EntryQueuedAt, want.EntryConfirmedAt)
 		}
+	}
+}
+
+// realToken is the token of the claim of role on issue key of the project LEGION, as the record
+// spells it (claim.NewToken): an issue's view reads its entries off the claim of the worker on its
+// role's step (record.WorkerClaim), so a fixture's claim must carry the token that rule gives.
+func realToken(key string, role claim.Role) claim.Token {
+	token, err := claim.NewToken("legion", key, role)
+	if err != nil {
+		panic(err)
+	}
+	return token
+}
+
+// Two claims hold the tester's role of a child at testing: the agent of a key, whose claim the
+// tester's phases row names while it runs the plan's step, and the tester's own claim of an earlier
+// version of the plan, listed after it. The entry given and the handshake the view shows are the
+// step's worker's, whichever claim of the role comes last.
+func TestAnIssueShowsTheEntryItsStepsWorkerWasGiven(t *testing.T) {
+	const project = "LEGION"
+	queued, confirmed := projectedAt.Add(-6*time.Minute), projectedAt.Add(-5*time.Minute)
+	keyed, err := claim.AgentToken("legion", "LEGION-20", "implementer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := projectionStore{
+		issues: []record.Issue{
+			{Key: "LEGION-10", Project: project, Tree: "LEGION-10", Phase: phase.Testing, Generation: 1,
+				Status: "testing", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: "a"},
+			{Key: "LEGION-20", Project: project, Tree: "LEGION-10", Phase: phase.Testing, Generation: 1,
+				Status: "testing", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Rank: "b"},
+		},
+		phases: map[string][]record.PhaseRow{
+			"LEGION-20": {{Issue: "LEGION-20", Role: claim.RoleTester, Claim: keyed, Entry: 5, StepTask: "task-2"}},
+		},
+	}
+	claims := []supervise.Claim{
+		{Token: keyed, Issue: "LEGION-20", Role: claim.RoleTester, State: supervise.StateWorking, Session: "ses_keyed",
+			GivenEntry: 5, Handshake: supervise.EntryHandshake{Entry: 5, Generation: 1, QueuedAt: queued, ConfirmedAt: confirmed}},
+		{Token: realToken("LEGION-20", claim.RoleTester), Issue: "LEGION-20", Role: claim.RoleTester, State: supervise.StateSuspended,
+			Session: "ses_tester", GivenEntry: 2},
+	}
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims, Now: projectedAt})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	view := got.Issues["LEGION-20"]
+	if view.PhaseEntry != 5 || view.GivenEntry != 5 {
+		t.Fatalf("LEGION-20 is projected with entry %d given %d, want entry 5 given 5: the step's worker was given 5, the role's own claim 2",
+			view.PhaseEntry, view.GivenEntry)
+	}
+	if !sameInstant(view.EntryQueuedAt, &queued) || !sameInstant(view.EntryConfirmedAt, &confirmed) {
+		t.Fatalf("LEGION-20 is projected with its entry queued %v and confirmed %v, want the step's worker's %v and %v",
+			view.EntryQueuedAt, view.EntryConfirmedAt, queued, confirmed)
 	}
 }

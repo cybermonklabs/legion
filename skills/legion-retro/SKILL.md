@@ -12,6 +12,9 @@ Run every step, even on a mechanical change.
 
 Retro commits nothing and pushes nothing of its own: the merger merges the branch's head, and a push would put a commit above the head the last worker step passed.
 A merge forward that the daemon's merge-forward message asks of you is no part of retro (`skill://legion-worker/references/conflicts-and-rewrites.md`, *The daemon's ask*).
+Outside a forward merge of the base, no Legion check compares the head that merges with a review's head.
+Where the task has a reviewer step, Legion asks the reviewer to read a merge forward it asked for.
+Whether another push after a review needs a new review is the repository's own rule.
 Never rebase the branch or make another branch or bookmark.
 Retro writes no handoff.
 In the workspace retro itself changes nothing.
@@ -32,19 +35,24 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 1. **Read the evidence**: the issue, `dispatch results --issue <issue>`, the pull request, and the thread of each plan task in `plan.md`.
    Also read the tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) where it has a tester step.
    Read the GitHub review of the last worker step's head where it has a reviewer step.
+   A step of a role of the deployment writes no handoff: `dispatch steps --issue <issue>` shows how its runs ended.
    A pass must stand at the last worker step's head for every `before_merge` check, and the body's `Checks` block carries each.
 
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs (`skill://legion-worker/references/ci-checks.md`).
      A `ci_check` check has no pass standing at that head when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label, whose run is `absent` or `skipped` until the label is on.
      A run that has not concluded, or one GitHub could not be read for, is neither a pass nor a fail yet: never wait for, watch or poll it, as your role prompt says of CI.
-     Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on; when CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
-     Send any other name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong, and the same for a check whose `run` is a whole test suite.
+     Name each run that has not concluded, with the time you read it, in step 5's `Runs still going` line, and go on.
+     When CI settles, the daemon tells the architect and the worker of the phase the issue then stands in.
+     Send any other name that no run answers (`absent`) to the architect as a finding, since the check's words are wrong.
      Neither that run nor that finding moves the issue back.
 
    - A `ci_check` check whose derived result is a fail is the merger's: the change passed every step of its task, and the merger decides at the merge whether the base or the change broke it.
      Name it in your retro message and complete.
 
-   - Any other check with no pass standing, or a check with no `ci_check` whose only evidence is a unit suite:
+   - Send a check whose `run` is a whole test suite to the architect as a finding.
+     The check's words are wrong, so do not send the work back.
+
+   - Any other check with no pass standing:
      `request_backward_move` with `to: implementing` for the implementer's result, or, where the task has a tester step, `to: testing` for the tester's result;
      name the check's block id in the reason.
 
@@ -85,9 +93,6 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    EOF
    ```
 
-   Dispatch records the session that wrote a comment or message, so neither carries the `<!-- legion: … -->` footer.
-   Only a pull-request comment or review needs it.
-
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the architect.
    In the same call, rate the plan the issue ran (its steps and the role that worked each, not the planner's `plan.md`):
    send both `plan_rating` and `plan_reason`, or neither where your tool takes neither.
@@ -99,8 +104,6 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
 ## Before you complete
 
 - `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only` lists nothing.
-
-- Each body line you added or changed that says work was done names work this pull request did.
 
 - The message is posted, and so is step 3's comment where a point qualified.
   The pull request's head is the head you found.

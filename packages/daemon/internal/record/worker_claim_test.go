@@ -73,7 +73,7 @@ func TestAPayloadNamesTheClaimItsProducerHolds(t *testing.T) {
 			roundTrip: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Claim: keyed},
 		},
 		{
-			name:      "a release's workspace save",
+			name:      "a release's workspace check",
 			kind:      OutboxKindIssueBundle,
 			named:     `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester","claim":"` + string(keyed) + `"}`,
 			unnamed:   `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester"}`,

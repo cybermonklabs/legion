@@ -822,6 +822,13 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return nil, false, nil
 		}
 		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, false, nil
+	case "review_requested", "review_request_removed":
+		// A review request opened or withdrawn moves what a `blocked` head's round waits on, and
+		// the read it asks for counts the requests; one with no head names none to read for.
+		if sha == "" {
+			return nil, false, nil
+		}
+		return PullRequestReviewRequests{Repo: repo, Number: number, HeadSHA: sha}, false, nil
 	default:
 		return nil, false, nil
 	}

@@ -41,7 +41,8 @@ func (h *claimFailures) applied() []intake.ClaimFailed {
 // neither the claim nor the deployment's limits: it reads both off the fact alone. So the fact a
 // real machine's failure applies must carry the cause the site that failed the claim chose, the
 // four counters that failure left on it and the three limits those counters run out against, not
-// the sentence alone.
+// the sentence alone, and the token of the claim that failed, since the engine holds the issue
+// only for the failure of the claim that works its role's step (workflow's claimFailed).
 //
 // The failure here is a real one: an agent that registers on a plugin contract this daemon does
 // not speak is relaunched onto the current plugin, and the relaunches run out (supervise's
@@ -99,6 +100,6 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		return len(applied) > 0
 	})
 	if len(applied) != 1 || applied[0] != want {
-		t.Fatalf("the workflow was told %+v, want exactly %+v: the cause, the counters the failure left and the limits they ran out against travel with the sentence", applied, want)
+		t.Fatalf("the workflow was told %+v, want exactly %+v: the claim that failed, the cause, the counters the failure left and the limits they ran out against travel with the sentence", applied, want)
 	}
 }

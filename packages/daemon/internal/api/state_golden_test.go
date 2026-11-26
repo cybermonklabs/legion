@@ -44,17 +44,19 @@ func goldenPath(name string) string {
 	return filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
 }
 
-// settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
-// share: every key the loader models is set but `roles` and `role_types`, which
-// `internal/api/settings_test.go` pins, and every value a credential, its source or its file
-// could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
-// password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
-// provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
-// on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo and a query
-// on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while `pi_legion` pins the
-// version form). Every path the settings emit (`state_dir`, `instructions`, the hook's
-// `prompt_file`) is a fixed absolute literal, so the golden does not churn with the temporary
-// directory the file is written under.
+// settingsFixtureFile is the maximal kubernetes legion.yaml the settings tests share with the two
+// state goldens written from populatedState, state.json (TestStateGolden) and
+// state-narrowed-repositories.json (TestStateNarrowedRepositoriesGolden), so a key added here moves
+// both goldens: every key the loader models is set but `roles` and `role_types`, which
+// `internal/api/settings_test.go` pins, and every value a credential, its source or its
+// file could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a
+// DSN password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key,
+// each provider key's store key, the pod's env values, volume, Secret and ServiceAccount names,
+// userinfo on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo
+// and a query on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while
+// `pi_legion` pins the version form). Every path the settings emit (`state_dir`, `instructions`,
+// `private_name_rules_file`, the hook's `prompt_file`) is a fixed absolute literal, so the goldens
+// do not churn with the temporary directory the file is written under.
 // Hosts are placeholders.
 const settingsFixtureFile = `project: LEGION
 port: 13370
@@ -67,6 +69,7 @@ daemon_url: http://legion-daemon.internal.example:13370
 worker_stream_port: 13371
 provider_keys: {ANTHROPIC_API_KEY: ANTHROPIC_API_KEY_FIXTURE, GEMINI_API_KEY: GEMINI_API_KEY_FIXTURE}
 instructions: /etc/legion/deployment-instructions.md
+private_name_rules_file: /etc/legion/private-names.toml
 worker_boot_timeout_seconds: 180
 worker_boot_registration_deadline_intervals: 2
 worker_rpc_timeout_seconds: 8
@@ -275,21 +278,21 @@ func populatedState(t *testing.T) State {
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
 	// LEGION-219's head has stood two days, and every read since the first after its approval has
-	// answered `blocked`, the last of them a minute before this state.
+	// answered `behind`, the last of them a minute before this state.
 	waitingHeadUpdatedAt := time.Date(2026, 9, 22, 8, 58, 40, 0, time.UTC)
 	stuckHeadUpdatedAt := time.Date(2026, 9, 20, 14, 5, 33, 0, time.UTC)
 	stuckStateReadAt := time.Date(2026, 9, 22, 9, 16, 12, 0, time.UTC)
 	// The movements of those two roots (Issue.MovedAt, which the quiet time reads below). Each
 	// reviewer completed its round after the head it approved went up, and a completion is a
 	// movement (workflow's handoff completion marks the issue). LEGION-218 has had nothing since.
-	// LEGION-219's first read after the approval took its merge state from unread to `blocked`,
+	// LEGION-219's first read after the approval took its merge state from unread to `behind`,
 	// which is news of the pull request and a movement too (workflow's pullRequestNews); every
-	// read after it confirmed `blocked` and moved only the read stamp, and telling the architect
+	// read after it confirmed `behind` and moved only the read stamp, and telling the architect
 	// and the reviewer of the stuck round writes a notice and the told marks, neither of which
 	// is a movement.
 	waitingApprovedAt := time.Date(2026, 9, 22, 9, 7, 21, 0, time.UTC)
 	stuckApprovedAt := time.Date(2026, 9, 20, 16, 42, 10, 0, time.UTC)
-	stuckFirstBlockedAt := time.Date(2026, 9, 20, 16, 42, 58, 0, time.UTC)
+	stuckFirstBehindAt := time.Date(2026, 9, 20, 16, 42, 58, 0, time.UTC)
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -389,6 +392,7 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Architect: &ClaimView{
+					Token:   "legion-legion-legion-208-architect",
 					Session: "ses_architect_208",
 					State:   "ready",
 					Locator: &runtime.Locator{
@@ -526,6 +530,12 @@ func populatedState(t *testing.T) State {
 				GivenEntry:       4,
 				EntryQueuedAt:    &entryQueued,
 				EntryConfirmedAt: &entryConfirmed,
+				// The reviewer's own claim of an earlier version of the plan, beside the claim
+				// of the agent of a key that works the reviewer's step: a claim `workers` does
+				// not show, listed with its role and found by its token (the stranded token's
+				// entry).
+				OtherClaims: []OtherClaimView{{Role: claim.RoleReviewer,
+					Claim: ClaimView{Token: "legion-legion-legion-208-reviewer", Session: "ses_reviewer_208_v1", State: "suspended"}}},
 				PullRequest: &PullRequestView{
 					Repo:   "acme/widgets",
 					Number: 1247,
@@ -953,8 +963,9 @@ func populatedState(t *testing.T) State {
 			// (classify.RoundWaitsOnMergeState, the one rule the engine reads to decide whether to
 			// read GitHub for a round), so each carries a `mergeWait`. They are the two readings
 			// the object was added for: a round GitHub has answered nothing about yet, and a
-			// round GitHub has held on `blocked` for days, whose architect and reviewer have been
-			// told of it.
+			// round GitHub has held `behind` its base for days, whose architect and reviewer have
+			// been told of it. A head whose `blocked` answer ends the round carries none
+			// (classify.MergeOutcomeOf).
 			"LEGION-218": {
 				Key:           "LEGION-218",
 				Generation:    1,
@@ -1037,25 +1048,25 @@ func populatedState(t *testing.T) State {
 					Number:         642,
 					Head:           "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 					State:          "open",
-					MergeState:     "blocked",
+					MergeState:     "behind",
 					ReviewDecision: "approved",
 				},
-				// The stuck round: the approval stands on a head GitHub has held on `blocked` since
-				// the first read after the approval, two days ago, and again at the read a minute
-				// before this state; the head itself has stood since the push before that approval,
-				// and two of the fence's runs are stamped with the head, so the wait is not a head
-				// GitHub has seen no run for. The told marks name the head and the state the
+				// The stuck round: the approval stands on a head GitHub has held `behind` its base
+				// since the first read after the approval, two days ago, and again at the read a
+				// minute before this state; the head itself has stood since the push before that
+				// approval, and two of the fence's runs are stamped with the head, so the wait is not
+				// a head GitHub has seen no run for. The told marks name the head and the state the
 				// architect and the reviewer were told of (workflow's tellStuckMergeState), which
 				// is what tells this round from LEGION-218's: both wait on GitHub's next answer
 				// about the same head, and only this one has been reported.
 				MergeWait: &MergeWaitView{
 					WaitsOn:       "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-					MergeState:    "blocked",
+					MergeState:    "behind",
 					StateReadAt:   &stuckStateReadAt,
 					HeadUpdatedAt: &stuckHeadUpdatedAt,
 					CheckRuns:     2,
 					ToldHead:      "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
-					ToldState:     "blocked",
+					ToldState:     "behind",
 				},
 				DesignGate: &GateView{
 					ArtifactID:      "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
@@ -1307,7 +1318,7 @@ func populatedState(t *testing.T) State {
 	// reading, so the fixture showed a pair no daemon would serve, which is why the movement of
 	// that tree is the step record itself. The other trees hold no claim with a step, so each of
 	// them moves at a time of its own. Each reviewing root moved last at the newest of its own
-	// movements named above: LEGION-218 at its approval, and LEGION-219 at its first `blocked`
+	// movements named above: LEGION-218 at its approval, and LEGION-219 at its first `behind`
 	// read. LEGION-219's head was read again a minute before this state, and that read only
 	// confirmed what the record held, which moves no tree (workflow's pullRequestNews), so its
 	// tree has been still for more than a day although its read stamp is a minute old.
@@ -1320,7 +1331,7 @@ func populatedState(t *testing.T) State {
 		"LEGION-211": time.Date(2026, 9, 21, 9, 18, 0, 0, time.UTC),
 		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
 		"LEGION-218": waitingApprovedAt,
-		"LEGION-219": newest(stuckApprovedAt, stuckFirstBlockedAt),
+		"LEGION-219": newest(stuckApprovedAt, stuckFirstBehindAt),
 		"LEGION-240": time.Date(2026, 9, 22, 8, 52, 16, 0, time.UTC),
 		"LEGION-241": time.Date(2026, 9, 22, 9, 4, 39, 0, time.UTC),
 	}
@@ -1687,13 +1698,13 @@ func approvedAt(version *int) string {
 // intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
 // podHoldContract's row does too, and every other key as a caller at shapedAnswersContract is
 // served it, since no other row of stateNarrowings stands between shapedAnswersContract and
-// repositoriesLiveContract. The row of deploymentRolesContract, above them all, also holds
-// back the roles of the deployment. shapedAnswersContract's row and pauseContract's stand at or
-// below the contract it is served at, which is why the golden carries `lowestPluginContract`,
-// each claim view's `updateState` and `paused`. The mark's `daemon` names this daemon's own
-// contract, which an entry moves, so it is taken out before the golden is compared or written
-// and held to that number here, as TestStateGolden takes out its marks; the `caller` is 199,
-// which no entry moves, and stays.
+// repositoriesLiveContract. The row of deploymentRolesContract, above them all, also holds back the
+// roles of the deployment, which this caller is served without too. shapedAnswersContract's row
+// and pauseContract's stand at or below the contract it is served at, which is why the golden
+// carries `lowestPluginContract`, each claim view's `updateState` and `paused`. The mark's
+// `daemon` names this daemon's own contract, which an entry moves, so it is taken out before the
+// golden is compared or written and held to that number here, as TestStateGolden takes out its
+// marks; the `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
@@ -2166,13 +2177,14 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 // project's records — so the rows carry only what is served.
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
-//   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace the check read clean (recordPodRelease
-//     counts only the claims this release's own stops suspended, and the store reads an empty
-//     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
-//     rather than absent;
-//   - the resumes are a wake whose pod was Ready and whose role took its first turn, which is
-//     the row that fills both optional stamps, and a wake of a pod with no release row recorded
+//   - the releases are a release that suspended two claims of two roles, named in `claims`, and
+//     saved a bundle, and one whose stops suspended no claim and whose workspace the check read
+//     clean (recordPodRelease counts only the claims this release's own stops suspended, and the
+//     store reads an empty `roles` column back as none): `roles` is `[]` and never `null`,
+//     `claims` is absent, and `bundleBytes` is 0 rather than absent;
+//   - the resumes are a wake whose pod was Ready and whose claim took its first turn, which is
+//     the row that fills both optional stamps and names the claim it woke in `claim`, here the
+//     agent of a key on the implementer's step; a wake of a pod with no release row recorded
 //     for it (`release` is 0) that went ten minutes with no turn, so it is `stuck` and its
 //     `firstTurnAt` is left out until something observes it; and a wake a project pause held
 //     (decision 15 of dispatch://INFRA-3759), which pairs with no release and names its pause in
@@ -2185,11 +2197,12 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
 		Releases: []store.PodRelease{
 			{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
-				At: released, BundleBytes: 4096},
+				Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"},
+				At:     released, BundleBytes: 4096},
 			{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 		},
 		Resumes: []store.PodResume{
-			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Kind: "delivery",
+			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Claim: "legion-legion-legion-208-tester", Kind: "delivery",
 				At: released.Add(30 * time.Minute), PodReadyAt: released.Add(31 * time.Minute),
 				FirstTurnAt: released.Add(32 * time.Minute)},
 			{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",

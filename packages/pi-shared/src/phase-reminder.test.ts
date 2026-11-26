@@ -662,9 +662,9 @@ test("no reminder is sent once the daemon has failed this role's claim", async (
   ]);
 });
 
-// Contract 258: a role of the deployment works the phase `step`, which no role's phase names, so
-// the record check reads the issue's `stepRole`: the checker is reminded while its own step runs,
-// and not while the step of another role of the deployment runs.
+// A role of the deployment works the phase `step`, which no role's phase names, so the record check
+// reads the issue's `stepRole`: the checker is reminded while its own step runs, and not while the
+// step of another role of the deployment runs.
 test("a role of the deployment is reminded at step while the issue's stepRole is its own", async () => {
   const checker = {
     ...implementer,
@@ -702,6 +702,52 @@ test("a role of the deployment is reminded at step while the issue's stepRole is
       expect(continuation, `stepRole ${stepRole}`).toBeUndefined();
       expect(debugged).toEqual([
         "legion: this role no longer works this phase; no reminder is sent",
+      ]);
+    }
+  }
+});
+
+// The stranded token's contract entry: two claims of one issue can hold one role — the agent
+// implementer's claim on the tester's step, beside the tester's own claim of an earlier version of
+// the plan — and only the worker on the role's step, the claim `workers.<role>.claim.token` names,
+// works the phase. The other claim of the role is not reminded, so it neither nudges a phase it
+// does not work nor reaches the architect as that role's worker. A record that names no token (a
+// daemon below that entry) keeps the role's rule.
+test("only the worker on its role's step is reminded, not another claim of that role", async () => {
+  const worker = "legion-legion-legion-208-implementer";
+  const own = "legion-legion-legion-208-tester";
+  for (const [claimToken, token, reminds] of [
+    [worker, worker, true],
+    [own, worker, false],
+    [own, undefined, true],
+  ] as const) {
+    const debugged: string[] = [];
+    // Only the fields the record check reads, cast as `claimFailed` above is.
+    const record = {
+      phase: "testing",
+      workers: { tester: { claim: { state: "working", ...(token ? { token } : {}) } } },
+    } as unknown as LegionIssue;
+    const reminder = createPhaseReminder({
+      sendReminder: () => {},
+      armTimer: () => {},
+      saveEntry: () => {},
+      claim: () => ({ ...implementer, role: "tester", claimToken }),
+      readRecord: async () => record,
+      publisher: async () => undefined,
+      project: "legion",
+      limits: DEFAULT_STALL_LIMITS,
+      log: { debug: (message) => debugged.push(message), warn: () => {} },
+    });
+    reminder.apply({ kind: "assignment" });
+    const continuation = await reminder.settle(said("Tested."));
+    const name = `claim ${claimToken}, worker ${token ?? "unnamed"}`;
+    if (reminds) {
+      expect(continuation, name).toBeString();
+      expect(debugged, name).toEqual([]);
+    } else {
+      expect(continuation, name).toBeUndefined();
+      expect(debugged, name).toEqual([
+        "legion: another claim works this role's step; no reminder is sent",
       ]);
     }
   }

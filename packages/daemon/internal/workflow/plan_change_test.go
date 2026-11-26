@@ -607,7 +607,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 			AgentKey: step.Key, Type: builtinDeployment.Roles[step.Role].Type}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, steps)
+		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, record.NameAgents(nil, steps, nil))
 	})
 }
 
@@ -685,8 +685,8 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		}
 		row := roleRowOf(t, pool, engine, key, claim.RoleImplementer)
 		const told = "Reason: the owner gave version 1 of the plan while task default was stopped."
-		if row.Entry != 1 || !strings.Contains(row.EntryTask, told) {
-			t.Fatalf("the implementer's row has entry %d and task %q, want entry 1, raised, whose task holds %q", row.Entry, row.EntryTask, told)
+		if previous := topEntryOfOthers(t, pool, key, claim.RoleImplementer); row.Entry <= previous || !strings.Contains(row.EntryTask, told) {
+			t.Fatalf("the implementer's row has entry %d and task %q, want above every other row's entry %d, with its task holding %q", row.Entry, row.EntryTask, previous, told)
 		}
 		if row.StepTask != "a" || row.StepPlace != 1 {
 			t.Fatalf("the implementer's row names step %d of task %q, want step 1 of task a, the step its start raised it for", row.StepPlace, row.StepTask)

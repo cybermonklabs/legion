@@ -547,11 +547,11 @@ func (ControllerTick) namedIssue() (string, bool) { return "", false }
 // (admit.Admission.convergeEntries).
 //
 // It carries nothing, because the difference it closes is one the record already holds and the
-// handler reads the whole project. What it is for is the running: an admission pass runs on a
-// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
-// the outbox fenced out — would otherwise leave a role behind its entry until something else
-// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
-// record a transition is in the middle of writing.
+// handler reads the whole project. What it is for is the running: an admission pass runs on the
+// facts its rule names (admit.Admission.Apply), and a daemon with none arriving — a quiet
+// project, a transition whose own start row the outbox fenced out — would otherwise leave a role
+// behind its entry until something else happened. Going through ApplyFact takes the one lock
+// every fact takes, so the sweep reads no record a transition is in the middle of writing.
 type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
@@ -559,14 +559,14 @@ func (EntrySweep) namedIssue() (string, bool) { return "", false }
 // ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
 // the resume has committed and never decoded from an event (internal/daemon's
 // projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
-// pass: the pause held every promotion, and the pass runs now rather than at the next fact or
-// tick. Admission promotes on it as on every fact that is not a Dispatch issue
-// (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
-// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass's own
-// release leaves free wakes the controller as any fact's pass does
-// (admit.Admission.wakeForFreeSlot), and nothing else. The rows a re-admission freed while the
-// pause held (admit's releaseTreeSlots) wake nothing; the resume's notice tells the controller
-// of that capacity.
+// pass: the pause held every promotion, and the pass runs now rather than at the next pass the
+// rule of admit.Admission.Apply runs, which names this fact among those that run it whatever they
+// wrote; the workflow engine and the blockers mirror do nothing for it. Unlike the controller's
+// tick, which queues a tick notice, it queues none: a slot its pass's own release leaves free
+// wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and nothing
+// else. The rows a re-admission freed while the pause held (admit's releaseTreeSlots) wake
+// nothing; the resume's notice tells the controller of that capacity. Where the pass fails, the
+// next pass the rule runs promotes the line, and any other fact that writes nothing runs none.
 //
 // It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
 // is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
@@ -602,8 +602,9 @@ type PullRequestOpened struct {
 func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 
 // OpenedRead is the PullRequestOpened a read of GitHub that found pull open on branch of repo
-// stands for, as its webhook would have carried it - a reopen when recorded is the same pull
-// request - and the event id, under source "github", it is applied under: the project, the
+// stands for, as its webhook would have carried it - its base, which the reads of the merge state
+// follow on before any of them has answered, and a reopen when recorded is the same pull request -
+// and the event id, under source "github", it is applied under: the project, the
 // repository and number, what the read observed, the head and GitHub's updated_at, and what the
 // workflow decides an opened by beside it, the issue's generation and its pull request record as
 // the read found it (nil for none: its number, state and clock). The id holds no read time and no
@@ -613,7 +614,7 @@ func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
 // or a record that changed since (a new generation removes a closed one the opened was declined
 // against), makes a new one.
 func OpenedRead(project, repo, branch string, pull githubrest.PullRequest, generation uint64, recorded *record.PullRequest) (PullRequestOpened, string) {
-	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(), Body: pull.Body,
+	fact := PullRequestOpened{Repo: repo, Number: pull.Number, Branch: branch, Base: pull.Base.Ref, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(), Body: pull.Body,
 		URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt, Reopened: recorded != nil && recorded.Number == pull.Number}
 	against := "none"
 	if recorded != nil {
@@ -841,12 +842,20 @@ func (PullRequestChecks) namedIssue() (string, bool) { return "", false }
 // GitHub is still computing it, record.MergeabilityMergeable or record.MergeabilityConflicting
 // once it has. MergeState is
 // GitHub's own merge state for the head from the same answer's `mergeable_state`, and it is what
-// an approval standing on the head waits for: a state the issue may advance on
-// (record.MergeState.Mergeable) ends the round, and the issue moves on to its task's next step
-// (accepting, in the default steps); any other state leaves the
-// approval standing where it is and tells the architect and the reviewer so (workflow's
-// reviewRound). It tells a head GitHub holds on a check or a review the repository requires from
-// one GitHub would merge now, which Mergeable cannot.
+// an approval standing on the head waits for; what each state comes to for the round is
+// classify.MergeOutcomeOf, the one place the rule is written. It tells a head GitHub holds on a
+// check that is still running, a review, or a rule about the reader from one GitHub would merge
+// now, which Mergeable cannot.
+//
+// ReviewsRequested and HeadChecks are the rest of the answer MergeOutcomeOf reads for a `blocked`
+// head, written beside MergeState (record.PullRequest.ReviewsRequested and HeadChecks): how many
+// review requests GitHub holds open, people, Apps and teams alike, and whether a check or a
+// commit status of the head was still running. A REST read counts `requested_reviewers` and
+// `requested_teams` and reads the head's `statusCheckRollup` from GitHub's GraphQL API when it
+// answers `blocked` and MERGEABLE; a base's GraphQL batch reads `reviewRequests { totalCount }`
+// and the same rollup in its one query. A nil count and record.HeadChecksUnread are an answer that
+// gave neither, which the round does not end on. A fact minted by anything that did not read
+// GitHub states them as it states MergeState.
 //
 // HeadSHA is the head GitHub answered both of them for, from the same answer's `head.sha`. Every
 // read fills it, and the engine records the answer only while the record still stands at that
@@ -880,11 +889,41 @@ type PullRequestMergeability struct {
 	HeadSHA    string
 	Mergeable  record.Mergeability
 	MergeState record.MergeState
-	ReadAt     time.Time
-	Rules      *record.BaseRules
+	// ReviewsRequested and HeadChecks are the rest of a `blocked` answer (above).
+	ReviewsRequested *int
+	HeadChecks       record.HeadChecks
+	ReadAt           time.Time
+	Rules            *record.BaseRules
 }
 
 func (PullRequestMergeability) namedIssue() (string, bool) { return "", false }
+
+// PullRequestMergeStateUnread is the daemon's own fact that a read of GitHub's merge state for the
+// pull request at head HeadSHA failed - GitHub refused it, timed out or answered nothing - while
+// the record holds a `blocked` answer of that head with `mergeable` null. It carries no answer:
+// it asks the review round again at the moment it is applied (workflow's mergeStateUnread), since
+// a persistent null is told once classify.NullMergeableTellAfter has passed since its first read,
+// whatever the count of reads, and when every read fails no answer comes to ask the round.
+type PullRequestMergeStateUnread struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestMergeStateUnread) namedIssue() (string, bool) { return "", false }
+
+// PullRequestReviewRequests is GitHub's pull_request action `review_requested` or
+// `review_request_removed`: the review requests GitHub holds open on the pull request changed, at
+// head HeadSHA. It carries no count: the read it asks for counts them (workflow's askMergeState),
+// since a request opened or withdrawn is what moves a `blocked` head's round between waiting for
+// a review and ending (classify.MergeOutcomeOf), and GitHub sends no other event of it.
+type PullRequestReviewRequests struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestReviewRequests) namedIssue() (string, bool) { return "", false }
 
 // PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
 // the head the pull request merged at, "" when the observation names none.
@@ -1071,8 +1110,10 @@ func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
 // architect's request from accepting (Requester claim.RoleArchitect, api's phaseBackward): the
 // claim of the architect, the issue's generation and the run of the step the issue stood in
 // (record.Store.OpenStep) as its route read them, which the workflow judges again under the fact
-// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries none of the three, and
-// carries PhaseEntry instead, which the architect's move does not: each check reads its own field.
+// lock (ArchitectRequest, EnteredRequest). A phase worker's move carries By alone of the three,
+// the claim that asked it, which the workflow holds to the claim the role's row names on its step
+// (two claims of one issue can hold one role); it carries PhaseEntry too, which the architect's
+// move does not: each check reads its own field.
 type BackwardMove struct {
 	Issue      string
 	Requester  claim.Role
@@ -1249,9 +1290,9 @@ func (f GateRegistered) namedIssue() (string, bool) { return f.Issue, true }
 // issue and its first step took a plan. It stores the plan (workflow's planGiven) where its task
 // has not started, and applies the rules of a later version. It answers PLAN_REFUSED
 // (RunningTaskChanged; StartedTaskBaseMoved; StartedBeforePlans for an issue that ran before
-// Legion took plans; or AgentUnnamed for a version in which a fresh agent would need the name of
-// its role that another agent of the plan holds from an earlier version, refused before anything
-// is written),
+// Legion took plans; or AgentUnnamed for a version in which an agent would need a name, its key's
+// or its role's, that another agent of the plan holds from an earlier version, refused before
+// anything is written),
 // PLAN_VERSION_OLD, PLAN_DOCUMENT_CHANGED, TASK_DONE (FinishedTask, ChangeOfTask),
 // PLAN_STALE_GENERATION, ISSUE_OUTSIDE_TREE, PLAN_NOT_TAKEN (an issue whose experiment's group
 // takes no plan from its owner) and TREE_LINGERING, and it leaves each of those refusals unspent
@@ -1473,9 +1514,13 @@ func (f CloseRoot) Message() string {
 type ClaimFailed struct {
 	Issue string
 	Role  claim.Role
-	// Claim is the claim that failed, whose name is its agent's (claim.Token.Cut): of an issue
-	// whose plan holds several tasks, the step that agent runs is the one the failure holds
-	// (workflow's viewOfAgent). It is "" for a fact built without it, which names no agent.
+	// Claim is the token of the claim that failed, whose name is its agent's (claim.Token.Cut). Two
+	// claims of one issue can hold one role — the agent of a key on a step of another role, beside
+	// that role's own claim of an earlier version of the plan — so the role does not name the
+	// claim: only the failure of the claim that works the role's step holds the issue, and only the
+	// failure of a look's claim ends that look (workflow's claimFailed). Of an issue whose plan
+	// holds several tasks, the step that agent runs is the one the failure holds. It is "" on a fact
+	// from a daemon before the claim was carried, which keeps the role's rule.
 	Claim        claim.Token
 	Reason       string
 	Death        string
@@ -1529,6 +1574,47 @@ type SessionStoreFault struct {
 }
 
 func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
+
+// PodRefusedLaunch is a launch of a claim refused because the issue's pod cannot run it until that
+// pod's update round or its release replaces it (runtime.ErrAwaitsPodUpdate): the claim is
+// suspended, charged nothing, and runs nothing while that pod stands (supervise's podRefused). It
+// is told on the issue and to the controller at the first refusal and hourly while the pod
+// stands, and the workflow queues a start of the claim wherever its outbox holds none that brings
+// the claim back, so that whatever replaces the pod resumes it (workflow's podRefusedLaunch).
+type PodRefusedLaunch struct {
+	Issue  string
+	Role   claim.Role
+	Claim  claim.Token
+	Pod    string
+	Detail string
+	// Generation is the generation of the claim whose launch the pod refused, as the machine held
+	// it at the refusal: a claim the store holds at a later generation has launched since, and the
+	// fact applies nothing (workflow's refusalStands).
+	Generation uint64
+}
+
+func (f PodRefusedLaunch) namedIssue() (string, bool) { return f.Issue, true }
+
+// RefusedStartEnded is a start row of a claim that the outbox finished while the claim's last launch
+// stands refused by its issue's pod (supervise's Machine.RefusedPod), and that was not queued for
+// that same refusal (record.SuperviseRequest.RefusedPod): the refusal's own fact (PodRefusedLaunch)
+// may have read the row as the start that brings the claim back, so the workflow reads the claim's
+// queued starts again, now the row is gone, and queues its start wherever none stands (workflow's
+// refusedStartEnded). It tells nobody: the refusal did.
+type RefusedStartEnded struct {
+	Issue string
+	Role  claim.Role
+	Claim claim.Token
+	// Pod is the uid of the issue pod that refused the claim's last launch when the row ended
+	// (supervise.Machine.RefusedPod), which the start this fact queues is marked with
+	// (record.SuperviseRequest.RefusedPod).
+	Pod string
+	// Generation is the claim's generation when the row ended, which the fact is judged by as the
+	// refusal's report is (PodRefusedLaunch.Generation).
+	Generation uint64
+}
+
+func (f RefusedStartEnded) namedIssue() (string, bool) { return f.Issue, true }
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
@@ -1630,9 +1716,11 @@ type ClaimReady struct {
 func (f ClaimReady) namedIssue() (string, bool) { return f.Issue, true }
 
 // TaskConfirmed is a role's agent taking the work the daemon gave it: a turn of its pending
-// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission
-// takes it as every other fact, so a root whose wait was held because its architect had not yet
-// taken its task is decided here rather than at the next tick (workflow's ReconcileAwaiting).
+// delivery started (supervise's confirmCarrying). The workflow changes nothing on it; admission's
+// pass rule (admit.Admission.Apply) runs the pass on it whatever it wrote, since it stands for the
+// confirmation the supervisor wrote outside the fact, so a root whose wait was held because its
+// architect had not yet taken its task is decided here rather than at the next tick (workflow's
+// ReconcileAwaiting).
 type TaskConfirmed struct {
 	Issue      string
 	Role       claim.Role
@@ -1801,10 +1889,9 @@ const (
 // at its due_at): the claim it was armed for (Claim), the worker of the open phase at its release,
 // is woken where it stands released (ReleasedClaimByToken), whatever else did or did not happen
 // since the release, and a backstop of an issue the record no longer holds does nothing. Role is
-// the role that claim held then; a backstop the release before armed names no claim, and wakes the
-// claim of the worker on Role's step. It is never decoded from an event — the daemon's own pass
-// reads the due rows and applies one fact per row, under the row's id, so a backstop that came due
-// while the daemon was down fires once after it starts.
+// the role that claim held then. It is never decoded from an event — the daemon's own pass reads
+// the due rows and applies one fact per row, under the row's id, so a backstop that came due while
+// the daemon was down fires once after it starts.
 type PodBackstopDue struct {
 	ID    int64
 	Issue string
@@ -1818,7 +1905,10 @@ func (f PodBackstopDue) namedIssue() (string, bool) { return f.Issue, true }
 // between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
 // and its session's report explaining none of that quiet. The sweep applies it from the live
 // claims, never from an event, and its handler decides in the fact's own transaction
-// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is). Claim
+// is the claim the sweep read: two claims of one issue can hold one role, and the handler judges
+// only the one that works the role's step, so a fact of the other is passed over; "" on a fact
+// from before the claim was carried, which the handler reads as the step's worker's.
 type WorkerSilent struct {
 	Issue      string
 	Role       claim.Role
@@ -1834,7 +1924,8 @@ func (f WorkerSilent) namedIssue() (string, bool) { return f.Issue, true }
 // on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
 // Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
 // an event, and its handler tells the architect and sends nothing (internal/daemon's
-// workerBackgroundEventID says what its id is).
+// workerBackgroundEventID says what its id is). Claim is the claim the sweep read, as
+// WorkerSilent's is.
 type WorkerBackgroundStalled struct {
 	Issue      string
 	Role       claim.Role
@@ -1935,13 +2026,19 @@ func StartedTaskBaseMoved(task, base, next string) plan.Refusal {
 		"task %s has started on the base %s, and this version would base it on %s: stop it with stop_task before you change its base.", task, base, next)}
 }
 
-// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task,
-// a fresh agent of its own, would take name, its role's, which another agent of the plan holds from
-// an earlier version (record.NameAgents). This release runs one agent of each role for an issue,
-// so such a version is refused as a plan before anything is written, never as an error of the write.
-func AgentUnnamed(task string, place int, name string) plan.Refusal {
-	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and another agent of this plan holds the name %s of its role "+
-		"from an earlier version; this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, name)}
+// AgentUnnamed is the reason a version of the plan is refused when the agent of step place of task
+// would take name — the name its key held in an earlier version, or its role's — which holder holds:
+// the key of another agent of the plan that holds the name, or the key whose rows held it in an
+// earlier version, "" for an agent with no key (record.NameAgents, record.UnnamedAgents). A name a
+// key held is that key's alone, and this release runs one agent of each role for an issue, so such
+// a version is refused as a plan before anything is written, never as an error of the write.
+func AgentUnnamed(task string, place int, name, holder string) plan.Refusal {
+	held := "another agent of this plan, with no key,"
+	if holder != "" {
+		held = "key " + holder + ", from this version or an earlier one,"
+	}
+	return plan.Refusal{Task: task, Reason: fmt.Sprintf("step %d of task %s needs an agent of its own, and %s holds the name %s, which this step's agent would take; "+
+		"a name a key held is that key's alone, and this release runs one agent of each role for an issue. This release of Legion does not carry it out yet.", place, task, held, name)}
 }
 
 // PlanVersionOld is the 409 PLAN_VERSION_OLD refusal of version given of issue's plan document,
@@ -2387,11 +2484,17 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 	return clause
 }
 
+// StaleEntryClause names a report's receiver and its served and current issue-wide entry identities.
+func StaleEntryClause(issue string, role claim.Role, p phase.Phase, current, serving int64, report string) string {
+	return fmt.Sprintf("%s handed the %s phase %s again: this %s is of entry %d, not the phase's current entry %d",
+		issue, role, p, report, serving, current)
+}
+
 // StaleEntry is the 409 HANDOFF_STALE_ENTRY refusal of a completion of a phase entry the issue's
 // phase has moved past: the role was given this phase's work again — the issue left the phase and
 // came back, or the phase ended under the worker and another role's round sent it here — and the
-// turn reporting this completion is on the earlier entry, current - serving entries behind. It
-// names the queued task of the entry the phase hands the role now when the claim already holds it
+// turn reporting this completion is on the earlier entry.
+// It names the queued task of the entry the phase hands the role now when the claim already holds it
 // (pending, which only the completion route reads; the workflow passes nil), as api's
 // staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
 // itself: the claim is behind the entry its phases row names, which is what the admission pass
@@ -2408,8 +2511,7 @@ func BehindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 //
 // clause says what refused this completion (BehindEntryClause).
 func StaleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) *Refusal {
-	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on, and %s; nothing was recorded",
-		issue, role, p, serving, current-serving, current, clause)
+	stale := StaleEntryClause(issue, role, p, current, serving, "completion") + ", and " + clause + "; nothing was recorded"
 	if pending != nil && pending.Entry == current {
 		stale = fmt.Sprintf("%s, and your turn began before the daemon's task for entry %d (%s) reached this session", stale, current, pending.ID)
 	}

@@ -88,15 +88,16 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.DispatchApprovalMoved{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.ProjectResumed{},
 		intake.PullRequestOpened{}, intake.PullRequestSynchronized{}, intake.PullRequestReview{}, intake.PullRequestChecks{},
 		intake.PullRequestMergeability{}, intake.PullRequestMerged{}, intake.PullRequestClosed{}, intake.PullRequestDequeued{},
+		intake.PullRequestReviewRequests{}, intake.PullRequestMergeStateUnread{},
 		intake.MergeQueueReadDone{}, intake.ConflictConfirmDone{}, intake.PullRequestMissing{}, intake.Push{}, intake.BasePush{},
 		intake.HandoffComplete{}, intake.BackwardMove{}, intake.RetryOrEscalate{}, intake.RestartPhase{}, intake.SignOff{},
 		intake.GateRegistered{}, intake.PlanGiven{}, intake.TaskStopped{}, intake.CloseRoot{}, intake.ClaimFailed{},
-		intake.SessionLost{}, intake.SessionStoreFault{},
+		intake.SessionLost{}, intake.SessionStoreFault{}, intake.RefusedStartEnded{},
 		intake.MemoryGuardKill{}, intake.ControllerMemoryGuardKill{}, intake.VolumeNearFull{}, intake.ClaimReady{}, intake.TaskConfirmed{},
 		intake.GateRequestFound{},
 		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.DaemonBooted{}, intake.CutoverMergerRepair{}, intake.CheckReport{},
 		intake.CheckWakeDue{}, intake.CheckLookEnded{}, intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
-		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.TaskJoined{},
+		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.TaskJoined{}, intake.PodRefusedLaunch{},
 	} {
 		rows = append(rows, row{fact: fact})
 	}

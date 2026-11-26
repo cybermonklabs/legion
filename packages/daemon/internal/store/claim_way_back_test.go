@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,7 +18,7 @@ import (
 
 // planStepAgentMigrationFile is the migration whose header carries the way back of the release that
 // names each step's agent.
-const planStepAgentMigrationFile = "20261117213545_plan_step_agent.up.sql"
+const planStepAgentMigrationFile = "20261124213820_plan_step_agent.up.sql"
 
 // headerWayBackOf is the transaction the header of the embedded migration file carries between its
 // psql heredoc and the heredoc's terminator, with the comment marker and the opener's indent taken
@@ -62,14 +63,20 @@ func headerWayBackOf(t *testing.T, file string) string {
 	return ""
 }
 
+// addedFields are the fields this release added to the outbox payloads the release before decodes:
+// the claim a row acts on (record.SuperviseRequest.Claim and its kin), the pod whose refusal queued
+// a start (record.SuperviseRequest.RefusedPod) and the session a start leaves
+// (record.SuperviseRequest.LeaveSession).
+var addedFields = []string{"Claim", "RefusedPod", "LeaveSession"}
+
 // decodeAsTheReleaseBefore decodes payload as the release before this one decodes a row of its
 // kind: strictly (record.DecodeOutboxPayload's DisallowUnknownFields), into the payload's type as
-// it stood then, which is shape's type without the field this release added to it, Claim.
+// it stood then, which is shape's type without the fields this release added to it (addedFields).
 func decodeAsTheReleaseBefore(payload []byte, shape any) error {
 	of := reflect.TypeOf(shape)
 	var fields []reflect.StructField
 	for i := range of.NumField() {
-		if field := of.Field(i); field.Name != "Claim" {
+		if field := of.Field(i); !slices.Contains(addedFields, field.Name) {
 			fields = append(fields, field)
 		}
 	}
@@ -151,5 +158,63 @@ func TestTheWayBackTakesTheClaimOffEachRowTheReleaseBeforeDecodes(t *testing.T) 
 		if named := reflect.ValueOf(decoded).FieldByName("Claim").String(); named != "" {
 			t.Fatalf("this release reads the %s row after the way back as naming %q, want no claim", row.kind, named)
 		}
+	}
+}
+
+// A start a refused launch queues names the pod whose refusal queued it
+// (record.SuperviseRequest.RefusedPod), and a start of a step whose agent took a name a key held
+// names the session to leave (record.SuperviseRequest.LeaveSession): keys the release before does
+// not know and decodes strictly, so such a start left queued at a rollback would fail its decode at
+// every attempt. The way back the migration's header gives takes each key off each queued supervise
+// row, as it takes `claim`, and keeps every other key: the release before then decodes the row, and
+// this release still decodes it after the roll forward, naming neither.
+func TestTheWayBackTakesTheRefusedPodAndTheSessionToLeaveOffAQueuedStart(t *testing.T) {
+	for _, key := range []string{"refusedPod", "leaveSession"} {
+		t.Run(key, func(t *testing.T) {
+			ctx := context.Background()
+			st := emptyStore(t)
+			if _, err := st.Migrate(ctx); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			queued := `{"op":"start","tree":"LEGION-208","role":"tester","generation":1,"` + key + `":"7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11"}`
+			if err := decodeAsTheReleaseBefore([]byte(queued), record.SuperviseRequest{}); err == nil || !strings.Contains(err.Error(), `unknown field "`+key+`"`) {
+				t.Fatalf("the release before decoding a start that names %s = %v, want the strict decode's refusal of the key", key, err)
+			}
+			var id int64
+			if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+				values ('supervise', 'LEGION-208', $1, 0, now(), '', '') returning id`, queued).Scan(&id); err != nil {
+				t.Fatalf("queue the start: %v", err)
+			}
+
+			if _, err := st.Pool().Exec(ctx, headerWayBackOf(t, planStepAgentMigrationFile), pgx.QueryExecModeSimpleProtocol); err != nil {
+				t.Fatalf("run the way back as one transaction: %v", err)
+			}
+
+			var payload []byte
+			if err := st.Pool().QueryRow(ctx, `select payload from outbox where id = $1`, id).Scan(&payload); err != nil {
+				t.Fatalf("read the start after the way back: %v", err)
+			}
+			if err := decodeAsTheReleaseBefore(payload, record.SuperviseRequest{}); err != nil {
+				t.Fatalf("the release before decoding the start after the way back = %v, want it decoded: %s", err, payload)
+			}
+			var before, after map[string]any
+			if err := json.Unmarshal([]byte(queued), &before); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(payload, &after); err != nil {
+				t.Fatal(err)
+			}
+			delete(before, key)
+			if !maps.EqualFunc(before, after, func(a, b any) bool { return reflect.DeepEqual(a, b) }) {
+				t.Fatalf("the start after the way back = %v, want %v: %s taken off and every other key kept", after, before, key)
+			}
+			decoded, err := record.DecodeOutboxPayload(record.OutboxRow{ID: id, Kind: record.OutboxKindSupervise, Payload: payload})
+			if err != nil {
+				t.Fatalf("this release decoding the start after the way back: %v", err)
+			}
+			if start, ok := decoded.(record.SuperviseRequest); !ok || start.RefusedPod != "" || start.LeaveSession != "" {
+				t.Fatalf("this release reads the start after the way back as %+v, want a start naming neither key", decoded)
+			}
+		})
 	}
 }

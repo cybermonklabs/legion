@@ -50,7 +50,7 @@ func TestValidateSpawnSpecRefusesWhatNoRuntimeCouldHonour(t *testing.T) {
 		{"a claim token of another issue", func(s *SpawnSpec) { s.Claim = "legion-omp-legion-99-tester" },
 			`spawn legion-omp-legion-99-tester: the claim token of omp/LEGION-43/tester is legion-omp-legion-43-tester`},
 		{"a token that names no agent of an issue", func(s *SpawnSpec) { s.Claim = claim.ControllerToken("omp") },
-			`spawn legion-omp-controller: the claim token of omp/LEGION-43/tester is legion-omp-legion-43-tester`},
+			`spawn legion-omp-controller: the claim token names no agent of an issue`},
 		{"no role prompt", func(s *SpawnSpec) { s.Prompt.RolePromptPaths = nil }, "spawn legion-omp-legion-43-tester: no role prompt"},
 		{"an Env name that is not a variable name", func(s *SpawnSpec) { s.Env["BAD NAME"] = "x" }, `spawn legion-omp-legion-43-tester: Env name "BAD NAME" is not an environment variable name`},
 		{"a variable the runtime sets", func(s *SpawnSpec) { s.Env["LEGION_TREE"] = "OTHER-1" }, "spawn legion-omp-legion-43-tester: Env sets LEGION_TREE, which the runtime sets itself"},

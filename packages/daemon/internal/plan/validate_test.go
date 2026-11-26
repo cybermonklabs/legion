@@ -111,9 +111,10 @@ func TestAPlanOfSeveralTasksIsTaken(t *testing.T) {
 }
 
 // Each cause this release does not carry out yet (Supported), with its exact text and its task.
-// Each cause gets one reason, so a plan with two causes gets two. The taken plans are the subsets
-// of today's line that keep the implementer, with the owner's acceptance, and with a key on a role
-// but acceptance.
+// Each cause gets one reason, so a plan with two causes gets two. The taken plans keep the
+// implementer before each tester, reviewer and acceptance step, a role of the deployment of the
+// type implementation before the implementer, and the other steps at any place, with the owner's
+// acceptance, and with a key on a role but acceptance.
 func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	implementer, _ := ParseSteps("implementer")
 	withTask := func(task Task) Plan { return Plan{Tasks: []Task{task}} }

@@ -50,7 +50,7 @@ import (
 // of GitHub's, so it gets no entry's sentence.
 func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row record.PhaseRow) string {
 	if role != claim.RoleReviewer {
-		if at == phase.Step && !claim.IsBuiltin(role) && row.ReviewedHead != "" {
+		if at == phase.Step && claim.IsDeploymentRole(role) && row.ReviewedHead != "" {
 			return task + " " + reviewround.CommitLabel + ": " + row.ReviewedHead + "."
 		}
 		return task
@@ -71,5 +71,5 @@ func namingTheReviewRound(task string, role claim.Role, at phase.Phase, row reco
 // the others (queuedRow), and the daemon's start executor names such a start queued for news alone
 // (its newsForStart).
 func NamesTheRound(role claim.Role) bool {
-	return role == claim.RoleReviewer || !claim.IsBuiltin(role)
+	return role == claim.RoleReviewer || claim.IsDeploymentRole(role)
 }

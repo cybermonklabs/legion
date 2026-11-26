@@ -42,22 +42,24 @@ func TestEachStepRecordNamesTheVariantOfItsIssue(t *testing.T) {
 		{name: "the planner's start and end, and the implementer's start", from: phase.Admitted, writes: 3, walk: func(t *testing.T, pool *pgxpool.Pool) {
 			engine := stepEngine(nil)
 			firstStep(t, pool, engine, "LEGION-208")
-			move(t, pool, engine, "LEGION-208", TriggerPlannerCompleted, "", record.PhaseRow{})
+			move(t, pool, engine, "LEGION-208", TriggerPlannerCompleted, record.TaskPlace{}, record.PhaseRow{})
 		}},
 		{name: "the acceptance's end, the retro's start, end and rating, and the merge's start", from: phase.Accepting, writes: 5, marked: "rating", walk: func(t *testing.T, pool *pgxpool.Pool) {
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 			engine := stepEngine(nil)
-			move(t, pool, engine, "LEGION-208", TriggerSignOff, "", record.PhaseRow{})
+			move(t, pool, engine, "LEGION-208", TriggerSignOff, record.TaskPlace{}, record.PhaseRow{})
 			applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer,
 				Claim: "implement-claim", Summary: "retro done", Commit: "head",
 				PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan fit the work."}})
 			assertPhase(t, pool, phase.Merging)
 		}},
 		// The review's run is one the boot opens (bootBefore, as reviewApprovedNow runs), so its
-		// start queues no row.
+		// start queues no row. The reviewer's step started (its entry task), so its completion after
+		// the approval is a late report of that step: a claim alone proves no start (ranUnreported).
 		{name: "the review's end, the acceptance's start, and the reviewer's late report", from: phase.Reviewing, writes: 3, marked: "report", walk: func(t *testing.T, pool *pgxpool.Pool) {
 			engine := returnEngine()
 			reviewer := seedPhaseWorker(t, pool, "LEGION-208", claim.RoleReviewer, "")
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewer, Entry: 1, EntryTask: "review this change"})
 			reviewApprovedNow(t, pool, engine, "LEGION-208")
 			assertPhase(t, pool, phase.Accepting)
 			if result := applyFacts(t, pool, engine)("late-report", reportOf(claim.RoleReviewer, reviewer, "review-1")); result.Refusal != nil {
@@ -120,7 +122,7 @@ func TestTheStartTheBootOpensNamesTheVariantOfItsIssue(t *testing.T) {
 			if drawn {
 				drawnInto(t, pool, "LEGION-208", "planning", "b", "default")
 			}
-			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+			move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 			execSQL(t, pool, `delete from step_starts where issue = 'LEGION-208'`)
 			if opened := openUncountedRuns(t, pool, stepEngine(nil)); opened != 1 {
 				t.Fatalf("the boot opened %d runs, want the tester's", opened)

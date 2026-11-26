@@ -33,7 +33,7 @@ const (
 // refusal. An implementer's completion names the handoff record id.
 func reportsAtEntry(t *testing.T, pool *pgxpool.Pool, engine *Engine, id, key string, generation uint64, role claim.Role, verdict, commit string, entry int64) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: generation, Issue: key, Role: role, Claim: claim.Token(string(role) + "-claim"), Summary: "reported",
+	fact := intake.HandoffComplete{Generation: generation, Issue: key, Role: role, Claim: workerOr(t, pool, key, role, claim.Token(string(role)+"-claim")), Summary: "reported",
 		Commit: commit, Verdict: verdict, Entry: entry}
 	if role == claim.RoleImplementer {
 		fact.HandoffRecord, fact.HandoffVersion = id, 1
@@ -181,7 +181,7 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 
 			if tc.refused {
 				result := applyFacts(t, pool, engine)("critic-fail", intake.HandoffComplete{Generation: child.Generation, Issue: child.Key, Role: "critic",
-					Claim: "critic-claim", Summary: "reported", Commit: stepCommitX, Verdict: "fail", Entry: tc.entry})
+					Claim: workerOr(t, pool, child.Key, "critic", "critic-claim"), Summary: "reported", Commit: stepCommitX, Verdict: "fail", Entry: tc.entry})
 				got := issueOf(t, pool, engine, child.Key)
 				if refusalCode(result) != "HANDOFF_STALE_ENTRY" || got.Phase != phase.Step || stepRoleOf(t, pool, engine, child.Key) != "critic" {
 					t.Fatalf("the critic's fail of entry %d with entry %d standing: refusal %+v, %s stands in %s at the %q step; want HANDOFF_STALE_ENTRY and the critic's step",

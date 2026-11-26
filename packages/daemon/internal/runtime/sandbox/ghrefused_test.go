@@ -125,6 +125,7 @@ func ghVolumeDrift(g *rig, loc runtime.Locator, role claim.Role) []string {
 // directory set reads is what keeps the two answers one (appauth.LeftOut). Once GitHub answers for
 // that owner again, a mint clears the record and the pod is replaced once, which is right.
 func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) {
+	t.Parallel()
 	var refuse atomic.Bool
 	refuse.Store(true)
 	g := newRig(t, nil, withRefusedOwner("acme", &refuse))
@@ -153,6 +154,7 @@ func TestAnOwnerEveryLeaseIsRefusedForIsNoDriftForThePodWithoutIt(t *testing.T) 
 // those keys in its own Secret, unprojected, and the issue's next pod projects them once every
 // role's bundle holds them.
 func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
+	t.Parallel()
 	var refuse atomic.Bool
 	refuse.Store(true)
 	tokens := refusingOwnerTokens{refuse: &refuse, owner: "acme", app: appauth.Review}
@@ -178,6 +180,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 // A launch whose roles share no directory at all still fails: the pod's GH_CONFIG_DIR would name
 // a directory no role's gh volume projects, and every role would start unable to reach GitHub.
 func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			bundle, err := staticCredential(ctx, role, repo)
@@ -211,6 +214,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 // once, the implement App's refusal would hide the controller's drift for as long as it stood —
 // and in a project with no live issue pod nothing mints for that App to clear it (INFRA-513).
 func TestAnOwnerOnlyTheOtherAppIsRefusedForIsDriftForTheControllersPod(t *testing.T) {
+	t.Parallel()
 	var implement, review atomic.Bool
 	implement.Store(true)
 	review.Store(true)

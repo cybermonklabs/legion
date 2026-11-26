@@ -844,7 +844,8 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		if spec.ResumeSession != "" {
 			return launch{}, refuse("a Claude Code claim resumes its session from its recorded transcript, never by the session id %s alone", spec.ResumeSession)
 		}
-		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(slotOf(spec.Claim)))
+		slot, _ := spec.Claim.Slot()
+		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(slot))
 		if err != nil {
 			return launch{}, refuse("its Claude Code MCP configuration: %v", err)
 		}
@@ -854,7 +855,7 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		// (claudeResumeSession, runtime/tmux/claude.go): a transcript of this pod's own Claude
 		// Code directory and nothing else. One that starts a session names a fresh uuid.
 		if spec.ResumeSessionFile != "" {
-			session, err := claudelaunch.ResumeSession(claudeConfigDir(slotOf(spec.Claim)), spec.ResumeSessionFile)
+			session, err := claudelaunch.ResumeSession(claudeConfigDir(slot), spec.ResumeSessionFile)
 			if err != nil {
 				return launch{}, refuse("%v", err)
 			}
@@ -989,7 +990,8 @@ func (l launch) agentArgv(agent []string) []string {
 	}
 	envoy, legion := envoyPlugin, legionPlugin
 	if l.spec.Plugins != nil {
-		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(slotOf(l.spec.Claim)), l.spec.Generation))
+		slot, _ := l.spec.Claim.Slot()
+		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(slot), l.spec.Generation))
 	}
 	model := "@default"
 	if l.spec.Model != "" {
@@ -1012,8 +1014,8 @@ func (l launch) agentArgv(agent []string) []string {
 // claudeArgv is the command the shim runs for a Claude Code role: the agent command
 // claudelaunch.Argv builds around the `legion claude-bridge` the pod runs it under, naming the
 // Claude Code this generation's start script installed (claudeCodeBinary, under the state home of
-// the claim's slot, slotOf, whatever role its step is on: the image carries none) and the image's
-// claude-envoy root (claudePluginDir), reading the
+// the claim's slot, claim.Token.Slot, whatever role its step is on: the image carries none) and the
+// image's claude-envoy root (claudePluginDir), reading the
 // MCP document its launcher writes into this generation's private directory (claudeMCPFile), and
 // `--append-system-prompt-file` naming the system prompt file the same launcher writes beside it
 // (systemPromptPath), the file the Oh My Pi branch names too: a pod cannot read the daemon's
@@ -1027,7 +1029,8 @@ func (l launch) agentArgv(agent []string) []string {
 // My Pi override, does not reach here: the Claude command is the runtime's, as the tmux lane's is
 // the host's boot-resolved one.
 func (l launch) claudeArgv() []string {
-	claude := claudeCodeBinary(roleStateHome(slotOf(l.spec.Claim)), l.spec.Generation)
+	slot, _ := l.spec.Claim.Slot()
+	claude := claudeCodeBinary(roleStateHome(slot), l.spec.Generation)
 	paths := claudelaunch.Paths{Legion: l.claude.legion, Claude: claude, PluginDir: claudePluginDir}
 	return claudelaunch.Argv(paths, generationDir(l.spec.Generation)+"/"+claudeMCPFile, l.claude.session, l.claude.resume,
 		systemPromptPath(l.spec.Generation), l.spec.Model)
@@ -1684,12 +1687,12 @@ const scratchRoot = TreeRoot + "/scratch"
 // configuration the agents' jj reads. None of these directories outlives the pod: the issue's disk
 // is the pod's own generic ephemeral volume, so a later pod of the issue downloads and builds
 // again, and the sharing here is between the roles of one pod, not between pods.
-func roleEnvironment(role claim.Role) []corev1.EnvVar {
+func roleEnvironment(slot claim.Agent) []corev1.EnvVar {
 	return []corev1.EnvVar{
 		{Name: "XDG_CONFIG_HOME", Value: xdgConfigHome},
 		{Name: "XDG_CACHE_HOME", Value: scratchRoot + "/cache"},
 		{Name: "XDG_DATA_HOME", Value: scratchRoot + "/data"},
-		{Name: "XDG_STATE_HOME", Value: roleStateHome(role)},
+		{Name: "XDG_STATE_HOME", Value: roleStateHome(slot)},
 		{Name: "TMPDIR", Value: scratchRoot + "/tmp"},
 		{Name: "GOCACHE", Value: goBuildCache},
 		{Name: "GOMODCACHE", Value: goModCache},
@@ -1698,7 +1701,8 @@ func roleEnvironment(role claim.Role) []corev1.EnvVar {
 }
 
 // roleStateHome is the XDG_STATE_HOME the agent in slot is told, `/legion/scratch/state/<slot>`,
-// the slot being the agent's name (slotOf) whatever role its step is on, so each generation of one
+// the slot being the agent's name (claim.Token.Slot) whatever role its step is on, so each
+// generation of one
 // agent finds the state its earlier ones left: the one directory of the issue's scratch that is one
 // per slot rather than one for the issue, in a pod whose roles share the network namespace, the
 // workspace path and the rest of that
@@ -1717,7 +1721,7 @@ func roleEnvironment(role claim.Role) []corev1.EnvVar {
 // charged to neither — and, unlike the container's own filesystem, the state home outlives a
 // restart of the `roles` container, though not the pod, whose own ephemeral volume the issue's
 // disk is.
-func roleStateHome(slot claim.Role) string {
+func roleStateHome(slot claim.Agent) string {
 	return scratchRoot + "/state/" + string(slot)
 }
 
@@ -1728,7 +1732,7 @@ func roleStateHome(slot claim.Role) string {
 // the transcripts its earlier ones left; like the rest of the pod's disk it lives and dies with
 // the pod (INFRA-80). Nothing in the image makes it: the generation's start script does, before the
 // agent execs (startScript).
-func claudeConfigDir(slot claim.Role) string {
+func claudeConfigDir(slot claim.Agent) string {
 	return roleStateHome(slot) + "/claude"
 }
 
@@ -1900,6 +1904,7 @@ func (r *Runtime) LaunchBound() time.Duration {
 // (runtime.SessionExclusiveVariable=1).
 func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	spec := l.spec
+	slot, _ := spec.Claim.Slot()
 	env := l.kind.agentEnv(l)
 	add := func(name, value string) { env = append(env, corev1.EnvVar{Name: name, Value: value}) }
 	add("LEGION_ROLE", string(spec.Role))
@@ -1990,7 +1995,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 		// so the result is read in a turn the daemon sees rather than after one it thinks has
 		// ended. Both names are the runtime's (runtimeOwned), so neither a spec nor an operator's
 		// pod.env may place them.
-		for _, pair := range claudelaunch.Environment(claudeConfigDir(slotOf(spec.Claim))) {
+		for _, pair := range claudelaunch.Environment(claudeConfigDir(slot)) {
 			name, value, _ := strings.Cut(pair, "=")
 			add(name, value)
 		}
@@ -2004,7 +2009,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 		// start command alone (launchEnvironment) and changes nothing of the pod.
 		add(claudelaunch.SessionVariable, l.claude.session)
 	}
-	env = append(env, roleEnvironment(slotOf(spec.Claim))...)
+	env = append(env, roleEnvironment(slot)...)
 	env = append(env, corev1.EnvVar{Name: "POD_UID", ValueFrom: &corev1.EnvVarSource{
 		FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"},
 	}})

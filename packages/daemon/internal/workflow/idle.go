@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -211,19 +212,18 @@ func (h IdleHold) String() string {
 
 // IdleDecision is what one of the pod rules, IdleRelease, UnownedPodRelease or LeftPodClose,
 // decided about one pod: whether it is released, whether it is closed, the hold that kept it when
-// it is neither, and the live claims a release or a close suspends, each by its token (Claims)
-// beside its stored role (Roles), in the order the view read them. A pod no claim owns has no such
-// claim, so UnownedPodRelease names none.
+// it is neither, and the live claims a release suspends or a close stops, each by its token beside
+// its stored role (store.ReleasedClaim), in the order the view read them, which is token order
+// (store's readIdleView). Two claims can hold one role, so each stop names its claim. A pod no
+// claim owns has no such claim, so UnownedPodRelease names none.
 type IdleDecision struct {
 	Release bool
-	// Close is LeftPodClose's decision to finish the close of an issue the workflow has taken
-	// out: each live claim of its pod, named in Claims beside its role in Roles, is suspended for
-	// the daemon, as the issue's departure suspended it, and the issue's Sandbox goes with its pod
-	// and its disk (record.IssueSuspend). It is never set with Release.
+	// Close finishes the close of an issue the workflow took out: each live claim in Claims is
+	// suspended for the daemon, and the issue's Sandbox goes with its pod and disk
+	// (record.IssueSuspend). It is never set with Release.
 	Close  bool
 	Hold   IdleHold
-	Claims []claim.Token
-	Roles  []claim.Role
+	Claims []store.ReleasedClaim
 	// HoldKinds names the hold more closely for the one hold that has more to say:
 	// IdleHoldBackgroundWork carries the kinds the held session reported (`subagent`,
 	// `async-job`, `claude-background-task`), which is what tells an operator reading the hold
@@ -318,13 +318,12 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.IsRoot() && view.Root.AwaitingPerson && !view.Root.Answered {
 		return IdleDecision{Hold: IdleHoldAwaitingPerson}
 	}
-	var claims []claim.Token
-	var roles []claim.Role
+	var claims []store.ReleasedClaim
 	for _, c := range view.Claims {
 		if !c.Live() {
 			continue
 		}
-		claims, roles = append(claims, c.Token), append(roles, c.Role)
+		claims = append(claims, store.ReleasedClaim{Token: c.Token, Role: c.Role})
 	}
 	if len(claims) == 0 {
 		return IdleDecision{Hold: IdleHoldNoLiveClaim}
@@ -379,7 +378,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 		}
 		return IdleDecision{Hold: IdleHoldUnpushedWork}
 	}
-	return IdleDecision{Release: true, Claims: claims, Roles: roles}
+	return IdleDecision{Release: true, Claims: claims}
 }
 
 // LeftPodClose decides the pod of an issue the workflow has taken out: one whose issue or tree
@@ -439,11 +438,11 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     kept as the release of a pod no claim owns keeps such a pod (IdleHoldUnownedUnpushedWork).
 //
 // A close with a live claim deletes a disk that a role worked on, so it reads that disk first, as
-// the idle release does: the decision names the live claims and their roles, and the daemon queues
-// the workspace check alone (record.IssueWorkspaceCheck, CloseRoles), which reads through one of
-// them and queues the stops and the suspension only where it finds nothing that origin does not
-// hold (LeftPodCloseAfterCheck). A read that finds work, or that fails, records a decline instead,
-// and the pod stays with its work. While that check waits on the lane, the pod is held as this
+// the idle release does: the decision names the live claims, and the daemon queues the workspace
+// check alone (record.IssueWorkspaceCheck, CloseRoles), which reads through one of them and queues
+// the stops and the suspension only where it finds nothing that origin does not hold
+// (LeftPodCloseAfterCheck). A read that finds work, or that fails, records a decline instead, and
+// the pod stays with its work. While that check waits on the lane, the pod is held as this
 // daemon's own act under way (IdleHoldReleasing, pods.IdleView.WorkspaceCheckQueued), which no
 // record counts. A pod with no live claim runs no role to read through: it is closed where no
 // decline says its disk holds work, and kept where one does.
@@ -462,13 +461,13 @@ func LeftPodClose(view pods.IdleView, now time.Time, idle time.Duration) IdleDec
 	if since, ok := view.QuietSince(); !ok || now.Sub(since) < idle {
 		return IdleDecision{Hold: IdleHoldNotIdle}
 	}
-	if len(decision.Roles) > 0 && view.Declined.Stands(view, now) {
+	if len(decision.Claims) > 0 && view.Declined.Stands(view, now) {
 		if view.Declined.Reason == pods.DeclineWorkspaceUnread {
 			return IdleDecision{Hold: IdleHoldWorkspaceUnread}
 		}
 		return IdleDecision{Hold: IdleHoldUnpushedWork}
 	}
-	if len(decision.Roles) == 0 && view.Declined.HoldsUnpushedWork(view) {
+	if len(decision.Claims) == 0 && view.Declined.HoldsUnpushedWork(view) {
 		return IdleDecision{Hold: IdleHoldUnownedUnpushedWork}
 	}
 	return decision
@@ -509,15 +508,13 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 	if !leftUnderRunningTree(view) || view.RoleStopQueued || view.CheckLookOpen {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
 	}
-	var roles []claim.Role
-	var claims []claim.Token
+	var claims []store.ReleasedClaim
 	for _, c := range view.Claims {
 		if c.Live() {
-			roles = append(roles, c.Role)
-			claims = append(claims, c.Token)
+			claims = append(claims, store.ReleasedClaim{Token: c.Token, Role: c.Role})
 		}
 	}
-	if len(roles) == 0 && view.IssueSuspendQueued {
+	if len(claims) == 0 && view.IssueSuspendQueued {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
 	}
 	if view.Paused {
@@ -555,7 +552,7 @@ func leftPodStops(view pods.IdleView) IdleDecision {
 			return IdleDecision{Hold: IdleHoldBackgroundWork, HoldKinds: c.ActivityKinds}
 		}
 	}
-	return IdleDecision{Close: true, Claims: claims, Roles: roles}
+	return IdleDecision{Close: true, Claims: claims}
 }
 
 // leftUnderRunningTree is whether the pod's issue is a child that left the workflow while its tree
@@ -571,10 +568,10 @@ func leftUnderRunningTree(view pods.IdleView) bool {
 // UnownedPodRelease decides whether an issue's pod may be released because no claim of the issue
 // can use it. It is the daemon's second pod-release rule, beside IdleRelease, and it exists
 // because an issue every claim of which has failed, been retired or been suspended still holds
-// its Kubernetes pod, 3 CPU and 19 GiB, with nobody in it: a claim in any of those three states
-// runs no process (pods.IdleClaim.Live), so no role is in that pod and none is coming back to it
-// on its own. Nothing else takes such a pod back, and it stands for as long as the record holds
-// the issue.
+// its Kubernetes pod and the pod's reservation (2 CPU and 8 GiB at the defaults), with nobody in
+// it: a claim in any of those three states runs no process (pods.IdleClaim.Live), so no role is
+// in that pod and none is coming back to it on its own. Nothing else takes such a pod back, and
+// it stands for as long as the record holds the issue.
 //
 // It is pure, as IdleRelease is, and it reads less than that rule: no image, no plugin contract,
 // no turn and no reminder. Each of those is a fact about a live role — the image a released pod
@@ -718,7 +715,11 @@ func idleStateReleasable(c pods.IdleClaim) bool {
 // of the running steps the view reads with the issue, pods.IdleView.Running, read as the issue's
 // own record reads them, record.RunningOf), serving the current generation: the one shape of
 // claim a phase reminder is armed in. Each step that takes work keeps its worker's claim, whatever
-// phase the issue stands in.
+// phase the issue stands in. Two claims of one issue can hold a step's role: the agent of a key on
+// that step, beside the role's own claim of an earlier version of the plan. Only a claim the record
+// gives a step of the role works it (record.WorkerClaims over the role's phases rows,
+// pods.IdleView.Phases): each claim a row of the role names while it runs a step, and the role's
+// own token where none does. A reminder due on the other claim holds no pod.
 func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
 	if c.ServingGeneration != view.Generation {
 		return false
@@ -728,5 +729,13 @@ func idlePhaseOpen(view pods.IdleView, c pods.IdleClaim) bool {
 		issue.Hold = &record.Hold{From: view.HeldFrom}
 	}
 	issue.Running = record.RunningOf(issue, view.Planned, view.Running)
-	return slices.ContainsFunc(OpenStepsOf(issue), func(step record.RunningStep) bool { return step.Role == c.Role })
+	if !slices.ContainsFunc(OpenStepsOf(issue), func(step record.RunningStep) bool { return step.Role == c.Role }) {
+		return false
+	}
+	rows := make([]record.PhaseRow, 0, len(view.Phases[c.Role]))
+	for _, row := range view.Phases[c.Role] {
+		rows = append(rows, record.PhaseRow{Issue: view.Issue, Role: c.Role, Claim: row.Claim, StepTask: row.StepTask})
+	}
+	workers, err := record.WorkerClaims(view.Project, view.Issue, c.Role, rows)
+	return err == nil && slices.Contains(workers, c.Token)
 }

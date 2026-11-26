@@ -26,14 +26,14 @@ it. A child's own architect accepts that child while it holds its role.
 The Legion extension gives this root session the architect's `legion` operations and Envoy
 messaging. Code, tests, reviews, and merges are the phase workers' work, which you delegate rather
 than do. The daemon starts every phase worker itself, in the order of the steps of the issue's
-plan, or of the project's default steps where you gave none or Legion took none, each as its own process with the
-issue's context already in its environment; an agent it starts again resumes that agent's session,
-whatever role its next step is on, and it starts in a new session, which has read none of its own
-earlier work, only once supervise's `forgetSession` has dropped that one. You start no worker, and
-you change a running task's steps only with `stop_task` (`issue`, `task`) and a later version of
-its plan. You may dispatch `task` subagents for your own work, for example to measure or
-investigate what the spec needs before the design gate opens; request no `isolated` work, since
-`LEGION_WORKSPACE` is the only workspace here.
+plan, or of the project's default steps where you gave none or Legion took none, each as its own
+process with the issue's context already in its environment; an agent it starts again resumes that
+agent's session, whatever role its next step is on, and it starts in a new session, which has read
+none of its own earlier work, only once supervise's `forgetSession` has dropped that one. You start
+no worker, and you change a running task's steps only with `stop_task` (`issue`, `task`) and a
+later version of its plan. You may dispatch `task` subagents for your own work, for example to
+measure or investigate what the spec needs before the design gate opens; request no `isolated`
+work, since `LEGION_WORKSPACE` is the only workspace here.
 A subagent claims no Legion role; it inherits your `GH_CONFIG_DIR`, so its `gh` acts as your App
 exactly as yours does; code changes stay the phase workers'. You write no code, so an update
 message's steps that name commits and pushes ask nothing of you or of your subagents.
@@ -78,9 +78,9 @@ waits on another issue, an open child under it or a `blocked_by` link to an issu
 `done`, so a child filed later leaves the root working beside its children. Give the root its
 plan with `register_plan` (`issue`, `artifactId`, `version`) before `register_gate`, and each
 child its plan before `release_children` releases it
-(`skill://legion-architect/references/plan.md`): the gate's opening starts the root's first
-step, and a child's first step can start in the admission pass that releases it. An issue that a
-project's experiment drew into a group whose issues run the default steps takes no plan
+(`skill://legion-architect/references/plan.md`): the root's first step can start as soon as the
+gate opens, and a child's first step can start in the admission pass that releases it. An issue
+that a project's experiment drew into a group whose issues run the default steps takes no plan
 (`PLAN_NOT_TAKEN`), and `read_record` shows a recorded issue's group. Once the spec's ask
 blocks are settled (`skill://dispatch-writing-specs`, "Approval"), request approval of both documents
 with `dispatch request-approval --include-verification`.
@@ -214,15 +214,18 @@ A worker's question about a task of the plan, or its departure from one, reaches
 that holds only the link of its comment on that task's block in `plan.md`, or on the issue where no
 block fits. Answer with a reply in that thread
 (`dispatch comment --issue <issue> --reply-to <comment id> --body '<the answer>'`), then send the
-worker, with `envoy_publish` to its role topic, a message that holds only your reply's link.
+worker, with `envoy_publish` to the topic of the agent that works its step, a message that holds
+only your reply's link.
 A decision you send a role about a task is such a reply too: write it in that task's thread
 first, then send its link. A role acts on no decision that has no Dispatch record, so a decision
 you send by message alone comes back to you as a request to write it there.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
 writes `done`, except that a root whose tree still runs, and a child with an issue beneath it still
-in the workflow, first wait in `merging` for those issues (below); the production check, where the
-project opens one, follows in the tester's own session, on the pull request, asking nothing of you. Your acceptance comes before it where the issue's task holds your
+in the workflow, first wait in `merging` for those issues (below), a state a deploy can leave,
+until the last of them leaves (a `pr-merged` notice says so); the production check, where the
+project opens one, follows in the tester's own session, on the pull request, asking nothing of
+you. Your acceptance comes before it where the issue's task holds your
 step `acceptance:owner`: the pass of the step before it moves the issue to `accepting` (in the
 default steps, the reviewer's approval). That step's notice of it comes to you for the root, and
 for another issue when neither its own architect nor an architect between it and the root holds its
@@ -242,7 +245,9 @@ each `unmet` finding there.
 Then
 `sign_off` (which moves the task to its next step, or to retro where your acceptance is its last
 step) or send it back with `request_backward_move` (`issue`, `to` the phase of an earlier step of
-the task, and `reason`). Your acceptance comment names each check with its result.
+the task, and `reason`). `request_backward_move` to `step` works where one earlier step of the
+task runs as `step`. Where two do, name `return_to`. Your acceptance comment names each check with
+its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
@@ -261,7 +266,7 @@ A tester completion that rejects the implementer's results goes back to the firs
 type implementation before the tester, the implementer in the default steps, or to the earlier
 step its completion names; a worker that reports no surface reaches the changed path gets the surface built
 in this tree (`skill://legion-architect/references/wake-routing.md`, `phase-finished`), and waits, with its
-phase and its task kept, until you tell it to continue (`envoy_publish` to its role topic, which
+phase and its task kept, until you tell it to continue (`envoy_publish` to its agent's topic, which
 wakes it when its idle pod was released): once that child
 closes, or at once when the surface folds into an open pull request of this tree and a backward
 move to `implementing` builds it there.

@@ -20,9 +20,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The tree of dispatch://INFRA-5471's cases: a root a person moved out of the workflow and back,
-// and the members its re-admission leaves as they stood. LEGION-ACTIVE holds the one slot of the
-// cap, so the re-admitted root waits in the line until that slot frees.
+// A root leaves the workflow and returns with its members still in their previous states.
+// LEGION-306 holds the cap's one slot, so the re-admitted root waits in the line until that
+// slot frees.
 const (
 	rmRoot         = "LEGION-300"
 	rmImplementing = "LEGION-301"
@@ -30,7 +30,7 @@ const (
 	rmAccepting    = "LEGION-303"
 	rmReopened     = "LEGION-304"
 	rmAdmitted     = "LEGION-305"
-	rmActive       = "LEGION-ACTIVE"
+	rmActive       = "LEGION-306"
 )
 
 // rmMembers is every member a re-admission leaves mid-phase or reopened, the issues the root's
@@ -65,12 +65,12 @@ func putClaimRow(t *testing.T, pool *pgxpool.Pool, root, key string, role claim.
 }
 
 // readmittedTree records the running tree runningTree seeds and moves its root to backlog and back
-// to todo, as the controller's restart did on 2026-11-23. The backlog parks the root and gives its
-// slot to LEGION-ACTIVE; the todo re-admits it at generation 2, where it waits in the line.
+// to todo. The backlog parks the root and gives its slot to LEGION-306; the todo re-admits it at
+// generation 2, where it waits in the line.
 //
-// With cleaned false the root comes back inside its linger, so its tree's lifecycle stands open
-// under the workflow, as INFRA-3118's did on 2026-11-23. With cleaned true the tree's cleanup was
-// reserved between the backlog and the todo, as after a linger that ended.
+// With cleaned false the root returns during its linger, so its tree's lifecycle stays open.
+// With cleaned true the tree's cleanup was reserved between the backlog and the todo, as after
+// a linger that ended.
 func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, cleaned bool) {
 	t.Helper()
 	runningTree(t, pool, cleaned)
@@ -102,7 +102,7 @@ func readmittedTree(t *testing.T, pool *pgxpool.Pool, admission *Admission, clea
 }
 
 // runningTree records the tree the cases move out and back as it runs before the move: its root
-// holds the cap's one slot at admitted with its design gate opened, LEGION-ACTIVE waits in the
+// holds the cap's one slot at admitted with its design gate opened, LEGION-306 waits in the
 // line behind it, and its members stand mid-phase, one implementing, one merging, one in accepting
 // whose own architect and implementer have run, and one a person reopened at done. Their claims
 // are suspended by the daemon, as the suspends the tree's close queues leave them. With cleaned
@@ -135,9 +135,9 @@ func openRootGate(t *testing.T, pool *pgxpool.Pool) {
 
 // registerApprovedSpec starts the root's architect and applies its register_gate of the spec a
 // person already approved, which opens the gate at once (the workflow's gateRegistered). The start
-// is the operator's retry of the architect's claim that INFRA's controller made on 2026-11-23 while
-// the roots waited in the line (the API's operator route, which the fact here does not pass
-// through): the claim stands ready at the root's new generation when its architect registers.
+// is an operator's retry of the architect's claim while the root waits in the line (the API's
+// operator route, which the fact here does not pass through): the claim stands ready at the root's
+// new generation when its architect registers.
 func registerApprovedSpec(t *testing.T, pool *pgxpool.Pool, admission *Admission, id string) {
 	t.Helper()
 	putClaimRow(t, pool, rmRoot, rmRoot, claim.RoleArchitect, 2, "ready")
@@ -148,7 +148,7 @@ func registerApprovedSpec(t *testing.T, pool *pgxpool.Pool, admission *Admission
 		ApprovedMark: record.EventMark{Seq: 9, At: reviewedAt}})
 }
 
-// promoteRoot frees LEGION-ACTIVE's slot, which promotes the waiting root.
+// promoteRoot frees LEGION-306's slot, which promotes the waiting root.
 func promoteRoot(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
 	t.Helper()
 	apply(t, pool, admission, "active-done", intake.DispatchIssue{Key: rmActive, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
@@ -193,7 +193,7 @@ func membersStarted(t *testing.T, pool *pgxpool.Pool) map[string]any {
 
 // readmittedAdmission is an admission under a cap of cap whose log the test reads: a controller
 // tick classifies every issue the line leaves behind and logs each one no held word is true of
-// (admit's logUnclassified), the line INFRA's daemon wrote for two stranded members on 2026-11-23.
+// (admit's logUnclassified), so the test can detect a stranded member.
 func readmittedAdmission(t *testing.T, cap int) (*Admission, *strings.Builder) {
 	t.Helper()
 	var lines strings.Builder
@@ -249,10 +249,9 @@ func assertMembersBack(t *testing.T, pool *pgxpool.Pool, admission *Admission, l
 	assertNoMemberUnclassified(t, pool, admission, lines, "tick-members-back", rmMembers...)
 }
 
-// INFRA-5471, case 1: a re-admitted root whose architect registers the spec a person already
-// approved before any promotion stops being a queued root at that registration, and its members
-// come back then, in the registration's own fact and with no daemon restart. A later pass starts
-// none of them again. On 2026-11-23 INFRA-3118's members waited from 18:30:41Z to 20:33:51Z.
+// A re-admitted root whose architect registers an approved spec before promotion stops being a
+// queued root at that registration. Its members return in the registration's own fact, with no
+// daemon restart, and a later pass starts none of them again.
 func TestReadmittedMembersComeBackWhenTheGateOpensFirst(t *testing.T) {
 	pool := migratedPool(t)
 	admission, lines := readmittedAdmission(t, 1)
@@ -277,9 +276,8 @@ func TestReadmittedMembersComeBackWhenTheGateOpensFirst(t *testing.T) {
 	}
 }
 
-// INFRA-5471, case 2, the control: the same tree promoted before its gate opens. The promotion
-// brings the members back as it always has, and the registration after it starts none of them
-// again. It passes before and after the change.
+// Promotion brings the members back before the root's gate opens. Registering the approved
+// spec after that starts none of them again.
 func TestReadmittedMembersComeBackOnceWhenThePromotionComesFirst(t *testing.T) {
 	pool := migratedPool(t)
 	admission, lines := readmittedAdmission(t, 1)
@@ -296,7 +294,7 @@ func TestReadmittedMembersComeBackOnceWhenThePromotionComesFirst(t *testing.T) {
 	}
 }
 
-// INFRA-5471, case 3: a root re-admitted after its tree's linger ended and the cleanup was
+// A root re-admitted after its tree's linger ended and the cleanup was
 // reserved has no open tree to run its members in. The registration of its approved spec leaves
 // it a queued root, so it keeps its place in the line; nothing of the tree starts, the released
 // child at admitted is offered no phase, and no member reads unclassified or at_work while it
@@ -361,12 +359,9 @@ func TestReadmittedMembersOfACleanedTreeWaitForThePromotion(t *testing.T) {
 	assertMembersBack(t, pool, admission, lines)
 }
 
-// INFRA-5471, case 4: a generation promoted before the change counts as brought back. A running
-// tree whose root was promoted by the release before, its members at work and one reopened at done,
-// starts nothing at the first pass after the change: the migration leaves such a root unmarked
-// (store's TestTheMembersOwedMarkComesOnlyOnRootsWhoseReadmissionHasStillToRun), which is the
-// record this test starts from.
-func TestReadmittedMembersOfATreePromotedBeforeTheChangeStartNothing(t *testing.T) {
+// A promoted generation already counts as brought back. The root is unmarked, its members
+// are at work and one is reopened at done; an admission pass must start none of them again.
+func TestReadmittedMembersOfAnAlreadyPromotedTreeStartNothing(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
 	seedSlottedInPhase(t, pool, testProject, rmRoot, "B", phase.Admitted, func(root *record.Issue) { root.Generation = 2 })

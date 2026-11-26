@@ -8,6 +8,10 @@
         "implementer",
         "tester"
       ],
+      "claims": [
+        "legion-legion-legion-208-implementer",
+        "legion-legion-legion-208-tester"
+      ],
       "at": "2026-11-01T12:00:00Z",
       "bundleBytes": 4096
     },
@@ -26,6 +30,7 @@
       "release": 101,
       "issue": "LEGION-208",
       "role": "implementer",
+      "claim": "legion-legion-legion-208-tester",
       "kind": "delivery",
       "at": "2026-11-01T12:30:00Z",
       "podReadyAt": "2026-11-01T12:31:00Z",

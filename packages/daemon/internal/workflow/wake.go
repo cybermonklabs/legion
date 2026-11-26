@@ -22,8 +22,8 @@ import (
 
 // A wake brings a released pod back. The release suspended every claim of the pod with the source
 // `released` and deleted the pod, its disk and its Sandbox; a wake resumes one of those claims,
-// which relaunches its session in a fresh pod whose launcher restores the workspace bundle the
-// release saved. Five things wake a pod, and this file holds four of them: the CI settlement, the
+// which relaunches its session in a fresh pod whose workspace is fetched from origin. Five things
+// wake a pod, and this file holds four of them: the CI settlement, the
 // role message and the agent message the Envoy listener reports, and the stored backstop. The
 // fifth — a delivery the daemon already had for a role of the pod — needs nothing here, because a
 // delivery to a suspended claim already resumes it (supervise's deliverResuming) and the delivery
@@ -80,11 +80,11 @@ type Pods interface {
 	// outbox row, so a notice held for an absent architect has still spent its count.
 	VolumeNoticeCounts(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int) (store.VolumeNoticeCounts, error)
 	RecordVolumeNotice(ctx context.Context, tx pgx.Tx, issue, podUID, trimmer string, episode int, at time.Time) (int, error)
-	// OpenPodBackstop is whether issue's claim token, which holds role now, has a backstop armed
-	// and not yet fired: a release that left the claim with its phase open armed it, so the
-	// backstop brings the pod back. The cutover's repair reads it to pass over a merger something
-	// will still wake (cutoverMergerRepair).
-	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, token claim.Token, role claim.Role) (bool, error)
+	// OpenPodBackstop is whether issue's claim token has a backstop armed and not yet fired: a
+	// release that left the claim with its phase open armed it, so the backstop brings the pod
+	// back. The cutover's repair reads it to pass over a merger something will still wake
+	// (cutoverMergerRepair).
+	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, token claim.Token) (bool, error)
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the claim it woke, token, in the woken
@@ -406,8 +406,7 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // backstop two passes read fires once, and the row survives a restart, so one that came due while
 // the daemon was down fires at the first pass after it starts. The claim it wakes is the one it was
 // armed for (fact.Claim), the worker of the open phase at its release, where that claim stands
-// released; a backstop the release before armed names none and wakes the agent that works the
-// backstop's role's step (Engine.workerClaim).
+// released.
 func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodBackstopDue) (intake.Result, error) {
 	if e.cfg.Pods == nil {
 		return intake.Result{}, nil
@@ -416,17 +415,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || !fired {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil {
-		return intake.Result{}, err
-	}
-	worker := fact.Claim
-	if worker == "" {
-		if worker, err = e.workerClaim(ctx, tx, *issue, fact.Role); err != nil {
-			return intake.Result{}, err
-		}
-	}
-	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(worker))
+	released, found, err := e.cfg.Pods.ReleasedClaimByToken(ctx, tx, string(fact.Claim))
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
@@ -513,8 +502,15 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 	return true, e.enqueue(ctx, tx, issue.Key, wakeRow(*issue, released.Role, released.Token, kind, pause, WakeTask(kind, detail, stop)))
 }
 
-// OpenWorkers names each distinct agent of the steps that take work, in task order.
-// RunningStep already carries the canonical agent, so this reads no role-collapsed phase row.
+// OpenWorkers is the claim of the worker of each of issue's steps that take work (OpenStepsOf),
+// each distinct claim once, in task order, and none where no step takes work. Each is the claim
+// of the agent the step names (record.RunningStep.Agent), and the role's own claim where it names
+// none. That claim can be a keyed agent's, whose token names another role, beside the role's own
+// claim of an earlier version of the plan, so a role does not name it. RunningStep already carries
+// the step's agent, so this reads no phases row. It answers which claims a completed release, a
+// pause's stop and a release's cancel while paused arm a backstop for. An architect gets none,
+// because nothing of its own is due and a sub-architect woken for nothing would hold a pod open for
+// the backstop period. project is the project's token, as claim.AgentToken takes it.
 func OpenWorkers(project string, issue record.Issue) ([]claim.Token, error) {
 	open := OpenStepsOf(issue)
 	if len(open) == 0 {

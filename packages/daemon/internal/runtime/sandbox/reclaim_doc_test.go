@@ -71,6 +71,7 @@ const (
 // Claude Code launch adds its configuration directory), so the walk runs once for each
 // (backendsRunning) rather than for a backend named here.
 func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t *testing.T) {
+	t.Parallel()
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
 
@@ -103,7 +104,7 @@ func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t
 // it: a backend puts its own directories under it (Claude Code's CLAUDE_CONFIG_DIR,
 // claudeConfigDir), and those reach the prose under `<agent>` as well.
 func documentedPath(dir, issue string, role claim.Role) string {
-	home := roleStateHome(role)
+	home := roleStateHome(claim.Agent(role))
 	if rest, under := strings.CutPrefix(dir, home); under && (rest == "" || strings.HasPrefix(rest, "/")) {
 		return path.Dir(home) + "/<agent>" + rest
 	}
