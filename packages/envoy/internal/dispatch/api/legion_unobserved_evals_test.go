@@ -25,7 +25,7 @@ func TestALegionProjectTheSamplerNeverReadReadsItsWorkEvals(t *testing.T) {
 	nameLegionDaemon(t, handler, fixture.Project, "http://legion-infra.internal:13370")
 	runLegionFactsConsumer(t, database, fixture.Project, len(fixture.PhaseWork))
 	now := time.Now().UTC()
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, now)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, now)
 
 	// The window starts on the first day the work-time eval holds a row, so no series of the four
 	// reads "no data" for a window that starts before its data.

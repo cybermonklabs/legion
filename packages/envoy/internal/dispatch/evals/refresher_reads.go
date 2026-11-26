@@ -15,7 +15,8 @@ import (
 )
 
 // refresher_reads.go holds the refresher's reads of where each item a change names stands, each
-// one statement, and its fill of the logged evals' zero rows (fillLoggedZeros).
+// one statement, or one for each cut of a list that grows past statementBytes (statementChunks),
+// and its fill of the logged evals' zero rows (fillLoggedZeros).
 
 // eventPage is what one page of the event log names: where the events cursor now stands, whether
 // the page was full, the projects whose count of unowned P0 issues an event can have moved, and
@@ -188,22 +189,27 @@ type owedDay struct {
 
 // owedDays is every day of projects that a write left owing a rewrite and no write of the day
 // has cleared (eval_days_owed, by its primary key): an item moved off it, or off the deploy run
-// whose day it is, by a write of another day; those a failed pass left among them.
+// whose day it is, by a write of another day; those a failed pass left among them. projects is
+// every project and owner key (refresh.owners), whose keys grow with the history, so it goes in
+// statements of at most statementBytes: a project's days are all in the one statement that names
+// it, in the order of its family and its day.
 func (s *Store) owedDays(ctx context.Context, projects []string) ([]owedDay, error) {
-	rows, err := s.database.Pool.Query(ctx, `
-		select project_key, family, day from eval_days_owed where project_key = any($1) order by project_key, family, day
-	`, projects)
-	if err != nil {
-		return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
-	}
 	var owed []owedDay
-	var one owedDay
-	if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.family, &one.day}, func() error {
-		one.day = measures.Midnight(one.day)
-		owed = append(owed, one)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+	for chunk := range statementChunks(projects, paramBytes(1), textBytes) {
+		rows, err := s.database.Pool.Query(ctx, `
+			select project_key, family, day from eval_days_owed where project_key = any($1) order by project_key, family, day
+		`, chunk)
+		if err != nil {
+			return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+		}
+		var one owedDay
+		if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.family, &one.day}, func() error {
+			one.day = measures.Midnight(one.day)
+			owed = append(owed, one)
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the days owed a rewrite: %w", err)
+		}
 	}
 	return owed, nil
 }
@@ -220,17 +226,44 @@ type heldMember struct {
 // heldMembers is where each of members was last counted in each of projects, under families and
 // deployRepos (the kept repositories and "", every deploy repository a member is counted under),
 // with the deploy run that shipped it then: the primary key's range of each project, family,
-// deploy repository and key.
+// deploy repository and key. projects (every project and owner key) and members (a page's items)
+// grow with the history and the page, so each goes in cuts (statementChunks): the projects in
+// cuts of at most half of statementBytes, all in one where they fit, and the members in cuts of
+// what the rest of a statement holds, each statement one cut of each.
 func (s *Store) heldMembers(ctx context.Context, projects, families, deployRepos, members []string) ([]heldMember, error) {
-	rows, err := s.database.Pool.Query(ctx, `
-		select project_key, row_key, day, shipped_by from eval_day_members
-		where project_key = any($1) and family = any($2) and deploy_repo = any($3) and row_key = any($4)
-		order by project_key, row_key, day
-	`, projects, families, deployRepos, members)
-	if err != nil {
-		return nil, fmt.Errorf("read where %d items were counted: %w", len(members), err)
+	projectBytes := 0
+	for i := range projects {
+		projectBytes += textBytes(&projects[i])
 	}
-	return collectHeld(rows, fmt.Sprintf("where %d items were counted", len(members)))
+	// A cut of the projects takes at most reserve bytes, the rest of a statement its other lists:
+	// statementChunks closes a cut at statementBytes, counted from statementBytes-reserve.
+	reserve := min(projectBytes, statementBytes/2)
+	base := paramBytes(4) + reserve
+	for _, list := range [][]string{families, deployRepos} {
+		for i := range list {
+			base += textBytes(&list[i])
+		}
+	}
+	what := fmt.Sprintf("where %d items were counted", len(members))
+	var held []heldMember
+	for named := range statementChunks(projects, statementBytes-reserve, textBytes) {
+		for keys := range statementChunks(members, base, textBytes) {
+			rows, err := s.database.Pool.Query(ctx, `
+				select project_key, row_key, day, shipped_by from eval_day_members
+				where project_key = any($1) and family = any($2) and deploy_repo = any($3) and row_key = any($4)
+				order by project_key, row_key, day
+			`, named, families, deployRepos, keys)
+			if err != nil {
+				return nil, fmt.Errorf("read %s: %w", what, err)
+			}
+			found, err := collectHeld(rows, what)
+			if err != nil {
+				return nil, err
+			}
+			held = append(held, found...)
+		}
+	}
+	return held, nil
 }
 
 // shippedMembersQuery is shippedMembers' statement. It carries eval_day_members_shipped's predicate
@@ -342,43 +375,63 @@ func (s *Store) subtreeCloseDays(ctx context.Context, keys []string) ([]projectD
 	return days, nil
 }
 
-// firstDays is the first day of project's all-repositories rows of each eval rows names, by eval
-// and deploy repository (evalKey), among the computation's rows before before (every row, where
-// before is nil): the earliest over the series rows names of the eval and deploy repository (a
-// zero day's rows, which name each series an eval's builder writes on every day it has input, for
-// each deploy repository whose rows are kept), each the first entry of one range of the primary
-// key, which the bound ends. An eval with no such row has no entry.
-func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow, before *time.Time) (map[evalKey]time.Time, error) {
-	first := map[evalKey]time.Time{}
-	if len(rows) == 0 {
-		return first, nil
+// firstDays is, for each project of zeros, the first day of its all-repositories rows of each eval
+// its rows name, by eval and deploy repository (evalKey), among the computation's rows before
+// before (every row, where before is nil): the earliest over the series the project's rows name
+// of the eval and deploy repository (a zero day's rows, which name each series an eval's builder
+// writes on every day it has input, for each deploy repository whose rows are kept), each the
+// first entry of one range of the primary key, which the bound ends. An eval with no such row has
+// no entry, and a project with none an empty map. One read for every project, the rows in
+// statements of at most statementBytes (statementChunks): a project's rows of one eval and deploy
+// repository that two statements share are the earliest of both.
+func (s *Store) firstDays(ctx context.Context, zeros map[string][]DayRow, before *time.Time) (map[string]map[evalKey]time.Time, error) {
+	type given struct {
+		project string
+		row     *DayRow
 	}
-	evals, deployRepos, series := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
-	for i, row := range rows {
-		evals[i], deployRepos[i], series[i] = row.EvalID, row.DeployRepo, row.Series
+	first := make(map[string]map[evalKey]time.Time, len(zeros))
+	var named []given
+	for _, project := range slices.Sorted(maps.Keys(zeros)) {
+		first[project] = map[evalKey]time.Time{}
+		for i := range zeros[project] {
+			named = append(named, given{project: project, row: &zeros[project][i]})
+		}
 	}
-	read, err := s.database.Pool.Query(ctx, `
-		select given.eval_id, given.deploy_repo, min(stored.day)
-		from unnest($2::text[], $5::text[], $3::text[]) as given(eval_id, deploy_repo, series)
-		cross join lateral (
-			select day from eval_days
-			where project_key = $1 and eval_id = given.eval_id and writer = $4 and deploy_repo = given.deploy_repo
-				and series = given.series and repo = '' and day < coalesce($6::date, 'infinity'::date)
-			order by day
-			limit 1
-		) stored
-		group by given.eval_id, given.deploy_repo
-	`, project, evals, series, writerComputation, deployRepos, before)
-	if err != nil {
-		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
+	size := func(one *given) int {
+		return 4*4 + len(one.project) + len(one.row.EvalID) + len(one.row.DeployRepo) + len(one.row.Series)
 	}
-	var key evalKey
-	var day time.Time
-	if _, err := pgx.ForEachRow(read, []any{&key.eval, &key.deployRepo, &day}, func() error {
-		first[key] = measures.Midnight(day)
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
+	for chunk := range statementChunks(named, paramBytes(4, writerComputation)+4+8, size) {
+		projects, evals, deployRepos, series := make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk)), make([]string, len(chunk))
+		for i, one := range chunk {
+			projects[i], evals[i], deployRepos[i], series[i] = one.project, one.row.EvalID, one.row.DeployRepo, one.row.Series
+		}
+		read, err := s.database.Pool.Query(ctx, `
+			select given.project_key, given.eval_id, given.deploy_repo, min(stored.day)
+			from unnest($1::text[], $2::text[], $5::text[], $3::text[]) as given(project_key, eval_id, deploy_repo, series)
+			cross join lateral (
+				select day from eval_days
+				where project_key = given.project_key and eval_id = given.eval_id and writer = $4 and deploy_repo = given.deploy_repo
+					and series = given.series and repo = '' and day < coalesce($6::date, 'infinity'::date)
+				order by day
+				limit 1
+			) stored
+			group by given.project_key, given.eval_id, given.deploy_repo
+		`, projects, evals, series, writerComputation, deployRepos, before)
+		if err != nil {
+			return nil, fmt.Errorf("read the first days of %d projects' series: %w", len(zeros), err)
+		}
+		var project string
+		var key evalKey
+		var day time.Time
+		if _, err := pgx.ForEachRow(read, []any{&project, &key.eval, &key.deployRepo, &day}, func() error {
+			day = measures.Midnight(day)
+			if since, held := first[project][key]; !held || day.Before(since) {
+				first[project][key] = day
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the first days of %d projects' series: %w", len(zeros), err)
+		}
 	}
 	return first, nil
 }
@@ -388,32 +441,34 @@ func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow, be
 // walk's batch writes whether or not it builds a row of them, so a day whose input left keeps no
 // row a whole walk would not hold (refresh.walkDays). One read of eval_days_window (project, repo,
 // day, over the listed rows) for the batch: every series of a computed eval is listed but a job
-// series, which a day holds only beside its eval's listed series.
+// series, which a day holds only beside its eval's listed series. Its evals are named by their
+// slugs, a row's eval id being its project's key, a `/` and its slug (eval_days_eval_of_project),
+// which a filter of the index range reads as the eval ids of every project would be, and the
+// projects, every project and owner key, which grow with the history, go in statements of at most
+// statementBytes.
 func (s *Store) heldDays(ctx context.Context, family string, projects, slugs []string, from, through time.Time) (map[builtDay]bool, error) {
 	held := map[builtDay]bool{}
-	if len(projects) == 0 {
-		return held, nil
+	base := paramBytes(2, writerComputation) + 2*(4+8)
+	for i := range slugs {
+		base += textBytes(&slugs[i])
 	}
-	evalIDs := make([]string, 0, len(projects)*len(slugs))
-	for _, project := range projects {
-		for _, slug := range slugs {
-			evalIDs = append(evalIDs, EvalID(project, slug))
+	for chunk := range statementChunks(projects, base, textBytes) {
+		rows, err := s.database.Pool.Query(ctx, `
+			select distinct project_key, day from eval_days
+			where project_key = any($1) and repo = '' and listed and day >= $2 and day <= $3
+				and substr(eval_id, length(project_key) + 2) = any($4) and writer = $5
+		`, chunk, from, through, slugs, writerComputation)
+		if err != nil {
+			return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
 		}
-	}
-	rows, err := s.database.Pool.Query(ctx, `
-		select distinct project_key, day from eval_days
-		where project_key = any($1) and repo = '' and listed and day >= $2 and day <= $3 and eval_id = any($4) and writer = $5
-	`, projects, from, through, evalIDs, writerComputation)
-	if err != nil {
-		return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
-	}
-	var project string
-	var day time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&project, &day}, func() error {
-		held[builtDay{family: family, project: project, day: measures.Midnight(day)}] = true
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
+		var project string
+		var day time.Time
+		if _, err := pgx.ForEachRow(rows, []any{&project, &day}, func() error {
+			held[builtDay{family: family, project: project, day: measures.Midnight(day)}] = true
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the days holding %s rows from %s through %s: %w", family, from.Format(time.DateOnly), through.Format(time.DateOnly), err)
+		}
 	}
 	return held, nil
 }
@@ -554,7 +609,7 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 	}); err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
 	}
-	if err := foldFiguresInTx(ctx, tx, r.build, project, spans); err != nil {
+	if err := foldFiguresInTx(ctx, tx, r.build, map[string]map[string]daySpan{project: spans}); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {

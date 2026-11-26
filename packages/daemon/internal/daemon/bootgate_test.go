@@ -84,6 +84,7 @@ func link(t *testing.T, unpacked, installed string) {
 // plugins: the profile OMP_PROFILE (else PI_PROFILE) names, under HOME's .omp, unless an XDG data
 // root already holds that profile's state.
 func TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot(t *testing.T) {
+	t.Parallel()
 	passwdHome := ""
 	if u, err := user.Current(); err == nil {
 		passwdHome = u.HomeDir
@@ -268,6 +269,7 @@ func TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot(t *testing.T) {
 
 // Oh My Pi refuses a profile name it cannot use, and so does the gate, naming it.
 func TestPluginManifestPathRefusesAProfileOhMyPiRefuses(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"Work", "..", "work.", "-work", "con", "nul.txt"} {
 		_, _, err := pluginManifestPath(map[string]string{"HOME": t.TempDir(), "OMP_PROFILE": name}, t.TempDir())
 		if err == nil || !strings.Contains(err.Error(), `Invalid OMP profile "`+name+`"`) {
@@ -414,6 +416,7 @@ const (
 // A manifest that declares another contract — or none, or one that is not a number — is refused
 // naming the manifest, the package version, and both numbers, before any Oh My Pi is run.
 func TestTheGateRefusesAPluginOfAnotherContractBeforeRunningOhMyPi(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name, legion, declared string
 	}{
@@ -448,6 +451,7 @@ func TestTheGateRefusesAPluginOfAnotherContractBeforeRunningOhMyPi(t *testing.T)
 // read then and the TypeScript daemon's 9 under the one it reads now: it is refused, naming the 9,
 // however the old field reads.
 func TestTheGateRefusesAPluginFromBeforeTheRename(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, `{"daemonApiVersion":9,"goDaemonApiVersion":3}`)
 
@@ -467,6 +471,7 @@ func TestTheGateRefusesAPluginFromBeforeTheRename(t *testing.T) {
 }
 
 func TestTheGateRefusesAManifestItCannotRead(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	manifest := manifestAt(filepath.Join(gate.env["HOME"], ".omp", "profiles", "gate"))
@@ -491,6 +496,7 @@ func TestTheGateRefusesAManifestItCannotRead(t *testing.T) {
 // prefix, under the pane's environment and nothing of the daemon's own. A pass is logged in the
 // words the e2e stages grep for, naming the Envoy plugin's interface and where it loaded from.
 func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	f := newFakeOmp(t, "yes")
 	gate, logged := gateUnder(t, f, contractCurrent)
 	t.Setenv("LEGION_DAEMON_ONLY_SECRET", "the daemon's own")
@@ -553,6 +559,7 @@ func TestTheLoadProbeRunsWhatAPaneRunsAndPassesOnTheLoadedMarker(t *testing.T) {
 // own exit on a loaded box. An exit inside the budget whose pipe is held past it is
 // TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt's.
 func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutputPipe(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-then-linger")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.retry.Attempts = 1
@@ -583,6 +590,7 @@ func TestTheLoadProbePassesOnTheFirstAttemptEvenWhenALingeringChildHoldsTheOutpu
 // inside the last WaitDelay of slow_command_timeout_seconds would be retried, and refused once its
 // retries ran out.
 func TestAProbeThatExitsWithinItsBudgetIsNotCutOffByAChildHoldingItsPipePastIt(t *testing.T) {
+	t.Parallel()
 	pidFile := filepath.Join(t.TempDir(), "lingering.pid")
 	t.Cleanup(func() { killPIDFile(t, pidFile) })
 	gate := pluginGate{env: map[string]string{"PATH": os.Getenv("PATH")}, workDir: t.TempDir(), timeout: procgroup.WaitDelay - 100*time.Millisecond}
@@ -621,6 +629,7 @@ func killPIDFile(t *testing.T, pidFile string) {
 // another plugin root than the pane environment names, and the contract probe would have vouched
 // for a plugin no pane runs.
 func TestTheLoadProbeRefusesAPluginLoadedFromAnotherRoot(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		step string
 		want []string
@@ -657,6 +666,7 @@ func TestTheLoadProbeRefusesAPluginLoadedFromAnotherRoot(t *testing.T) {
 // A probe that ran and did not see the plugin load is an answer, not a failure to retry: the
 // plugin is installed and disabled, or not registered.
 func TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad(t *testing.T) {
+	t.Parallel()
 	for _, step := range []string{"no", "silent", "no-then-hang"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step)
@@ -678,6 +688,7 @@ func TestTheLoadProbeRefusesAPluginOhMyPiDidNotLoad(t *testing.T) {
 // A pi-legion loaded with no pi-envoy has nothing to claim its role through: the gate refuses,
 // naming the pi-envoy release to install into the pane's profile.
 func TestTheLoadProbeRefusesAPluginWithoutTheEnvoyPlugin(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-no-envoy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
@@ -696,6 +707,7 @@ func TestTheLoadProbeRefusesAPluginWithoutTheEnvoyPlugin(t *testing.T) {
 // from different commits: the gate refuses, naming both versions, where pi-envoy loaded from, and
 // the remedy of installing both releases.
 func TestTheLoadProbeRefusesAPluginAtAnotherEnvoyInterface(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-envoy-mismatch")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
@@ -715,6 +727,7 @@ func TestTheLoadProbeRefusesAPluginAtAnotherEnvoyInterface(t *testing.T) {
 // Legion entries against the same pane: the gate refuses, naming the uninstall under the pane's
 // profile, before any word on pi-envoy.
 func TestTheLoadProbeRefusesAPluginBesideTheOldPackage(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-legacy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 
@@ -733,6 +746,7 @@ func TestTheLoadProbeRefusesAPluginBesideTheOldPackage(t *testing.T) {
 // reads no pi-envoy manifest of its own to hold it to, so one loaded from another root passes,
 // and one no @sjawhar/pi-envoy manifest owns is refused.
 func TestTheLoadProbeHoldsTheEnvoyPluginToAManifestOfItsName(t *testing.T) {
+	t.Parallel()
 	for _, testCase := range []struct {
 		name  string
 		owned bool
@@ -764,6 +778,7 @@ func TestTheLoadProbeHoldsTheEnvoyPluginToAManifestOfItsName(t *testing.T) {
 // loaded, the skills it ships are missing too, and the gate names the missing plugin, never the
 // missing skill.
 func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "yes-no-envoy")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.roleReferences = promptrefs.New()
@@ -786,6 +801,7 @@ func TestTheGateRefusesAMissingEnvoyBeforeTheMissingSkills(t *testing.T) {
 // not Oh My Pi — is its own refusal, with the command and what it printed. One a signal ended names
 // the signal where an exit names its status: it has none, and read as one it was `(exit -1)`.
 func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
+	t.Parallel()
 	for step, ending := range map[string]string{"denied": "(exit 3)", "denied-then-killed": "(signal: killed)"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step)
@@ -814,6 +830,7 @@ func TestTheLoadProbeRefusesALaunchThatFailsBeforeOhMyPi(t *testing.T) {
 // A pass slower than a second or two passes on the first attempt that answers, as it does on a
 // loaded machine.
 func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
+	t.Parallel()
 	for _, step := range []string{"yes-then-die", "yes-then-killed"} {
 		t.Run(step, func(t *testing.T) {
 			f := newFakeOmp(t, step, step, "yes-slowly", "yes")
@@ -837,6 +854,7 @@ func TestTheLoadProbeRetriesWhatSaysNothingAboutThePlugin(t *testing.T) {
 // and its transient lines: the fake's own count can fall short of it, as an attempt cut off before
 // the fake wrote its count leaves none, and it can never pass it.
 func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
+	t.Parallel()
 	plan := []string{"hang"}
 	f := newFakeOmp(t, plan...)
 	gate, logged := gateUnder(t, f, contractCurrent)
@@ -859,6 +877,7 @@ func TestTheLoadProbeGivesUpOnAProbeCutOffEveryTime(t *testing.T) {
 
 // A daemon stopped while its gate waits kills the probe it is running and starts no other.
 func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
+	t.Parallel()
 	f := newFakeOmp(t, "hang")
 	gate, _ := gateUnder(t, f, contractCurrent)
 	gate.timeout = time.Minute
@@ -897,9 +916,10 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 // stops cleanly, having served nothing. The plugin is held to this daemon's own number, so the
 // contract below it — the one the previous release pins — is refused like any other.
 func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	// The daemon holds the plugin to its own DaemonAPIVersion.
-	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion) + `}`
-	previous := strconv.Itoa(api.DaemonAPIVersion - 1)
+	thisDaemons := `{"daemonApiVersion":` + strconv.Itoa(api.DaemonAPIVersion()) + `}`
+	previous := strconv.Itoa(api.DaemonAPIVersion() - 1)
 	for _, testCase := range []struct {
 		name, legion, step, want string
 	}{
@@ -947,12 +967,13 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 // The tmux gate asks the load probe for the skills and task agents the daemon's role prompts name,
 // beside the plugin's own: legion-controller is loaded by roles/controller-root.md alone.
 func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	cfg := testConfig(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("OMP_PROFILE", "gate")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
-		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
+		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion())+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil
@@ -982,6 +1003,7 @@ func TestTheTmuxGateAsksForWhatTheRolePromptsName(t *testing.T) {
 // resolves under the gate as it will in a pane. The daemon's own value of the variable, which no
 // pane carries, never reaches the probe.
 func TestTheGateProbesWithTheProviderKeysAPaneGets(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process.
 	cfg := testConfig(t)
 	cfg.ProviderKeys = []config.ProviderKey{{Env: "GEMINI_API_KEY", Secret: "GEMINI_API_KEY_TESTS"}}
 	stub := t.TempDir()
@@ -1001,7 +1023,7 @@ esac
 	t.Setenv("PATH", stub+":"+os.Getenv("PATH"))
 	t.Setenv("GEMINI_API_KEY", "the-daemons-own")
 	writeManifest(t, manifestAt(filepath.Join(home, ".omp", "profiles", "gate")),
-		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion)+`}`)
+		`{"daemonApiVersion":`+strconv.Itoa(api.DaemonAPIVersion())+`}`)
 	f := newFakeOmp(t, "no")
 	o := fakeRuntime(fake.NewRuntime(), &built{})
 	o.runtime = nil
@@ -1033,6 +1055,7 @@ esac
 // legion.issue nor legion.role, and the probe's minutes are billed under the deployment's own
 // attributes rather than under some launch's issue.
 func TestTheGateIsToldTheOperatorsSpendAttributesAlone(t *testing.T) {
+	t.Parallel()
 	// The live deployment's shape, with a placeholder person, as an operator writes it: the
 	// project, the lane, the credential the gateway bills and the person who owns the spend.
 	const operator = "acme.project=legion,acme.lane=legion-infra,acme.credential=gateway,acme.person=sami@example.com"

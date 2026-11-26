@@ -17,22 +17,30 @@ const releaseBuild = "api-release-build"
 // architect's 07:59Z ruling): a release whose rebuild moves values lands them in one commit, its
 // flip, whose eval_days changes carry the rebuild's mark, so the Delivery page's live hub
 // recomputes an evals view of them at once and sends it one delta. Over the refreshed history, three
-// days of the main project's deploy-frequency rows in the page's window are moved away from what
-// their input builds, as a build whose rules differ leaves them (their updated_at with them, so the
-// stored figures' read of the change log folds them again), and the running build's passes fold
-// their figures; the page takes the deltas of that write. Then a new build's refresher runs its
-// passes until it has nothing left to do, on a hub whose clock stands still: the page gets one
-// delta, which lands on the route's body, from one recompute of cause rebuild, and nothing follows
-// it, however far the clock moves past every quiet. Before, the new build's walk rewrote the days
-// one commit each, each change waiting for its quiet.
+// days of the deploy-frequency rows the main project reads in the page's window are moved away from
+// what their input builds, as a build whose rules differ leaves them (their updated_at with them, so
+// the stored figures' read of the change log folds them again): the rows of every key the project
+// reads (eval_project_owners, each eval id mapped to the key's as the reads map it). Every deploy
+// of this history is stored under an owner key of its repository (evals.OwnerKey) and none under
+// the project's own key: its issues own no repository, so a pull request is held through the
+// project's default repository, and a deploy that ships none counts for no issue. The running
+// build's passes fold their figures, and the page takes the deltas of that write. Then a new
+// build's refresher runs its passes until it has nothing left to do, on a hub whose clock stands
+// still: the page gets one delta, which lands on the route's body, from one recompute of cause
+// rebuild, and nothing follows it, however far the clock moves past every quiet. Before, the new
+// build's walk rewrote the days one commit each, each change waiting for its quiet.
 func TestARestartThatMovesValuesSendsTheEvalsPageOneDeltaAtItsFlip(t *testing.T) {
 	page := newRefreshedEvalsPage(t, nil, nil)
 	project := page.fixture.Project
 	today := page.now.Truncate(24 * time.Hour)
 	if _, err := page.rig.database.Pool.Exec(t.Context(), `
-		update eval_days set n = n + 2, sum = coalesce(sum, 0) + 2, updated_at = clock_timestamp()
-		where project_key = $1 and eval_id = $2 and writer = 'computation' and repo = '' and day in (
-			select distinct day from eval_days where project_key = $1 and eval_id = $2 and n > 0 and day > $3 order by day desc limit 3)
+		update eval_days d set n = d.n + 2, sum = coalesce(d.sum, 0) + 2, updated_at = clock_timestamp()
+		from eval_project_owners o
+		where o.project_key = $1 and d.project_key = o.owner and d.eval_id = o.owner || substr($2, length($1) + 1)
+			and d.writer = 'computation' and d.repo = '' and d.day in (
+				select distinct r.day from eval_project_owners ro
+				join eval_days r on r.project_key = ro.owner and r.eval_id = ro.owner || substr($2, length($1) + 1)
+				where ro.project_key = $1 and r.n > 0 and r.day > $3 order by r.day desc limit 3)
 	`, project, evals.EvalID(project, evals.SlugDeployFrequency), today.AddDate(0, 0, -27)); err != nil {
 		t.Fatalf("move three days of deploy-frequency: %v", err)
 	}
@@ -53,7 +61,7 @@ func TestARestartThatMovesValuesSendsTheEvalsPageOneDeltaAtItsFlip(t *testing.T)
 		t.Fatalf("the release's passes: %v", err)
 	}
 	page.rig.hub.catchUpNow()
-	delta := page.conn.delta(t, 10*time.Second, "e")
+	delta := page.conn.delta(t, "e")
 	page.held = applyLiveDelta(t, evalsView, page.held, delta)
 	page.requireAtRoute(t, "the release's one delta")
 	if reflect.DeepEqual(liveComparable(t, mustEncodeLive(t, evalsView, before)), liveComparable(t, mustEncodeLive(t, evalsView, page.held))) {

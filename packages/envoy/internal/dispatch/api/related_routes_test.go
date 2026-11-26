@@ -59,6 +59,7 @@ func relatedOwners(suggestions testSuggestions) []string {
 // a common one, and the check leaves no row behind. The title's other words are ones no item of
 // the project holds, the project's seeded evals-md (dispatch://INFRA-2916, R5) included.
 func TestRelatedRouteGetWithATitleFindsTheRareWordMatchAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RGET")
 	for index := range 30 {
@@ -83,6 +84,7 @@ func TestRelatedRouteGetWithATitleFindsTheRareWordMatchAndWritesNothing(t *testi
 // words are ones no item of the project holds, the project's seeded evals-md (dispatch://INFRA-2916,
 // R5) included.
 func TestRelatedRoutePostChecksALongSpec(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RPOST")
 	target := createSearchIssue(t, handler, "RPOST", "Brewing records", "Our zymurgy fermentation log.")
@@ -115,6 +117,7 @@ func TestRelatedRoutePostChecksALongSpec(t *testing.T) {
 // the items; another issue holding the words is still listed. An issue that is not the project's
 // is refused.
 func TestRelatedRouteExcludeIssueLeavesItsOwnItemsOut(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REXCL")
 	createSuggestionProject(t, handler, "ROTHER")
@@ -154,12 +157,13 @@ func TestRelatedRouteExcludeIssueLeavesItsOwnItemsOut(t *testing.T) {
 // keywords_only skips the meaning search a configured embedder would otherwise answer: the result
 // says it searched by keywords only because that was asked for, and the text is never embedded.
 func TestRelatedRouteKeywordsOnlySkipsMeaning(t *testing.T) {
+	t.Parallel()
 	const title, text = "Nightly backups overrun their window", "Nightly snapshots finish late"
 	embedder := &fakeEmbedder{vectors: map[string][]float32{
 		issueEmbeddingText(title, ""): angledVector(0.9, 2),
 		text:                          queryVector(),
 	}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, relatedBound: meaningVerdictBound(t)})
 	createSuggestionProject(t, handler, "RKEY")
 	key := createSearchIssue(t, handler, "RKEY", title, "")
 	processAllPending(t, database, embedder)
@@ -193,6 +197,7 @@ func TestRelatedRouteKeywordsOnlySkipsMeaning(t *testing.T) {
 // The bare path, as the deployment's production check GETs it, answers 200 with a check not made
 // for a blank text; an unknown project is 404 as on every {key} route.
 func TestRelatedRouteBareGetIsNotMadeAndAnUnknownProjectIs404(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RBARE")
 	createSearchIssue(t, handler, "RBARE", "Zymurgy ledger drifts", "")
@@ -281,6 +286,7 @@ func sameTiming(got, want model.RelatedCheckTiming) bool {
 // project and source kind filters narrow it. A check whose request ended first (cancelled) is
 // neither completed nor skipped for time.
 func TestRelatedChecksRouteCountsAndPercentilesOverTheWindow(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REC")
 	createSuggestionProject(t, handler, "RECB")
@@ -366,6 +372,7 @@ func TestRelatedChecksRouteCountsAndPercentilesOverTheWindow(t *testing.T) {
 // A source kind the table does not hold, or a bound that is not a time or ends the window before
 // it starts, is refused.
 func TestRelatedChecksRouteRefusesABadFilter(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	for _, query := range []string{
 		"source_kind=comment",
@@ -400,6 +407,7 @@ func uploadProjectDocument(t *testing.T, handler http.Handler, project, name, ma
 // comes after every open one. A project document is what the audit found taking an issue's
 // place: a filer can fold into an issue and only read a document.
 func TestRelatedItemsListOpenIssuesBeforeAnyOtherItem(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RORDER")
 	const subject = "zymurgy ledger reconciliation drifts after a gnomon reseat"
@@ -450,6 +458,7 @@ func TestRelatedItemsListOpenIssuesBeforeAnyOtherItem(t *testing.T) {
 // The no-write route leaves out every issue its list names, and a released client's single
 // exclude_issue as a string still answers 200 and leaves that issue out.
 func TestRelatedRouteExcludeIssuesLeavesEveryNamedIssueOut(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "REXCLS")
 	const subject = "zymurgy ledger reconciliation drifts"
@@ -509,6 +518,7 @@ func TestRelatedRouteExcludeIssuesLeavesEveryNamedIssueOut(t *testing.T) {
 // answers none while the match it exists to find sits below it - which is what the list is for,
 // a read that leaves out an issue and its subtree (INFRA-1160).
 func TestRelatedRouteExcludedIssuesLeaveTheSearchWindowNotJustItsResults(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	createSuggestionProject(t, handler, "RWIN")
 	// The keeper is filed first, so it is the oldest of the issues that tie on anything, and it

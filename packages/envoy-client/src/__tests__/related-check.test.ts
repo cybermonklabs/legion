@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { AdviceDeclinedAsk, SessionAnswer, WriteAdvice } from "@legion/contracts";
-import { declinedAskLines } from "../related-check";
+import type {
+  AdviceDeclinedAsk,
+  SessionAnswer,
+  WriteAdvice,
+  WriteSuggestion,
+} from "@legion/contracts";
+import { declinedAskLines, relatedCheckLines } from "../related-check";
 import { renderSessionAnswerItem } from "../session-answers";
 
 /** The four sentences Dispatch writes beside a person's note when they decline to answer
@@ -128,5 +133,35 @@ describe("what a write about to ask is told of the issue's declined asks", () =>
         `Dispatch's words: ${DISPATCH_WORDS}`,
       ].join("\n")
     );
+  });
+});
+
+describe("the related-item check's hits", () => {
+  // A hit of a comment or a message carries the post's `snippet`, and a hit carries no mark of a
+  // delete (`WriteSuggestion`). The line names the hit by its owner and links it, and prints no
+  // snippet, so no check, fresh or kept, prints a part of a post's body.
+  test("a hit of a comment or a message prints its owner and its link, and never its snippet", () => {
+    const hit = (kind: string, key: string, id: string): WriteSuggestion => ({
+      kind,
+      owner: { kind: "issue", key, title: "Webhook retries", status: "triage" },
+      id,
+      snippet: `the <mark>webhook</mark> words of ${id}`,
+      href: `/issues/${key}#${kind}-${id}`,
+    });
+
+    const lines = relatedCheckLines(
+      {
+        outcome: "found",
+        search: "meaning_and_keywords",
+        related: [hit("comment", "CORE-7", "c-1"), hit("message", "CORE-8", "m-1")],
+      },
+      { project: "CORE", text: "Retry webhook deliveries", linkBase: CONFIG_URL }
+    );
+
+    expect(lines).toEqual([
+      "Related items (searched by meaning and keywords):",
+      "- CORE-7 [triage] Webhook retries → http://dispatch.test/issues/CORE-7#comment-c-1",
+      "- CORE-8 [triage] Webhook retries → http://dispatch.test/issues/CORE-8#message-m-1",
+    ]);
   });
 });

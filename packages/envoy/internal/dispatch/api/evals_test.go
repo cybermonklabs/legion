@@ -379,6 +379,143 @@ func showKept(kept *int64) string {
 	return fmt.Sprint(*kept)
 }
 
+// keptAnswer is the size of the answer the idempotency key key keeps (request_keys.response), nil
+// where it keeps none.
+func keptAnswer(t *testing.T, database *store.Store, key string) *int64 {
+	t.Helper()
+	var kept *int64
+	if err := database.Pool.QueryRow(t.Context(), `select octet_length(response) from request_keys where idempotency_key = $1`, key).Scan(&kept); err != nil {
+		t.Fatalf("read the answer the key %s keeps: %v", key, err)
+	}
+	return kept
+}
+
+// checkKeptReplay fails unless first, an eval write's answer, takes at most evals.MaxAnswerBytes
+// and is the answer its key keeps, and repeat, the same request again under that key, is answered
+// it byte for byte and marked replayed: not ANSWER_NOT_KEPT, which a key answers whose first
+// answer was past what it keeps.
+func checkKeptReplay(t *testing.T, database *store.Store, key string, first, repeat *httptest.ResponseRecorder) {
+	t.Helper()
+	kept := keptAnswer(t, database, key)
+	if first.Body.Len() > evals.MaxAnswerBytes || kept == nil || *kept != int64(first.Body.Len()) {
+		t.Errorf("the write answered %d bytes and its key keeps %s, want the answer kept whole, within %d", first.Body.Len(), showKept(kept), evals.MaxAnswerBytes)
+	}
+	if repeat.Code != first.Code || repeat.Header().Get(contracts.IdempotencyReplayedHeader) == "" || repeat.Body.String() != first.Body.String() {
+		var refusal evalRefusal
+		_ = json.Unmarshal(repeat.Body.Bytes(), &refusal)
+		t.Errorf("the repeat under the key answered %d %s (%s %q), %d bytes; want the first answer, %d and %d bytes, replayed",
+			repeat.Code, refusal.Code, contracts.IdempotencyReplayedHeader, repeat.Header().Get(contracts.IdempotencyReplayedHeader),
+			repeat.Body.Len(), first.Code, first.Body.Len())
+	}
+}
+
+// TestAMegabyteOfGoodReadingsIsAnsweredWithABoundedKeptAnswer: a readings body of nearly a
+// megabyte, the most the route takes, of small good readings stores every one of them and is
+// answered 201 counting them all in total and listing the first of them in the batch's order,
+// fewer than total, limit counting those; that answer takes at most evals.MaxAnswerBytes and is
+// the one its idempotency key keeps; and the same request again under the key is answered it
+// byte for byte, replayed, storing no second reading. A reading the answer leaves out is read
+// back with its id from the eval's items.
+func TestAMegabyteOfGoodReadingsIsAnsweredWithABoundedKeptAnswer(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	var rows []any
+	for size := 0; ; {
+		next := map[string]any{"series": "s", "row_kind": "r", "row_key": fmt.Sprint(len(rows)), "value": 1, "measured_at": at}
+		encoded, err := json.Marshal(next)
+		if err != nil {
+			t.Fatalf("encode a row: %v", err)
+		}
+		if size+len(encoded)+1 > 1<<20-512 {
+			break
+		}
+		rows, size = append(rows, next), size+len(encoded)+1
+	}
+	const key = "good-rows-megabyte"
+	path, body := "/api/v1/projects/EVL/evals/good-rows/readings", map[string]any{"readings": rows}
+	count := func() int64 {
+		return countRows(t, database, `select count(*) from eval_readings where eval_id = 'EVL/good-rows'`)
+	}
+	first := evalRequest(t, handler, http.MethodPost, path, body, key)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("a body of %d good readings: status %d, %.300s", len(rows), first.Code, first.Body.String())
+	}
+	answer := decodeBody[evalReadingsResponse](t, first)
+	ordered := true
+	for index, item := range answer.Items {
+		ordered = ordered && item.RowKey == fmt.Sprint(index)
+	}
+	if answer.Total != len(rows) || answer.Limit != len(answer.Items) || answer.Offset != 0 || len(answer.Items) == 0 || len(answer.Items) >= len(rows) || !ordered {
+		t.Errorf("a body of %d readings was answered total %d, limit %d, offset %d, %d items in the batch's order %t; want total %d and fewer items, the first, counted by limit",
+			len(rows), answer.Total, answer.Limit, answer.Offset, len(answer.Items), ordered, len(rows))
+	}
+	stored := count()
+	repeat := evalRequest(t, handler, http.MethodPost, path, body, key)
+	checkKeptReplay(t, database, key, first, repeat)
+	if again := count(); stored != int64(len(rows)) || again != stored {
+		t.Errorf("the body stored %d readings and its repeat left %d, want %d both times", stored, again, len(rows))
+	}
+	last := fmt.Sprint(len(rows) - 1)
+	items := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/EVL/evals/good-rows/items?row_kind=r&row="+last)
+	if len(items.Items) != 1 || items.Items[0].Cols["id"] == nil || items.Items[0].Cols["id"] == "" {
+		t.Errorf("the items of row %s answer %+v, want the one reading with its id", last, items.Items)
+	}
+	t.Logf("%d readings stored: %d listed in an answer of %d bytes, kept and replayed", len(rows), len(answer.Items), first.Body.Len())
+}
+
+// TestTheMostSeriesAtTheLargestNamesAreAnsweredWithABoundedKeptAnswer: a register write of
+// evals.MaxEvalSeries series under a slug and names of the most bytes a key holds (512), which
+// all listed would pass the answer's bound, is answered 201 with series_total
+// evals.MaxEvalSeries and the first of the eval's series by name, fewer than all; that answer takes
+// at most evals.MaxAnswerBytes and is the one its idempotency key keeps; and the same request
+// again under the key is answered it byte for byte, replayed, storing no second version.
+func TestTheMostSeriesAtTheLargestNamesAreAnsweredWithABoundedKeptAnswer(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	const keyBytes = 512
+	slug := strings.Repeat("a", keyBytes)
+	names := make([]string, evals.MaxEvalSeries)
+	var series []any
+	for index := range names {
+		head := fmt.Sprintf("s%03d-", index)
+		names[index] = head + strings.Repeat("x", keyBytes-len(head))
+		series = append(series, map[string]any{"series": names[index]})
+	}
+	const key = "most-series"
+	path, body := "/api/v1/projects/EVL/evals", map[string]any{"slug": slug, "series": series}
+	versions := func() [2]int64 {
+		return [2]int64{
+			countRows(t, database, `select count(*) from eval_versions where eval_id = $1`, "EVL/"+slug),
+			countRows(t, database, `select count(*) from eval_series where eval_id = $1`, "EVL/"+slug),
+		}
+	}
+	first := evalRequest(t, handler, http.MethodPost, path, body, key)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("a register write of %d series: status %d, %.300s", len(names), first.Code, first.Body.String())
+	}
+	answer := decodeBody[evalRegisterResponse](t, first)
+	if len(answer.Items) != 1 {
+		t.Fatalf("the register write answered %d items, want 1", len(answer.Items))
+	}
+	registered := answer.Items[0]
+	listed := make([]string, len(registered.Series))
+	for index, one := range registered.Series {
+		listed[index] = one.Series
+	}
+	if registered.SeriesTotal != evals.MaxEvalSeries || len(listed) == 0 || len(listed) >= evals.MaxEvalSeries || !slices.Equal(listed, names[:len(listed)]) {
+		t.Errorf("the register write of %d series answered series_total %d and %d series, the first by name %t; want %d and fewer, the first by name",
+			len(names), registered.SeriesTotal, len(listed), slices.Equal(listed, names[:min(len(listed), len(names))]), evals.MaxEvalSeries)
+	}
+	stored := versions()
+	repeat := evalRequest(t, handler, http.MethodPost, path, body, key)
+	checkKeptReplay(t, database, key, first, repeat)
+	if again := versions(); stored != [2]int64{1, int64(evals.MaxEvalSeries)} || again != stored {
+		t.Errorf("the write stored %v versions of the definition and of series, and its repeat left %v; want 1 and %d both times", stored, again, evals.MaxEvalSeries)
+	}
+	t.Logf("%d series registered: %d listed in an answer of %d bytes, kept and replayed", registered.SeriesTotal, len(listed), first.Body.Len())
+}
+
 // TestAReadingsBatchRepeatedUnderItsKeyIsWrittenOnce: a batch of three under one key stores
 // three readings; the repeat under that key stores none and is answered the first answer, marked
 // replayed; the same batch under a fresh key stores three more, the negative control; and a
@@ -683,12 +820,29 @@ func readGoldenLegionWindows(t *testing.T) []goldenLegionWindow {
 // seedEvalHistories writes into database, behind handler, the two histories the eval reads are
 // checked over, and then refreshes their day rows as the server's refresher writes them, as of
 // the later end of the two (refreshEvalDays), which seeds every project's evals too:
-// deliverytest's (DELIV, every pull request of it, and DELIVX, which holds none) over days of
-// history, and the legiontest history legion/metrics' golden files were recorded over (GOLDEN).
-// It answers the delivery fixture and the golden windows.
+// deliverytest's (DELIV, whose issues every pull request names, and DELIVX, which holds none) over
+// days of history, and the legiontest history legion/metrics' golden files were recorded over
+// (GOLDEN). It answers the delivery fixture and the golden windows.
 func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int) (deliverytest.Fixture, []goldenLegionWindow) {
 	t.Helper()
+	return seedEvalHistoriesAs(t, database, deps, days, false)
+}
+
+// seedEvalHistoriesByIssue is seedEvalHistories with the delivery history's attribution inputs left
+// unread before the refresh (leaveAttributionInputsUnread), so every pull request counts for DELIV,
+// the project of the issue its row names: the history of a test whose oracle is that issue.
+func seedEvalHistoriesByIssue(t *testing.T, database *store.Store, deps Deps, days int) (deliverytest.Fixture, []goldenLegionWindow) {
+	t.Helper()
+	return seedEvalHistoriesAs(t, database, deps, days, true)
+}
+
+// seedEvalHistoriesAs is seedEvalHistories, and with byIssue seedEvalHistoriesByIssue.
+func seedEvalHistoriesAs(t *testing.T, database *store.Store, deps Deps, days int, byIssue bool) (deliverytest.Fixture, []goldenLegionWindow) {
+	t.Helper()
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: days})
+	if byIssue {
+		leaveAttributionInputsUnread(t, database.Pool)
+	}
 	windows := readGoldenLegionWindows(t)
 	spec := windows[0].Spec
 	history := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
@@ -697,7 +851,7 @@ func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int)
 	if fixture.To.After(end) {
 		end = fixture.To
 	}
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, end.Add(-time.Minute))
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, end.Add(-time.Minute))
 	return fixture, windows
 }
 
@@ -724,8 +878,9 @@ func nearly(got *float64, want, tolerance float64) bool {
 	return got != nil && math.Abs(*got-want) <= tolerance
 }
 
-// TestTheEvalReadsFoldTheStoredDayRows (R12, R16): over a project with
-// written day rows, the list read answers for one window the numbers the delivery routes answer
+// TestTheEvalReadsFoldTheStoredDayRows (R12, R16): over a project with written day rows, every pull
+// request of whose history counts for it by the issue its row names (seedEvalHistoriesByIssue),
+// the list read answers for one window the numbers the delivery routes answer
 // (GET /api/v1/delivery/measures for that window, and /pipeline at its last second, whose seven
 // days are the window's, since the Pipeline reads at alone; both build the same parts from the
 // population and fold them through the same folds), and the Legion evals answer the numbers the
@@ -737,7 +892,7 @@ func nearly(got *float64, want, tolerance float64) bool {
 // measured when its value was (itemMeasuredAt).
 func TestTheEvalReadsFoldTheStoredDayRows(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
-	fixture, windows := seedEvalHistories(t, database, deps, 14)
+	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
 
 	// The delivery evals against the delivery routes, over seven whole days of the history.
 	from, to := fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)
@@ -1037,7 +1192,7 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 	if series, days := deploys("flip"); series.Window["value"] == nil || *series.Window["value"] != 500 || days != 1 {
 		t.Fatalf("while flip is logged it reads %v and lists %d day rows; want the reading's 500 and its day's row", series.Window, days)
 	}
-	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, "SQL"); err != nil {
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, "SQL"); err != nil {
 		t.Fatalf("seed the evals of SQL: %v", err)
 	}
 	registered := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/SQL/evals",
@@ -1111,7 +1266,7 @@ func TestARegisterWriteOfNoTargetHoldsThroughTheSeed(t *testing.T) {
 	if written.Code != http.StatusCreated || len(registered.Items) != 1 || !registered.Items[0].Wrote || registered.Items[0].Definition.Version != 2 {
 		t.Fatalf("a register write of target null: status %d, body %s; want 201 with version 2, the version that records the choice", written.Code, written.Body.String())
 	}
-	if _, err := evals.New(database, deps.Docs, deps.Events).Ensure(ctx, "SQL"); err != nil {
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Ensure(ctx, "SQL"); err != nil {
 		t.Fatalf("seed the evals of SQL: %v", err)
 	}
 	after := target("after the seed")

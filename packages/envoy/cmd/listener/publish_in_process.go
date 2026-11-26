@@ -30,11 +30,11 @@ var errEarlierAttemptInProcess = errors.New("the request ended while an earlier 
 // clustered stream refuses it as still in process under another publish under the same message
 // id (bus.ErrDuplicateInProcess), since the next answer names the copy that publish stored. The
 // message routes take it - the send route and the publish route's team and captured topics
-// (sendHandler, publishHandler) - and so do a role forward (startRoleForward, which every role
-// send, role-lane delivery and kept-lane walk forwards through), a keep (storeKeptRoleCopy) and a
-// takeover's copy (keepTakenRoleFrame). So a resend that meets its own earlier attempt still
-// being stored, as a hub failover leaves one, is answered with that attempt's copy rather than as
-// a bus that did not answer.
+// (sendHandler, publishHandler, through publishHeld) - and so do a role forward
+// (startRoleForward, which every role send, role-lane delivery and kept-lane walk forwards
+// through), a keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame). So a resend
+// that meets its own earlier attempt still being stored, as a hub failover leaves one, is
+// answered with that attempt's copy rather than as a bus that did not answer.
 //
 // The listener's other publishes under a message id do not take it, and the earlier publish the
 // refusal names stores the one copy all the same. The webhook routes (webhookRoutes:

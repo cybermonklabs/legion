@@ -203,9 +203,12 @@ message from Dispatch's Agents page as that person's own turn.
   different message under the same key, and where its `ENVOY_URL` is not a plain http(s) URL (one
   with user info of any length, say) the URL is never printed; either way only the key is printed,
   with how to resend the original. A resend under a key exits 75 on any failure, since the send
-  before it may have arrived. Any other refusal, one for the sender's rate among them, prints the
-  listener's own sentence after `Claude Envoy send failed: `, exits 1 and is not sent again; so
-  does a listener that refused the connection or whose name did not resolve.
+  before it may have arrived. A send whose idempotency key another sender's message already holds
+  stored nothing: it prints `Claude Envoy send not delivered: …`, naming that message's event id,
+  and exits 1; run again without the key, it goes under a new one. Any other refusal, one for the
+  sender's rate among them, prints the listener's own sentence after `Claude Envoy send failed: `,
+  exits 1 and is not sent again; so does a listener that refused the connection or whose name did
+  not resolve.
 
 ## What a delivered line carries
 

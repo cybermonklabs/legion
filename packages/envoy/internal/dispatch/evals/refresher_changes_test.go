@@ -19,7 +19,7 @@ import (
 // every day, makes one pass, and reads back which days the pass wrote and which rows' updated_at
 // moved (expectDays).
 
-// deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDay)
+// deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDays)
 // with the one repository a deploy source reads, the one repository of the history that holds
 // runs, as the deploy repository: that repository's read of each day.
 func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
@@ -34,11 +34,11 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), []keptRepo{{name: rules[0].DeployRepo, deploys: true, rule: rules[0]}}, day, nil, nil)
+		reads, err := r.registry.readDeliveryDays(t.Context(), []keptRepo{{name: rules[0].DeployRepo, deploys: true, rule: rules[0]}}, []time.Time{measures.Midnight(day)}, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
-		days = append(days, read.days[1])
+		days = append(days, reads[0].days[1])
 	}
 	return days
 }
@@ -59,8 +59,9 @@ func line(family, project string, day time.Time) string {
 	return family + " " + project + " " + day.Format(time.DateOnly)
 }
 
-// TestEachDeliveryChangeRewritesExactlyItsDays: over the delivery history, once every day is
-// walked,
+// TestEachDeliveryChangeRewritesExactlyItsDays: over the delivery history, its pull requests'
+// attribution inputs left unread so the issue each row names is its attribution
+// (leaveInputsUnread), once every day is walked,
 //   - a pull request whose issue moves to the other project rewrites its merge day in both
 //     projects (the day eval_day_members held it under in the first), the start day of the
 //     deploy run that ships it, in both projects, since the run counts for the projects of its
@@ -81,8 +82,10 @@ func line(family, project string, day time.Time) string {
 // run's row in it did, and a key whose first input the change brings writes its zero rows through
 // today, as one that no input counts for any more deletes every row it held (keyDays).
 func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	main, other := deliveries.Project, deliveries.SecondProject
@@ -134,7 +137,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		if project := projectOf(pr); project != "" {
 			return project
 		}
-		return OwnerKey(pr.Repo, nil)
+		return OwnerKey(pr.Repo, nil, nil)
 	}
 	shipper := func(pr delivery.DeliveryPullRequest) *delivery.Apply {
 		if pr.Repo != deliveries.DeployRepo {
@@ -178,7 +181,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 			count.projects[main] = true
 		case len(unissued) > 0:
 			slices.Sort(unissued)
-			count.owner = OwnerKey(runRepos[runID], slices.Collect(maps.Keys(count.projects)))
+			count.owner = OwnerKey(runRepos[runID], slices.Collect(maps.Keys(count.projects)), nil)
 			count.unissued = strings.Join(unissued, " ")
 		}
 		return count
@@ -608,6 +611,7 @@ func (r *refresherRig) writeIssueEvent(t *testing.T, issue, kind, payload string
 //     that is no P0 rewrites nothing;
 //   - a reading of a logged eval rewrites no day.
 func TestEachLegionChangeRewritesExactlyItsDays(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -708,6 +712,7 @@ func TestEachLegionChangeRewritesExactlyItsDays(t *testing.T) {
 // third day) below EVAL-4 (open, with no filing), a write moving EVAL-4's repository rewrites
 // EVAL-3's close day.
 func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.exec(t, "put EVAL-3 below EVAL-4", `update issues set parent_key = 'EVAL-4' where key = 'EVAL-3'`)
@@ -719,16 +724,20 @@ func TestAMoveOfAnAncestorRewritesTheCloseDaysBelowIt(t *testing.T) {
 }
 
 // TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass: a PR-checks run counts for the
-// project its pull request counts for, whatever day it started on (attribution.check). Once every
-// day is walked, a pull request of the deploy repository whose issue is the first project's, and
-// one of whose PR-checks runs started on another day than its merge, moves to the second project
-// (a new issue of it): the one pass after the move counts each of its PR-checks runs for the
-// second project and no more for the first, and the database then holds the rows, members and
-// figures a second database holds that made the same move before its first walk. Then a write of
-// repo_projects, which no rule reads, logs no change, and the pass after it rewrites no day.
+// project its pull request counts for, whatever day it started on (attribution.check). Over the
+// delivery history, its pull requests' attribution inputs left unread so the issue each row names
+// is its attribution (leaveInputsUnread), once every day is walked, a pull request of the deploy
+// repository whose issue is the first project's, and one of whose PR-checks runs started on
+// another day than its merge, moves to the second project (a new issue of it): the one pass after
+// the move counts each of its PR-checks runs for the second project and no more for the first, and
+// the database then holds the rows, members and figures a second database holds that made the same
+// move before its first walk. Then a write of repo_projects, which no rule reads, logs no change,
+// and the pass after it rewrites no day.
 func TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	main, other := deliveries.Project, deliveries.SecondProject
@@ -778,6 +787,7 @@ func TestAPullRequestsIssueMoveMovesItsPRChecksRunsWithinOnePass(t *testing.T) {
 	}
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	move(walk)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "after "+PullRequestMember(moved.Repo, moved.Number)+" moved to "+other, walk)
@@ -815,7 +825,9 @@ func (r *refresherRig) mergeDayEarlier(t *testing.T, repo string, day time.Time)
 	`, repo, day, day.AddDate(0, 0, 1))
 }
 
-// TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone: once every day is walked,
+// TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone: over the delivery
+// history, its pull requests' attribution inputs left unread so the issue each row names is its
+// attribution (leaveInputsUnread), once every day is walked,
 // every pull request one repository merged on one day is merged again a day earlier, so the
 // repository's last pull request leaves that day. The one pass after it deletes each of the
 // repository's rows of that day, in every project and owner key (owners.go) that held one, where
@@ -829,8 +841,10 @@ func (r *refresherRig) mergeDayEarlier(t *testing.T, repo string, day time.Time)
 // card: one pass deletes every row of that card, where a whole walk under the new settings holds
 // none.
 func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	// The third repository's pull requests are tracked by no deploy, so moving them moves the pull
@@ -892,6 +906,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	walk.mergeDayEarlier(t, repo, day)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "after "+repo+"'s pull requests of "+day.Format(time.DateOnly)+" merged a day earlier", walk)
@@ -920,7 +935,9 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 }
 
 // TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt: the boundary of the
-// stored rows (dispatch://INFRA-2916, items 5 and 8, R12). Over the delivery history, once every
+// stored rows (dispatch://INFRA-2916, items 5 and 8, R12). Over the delivery history, its pull
+// requests' attribution inputs left unread so the issue each row names is its attribution
+// (leaveInputsUnread), once every
 // day is walked, the deploy runs of the deploy repository's first deploy day and of its last are
 // deleted. The pass after it leaves the main project's deploy-frequency of that repository with no
 // row on the first of those days, which is no first input day of it any more, so a window over it
@@ -929,8 +946,10 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 // 0 deploys a day. A second database whose runs were deleted before its first walk holds the same
 // rows, members and stored figures.
 func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	ctx := t.Context()
 	repo, main := deliveries.DeployRepo, deliveries.Project
@@ -961,6 +980,7 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 	r.settle(t)
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	drop(walk)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "the deploy runs of "+first.Format(time.DateOnly)+" and "+last.Format(time.DateOnly)+" deleted", walk)
@@ -974,14 +994,14 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 		t.Fatalf("%s has no deploy-frequency eval", main)
 	}
 	entry, evalID := page.Items[index], EvalID(main, SlugDeployFrequency)
-	firsts, err := r.registry.FirstDays(ctx, []Entry{entry}, DeployReposOf(main, repo))
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, DeployReposOf(main, repo))
 	if err != nil {
 		t.Fatalf("read the first days of %s: %v", evalID, err)
 	}
 	read := func(day time.Time) SeriesValues {
 		t.Helper()
 		window := Range{From: day, To: day.AddDate(0, 0, 1)}
-		rows, err := r.registry.DayWindow(ctx, []string{main}, []Entry{entry}, DeployReposOf(main, repo), nil, window, nil)
+		rows, err := DayWindowIn(ctx, r.database.Pool, []string{main}, []Entry{entry}, DeployReposOf(main, repo), nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}
@@ -1075,6 +1095,7 @@ func (r *refresherRig) expectSameLegionAsWalk(t *testing.T, what string, walk *r
 // holds the Legion rows, the members and the stored figures of a second database whose issue
 // closed so before its first walk.
 func TestALegionSeriesWhoseFirstDayMovesLandsInOneCommitAsAWholeWalkHoldsIt(t *testing.T) {
+	t.Parallel()
 	live := newRefresherRig(t)
 	live.batch = 2
 	history := live.seedLegionEval(t)
@@ -1084,8 +1105,8 @@ func TestALegionSeriesWhoseFirstDayMovesLandsInOneCommitAsAWholeWalkHoldsIt(t *t
 		t.Helper()
 		var at string
 		if err := live.database.Pool.QueryRow(t.Context(), `
-			select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = 'EVAL' and built_by = $2
-		`, walkLegion, live.build).Scan(&at); err != nil {
+			select xmin::text || ' ' || coalesce(next_day::text, 'to begin') from eval_days_walks where family = $1 and project_key = 'EVAL'
+		`, walkLegion).Scan(&at); err != nil {
 			t.Fatalf("read the Legion walk's record: %v", err)
 		}
 		return at

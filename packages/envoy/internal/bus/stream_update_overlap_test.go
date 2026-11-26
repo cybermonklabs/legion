@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"reflect"
 	"slices"
@@ -27,6 +28,7 @@ import (
 // not hold it, each update sent again built from the read before it, so it carries what another
 // writer changed since; any other refusal is returned at once.
 func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testing.T) {
+	t.Parallel()
 	overlap := &nats.APIError{Code: 400, ErrorCode: jsStreamSubjectOverlap, Description: "subjects overlap with an existing stream"}
 	otherRefusal := &nats.APIError{Code: 503, ErrorCode: 10023, Description: "insufficient resources"}
 	for _, test := range []struct {
@@ -59,7 +61,7 @@ func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testi
 			js := &scriptedUpdateJetStream{config: nats.StreamConfig{Name: Stream, Replicas: 1}, answers: test.answers, landed: test.landed, otherWrite: test.otherWrite}
 			update := nats.StreamConfig{Name: Stream, Replicas: 3}
 
-			_, err := updateStream(countedReads(t.Context()), js, &nats.StreamInfo{Config: js.config}, raisedToThree, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
+			_, err := updateStream(countedReads(t.Context()), slog.Default(), js, &nats.StreamInfo{Config: js.config}, raisedToThree, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
 
 			if !errors.Is(err, test.want) {
 				t.Fatalf("updateStream = %v, want %v", err, test.want)
@@ -100,7 +102,7 @@ func TestAnUpdateTheServerNeverAnswersIsSentAgainUntilTheWaitEnds(t *testing.T) 
 	ctx, cancel := context.WithTimeout(countedReads(t.Context()), 300*time.Millisecond)
 	defer cancel()
 
-	_, err := updateStream(ctx, js, &nats.StreamInfo{Config: js.config}, raisedToThree, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
+	_, err := updateStream(ctx, slog.Default(), js, &nats.StreamInfo{Config: js.config}, raisedToThree, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
 
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("an update the server never answers = %v, want it to end with the wait's context.DeadlineExceeded", err)
@@ -118,16 +120,17 @@ func TestAnUpdateTheServerNeverAnswersIsSentAgainUntilTheWaitEnds(t *testing.T) 
 // sent its update again from that read, the stream would carry this build's generation and its
 // 72 h age again.
 func TestALostUpdateIsNotSentAgainOntoANewerBuildsStream(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		run  func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error
 	}{
 		{"a start", func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error {
-			_, err := ensureStreamWithConfig(countedReads(t.Context()), js, cfg, capsAnUnsetStream, atStart)
+			_, err := ensureStreamWithConfig(countedReads(t.Context()), slog.Default(), js, cfg, capsAnUnsetStream, atStart)
 			return err
 		}},
 		{"a keeper pass", func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error {
-			restored, err := keepStream(countedReads(t.Context()), js, cfg, capsAnUnsetStream)
+			restored, err := keepStream(countedReads(t.Context()), slog.Default(), js, cfg, capsAnUnsetStream)
 			if len(restored) != 0 {
 				t.Errorf("the keeper reported %v restored, want nothing: it wrote nothing that landed", restored)
 			}
@@ -137,7 +140,7 @@ func TestALostUpdateIsNotSentAgainOntoANewerBuildsStream(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			js := streamTestJetStream(t)
 			own := parseConnectOptions([]ConnectOption(nil)).streamConfig()
-			if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream, atStart); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), slog.Default(), js, &own, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("this build creates the stream: %v", err)
 			}
 			// A byte limit the stream lacks, so this build's start and keeper each have an update to
@@ -256,6 +259,7 @@ func (js *scriptedUpdateJetStream) counts() ([]nats.StreamConfig, int) {
 // every round's byte limit. The rounds are the measurement, so they are many and each is cheap: no
 // round restarts the cluster.
 func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
+	t.Parallel()
 	const rounds = 300
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3))
@@ -280,7 +284,7 @@ func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				sent := update
-				_, errs[i] = updateStream(countedReads(t.Context()), member, &nats.StreamInfo{Config: deployed}, func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+				_, errs[i] = updateStream(countedReads(t.Context()), slog.Default(), member, &nats.StreamInfo{Config: deployed}, func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
 					changed := current.Config
 					changed.MaxBytes = sent.MaxBytes
 					return changed, true

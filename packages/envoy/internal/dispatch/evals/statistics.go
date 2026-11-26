@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"cmp"
 	"maps"
 	"math"
 	"slices"
@@ -13,7 +14,7 @@ import (
 
 // An eval read states each listed series' statistics for a range of days: the figures a card
 // shows and a target judges, a judge naming one as `<series>.<stat>`. They are folded from the
-// stored day rows of the range (DayWindow), never from the population again (R12):
+// stored day rows of the range (DayWindowIn), never from the population again (R12):
 //
 //   - a computed eval through the one fold its source names (computedSources), which is the fold
 //     the delivery and Legion routes answer through too (R7), so one rule has one statement;
@@ -158,19 +159,19 @@ type DayPoint struct {
 }
 
 // SeriesValuesOf is each listed series of entry with its values over rows, the eval's day rows of
-// window and of compare, the compare range, nil for none (DayWindow), and firsts, each series'
-// first day (FirstDays). A range that starts before a series' first day, or a series with no first
+// window and of compare, the compare range, nil for none (DayWindowIn), and firsts, each series'
+// first day (FirstDaysIn). A range that starts before a series' first day, or a series with no first
 // day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
 // the per-day array still answers each day that holds a row (R12).
 //
-// It folds the rows in day order: it sorts rows by day in place, keeping their order within a day,
-// as the stored figures are folded (figures.go, newFigureGroup), so a fold whose sums depend on
-// the order of its parts answers the stored figures' bits whatever order the read's plan answered
-// its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers what this
-// does, bit for bit.
+// It folds the rows in the one order every fold of them takes (sortWindowRows), which it sorts rows
+// into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
+// sums depend on the order of its parts answers the stored figures' bits whatever order the read's
+// plan answered its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers
+// what this does, bit for bit.
 func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	listed, headline := listedAndHeadline(entry)
-	sortByDay(rows)
+	sortWindowRows(rows)
 	var windowParts, compareParts []measures.DayPart
 	byDay := map[time.Time][]measures.DayPart{}
 	via := map[string]int{}
@@ -199,10 +200,23 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
 }
 
-// sortByDay sorts rows by day in place, keeping their order within a day: the order a read of the
-// day rows (SeriesValuesOf) and the stored figures (newFigureGroup) both fold them in.
-func sortByDay(rows []WindowRow) {
-	slices.SortStableFunc(rows, func(a, b WindowRow) int { return a.Part.Day.Compare(b.Part.Day) })
+// sortWindowRows sorts rows in place into the one order a read of the day rows (SeriesValuesOf),
+// the stored figures (newFigureGroup) and a rebuild's overlay of staged rows (readOverlayGroups)
+// all fold them in: by day, and within a day by the key each row is stored under (WindowRow.owner),
+// then by its repository (WindowRow.repo) and then by its series. A day of one series can hold
+// several rows: a project's own row and an owner key's (owners.go), and in the cut of the project's
+// default repository its own row of the repository and its own row stored under
+// legionfacts.DefaultRepo (repoCut). No two rows of one eval and range share all four, so the order
+// is total, and a sum of floats, whose bits depend on the order of its parts (1e16, -1e16 and 1 sum
+// to 1 in that order and to 0 in another), answers the same bits whatever order the database
+// answered the rows in.
+func sortWindowRows(rows []WindowRow) {
+	slices.SortFunc(rows, func(a, b WindowRow) int {
+		if order := a.Part.Day.Compare(b.Part.Day); order != 0 {
+			return order
+		}
+		return cmp.Or(strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo), strings.Compare(a.Part.Series, b.Part.Series))
+	})
 }
 
 // foldDay is the fold of parts, one day's parts of definition's eval, of each of headline, its
@@ -609,7 +623,7 @@ func splittingStatistics(fold *metrics.SplittingFold, base string) Statistics {
 }
 
 // readsSamples reports whether the fold of series, one of definition's eval, reads its day rows'
-// sample lists, so a window read sends them only where it does (DayWindow). A computed eval's fold
+// sample lists, so a window read sends them only where it does (DayWindowIn). A computed eval's fold
 // reads what its builders store, and they store a sample list only for a series whose fold merges
 // one; a logged series' agg reads them for a quantile alone (aggStatistics), though the readings
 // write keeps every value whatever the agg, so a later change of agg still folds every day.

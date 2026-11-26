@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/explaintest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // attributionDay is the day the hand-written delivery history of seedAttribution happens on.
@@ -31,9 +32,11 @@ const (
 
 // seedAttribution writes, on attributionDay, the delivery history of the attribution rule over
 // four projects, ALPHA, BETA, GAMMA (no row) and OWNER, whose one deploy source names acme/alpha,
-// the deploy repository, which is no project's default. No repository maps to a project: a row
-// reaches one through an issue alone (evals' attribution), but a deploy that ships no pull request,
-// which counts for its source's project (dispatch://INFRA-978, R12).
+// the deploy repository, which is no project's default. No project has a default repository, and
+// no pull request's attribution inputs are stored (not read from GitHub yet), so each counts by
+// the one list its row's issue_key gives (evals' attribution): its issue's project, or none, which
+// reaches no project; but a deploy that ships no pull request counts for its source's project
+// (dispatch://INFRA-978, R12).
 //
 //   - acme/alpha#1 names BETA-1, so it counts for BETA;
 //   - acme/alpha#2 names no issue, so it counts for no project;
@@ -301,15 +304,17 @@ func (r rig) refreshDays(t *testing.T, legion []string, days ...time.Time) []str
 // requests, and every row of a deploy or a CI run; its items of the day that it no longer holds
 // are deleted; written again, the moved day rewrites nothing.
 func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	settings := seedAttribution(t, r)
 	ctx := t.Context()
 
-	read, err := r.registry.readDeliveryDay(ctx, []keptRepo{{name: alphaRepo, deploys: true, rule: settings}}, attributionDay, nil, nil)
+	reads, err := r.registry.readDeliveryDays(ctx, []keptRepo{{name: alphaRepo, deploys: true, rule: settings}}, []time.Time{measures.Midnight(attributionDay)}, nil, nil)
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}
-	wantOwners := []string{OwnerKey(alphaRepo, nil), OwnerKey(alphaRepo, []string{"ALPHA", "BETA"}), OwnerKey(zetaRepo, nil)}
+	read := reads[0]
+	wantOwners := []string{OwnerKey(alphaRepo, nil, nil), OwnerKey(alphaRepo, []string{"ALPHA", "BETA"}, nil), OwnerKey(zetaRepo, nil, nil)}
 	if got := dayProjects(read); !slices.Equal(got, slices.Concat(wantOwners, []string{"ALPHA", "BETA", "OWNER"})) {
 		t.Fatalf("the day's rows count for %v, want ALPHA, BETA, OWNER and the owner keys %v (acme/alpha#2 and acme/zeta#1 through their repositories, runs 102 and 103 for OWNER, GAMMA holds nothing)",
 			got, wantOwners)
@@ -481,11 +486,75 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	t.Logf("compared %d day rows of three projects; after acme/alpha#3 moved to BETA, ALPHA holds %d", compared, len(alpha))
 }
 
+// A pull request's ranked candidates make its attribution list as the attribution passes over and
+// holds them (attributionListOf): a candidate whose issue owns the pull request's repository ends
+// the list as its terminal, one whose issue owns another repository is passed over, one whose
+// issue owns none is a condition, once, in rank order, and one whose issue no row holds or whose
+// chain ran out of depth is passed over. The owner key of lists that are not constant carries them
+// after the repository and the sharers (OwnerKey), sorted and once each, and reads back as it was
+// made (parseOwner); a key whose every list is none is the plain key.
+func TestAPullRequestsCandidatesMakeItsAttributionList(t *testing.T) {
+	t.Parallel()
+	here := func(project string) delivery.ResolvedCandidate {
+		return delivery.ResolvedCandidate{Key: project + "-1", Project: project, Owned: alphaRepo, OwnedHere: true}
+	}
+	elsewhere := func(project string) delivery.ResolvedCandidate {
+		return delivery.ResolvedCandidate{Key: project + "-2", Project: project, Owned: betaRepo}
+	}
+	unowned := func(project string) delivery.ResolvedCandidate {
+		return delivery.ResolvedCandidate{Key: project + "-3", Project: project}
+	}
+	for _, c := range []struct {
+		name       string
+		candidates []delivery.ResolvedCandidate
+		want       string
+		constant   bool
+	}{
+		{"no candidate", nil, ">", true},
+		{"one that owns the repository", []delivery.ResolvedCandidate{here("ALPHA")}, ">ALPHA", true},
+		{"one that owns another, then one that owns none", []delivery.ResolvedCandidate{elsewhere("ALPHA"), unowned("BETA")}, "BETA>", false},
+		{"one that owns none", []delivery.ResolvedCandidate{unowned("ALPHA")}, "ALPHA>", false},
+		{"a chain too deep, then one that owns the repository", []delivery.ResolvedCandidate{
+			{Key: "ALPHA-4", Project: "ALPHA", TooDeep: true}, here("BETA")}, ">BETA", true},
+		{"an issue no row holds, then one that owns none", []delivery.ResolvedCandidate{{Key: "GONE-1"}, unowned("BETA")}, "BETA>", false},
+		{"two conditions, a repeat, a terminal and one after it", []delivery.ResolvedCandidate{
+			unowned("ALPHA"), elsewhere("GAMMA"), unowned("BETA"), unowned("ALPHA"), here("GAMMA"), unowned("DELTA")}, "ALPHA,BETA>GAMMA", false},
+	} {
+		list := attributionListOf(c.candidates)
+		if got := list.String(); got != c.want || list.constant() != c.constant {
+			t.Errorf("%s: the list is %q (constant %t), want %q (constant %t)", c.name, got, list.constant(), c.want, c.constant)
+		}
+	}
+
+	beta := attributionList{conditions: []string{"BETA"}}
+	for _, c := range []struct {
+		sharers            []string
+		lists              []attributionList
+		want               string
+		wantSharers, carry []string
+	}{
+		{nil, nil, ":acme/alpha|", nil, nil},
+		{[]string{"GAMMA", "ALPHA", "GAMMA"}, []attributionList{{}, {}}, ":acme/alpha|ALPHA,GAMMA", []string{"ALPHA", "GAMMA"}, nil},
+		{nil, []attributionList{beta}, ":acme/alpha||BETA>", nil, []string{"BETA>"}},
+		{[]string{"DELTA"}, []attributionList{beta, {}, {conditions: []string{"ALPHA", "BETA"}, terminal: "GAMMA"}, beta},
+			":acme/alpha|DELTA|>;ALPHA,BETA>GAMMA;BETA>", []string{"DELTA"}, []string{">", "ALPHA,BETA>GAMMA", "BETA>"}},
+	} {
+		key := OwnerKey(alphaRepo, c.sharers, c.lists)
+		if key != c.want {
+			t.Errorf("the owner key of %v and %v is %q, want %q", c.sharers, c.lists, key, c.want)
+		}
+		if repo, sharers, carried, ok := parseOwner(key); !ok || repo != alphaRepo || !slices.Equal(sharers, c.wantSharers) || !slices.Equal(carried, c.carry) {
+			t.Errorf("%q reads back as repository %q, sharers %v and lists %v (%t), want %s, %v and %v", key, repo, sharers, carried, ok, alphaRepo, c.wantSharers, c.carry)
+		}
+	}
+}
+
 // TestTheZeroDayIsTheBuildersDayWithNoRow: ZeroDeliveryDay holds the all-repositories row of every
 // delivery and CI series (the staging cards only where the settings name their jobs), each n 0
 // and its value zero, those of the evals that read the deploy repository keyed by the repository
 // kept, and WithZeros adds a zero row only where the day holds none of that series.
 func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
+	t.Parallel()
 	day := attributionDay
 	settings := delivery.DeliverySettings{DeployRepo: alphaRepo, ProductionJobNames: []string{"production / apply"}, StagingE2EJobName: new("staging-e2e / run")}
 	zero := ZeroDeliveryDay("ALPHA", day, []delivery.DeliverySettings{settings})
@@ -527,6 +596,7 @@ func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
 // P0 issues with no claim and no route as the day row's last value, at the write's time; a second
 // write after one more such issue opens moves the value and the time.
 func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	actor := `{"kind":"system","id":"p0-test"}`
@@ -582,7 +652,7 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // ids grow with the batch), and its generic plan matches each reading to its keys by their day, as
 // a hash or merge join on it or an index condition, rather than testing each reading against every
 // key of its series. The day is past work_mem, as one of INFRA's is: 80,000 items across 40 deploy
-// repositories and 80,000 rows written through writeDeliveryDay, and 80,000 readings of a logged
+// repositories and 80,000 rows written through writeProjectDay, and 80,000 readings of a logged
 // eval on the same day, the three tables analyzed. Each statement is explained with the arrays a
 // second write of the day sends, one item, one row and one reading fewer than stored, in a
 // transaction prepared as its write prepares it, and then with literals for its generic plan,
@@ -596,6 +666,7 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // as `not exists`, the stale rows' generic plan was a nested-loop anti-join that had not written
 // 80,000 rows after 2 minutes.
 func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	day := attributionDay
@@ -613,7 +684,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 			DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
 		}
 	}
-	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: rows, Members: members}, testBuild, true); err != nil {
+	if err := r.registry.writeProjectDay(ctx, deliveryFamily, ProjectDay{Project: "EVAL", Day: day, Rows: rows, Members: members}, testBuild, true); err != nil {
 		t.Fatalf("write a day of %d items and %d rows: %v", items, items, err)
 	}
 	// The readings: the write that registers the logged eval, and the day's other readings
@@ -737,7 +808,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 					t.Fatalf("%s: %v", setting, err)
 				}
 			}
-			_, _ = explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
+			explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
 				filter.parameters, filter.literals, filter.lists...)
 		})
 	}
@@ -757,7 +828,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 
 	// The second write itself, which leaves one item and one row fewer: the row the day no longer
 	// holds is deleted.
-	if err := r.registry.writeDeliveryDay(ctx, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild, true); err != nil {
+	if err := r.registry.writeProjectDay(ctx, deliveryFamily, ProjectDay{Project: "EVAL", Day: day, Rows: kept, Members: again}, testBuild, true); err != nil {
 		t.Fatalf("write the day again with one item and one row fewer: %v", err)
 	}
 	if held := r.count(t, `select count(*) from eval_day_members where project_key = 'EVAL'`); held != items-1 {
@@ -784,6 +855,12 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 // index-only scan reads eval_days in the project's order: with asynchronous commits, which the
 // pod's test server runs, a vacuum just after a commit can mark no page all-visible (as
 // embedqueue's TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap found).
+// Even after a synchronous commit, a vacuum marks a page all-visible only once the commit status
+// of its rows' transaction is hinted, which waits until the WAL is flushed past the newest commit
+// of any transaction whose id shares its commit-log group of 32: an asynchronous commit of a
+// neighbouring id, in another database of the same server (a test running beside this one), keeps
+// the pages unmarked until the WAL writer flushes it, at most a few hundred milliseconds later. So
+// the test vacuums again until every page is all-visible, for at most allVisibleBound.
 // The write rewrites those 200 days and holds every row but one, which it deletes, in a
 // transaction planned as rewriteSettings plans its own; its one statement (EVAL's, whose rows fit
 // in one) names EVAL's six evals. With merge joins on, the planner estimates the scan of eval_days
@@ -837,10 +914,19 @@ func TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *tes
 		t.Fatalf("vacuum and analyze eval_days: %v", err)
 	}
 	var pages, visible int
-	if err := r.database.Pool.QueryRow(ctx, `select relpages, relallvisible from pg_class where oid = 'eval_days'::regclass`).Scan(&pages, &visible); err != nil {
-		t.Fatalf("read how many pages of eval_days are all-visible: %v", err)
+	allVisible := func() bool {
+		if err := r.database.Pool.QueryRow(ctx, `select relpages, relallvisible from pg_class where oid = 'eval_days'::regclass`).Scan(&pages, &visible); err != nil {
+			t.Fatalf("read how many pages of eval_days are all-visible: %v", err)
+		}
+		if pages > 0 && visible == pages {
+			return true
+		}
+		if _, err := r.database.Pool.Exec(ctx, `vacuum eval_days`); err != nil {
+			t.Fatalf("vacuum eval_days again: %v", err)
+		}
+		return false
 	}
-	if pages == 0 || visible != pages {
+	if !testwait.Holds(allVisibleBound, 100*time.Millisecond, allVisible) {
 		t.Fatalf("the vacuum marked %d of eval_days' %d pages all-visible; the test needs every page", visible, pages)
 	}
 
@@ -883,6 +969,11 @@ func TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay(t *tes
 			held, zero, len(stored)-1)
 	}
 }
+
+// allVisibleBound is how long TestTheStaleRowsOfASettingsRewriteMatchTheWrittenDaysByProjectAndDay
+// vacuums eval_days again for every page to be all-visible: well past the WAL writer's flush of
+// an asynchronous commit, which wal_writer_delay (200 ms by default) bounds to three times it.
+const allVisibleBound = 5 * time.Second
 
 // explainingTx is a transaction that explains its statement explained, with the arguments it is
 // run with and under whatever its caller set in the transaction, before it runs it, and keeps the

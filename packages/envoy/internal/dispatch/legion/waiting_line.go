@@ -59,8 +59,10 @@ type WaitingLine struct {
 	columns map[string]string
 }
 
-// NewWaitingLine numbers the line and takes the blocker links. A key the daemon reports nothing
-// of takes no place: the board draws no card for it, so no reader has a card to put a place on.
+// NewWaitingLine numbers the line and takes the blocker links, by the admission block's one rule
+// of which entry names an issue's blockers (Admission.Blockers), which one issue's read names
+// them by too. A key the daemon reports nothing of takes no place: the board draws no card for
+// it, so no reader has a card to put a place on.
 // A field of the admission block it comes to read goes into SameLine too: a reader that holds a
 // line asks SameLine whether the next block builds another one.
 func NewWaitingLine(input WaitingLineInput) *WaitingLine {
@@ -84,9 +86,7 @@ func NewWaitingLine(input WaitingLineInput) *WaitingLine {
 		line.order = append(line.order, key)
 		line.places[key] = len(line.places) + 1
 	}
-	for _, blocked := range input.Admission.Blocked {
-		line.blockers[blocked.Issue] = blocked.BlockedBy
-	}
+	line.blockers = input.Admission.Blockers()
 	return line
 }
 

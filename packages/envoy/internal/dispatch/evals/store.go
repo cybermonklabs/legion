@@ -22,18 +22,22 @@ import (
 // Store is the registry over one Dispatch database. Its writes join the document service's
 // transaction (docs.API.Join), so the sections they write to `evals-md` commit with their rows,
 // and append the documents' events through the server's broker, which publishes them once the
-// transaction has committed.
+// transaction has committed. Its delivery day rows attribute each pull request by the candidates
+// attributor resolves (delivery_days.go's readAttribution), under the rename pairs it was built of.
 type Store struct {
-	database  *store.Store
-	documents docs.API
-	events    *events.Broker
+	database   *store.Store
+	documents  docs.API
+	events     *events.Broker
+	attributor *delivery.Attributor
 }
 
 // New is the registry over database, writing `evals-md` through documents and its events
-// through broker: the server's own three, so a document the registry writes is one its readers
-// and its live rooms already know.
-func New(database *store.Store, documents docs.API, broker *events.Broker) *Store {
-	return &Store{database: database, documents: documents, events: broker}
+// through broker, and reading what attributes its delivery day rows through attributor: the
+// server's own four, so a document the registry writes is one its readers and its live rooms
+// already know, and a pull request is attributed by the rename pairs every reader of a repository
+// name reads.
+func New(database *store.Store, documents docs.API, broker *events.Broker, attributor *delivery.Attributor) *Store {
+	return &Store{database: database, documents: documents, events: broker, attributor: attributor}
 }
 
 // slugPattern is the slug check of eval_versions, so a write is refused with a stable code
@@ -54,8 +58,10 @@ func slugOf(project, evalID string) string {
 
 // writeTx is one registry write's transaction and what its commit owes: the ledger its document
 // writes and their events queue on (docs.Ledger), the document events it queued, published once
-// it commits, and the documents it wrote, whose settlement is scheduled then, as an upload and an
-// edit schedule theirs. now is the transaction's own now(), which every time the write stores is.
+// it commits, and the documents it wrote that owe a settlement, whose settlement is scheduled
+// then, as an upload and an edit schedule theirs: an edit of `evals-md` that applied an
+// operation, and a create of it whose seed owes one (createDocument). now is the transaction's
+// own now(), which every time the write stores is.
 type writeTx struct {
 	pgx.Tx
 	ledger  *docs.Ledger
@@ -144,9 +150,9 @@ func openWrite(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, project stri
 }
 
 // committed is what w's commit owes, paid once its transaction has committed: the settlement of
-// each document it wrote is scheduled, the document events it queued are published, and a batch
-// of the change log's outbox, its own change rows among them where no backlog lies ahead of them,
-// is moved into the change log (drainChanges).
+// each document it wrote that owes one is scheduled, the document events it queued are published,
+// and a batch of the change log's outbox, its own change rows among them where no backlog lies
+// ahead of them, is moved into the change log (drainChanges).
 func (s *Store) committed(ctx context.Context, w *writeTx) {
 	for _, artifactID := range w.settle {
 		s.documents.ScheduleSettlement(artifactID)
@@ -315,15 +321,31 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	return day, nil
 }
 
-// scanWindowRow reads one row of a DayWindow read: whether it answers for the window or the
-// compare range, then its eval, series and day, its parts and its updated_at.
+// scanWindowRow reads one row of a DayWindowIn read that names no repository: whether it answers
+// for the window or the compare range, then its eval, series and day, its parts, its updated_at and
+// the owner it is stored under (owners.go). Every row of that read is stored under "", which the
+// row's repo, left empty, says.
 func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
+	return scanWindowRowOf(row, false)
+}
+
+// scanRepoWindowRow is scanWindowRow of a read that names repositories, which answers each row's
+// repository after its owner (DayWindowIn).
+func scanRepoWindowRow(row pgx.CollectableRow) (WindowRow, error) {
+	return scanWindowRowOf(row, true)
+}
+
+func scanWindowRowOf(row pgx.CollectableRow, repo bool) (WindowRow, error) {
 	var inWindow bool
 	var day WindowRow
 	part := &day.Part
-	if err := row.Scan(&inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
+	fields := append(make([]any, 0, 19), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
 		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
-		&day.UpdatedAt, &day.owner); err != nil {
+		&day.UpdatedAt, &day.owner)
+	if repo {
+		fields = append(fields, &day.repo)
+	}
+	if err := row.Scan(fields...); err != nil {
 		return WindowRow{}, err
 	}
 	day.Range = RangeCompare

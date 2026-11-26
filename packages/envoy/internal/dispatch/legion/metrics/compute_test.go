@@ -404,6 +404,43 @@ func TestAHandoffStartsTheNextPhaseAndLeavesNoHourBetweenThem(t *testing.T) {
 	}
 }
 
+// The fallback timeline follows the order of the steps the issue's plan names, not the default
+// steps' order. Under `implementer reviewer tester` the implement handoff starts reviewing, the
+// review handoff starts testing, the tester's first event is no step back, and the test handoff,
+// the last step's, starts the retro. A plan made after an event does not reach back to it: the
+// event reads the plan of the run it fell in, or the first run's where it fell before every plan.
+// The control is the same event log with no plan, read in the default steps' order.
+func TestTheFallbackTimelineFollowsTheStepsOfTheIssuesPlan(t *testing.T) {
+	events := func() *Issue {
+		return newIssue("INFRA-1").
+			worked("implementer", hour(0)).
+			handedOff("implement", hour(2)).
+			worked("reviewer", hour(3)).
+			handedOff("review", hour(5)).
+			worked("tester", hour(6)).
+			handedOff("test", hour(8)).
+			closedAt(hour(10))
+	}
+	for _, tc := range []struct {
+		name  string
+		issue *Issue
+		want  []string
+	}{
+		{"implementer reviewer tester", events().ran(hour(0), "implementer", "reviewer", "tester"),
+			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
+		{"the plan of the first run, made after the first event", events().ran(hour(1), "implementer", "reviewer", "tester"),
+			[]string{"implementing 0-2", "reviewing 2-5", "testing 5-8", "retro 8-10"}},
+		{"control: no plan, the default steps", events(),
+			[]string{"implementing 0-2", "testing 2-3", "reviewing 3-5", "accepting 5-8", "reviewing 8-10"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := timelineOf(fixture(hour(-24), hour(24), tc.issue), tc.issue); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("the fallback timeline is %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestTheNoRoleBarHoldsAwaitingPersonAndHeldAlone: "A seventh bar, 'no role', holds the phases no
 // role works: `awaiting_person` and `held`", and the spec's "Phase boundaries before
 // observations" holds it to those two. Every other hour of the work time is on a role's bar.

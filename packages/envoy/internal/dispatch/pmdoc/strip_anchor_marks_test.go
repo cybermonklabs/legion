@@ -43,6 +43,7 @@ func stripSampleDoc() *Node {
 // every line break as the document holds it: the strip copies what writtenTree gives with
 // lineBreaks false, which rewrites none of them.
 func TestStripAnchorMarksIsItsDocumentStripped(t *testing.T) {
+	t.Parallel()
 	text := func(value string, marks ...Mark) *Node { return &Node{Type: "text", Text: value, Marks: marks} }
 	comment := writtenCommentMark("c1")
 	for name, test := range map[string]struct{ doc, want *Node }{
@@ -92,6 +93,7 @@ func TestStripAnchorMarksIsItsDocumentStripped(t *testing.T) {
 // Nothing the copy holds is the document's, or the rendering's: every node, attribute map and mark
 // slice is its own, and writing all of them leaves the document rendering as it did.
 func TestStripAnchorMarksSharesNothingWithItsDocument(t *testing.T) {
+	t.Parallel()
 	doc := stripSampleDoc()
 	before, err := Render(doc)
 	if err != nil {

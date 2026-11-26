@@ -434,9 +434,9 @@ func TestAListenerOnOneChannelWithoutAnOnConnectedHearsThatChannelAlone(t *testi
 	}
 }
 
-// The channels Dispatch's own writers notify reach a listener that names them: a settings write
-// notifies delivery_changes and delivery_freshness (migration 0100) and an event insert
-// dispatch_events (migration 0107).
+// The channels Dispatch's own writers notify reach a listener that names them: a save of a
+// project's delivery settings notifies delivery_changes and delivery_freshness (migration
+// 20261123010254) and an event insert dispatch_events (migration 0107).
 func TestTheListenerHearsTheTriggersItListensFor(t *testing.T) {
 	database := storetest.Open(t)
 	probe := newListenerProbe()
@@ -444,15 +444,27 @@ func TestTheListenerHearsTheTriggersItListensFor(t *testing.T) {
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	ctx := context.Background()
 
-	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
-		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
-		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
-		PopulationAuthors: []string{"octocat"},
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, default_repo) values ('LIVE', 'Live', 'alice', 'acme/widgets')`); err != nil {
+		t.Fatalf("insert the project: %v", err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the settings save: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := delivery.PutProjectSettings(ctx, tx, delivery.ProjectSettingsInput{
+		Project: "LIVE", Delivery: true, PopulationAuthors: []string{"octocat"},
+		Sources: []delivery.SourceInput{{
+			Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new(".github/workflows/deploy.yml"),
+			ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: new(".github/workflows/pr-checks.yml"),
+		}},
 	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("PutSettings: %v", err)
+		t.Fatalf("PutProjectSettings: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the settings save: %v", err)
 	}
 	for _, statement := range []string{
-		`insert into projects (key, name, default_assignee) values ('LIVE', 'Live', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank) values ('LIVE-1', 'LIVE', 1, 'x', '{"kind":"user","id":"alice"}', 'U')`,
 		`insert into events (issue_key, seq, type, actor, payload, notify) values ('LIVE-1', 1, 'issue.created', '{"kind":"user","id":"alice"}', '{}', false)`,
 	} {

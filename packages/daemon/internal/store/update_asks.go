@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
@@ -22,21 +24,24 @@ import (
 // (outbox_issue), so it costs one indexed query for an issue the sweep asks and nothing for one it
 // does not.
 func (s *Store) QueuedUpdateAsks(ctx context.Context, issue, round string) (map[claim.Role]bool, error) {
-	rows, err := s.pool.Query(ctx, `select payload->>'role' from outbox
-		where issue = $1 and kind = 'update_ask' and payload->>'round' = $2`, issue, round)
-	if err != nil {
-		return nil, fmt.Errorf("read the queued update asks of %s for %s: %w", issue, round, err)
-	}
-	defer rows.Close()
 	queued := map[claim.Role]bool{}
-	for rows.Next() {
-		var role string
-		if err := rows.Scan(&role); err != nil {
-			return nil, fmt.Errorf("read the queued update asks of %s for %s: %w", issue, round, err)
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `select payload->>'role' from outbox
+			where issue = $1 and kind = 'update_ask' and payload->>'round' = $2`, issue, round)
+		if err != nil {
+			return err
 		}
-		queued[claim.Role(role)] = true
-	}
-	if err := rows.Err(); err != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var role string
+			if err := rows.Scan(&role); err != nil {
+				return err
+			}
+			queued[claim.Role(role)] = true
+		}
+		return rows.Err()
+	})
+	if err != nil {
 		return nil, fmt.Errorf("read the queued update asks of %s for %s: %w", issue, round, err)
 	}
 	return queued, nil

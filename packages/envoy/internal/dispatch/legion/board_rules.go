@@ -216,8 +216,8 @@ type Wait struct {
 // is whether the value was read: it is false for a value of another shape than this one, and for
 // a wait that names no kind, because the daemon owns the wire shape and a reader of one names
 // what it expects rather than trusting it. A reader then does what it does with a value it
-// cannot read — the board keeps the issue's previous wait, and the stored facts read no wait at
-// all.
+// cannot read — a board card, which decodes the wait the issue's state holds (IssueState), shows
+// no wait, and the stored facts read no wait at all.
 func ParseWait(value []byte) (*Wait, bool) {
 	var wait struct {
 		Kind       string     `json:"kind"`

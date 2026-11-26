@@ -65,11 +65,6 @@ var keyedWriteGuardAllowed = map[string]string{
 	// The suggestions a write offered, recorded after that write's own transaction committed and
 	// marked the key; a failure is only logged, and the write is never undone for it.
 	"api.server.persistSuggestions": "records what a committed write offered, after that write marked its key",
-	// The related-item check's own record: one row per check, whether or not the write it checked
-	// wrote anything (an external issue Dispatch already holds commits only a read, so no key is
-	// marked). A failure is only logged, and a duplicate after a takeover adds only one more row of
-	// statistics.
-	"api.server.insertRelatedChecks": "records a check whether or not its write wrote; a takeover's duplicate only adds a statistics row",
 	// The display tree of a text a committed write stored, written after that write's transaction
 	// marked the key (api's storeDisplayTrees, docs' storeVersionTrees), and the trees a read
 	// made for itself, written after its answer (api's displayTreeReader). Both end in the one
@@ -182,6 +177,7 @@ func writingCallOf(functions []string) *regexp.Regexp {
 // whose SQL it cannot read at all is refused too, since it cannot be told from a write.
 // keyedWriteGuardStops and keyedWriteGuardAllowed name, with their reasons, what it leaves.
 func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
+	t.Parallel()
 	var offences []string
 	for _, offence := range newKeyedWriteGuard(t).offences() {
 		offences = append(offences, offence.at+" in "+offence.function+": "+offence.why)
@@ -203,6 +199,7 @@ func TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks(t *testing.T) {
 // takes its SQL as a parameter, the work a handler hands a Go method or starts with a go statement,
 // and a select of a SQL function that writes.
 func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
+	t.Parallel()
 	guard := newKeyedWriteGuard(t)
 	guard.offences()
 	var want []string
@@ -338,11 +335,7 @@ func (g *keyedWriteGuard) walk(fn *lockFunction) {
 // presumed to run after the handler (detached), so a bare write anywhere else - a timer's callback
 // included - is named, and moves into a transaction or onto goDetached.
 func (g *keyedWriteGuard) callees(call *ast.CallExpr) []*lockFunction {
-	callees := g.graph.callees(call)
-	for _, argument := range call.Args {
-		callees = append(callees, g.graph.functionValue(argument)...)
-	}
-	return callees
+	return g.graph.calleesAndPassed(call)
 }
 
 // ownCalls is every call fn's own body makes, a go statement's included, but none inside a function

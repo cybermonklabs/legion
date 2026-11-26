@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,8 +19,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalbench"
+	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -148,10 +153,12 @@ func (c *headChecks) k13() {
 
 // k16 prints the project's day rows by repository, and for one count, one share and one quantile
 // folds each repository's day rows of the 84-day window by hand, against the list read with that
-// repository, and the repositories' parts against the project's.
+// repository, and the repositories' parts against the project's. A project's day rows are those of
+// every key it reads (ownedDays): its own and those of the owner keys it reads under the published
+// defaults, as every eval read of it folds them.
 func (c *headChecks) k16() {
 	ctx := context.Background()
-	rows, err := c.pool.Query(ctx, `select repo, count(*) from eval_days where project_key = $1 group by repo order by repo`, c.o.project)
+	rows, err := c.pool.Query(ctx, `select d.repo, count(*) from `+ownedDays+` where o.project_key = $1 group by d.repo order by d.repo`, c.o.project)
 	if err != nil {
 		c.r.fail("k16: count the day rows by repository: %v", err)
 		return
@@ -175,9 +182,9 @@ func (c *headChecks) k16() {
 		slug, series, stat string
 		hand               string
 	}{
-		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "n", `select coalesce(sum(cardinality(samples)), 0)::float8 from eval_days`},
-		{evals.SlugReworkShare, measures.SeriesPRs, "rate", `select sum(num) / nullif(sum(den), 0) from eval_days`},
-		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "median", `select percentile_cont(0.5) within group (order by sample) from eval_days, unnest(samples) as sample`},
+		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "n", `select coalesce(sum(cardinality(d.samples)), 0)::float8 from ` + ownedDays},
+		{evals.SlugReworkShare, measures.SeriesPRs, "rate", `select sum(d.num) / nullif(sum(d.den), 0) from ` + ownedDays},
+		{evals.SlugPROpenToMerge, measures.SeriesMinutes, "median", `select percentile_cont(0.5) within group (order by sample) from ` + ownedDays + `, unnest(d.samples) as sample`},
 	}
 	compared := 0
 	for _, fold := range folds {
@@ -195,8 +202,13 @@ func (c *headChecks) k16() {
 			if repo == "" {
 				project, projectRead = route, true
 			}
-			// A computed eval's fold reads the computation's rows alone (eval_days.writer).
-			hand, err := c.handFold(ctx, fold.hand+` where project_key = $1 and eval_id = $2 and writer = 'computation' and series = $3 and repo = $4 and day >= $5 and day < $6`,
+			// A computed eval's fold reads the computation's rows alone (eval_days.writer). A
+			// repository's cut reads the Legion rows stored under legionfacts.DefaultRepo of the
+			// project's own key where the repository is its published default, as EvalDaysIn does.
+			hand, err := c.handFold(ctx, fold.hand+` where `+ownedEval+` and d.writer = 'computation' and d.series = $3
+				and (d.repo = $4 or (d.repo = '`+legionfacts.DefaultRepo+`' and d.project_key = o.project_key and exists (
+					select 1 from eval_project_repos p where p.project_key = $1 and p.repo = $4)))
+				and d.day >= $5 and d.day < $6`,
 				evals.EvalID(c.o.project, fold.slug), fold.series, repo, w84)
 			if err != nil {
 				c.r.fail("k16 %s.%s.%s repo=%q: %v", fold.slug, fold.series, fold.stat, repo, err)
@@ -214,7 +226,7 @@ func (c *headChecks) k16() {
 		}
 		// The repositories partition the project's rows: a count sums, and a share or a quantile
 		// is the fold of the union of their parts.
-		union, err := c.handFold(ctx, fold.hand+` where project_key = $1 and eval_id = $2 and series = $3 and repo <> $4 and day >= $5 and day < $6`,
+		union, err := c.handFold(ctx, fold.hand+` where `+ownedEval+` and d.series = $3 and d.repo <> $4 and d.day >= $5 and d.day < $6`,
 			evals.EvalID(c.o.project, fold.slug), fold.series, "", w84)
 		if err != nil {
 			c.r.fail("k16 %s.%s.%s union: %v", fold.slug, fold.series, fold.stat, err)
@@ -274,6 +286,14 @@ func (c *headChecks) routeValue(ctx context.Context, w window, repo, slug, serie
 	}
 	return nil, fmt.Errorf("the list read answers no series %s of %s", series, slug)
 }
+
+// ownedDays is the day rows d of every key the project o names reads (eval_project_owners): its own
+// and those of each owner key it reads under the published defaults.
+const ownedDays = `eval_project_owners o join eval_days d on d.project_key = o.owner`
+
+// ownedEval holds ownedDays to the project $1 and its eval $2: the rows of the eval of the same
+// slug under each key the project reads, as evals.EvalDaysIn reads them.
+const ownedEval = `o.project_key = $1 and d.eval_id = o.owner || substr($2, length($1) + 1)`
 
 // handFold runs one fold over eval_days, by hand.
 func (c *headChecks) handFold(ctx context.Context, query, evalID, series, repo string, w window) (*float64, error) {
@@ -478,4 +498,312 @@ func (c *headChecks) insertRolledBack(ctx context.Context, index, text string, a
 		return refused.Code, refused.ConstraintName, nil
 	}
 	return "", "", err
+}
+
+// fallbackLeaseTries is how many times the fallback tries for the refresher's lease, and
+// fallbackLeaseWait how long it waits after a try that did not take it: two minutes in all, the
+// bound the paint's client gives each read of the server. A refresher pass holds the lease for as
+// long as it runs and gives it back as it ends (duty.Exclusive with no period, which duty.RunWoken
+// takes), so a try between two passes takes it. A lease no try takes in two minutes is a pass that
+// runs longer than that, or a take that keeps failing, and the lines duty.Exclusive writes say which.
+const (
+	fallbackLeaseTries = 240
+	fallbackLeaseWait  = 500 * time.Millisecond
+)
+
+// fallback measures, for k16, the read of a repository whose cut a default move has marked stale
+// and the refresher has not folded again yet (dispatch://INFRA-2916/artifact/decisions-md, "A
+// repository's cut is stored again"), and the same reads once the cut's first paint is folded: it
+// marks the project's cut of the deploy repository stale as a move's commit marks it
+// (eval_figure_cuts_stale), its first paint owed, and reads the paint's 84-day read with a compare
+// range and its 28-day read of that repository once more, as the paint measures each (measure),
+// and that 84-day read one window back (pastCase), which fold the day rows of the evals the mark
+// names while it owes its first paint and read every other eval's stored figures
+// (figuresThrough); then it folds the cut's first paint as the boot and a refresher pass fold it
+// before the rest of the refold (evals.FoldFirstPaint), timed, and makes the three reads again:
+// the first two read the stored figures of the first paint, and the one a window back still folds
+// the day rows of the evals the mark names, the refold not having come down to it. It takes the
+// mark away again where it made it; then it does the same with the mark naming every eval, the
+// worst case (staleReads). A running server's refresher folds a marked cut again in any pass
+// (evals.refoldStaleCuts): its first batch folds the first paint, the next records where the
+// refold stands (next_day) and its last deletes the mark. So the fallback does all of that holding
+// the refresher's lease (evals.RefresherLease) on a connection of the bench's lease pool, as a
+// refresher pass holds it (duty.Exclusive with no period), and no refresher pass of any process
+// that takes the lease runs until it gives the lease back. A try that finds the lease held is made
+// again, fallbackLeaseWait later, up to fallbackLeaseTries; where none takes it, the fallback
+// states no read and fails.
+func (c *headChecks) fallback(measured []measuredCase, catalog map[int64]bool) {
+	ctx := context.Background()
+	callers, err := c.pool.Leases()
+	if err != nil {
+		c.r.fail("k16 fallback: open the lease pool: %v", err)
+		return
+	}
+	leases, err := callers.For("k16 fallback")
+	if err != nil {
+		c.r.fail("k16 fallback: reserve a connection of the lease pool: %v", err)
+		return
+	}
+	// With no period and a context nothing cancels, Exclusive reports exactly whether the pass
+	// ran: it did not take the lease otherwise.
+	read := func(ctx context.Context) { c.staleReads(ctx, measured, catalog) }
+	for try := 1; !duty.Exclusive(ctx, leases, evals.RefresherLease, time.Time{}, 0, read); try++ {
+		if try == fallbackLeaseTries {
+			c.r.fail("k16 fallback: no try of %d, %s apart, took the refresher's lease %s: a refresher pass held it at each, or the take failed (the dispatch duty lines above say which); no read of a stale cut is stated",
+				fallbackLeaseTries, fallbackLeaseWait, evals.RefresherLease)
+			return
+		}
+		time.Sleep(fallbackLeaseWait)
+	}
+}
+
+// staleReads is the fallback's measurement, made under the refresher's lease, under three marks,
+// one after the other (staleMarkReads): two of the project's cut of the deploy repository, its
+// published default, the mark a move of the project's default away from it makes, naming the evals
+// whose rows the move moves out of the cut (defaultRowEvals), the read a person's move of the
+// default meets, its reads named with -stale, and one naming every eval (null), the mark of the
+// boot's rename pass and the worst case, its reads named with -stale-all; and one of the project's
+// own rows (""), which the main Evals page reads and a move marks for the evals of the owner keys
+// it moves, naming every eval, its worst case, its reads (list-84d-compare, list-28d and the first
+// one window back) named with -stale-all. Each read of the paint is compared with the paint's own
+// read of the stored figures; each read one window back (pastCase) with the same read made first,
+// with no mark, from the stored figures, its line named with -past. The first paint is folded as
+// the server's build (serverBuild), as the server's own refresher would fold it. A project that
+// publishes another default, or a move that names no eval of the cut, fails beside the first mark,
+// which then states no read.
+func (c *headChecks) staleReads(ctx context.Context, measured []measuredCase, catalog map[int64]bool) {
+	repo := evalbench.Repos[0]
+	build, err := serverBuild(ctx, c.o.url)
+	if err != nil {
+		c.r.fail("k16 fallback: read the server's build, which the first paint is folded as: %v", err)
+		return
+	}
+	cases, ok := c.staleCases(ctx, measured, catalog, "list-84d-compare-repo", "list-28d-repo")
+	own, ownOK := c.staleCases(ctx, measured, catalog, "list-84d-compare", "list-28d")
+	if !ok || !ownOK {
+		return
+	}
+	moved, err := c.defaultRowEvals(ctx, repo)
+	switch {
+	case err != nil:
+		c.r.fail("k16 fallback: read the evals a move of %s's default repository from %s names: %v", c.o.project, repo, err)
+	case len(moved) == 0:
+		c.r.fail("k16 fallback: a move of %s's default repository from %s names no eval of its cut, so no read of a cut that move marks is stated", c.o.project, repo)
+	default:
+		c.staleMarkReads(ctx, catalog, repo, build, moved, "", cases)
+	}
+	c.staleMarkReads(ctx, catalog, repo, build, nil, "-all", cases)
+	c.staleMarkReads(ctx, catalog, "", build, nil, "-all", own)
+}
+
+// staleCases is the reads of the paint named names a mark's reads make (staleMarkReads), each with
+// the paint's own measurement of it from the stored figures, and after them the first of them one
+// window back (pastCase), measured once here, with no mark, from the stored figures, its RESULT
+// line stated. ok is false where the paint holds none of names or a read fails, which it states.
+func (c *headChecks) staleCases(ctx context.Context, measured []measuredCase, catalog map[int64]bool, names ...string) ([]staleCase, bool) {
+	var cases []staleCase
+	for _, name := range names {
+		index := slices.IndexFunc(measured, func(one measuredCase) bool { return one.name == name })
+		if index < 0 {
+			c.r.fail("k16 fallback: the paint has no case %s", name)
+			continue
+		}
+		cases = append(cases, staleCase{read: measured[index].paintCase, stored: measured[index]})
+	}
+	if len(cases) == 0 || cases[0].read.name != names[0] {
+		return cases, len(cases) > 0
+	}
+	past, err := c.pastCase(cases[0].read)
+	if err != nil {
+		c.r.fail("k16 fallback: %v", err)
+		return nil, false
+	}
+	stored, err := measure(ctx, c.pool, c.client, c.o, past, catalog)
+	if err != nil {
+		c.r.fail("k16 fallback: %s: %v", past.name, err)
+		return nil, false
+	}
+	c.r.result("k16 fallback case=%s marked_evals=none status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d",
+		past.name, stored.status, dbMs(stored.own), len(stored.own), stored.serverMs, len(stored.body), gzipSize(stored.body))
+	return append(cases, staleCase{read: past, stored: stored, past: true}), true
+}
+
+// defaultRowEvals is the evals a move of the project's default repository away from repo names in
+// repo's cut for the project's own rows stored under legionfacts.DefaultRepo, its evals that hold a
+// listed row under it, read by the statement the move's commit reads them with
+// (evals.DefaultRowEvalsQuery): it marks the cut as the ownDefault case of evals.staleMarksOf does,
+// which is the whole of the mark of the move of INFRA's default the farm measures, a move that
+// moves no owner key. The project must publish repo as its default.
+func (c *headChecks) defaultRowEvals(ctx context.Context, repo string) ([]string, error) {
+	published, err := evals.PublishedDefaultIn(ctx, c.pool, c.o.project)
+	if err != nil {
+		return nil, err
+	}
+	if published != repo {
+		return nil, fmt.Errorf("%s publishes %q as its default repository, not %s", c.o.project, published, repo)
+	}
+	rows, err := c.pool.Query(ctx, evals.DefaultRowEvalsQuery, []string{c.o.project})
+	if err != nil {
+		return nil, err
+	}
+	var marked []string
+	var project, evalID string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &evalID}, func() error {
+		marked = append(marked, evalID)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	slices.Sort(marked)
+	return marked, nil
+}
+
+// staleCase is one read the fallback makes under a mark (staleMarkReads): the read, the same read's
+// measurement from the stored figures with no mark, whose items it must answer, and whether it is
+// the read one window back (pastCase).
+type staleCase struct {
+	read   paintCase
+	stored measuredCase
+	past   bool
+}
+
+// names is the case's names under a mark, tag naming the mark ("" for the evals a move names, -all
+// for every eval): before the cut's first paint is folded, -stale with tag, and after it -ready
+// after those for a read of the paint, and -ready with tag in place of them for the read one window
+// back, which the first paint does not answer.
+func (s staleCase) names(tag string) (string, string) {
+	if s.past {
+		return s.read.name + "-stale" + tag, s.read.name + "-ready" + tag
+	}
+	return s.read.name + "-stale" + tag, s.read.name + "-stale" + tag + "-ready"
+}
+
+// pastCase is stored, the paint's 84-day read with a compare range, of the repository or of the
+// project's own rows, moved one window back, as a person who steps back a window reads it: its
+// window the 84 days ending 84 days
+// before the live view's window end (through-1-84, through being the last end day the figures are
+// built through, FigureLead days after today), and its compare range the 84 days before that. Its
+// compare range and most of its window's days are none of the cut's first paint (evals'
+// firstPaintOf), so under a mark a read of it folds the day rows of the evals the mark names until
+// the cut's refold, newest end day first, has come down past its compare range's end.
+func (c *headChecks) pastCase(stored paintCase) (paintCase, error) {
+	at, err := url.Parse(stored.path)
+	if err != nil {
+		return paintCase{}, fmt.Errorf("read the path of %s: %w", stored.name, err)
+	}
+	end := c.today.AddDate(0, 0, evals.FigureLead-1-84)
+	w, compare := before(end, 84), before(end.AddDate(0, 0, -84), 84)
+	query := at.Query()
+	query.Set("from", w.from.Format(time.RFC3339))
+	query.Set("to", w.to.Format(time.RFC3339))
+	query.Set("compare_from", compare.from.Format(time.RFC3339))
+	query.Set("compare_to", compare.to.Format(time.RFC3339))
+	at.RawQuery = query.Encode()
+	past := stored
+	past.name, past.path = stored.name+"-past", at.String()
+	return past, nil
+}
+
+// staleMarkReads marks the project's cut of repo stale, naming marked (nil: every eval), its first
+// paint owed, and makes each read of cases, each named as tag names it before the first paint
+// (staleCase.names); then folds the cut's first paint as build (evals.FoldFirstPaint), and makes
+// each read again, named as tag names it after the first paint; and takes the mark back where it
+// made it. Before the take-back it reads the mark back. The lease keeps out every refresher that
+// takes it, so where the mark no longer stands at generation 1 with its refold to begin, naming
+// marked, its first paint folded at the end day the fold answered, a writer that takes no lease
+// moved it during the measurement, and a read may have read the stored figures of an eval it
+// names, or the day rows of one the first paint answers: it states no read of it and fails. Each
+// RESULT line names the read, how many evals the mark names ("all" for every one), its database
+// and server time, its body, the same read's database time from the stored figures with no mark,
+// and whether the two answers' items are equal; and one RESULT line names the first paint's fold,
+// the evals it folded, the end day it folded through and its transaction's time. A read whose items
+// are not equal fails beside its line: the stored figures and the day rows answer the same values
+// (sameItems). It judges no budget: the architect reads the fallback's time.
+func (c *headChecks) staleMarkReads(ctx context.Context, catalog map[int64]bool, repo, build string, marked []string, tag string, cases []staleCase) {
+	inserted, err := c.pool.Exec(ctx, `
+		insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals) values ($1, $2, 1, null, null, $3)
+		on conflict (project_key, repo) do nothing
+	`, c.o.project, repo, marked)
+	if err != nil {
+		c.r.fail("k16 fallback: mark %s's cut of %s stale: %v", c.o.project, repo, err)
+		return
+	}
+	if inserted.RowsAffected() == 1 {
+		defer func() {
+			if _, err := c.pool.Exec(ctx, `delete from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null
+				and evals is not distinct from $3`, c.o.project, repo, marked); err != nil {
+				c.r.fail("k16 fallback: take back the mark of %s's cut of %s: %v", c.o.project, repo, err)
+			}
+		}()
+	}
+	names := "all"
+	if marked != nil {
+		names = strconv.Itoa(len(marked))
+	}
+	type staleRead struct {
+		name, line string
+		equal      bool
+	}
+	var reads []staleRead
+	read := func(one staleCase, name string) {
+		run := one.read
+		run.name = name
+		got, err := measure(ctx, c.pool, c.client, c.o, run, catalog)
+		if err != nil {
+			c.r.fail("k16 fallback: %s: %v", run.name, err)
+			return
+		}
+		equal := sameItems(got.body, one.stored.body)
+		reads = append(reads, staleRead{name: run.name, equal: equal, line: fmt.Sprintf("k16 fallback case=%s marked_evals=%s status=%d db_ms=%.2f statements=%d server_ms=%.0f body_bytes=%d gzip_bytes=%d stored_db_ms=%.2f items_equal=%t",
+			run.name, names, got.status, dbMs(got.own), len(got.own), got.serverMs, len(got.body), gzipSize(got.body), dbMs(one.stored.own), equal)})
+	}
+	for _, one := range cases {
+		stale, _ := one.names(tag)
+		read(one, stale)
+	}
+	paint, err := evals.FoldFirstPaint(ctx, c.pool, build, c.o.project, repo)
+	if err != nil {
+		c.r.fail("k16 fallback: fold the first paint of %s's cut of %s: %v", c.o.project, repo, err)
+		return
+	}
+	if !paint.Folded {
+		c.r.fail("k16 fallback: the first paint of %s's cut of %s, marked naming %s evals, folded nothing: the mark owed none, or %s's figures are folded nowhere; no read of it is stated",
+			c.o.project, repo, names, c.o.project)
+		return
+	}
+	for _, one := range cases {
+		_, ready := one.names(tag)
+		read(one, ready)
+	}
+	var stands bool
+	if err := c.pool.QueryRow(ctx, `select exists (select 1 from eval_figure_cuts_stale where project_key = $1 and repo = $2 and generation = 1 and next_day is null
+		and ready_through = $4 and evals is not distinct from $3)`, c.o.project, repo, marked, paint.Through).Scan(&stands); err != nil {
+		c.r.fail("k16 fallback: read back the mark of %s's cut of %s: %v", c.o.project, repo, err)
+		return
+	}
+	if !stands {
+		c.r.fail("k16 fallback: the mark of %s's cut of %s no longer stands at generation 1 with its refold to begin, naming %s evals, its first paint folded through %s, though the fallback held the refresher's lease, so its reads may have read the stored figures of an eval it names; no read of it is stated",
+			c.o.project, repo, names, paint.Through.Format(time.DateOnly))
+		return
+	}
+	c.r.result("k16 fallback first-paint repo=%q marked_evals=%s evals=%d through=%s transaction_ms=%d locks_held_ms=%d",
+		repo, names, paint.Evals, paint.Through.Format(time.DateOnly), paint.Transaction.Milliseconds(), paint.LocksHeld.Milliseconds())
+	for _, read := range reads {
+		c.r.result("%s", read.line)
+		if !read.equal {
+			c.r.fail("k16 fallback: %s answers other items than the read of the stored figures with no mark, where the day rows and the stored figures answer the same values", read.name)
+		}
+	}
+}
+
+// sameItems reports whether two answers of the eval list hold the same items, byte for byte as
+// JSON: the stored figures and the day rows answer the same values (evals.StoredFigures.SeriesValues).
+func sameItems(a, b []byte) bool {
+	var one, other struct {
+		Items json.RawMessage `json:"items"`
+	}
+	if json.Unmarshal(a, &one) != nil || json.Unmarshal(b, &other) != nil {
+		return false
+	}
+	return len(one.Items) > 0 && bytes.Equal(one.Items, other.Items)
 }

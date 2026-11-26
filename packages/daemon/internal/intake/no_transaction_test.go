@@ -32,13 +32,14 @@ func (l *factLocks) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndD
 
 // A repository the daemon hears carries far more GitHub events than Legion's own pull requests: other pull
 // requests opened and pushed to, their reviews and CI settlements, and every workflow its CI runs.
-// None of them can change a record, so each is acknowledged without a transaction, the fact lock
-// or a GitHub read: a pull request event on a branch that is no issue's, a review or a checks
+// None of them can change a record, so each is acknowledged with no fact transaction, no fact lock
+// and no GitHub read: a pull request event on a branch that is no issue's, a review or a checks
 // settlement of a pull request the daemon does not record, and a run of any workflow, which wakes
 // nothing. Once the daemon records the pull request, the same review and settlement are applied
 // under the lock, the review's author's permission read first, and so is a pull request event on
 // an issue's branch.
 func TestAnEventTheDaemonCannotActOnIsAcknowledgedWithNoTransaction(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	locks := &factLocks{}

@@ -79,9 +79,9 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 		subOf[spec.key] = sub
 		conns[sub] = newFakeLiveConn()
 		rig.hub.Subscribe(conns[sub], subscribeFrame(sub, frames[sub]))
-		conns[sub].snapshot(t, 5*time.Second, sub)
+		conns[sub].snapshot(t, sub)
 		if sub != "t" {
-			conns[sub].freshness(t, 5*time.Second, "the verdict after the snapshot of "+sub)
+			conns[sub].freshness(t, "the verdict after the snapshot of "+sub)
 		}
 	}
 	rig.settle(t)
@@ -113,7 +113,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 		}
 		rig.hub.catchUpNow()
 		for _, sub := range wantRecomputed {
-			rig.waitFor(t, mark, 5*time.Second, "the recompute of "+sub+" after "+what, recomputeOfView(t, frames[sub]))
+			rig.waitFor(t, mark, "the recompute of "+sub+" after "+what, recomputeOfView(t, frames[sub]))
 		}
 		rig.waitNoRecompute(t, viewMaxWait)
 		recomputed := []string{}
@@ -146,7 +146,7 @@ func TestARecordWriteMarksNoViewAndTheRefreshersWriteMarksTheEvalsViewsOfItsProj
 			for i, slug := range slugs {
 				ids[i] = evals.EvalID(project, slug)
 			}
-			got := liveUpsertIDs(t, conns[sub].delta(t, 5*time.Second, sub), "items")
+			got := liveUpsertIDs(t, conns[sub].delta(t, sub), "items")
 			slices.Sort(got)
 			slices.Sort(ids)
 			if !slices.Equal(got, ids) {

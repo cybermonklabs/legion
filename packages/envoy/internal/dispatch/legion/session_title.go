@@ -9,7 +9,7 @@ import "strings"
 // PhaseWorkOf) and the metrics' own window reads — so it lives here, beside the walk, rather than
 // in either reader.
 
-// roles are Legion's six worker types, in the order the workflow runs them. The daemon's
+// roles are Legion's six worker types, in the order of the default steps. The daemon's
 // claim.Roles is the same list in the daemon's own module (packages/daemon/internal/claim/
 // token.go), which this module does not import; a deployment changes each role's prompt, model
 // and harness, not the roles.

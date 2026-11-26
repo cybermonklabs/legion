@@ -53,6 +53,8 @@ var routeXidWindowTable = slices.Concat(documentRouteXidWindows, issueRouteXidWi
 
 // TestXidWindowRouteTable measures every row of routeXidWindowTable.
 func TestXidWindowRouteTable(t *testing.T) {
+	// Not parallel: the xid rig measures only in a test that runs alone in the process
+	// (XidTracer.Measure fails in a parallel test, or in a subtest of one).
 	for _, row := range routeXidWindowTable {
 		t.Run(row.name, func(t *testing.T) { measureRouteXidWindow(t, row) })
 	}

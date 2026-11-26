@@ -123,12 +123,13 @@ func holdsEventsSource(settings delivery.ProjectSettings) bool {
 
 // reaches reports whether c, one of the projects or owner keys a deploy counts for
 // (deployProjects), is p's: p itself, or an owner key of p's default repository whose sharers do
-// not hold p (eval_project_owners' rule).
+// not hold p (eval_project_owners' rule for a plain key: a deploy of the record ships pull requests
+// whose lists are constant, readShippedIssues, so its owner key carries none).
 func (p failureProject) reaches(c counted) bool {
 	if c.project == p.project {
 		return true
 	}
-	repo, sharers, ok := parseOwner(c.project)
+	repo, sharers, _, ok := parseOwner(c.project)
 	return ok && p.defaultRepo != "" && strings.EqualFold(repo, p.defaultRepo) && !slices.Contains(sharers, p.project)
 }
 
@@ -268,9 +269,9 @@ func (f *failureRecord) count(failures []prodevents.Event) {
 
 // recordProjects is what deploy, a deploy row of the record, counts for, by deployProjects' rule:
 // a posted deploy its route's project alone, through no repository; a GitHub deploy the projects
-// of the pull requests it ships through the issue its stored row names (attribution.pulls, by row
-// key), and its repository's owner key where one names no issue, or the row's project where it
-// ships none; a dropped deploy nothing.
+// of the pull requests it ships through the issue its stored row names (their attribution lists,
+// by row key), and its repository's owner key where one names no issue, or the row's project where
+// it ships none; a dropped deploy nothing.
 func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 	switch {
 	case deploy.Status == prodevents.StatusDropped:
@@ -280,26 +281,19 @@ func (a attribution) recordProjects(deploy prodevents.Event) []counted {
 	}
 	var shipped []*delivery.DeliveryPullRequest
 	for _, ref := range deploy.PullRequests {
-		repo, number, ok := parsePullRequestRef(ref)
-		if !ok {
-			continue
+		if repo, number, ok := parsePullRequestRef(ref); ok {
+			shipped = append(shipped, &delivery.DeliveryPullRequest{Repo: repo, Number: number})
 		}
-		pr := &delivery.DeliveryPullRequest{Repo: repo, Number: number}
-		if issue, named := a.pulls[PullRequestMember(repo, number)]; named {
-			pr.IssueKey = &issue
-		}
-		shipped = append(shipped, pr)
 	}
 	return a.deployProjects(deploy.Repo, shipped, deploy.ProjectKey)
 }
 
 // readShippedIssues reads, in q, what attributes the pull requests the GitHub deploys of deploys
-// ship (production_events.pull_requests, containment's): the issue each one's stored row names, by
-// its row key (the attribution's pulls), and that issue's project (its issues), where the
-// population holds a row of the pull request naming an issue the issues table holds
-// (readPullRequestIssues).
+// ship (production_events.pull_requests, containment's): of each one whose stored row names an
+// issue the issues table holds, the attribution list whose terminal is that issue's project, by its
+// row key, and none of the rest (readPullRequestIssues).
 func readShippedIssues(ctx context.Context, q delivery.Querier, deploys []prodevents.Event) (attribution, error) {
-	attribute := attribution{issues: map[string]string{}, pulls: map[string]string{}}
+	attribute := attribution{lists: map[string]attributionList{}}
 	var prs pullRequestSet
 	for _, deploy := range deploys {
 		if deploy.Source == prodevents.SourceAPI || deploy.Status == prodevents.StatusDropped {
@@ -318,7 +312,9 @@ func readShippedIssues(ctx context.Context, q delivery.Querier, deploys []prodev
 	if err != nil {
 		return attribution{}, err
 	}
-	attribute.pulls, attribute.issues = pulls, projects
+	for member, issue := range pulls {
+		attribute.lists[member] = attributionList{terminal: projects[issue]}
+	}
 	return attribute, nil
 }
 
@@ -477,7 +473,7 @@ func (s *Store) writeFailureDays(ctx context.Context, write failureWrite, builtB
 			return fmt.Errorf("delete the failure rows %s holds outside its days: %w", write.project, err)
 		}
 	}
-	if err := foldFiguresInTx(ctx, tx, builtBy, write.project, spans); err != nil {
+	if err := foldFiguresInTx(ctx, tx, builtBy, map[string]map[string]daySpan{write.project: spans}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -522,9 +518,9 @@ func deleteStaleFailureDays(ctx context.Context, tx pgx.Tx, project string, eval
 
 // deleteFailureDays deletes, in one transaction, every stored failure row of projects, each a
 // project whose failure measures are off, and folds again the stored figures of each day a row
-// went from (foldFiguresInTx), each project's in turn. Its change rows wait in the change log's
-// outbox and are moved into the log once it has committed (drainChanges). It writes nothing for no
-// project.
+// went from (foldFiguresInTx), every project's in one fold. Its change rows wait in the change
+// log's outbox and are moved into the log once it has committed (drainChanges). It writes nothing
+// for no project.
 func (s *Store) deleteFailureDays(ctx context.Context, projects []string, builtBy string) error {
 	if len(projects) == 0 {
 		return nil
@@ -559,10 +555,8 @@ func (s *Store) deleteFailureDays(ctx context.Context, projects []string, builtB
 	}); err != nil {
 		return fmt.Errorf("delete the failure rows of %v, whose failure measures are off: %w", projects, err)
 	}
-	for _, project := range projects {
-		if err := foldFiguresInTx(ctx, tx, builtBy, project, spans[project]); err != nil {
-			return err
-		}
+	if err := foldFiguresInTx(ctx, tx, builtBy, spans); err != nil {
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the failure rows of %v: %w", projects, err)

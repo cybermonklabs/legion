@@ -73,6 +73,7 @@ func mergeStateUnknown(t *testing.T, apply func(string, intake.Fact) intake.Resu
 // GitHub's answer and keeps the issue in reviewing, so the promotion starts the reviewer on the
 // resume task of that phase, and that task names no commit.
 func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *testing.T) {
+	t.Parallel()
 	pool, engine, apply := reviewedChild(t)
 	mergeStateUnknown(t, apply)
 	entered := engine.now()
@@ -88,7 +89,7 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 		t.Fatalf("after the late approval the reviewer's row reads the reviewed commit %q, want none: the approval was submitted before the re-admission cleared the generation", got)
 	}
 	promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
+	want := "Continue child. Issue: LEGION-208. Phase: reviewing. Working copy: branch legion/LEGION-208. Resume the existing phase work." + reviewedPartOf("none") + reviewEntryPartOf(reviewerRow(t, pool).Entry)
 	if task := reviewerRow(t, pool).EntryTask; task != want {
 		t.Fatalf("the promoted reviewer's first task = %q, want %q: the first review of the new generation reads the whole change", task, want)
 	}
@@ -104,6 +105,7 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 // the next round's task names the commit the row holds: none after the late review, the head
 // after the control.
 func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// promoted is whether the review names the promoted entry rather than the one before.
@@ -165,6 +167,7 @@ func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *t
 // the head the pull request still stands at, leaves the commit cleared, so the next round's task
 // names none.
 func TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGivesIt(t *testing.T) {
+	t.Parallel()
 	pool, engine, apply := reviewedChild(t)
 	mergeStateUnknown(t, apply)
 	entered := engine.now()
@@ -209,6 +212,7 @@ func TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGives
 // untimed review always has. The same untimed review naming no entry decides the round and moves
 // nothing, which is the control.
 func TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// namesEntry is whether the review's footer names the entry the row holds.
@@ -245,6 +249,7 @@ func TestAReviewWithNoSubmissionTimeMovesTheCommitWhenItNamesItsEntry(t *testing
 // only the number tells the two entries apart. Round 2 here stands at headTwo, and the commit
 // round 1 read is headOne.
 func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// names is the entry the review's footer names: "before" the promotion, the "promoted"
@@ -308,6 +313,7 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(
 // App's as production delivers it: the daemon never reads write access for the review App's
 // login (daemon's reviewerCanWrite), so AuthorCanWrite is false.
 func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
+	t.Parallel()
 	const why = "workflow: the reviewer's own review moves no reviewed commit: "
 	for _, tc := range []struct {
 		name  string

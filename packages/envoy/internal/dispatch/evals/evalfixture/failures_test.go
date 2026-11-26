@@ -197,11 +197,11 @@ func TestTheFailuresModeLoadsTwiceIntoTheSameRows(t *testing.T) {
 		if len(entries) != len(series) {
 			t.Fatalf("%s holds %d of the %d evals the test reads", project, len(entries), len(series))
 		}
-		firsts, err := registry.FirstDays(ctx, entries, deployRepos)
+		firsts, err := evals.FirstDaysIn(ctx, database.Pool, entries, deployRepos)
 		if err != nil {
 			t.Fatalf("read the first days of %s's evals: %v", project, err)
 		}
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, deployRepos, nil, window, nil)
+		rows, err := evals.DayWindowIn(ctx, database.Pool, []string{project}, entries, deployRepos, nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s's day rows: %v", project, err)
 		}

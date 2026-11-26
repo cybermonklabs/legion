@@ -221,6 +221,51 @@ func TestAWindowOutsideTheYearsAReadAnswersIsRefused(t *testing.T) {
 	}
 }
 
+// TestAnEvalReadsRepositoryListIsHeldToItsBounds: every statement of an eval read sends its repo
+// list, so a read takes at most evalRepoMax repositories, a repository the query repeats counted
+// once, each of at most evalRepoBytes bytes. Each of the four reads answers a list at both bounds
+// whose every repository the query names twice, and refuses one repository more, or one byte more
+// of a name, 400 INVALID_QUERY naming the bound.
+func TestAnEvalReadsRepositoryListIsHeldToItsBounds(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	registerReviewTime(t, handler)
+	// repos names count repositories of bytes bytes each, every one twice.
+	repos := func(count, bytes int) url.Values {
+		query := url.Values{}
+		for index := range count {
+			head := fmt.Sprintf("acme/r%03d-", index)
+			name := head + strings.Repeat("x", bytes-len(head))
+			query["repo"] = append(query["repo"], name, name)
+		}
+		return query
+	}
+	for _, path := range []string{
+		"/api/v1/projects/EVL/evals?",
+		"/api/v1/evals?",
+		"/api/v1/projects/EVL/evals/review-time?",
+		"/api/v1/projects/EVL/evals/review-time/items?",
+	} {
+		checkAnswered(t, fmt.Sprintf("GET %s with %d repositories of %d bytes, each named twice", path, evalRepoMax, evalRepoBytes),
+			evalRequest(t, handler, http.MethodGet, path+repos(evalRepoMax, evalRepoBytes).Encode(), nil, ""))
+		for _, past := range []struct {
+			what  string
+			query url.Values
+			names string
+		}{
+			{what: fmt.Sprintf("%d repositories", evalRepoMax+1), query: repos(evalRepoMax+1, evalRepoBytes), names: fmt.Sprintf("at most %d", evalRepoMax)},
+			{what: fmt.Sprintf("a repository of %d bytes", evalRepoBytes+1), query: repos(1, evalRepoBytes+1), names: fmt.Sprintf("at most %d", evalRepoBytes)},
+		} {
+			response := evalRequest(t, handler, http.MethodGet, path+past.query.Encode(), nil, "")
+			var refusal evalRefusal
+			if response.Code != http.StatusBadRequest || json.Unmarshal(response.Body.Bytes(), &refusal) != nil || refusal.Code != "INVALID_QUERY" ||
+				!strings.Contains(refusal.Error, past.names) {
+				t.Errorf("GET %s with %s: status %d, body %.300s; want 400 INVALID_QUERY naming %q", path, past.what, response.Code, response.Body.String(), past.names)
+			}
+		}
+	}
+}
+
 // TestADeliveryReadRefusesARepeatedWindowKey: the delivery routes read their window through the
 // parser the eval routes do (parseDeliveryWindow), and the eval routes refuse a key they take one
 // value of when a query names it twice (C9 of the review of 2fdcf77f). A delivery read answered

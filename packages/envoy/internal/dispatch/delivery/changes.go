@@ -31,10 +31,12 @@ import (
 // span, since it changes how every window of the eval reads; an eval_days row is one
 // transaction's writes of one eval's day rows, spanning midnight UTC of the first and the last day
 // written, and its RunKind names the refresher's transaction that wrote it where that is its
-// rewrite of a settings change or its rebuild of a span (EvalDaysWrittenBySettingsRewrite,
-// EvalDaysWrittenByRebuild). An eval_days row of no eval, whose Repo and Ref are empty, is the
-// refresher's word that the day rows stand at the delivery settings a change of the settings
-// row named (SettingsApplied below): it carries the settings rewrite's RunKind and no span.
+// rewrite of a settings change, its rebuild of a span or a verified rebuild's flip, or its
+// publishing of the default repositories (EvalDaysWrittenBySettingsRewrite,
+// EvalDaysWrittenByRebuild, EvalDaysWrittenByDefaults). An eval_days row of no eval, whose Repo
+// and Ref are empty, is the refresher's word that the day rows stand at the delivery settings a
+// change of the settings row named (SettingsApplied below): it carries the settings rewrite's
+// RunKind and no span.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
@@ -83,8 +85,8 @@ const (
 // transaction sets the transaction-local setting dispatch.eval_days_cause to it before its first
 // write of a day row, and eval_days_change_log records that setting as the change's run_kind
 // (migration 20261117100014). The Delivery page's live hub recomputes an evals view such a change
-// marks at once, where every other change but a rebuild's waits the quiet that gathers a burst
-// into one recompute.
+// marks at once, as it does for a rebuild's and a publishing of the defaults (EvalDaysImmediate),
+// where every other change waits the quiet that gathers a burst into one recompute.
 //
 // It is also the RunKind of the eval_days change of no eval (SettingsApplied): the one change the
 // refresher's page logs once the day rows stand at the delivery settings a change of the settings
@@ -96,10 +98,11 @@ const (
 const EvalDaysWrittenBySettingsRewrite = "settings_rewrite"
 
 // EvalDaysWrittenByRebuild is the RunKind of an eval_days change that the refresher's rebuild of a
-// span wrote (evals.MarkRebuild): the one transaction in which a page whose changes move a series'
-// first input day, or the repositories that hold a delivery run, writes the days it names with
-// every other day those moves reach. Its day rows arrive together, as the settings rewrite's do,
-// so the live hub recomputes an evals view such a change marks at once.
+// span wrote, or a verified rebuild's flip (evals.MarkRebuild): the one transaction in which a page
+// whose changes move a series' first input day, or the repositories that hold a delivery run,
+// writes the days it names with every other day those moves reach, or the one in which a rebuild
+// makes what it staged visible (evals' flipRebuild). Its day rows arrive together, as the settings
+// rewrite's do, so the live hub recomputes an evals view such a change marks at once.
 const EvalDaysWrittenByRebuild = "rebuild"
 
 // EvalDaysWrittenByDefaults is the RunKind of the eval_days changes the refresher's page logs in
@@ -110,8 +113,10 @@ const EvalDaysWrittenByRebuild = "rebuild"
 // deploy source reads the repository, a source that names none reading its project's published
 // default), whose evals judge the delivery views' figures (evals.Store.DeployRepoEvals), one more
 // whose Ref is DefaultsJudgingRef and Repo the deploy repository, which marks every delivery view
-// those evals judge (JudgingMoved). The commit makes the defaults and the stored figures folded
-// under them visible together, so a view of them is recomputed at once.
+// those evals judge (JudgingMoved). The commit makes the defaults, the marks of every cut of the
+// stored figures the move moves rows into or out of, the project's own cut (repo "") as much as a
+// repository's, and the first paint of each marked cut, folded under the new defaults
+// (evals.foldMarkedFirstPaints), visible together, so a view of them is recomputed at once.
 const EvalDaysWrittenByDefaults = "defaults"
 
 // DefaultsJudgingRef is the Ref of the change that says the project judging the delivery views

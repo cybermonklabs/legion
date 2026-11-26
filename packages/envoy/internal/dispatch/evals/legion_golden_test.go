@@ -128,13 +128,14 @@ const (
 // the history the golden reports were recorded over, with its facts and filings stored as the facts
 // consumer stores them, every day's Legion rows are written as the refresher's walk writes them;
 // then for each window of the golden files and each cut, the six folds over the window's stored
-// rows, read as the eval routes read them (DayWindow), answer every number the base head's report
+// rows, read as the eval routes read them (DayWindowIn), answer every number the base head's report
 // answered at the matching scope: work time, each bar with its segments, the idle share, rework
 // and splitting, whose root figures the base answered the same at every scope and the all cut
 // carries. The report's tables of issues are no folds: each is compared with the stored rows of
 // the window and cut, which the items route answers. Then one day's rows are deleted, and the
 // same comparison must find numbers that moved.
 func TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	windows, project, _ := seedGoldenLegionHistory(t, r)
 	spec := windows[0].Spec
@@ -327,7 +328,7 @@ func compareLegionWindows(t *testing.T, r rig, project string, windows []goldenR
 	}
 	check := &legionCheck{}
 	for _, window := range windows {
-		read, err := r.registry.DayWindow(ctx, []string{project}, entries, nil, nil, Range{From: window.Window.From, To: window.Window.To}, nil)
+		read, err := DayWindowIn(ctx, r.database.Pool, []string{project}, entries, nil, nil, Range{From: window.Window.From, To: window.Window.To}, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s: %v", window.Window.Name, err)
 		}

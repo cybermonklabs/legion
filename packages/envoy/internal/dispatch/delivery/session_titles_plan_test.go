@@ -76,6 +76,7 @@ func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 // a session that never stamped a title, none for one the events table never heard of, and nothing
 // from a person's actor that shares a session's id.
 func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
+	t.Parallel()
 	pool, ctx := newSessionTitlesPlanFixture(t)
 	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, resolveSessionTitlesQuery, sessionTitlePlanSessions)
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"session_titles"}) {

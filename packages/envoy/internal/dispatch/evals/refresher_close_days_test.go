@@ -72,6 +72,7 @@ func closeMarkProblems(marked, closes []string) []string {
 // rewrites those two days, which count no change of the issue, and the same judgement of the marks
 // finds it wrong.
 func TestAFactsChangeMarksAndRewritesTheIssuesCloseDaysAlone(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)

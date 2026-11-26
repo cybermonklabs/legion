@@ -16,6 +16,7 @@ import (
 // added to one struct and missed in one of those fails here, rather than being taken and then
 // overwritten by the next seed, or refused and still carried forward.
 func TestEveryComputationFieldIsChangedComparedAndNamedAsOne(t *testing.T) {
+	t.Parallel()
 	link := Link{Rel: "via", Href: "https://ci.example/runs", RecordedAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)}
 	differing := map[reflect.Kind]any{reflect.String: "changed", reflect.Bool: true}
 	for _, pair := range []struct {

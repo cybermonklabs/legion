@@ -33,6 +33,7 @@ func good(t *testing.T) json.RawMessage {
 // is refused whole, and the refusal names that row's index and the rule's code, for every code
 // the readings write refuses with.
 func TestEachBadRowIsRefusedByItsIndexAndCode(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	// A reading another correction replaced already, for READING_ALREADY_REPLACED.
 	first := r.write(t, "accuracy", alice, good(t))
@@ -129,6 +130,7 @@ func TestEachBadRowIsRefusedByItsIndexAndCode(t *testing.T) {
 // largest int64 is stored whole, and an n past it is refused READING_INVALID naming n, and stores
 // nothing, rather than reaching the store.
 func TestAReadingsNIsHeldWholeToTheLargestInt64(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	written := r.write(t, "sizes", alice, row(t, map[string]any{
 		"series": "score", "row_kind": "run", "value": 1, "n": int64(math.MaxInt64), "measured_at": at(3, 9, 0),
@@ -160,6 +162,7 @@ func TestAReadingsNIsHeldWholeToTheLargestInt64(t *testing.T) {
 // MEASURED_AT_OUT_OF_RANGE naming its row, and its batch stores nothing. A row at the floor itself
 // and one an hour inside the ceiling are stored.
 func TestAReadingMeasuredOutsideItsRangeIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	now := time.Now().UTC()
 	measuredAt := func(measured any) json.RawMessage {
@@ -193,6 +196,7 @@ func TestAReadingMeasuredOutsideItsRangeIsRefusedNamingItsRow(t *testing.T) {
 // in one of the reading's keys is refused EVAL_KEY_TOO_LONG naming its row and field, and in a
 // slug or a register write's series naming the field; none of them stores anything.
 func TestAKeyAtItsBoundIsStoredAndOnePastItRefused(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	// Hex of a multiplicative hash, which repeats nothing a compressor could use.
 	var digits strings.Builder
@@ -252,6 +256,7 @@ func TestAKeyAtItsBoundIsStoredAndOnePastItRefused(t *testing.T) {
 // recorder is refused whole: eval_readings holds as many rows after it as before, and the slug
 // it named, which no eval held, is not registered either.
 func TestABatchWithABadLastRowStoresNothing(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	r.write(t, "latency", alice, row(t, map[string]any{"series": "ms", "row_kind": "request", "value": 12, "measured_at": at(2, 8, 0)}))
 
@@ -288,6 +293,7 @@ func TestABatchWithABadLastRowStoresNothing(t *testing.T) {
 // write left holding one. Each stores no reading, registers no eval and moves no day row; the same
 // values spread over days whose sums stay within a float are stored.
 func TestABatchThatWouldOverflowADayRowIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	huge := func(key string, value float64, n int64, measured time.Time) json.RawMessage {
 		return row(t, map[string]any{"series": "bytes", "row_kind": "run", "row_key": key, "value": value, "n": n, "measured_at": measured})
@@ -337,6 +343,7 @@ func TestABatchThatWouldOverflowADayRowIsRefusedNamingItsRow(t *testing.T) {
 // MaxEvalSeries series; a batch of series it holds is taken, and one naming one more series is
 // refused at that row.
 func TestAReadingsWriteThatWouldPassTheSeriesBoundIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	const slug = "series-bound"
 	evalID := EvalID(r.project, slug)
@@ -417,9 +424,10 @@ const dayKeyOrder = `
 // every row holds its one reading; and the write logs one eval_days change of the eval, spanning
 // the day, as one statement does (migration 20261117100014).
 func TestAReadingsWritesDayRowsGoInBoundedStatementsInKeyOrder(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	const slug, count = "wide-keys", 190
 	evalID := EvalID(r.project, slug)
 	day := at(3, 0, 0)
@@ -531,7 +539,8 @@ func (r rig) loggedChanges(t *testing.T, kind string, heads [2]int) []dayChange 
 	}
 	changes, err := pgx.CollectRows(changed, func(row pgx.CollectableRow) (dayChange, error) {
 		var change dayChange
-		return change, row.Scan(&change.project, &change.evalID, &change.first, &change.last)
+		err := row.Scan(&change.project, &change.evalID, &change.first, &change.last)
+		return change, err
 	})
 	if err != nil {
 		t.Fatalf("read the %s changes logged: %v", kind, err)
@@ -549,9 +558,10 @@ func (r rig) loggedChanges(t *testing.T, kind string, heads [2]int) []dayChange 
 // the batch stores nothing; one with a note of 200,000 bytes is stored, in statements within the
 // bound.
 func TestTheLargestReadingsBodyGoesInBoundedStatements(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	const slug, body = "wide-body", 1 << 20
 	evalID := EvalID(r.project, slug)
 	day := at(3, 0, 0)
@@ -635,9 +645,10 @@ func TestTheLargestReadingsBodyGoesInBoundedStatements(t *testing.T) {
 //     key holds: the keys of the 1,201 day rows the correction folds again grow with it; each
 //     repository's row holds its corrected value.
 func TestTheMostCorrectionsABodyHoldsGoInBoundedStatements(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	statements := &sentStatements{}
-	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	day := at(3, 0, 0)
 	for _, shape := range []struct {
 		slug  string
@@ -704,15 +715,97 @@ func TestTheMostCorrectionsABodyHoldsGoInBoundedStatements(t *testing.T) {
 	}
 }
 
+// TestAWeeksCorrectionOfSmallReadingsIsInsertedInOneStatement: a week of readings as the bench
+// writes them, 1,408 over 8 series and 7 days with short series names and row keys, each with a
+// value and with n and the confidence fields null, and then one body correcting every one of them,
+// which adds the id each replaces: about 180 bytes a reading as the insert sends it, some 250,000
+// in all. The correction's readings are inserted in exactly one statement, within statementBytes
+// as pgx encodes its parameters and within what readingBytes estimates of them beside the
+// statement's own (paramBytes), which statementChunks cuts by: an estimate that counted the 8
+// bytes of a number for each null would pass the bound and cut them in two.
+func TestAWeeksCorrectionOfSmallReadingsIsInsertedInOneStatement(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	statements := &sentStatements{}
+	r.registry = New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
+	const slug, count = "week-of-corrections", 1408
+	evalID := EvalID(r.project, slug)
+	reading := func(index int, value float64, replaces string) json.RawMessage {
+		fields := map[string]any{"series": fmt.Sprintf("s%d", index/7%8), "row_kind": "run", "row_key": fmt.Sprintf("k%d", index), "value": value,
+			"measured_at": at(6+index%7, 10, 0)}
+		if replaces != "" {
+			fields["replaces"] = replaces
+		}
+		return row(t, fields)
+	}
+	originals := make([]json.RawMessage, count)
+	for index := range originals {
+		originals[index] = reading(index, float64(1+index%7), "")
+	}
+	stored := r.write(t, slug, alice, originals...)
+	corrections := make([]json.RawMessage, count)
+	for index, original := range stored.Readings {
+		corrections[index] = reading(index, *original.Value+1, original.ID)
+	}
+	statements.take()
+	written := r.write(t, slug, alice, corrections...)
+	var inserts []sentStatement
+	for _, statement := range r.measured(t, statements.take()) {
+		if strings.Contains(statement.sql, "insert into eval_readings") {
+			inserts = append(inserts, statement)
+		}
+	}
+	recordedBy, err := json.Marshal(alice.Recorded())
+	if err != nil {
+		t.Fatalf("encode the recorder: %v", err)
+	}
+	estimate, nulls := paramBytes(readingArrays, evalID)+4+len(recordedBy), 0
+	for index := range written.Readings {
+		one := &written.Readings[index]
+		attributes, err := json.Marshal(one.Attributes)
+		if err != nil {
+			t.Fatalf("encode the attributes of reading %d: %v", index, err)
+		}
+		links, err := json.Marshal(nonNil(one.Links))
+		if err != nil {
+			t.Fatalf("encode the links of reading %d: %v", index, err)
+		}
+		estimate += readingBytes(one, string(attributes), string(links))
+		for _, null := range []bool{one.Value == nil, one.N == nil, one.CILow == nil, one.CIHigh == nil, one.CILevel == nil} {
+			if null {
+				nulls++
+			}
+		}
+	}
+	if estimate+8*nulls <= statementBytes {
+		t.Fatalf("the correction's readings take an estimated %d bytes, %d with 8 for each of their %d null numbers, and the check needs the second past %d",
+			estimate, estimate+8*nulls, nulls, statementBytes)
+	}
+	sizes := make([]int, len(inserts))
+	for index, insert := range inserts {
+		sizes[index] = insert.bytes
+	}
+	if len(inserts) != 1 || inserts[0].bytes > statementBytes || inserts[0].bytes > estimate {
+		t.Errorf("the correction of %d readings was inserted in %d statements of %v bytes of parameters as pgx encodes them, want one within %d and within the estimate %d",
+			count, len(inserts), sizes, statementBytes, estimate)
+	}
+	if superseded := r.count(t, `select count(*) from eval_readings where eval_id = $1 and superseded_at is not null`, evalID); superseded != count || len(written.Readings) != count {
+		t.Errorf("the correction stored %d readings and left %d superseded, want %d of each", len(written.Readings), superseded, count)
+	}
+	t.Logf("a correction of %d readings: %d insert statement(s) of %v bytes of parameters, estimated %d (%d counting 8 for each of %d null numbers), of %d",
+		count, len(inserts), sizes, estimate, estimate+8*nulls, nulls, statementBytes)
+}
+
 // TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest: a refusal of 20,000 refused rows, given
 // out of order, each with a field and an error past their bounds and full of characters JSON
 // escapes, lists the first MaxRefusedRows by index, each text within its bound as JSON encodes it,
 // and counts the rest (rows_omitted), its JSON, as the route's encoder writes it, within
-// statementBytes less what the stored answer's statement holds besides it
-// (refusalStatementReserve). MaxRefusedRows row errors at their largest (every text at its bound,
-// a code of codeBytes, an index and a count of 20 digits) encode within that; one more passes it.
-// Every code of the registry takes at most codeBytes.
+// MaxAnswerBytes, what the stored answer's statement leaves it within statementBytes.
+// MaxRefusedRows row errors at their largest (every text at its bound, a code of codeBytes, an
+// index and a count of 20 digits) encode within that; one more passes it. Every code of the
+// registry takes at most codeBytes.
 func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	encoded := func(value any) []byte {
 		var buffer bytes.Buffer
 		if err := json.NewEncoder(&buffer).Encode(value); err != nil {
@@ -748,7 +841,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 			break
 		}
 	}
-	if room := statementBytes - refusalStatementReserve; len(body) > room {
+	if room := MaxAnswerBytes; len(body) > room {
 		t.Errorf("the refusal of %d rows encodes in %d bytes, past the %d the stored answer's statement leaves it", count, len(body), room)
 	}
 	t.Logf("a refusal of %d rows: %d listed, %d counted, %d bytes as JSON; %s", count, len(answer.Rows), answer.RowsOmitted, len(body), refusal.Message)
@@ -760,7 +853,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 		}
 		return len(encoded(&Error{Code: strings.Repeat("C", codeBytes), Message: strings.Repeat("m", errorTextBytes), Rows: listed, RowsOmitted: math.MinInt64}))
 	}
-	room := statementBytes - refusalStatementReserve
+	room := MaxAnswerBytes
 	if most, past := largest(MaxRefusedRows), largest(MaxRefusedRows+1); most > room || past <= room {
 		t.Errorf("%d row errors at their largest encode in %d bytes and %d in %d, want the first within the %d the stored answer's statement leaves and the second past it",
 			MaxRefusedRows, most, MaxRefusedRows+1, past, room)
@@ -770,7 +863,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 	for _, code := range []string{CodeSlugInvalid, CodeProjectNotFound, CodeFieldInvalid, CodeSeriesInvalid, CodeDocTextEmpty, CodeDocumentNotDocument,
 		CodeReadingsEmpty, CodeReadingInvalid, CodeValueOrReason, CodeFieldServerSet, CodeReplacesUnknown, CodeAlreadyReplaced, CodeLinkHrefNotAbsolute,
 		CodeLinkHrefNotHTTP, CodeLinkRelMissing, CodeReadingSeriesInvalid, CodeReadingDayOverflow, CodeMeasuredAtOutOfRange, CodeKeyTooLong,
-		CodeFieldComputed, CodeSeriesLimit, CodeReadingDaySamplesLimit, CodeReadingTooLarge} {
+		CodeFieldComputed, CodeSeriesLimit, CodeReadingDaySamplesLimit, CodeReadingTooLarge, CodeVersionTooLarge} {
 		if len(code) > codeBytes {
 			t.Errorf("the code %s takes %d bytes, past codeBytes, %d", code, len(code), codeBytes)
 		}
@@ -785,6 +878,7 @@ func TestARefusalListsAtMostItsBoundOfRowsAndCountsTheRest(t *testing.T) {
 // value more is then refused at its row 0; a correction of a reading of the full day, which adds no
 // value, is taken, and so is a batch on another day.
 func TestADayRowPastItsSampleBoundIsRefusedNamingItsRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	const slug, size, most = "many-samples", 1000, 25000
 	evalID := EvalID(r.project, slug)
@@ -827,7 +921,7 @@ func TestADayRowPastItsSampleBoundIsRefusedNamingItsRow(t *testing.T) {
 	t.Logf("a batch onto %d values: %s at row %d: %s", held, refused.Code, refused.Rows[0].Index, refused.Rows[0].Message)
 
 	statements := &sentStatements{}
-	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	if _, err := traced.WriteReadings(t.Context(), batch(held, MaxDaySamples-held, day)); err != nil {
 		t.Fatalf("a batch filling the day row to %d values: %v", MaxDaySamples, err)
 	}
@@ -866,6 +960,7 @@ func TestADayRowPastItsSampleBoundIsRefusedNamingItsRow(t *testing.T) {
 // neither write found and one of them created. The test holds the eval's lock until both writes
 // wait for it, so each has read that no version exists before either writes one.
 func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	slug := "first-try-rate"
 	evalID := EvalID(r.project, slug)
@@ -891,9 +986,7 @@ func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
 			})
 		})
 	}
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, time.Minute); waiting < 2 {
-		t.Fatalf("%d writes wait for the eval's lock, want both", waiting)
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 	if err := holder.Commit(t.Context()); err != nil {
 		t.Fatalf("release the eval's lock: %v", err)
 	}
@@ -958,6 +1051,7 @@ func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
 // (events.Horizon). Let go, it lands. Before, it locked the reading first (lockReplaced, `for
 // update`), which gave it an id it held for the whole wait.
 func TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	slug := "correction-wait"
 	stored := r.write(t, slug, alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 4, "measured_at": at(4, 9, 0)}))
@@ -977,9 +1071,7 @@ func TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID(t *testing.T) {
 			Rows: []json.RawMessage{row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 6, "measured_at": at(4, 9, 0), "replaces": replaced})}})
 		answered <- err
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Minute); waiting < 1 {
-		t.Fatalf("the correction never waited for the eval's lock")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	// backend_xid is null for a backend holding no transaction id, read here as "".
 	rows, err := r.database.Pool.Query(t.Context(), `
 		select pid, coalesce(wait_event, ''), coalesce(backend_xid::text, '') from pg_stat_activity
@@ -1026,6 +1118,7 @@ func TestACorrectionWaitsForTheEvalsLockHoldingNoTransactionID(t *testing.T) {
 // max and the last value. A second correction measured before the day's other reading makes that
 // reading the day's last again.
 func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	written := r.write(t, "build-minutes", alice,
 		row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 10, "n": 2, "measured_at": at(5, 10, 0)}),
@@ -1096,6 +1189,7 @@ func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T
 // an equal moment, and the refold, which orders the readings by when their writes began, put the
 // other's back: the day's last flipped from 10 to 20.
 func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirst(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	slug := "tie-break"
@@ -1111,7 +1205,7 @@ func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirs
 	pause := joinPause{API: r.documents, reached: make(chan struct{}), release: make(chan struct{})}
 	let := sync.OnceFunc(func() { close(pause.release) })
 	t.Cleanup(let)
-	held := New(r.database, pause, r.registry.events)
+	held := New(r.database, pause, r.registry.events, r.registry.attributor)
 	firstDone := make(chan error, 1)
 	go func() {
 		_, err := held.WriteReadings(context.WithValue(ctx, joinPauseKey{}, true), Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
@@ -1179,6 +1273,7 @@ func (p joinPause) Join(ctx context.Context, tx pgx.Tx) (context.Context, *docs.
 // and denominator, the empty sample list, no maximum and no last value) between a day before it
 // and a day after it that the same write adds to, each of which holds its own samples alone.
 func TestAWriteThatEmptiesADayRowWritesItsZeroRowBesideTheRowsItFills(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	minutes := func(key string, value float64, n int, measured time.Time, extra map[string]any) json.RawMessage {
 		fields := map[string]any{"series": "minutes", "row_kind": "run", "row_key": key, "value": value, "n": n, "measured_at": measured}
@@ -1227,6 +1322,7 @@ func sameValue(got, want *float64) bool {
 // eval's slug, the seed's deploy-frequency, is stored and answered by the items read, its series
 // registered unlisted, and no day row of the computed eval moves.
 func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	if _, err := r.registry.Ensure(t.Context(), r.project); err != nil {
 		t.Fatalf("seed %s: %v", r.project, err)
@@ -1258,6 +1354,7 @@ func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
 // unfolded reading adds its own value and takes nothing away, so the day holds the second
 // reading's value and the correction's.
 func TestACorrectionOfAReadingNeverFoldedTakesNothingFromItsDayRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	evalID := EvalID(r.project, "review-load")
 	if _, err := r.registry.Register(t.Context(), Registration{
@@ -1308,6 +1405,7 @@ func (r rig) setSource(t *testing.T, evalID, source string) {
 // while the eval was computed, between two logged versions, which no row ever folded; a row no
 // corrected reading counted in is appended to.
 func TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	reading := func(series string, value float64, measured time.Time, repo, replaces string) json.RawMessage {
 		fields := map[string]any{"series": series, "row_kind": "run", "value": value, "measured_at": measured}
@@ -1369,6 +1467,7 @@ func TestACorrectionBatchOverSeveralDaysFoldsEachDayFromTheReadingsThatStand(t *
 // order a tie leaves to chance. Each of 24 days holds such a tie, so an order that chance decides
 // keeps every day's last with a chance of one in 2^24.
 func TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	on := func(day, hour int) time.Time { return time.Date(2026, time.October, day, hour, 0, 0, 0, time.UTC) }
 	reading := func(key string, value float64, measured time.Time, replaces string) json.RawMessage {
@@ -1417,9 +1516,10 @@ func TestATieOfOneMomentKeepsTheDaysLastAcrossACorrection(t *testing.T) {
 // whatever order the rows come in and whichever repository's key sorts first. On the 1st acme/b's
 // reading is written first and acme/a's in a later write; on the 2nd acme/a's first and acme/b's
 // later; on the 3rd one batch holds acme/b's and then acme/a's. Each day's window over both
-// repositories, its two rows folded in the order DayWindow answered them and reversed, answers
+// repositories, its two rows folded in the order DayWindowIn answered them and reversed, answers
 // the later write's value, which the project's row of that day holds as its last.
 func TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	reading := func(repo string, value float64, day int) json.RawMessage {
 		return row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": fmt.Sprintf("%s-%d", repo, day),
@@ -1440,7 +1540,7 @@ func TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
 		if project := r.day(t, evalID, "depth", "", window.From); project.LastValue == nil || *project.LastValue != want.value {
 			t.Fatalf("the project's row of the %d. holds the last value %s, want %g, the later write's", want.day, showValue(project.LastValue), want.value)
 		}
-		rows, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{entry}, nil, []string{"acme/a", "acme/b"}, window, nil)
+		rows, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{entry}, nil, []string{"acme/a", "acme/b"}, window, nil)
 		if err != nil {
 			t.Fatalf("read the window of the %d.: %v", want.day, err)
 		}

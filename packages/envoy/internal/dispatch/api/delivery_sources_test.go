@@ -108,7 +108,7 @@ func TestTheDeliveryTargetsAreTheOneOwningProjects(t *testing.T) {
 	saveProjectRules(t, database, "ALPHA", deployRule("acme/one", "one / release"), deployRule("acme/two", "two / release"))
 	saveProjectRules(t, database, "BETA", deployRule("acme/three", "three / release"))
 	setDelivery(t, database, "BETA", false)
-	if _, err := evals.New(database, deps.Docs, deps.Events).Register(t.Context(), evals.Registration{
+	if _, err := evals.New(database, deps.Docs, deps.Events, deps.Attributor).Register(t.Context(), evals.Registration{
 		Project: "ALPHA", Slug: evals.SlugDeployFrequency, Caller: model.Actor{Kind: "user", ID: "alice"}, Target: evals.Set(new(7.0)),
 	}); err != nil {
 		t.Fatalf("set ALPHA's deploy-frequency target: %v", err)

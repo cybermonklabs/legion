@@ -171,6 +171,11 @@ packages/*/dist/
 # rest of the package, and `npm pack` reads package.json's "files" list rather than git, so an
 # ignored path is packed all the same.
 packages/claude-envoy/legion/
+# The Dispatch API's TypeScript types. `bun install` renders them from
+# packages/contracts/schemas/dispatch-openapi.json (the root package.json's postinstall), so two
+# branches that each add a route never edit one generated file. Only type checks read the module:
+# dispatch-api.ts re-exports it with `export type *`, so no bundle and no `bun` run loads it.
+packages/contracts/src/dispatch-api.generated.ts
 
 # Gatsby files
 .cache/
@@ -277,9 +282,9 @@ $RECYCLE.BIN/
 
 # Playwright output (packages/dispatch e2e)
 packages/dispatch/e2e/test-results/
-# The reverse-order visual run's results (`e2e/visual-run.sh --output=e2e/test-results-reverse`).
-packages/dispatch/e2e/test-results-reverse/
 packages/dispatch/e2e/playwright-report/
+# The row map that `bun e2e/tools/row-map.ts --write` writes. Git does not keep it.
+packages/dispatch/e2e/row-map.md
 # The blob report `--reporter=blob` writes, which the CI legs send to $RUNNER_TEMP through
 # PLAYWRIGHT_BLOB_OUTPUT_DIR and a run by hand leaves here (.github/workflows/dispatch-browser.yaml).
 packages/dispatch/blob-report/

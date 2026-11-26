@@ -12,15 +12,18 @@ import (
 )
 
 // The probe, after the first paint: where the 84-day compare read's stored-figures statements
-// (evals.Store.ReadStoredFigures, as the server ran them) spend their time on the loaded database,
-// so the next change to them is chosen from a measurement. The list answers an offered range with
-// two of them: the range-figures read, the `union all` of the window's and the compare range's rows
-// of eval_range_figures, one row an eval each, and the day-figures read, the window's rows of
-// eval_day_figures of the evals with a headline series. The probe finds each among the read's
-// captured statements by the text the statement log holds of it, `from eval_range_figures` and
-// `from eval_day_figures`. A read that ran neither fails the probe: its list no longer reads the
-// stored figures, and the probe would measure nothing. A read that ran one of them has the other
-// printed as skipped (the server skips the day-figures read where no eval has a headline series).
+// (evals.ReadStoredFiguresIn, as the server ran them) spend their time on the loaded database,
+// so the next change to them is chosen from a measurement. The list answers an offered range of the
+// project's own rows, or of one repository's, with two of them: the range-figures read, the `union
+// all` of the window's and the compare range's rows of eval_range_figures of the read's cut, one
+// row an eval each, and the day-figures read, the window's rows of eval_day_figures of the evals
+// with a headline series. The probe finds each among the read's captured statements by the text
+// the statement log holds of it, `from eval_range_figures` and `from eval_day_figures`. A read that
+// ran neither fails the probe: its list no longer reads the stored figures, and the probe would
+// measure nothing. A read that ran one of them has the other printed as skipped (the server skips
+// the day-figures read where no eval has a headline series). The reads that name a repository
+// (list-84d-compare-repo, list-28d-repo) run the same two statements over the cut of that
+// repository (evals.FiguresOffered), so the probe measures list-84d-compare, which names none.
 //
 // Each variant of a statement is run probeRuns times under `explain (analyze, buffers, serialize
 // binary)`, which executes it and serialises its rows as the server sends them without sending
@@ -37,11 +40,9 @@ import (
 //   - narrow: the same rows without the figures column, which holds each row's encoded figures, so
 //     the time and the bytes it saves are what reading and serialising the figures cost.
 //
-// The day-row read's other variants are dropped with that read. Its window and compare branches:
-// the range-figures read's `union all` is of two lookups of the same shape, so a branch alone would
-// measure half of one lookup. Its headline filter: the day-figures read already reads the evals
-// with a headline series alone. Its narrow list over eval_days is rewritten as the narrow variant
-// above.
+// It measures no variant of a branch or of the headline filter: the range-figures read's
+// `union all` is of two lookups of the same shape, so a branch alone would measure half of one
+// lookup, and the day-figures read already reads the evals with a headline series alone.
 //
 // It then prints eval_days' size on disk and its average row width, split by whether a row holds a
 // sample, over the whole table and over the paint's project's listed rows; and the size on disk of
@@ -64,7 +65,7 @@ var (
 // the table. The narrow variant keeps the first and the last.
 var figuresColumn = regexp.MustCompile(`(\bselect\s[^;]*?),\s*figures\b([^;]*?\bfrom eval_(?:range|day)_figures\b)`)
 
-// storedFiguresStatements are the two statements of evals.Store.ReadStoredFigures the probe
+// storedFiguresStatements are the two statements of evals.ReadStoredFiguresIn the probe
 // measures, each by the name its lines carry and the text that marks it in the statement log.
 var storedFiguresStatements = []struct{ name, mark string }{
 	{"range-figures", "from eval_range_figures"},
@@ -135,7 +136,7 @@ func storedFiguresReads(read measuredCase) (found []probedStatement, skipped []s
 		}
 	}
 	if len(found) == 0 {
-		return nil, nil, fmt.Errorf("%s ran neither stored-figures read of evals.Store.ReadStoredFigures: no statement holding %q (the %s read) "+
+		return nil, nil, fmt.Errorf("%s ran neither stored-figures read of evals.ReadStoredFiguresIn: no statement holding %q (the %s read) "+
 			"or %q (the %s read), so its list no longer reads the stored figures and the probe measured nothing", read.name,
 			storedFiguresStatements[0].mark, storedFiguresStatements[0].name, storedFiguresStatements[1].mark, storedFiguresStatements[1].name)
 	}

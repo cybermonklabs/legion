@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -107,7 +109,8 @@ func (w *workflowRuntime) tickWakes(ctx context.Context) {
 // now. The row is the durable half and the fact the acting half: a backstop that came due while
 // the daemon was down is read by the first pass after it starts, and the row's conditional fire
 // (store.PodRecords.FirePodBackstop) is what makes two passes that read the same row wake its
-// pod once.
+// pod once. The start row the fact's wake queues wakes its lane once the fact commits, through the
+// project's records (projectRecords.wakeOnCommit), so the pass wakes no lane of its own.
 func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 	due, err := w.idleStore.DuePodBackstops(ctx, w.projectID, now)
 	if err != nil {
@@ -122,9 +125,7 @@ func (w *workflowRuntime) fireDueBackstops(ctx context.Context, now time.Time) {
 		id := fmt.Sprintf("pod-backstop:%d", backstop.ID)
 		if _, err := intake.ApplyFact(ctx, w.pool, "wake", id, fact, w.handlers...); err != nil {
 			w.log.Warn("wake: could not fire a released pod's backstop", "issue", backstop.Issue, "role", backstop.Role, "error", err)
-			continue
 		}
-		w.wakeOutbox(backstop.Issue, record.OutboxKindSupervise)
 	}
 }
 
@@ -318,8 +319,21 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if !wakeable {
 		return false, time.Time{}, nil
 	}
-	taken, err := r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark)
-	if err != nil {
+	// The take's line is a hook of its commit. The resume below is not: it is order-sensitive and
+	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
+	// meets the open resume the take recorded and resumes the claim (the refused branch below).
+	var taken bool
+	if err := store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		if taken, err = r.trees.TakePodWake(ctx, r.project, issue.Key, token, pods.WakeDelivery, r.now().UTC(), mark); err != nil || !taken {
+			return err
+		}
+		store.OnCommit(ctx, func() {
+			r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
+				"issue", issue.Key, "role", held.Role, "detail", detail)
+		})
+		return nil
+	}); err != nil {
 		return false, time.Time{}, err
 	}
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
@@ -340,9 +354,6 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 		}
 		reason = "a wake for " + detail + ", whose resume the record already held open"
 		r.logRefusedByOpenResume(ctx, issue.Key, held.Role, detail)
-	} else {
-		r.log.Info("wake: a released pod is coming back for a delivery the daemon holds for one of its roles",
-			"issue", issue.Key, "role", held.Role, "detail", detail)
 	}
 	if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
 		return false, time.Time{}, fmt.Errorf("wake claim %s for %s: %w", token, detail, err)
@@ -461,7 +472,7 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 // a claim this path owns. A `suspend` row takes one role over and drops that role's backstop alone
 // (decision 17 of dispatch://INFRA-3759): another role of the pod may be waiting on a deploy with
 // nothing but its own backstop to bring it back. An issue's close and a tree's close name no role
-// (dropReleasedWork), and drop every backstop of the issue, since the issue's work is over. The
+// (forgetIdleRelease), and drop every backstop of the issue, since the issue's work is over. The
 // claim's own suspension source is re-stamped by the machine (supervise's suspendedAgain), which
 // is what takes it out of every released-claim read; this drops what is left behind in the
 // record.
@@ -479,16 +490,23 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string, role claim.R
 	}
 }
 
-// dropReleasedWork takes a released pod's issue over and deletes the workspace bundle its release
-// saved: the issue is done, or its tree is closing, so nothing will restore that bundle and
-// nothing should. A linger and a park keep theirs, because their issue comes back. A runner with
-// no tree store does nothing, as takeOverRelease says.
-func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
+// forgetIdleRelease takes a released pod's issue over and forgets the decline of an idle release
+// of it (store.ForgetIdleDecline): the issue is done, or its tree is closing, so no idle release of
+// its pod is coming. It deletes the record of the disks of the issue's pods too
+// (store.DeleteIssuePodDisks), which the issue's update rounds read (workOnRoundPod): no round of
+// the issue's pods is left to name a role by it. Both records expire together, at the end of the
+// issue's work, which is the one event of every caller, so a change to the idle release here must
+// keep the delete of the disks' record. A linger and a park keep both, because their issue comes
+// back. A runner with no tree store does nothing, as takeOverRelease says.
+func (r *outbox) forgetIdleRelease(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue, "")
 	if r.trees == nil {
 		return
 	}
-	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
+	if err := r.trees.ForgetIdleDecline(ctx, r.project, issue); err != nil {
+		r.log.Warn("wake: could not forget the declined idle release of a finished issue", "issue", issue, "error", err)
+	}
+	if err := r.trees.DeleteIssuePodDisks(ctx, issue); err != nil {
+		r.log.Warn("wake: could not delete the record of the disks of the pods of a finished issue", "issue", issue, "error", err)
 	}
 }

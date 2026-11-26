@@ -451,8 +451,8 @@ func TestTheStateRouteTakesAPersonAndTheProvenControllerAlone(t *testing.T) {
 	}
 }
 
-// TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof: the list read is on the read list
-// (readScopeRoutes), so it is held to what every listed route is held to: for a read-only token it
+// TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof: the list read is a read (readClasses,
+// readWritesNothing), so it is held to what every read is held to: for a read-only token it
 // writes nothing but the row that spends its DPoP proof. The positive controls are that insert and
 // the handler's own read of production_events.
 func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
@@ -475,4 +475,36 @@ func TestAReadOnlyTokensReadOfTheRecordWritesOnlyItsProof(t *testing.T) {
 		t.Fatalf("the read-only token's read: status=%d body=%s, want 200 and the one deploy", response.Code, response.Body.String())
 	}
 	requireOnlyProofAndCaches(t, marked.take(), regexp.MustCompile(`(?i)\bfrom\s+production_events\b`))
+}
+
+// requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or
+// a cache Dispatch rebuilds, the proof's insert among them, and handlerRead, the handler's own
+// read, is among them too. Each statement is read by writesOf (read_only_token_test.go).
+func requireOnlyProofAndCaches(t *testing.T, statements []string, handlerRead *regexp.Regexp) {
+	t.Helper()
+	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
+	var proofInserted, readByHandler bool
+	var written []string
+	for _, statement := range statements {
+		writes, readable := writesOf(statement)
+		if !readable {
+			t.Errorf("the request ran a write this test cannot read a table for: %s", statement)
+		}
+		for _, write := range writes {
+			written = append(written, write)
+			verb, table, _ := strings.Cut(write, " ")
+			if !allowed[table] {
+				t.Errorf("the request wrote %s, which is neither its proof's replay row nor a cache Dispatch rebuilds: %s", table, statement)
+			}
+			proofInserted = proofInserted || (verb == "insert" && table == "dpop_proofs")
+		}
+		readByHandler = readByHandler || handlerRead.MatchString(statement)
+	}
+	if !proofInserted {
+		t.Errorf("the tracer saw no insert into dpop_proofs among %d statements: it did not see the request's proof spent", len(statements))
+	}
+	if !readByHandler {
+		t.Errorf("the tracer saw no statement matching %s among %d statements: it did not see the handler's reads", handlerRead, len(statements))
+	}
+	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
 }

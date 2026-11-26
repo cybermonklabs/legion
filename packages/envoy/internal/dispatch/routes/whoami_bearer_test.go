@@ -46,7 +46,7 @@ func bearerRouter(t *testing.T, database *store.Store, broker *ciphertokentest.S
 	verifier, err := ciphertoken.New(ciphertoken.Options{
 		BrokerURL:      broker.Server.URL,
 		Account:        ciphertoken.NewAccountToken(account),
-		Origin:         bearerOrigin,
+		Origins:        []string{bearerOrigin},
 		Replay:         store.NewDPoPProofs(database.Pool),
 		Address:        auth.ForwardedAddress,
 		ServesReadOnly: true,
@@ -221,10 +221,11 @@ func TestAuthWhoamiAnswersEachAgentByTheLabelRule(t *testing.T) {
 }
 
 // TestAuthWhoamiAnswersABearerTheAPIRefusesAsItAnswersNone: a bearer the API refuses - a token it
-// does not know, a broker token the broker does not hold live, and a read-only token, which GET
-// /api/v1/whoami refuses as every route the read list does not name does - is answered exactly as
-// a request carrying no bearer: 401 NO_IDENTITY, which sends a page to sign in. The shared token
-// on the same router is answered as an agent, so the refusal is the bearer's own.
+// does not know, or a broker token the broker does not hold live - and a read-only token, which
+// GET /api/v1/whoami answers 200 (main #4557) but which can save nothing the dashboard draws
+// (dashboardAgent), are each answered exactly as a request carrying no bearer: 401 NO_IDENTITY,
+// which sends a page to sign in. The shared token on the same router is answered as an agent, so
+// the refusal is the bearer's own.
 func TestAuthWhoamiAnswersABearerTheAPIRefusesAsItAnswersNone(t *testing.T) {
 	database := storetest.Open(t)
 	broker := ciphertokentest.NewStubBroker(t)
@@ -248,7 +249,7 @@ func TestAuthWhoamiAnswersABearerTheAPIRefusesAsItAnswersNone(t *testing.T) {
 	}{
 		{"a token the API does not know", bearer("dsp_not-a-token-anyone-minted"), http.StatusUnauthorized},
 		{"a broker token the broker does not hold live", dpop(lapsed, "lapsed-token"), http.StatusUnauthorized},
-		{"a read-only token", dpop(reader, "read-only-token"), http.StatusForbidden},
+		{"a read-only token", dpop(reader, "read-only-token"), http.StatusOK},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if refused := serveGet(handler, "/api/v1/whoami", row.credential(t, "/api/v1/whoami")); refused.Code != row.apiStatus {

@@ -38,14 +38,14 @@ import (
 // another repository, or reads a moved default repository, keeps or stops keeping repositories
 // (syncKept): a read chooses among them by the repositories recorded with the rows (deploy_repos.go,
 // DeployReposIn). A production job name no run holds moves the rule's names but its verdict on no
-// run and no card's part, so the rewrite reads the history and, once the running build's delivery
-// walk has written today, builds no day: it builds only the days whose rows the change can move
+// run and no card's part, so the rewrite reads the history and, once the delivery walk has written
+// today, builds no day: it builds only the days whose rows the change can move
 // (movedDeliveryDays). Until then it builds every day (rewriteSettings says why). Each of its
 // writes sends a row, a member or a figure only where its value moved.
 
 // settingsMoves is the delivery and CI evals (by slug) whose day rows of one repository a change of
 // its rule from prev to next can move, and the families of eval_day_members it can move, read from
-// the code that builds the rows (readDeliveryDay, DeliveryDay.Rows and the measures they call). It
+// the code that builds the rows (readDeliveryDays, DeliveryDay.Rows and the measures they call). It
 // moves the rows of that repository alone, where it holds a run (rewriteSettings):
 //
 //   - the production rule (production_job_names, production_apply_step_name): it decides which run
@@ -459,27 +459,49 @@ type memberAt struct {
 
 // readMembers reads every member of projects under families counted under one of deployRepos on
 // one of days, by its key, and none where days is empty. eval_day_members_day (project_key,
-// family, day) keys its filter of the days.
+// family, day) keys its filter of the days. projects (every project and owner key) and days (every
+// day of the history a rewrite builds) grow with the history, so each goes in cuts
+// (statementChunks), each statement one cut of each: the projects in cuts of at most half of
+// statementBytes, all in one where they fit, and the days in cuts of what the rest of a statement
+// holds. A member stands on one day, so no two statements read it.
 func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos []string, days []time.Time) (map[memberKey]memberAt, error) {
 	held := map[memberKey]memberAt{}
 	if len(families) == 0 || len(projects) == 0 || len(deployRepos) == 0 || len(days) == 0 {
 		return held, nil
 	}
-	rows, err := s.database.Pool.Query(ctx, `
-		select project_key, family, deploy_repo, row_key, day, repo, shipped_by from eval_day_members
-		where project_key = any($1) and family = any($2) and deploy_repo = any($3) and day = any($4::date[])
-	`, projects, families, deployRepos, days)
-	if err != nil {
-		return nil, fmt.Errorf("read the members of %v: %w", families, err)
+	projectBytes := 0
+	for i := range projects {
+		projectBytes += textBytes(&projects[i])
 	}
-	var key memberKey
-	var at memberAt
-	if _, err := pgx.ForEachRow(rows, []any{&key.project, &key.family, &key.deployRepo, &key.rowKey, &at.day, &at.repo, &at.shippedBy}, func() error {
-		at.day = measures.Midnight(at.day)
-		held[key] = at
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the members of %v: %w", families, err)
+	// A cut of the projects takes at most reserve bytes, the rest of a statement its other lists:
+	// statementChunks closes a cut at statementBytes, counted from statementBytes-reserve.
+	reserve := min(projectBytes, statementBytes/2)
+	base := paramBytes(4) + reserve
+	for _, list := range [][]string{families, deployRepos} {
+		for i := range list {
+			base += textBytes(&list[i])
+		}
+	}
+	dayBytes := func(*time.Time) int { return 4 + 8 }
+	for named := range statementChunks(projects, statementBytes-reserve, textBytes) {
+		for dates := range statementChunks(days, base, dayBytes) {
+			rows, err := s.database.Pool.Query(ctx, `
+				select project_key, family, deploy_repo, row_key, day, repo, shipped_by from eval_day_members
+				where project_key = any($1) and family = any($2) and deploy_repo = any($3) and day = any($4::date[])
+			`, named, families, deployRepos, dates)
+			if err != nil {
+				return nil, fmt.Errorf("read the members of %v: %w", families, err)
+			}
+			var key memberKey
+			var at memberAt
+			if _, err := pgx.ForEachRow(rows, []any{&key.project, &key.family, &key.deployRepo, &key.rowKey, &at.day, &at.repo, &at.shippedBy}, func() error {
+				at.day = measures.Midnight(at.day)
+				held[key] = at
+				return nil
+			}); err != nil {
+				return nil, fmt.Errorf("read the members of %v: %w", families, err)
+			}
+		}
 	}
 	return held, nil
 }
@@ -497,9 +519,9 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     deploy run on main of each repository rewritten with its jobs of the names either rule
 //     judges by and each card the change moves follows under either settings
 //     (delivery.ReadHistoryRows), the walk's first input day (deliveryInputStart, over every kept
-//     repository), each project's first days (firstDays) and the running build's record of its
-//     walks (readWalks);
-//   - the projects of the issues the pull requests name (readAttribution), and beside that read
+//     repository), each project's first days (firstDays) and the record of the walks
+//     (readWalks);
+//   - the attribution lists of the pull requests (readAttribution), and beside that read
 //     containment over each repository's history as the deploy repository (historyOf): the new
 //     production rule's verdict on each run (ProductionApplies, which judges a run by its own jobs
 //     alone, and by its jobs of the judged names as by every job), each pull request's first
@@ -507,7 +529,7 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     whose first shipping apply it is (Deploys.ShippedBy's rule over every day at once); and,
 //     where it builds the days the change can move alone (below), the old rule's verdict and first
 //     shipping applies (containmentOf), the new rule's where the rule did not change. No
-//     containment reads the issues' projects, so each repository's under each rule runs on a
+//     containment reads the attribution, so each repository's under each rule runs on a
 //     goroutine of its own, as many at once as rewriteWorkers allows;
 //   - the days to build, from the delivery walk's first day through today: those whose rows the
 //     change can move (movedDeliveryDays), none for a change that moves no verdict and no card's
@@ -518,7 +540,7 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     reached holds rows of the settings before those its walk began under, which no comparison of
 //     prev with the new settings finds;
 //   - those days in day order a chunk at a time (rewriteDays), each chunk's days built side by
-//     side, each repository's DeliveryDay as readDeliveryDay builds it from those rows and each
+//     side, each repository's DeliveryDay as readDeliveryDays builds it from those rows and each
 //     project's rows of the day (deliveryRead.Rows); then, in day order, each project's day as the
 //     walk writes it (writeDelivery, dropUnshipped, zerosFrom and noteBuilt), by the first input
 //     days the walk builds by: those the build itself finds, day by day from the first, where it
@@ -545,7 +567,9 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     changes are one per eval, as every transaction's are (migration 20261117100014), so an evals
 //     view hears of the whole change once, and each carries the rewrite's mark
 //     (MarkSettingsRewrite), so the view is recomputed for them at once. With no day to build it
-//     writes the rule alone.
+//     writes no row, member or figure: its word that the rows stand at the settings
+//     (markSettingsApplied), the rule recorded and a building rebuild begun again
+//     (replaceRebuild) alone.
 //
 // A day it does not build holds the rows it would build: its inputs, its rows' first days and the
 // settings its rows read are what they were built from. It leaves eval_days_owed as it is: it
@@ -597,7 +621,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// owners is the delivery family's owners (refresh.owners), and the owner keys the rewritten
 	// history counts rows for that the store holds none of yet, added below once it is attributed.
 	owners := slices.Clone(r.owners)
-	firsts := make(map[string]map[evalKey]time.Time, len(owners))
+	var firsts map[string]map[evalKey]time.Time
 	// The events repositories' posted deploys, which ship a pull request first where one finishes
 	// before the repository's own deploy does (firstShipped).
 	var events []keptRepo
@@ -616,15 +640,14 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			input, err = r.store.deliveryInputStart(ctx, kept)
 			return err
 		},
-		func(ctx context.Context) error {
+		func(ctx context.Context) (err error) {
+			zeros := make(map[string][]DayRow, len(owners))
+			rules := keptRules(kept)
 			for _, project := range owners {
-				first, err := r.store.firstDays(ctx, project, ZeroDeliveryDay(project, r.today, keptRules(kept)).Rows, nil)
-				if err != nil {
-					return err
-				}
-				firsts[project] = first
+				zeros[project] = ZeroDeliveryDay(project, r.today, rules).Rows
 			}
-			return nil
+			firsts, err = r.store.firstDays(ctx, zeros, nil)
+			return err
 		},
 		func(ctx context.Context) (err error) {
 			walks, err = r.store.readWalks(ctx)
@@ -665,19 +688,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 	}
 	prs := history.PullRequests
-	var issueKeys []string
-	for _, pr := range prs {
-		if pr.IssueKey != nil {
-			issueKeys = append(issueKeys, *pr.IssueKey)
-		}
-	}
-	prsByDay := map[time.Time][]int{}
-	for i := range prs {
-		if prs[i].MergedAt != nil {
-			day := measures.Midnight(*prs[i].MergedAt)
-			prsByDay[day] = append(prsByDay[day], i)
-		}
-	}
+	prsByDay := prsByMergeDay(prs)
 	start := earliestOf(input, earliest)
 	served, err := r.servingNext(ctx, walkDelivery, "")
 	if err != nil {
@@ -726,7 +737,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	var attribute attribution
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			attribute, err = readAttribution(ctx, r.store, issueKeys, nil)
+			attribute, err = readAttribution(ctx, r.store, prs, nil)
 			return err
 		},
 		func(ctx context.Context) error {
@@ -779,29 +790,17 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			days = append(days, day)
 		}
 	}
-	// dayOf is each project's rows of day: the repository's DeliveryDay of it, as readDeliveryDay
-	// builds it from the history's rows under the new rule, each pull request's lead times kept
-	// where its first deploy is the repository's (firstShipped).
+	// dayOf is each project's rows of day: the repository's DeliveryDay of it, as readDeliveryDays
+	// builds it, from the history's rows under the new rule (repoHistory.deliveryDay), each pull
+	// request's lead times kept where its first deploy is the repository's (firstShipped).
 	dayOf := func(day time.Time) []ProjectDay {
 		read := deliveryRead{Day: day, rules: []delivery.DeliverySettings{next}, days: make([]DeliveryDay, len(histories))}
 		var merged []delivery.DeliveryPullRequest
 		for _, i := range prsByDay[day] {
 			merged = append(merged, prs[i])
 		}
-		for k, h := range histories {
-			one := DeliveryDay{Day: day, deployRepo: h.repo, since: h.since, cards: cards}
-			for _, i := range prsByDay[day] {
-				// A partial row, whose opening is not known yet, as readDeliveryDay leaves it out.
-				if prs[i].CreatedAt != nil {
-					one.prs = append(one.prs, attribute.pullRequest(prs[i], h.containing[i], h.runByID))
-				}
-			}
-			for _, run := range h.deploysByDay[day] {
-				_, reached := h.applied[run.RunID]
-				one.deploys = append(one.deploys, attribute.deploy(run, reached, h.shipped[run.RunID], next.Project))
-			}
-			one.pushes, one.pushJobs = attribute.pushRuns(h.pushesByDay[day], one.deploys), h.jobs
-			compared := []DeliveryDay{one}
+		for k := range histories {
+			compared := []DeliveryDay{histories[k].deliveryDay(day, prs, prsByDay, attribute)}
 			for i, eventsRepo := range events {
 				compared = append(compared, postedDayAs(day, merged, posted[i], eventsRepo))
 			}
@@ -863,7 +862,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 						first := r.first[walkKey{family: walkDelivery, project: project}]
 						own.Rows = dropUnshipped(own.Rows, first, day)
 						full := own
-						if computed(day) {
+						if computed(day) && begunBy(first, day) {
 							full = own.WithZeros(zerosFrom(ZeroDeliveryDay(project, day, []delivery.DeliverySettings{next}).Rows, first, day))
 						}
 						if from, held := heldFrom[project]; len(full.Rows) == 0 && (!held || day.Before(from)) {
@@ -914,8 +913,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	}
 	defer tx.Rollback(ctx)
 	// Each statement planned for the arrays it is sent: a connection's cached statement can turn
-	// generic after its fifth run, and the zero rows' statement took 10 ms in its first runs and
-	// 450 ms in later ones of one process (k8's phase D, at 2 % of the stated rate).
+	// generic after its fifth run.
 	if _, err := tx.Exec(ctx, `set local plan_cache_mode = force_custom_plan`); err != nil {
 		return fmt.Errorf("plan the rewrite of a settings change: %w", err)
 	}
@@ -934,14 +932,12 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := writeMovedMembers(ctx, tx, stored, members, written); err != nil {
 		return err
 	}
-	for _, project := range slices.Sorted(maps.Keys(spans)) {
-		moved := make(map[string]daySpan, len(slugs))
-		for _, slug := range slugs {
-			moved[EvalID(project, slug)] = spans[project]
-		}
-		if err := foldFiguresInTx(ctx, tx, r.build, project, moved); err != nil {
-			return err
-		}
+	moved := make(map[string]map[string]daySpan, len(spans))
+	for project, span := range spans {
+		moved[project] = slugSpans(project, slugs, span)
+	}
+	if err := foldFiguresInTx(ctx, tx, r.build, moved); err != nil {
+		return err
 	}
 	if err := recordRule(ctx, tx, next); err != nil {
 		return err
@@ -981,14 +977,13 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 // first write of a day row: it sets the transaction-local setting dispatch.eval_days_cause to
 // delivery.EvalDaysWrittenBySettingsRewrite, which eval_days_change_log records as the run_kind of
 // each eval_days change the transaction logs (migration 20261117100014). The Delivery page's live
-// hub recomputes an evals view at once for those changes alone: the rewrite's day rows arrive
-// together, in one transaction, with no burst left for the quiet to gather, while the page has
-// waited for the pass since the settings change. No other writer of day rows sets it.
+// hub recomputes an evals view at once for those changes, as for a rebuild's and a publishing of
+// the defaults' (delivery.EvalDaysImmediate): the rewrite's day rows arrive together, in one
+// transaction, with no burst left for the quiet to gather, while the page has waited for the pass
+// since the settings change. MarkRebuild sets the same setting to a rebuild's cause; no other
+// writer of day rows sets it.
 func MarkSettingsRewrite(ctx context.Context, tx pgx.Tx) error {
-	if _, err := tx.Exec(ctx, `select set_config('dispatch.eval_days_cause', $1, true)`, delivery.EvalDaysWrittenBySettingsRewrite); err != nil {
-		return fmt.Errorf("mark the rewrite of a settings change: %w", err)
-	}
-	return nil
+	return markCause(ctx, tx, delivery.EvalDaysWrittenBySettingsRewrite, "the rewrite of a settings change")
 }
 
 // movedDeliveryDays is, in day order, each day from start through today whose rows of the evals
@@ -1184,12 +1179,13 @@ func containmentOf(repo string, deploys delivery.RunsWithJobs, prs []delivery.De
 
 // repoHistory is containment over one repository's whole history as the deploy repository
 // (historyOf): the production rule's verdict on its runs and its pull requests (containment), the
-// project of its rule, the start of its history, its deploy runs by id, the pull requests each
-// apply ships first, and its deploy runs and push runs on main by the day they started, with their
-// jobs.
+// project and the deploy cards of its rule, the start of its history, its deploy runs by id, the
+// pull requests each apply ships first, and its deploy runs and push runs on main by the day they
+// started, with their jobs.
 type repoHistory struct {
 	containment
 	repo, project             string
+	cards                     []measures.DeployJobCard
 	since                     time.Time
 	runByID                   map[int64]delivery.DeliveryRun
 	shipped                   map[int64][]*delivery.DeliveryPullRequest
@@ -1204,7 +1200,8 @@ type repoHistory struct {
 func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.DeliveryPullRequest) repoHistory {
 	h := repoHistory{
 		containment: containmentOf(repo.name, deploys, prs, repo.rule.Production()),
-		repo:        repo.name, project: repo.rule.Project, since: repo.since, runByID: make(map[int64]delivery.DeliveryRun, len(deploys.Runs)),
+		repo:        repo.name, project: repo.rule.Project, cards: measures.DeployCards(repo.rule), since: repo.since,
+		runByID:      make(map[int64]delivery.DeliveryRun, len(deploys.Runs)),
 		shipped:      map[int64][]*delivery.DeliveryPullRequest{},
 		deploysByDay: map[time.Time][]delivery.DeliveryRun{}, pushesByDay: map[time.Time][]delivery.DeliveryRun{}, jobs: deploys.Jobs,
 	}
@@ -1224,12 +1221,47 @@ func historyOf(repo keptRepo, deploys delivery.RunsWithJobs, prs []delivery.Deli
 	return h
 }
 
+// prsByMergeDay is the index in prs of each pull request merged on each UTC day, by the day.
+func prsByMergeDay(prs []delivery.DeliveryPullRequest) map[time.Time][]int {
+	byDay := map[time.Time][]int{}
+	for i := range prs {
+		if prs[i].MergedAt != nil {
+			day := measures.Midnight(*prs[i].MergedAt)
+			byDay[day] = append(byDay[day], i)
+		}
+	}
+	return byDay
+}
+
+// deliveryDay is the repository's DeliveryDay of day under its rule, as readDeliveryDays builds it,
+// from the history's rows: of prs, every population pull request, those merged on the day (byDay,
+// prsByMergeDay), each shipped by its first shipping apply; the deploy runs started on the day,
+// each with whether it reached production and the pull requests it ships first, one that ships
+// none counted for the rule's project (attribution.deploy); and the push runs on main started on
+// the day with the jobs the rule's cards follow; each attributed by attribute. It holds no
+// PR-checks run, which the history does not hold.
+func (h *repoHistory) deliveryDay(day time.Time, prs []delivery.DeliveryPullRequest, byDay map[time.Time][]int, attribute attribution) DeliveryDay {
+	one := DeliveryDay{Day: day, deployRepo: h.repo, since: h.since, cards: h.cards}
+	for _, i := range byDay[day] {
+		// A partial row, whose opening is not known yet, as readDeliveryDays leaves it out.
+		if prs[i].CreatedAt != nil {
+			one.prs = append(one.prs, attribute.pullRequest(prs[i], h.containing[i], h.runByID))
+		}
+	}
+	for _, run := range h.deploysByDay[day] {
+		_, reached := h.applied[run.RunID]
+		one.deploys = append(one.deploys, attribute.deploy(run, reached, h.shipped[run.RunID], h.project))
+	}
+	one.pushes, one.pushJobs = attribute.pushRuns(h.pushesByDay[day], one.deploys), h.jobs
+	return one
+}
+
 // historyOwners is every owner key (OwnerKey) the rewritten history counts a row for under the
-// settings histories were built by, in key order: each pull request no issue attributes
-// (attribution.of), each deploy run's (attribution.deploy, under the project of its repository's
-// rule, which a deploy that ships no pull request counts for) and the push runs on main of a
-// repository that are no deploy run of their day (attribution.pushRuns). A day the rewrite builds
-// builds their rows as it builds a project's.
+// settings histories were built by, in key order: each pull request's whose attribution list is not
+// constant or has no terminal (attribution.of), each deploy run's (attribution.deploy, under the
+// project of its repository's rule, which a deploy that ships no pull request counts for) and the
+// push runs on main of a repository that are no deploy run of their day (attribution.pushRuns). A
+// day the rewrite builds builds their rows as it builds a project's.
 func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, attribute attribution) []string {
 	owners := map[string]bool{}
 	for _, pr := range prs {
@@ -1249,7 +1281,7 @@ func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, 
 			}
 		}
 		if len(h.pushesByDay) > 0 {
-			owners[OwnerKey(h.repo, nil)] = true
+			owners[OwnerKey(h.repo, nil, nil)] = true
 		}
 	}
 	return slices.Sorted(maps.Keys(owners))
@@ -1261,8 +1293,9 @@ func historyOwners(histories []repoHistory, prs []delivery.DeliveryPullRequest, 
 // not among, as deleteStaleDays deletes them. It sends each project's days with that project's
 // evals and rows, the rows in statements of at most statementBytes of parameters as
 // deleteStaleDays cuts them (staleRuns), each reading the stored rows of its own range of keys,
-// so the statements together delete what one would. Its statements are planned with merge joins
-// off, and the setting then given back the value it held.
+// and a project's days, every day of the history it rewrites, in cuts where they would pass their
+// reserve (writtenReserve, writtenCuts), so the statements together delete what one would. Its
+// statements are planned with merge joins off, and the setting then given back the value it held.
 func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, days []time.Time, slugs, deployRepos []string, held []DayRow) error {
 	if len(projects) == 0 || len(deployRepos) == 0 {
 		return nil
@@ -1299,8 +1332,9 @@ func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, 
 		for i := range dates {
 			writtenProjects[i] = project
 		}
+		limit := writtenReserve(writtenProjects, nil)
 		evalIDs := make([]string, len(slugs))
-		base := paramBytes(10, writerComputation) + len(dates)*(4+len(project)+4+8)
+		base := paramBytes(12, writerComputation) + limit
 		for i, slug := range slugs {
 			evalIDs[i] = EvalID(project, slug)
 			base += 4 + len(evalIDs[i])
@@ -1308,17 +1342,14 @@ func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, 
 		for _, repo := range deployRepos {
 			base += 4 + len(repo)
 		}
-		for _, run := range staleRuns(rows[project], base, settingsKeyBytes) {
-			count := len(run.rows)
-			heldProjects, heldEvals, heldDeployRepos := make([]string, count), make([]string, count), make([]string, count)
-			heldSeries, heldRepos, heldDays := make([]string, count), make([]string, count), make([]time.Time, count)
-			for i, row := range run.rows {
-				heldProjects[i], heldEvals[i], heldDeployRepos[i] = row.ProjectKey, row.EvalID, row.DeployRepo
-				heldSeries[i], heldRepos[i], heldDays[i] = row.Series, row.Repo, measures.Midnight(row.Day)
-			}
-			if _, err := tx.Exec(ctx, deleteStaleSettingsDaysStatement, writtenProjects, dates, heldProjects, heldEvals, heldSeries, heldRepos, heldDays,
-				evalIDs, writerComputation, heldDeployRepos, deployRepos, settingsKey(run.from), settingsKey(run.until)); err != nil {
-				return fmt.Errorf("delete the day rows of %s a settings change leaves no longer held: %w", project, err)
+		cuts := writtenCuts(writtenProjects, dates, nil, nil, nil, limit)
+		for _, run := range staleRuns(rows[project], base, dayRowKeyBytes) {
+			heldProjects, heldEvals, heldDeployRepos, heldSeries, heldRepos, heldDays := dayRowKeys(run.rows)
+			for _, cut := range cuts {
+				if _, err := tx.Exec(ctx, deleteStaleSettingsDaysStatement, cut.projects, cut.dates, heldProjects, heldEvals, heldSeries, heldRepos, heldDays,
+					evalIDs, writerComputation, heldDeployRepos, deployRepos, dayRowKey(run.from), dayRowKey(run.until)); err != nil {
+					return fmt.Errorf("delete the day rows of %s a settings change leaves no longer held: %w", project, err)
+				}
 			}
 		}
 	}
@@ -1328,27 +1359,11 @@ func deleteStaleSettingsDays(ctx context.Context, tx pgx.Tx, projects []string, 
 	return nil
 }
 
-// settingsKeyBytes is the most bytes row adds to the given keys of deleteStaleSettingsDays'
-// statement, as pgx encodes them in binary: in each of its six arrays 4 bytes of length and the
-// element, the day at most 10 (its text in a bound, settingsKey). A bound takes as many.
-func settingsKeyBytes(row *DayRow) int {
-	return 6*4 + len(row.ProjectKey) + len(row.EvalID) + len(row.DeployRepo) + len(row.Series) + len(row.Repo) + 10
-}
-
-// settingsKey is row's key as a bound of deleteStaleSettingsDays' range (project, eval, deploy
-// repository, series, repository, day), nil for no bound.
-func settingsKey(row *DayRow) []string {
-	if row == nil {
-		return nil
-	}
-	return []string{row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo, measures.Midnight(row.Day).Format(time.DateOnly)}
-}
-
 // deleteStaleSettingsDaysStatement is deleteStaleSettingsDays' statement: $1 and $2 the projects
 // and days written (pairwise), $3, $4, $10, $5, $6 and $7 the rows they hold of the statement's
 // range of keys (project, eval, deploy repository, series, repository, day), $8 the evals, $9
 // writerComputation, $11 the deploy repositories, and $12 and $13 the range, from $12 up to $13 in
-// the byte order of the keys (settingsKey), null for no bound. gone is the stored rows' keys of the
+// the byte order of the keys (dayRowKey), null for no bound. gone is the stored rows' keys of the
 // range except the given ones, the form every statement that finds what a day no longer holds
 // takes (day_rows.go says why).
 const deleteStaleSettingsDaysStatement = `
@@ -1410,16 +1425,7 @@ func writeMovedMembers(ctx context.Context, tx pgx.Tx, stored, built map[memberK
 			projects[i], families[i], deployRepos[i], keys[i] = key.project, key.family, key.deployRepo, key.rowKey
 			days[i], repos[i], shippedBy[i] = at.day, at.repo, at.shippedBy
 		}
-		if _, err := tx.Exec(ctx, `
-			insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
-			select member.* from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::date[], $6::text[], $7::text[])
-				as member(project_key, family, deploy_repo, row_key, day, repo, shipped_by)
-			order by member.project_key collate "C", member.family collate "C", member.deploy_repo collate "C", member.row_key collate "C"
-			on conflict (project_key, family, deploy_repo, row_key) do update
-			set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by
-			where (eval_day_members.day, eval_day_members.repo, eval_day_members.shipped_by)
-				is distinct from (excluded.day, excluded.repo, excluded.shipped_by)
-		`, projects, families, deployRepos, keys, days, repos, shippedBy); err != nil {
+		if _, err := tx.Exec(ctx, upsertMembersStatement, projects, families, deployRepos, keys, days, repos, shippedBy); err != nil {
 			return fmt.Errorf("record the %d members that moved: %w", len(moved), err)
 		}
 	}

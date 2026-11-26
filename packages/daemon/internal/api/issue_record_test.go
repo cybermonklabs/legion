@@ -63,7 +63,7 @@ func issuesOf(t *testing.T, state []byte) map[string]json.RawMessage {
 // Both answers are read at this daemon's own contract here. The case below reads them at every
 // contract this daemon serves, which is where the shaping of the two could part company.
 func TestTheRecordEqualsTheIssuesRecordInTheWholeProjectBody(t *testing.T) {
-	handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion))
+	handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion()))
 	issues := issuesOf(t, stateAsked(t, handler, statePodAddr+":41000"))
 
 	for key, inState := range issues {
@@ -88,9 +88,9 @@ func TestTheRecordEqualsTheIssuesRecordInTheWholeProjectBody(t *testing.T) {
 // (pluginContractHeader), and both answers of one contract come from one handler, so the two
 // read one state of one moment.
 func TestTheRecordIsShapedAsTheIssueInsideTheStateIs(t *testing.T) {
-	for _, contract := range SupportedContracts {
+	for _, contract := range SupportedContracts() {
 		t.Run(strconv.Itoa(contract), func(t *testing.T) {
-			handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion))
+			handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion()))
 			issues := issuesOf(t, stateStating(t, handler, "192.0.2.1:41000", contract))
 
 			for key, inState := range issues {
@@ -111,7 +111,7 @@ func TestTheRecordIsShapedAsTheIssueInsideTheStateIs(t *testing.T) {
 // LEGION-210, an issue of another tree whose claims run elsewhere.
 func TestTheRecordRouteAnswersAnIssueThatIsNotTheCallersOwn(t *testing.T) {
 	const other = "LEGION-210"
-	handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion))
+	handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion()))
 	issues := issuesOf(t, stateAsked(t, handler, statePodAddr+":41000"))
 	if _, recorded := issues[other]; !recorded {
 		t.Fatalf("the fixture records no %s; this proves nothing", other)
@@ -131,7 +131,7 @@ func TestTheRecordRouteAnswersAnIssueThatIsNotTheCallersOwn(t *testing.T) {
 // always read, whichever side found the record missing.
 func TestTheRecordRouteRefusesAnIssueItHoldsNoRecordFor(t *testing.T) {
 	const unknown = "LEGION-999"
-	handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion))
+	handler := stateServer(t, populatedState(t), podClaims(DaemonAPIVersion()))
 	if _, recorded := issuesOf(t, stateAsked(t, handler, statePodAddr+":41000"))[unknown]; recorded {
 		t.Fatalf("the fixture records %s; this proves nothing", unknown)
 	}

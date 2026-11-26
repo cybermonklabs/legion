@@ -1,5 +1,7 @@
 package legion
 
+//ci:reads packages/contracts/fixtures/daemon-api/state.json TestTheDecodeReadsTheStateDocumentTheDaemonWrote os.ReadFile (goldenStatePath, ../../../../contracts/fixtures/daemon-api): the state document the daemon's own internal/api/state_golden_test.go writes, which the sampler's decode must read
+
 import (
 	"encoding/json"
 	"os"

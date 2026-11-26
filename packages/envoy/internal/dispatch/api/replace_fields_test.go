@@ -17,6 +17,7 @@ import (
 // markdown) was too. Each refused replace stands second in its batch, after a replace that would
 // write, so the refusal names operation 1 and the batch writes nothing.
 func TestAReplaceWithoutItsWithIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name  string
 		op    map[string]any
@@ -90,6 +91,7 @@ func TestAReplaceWithoutItsWithIsRefused(t *testing.T) {
 
 // An explicit with "" is how a caller deletes a replace's match on purpose, and it still does.
 func TestAReplaceWithAnEmptyWithDeletesItsMatch(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Empty with", "Intro.\n\nPlanning notes here.\n\nOutro.\n")
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
@@ -108,6 +110,7 @@ func TestAReplaceWithAnEmptyWithDeletesItsMatch(t *testing.T) {
 // identity is answered 401 NO_IDENTITY for a replace carrying a member replace does not take, as
 // for any other edit, and learns nothing of the batch's shape; the document is left as it was.
 func TestAnUnauthenticatedReplaceCarryingAForeignMemberIsRefusedForItsIdentity(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "No identity", "Intro.\n\nPlanning notes here.\n\nOutro.\n")
 	before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
@@ -128,6 +131,7 @@ func TestAnUnauthenticatedReplaceCarryingAForeignMemberIsRefusedForItsIdentity(t
 // the value would answer 500 INTERNAL for a body the route had accepted. The replace's empty with
 // deletes its match as it does in any other body.
 func TestAnEditBodyEndingInAStrayBracketIsReadAsItsOneValue(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Stray bracket", "Intro.\n\nPlanning notes here.\n\nOutro.\n")
 	body := `{"ops":[{"op":"replace","find":" notes","with":""}],"actor":{"kind":"session","id":"session-0123456789abcdef"}}]`

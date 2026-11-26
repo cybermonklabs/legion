@@ -72,6 +72,7 @@ import (
 //     takes back and nothing else, so step 8 cannot pass by checking everything;
 //  10. the roots of step 8 are admitted when that blocker closes.
 func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
+	t.Parallel()
 	// The NATS server is taken first: testnats.URL empties it of every stream, and Dispatch
 	// reconciles ENVOY_NOTIFICATIONS on it on its first connection, which the daemon then consumes
 	// from.
@@ -780,13 +781,13 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// The hand-over is read off the record, as the tree the child stands in: it becomes a tree of
 	// its own. A place in `admission.waiting` or `admission.active` no longer marks it. The child
 	// re-entered its tree at admitted when a person set it back to todo, and the daemon had
-	// started it, so it would keep its admission slot until its work is past its review
-	// (record.KeepsSlot); but it waits on `elsewhere`, and a started issue that waits on another
-	// issue holds no slot while it waits (admit's releaseSlotsForWaits) and stands in
-	// `admission.waiting` and `admission.blocked`. So it stands in `admission.waiting` from its
-	// re-entry on, as it does after the hand-over, and a predicate reading that list would be true
-	// before the close of `free` was consumed at all and would judge the state before the
-	// hand-over.
+	// started it, so it would keep its admission slot while it stands in a phase that keeps one,
+	// as admitted does (record.KeepsSlot); but it waits on `elsewhere`, and a started issue that
+	// waits on another issue holds no slot while it waits (admit's releaseSlotsForWaits) and
+	// stands in `admission.waiting` and `admission.blocked`. So it stands in `admission.waiting`
+	// from its re-entry on, as it does after the hand-over, and a predicate reading that list
+	// would be true before the close of `free` was consumed at all and would judge the state
+	// before the hand-over.
 	state, body = settled(t, d, "hand "+child+" over as a root of its own once "+free+" closed", func(s api.State) bool {
 		return s.Issues[child].Tree == child
 	})
@@ -952,7 +953,7 @@ func registerLaunch(t *testing.T, d *daemon, launch runtime.SpawnSpec) (string, 
 	session := "ses_" + string(launch.Claim)
 	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: "agent", PluginContract: api.DaemonAPIVersion,
+		AgentID: "agent", PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the session of %s = %d; body %s", launch.Claim, status, body)
@@ -1055,19 +1056,25 @@ func dispatchCall(t *testing.T, baseURL, method, path string, body, into any) {
 
 // createBlockersIssue creates one issue of project through Dispatch's own API, carrying the legion
 // label that hands it to Legion, optionally under parent, and waiting on waits. It is created in
-// triage, where every Dispatch issue starts, by a session (createDispatchIssue): the label is a
-// session's, so the root is the controller's triage wake and never a person's handover the daemon
-// would queue as todo itself (LEGION-755) ahead of the test's own write, which moves it on.
+// triage, where every Dispatch issue starts. A root is created by a session (createDispatchIssue):
+// the label is a session's, so the root is the controller's triage wake and never a person's
+// handover the daemon would queue as todo itself (LEGION-755) ahead of the test's own write, which
+// moves it on. A child is created by the person, as a person files the issue that the tree's
+// architect then releases: Dispatch refuses a session that is no architect a create under a parent
+// Legion runs (403 DOCUMENT_WRITER_NOT_ARCHITECT), and a person's label hands over a root alone
+// (intake's LabelledTriageRoot).
 func createBlockersIssue(t *testing.T, baseURL, project, title, parent string, waits []string) string {
 	t.Helper()
 	body := map[string]any{"project": project, "title": title, "labels": []string{"legion"}}
+	identity := asSession
 	if parent != "" {
 		body["parent"] = parent
+		identity = asPerson
 	}
 	if len(waits) > 0 {
 		body["blocked_by"] = waits
 	}
-	return createDispatchIssue(t, baseURL, title, body, asSession)
+	return createDispatchIssue(t, baseURL, title, body, identity)
 }
 
 // createUnhandedIssue creates one issue of project through Dispatch's own API without the legion

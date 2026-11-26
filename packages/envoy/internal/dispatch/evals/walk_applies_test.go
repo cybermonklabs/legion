@@ -16,6 +16,7 @@ import (
 // that day): the same runs in the same order and the same jobs, over every day of deliverytest's
 // history.
 func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
@@ -54,6 +55,7 @@ func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
 // routes bound a window's) are the rows the day builds of every deploy run created from its start
 // on (delivery.ReadApplyRows, which the walk reads once a batch).
 func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	fixture := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 8})

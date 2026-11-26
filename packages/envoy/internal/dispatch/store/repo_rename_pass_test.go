@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -16,7 +17,9 @@ import (
 // pass, in mixed case where a field takes it, and beside each a row of sjawhar/legion-smoke or
 // sjawhar/dotfiles, which only begin like the old name or share its owner. updated_at is a fixed
 // time on every table that has one, so a test can tell the pass left it alone. The rename pair is
-// a repo_projects row, as production holds it, and one stored event names the old name.
+// a repo_projects row, as production holds it, and one stored event names the old name. INFRA
+// publishes the old name as its default, SMOKE holds stored eval figures of a cut of the old name
+// in two spellings, and two cuts hold a stale mark already, one of them a cut the pass marks.
 const renamedRepositoriesSeed = `
 	insert into projects (key, name, default_assignee, default_repo) values
 		('INFRA', 'Infra', 'alice', 'sjawhar/legion'),
@@ -90,6 +93,15 @@ const renamedRepositoriesSeed = `
 	insert into ci_reconcile_passes (instance, cursor_repository) values
 		(gen_random_uuid(), 'SJawhar/Legion'),
 		(gen_random_uuid(), 'sjawhar/dotfiles');
+	insert into eval_days_defaults (project_key, repo) values ('INFRA', 'sjawhar/legion'), ('SMOKE', 'sjawhar/legion-smoke');
+	insert into eval_range_figures (project_key, repo, days, end_day, eval_id, fold_key, figures, oldest_updated_at, built_by) values
+		('SMOKE', 'SJawhar/Legion', 7, '2026-01-02', 'SMOKE/a', 1, '\x00', '2026-01-01T00:00:00Z', 'test'),
+		('SMOKE', 'sjawhar/legion-smoke', 7, '2026-01-02', 'SMOKE/a', 1, '\x00', '2026-01-01T00:00:00Z', 'test');
+	insert into eval_day_figures (project_key, repo, day, eval_id, fold_key, figures, rows_stamp, built_by) values
+		('SMOKE', 'sjawhar/legion', '2026-01-01', 'SMOKE/a', 1, '\x00', 1, 'test');
+	insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals) values
+		('INFRA', 'cybermonklabs/legion', 2, '2026-01-03', '2026-01-01', '{INFRA/a}'),
+		('SMOKE', 'sjawhar/legion-smoke', 1, '2026-01-03', '2026-01-01', '{SMOKE/b}');
 	insert into events (project_key, seq, type, actor, payload, notify) values
 		('INFRA', 1, 'settings.repo_project.updated', '{"kind":"user","id":"alice"}',
 			'{"repo":"SJawhar/Legion","project":"INFRA","renamed_to":"CybermonkLabs/Legion"}', false);
@@ -121,6 +133,17 @@ var renamedRepositoriesAfter = map[string]string{
 		"search=authors=octocat excluded=cybermonklabs/legion,sjawhar/legion-smoke deploy=cybermonklabs/legion",
 	`select string_agg(project_key || '=' || repo, ' ' order by project_key) from architecture_sources`: "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
 	`select string_agg(cursor_repository, ' ' order by cursor_repository) from ci_reconcile_passes`:     "cybermonklabs/legion sjawhar/dotfiles",
+	`select string_agg(project_key || '=' || repo, ' ' order by project_key) from eval_days_defaults`:   "INFRA=cybermonklabs/legion SMOKE=sjawhar/legion-smoke",
+	// The cut of the old name, in each spelling a row holds it in, and of the new name, of each
+	// project whose published default the pass moves from the old name, or that holds stored
+	// figures of the old name: at generation 1, or at the next where a mark stands, for every eval,
+	// its first paint and its refold to begin. The pass writes no stored figure, which the
+	// refresher folds again.
+	`select string_agg(project_key || ' ' || repo || ' ' || generation || ' ' || coalesce(ready_through::text, '-') || ' ' || coalesce(next_day::text, '-') || ' ' ||
+		coalesce(evals::text, 'every'), ' | ' order by project_key, repo collate "C") from eval_figure_cuts_stale`: "INFRA cybermonklabs/legion 3 - - every | " +
+		"INFRA sjawhar/legion 1 - - every | SMOKE SJawhar/Legion 1 - - every | SMOKE cybermonklabs/legion 1 - - every | SMOKE sjawhar/legion 1 - - every | " +
+		"SMOKE sjawhar/legion-smoke 1 2026-01-03 2026-01-01 {SMOKE/b}",
+	`select string_agg(repo, ' ' order by repo collate "C") from (select repo from eval_range_figures union all select repo from eval_day_figures) f`: "SJawhar/Legion sjawhar/legion sjawhar/legion-smoke",
 }
 
 // untouchedByThePass reads what the pass must leave as it found it: the mapping, the event log,
@@ -211,9 +234,11 @@ func readText(t *testing.T, store *Store, query string) string {
 }
 
 // The pass writes the new name in every field that holds the old name, in any case, and leaves
-// sjawhar/legion-smoke and sjawhar/dotfiles as they are. It logs each field it wrote, and a second
-// run writes nothing. It leaves the mapping, the event log and updated_at as they were, and
-// appends no event. A run it moves keeps every other column.
+// sjawhar/legion-smoke and sjawhar/dotfiles as they are. It marks stale the eval figures' cuts of
+// the old and the new name of each project that publishes the old name or holds stored figures of
+// it, for every eval, and no other cut. It logs each field it wrote, and a second run writes
+// nothing. It leaves the mapping, the event log and updated_at as they were, and appends no event.
+// A run it moves keeps every other column.
 func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed)
@@ -253,7 +278,7 @@ func TestTheRenamePassWritesEveryFieldAndASecondRunWritesNothing(t *testing.T) {
 		"delivery_pull_requests.repo": 1, "delivery_pull_requests.url": 1, "delivery_pull_requests.attribution_cited_issues": 1,
 		"delivery_runs.repo": 1, "delivery_run_jobs.repo": 2, "delivery_runs.url": 1, "delivery_run_warnings.repo": 1,
 		"delivery_settings.deploy_repo": 1, "delivery_settings.excluded_repos": 1, "delivery_reconcile_progress.scope": 2,
-		"architecture_sources.repo": 1, "ci_reconcile_passes.cursor_repository": 1,
+		"architecture_sources.repo": 1, "ci_reconcile_passes.cursor_repository": 1, "eval_days_defaults.repo": 1,
 	} {
 		if written[field] != want {
 			t.Errorf("logged %v rows of %s, want %v (every line: %v)", written[field], field, want, written)
@@ -325,6 +350,58 @@ func TestASecondRenamePassOnAWrittenDatabaseRunsNoLine(t *testing.T) {
 	}
 	if failed := named(logs(), failedLine); len(failed) != 0 {
 		t.Fatalf("a second pass ran a line: %v", failed)
+	}
+}
+
+// renamedDefaultSeed holds the rename pair sjawhar/legion to cybermonklabs/legion, INFRA, which
+// publishes the old name as its default, and CYBER, which published the new name before the
+// rename. Neither holds a stored eval figure or a stale mark.
+const renamedDefaultSeed = `
+	insert into projects (key, name, default_assignee, default_repo) values
+		('INFRA', 'Infra', 'alice', 'sjawhar/legion'),
+		('CYBER', 'Cyber', 'alice', 'cybermonklabs/legion');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('sjawhar/legion', 'INFRA', '{"kind":"user","id":"alice"}', 'cybermonklabs/legion');
+	insert into eval_days_defaults (project_key, repo) values ('INFRA', 'sjawhar/legion'), ('CYBER', 'cybermonklabs/legion');
+`
+
+// A run of the pass after one that committed, which runs its lines because a row a build before
+// this one wrote during a roll names the old name, marks no cut through a default the run before
+// it moved: every mark stands as that run and the refold since left it, the old name's cut, whose
+// refold is done, unmarked, and the new name's at its generation, its first paint folded and its
+// refold begun. Neither run marks a cut of CYBER, which published the new name before the rename
+// and holds no stored figure of the old name. Red where the line marks the cuts of every project
+// that publishes the new name once it has written the defaults: the first run then marks CYBER's
+// two cuts, and the second marks both cuts of each project again, at the next generation, with
+// their first paints owed and their refolds to begin again.
+func TestARenamePassAfterOneThatCommittedLeavesTheMarksItMade(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renamedDefaultSeed)
+	const marks = `select coalesce(string_agg(project_key || ' ' || repo || ' ' || generation || ' ' || coalesce(ready_through::text, '-') || ' ' ||
+		coalesce(next_day::text, '-') || ' ' || coalesce(evals::text, 'every'), ' | ' order by project_key, repo collate "C"), 'none') from eval_figure_cuts_stale`
+	if first := RewriteRenamedRepositories(ctx, store.Pool, pairs); first.Failures != 0 || first.Left != noneLeft {
+		t.Fatalf("the first pass = %+v, want no failure and nothing left", first)
+	}
+	if got, want := readText(t, store, marks), "INFRA cybermonklabs/legion 1 - - every | INFRA sjawhar/legion 1 - - every"; got != want {
+		t.Errorf("the first pass left the marks %s, want %s", got, want)
+	}
+	if _, err := store.Pool.Exec(ctx, `
+		delete from eval_figure_cuts_stale where project_key = 'INFRA' and repo = 'sjawhar/legion';
+		update eval_figure_cuts_stale set ready_through = '2026-01-03', next_day = '2026-01-01' where project_key = 'INFRA' and repo = 'cybermonklabs/legion';
+		insert into issues (key, project_key, number, title, created_by, rank, repo, updated_at) values
+			('INFRA-1', 'INFRA', 1, 'One', '{"kind":"user","id":"alice"}', 'U1', 'sjawhar/legion', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("fold the marked cuts and write an issue under the old name: %v", err)
+	}
+	folded := readText(t, store, marks)
+
+	again := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if again != (RepoRenamePass{Pairs: 1, Rows: 1, Left: noneLeft}) {
+		t.Fatalf("the second pass = %+v, want the one issue written and nothing left", again)
+	}
+	if got := readText(t, store, marks); got != folded {
+		t.Errorf("the second pass left the marks %s, want them as the first pass and the refold left them: %s", got, folded)
 	}
 }
 
@@ -436,6 +513,98 @@ func TestTheRenamePassKeepsTheNewNameRowOfEachCollision(t *testing.T) {
 	}
 }
 
+// renameOwnersSeed holds the rename pair sjawhar/legion to cybermonklabs/legion and no row of the
+// new name. Under owner keys of the old name it holds a day row of one eval, series and day under
+// the plain key and under a key that carries a list, and a day row of another series under each of
+// two spellings of the old name in a key with a sharer. Each of the four keys holds a member of
+// the same pull request and an owed day, and the eval_days change trigger records each in
+// eval_day_owners. Two spellings of the old name in a key with another sharer hold an owner row
+// and no day row, as a key whose rows are all gone keeps its row.
+const renameOwnersSeed = `
+	insert into projects (key, name, default_assignee) values ('INFRA', 'Infra', 'alice');
+	insert into repo_projects (repo, project, created_by, renamed_to) values
+		('sjawhar/legion', 'INFRA', '{"kind":"user","id":"alice"}', 'cybermonklabs/legion');
+	insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, built_by)
+		select owner, owner || '/deploy-frequency', series, '', '2026-11-03', true, n, n, 'test'
+		from (values (':sjawhar/legion|', 'deploys', 1), (':sjawhar/legion||INFRA>', 'deploys', 2),
+			(':SJawhar/Legion|INFRA', 'shared', 3), (':sjawhar/legion|INFRA', 'shared', 3)) as k(owner, series, n);
+	insert into eval_day_members (project_key, family, row_key, day)
+		select project_key, 'delivery', 'pull_request:sjawhar/legion#7', day from eval_days;
+	insert into eval_days_owed (project_key, family, day)
+		select project_key, 'delivery', day from eval_days;
+	insert into eval_day_owners (owner, repo, sharers) values
+		(':SJawhar/Legion|SMOKE', 'SJawhar/Legion', '{SMOKE}'),
+		(':sjawhar/legion|SMOKE', 'sjawhar/legion', '{SMOKE}');
+`
+
+// The rename writes the new name in the repository of an owner key and keeps its sharers and its
+// lists, so the plain key of the old name and a key that carries a list rename to two keys: the
+// day rows of one eval, series and day under each both stay, each under its renamed key and eval
+// id, and the pass deletes and logs neither, nor their members, owed days or owner rows. Two keys
+// that hold the old name in two spellings of case rename to one key, and of each of their rows one
+// stays, an owner row with no day row as much as a day row. The pass counts the rows it logs as
+// deleted. Red where the pass deletes a row of the old name wherever another row of the old name
+// with the same slug and other key columns has an owner key that sorts first, whatever the two
+// keys rename to: on a database that held no row of the new name, it deleted the conditional
+// key's rows as collisions of the plain key's. Red where the line writes the owner rows after the
+// day rows, whose change trigger records each renamed key first: the line deleted and logged the
+// owner row of every key it moved. And red where it deletes an owner row of the old name only for
+// a row of the new name: the two spellings of the key with no day row renamed to one owner, and
+// the line failed.
+func TestTheRenamePassKeepsTheRowsOfOwnerKeysThatRenameApart(t *testing.T) {
+	ctx := context.Background()
+	store, pairs := openRenamedRepositoriesStore(t, renameOwnersSeed)
+	logs := capturePassLogs(t)
+
+	pass := RewriteRenamedRepositories(ctx, store.Pool, pairs)
+
+	if pass.Failures != 0 || pass.Left != noneLeft {
+		t.Fatalf("the pass = %+v, want no failure and nothing left", pass)
+	}
+	const keys = ":cybermonklabs/legion|, :cybermonklabs/legion|INFRA, :cybermonklabs/legion||INFRA>"
+	for query, want := range map[string]string{
+		`select string_agg(project_key || ' ' || eval_id || ' ' || series || ' ' || n, ', ' order by project_key collate "C") from eval_days`: ":cybermonklabs/legion| :cybermonklabs/legion|/deploy-frequency deploys 1, " +
+			":cybermonklabs/legion|INFRA :cybermonklabs/legion|INFRA/deploy-frequency shared 3, " +
+			":cybermonklabs/legion||INFRA> :cybermonklabs/legion||INFRA>/deploy-frequency deploys 2",
+		`select string_agg(project_key, ', ' order by project_key collate "C") from eval_day_members`: keys,
+		`select string_agg(project_key, ', ' order by project_key collate "C") from eval_days_owed`:   keys,
+		`select string_agg(owner || ' ' || repo, ', ' order by owner collate "C") from eval_day_owners`: ":cybermonklabs/legion| cybermonklabs/legion, " +
+			":cybermonklabs/legion|INFRA cybermonklabs/legion, :cybermonklabs/legion|SMOKE cybermonklabs/legion, " +
+			":cybermonklabs/legion||INFRA> cybermonklabs/legion",
+	} {
+		if got := readText(t, store, query); got != want {
+			t.Errorf("%s\n= %s\nwant %s", query, got, want)
+		}
+	}
+	deletions := named(logs(), deletedLine)
+	if pass.Deleted != int64(len(deletions)) {
+		t.Errorf("the pass counted %d rows deleted and logged %d: %v", pass.Deleted, len(deletions), deletions)
+	}
+	deleted := map[string][]string{}
+	for _, record := range deletions {
+		var key struct {
+			ProjectKey string `json:"project_key"`
+			Owner      string `json:"owner"`
+		}
+		if text, _ := record["key"].(string); json.Unmarshal([]byte(text), &key) != nil {
+			t.Errorf("a deletion's line = %v, want the deleted row's key", record)
+		}
+		table, _ := record["table"].(string)
+		deleted[table] = append(deleted[table], strings.ToLower(key.ProjectKey+key.Owner))
+	}
+	for _, found := range deleted {
+		slices.Sort(found)
+	}
+	// Of each key held in two spellings, the row of the spelling that sorts second, in lower case.
+	want := map[string][]string{
+		"eval_days": {":sjawhar/legion|infra"}, "eval_day_members": {":sjawhar/legion|infra"}, "eval_days_owed": {":sjawhar/legion|infra"},
+		"eval_day_owners": {":sjawhar/legion|infra", ":sjawhar/legion|smoke"},
+	}
+	if !maps.EqualFunc(deleted, want, slices.Equal[[]string]) {
+		t.Errorf("logged deletions %v, want %v", deleted, want)
+	}
+}
+
 // A line whose table refuses its writes fails alone: the pass logs it at ERROR with its field,
 // counts it a failure and the rows it left, and writes every other line. The pass after the
 // table takes writes again writes that line, and nothing is left.
@@ -489,6 +658,7 @@ func TestARenamePassLineThatFailsLeavesTheOthersWritten(t *testing.T) {
 // A pass whose bound has already run out fails every line, and still counts the rows its lines
 // left, under a bound of its own: the count is the true count, never a 0 nothing counted.
 func TestARenamePassOutOfTimeStillCountsWhatItLeft(t *testing.T) {
+	t.Parallel()
 	store, pairs := openRenamedRepositoriesStore(t, `
 		insert into projects (key, name, default_assignee, default_repo) values ('INFRA', 'Infra', 'alice', 'sjawhar/legion');
 		insert into repo_projects (repo, project, created_by, renamed_to)
@@ -513,6 +683,7 @@ func TestARenamePassOutOfTimeStillCountsWhatItLeft(t *testing.T) {
 // A count of the rows left that fails is one more failure, and the pass says the rows left are
 // unknown: its summary reads left=unknown, never left=0.
 func TestARenamePassWhoseCountFailsSaysTheRowsLeftAreUnknown(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed+`drop table ci_reconcile_passes;`)
 
@@ -534,6 +705,7 @@ func TestARenamePassWhoseCountFailsSaysTheRowsLeftAreUnknown(t *testing.T) {
 // dispatch://INFRA-4411 drops repo_projects. The boot then reads no pairs, and the pass reads and
 // writes nothing: every field keeps the name it holds.
 func TestTheRenamePassWritesNothingOnceRepoProjectsIsDropped(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store, pairs := openRenamedRepositoriesStore(t, renamedRepositoriesSeed+`drop table repo_projects;`)
 	if len(pairs) != 0 {

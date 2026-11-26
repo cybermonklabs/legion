@@ -18,6 +18,7 @@ import (
 // names no version the document must hold, and the plan review refuses it as a version the plan
 // does not have.
 func TestAVersionNumberInABodyAboveTheColumnsRangeIsRefusedNotAFault(t *testing.T) {
+	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "PLAN", "Version bounds", "A spec\n")
 	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nOne.\n")

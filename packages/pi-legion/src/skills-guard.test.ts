@@ -342,9 +342,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(silent).toEqual([]);
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
-      "skills/dispatch-writing-specs/SKILL.md",
       "skills/legion-architect/SKILL.md",
-      "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
       "skills/legion-controller/references/consolidation.md",
       "skills/legion-oracle/SKILL.md",
@@ -352,7 +350,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
       "skills/legion-worker/references/merge-gate.md",
       "skills/simplify-settled-diff/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/SKILL.md",
-      "the fresh Claude plugin's skills/legion-architect/references/decomposition.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
       "the fresh Claude plugin's skills/legion-controller/references/consolidation.md",
       "the fresh Claude plugin's skills/legion-oracle/SKILL.md",
@@ -389,17 +386,6 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   }));
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
-
-// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
-// merge can bring a new instance of a class the branch already answered. The implementer's merge
-// procedure carries the class search.
-test("a forward merge searches the new head for each earlier finding's class", () => {
-  expect(
-    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
-  ).toContain(
-    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
-  );
-});
 
 // R4: a planner waits on a decision its plan needs rather than completing around it
 // (dispatch://INFRA-206). The role prompts carry the rest of R4; roles_test.go pins those.
@@ -556,10 +542,10 @@ test("the worker prompt tells a role to read the pull request's head after its o
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "The empty commit changes no file, so record each `before_merge` check again at the new head as carried from the commit before it (`skill://legion-worker/references/pr-body.md#what-a-result-is`), and run none of them again. A check carrying `ci_check` is CI's, so skip it.",
+    "The empty commit changes no file, so record each `before_merge` check again at the new head as carried from the commit before it (`skill://legion-worker/references/results.md#what-a-result-is`), and run none of them again. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you push, let your subagents and background jobs finish or stop them, push what they made, answer the daemon and end the turn, so make this read in your next turn, before your phase completes.",
-    "The merger pushes only a merge of the base forward, and makes this read after that push as any role does; the results at the new head are the implementer's and the tester's to record, so it asks them as its part says, and it merges nothing until the pull request names its commit.",
+    "The merger pushes only a merge of the base forward, and makes this read after that push as any role does; the results at the new head are the implementer's, and the tester's where the task has a tester step, to record, so it asks them as its part says, and it merges nothing until the pull request names its commit.",
     "the empty commit that carries the pull request onto the commit you pushed",
   ];
   for (const rule of step) {
@@ -596,14 +582,51 @@ test("the worker prompt's push step leaves out a check CI proves", () => {
 // architect corrects, and no role sends that to an implementer who cannot cure it
 // (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass
 // back names that case and gives it to the architect, so the two texts say the same thing
-// (dispatch://INFRA-3204, tester round 5).
+// (dispatch://INFRA-3204, tester round 5). The one exception is a job held back without its
+// label: a job of a called workflow whose caller is skipped never starts, so its check has no run,
+// and the implementer's label cures it (`ci-checks.md`, the same section's held-back step). Retro,
+// the tester's rule and the architect's acceptance each name that case as a check with no pass
+// standing, so none of them sends a missing label to the architect as wrong words.
 test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   const sentences = retro.split(/(?<=\.)\s+/);
   const absent = sentences.filter((sentence) => sentence.includes("`absent`"));
   expect(absent.length).toBeGreaterThan(0);
-  expect(absent.some((sentence) => sentence.includes("architect"))).toBe(true);
+  expect(
+    absent.some((sentence) => sentence.includes("architect") && sentence.includes("any other name"))
+  ).toBe(true);
   expect(absent.some((sentence) => sentence.includes("to: implementing"))).toBe(false);
+  expect(
+    absent.some(
+      (sentence) =>
+        sentence.includes("no pass standing") &&
+        sentence.includes("held back without its label") &&
+        !sentence.includes("architect")
+    )
+  ).toBe(true);
+});
+
+test("a job held back without its label is a check with no pass, not wrong words, for the tester and the architect", () => {
+  const ciChecks = collapsed(path.join(staged, "legion-worker", "references", "ci-checks.md"));
+  expect(ciChecks).toContain(
+    "A `ci_check` check goes in `failures` only when its derived result is a fail, its run concluded `skipped`, `neutral` or `cancelled`, or it names a job held back without its label"
+  );
+  expect(ciChecks).toContain(
+    "The check's words are right: the implementer adds the label and pushes, and each other role sends the issue back to the implementer for it"
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
+    "a name no run answers is yours to correct in the check, unless it names a job held back without its label, which has no pass standing until the implementer adds the label"
+  );
+});
+
+// #5175 split envoy's Go build and checks (envoy-go-build) from its script tests (envoy-go-checks,
+// a held-back slow suite). A check of the gofmt, OpenAPI, pmdoc or edited-migrations steps that
+// still named envoy-go-checks would pass under that job's label with none of those steps run, so
+// the worker's reference names the job that runs them.
+test("a check of envoy's Go build and checks names envoy-go-build, not the held-back script tests", () => {
+  expect(collapsed(path.join(staged, "legion-worker", "references", "ci-checks.md"))).toContain(
+    "a check of the edited-migrations, gofmt, OpenAPI or pmdoc steps names `envoy-go-build / envoy-go-build`, which every pull request runs; envoy-go-checks is envoy's script tests, a held-back slow suite"
+  );
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
@@ -660,6 +683,50 @@ test("the retro skill names the rating's fields, its refusals, its scale and its
   ]) {
     expect(retro).toContain(token);
   }
+});
+
+// Only a review that requests changes counts a review round (the daemon's recordRound): a tester's
+// fail and a move back, the architect's from `accepting` among them, count none, as the architect's
+// prompt parts say (`go/architect-common.md`). The two guides that say what the cap counts say so
+// too, and each sentence that counted every move back is gone. A move made at a conflicting head
+// raises no pair, whoever made it (recordPass), so the concepts page says that of any such move.
+// The guides are read where they live in the repository.
+test("the guides say only a review that requests changes counts a round", () => {
+  const guide = (relative: string, duties: RegExp[]) => {
+    const text = collapsed(path.join(REPO_ROOT, "docs/site/src/content/docs/legion", relative));
+    return duties.filter((duty) => !duty.test(text)).map((duty) => `${relative} lacks ${duty}`);
+  };
+  expect([
+    ...guide("concepts.md", [
+      /Only a review that requests changes counts a round: a tester's fail and a move back by a worker or the architect count none\./,
+      /A request for changes made while the record holds the head conflicting with its base is a conflict round/,
+      /a move made while the head conflicts with its base raises no pair/,
+      /^(?![\s\S]*Every move back to an earlier phase counts a round)/,
+    ]),
+    ...guide("troubleshooting.md", [
+      /only a review that requests changes raises the count/,
+      /^(?![\s\S]*every move back to an earlier phase raises the count)/,
+    ]),
+  ]).toEqual([]);
+});
+
+// skills/AGENTS.md bounds a skill's SKILL.md and each of its references at 150 lines and 8 KB,
+// counted here as 8,000 bytes. Every file of the Legion role skills is held to it, so a file that
+// grows past it moves its detail one level down before it ships.
+test("every file of the Legion role skills fits the skill budget", () => {
+  const budgeted = files(staged).filter((file) =>
+    /^legion-[a-z-]+\/(SKILL|references\/[^/]+)\.md$/.test(path.relative(staged, file))
+  );
+  expect(budgeted.length).toBeGreaterThan(20);
+  const over = budgeted.flatMap((file) => {
+    const text = readFileSync(file, "utf8");
+    const bytes = Buffer.byteLength(text);
+    const lines = text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+    return bytes > 8_000 || lines > 150
+      ? [`${path.relative(staged, file)}: ${lines} lines, ${bytes} bytes`]
+      : [];
+  });
+  expect(over).toEqual([]);
 });
 
 // INFRA-4673 R3: the code, a command's output and its `--help` win over a skill, and the sentence

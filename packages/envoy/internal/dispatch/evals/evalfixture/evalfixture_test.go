@@ -9,11 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -46,7 +48,7 @@ func refresh(t *testing.T, database *store.Store) *evals.Store {
 			t.Errorf("shut down the document service: %v", err)
 		}
 	})
-	registry := evals.New(database, documents, broker)
+	registry := evals.New(database, documents, broker, delivery.NewAttributor(refs.Renames{}))
 	deps := evals.RefresherDeps{Horizon: events.NewHorizon(database.Pool), Build: "evalfixture-test"}
 	if err := registry.RefreshThrough(t.Context(), deps, now); err != nil {
 		t.Fatalf("refresh the day rows as of %s: %v", now.Format(time.RFC3339), err)
@@ -234,7 +236,7 @@ func TestTheBaseModeWritesTheSameHistoryIntoTheBaseSchema(t *testing.T) {
 
 // TestTheAttributionModeWritesK15sCase: -attribution writes k15's case (verification version 26):
 // three projects, two of them with a default repository, three pull requests, two deploys and two
-// CI jobs, and the read the eval routes fold (evals.Store.DayWindow, over the rows the refresher
+// CI jobs, and the read the eval routes fold (evals.DayWindowIn, over the rows the refresher
 // builds, evals.Store.RefreshThrough) counts each row for exactly the projects the case's R15
 // oracle names and through what it names: pr-open-to-merge counts the pull requests,
 // deploy-frequency the deploys and pr-ci the CI jobs, each day row carries how many of them came
@@ -305,7 +307,7 @@ func TestTheAttributionModeWritesK15sCase(t *testing.T) {
 		if len(entries) != len(series) {
 			t.Fatalf("%s holds %d of the evals %v", project, len(entries), slices.Sorted(maps.Keys(series)))
 		}
-		rows, err := registry.DayWindow(ctx, []string{project}, entries, deployRepos, nil, window, nil)
+		rows, err := evals.DayWindowIn(ctx, database.Pool, []string{project}, entries, deployRepos, nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s's day rows of %s: %v", project, day.Format(time.DateOnly), err)
 		}

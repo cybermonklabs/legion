@@ -29,7 +29,7 @@ import (
 // refresher's page records in the commit that brings the rows to it, and a read answers the old
 // selection whole or the new one whole.
 //
-// What reads the deploy repository is what a day reads of it (readDeliveryDay): its deploy runs
+// What reads the deploy repository is what a day reads of it (readDeliveryDays): its deploy runs
 // (delivery.ReadDeploys), its apply runs, under which containment ships its pull requests alone
 // (delivery.ContainingRun), and its CI runs (delivery.ReadCIRows). So the three lead times to
 // production, deploy-frequency, deploy-run-success, pr-ci with its job series and the three deploy
@@ -479,7 +479,7 @@ var leadTimeSlugs = []string{SlugMergeToProduction, SlugFirstCommitToProduction,
 func dropUnshipped(rows []DayRow, first map[evalKey]time.Time, day time.Time) []DayRow {
 	unshipped := map[evalKey]bool{}
 	for _, row := range rows {
-		if row.DeployRepo == "" || row.Repo != "" || row.N != 0 || !slices.Contains(leadTimeSlugs, slugOf(row.ProjectKey, row.EvalID)) {
+		if !unshippedLeadTime(&row) {
 			continue
 		}
 		if since, held := first[keyOf(row)]; !held || day.Before(since) {
@@ -494,15 +494,22 @@ func dropUnshipped(rows []DayRow, first map[evalKey]time.Time, day time.Time) []
 
 // inputKeys is each eval and deploy repository of which rows, a project's rows of a day as its
 // reads build them, hold input: an all-repositories row, but a lead time to production of a
-// deploy repository that counts no pull request (dropUnshipped's), which no first input day
+// deploy repository that counts no pull request (unshippedLeadTime), which no first input day
 // begins at. A day that holds no input of a series is no first input day of it.
 func inputKeys(rows []DayRow) map[evalKey]bool {
 	input := map[evalKey]bool{}
 	for _, row := range rows {
-		if row.Repo != "" || row.DeployRepo != "" && row.N == 0 && slices.Contains(leadTimeSlugs, slugOf(row.ProjectKey, row.EvalID)) {
+		if row.Repo != "" || unshippedLeadTime(&row) {
 			continue
 		}
 		input[keyOf(row)] = true
 	}
 	return input
+}
+
+// unshippedLeadTime reports whether row is a deploy repository's all-repositories row of a lead
+// time to production that counts no pull request (n 0): one dropUnshipped drops before the eval's
+// first input day, and no input of the eval (inputKeys).
+func unshippedLeadTime(row *DayRow) bool {
+	return row.DeployRepo != "" && row.Repo == "" && row.N == 0 && slices.Contains(leadTimeSlugs, slugOf(row.ProjectKey, row.EvalID))
 }

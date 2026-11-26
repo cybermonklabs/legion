@@ -8,9 +8,10 @@
 # migrate boots the server once on an empty database, which migrates it, and stops it.
 #
 # measure boots the server on the loaded database, waits until its consumers have caught up
-# (`measure wait`: the Legion facts read whole and, at this head, every family's day rows written
-# through today by the running build and the keyword fill's cursor at the newest event, which the
-# load leaves at its last event, with a RESULT line of how long the fill took to get there), stops
+# (`measure wait`: the Legion facts read whole and, at this head, every family's day rows served
+# under the running build with every walk done and the stored figures built, and the keyword fill's
+# cursor at the newest event, which the load leaves at its last event, with a RESULT line of how
+# long the fill took to get there), stops
 # it, starts it again and measures the first paint as the first requests after that restart
 # (`measure paint`). At this head it then greps the read path for a read of events (k13) and
 # prints the query keys of the list route (k16). failure-day is this head over the fixture with a
@@ -142,16 +143,21 @@ measure paint -token "$token" -server-log "$work/server-paint.log" -pg-log "$EVA
 
 if [ "$mode" = head ]; then
   # k13: no read of the first paint's path names events. The read path is the list read's
-  # handler and the registry reads it calls in its one snapshot (api/evals.go readEvalList;
-  # evals.CurrentIn, FirstDaysIn and DayWindowIn of reads.go; RefresherAgeIn of refresher.go;
-  # ReadStoredFiguresIn of figures_read.go and figuresThrough of figures_refresher.go;
-  # delivery.GetSettings of delivery/store.go), and the folds of statistics.go.
+  # handler, every statement it runs in its one snapshot, and the registry's folds of what they
+  # read: api/evals.go (readEvalList, evalProjectsIn, readEvalValues); loadProject of
+  # api/owner.go; evals.ProjectsIn, CurrentIn, FirstDaysIn and DayWindowIn of reads.go, with the
+  # column lists and scans of store.go; DeployRepoIn and deployRepoCase of deploy_repos.go;
+  # viaAsRead of owners.go; RefresherAgeIn of refresher.go; ReadStoredFiguresIn of figures_read.go,
+  # figuresThrough of figures_refresher.go and the stored figures' keys, decode and statement cuts
+  # of figures.go; the folds of statistics.go; VerdictOf of delivery_targets.go; and the
+  # definition's writer of evals.go.
   if [ -n "${EVALBENCH_SOURCE:-}" ]; then
     dispatch_src="$EVALBENCH_SOURCE/packages/envoy/internal/dispatch"
-    read_path=("$dispatch_src/api/evals.go" "$dispatch_src/evals/reads.go" "$dispatch_src/evals/store.go"
-      "$dispatch_src/evals/statistics.go" "$dispatch_src/evals/refresher.go"
-      "$dispatch_src/evals/figures_read.go" "$dispatch_src/evals/figures_refresher.go"
-      "$dispatch_src/delivery/store.go")
+    read_path=("$dispatch_src/api/evals.go" "$dispatch_src/api/owner.go" "$dispatch_src/evals/reads.go"
+      "$dispatch_src/evals/store.go" "$dispatch_src/evals/deploy_repos.go" "$dispatch_src/evals/owners.go"
+      "$dispatch_src/evals/refresher.go" "$dispatch_src/evals/figures_read.go"
+      "$dispatch_src/evals/figures_refresher.go" "$dispatch_src/evals/figures.go"
+      "$dispatch_src/evals/statistics.go" "$dispatch_src/evals/delivery_targets.go" "$dispatch_src/evals/evals.go")
     # grep exits 1 when no line matches and above 1 when it could not read a file, which would
     # leave a file of the read path unread.
     searched=0

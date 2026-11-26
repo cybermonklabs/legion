@@ -118,6 +118,7 @@ func shuffledDays(rows []DayRow) []DayRow {
 // their order. A row larger than the bound alone is sent in a statement of its own, between the
 // statements of the rows around it.
 func TestAStatementOfDayRowsHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
+	t.Parallel()
 	long := func(index, size int) string { return fmt.Sprintf("%06d", index) + strings.Repeat("é", size/2) }
 	far := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
 	lastAt := far.Add(24*time.Hour - time.Microsecond)
@@ -236,6 +237,7 @@ func (s *sentExecs) Exec(_ context.Context, _ string, args ...any) (pgconn.Comma
 // cannot affect a row a second time); cut into two statements, the second would rewrite the
 // first.
 func TestTwoDayRowsOfOneKeyAreRefusedByAnUpsertBeforeAnyStatement(t *testing.T) {
+	t.Parallel()
 	day := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
 	rowOf := func(series, repo string, at time.Time, n int) DayRow {
 		return DayRow{ProjectKey: "EVAL", EvalID: EvalID("EVAL", "lead-time"), DeployRepo: "Acme/deploy", Repo: repo, Listed: true,
@@ -308,6 +310,7 @@ func (c dayChange) String() string {
 // statement holds rows the upsert updates and rows it inserts, does the same and leaves the
 // earlier 20 days as they were.
 func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	inserts := &dayInserts{}
@@ -473,4 +476,111 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 		}
 	}
 	stored("a write rewriting the later 20 days and adding 20", slices.Concat(kept, rewritten))
+}
+
+// TestAWriteOfSeveralProjectsDaysDeletesWhatEachNoLongerHoldsAcrossItsRuns: one write of a day of
+// two projects (writeProjectDays) whose rows and items pass statementBytes cuts each into runs of
+// their keys (staleRuns, memberRuns), and sends each run's statements the days written of the
+// projects its range holds keys of (writtenCuts). Written again with the first and the last row
+// and item of each project's day gone, laid out so a run begins at the second project's first row
+// and item that stand, the write deletes every one of them and keeps the rest: the second
+// project's first row and item gone lie in the range of the run before, which ends inside that
+// project, and its last ones in the range of the run after.
+func TestAWriteOfSeveralProjectsDaysDeletesWhatEachNoLongerHoldsAcrossItsRuns(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	ctx := t.Context()
+	day := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	pad := strings.Repeat("x", 480)
+	// dayOf is project's day of rows rows and items items, each a deploy-frequency row of a
+	// repository of its own and a pull request, in the byte order of their keys, less the first and
+	// the last of each where trim is set.
+	dayOf := func(project string, rows, items int, trim bool) ProjectDay {
+		from, less := 0, 0
+		if trim {
+			from, less = 1, 1
+		}
+		written := ProjectDay{Project: project, Day: day}
+		for i := from; i < rows-less; i++ {
+			written.Rows = append(written.Rows, DayRow{ProjectKey: project, EvalID: EvalID(project, SlugDeployFrequency), DeployRepo: "acme/deploy",
+				Repo: fmt.Sprintf("acme/r%05d-%s", i, pad), Listed: true, DayPart: measures.DayPart{Series: measures.SeriesDeploys, Day: day, N: 1, Sum: new(1.0)}})
+		}
+		for i := from; i < items-less; i++ {
+			written.Members = append(written.Members, Member{Family: KindDelivery, DeployRepo: "acme/deploy",
+				RowKey: fmt.Sprintf("pull_request:acme/web#%05d-%s", i, pad), Repo: "acme/web"})
+		}
+		return written
+	}
+	const second = 20
+	// The first project's rows and items are as many as make a run of the write again begin at the
+	// second project's first row and first item that stand: the cuts deleteStaleDays and
+	// writeDayMembersIn make of that write.
+	rows, items := 0, 0
+	for n := 100; n < 2000 && (rows == 0 || items == 0); n++ {
+		again := []ProjectDay{dayOf("P0", n, n, true), dayOf("P1", second, second, true)}
+		projects, _ := writtenDays(again)
+		var held []*DayRow
+		for i := range again {
+			for j := range again[i].Rows {
+				held = append(held, &again[i].Rows[j])
+			}
+		}
+		for _, run := range staleRuns(held, paramBytes(11, writerComputation)+writtenReserve(projects, deliveryFamily.slugs), dayRowKeyBytes)[1:] {
+			if rows == 0 && rowKey(*run.rows[0]) == rowKey(again[1].Rows[0]) {
+				rows = n
+			}
+		}
+		for _, run := range memberRuns(again, deliveryFamily.families)[1:] {
+			if items == 0 && run.members[0].project == "P1" && run.members[0].RowKey == again[1].Members[0].RowKey {
+				items = n
+			}
+		}
+	}
+	if rows == 0 || items == 0 {
+		t.Fatalf("no count of the first project's rows and items begins a run at the second project's first ones (rows %d, items %d)", rows, items)
+	}
+	write := func(what string, days []ProjectDay) {
+		t.Helper()
+		if err := r.registry.writeProjectDays(ctx, deliveryFamily, days, testBuild, false); err != nil {
+			t.Fatalf("%s: %v", what, err)
+		}
+	}
+	write("the first write", []ProjectDay{dayOf("P0", rows, items, false), dayOf("P1", second, second, false)})
+	again := []ProjectDay{dayOf("P0", rows, items, true), dayOf("P1", second, second, true)}
+	write("the write again", again)
+	var wantRows, wantItems []string
+	for _, written := range again {
+		for _, row := range written.Rows {
+			wantRows = append(wantRows, row.ProjectKey+" "+row.Repo)
+		}
+		for _, member := range written.Members {
+			wantItems = append(wantItems, written.Project+" "+member.RowKey)
+		}
+	}
+	for _, check := range []struct {
+		what, query string
+		want        []string
+	}{
+		{"rows", `select project_key || ' ' || repo from eval_days where project_key in ('P0', 'P1') order by (project_key || ' ' || repo) collate "C"`, wantRows},
+		{"items", `select project_key || ' ' || row_key from eval_day_members where project_key in ('P0', 'P1') order by (project_key || ' ' || row_key) collate "C"`, wantItems},
+	} {
+		found, err := r.database.Pool.Query(ctx, check.query)
+		if err != nil {
+			t.Fatalf("read the stored %s: %v", check.what, err)
+		}
+		stored, err := pgx.CollectRows(found, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the stored %s: %v", check.what, err)
+		}
+		if !slices.Equal(stored, check.want) {
+			var extra []string
+			for _, line := range stored {
+				if !slices.Contains(check.want, line) {
+					extra = append(extra, line[:min(len(line), 40)])
+				}
+			}
+			t.Errorf("the write again leaves %d stored %s where its days hold %d, those it no longer holds %v", len(stored), check.what, len(check.want), extra)
+		}
+	}
+	t.Logf("%d rows and %d items of P0 and %d of each of P1, written again with the first and the last of each gone", rows, items, second)
 }

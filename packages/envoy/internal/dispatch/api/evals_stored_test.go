@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -15,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -36,10 +38,10 @@ func evalDaysEnding(n int, end time.Time) evals.Range {
 
 // storedEvalShapes is every shape of the list read a page asks for as of today, and two the stored
 // figures do not answer: each preset of the Evals tab as a GET from midnight to midnight (L days
-// ending today), with and without the compare range before it; each as the live view reads it at a
-// moment of today (L+1 days ending tomorrow), with the compare range its query names and without;
-// a repository's rows; and, read from the day rows, a range of a length the tab does not offer and
-// two repositories.
+// ending today), with and without the compare range before it; each as the live view reads it at
+// a moment of today (L+1 days ending tomorrow), with the compare range its query names and
+// without; a repository's rows, which the stored figures of its cut answer; and, read from the day
+// rows, a range of a length the tab does not offer and two repositories.
 func storedEvalShapes(today time.Time, repo, other string) []evalShape {
 	var shapes []evalShape
 	for _, n := range []int{7, 14, 28, 84} {
@@ -125,7 +127,7 @@ func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, ar
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	seedLoggedAggs(t, registry, fixture.Project, fixture.DeployRepo, measures.Midnight(now))
 	refreshEvalDays(t, registry, database, now)
 	exec := func(statement string, args ...any) {
@@ -156,7 +158,8 @@ func readEvalShape(t *testing.T, served *server, projects []string, now time.Tim
 		ranges.compareFrom, ranges.compareTo = shape.compare.From, shape.compare.To
 	}
 	answer, err := served.readEvalList(t.Context(), evalListRequest{
-		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax}, projects: projects,
+		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax},
+		projectsIn:    func(context.Context, pgx.Tx) ([]string, error) { return projects, nil },
 	}, now)
 	if err != nil {
 		t.Fatalf("read %s: %v", shape.name, err)
@@ -175,8 +178,9 @@ func readEvalShape(t *testing.T, served *server, projects []string, now time.Tim
 // and as the live view's L+1 days, a repository's rows, and ranges that start before a series'
 // first day. The read of the day rows is the same server's once no project's figures stand built
 // (eval_figures_built), which a range of a length the tab does not offer and a read of two
-// repositories read anyway. The negative control breaks the stored figures of one eval: every
-// shape the stored figures answer then answers otherwise, and the two the day rows answer do not.
+// repositories read anyway. The negative control breaks the stored figures of one eval, every cut
+// of them: every shape the stored figures answer then answers otherwise, and the two the day rows
+// answer do not.
 func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 	r, exec := newStoredEvalsRig(t)
 	shapes := storedEvalShapes(r.today, r.repos[0], r.repos[1])
@@ -232,12 +236,28 @@ func firstDifference(a, b []byte) int {
 	return min(len(a), len(b))
 }
 
-// figuresBuilt is how far each of the rig's projects' figures stand built.
+// figuresBuilt is how far each of the rig's projects' figures stand built (figuresBuiltOf).
 func (r *storedEvalsRig) figuresBuilt(t *testing.T) map[string]time.Time {
 	t.Helper()
-	built, err := r.served.registry().FiguresThrough(t.Context(), r.projects)
+	return figuresBuiltOf(t, r.served.deps.Store.Pool, r.projects)
+}
+
+// figuresBuiltOf is how far each of projects' figures stand built, read in pool: the end day
+// eval_figures_built holds of each, which a read of the stored figures reads.
+func figuresBuiltOf(t *testing.T, pool *store.Pool, projects []string) map[string]time.Time {
+	t.Helper()
+	rows, err := pool.Query(t.Context(), `select project_key, through from eval_figures_built where project_key = any($1)`, projects)
 	if err != nil {
-		t.Fatalf("read how far the figures are built: %v", err)
+		t.Fatalf("read how far the figures of %v are built: %v", projects, err)
+	}
+	built := map[string]time.Time{}
+	var project string
+	var through time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&project, &through}, func() error {
+		built[project] = measures.Midnight(through)
+		return nil
+	}); err != nil {
+		t.Fatalf("read how far the figures of %v are built: %v", projects, err)
 	}
 	return built
 }
@@ -383,10 +403,10 @@ func TestOneEvalListAnswerReadsItsFiguresAndItsDayRowsFromOneSnapshot(t *testing
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	shape := evalShape{name: "7 days", window: evalDaysEnding(7, measures.Midnight(now)), offered: true}
-	if built, err := registry.FiguresThrough(t.Context(), []string{fixture.Project}); err != nil || built[fixture.Project].Before(shape.window.To) {
-		t.Fatalf("%s's figures stand built through %v (%v), so the read of %s answers from the day rows", fixture.Project, built, err, shape.name)
+	if built := figuresBuiltOf(t, database.Pool, []string{fixture.Project}); built[fixture.Project].Before(shape.window.To) {
+		t.Fatalf("%s's figures stand built through %v, so the read of %s answers from the day rows", fixture.Project, built, shape.name)
 	}
 	// read is the list read of the delivery project's evals in shape, and its body without its
 	// freshness, which a refresher pass may move without moving a value.

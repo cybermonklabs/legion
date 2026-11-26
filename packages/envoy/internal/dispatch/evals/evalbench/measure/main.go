@@ -12,10 +12,12 @@
 //
 // wait polls the database until the server's consumers have caught up with the fixture: the
 // Legion facts consumer has read every project whole under the running build and passed every
-// feed's head, and (this head) the day-row refresher has passed both its feeds' heads and walked
-// every family to today, so every eval_days row carries the running build, and the keyword fill's
+// feed's head, and (this head) the day-row refresher has passed its feeds' heads, done every walk,
+// served every family's rows under the running build (eval_days_serving) with no rebuild building
+// and built every project's stored figures through today's last end day, and the keyword fill's
 // cursor stands at the newest event, which evalbench's load leaves it at as of the load, so it has
-// only the server's own later events to follow. At this head it prints how long that took.
+// only the server's own later events to follow (consumerState.caughtUp). At this head it prints
+// how long that took.
 //
 // paint is the first paint after a restart: the reads the page makes, each with the database time
 // of its statements (pg_stat_statements' total_exec_time, reset before each), the handler's

@@ -131,7 +131,7 @@ func sameFigure(t *testing.T, name string, got, want *float64) {
 func TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedFailureHistory(t, database)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	refreshEvalDays(t, registry, database, failuresNow)
 
 	query := failureWindowQuery(0, 2)
@@ -188,7 +188,7 @@ func TestTheMeasuresRoutesFailureValuesEqualTheEvalRoutes(t *testing.T) {
 func TestTheFailureMeasuresItemsAnswerTheirDeploysAndFailures(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	rows := seedFailureHistory(t, database)
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, failuresNow)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, failuresNow)
 	type item struct {
 		kind, relation string
 		minutes        *float64
@@ -252,7 +252,7 @@ func TestTheFailureMeasuresItemsAnswerTheirDeploysAndFailures(t *testing.T) {
 func TestAFailureMeasuresItemsOfTwoRangesAreEachRangesOwn(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	seedFailureHistory(t, database)
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, failuresNow)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, failuresNow)
 	type item struct {
 		key, kind, relation, at string
 	}

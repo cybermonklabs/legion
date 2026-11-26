@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A kvwatch subscription can end in ways kvwatch does not choose: the connection closes or drains
@@ -69,12 +70,7 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 		}}
 		w := kvwatch.New("test cache", handle, into, kvwatch.WithStreamProbeInterval(0))
 		w.Start()
-		var started time.Time
-		select {
-		case started = <-first:
-		case <-time.After(10 * time.Second):
-			t.Fatalf("round %d: the first record never reached the cache", round)
-		}
+		started := testwait.Receive(t, fmt.Sprintf("round %d: the first record to reach the cache", round), first)
 		time.Sleep(time.Until(started.Add(hold)))
 		conn.Close()
 		close(release)

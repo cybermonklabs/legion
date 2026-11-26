@@ -26,6 +26,7 @@ import (
 // The test holds that too: every issue a day counts is closed, and the open issues the
 // computation answers are counted on no day.
 func TestTheLegionDayRowsOfTheStoredRowsAreTheComputationsOnBothSidesOfAMidnight(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	now := time.Date(2026, 11, 11, 21, 0, 0, 0, time.UTC)

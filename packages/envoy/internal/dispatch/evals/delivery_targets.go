@@ -173,12 +173,12 @@ var deliveryJudges = func() map[string][]string {
 // D1), where a source that names no repository reads its project's published default
 // repository (eval_project_repos, the record the refresher's page commit moves in the commit that
 // makes the figures folded under it visible; owners.go), so the delivery routes and the Evals tab
-// judge by one state (INFRA-2916, the architect's ruling of 14:07Z) and a person's write of a
-// default repository moves neither until that commit. Where no source reads deployRepo, no project
-// is named, and where the project holds no version of a slug yet, the slug's catalogue entry
-// stands in: the definition and series the seed writes, whose target is main's
-// (measures.DefaultTargets). A slug neither holds is absent. An empty deployRepo, which no source
-// reads (delivery.SourceRepoOf resolves none to ""), names no project, so it reads nothing.
+// judge by one state and a person's write of a default repository moves neither until that
+// commit. Where no source reads deployRepo, no project is named, and where the project holds no
+// version of a slug yet, the slug's catalogue entry stands in: the definition and series the seed
+// writes, whose target is main's (measures.DefaultTargets). A slug neither holds is absent. An
+// empty deployRepo, which no source reads (delivery.SourceRepoOf resolves none to ""), names no
+// project, so it reads nothing.
 func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []string) (map[string]Entry, error) {
 	entries := make(map[string]Entry, len(slugs))
 	if deployRepo != "" {

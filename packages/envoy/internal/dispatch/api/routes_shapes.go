@@ -332,6 +332,12 @@ type issueListQuery struct {
 	// issue above them states, over every project; `none` lists those that advance no live
 	// priority and `any` those that advance one, which is every other issue.
 	Advances []string `query:"advances"`
+	// Own, `true`, keeps, of the issues the Advances values answer, those whose own row names a
+	// priority a value matches and no issue above them carries it: a child that only inherits a
+	// priority, or restates one an issue above it carries, is left out, and `none`, which
+	// matches no priority, keeps nothing. Without an Advances value it filters nothing.
+	// `advances=any&own=true` over backlog and icebox is the second fault of GET /api/v1/priorities.
+	Own bool `query:"own"`
 	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
 	// the issue was moved there and who moved it. A listing without it reads neither.
 	Moved bool `query:"moved"`
@@ -449,6 +455,15 @@ type messageReplyQuery struct {
 	FollowUp bool `query:"follow_up"`
 }
 
+// postHistoryQuery is the query GET /api/v1/comments/{id}/history and
+// GET /api/v1/messages/{id}/history share: where the page after the first one starts.
+type postHistoryQuery struct {
+	// Before answers the rows written strictly before this RFC3339 time, which is how the
+	// caller reads the page after one of 200 rows: the oldest edited_at it was answered.
+	// Anything that is not an RFC3339 time is 400 INVALID_QUERY.
+	Before string `query:"before"`
+}
+
 // inboxQuery is GET /api/v1/inbox's query.
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
@@ -458,7 +473,10 @@ type inboxQuery struct {
 	Assignee string `query:"assignee"`
 }
 
-// myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
+// myAnswersQuery is the offset page GET /api/v1/me/answers and
+// GET /api/v1/people/{login}/nodes each answer: the page, and nothing else. Neither route
+// takes a kind, a filter or a traversal from its caller, so this struct is the whole of what
+// either reads (answers.go's parseMyAnswersPage, which both parse their page with).
 type myAnswersQuery struct {
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
@@ -506,9 +524,9 @@ type searchRouteQuery struct {
 	Offset int `query:"offset"`
 }
 
-// searchResultsRouteQuery is GET /api/v1/search/results's query, all nine members: the four
-// searchRouteQuery names and the five a build released before them does not serve, which is why
-// that path exists. The nine are written out rather than embedded because the emitter reads a
+// searchResultsRouteQuery is GET /api/v1/search/results's query, all ten members: the four
+// searchRouteQuery names and the six a build released before them does not serve, which is why
+// that path exists. The ten are written out rather than embedded because the emitter reads a
 // query struct's own fields and refuses one carrying no query tag (openapi.go, queryParameters).
 type searchResultsRouteQuery struct {
 	// Q is the text searched for, at least 2 characters and at most contracts.SearchQueryMax.
@@ -534,6 +552,10 @@ type searchResultsRouteQuery struct {
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
 	Offset int `query:"offset"`
+	// Kind ranks, counts and pages the kinds it names and no others, repeated once per kind;
+	// with none named every kind the index holds is searched. A kind outside the five is
+	// 400 INVALID_QUERY (searchIndexedKinds, parseSearchKinds).
+	Kind []string `query:"kind" enum:"issue,document,comment,ask,message"`
 }
 
 // relatedChecksQuery is GET /api/v1/related-checks's query.
@@ -569,6 +591,13 @@ type sessionAnswersQuery struct {
 	Since string `query:"since"`
 	// MaxChars bounds how much of each item's text the answer carries.
 	MaxChars int `query:"max_chars"`
+}
+
+// knownSessionsQuery is GET /api/v1/agents/known's query.
+type knownSessionsQuery struct {
+	// ID is one session id asked about, repeated: 1 to contracts.KnownSessionsMax of them, each a
+	// session id (text.IsSessionID) of at most knownSessionIDMax bytes, the longest text names.
+	ID []string `query:"id"`
 }
 
 // issueAsksQuery is GET /api/v1/issues/{key}/asks's query.
@@ -617,6 +646,13 @@ type artifactVersionQuery struct {
 	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
 	// JSON that wraps it. Any other value answers as without it.
 	Download bool `query:"download"`
+	// Blocks, `true`, carries a document version's typed blocks beside its markdown, each read
+	// from that version's own text under the id its opening line writes, with its attributes and
+	// its byte range in the markdown the answer carries: the version as this build renders it,
+	// which is the stored text unless an earlier renderer wrote it otherwise, with the sha256 and
+	// the size of that text. A block's references read zero and it carries no embedding state:
+	// both describe the live document, not a version. Any other value carries no blocks.
+	Blocks bool `query:"blocks"`
 }
 
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
@@ -719,9 +755,9 @@ var routeShapes = map[string]routeShape{
 		// A body that changes no field of the definition or of a series answers the versions that
 		// stand, 200.
 		Also: []routeAnswer{{Status: http.StatusOK, Body: evalRegisterResponse{}}},
-		// The registry's refusals (writeEvalError): a field the tables would refuse, 400; a
-		// project no row holds, 404 PROJECT_NOT_FOUND; a project whose evals-md slug names a
-		// file, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
+		// The registry's refusals (writeEvalError): a field the tables would refuse, or a version
+		// past evals.MaxVersionBytes, 400; a project no row holds, 404 PROJECT_NOT_FOUND; a
+		// project whose evals-md slug names a file, 409 EVALS_DOCUMENT_NOT_A_DOCUMENT.
 		Refusals: evalRefusals,
 	},
 	"GET /api/v1/projects/{key}/evals/{slug}": {
@@ -733,9 +769,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/evals/{slug}/readings": {
 		Status: http.StatusCreated, Response: evalReadingsResponse{}, Request: evalReadingsInput{},
 		// A refused batch names every refused row by its index beside the code of the first; a
-		// slug that is no slug and an empty batch are 400 too, a project no row holds 404 and a
-		// project whose evals-md slug names a file 409, each the registry's own body
-		// (writeEvalError); every other refusal is errorBody's.
+		// slug that is no slug, an empty batch and a first reading whose writer would pass
+		// evals.MaxVersionBytes are 400 too, a project no row holds 404 and a project whose
+		// evals-md slug names a file 409, each the registry's own body (writeEvalError); every
+		// other refusal is errorBody's.
 		Refusals: evalRefusals,
 	},
 	// The two rows that refuse every change of a reading answer no success: 204 is the shape a
@@ -777,8 +814,9 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/projects/{key}/architecture-sources/sync":                {Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 	"POST /api/v1/projects/{key}/architecture-source/sync":                 {Status: http.StatusOK, Response: model.ArchitectureSource{}},
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
-	// tree, so the row names that read: the document describes the body the handler sends, and
-	// a client generated from it holds the field a reader draws.
+	// tree and whose Not architectural rows carry their reasons', so the row names that read: the
+	// document describes the body the handler sends, and a client generated from it holds the
+	// field a reader draws.
 	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
 	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
@@ -787,6 +825,13 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/projects/{key}/gated-steps": {
 		Status: http.StatusOK, Response: projectGatedSteps{}, Request: projectGatedStepsInput{},
 	},
+	// Both answer the project as GET /api/v1/projects lists it (project_proven_sessions.go). A
+	// bearer names its session in the PUT's actor; the DELETE reads its person off the
+	// credential and takes no body.
+	"PUT /api/v1/projects/{key}/proven-sessions": {
+		Status: http.StatusOK, Response: model.Project{}, Request: actorInput{}, OptionalRequest: true,
+	},
+	"DELETE /api/v1/projects/{key}/proven-sessions": {Status: http.StatusOK, Response: model.Project{}},
 	// A move a delivery-on project's source refuses answers the settings save's own refusal body
 	// (delivery.SettingsError, defaultRepositoryMove), naming the project that reads the repository.
 	"PUT /api/v1/projects/{key}/default-repository": {
@@ -893,17 +938,34 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues": {
 		Status: http.StatusCreated, Response: model.Issue{}, Request: createIssueInput{}, Advice: writeAdvice{},
 		// A ref whose external issue already has a Dispatch issue answers that issue, 200.
-		Also:     []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueDuplicateError{}}},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: model.Issue{}}},
+		// A 409 is a possible duplicate, or, with DISPATCH_PARENT_STATUS_RULE on, a create under a
+		// done parent (parent_status_rule.go).
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: issueDuplicateError{}},
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
 	},
 	"GET /api/v1/issues/resolve":       {Status: http.StatusOK, Response: issueRefResolved{}, Params: issueResolveQuery{}},
 	"GET /api/v1/issues/{key}":         {Status: http.StatusOK, Response: issueDetail{}},
 	"GET /api/v1/issues/{key}/summary": {Status: http.StatusOK, Response: issueSummary{}},
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
-		// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
-		// over an open child of another project (refuseOpenForeignChildren).
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: foreignChildOpenError{}}},
+		Refusals: []routeAnswer{
+			// An acceptance write that asks for the open-child check (refuse_open_foreign_children)
+			// over an open child of another project (refuseOpenForeignChildren).
+			{Status: http.StatusConflict, Body: foreignChildOpenError{}},
+			// With DISPATCH_PARENT_STATUS_RULE on, a status or a parent that breaks the rule.
+			{Status: http.StatusConflict, Body: parentStatusConflictBody{}},
+		},
+	},
+	"POST /api/v1/issues/{key}/status-change": {
+		Status: http.StatusOK, Response: statusChangeAnswer{}, Request: statusChangeInput{},
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: statusChangeConflict{}},
+			{Status: http.StatusConflict, Body: statusChangeRefusal{}},
+			{Status: http.StatusForbidden, Body: statusChangeRefusal{}},
+		},
 	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
@@ -914,8 +976,10 @@ var routeShapes = map[string]routeShape{
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"GET /api/v1/issues/{key}/events": {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
+	// An issue's references read answers issueReferencesRead, whose rows carry their names'
+	// trees, so the row names that read for the reason the architecture row above gives.
 	"GET /api/v1/issues/{key}/references": {
-		Status: http.StatusOK, Response: model.IssueReferences{}, Params: issueReferencesQuery{},
+		Status: http.StatusOK, Response: issueReferencesRead{}, Params: issueReferencesQuery{},
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},
@@ -960,8 +1024,10 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/issues/{key}/handoffs/{phase}": {
 		Status: http.StatusCreated, Response: model.HandoffSummary{}, Request: createHandoffInput{},
 	},
-	"GET /api/v1/issues/{key}/handoffs":                {Status: http.StatusOK, Response: []model.HandoffSummary{}},
-	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/issues/{key}/handoffs": {Status: http.StatusOK, Response: []model.HandoffSummary{}},
+	// The two reads of one handoff with its body answer handoffRead, whose field_trees carries
+	// the tree of each text the body's card draws.
+	"GET /api/v1/issues/{key}/handoffs/{phase}/latest": {Status: http.StatusOK, Response: handoffRead{}},
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
@@ -969,11 +1035,15 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/issues/{key}/legion":       {Status: http.StatusOK, Response: legionIssueResponse{}},
 	"PUT /api/v1/issues/{key}/steps/{id}": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
 	},
 	"PUT /api/v1/issues/{key}/steps/{id}/rating": {
 		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRatingInput{},
+	},
+	"PUT /api/v1/issues/{key}/steps/{id}/experiment": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepExperimentInput{},
 	},
 	"GET /api/v1/issues/{key}/steps": {Status: http.StatusOK, Response: model.IssueSteps{}},
 	"PUT /api/v1/issues/{key}/plans/{id}": {
@@ -982,9 +1052,16 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/projects/{key}/plans": {
 		Status: http.StatusOK, Response: model.ProjectPlans{}, Params: projectPlansQuery{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: handoffRead{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/messages/{id}/history": {
+		Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{},
+	},
+	"PATCH /api/v1/messages/{id}": {Status: http.StatusOK, Response: model.Message{}, Request: editMessageInput{}},
+	"DELETE /api/v1/messages/{id}": {
+		Status: http.StatusOK, Response: model.Message{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -1002,6 +1079,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/people/{login}/nodes": {Status: http.StatusOK, Response: personNodes{}, Params: myAnswersQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -1033,6 +1111,9 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
 	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/agents/known": {
+		Status: http.StatusOK, Response: knownSessions{}, Params: knownSessionsQuery{},
+	},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},
@@ -1040,6 +1121,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/agents/{session_id}/messages": {
 		Status: http.StatusCreated, Response: shapedMessage{}, Request: createAgentMessageInput{},
 	},
+	"GET /api/v1/agents/{session_id}/artifacts": {Status: http.StatusOK, Response: []artifactRead{}},
 	"POST /api/v1/agents/{session_id}/artifacts": {
 		Status: http.StatusCreated, Response: artifactUploadResponse{},
 		// The upload reads JSON or multipart as the issue and project forms do, but a
@@ -1083,6 +1165,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/comments/{id}/history":  {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 	"POST /api/v1/comments/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.CommentDelivery{}, Request: createCommentDeliveryInput{},
 	},
@@ -1097,6 +1180,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: shapedComment{}, Request: editCommentInput{}},
+	"DELETE /api/v1/comments/{id}": {
+		Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {

@@ -375,7 +375,7 @@ func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time
 }
 
 // The reads of several UTC days at once, the day-row refresher's read of the days a page names
-// (evals' readDeliveryDays): each read readDeliveryDay's day makes is made once for every day of
+// (evals' readDeliveryDays): each read one day of the page needs is made once for every day of
 // the page rather than once a day, so a page naming N days makes as many statements of each as a
 // page naming one, and each answers, for each day, what the read of that day alone answers:
 // ListPullRequestsOnDays what ListPullRequestsInWindow answers, ReadDaysDeploys what ReadDeploys

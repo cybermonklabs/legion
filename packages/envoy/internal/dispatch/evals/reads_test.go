@@ -3,6 +3,7 @@ package evals
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ import (
 // none while the series is folded by its last value (the fold a reading's eval registers it
 // with), every value of its day once a register write folds it as a quantile.
 func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	var rows []json.RawMessage
 	for day := 1; day <= 6; day++ {
@@ -36,7 +38,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	compare := Range{From: at(1, 0, 0), To: at(4, 0, 0)}
 
-	days, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), nil, nil, window, &compare)
+	days, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, r.entries(t, evalID), nil, nil, window, &compare)
 	if err != nil {
 		t.Fatalf("read the window and the compare range: %v", err)
 	}
@@ -48,7 +50,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 		t.Errorf("the read answers %v, want %v", got, want)
 	}
 
-	repoDays, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), nil, []string{"acme/web"}, window, &compare)
+	repoDays, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, r.entries(t, evalID), nil, []string{"acme/web"}, window, &compare)
 	if err != nil {
 		t.Fatalf("read acme/web's window and compare range: %v", err)
 	}
@@ -58,7 +60,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 		t.Errorf("the repository's read answers %v, want %v", got, want)
 	}
 
-	windowOnly, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{{Definition: Definition{EvalID: "EVAL/no-such-eval"}}}, nil, nil, window, nil)
+	windowOnly, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{{Definition: Definition{EvalID: "EVAL/no-such-eval"}}}, nil, nil, window, nil)
 	if err != nil {
 		t.Fatalf("read another eval's window: %v", err)
 	}
@@ -71,7 +73,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("fold visits as a quantile: %v", err)
 	}
-	quantiles, err := r.registry.DayWindow(t.Context(), []string{r.project}, r.entries(t, evalID), nil, []string{"acme/web"}, window, &compare)
+	quantiles, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, r.entries(t, evalID), nil, []string{"acme/web"}, window, &compare)
 	if err != nil {
 		t.Fatalf("read acme/web's rows of a quantile: %v", err)
 	}
@@ -86,6 +88,7 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 // eval's readings of one row kind in the window, newest first, pages them by limit and offset
 // with the total, and leaves a replaced reading out.
 func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	written := r.write(t, "pr-size", alice,
 		row(t, map[string]any{"series": "lines", "row_kind": "pull_request", "row_key": "acme/web#1", "value": 100, "measured_at": at(8, 9, 0)}),
@@ -125,6 +128,7 @@ func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
 // items route's day rows. Logged, the eval reads the reading's row and its day as its first; read
 // as computed, the computation's two rows, the earlier of them its first day.
 func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	evalID := r.write(t, "load", alice, row(t, map[string]any{
 		"series": "load", "row_kind": "run", "row_key": "r", "value": 7, "measured_at": at(4, 9, 0),
@@ -149,15 +153,15 @@ func TestEachEvalReadsTheDayRowsOfItsOwnWriter(t *testing.T) {
 		{"logged", logged, []string{"window 2026-11-04 7 no samples"}, "2026-11-04"},
 		{"computed", computed, []string{"window 2026-11-03 3 no samples", "window 2026-11-04 3 no samples"}, "2026-11-03"},
 	} {
-		days, err := r.registry.DayWindow(t.Context(), []string{r.project}, []Entry{test.entry}, nil, nil, window, nil)
+		days, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{test.entry}, nil, nil, window, nil)
 		if err != nil {
 			t.Fatalf("%s: read the window: %v", test.as, err)
 		}
-		firsts, err := r.registry.FirstDays(t.Context(), []Entry{test.entry}, nil)
+		firsts, err := FirstDaysIn(t.Context(), r.database.Pool, []Entry{test.entry}, nil)
 		if err != nil {
 			t.Fatalf("%s: read the first days: %v", test.as, err)
 		}
-		items, err := r.registry.EvalDays(t.Context(), test.entry.Definition, nil, "", nil, window)
+		items, err := EvalDaysIn(t.Context(), r.database.Pool, test.entry.Definition, nil, "", nil, window)
 		if err != nil {
 			t.Fatalf("%s: read the items' day rows: %v", test.as, err)
 		}
@@ -191,11 +195,14 @@ func dayLabels(days []WindowRow) []string {
 // TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements: the reads the list read makes
 // of a full page of evals (200, the most a page holds), each a logged eval of MaxEvalSeries series
 // folded as quantiles whose names and slug are the largest a key holds, over a window and a compare
-// range: the day rows (DayWindow), the series' first days (FirstDays) and the stored figures
-// (ReadStoredFigures) send statements that each take at most statementBytes of parameters as pgx
-// encodes them, the day rows' in several; and the day rows of the three evals that hold some come
-// back once each, each with its samples, and their first days with them.
+// range: the day rows (DayWindowIn), the series' first days (FirstDaysIn) and the stored figures
+// of a project whose figures are built through both ranges (ReadStoredFiguresIn, its range and day
+// figures reads among them), each on the pool, send statements that each take at most
+// statementBytes of parameters as pgx encodes them, the day rows' in several; and the day rows of
+// the three evals that hold some come back once each, each with its samples, and their first days
+// with them.
 func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	const page = 200
 	day := at(3, 0, 0)
@@ -227,23 +234,33 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 		}
 		r.write(t, largest("e", index), alice, rows...)
 	}
+	if _, err := r.database.Pool.Exec(t.Context(), `insert into eval_figures_built (project_key, through, built_by) values ($1, $2, 'test')`,
+		r.project, day.AddDate(0, 0, 1)); err != nil {
+		t.Fatalf("mark %s's stored figures built: %v", r.project, err)
+	}
 	statements := &sentStatements{}
-	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events)
+	traced := New(storetest.TracedStore(t, r.database, statements), r.documents, r.registry.events, r.registry.attributor)
 	window, compare := Range{From: day, To: day.AddDate(0, 0, 1)}, Range{From: day.AddDate(0, 0, -7), To: day.AddDate(0, 0, -6)}
-	days, err := traced.DayWindow(t.Context(), []string{r.project}, entries, nil, nil, window, &compare)
+	days, err := DayWindowIn(t.Context(), traced.database.Pool, []string{r.project}, entries, nil, nil, window, &compare)
 	if err != nil {
 		t.Fatalf("read the day rows of %d evals: %v", page, err)
 	}
-	firsts, err := traced.FirstDays(t.Context(), entries, nil)
+	firsts, err := FirstDaysIn(t.Context(), traced.database.Pool, entries, nil)
 	if err != nil {
 		t.Fatalf("read the first days of %d evals: %v", page, err)
 	}
-	if _, err := traced.ReadStoredFigures(t.Context(), []string{r.project}, entries, nil, "", window, &compare); err != nil {
+	if _, err := ReadStoredFiguresIn(t.Context(), traced.database.Pool, []string{r.project}, entries, nil, nil, window, &compare); err != nil {
 		t.Fatalf("read the stored figures of %d evals: %v", page, err)
 	}
 	sent := r.measured(t, statements.take())
 	windows := 0
+	figures := map[string]bool{}
 	for _, statement := range sent {
+		for _, table := range []string{"eval_range_figures", "eval_day_figures"} {
+			if strings.Contains(statement.sql, "from "+table) {
+				figures[table] = true
+			}
+		}
 		if statement.bytes > statementBytes {
 			t.Errorf("the list's reads sent %.80q with %d bytes of parameters as pgx encodes them, past %d", strings.Join(strings.Fields(statement.sql), " "), statement.bytes, statementBytes)
 		}
@@ -253,6 +270,9 @@ func TestTheListReadsOfAFullPageOfTheLargestEvalsSendBoundedStatements(t *testin
 	}
 	if windows < 2 {
 		t.Errorf("the day rows of %d evals of %d series were read in %d statements, and the check needs them cut", page, MaxEvalSeries, windows)
+	}
+	if len(figures) != 2 {
+		t.Errorf("the stored figures of %d evals were read from %v, and the check needs both their range and their day figures read", page, slices.Sorted(maps.Keys(figures)))
 	}
 	var want, got []string
 	for _, index := range held {

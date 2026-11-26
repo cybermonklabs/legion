@@ -3,19 +3,47 @@ package evals
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// evalsTestParallelism is how many of this package's tests run at once when the command line names
+// no -parallel. Every test calls t.Parallel except those that change or read back something the
+// whole process shares, or hold a bound of the wall clock that other tests' load would move, which
+// stay serial and run before the rest: the catalogue a later release changes (withCatalogue), the
+// default logger, whose records the refresher's loop (startLoop) and a rebuild's flip are read
+// from, a loop run in real time against its gaps and latency bounds (startLoop), samples of the
+// change log's lock taken every millisecond (SampleAdvisoryHolds, intakeBlockers), a vacuum waited
+// for under allVisibleBound, which commits in other databases hold back, the fold pool's 200 ms
+// window, and the timings an environment variable asks for. Each parallel test has a database and
+// pools of its own (storetest.Open's clone). go test's default of GOMAXPROCS is four on CI's arm
+// runner, but hundreds on a dev box, where every test's database and pools at once would open more
+// connections than the test server allows (testlimits.ServerConnections); four is CI's default, so
+// the cap changes nothing there.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const evalsTestParallelism = 4
+
+// TestMain sets the package's default -parallel and runs the package's tests through the Dispatch
+// harness's Main, which waits for their databases to drop and drops their templates.
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(evalsTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Main(m))
+}
 
 // testBuild is the build every test's readings write records on its day rows.
 const testBuild = "test-build"
@@ -53,7 +81,7 @@ func newRig(t *testing.T) rig {
 	if _, err := database.Pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ('EVAL', 'Evaluation', 'alice')`); err != nil {
 		t.Fatalf("make project EVAL: %v", err)
 	}
-	return rig{database: database, documents: documents, registry: New(database, documents, broker), project: "EVAL"}
+	return rig{database: database, documents: documents, registry: New(database, documents, broker, delivery.NewAttributor(refs.Renames{})), project: "EVAL"}
 }
 
 // row is one reading as a caller's JSON body carries it.
@@ -91,13 +119,18 @@ func (r rig) write(t *testing.T, slug string, caller model.Actor, rows ...json.R
 	return written
 }
 
-// entries answers the current entry of each of evalIDs, as the list read holds it, failing the
-// test when no version holds one.
+// entries answers the current entry of each of evalIDs, as the list read holds it (EvalIn, in one
+// snapshot), failing the test when no version holds one.
 func (r rig) entries(t *testing.T, evalIDs ...string) []Entry {
 	t.Helper()
+	tx, err := r.registry.BeginSnapshot(t.Context())
+	if err != nil {
+		t.Fatalf("begin the read of the evals %v: %v", evalIDs, err)
+	}
+	defer tx.Rollback(t.Context())
 	entries := make([]Entry, len(evalIDs))
 	for index, evalID := range evalIDs {
-		entry, found, err := r.registry.Eval(t.Context(), evalID)
+		entry, found, err := EvalIn(t.Context(), tx, evalID)
 		if err != nil || !found {
 			t.Fatalf("read the eval %s: found %t, %v", evalID, found, err)
 		}

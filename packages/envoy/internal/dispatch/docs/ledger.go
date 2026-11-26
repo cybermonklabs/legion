@@ -25,10 +25,10 @@ import (
 // they write. Join is the only way to join a transaction, so an operation that has one always has
 // its ledger. Commit ends the transaction the way every caller must: it runs the transaction's
 // write queue, records the writes' authors and takes out the authors its versions listed in the
-// transaction itself, commits, marks the in-flight credits its versions listed consumed, records
-// the writes' latest edit source in their rooms, and publishes the writes to their rooms, in that
-// order. Discard, which callers defer right after Join, drops whatever a transaction that did not
-// commit left behind.
+// transaction itself, runs the steps registered to follow those writes (AfterWrites), commits,
+// marks the in-flight credits its versions listed consumed, records the writes' latest edit source
+// in their rooms, and publishes the writes to their rooms, in that order. Discard, which callers
+// defer right after Join, drops whatever a transaction that did not commit left behind.
 //
 // A joined transaction runs in two phases. Its read phase takes the locks it needs - advisory
 // locks, none of which gives it a transaction id - reads, and does every operation's document
@@ -36,11 +36,13 @@ import (
 // its own beside them (Queue). The write phase is Commit: every queued write puts its statements
 // on one batch, in the order the writes were made, so the events they append keep their order,
 // and the batch goes to the server pipelined, in one round trip (store.WriteBatch), with the
-// statements recording the transaction's settlement credit after them; the commit follows. The
-// transaction holds a transaction id from the batch's first write to its commit, and neither
-// document work nor a wait for this process to read a result runs in between. What a queued write
-// leaves that a later read of the same transaction would have seen - a document's head, a
-// version's number and time, an anchor's quote, an approval request's state, a source's
+// statements recording the transaction's settlement credit after them; the steps a caller
+// registered to follow the batch run next (AfterWrites), and the commit follows. The transaction
+// holds a transaction id from the batch's first write to its commit, and no document work runs in
+// between; nor does a wait for this process to read a result, but for the round trip of each step
+// after the batch, which needs a value the batch's results give in Go and none other can. What a
+// queued write leaves that a later read of the same transaction would have seen - a document's
+// head, a version's number and time, an anchor's quote, an approval request's state, a source's
 // references - the ledger holds in memory (pendingRoom, NextVersion, RegisterPendingAnchor,
 // recordPendingApproval, referenced), and the read takes it from there.
 //
@@ -75,8 +77,8 @@ type Ledger struct {
 	// author capture - still stores its tree.
 	versionTexts []ledgerVersionText
 	// seeds holds, per document this transaction seeded (SeedText), the actor that wrote its
-	// first text and the tree it wrote, which credit records and registers as that actor's ask
-	// blocks once the transaction has committed.
+	// first text, the tree it wrote and whether the seed owes the document no settlement, which
+	// credit records and registers as that actor's ask blocks once the transaction has committed.
 	seeds map[string]ledgerSeed
 	// rebuilds are the documents this transaction rebuilds (RebuildDocument), whose rooms refuse
 	// loads until it ends, committed or not.
@@ -99,11 +101,14 @@ type Ledger struct {
 	// queue is the transaction's write phase (WriteStep): every write its operations and its
 	// caller made, in the order they made them, which Commit sends as one batch before it commits.
 	// sealed is set once the write phase has begun or the ledger was discarded, after which
-	// nothing more is queued (Queue). batch is the write phase's batch while runQueue builds it, on
-	// which a write made meanwhile in the ledger's transaction puts its statements (write).
-	queue  []WriteStep
-	sealed bool
-	batch  *store.WriteBatch
+	// nothing more is queued (Queue, AfterWrites). batch is the write phase's batch while runQueue
+	// builds it, on which a write made meanwhile in the ledger's transaction puts its statements
+	// (write). afterWrites are the steps the caller registered to run once that batch has run and
+	// before the commit (AfterWrites), in the order it registered them.
+	queue       []WriteStep
+	sealed      bool
+	batch       *store.WriteBatch
+	afterWrites []WriteStep
 	// artifacts is the address of each artifacts row this transaction creates and has not
 	// written yet, by artifact id (RegisterPendingArtifact), and issues the key of each issues
 	// row it creates and has not written yet (RegisterPendingIssue): the two rows a write
@@ -115,7 +120,10 @@ type Ledger struct {
 	rooms map[string]*pendingRoom
 	// numbers is, per document this transaction has numbered a version of, the number it gave the
 	// last one (NextVersion), and latest that version as it will stand once written, which
-	// latestVersion answers for it; now is the transaction's start, read once (Now).
+	// latestVersion answers for it; now is the transaction's start, read once (Now). latest is read
+	// only while the ledger is unsealed (PendingVersionMarkdown, PendingVersionNumber,
+	// PendingMarkdown, queueFor), and Discard drops it: each entry holds its version's whole
+	// markdown.
 	numbers map[string]int
 	latest  map[string]pendingVersion
 	now     *time.Time
@@ -179,17 +187,21 @@ type Ledger struct {
 // queued, in the transaction's read phase, so a step renders nothing, walks no tree and encodes no
 // document, and it reads no result: the batch is sent once every step has queued its statements.
 // A value a later statement needs from an earlier one is derived in the later statement's SQL (an
-// event's sequence from its owner row, its id as store.LatestEventID). A value the caller needs
-// once Commit has returned - an appended event's id, a row's generated timestamp - is written by
-// the statement's callback through a variable the step captured, and only that caller reads it. A
-// step's own error - an argument it cannot encode - ends the write phase as a failed statement
-// would, after the statements queued before it.
+// event's sequence from its owner row, its id as store.LatestEventID); a statement that needs one
+// it cannot derive there goes on a step registered to follow the batch instead (AfterWrites). A
+// value the caller needs once Commit has returned - an appended event's id, a row's generated
+// timestamp - is written by the statement's callback through a variable the step captured, and
+// only that caller reads it, or a step it registered to follow the batch. A step's own error - an
+// argument it cannot encode - ends the write phase as a failed statement would, after the
+// statements queued before it.
 type WriteStep func(b *store.WriteBatch) error
 
-// ErrQueueSealed refuses a write queued once the ledger's write phase has begun (Commit) or the
-// ledger was discarded: it would run after statements it was meant to precede, or in no
-// transaction at all. It is a programming error in the caller, which Queue reports rather than
-// panics on, so a handler answers it as any other failure of its transaction.
+// ErrQueueSealed refuses a write queued (Queue) or a step registered to follow the write phase
+// (AfterWrites) once the ledger's write phase has begun (Commit) or the ledger was discarded: a
+// queued write would run after statements it was meant to precede, or in no transaction at all,
+// and a step registered once the write phase has begun would never run. It is a programming error
+// in the caller, which Queue and AfterWrites report rather than panic on, so a handler answers it
+// as any other failure of its transaction.
 var ErrQueueSealed = errors.New("docs: the transaction's write queue is sealed: Commit has begun or the ledger was discarded")
 
 // Queue appends step to the transaction's write phase, after every write queued so far: a route
@@ -204,6 +216,30 @@ func (l *Ledger) Queue(step WriteStep) error {
 		return ErrQueueSealed
 	}
 	l.queue = append(l.queue, step)
+	return nil
+}
+
+// AfterWrites registers step to run in Commit right after the write phase's batch has run, in the
+// same transaction and before it commits, after every step registered before it: a write whose
+// statement needs a value only the write phase's results give in Go - a callback's value, an
+// appended event's sequence - which it cannot derive in its own SQL as a later statement of the
+// batch derives what an earlier one wrote. The step puts its statements on a batch of its own
+// (store.RunWrite), built once every callback of the write phase has read its result, so it reads
+// what those callbacks captured. Each such step costs the transaction one round trip of its own,
+// between its batch and its commit, so a write that can be queued on the batch (Queue) is. A step
+// that fails ends the transaction as a failed statement of the write phase does: it rolls back,
+// what the ledger holds is dropped (Discard), and Commit returns the failure as the step's batch
+// returned it (store.WriteBatch.Send), a callback's error unchanged, so a caller still tells a
+// typed refusal apart with errors.Is. It refuses a ledger no caller joined and a sealed one
+// (ErrQueueSealed), as Queue does.
+func (l *Ledger) AfterWrites(step WriteStep) error {
+	if l.tx == nil {
+		return errUnjoined
+	}
+	if l.sealed {
+		return ErrQueueSealed
+	}
+	l.afterWrites = append(l.afterWrites, step)
 	return nil
 }
 
@@ -694,12 +730,18 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // already stored, whose row the reader reads for itself (refs.ScopeOf). It is read only if a
 // part holds a `#` candidate, and a route that reconciles the ask's question too hands the same
 // one to both readers, so the two of them read it once.
+//
+// questionReconciled says the route queued the reconciliation of the ask's question before this
+// call, so the parts' statements settle the ask's row of the forms queue; a route that writes the
+// parts alone - an answer, a resolution, a restoration - passes false, and the parts' step
+// reconciles the question's references after them and settles it there (planAskPartsCounted).
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
 	document *refs.PendingDocument,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
 	if l.writer == nil {
@@ -716,8 +758,8 @@ func (l *Ledger) QueueAskParts(
 	// The parts are the only text of the ask this call holds, so the reader is its own: a route
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
-	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
-	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
+	reader := refs.NewReaderInScope(ctx, l.writer, ask.Author, "ask", ask.ID, serverURL, document)
+	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside)
 	if err != nil {
 		return model.ReferenceChanges{}, err
 	}
@@ -876,10 +918,13 @@ type ledgerVersionText struct {
 // text, and the tree it wrote with that tree's rendering and its blocks' byte ranges. Credit
 // registers the actor against every ask block the tree introduced (registerAskAuthors) once the
 // transaction has committed, and the seed's version cuts its mentions' excerpts from the
-// rendering.
+// rendering. owesNothing marks a seed that owes its document no settlement (SeedText,
+// seedOwesSettlement): its commit records no latest edit source for it and leaves its room no
+// record (recordSettlementCredit, creditRooms), so nothing it commits says a settlement is owed.
 type ledgerSeed struct {
-	actor    model.Actor
-	rendered renderedTree
+	actor       model.Actor
+	rendered    renderedTree
+	owesNothing bool
 }
 
 type ledgerContextKey struct{}
@@ -961,11 +1006,12 @@ func collectVersionText(ctx context.Context, artifactID, markdown string) {
 }
 
 // Commit runs the transaction's write phase (its queue, one batch with the settlement credit's
-// statements after it) and commits it, then credits, releases and publishes what its document
-// operations recorded (see Ledger), publishes the events they appended, so a caller's own events,
-// published after Commit returns, follow them, and stores the display trees of the versions'
-// markdown (storeVersionTrees). A statement of the write phase that fails, or a callback that
-// refuses its result, stops it: the transaction rolls back, nothing reaches a room, and Commit
+// statements after it), then the steps registered to follow that batch (AfterWrites), and commits
+// it, then credits, releases and publishes what its document operations recorded (see Ledger),
+// publishes the events they appended, so a caller's own events, published after Commit returns,
+// follow them, and stores the display trees of the versions' markdown (storeVersionTrees). A
+// statement of the write phase that fails, a callback that refuses its result, or a step after the
+// batch that fails, stops it: the transaction rolls back, nothing reaches a room, and Commit
 // returns the first such error unchanged. When the commit itself returns an error its outcome is
 // unknown, so the rooms the transaction wrote are failed and reload the durable document.
 func (l *Ledger) Commit(ctx context.Context) error {
@@ -1025,7 +1071,11 @@ func (l *Ledger) storeVersionTrees(ctx context.Context) {
 // commit is Commit up to the publish. Another transaction can run between the two, and tests
 // call them apart to hold that window open.
 func (l *Ledger) commit(ctx context.Context) error {
-	if err := l.runQueue(ctx, l.commitWrites); err != nil {
+	err := l.runQueue(ctx, l.commitWrites)
+	if err == nil {
+		err = l.runAfterWrites(ctx)
+	}
+	if err != nil {
 		// The transaction rolls back, so its writes reached neither the store nor a room: what it
 		// leaves behind is what a transaction that never committed leaves (Discard).
 		_ = l.tx.Rollback(context.Background())
@@ -1040,9 +1090,16 @@ func (l *Ledger) commit(ctx context.Context) error {
 		captures = append(captures, flushCapture(flush))
 	}
 	// Each write leaves its room a shadow (roomShadow), installed by the commit under its state's
-	// lock, after the flushes' classes are marked stored.
+	// lock, after the flushes' classes are marked stored. The shadow's document is the write's
+	// fork, so here is the last point the fork is the write's own, where its rendering is checked
+	// (checkRendering): once the commit drops the document's advisory lock, the room's worker
+	// stores the browser updates that lock held back and measures each on the shadow
+	// (roomShadow.measure), before the publish or after it.
 	for _, artifactID := range l.order {
 		write := l.live[artifactID]
+		if l.service.checkRendering != nil {
+			l.service.checkRendering("commit", write)
+		}
 		if shadow := write.newShadow(); shadow != nil {
 			captures = append(captures, roomCapture{room: artifactID, capture: authorCapture{state: write.state}, shadow: shadow})
 		}
@@ -1058,7 +1115,7 @@ func (l *Ledger) commit(ctx context.Context) error {
 	// such a cursor already names (catchUpRoom). A commit that fails fails these rooms (fail), so
 	// the instance holding such a cursor is dropped with them.
 	l.takeRoomCursors()
-	err := l.service.commitConsuming(ctx, l.tx, captures, func(error) {
+	err = l.service.commitConsuming(ctx, l.tx, captures, func(error) {
 		// The transaction has ended whichever way the commit went, so a rebuild's room reads the
 		// history the commit left from here.
 		l.endRebuilds()
@@ -1082,6 +1139,21 @@ func (l *Ledger) commit(ctx context.Context) error {
 	l.noteAppended()
 	l.flushes = nil
 	l.creditRooms()
+	return nil
+}
+
+// runAfterWrites runs, in the ledger's transaction, each step registered to follow the write
+// phase's batch (AfterWrites), each as a batch of its own (store.RunWrite), in the order they were
+// registered, and returns the first failure as that batch returned it. runQueue has sealed the
+// ledger, so no step is registered meanwhile.
+func (l *Ledger) runAfterWrites(ctx context.Context) error {
+	steps := l.afterWrites
+	l.afterWrites = nil
+	for _, step := range steps {
+		if err := store.RunWrite(ctx, l.writer, step); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1237,14 +1309,15 @@ func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roo
 	return err
 }
 
-// Discard drops what a transaction that did not commit left behind: its queued writes, which
-// never ran, its live writes, which no room ever saw, and the rooms its rebuilds held. A version
-// it wrote marked nothing it read, so its authors stay where they were. After Commit only the
-// read-backs are left to drop. Every caller defers it, so it is where the request's use of the
-// ledger ends.
+// Discard drops what a transaction that did not commit left behind: its queued writes and the
+// steps registered to follow them (AfterWrites), which never ran, its live writes, which no room
+// ever saw, and the rooms its rebuilds held. A version it wrote marked nothing it read, so its
+// authors stay where they were. After Commit only the read-backs and the queued versions (latest)
+// are left to drop. Every caller defers it, so it is where the request's use of the ledger ends.
 func (l *Ledger) Discard() {
 	l.sealed = true
 	l.queue = nil
+	l.afterWrites = nil
 	for _, artifactID := range l.order {
 		l.service.finishLiveWrite(l.live[artifactID])
 	}
@@ -1258,6 +1331,10 @@ func (l *Ledger) Discard() {
 	// wrote whole stayed resident beside the document's room
 	// (TestAnUploadsReadBackTreeGoesWhenItsRequestEnds).
 	l.readBacks = nil
+	// The versions this transaction queued (queuedVersion) are read only until its write phase
+	// seals the ledger, when the table holds them, and each holds its version's whole markdown,
+	// which the same pooled context would keep.
+	l.latest = nil
 	l.endRebuilds()
 }
 
@@ -1372,9 +1449,11 @@ func (l *Ledger) commitWrites(ctx context.Context) error {
 // once the transaction has committed, so a settlement on any process finds it. All of it commits
 // or rolls back with the content, before the request context can be canceled after commit. A
 // transaction whose every write was a server lifecycle write (withLifecycleWrite) credited no
-// one, so it records nothing here. Commit runs it as its write phase's last part (commitWrites,
-// runQueue), so its statements join that batch after every queued write: everything they write
-// is known in memory by then.
+// one, so it records nothing here, and a seed that owes no settlement (ledgerSeed.owesNothing)
+// records no edit source: the row that source goes on is the one its append left unwritten
+// (SeedText), and recording it would write that row. Commit runs it as its write phase's last
+// part (commitWrites, runQueue), so its statements join that batch after every queued write:
+// everything they write is known in memory by then.
 func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 	for _, written := range l.versions {
 		if err := deleteCapturedPendingAuthors(ctx, l.tx, written.artifactID, written.capture); err != nil {
@@ -1385,6 +1464,9 @@ func (l *Ledger) recordSettlementCredit(ctx context.Context) error {
 	for artifactID, seed := range l.seeds {
 		if err := recordAskAuthors(ctx, l.tx, artifactID, seededAskAuthors(seed)); err != nil {
 			return err
+		}
+		if seed.owesNothing {
+			continue
 		}
 		if _, listed := released[artifactID][actorKey(seed.actor)]; listed {
 			continue
@@ -1457,9 +1539,15 @@ func (l *Ledger) releasedAuthors() map[string]map[string]struct{} {
 // introduced to its author. The authors themselves, the latest edit sources and the ask blocks'
 // authors are already recorded in the database (recordSettlementCredit), which is where a
 // settlement on any process reads the edit source its events name (settlementAuthors) and, for a
-// block its room did not register, the ask block's author (askBlockSources.author).
+// block its room did not register, the ask block's author (askBlockSources.author). A seed that
+// owes no settlement (ledgerSeed.owesNothing) is left out: it introduced no ask block, and a
+// source recorded for it would mark its room unsettled, a record that only a settlement clears
+// (unusedLocked), so the record would outlast the room for a settlement nothing owes.
 func (l *Ledger) creditRooms() {
 	for artifactID, seed := range l.seeds {
+		if seed.owesNothing {
+			continue
+		}
 		state := l.service.lockState(artifactID)
 		state.creditSeq.Add(1)
 		state.lastActor = new(seed.actor)
@@ -1490,12 +1578,19 @@ func (l *Ledger) creditRooms() {
 
 // seeded records that this transaction seeded artifactID's first text as actor (SeedText), with
 // the rendering of the tree it wrote, whose ask blocks credit registers to actor once the
-// transaction commits.
-func (l *Ledger) seeded(artifactID string, rendered renderedTree, actor model.Actor) {
+// transaction commits, and whether the seed owes the document a settlement.
+func (l *Ledger) seeded(artifactID string, rendered renderedTree, actor model.Actor, owes bool) {
 	if l.seeds == nil {
 		l.seeds = make(map[string]ledgerSeed)
 	}
-	l.seeds[artifactID] = ledgerSeed{actor: actor, rendered: rendered}
+	l.seeds[artifactID] = ledgerSeed{actor: actor, rendered: rendered, owesNothing: !owes}
+}
+
+// seedOwes is whether the seed this transaction wrote of artifactID (SeedText) left the document
+// owing a settlement: every seed does but one recorded as owing nothing, and a document this
+// ledger records no seed of is answered as owing one, as every other write leaves it.
+func (l *Ledger) seedOwes(artifactID string) bool {
+	return !l.seeds[artifactID].owesNothing
 }
 
 // writtenRendering is the rendering of the tree this transaction last wrote to artifactID: the one

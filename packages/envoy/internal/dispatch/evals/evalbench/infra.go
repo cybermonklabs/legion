@@ -3,6 +3,7 @@ package evalbench
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -356,9 +357,19 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 // project names alice as its default assignee, the column every project fills (store migration
 // 20261111210103), as the smaller projects' Legion history does; no eval and no count the load
 // prints reads it.
+//
+// The default is written where each head reads it. In this head's schema it is the project's
+// default_repo (store migration 20261119000230). The base head's schema (spec.Base) has no such
+// column: it maps each repository to its project in repo_projects and reads a project's default
+// off the mapping marked is_default, so under -base the project goes in without default_repo and
+// each of Repos is mapped to it, the first as its default (writeBaseProject).
 func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory, error) {
 	history := planInfra(spec)
-	if _, err := pool.Exec(ctx, `
+	if spec.Base {
+		if err := writeBaseProject(ctx, pool); err != nil {
+			return infraHistory{}, err
+		}
+	} else if _, err := pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee, next_number, default_repo) values ($1, 'Infrastructure', 'alice', 1, $2)
 	`, Project, Repos[0]); err != nil {
 		return infraHistory{}, fmt.Errorf("write the project %s: %w", Project, err)
@@ -379,6 +390,30 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 		return infraHistory{}, fmt.Errorf("write INFRA's legion_settings: %w", err)
 	}
 	return history, nil
+}
+
+// writeBaseProject writes INFRA's project into the base head's schema, with no default_repo, and
+// maps each of Repos to it in repo_projects, the first as its default. The mappings go in by the
+// insert alone, with none of the locks the base head's mapping route takes: no other writer runs
+// beside the load, since job.sh runs no server during it (run.sh migrate starts and stops the
+// server before it, and run.sh measure starts one after).
+func writeBaseProject(ctx context.Context, pool *store.Pool) error {
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, next_number) values ($1, 'Infrastructure', 'alice', 1)
+	`, Project); err != nil {
+		return fmt.Errorf("write the project %s: %w", Project, err)
+	}
+	author, err := json.Marshal(actor)
+	if err != nil {
+		return fmt.Errorf("encode the author of INFRA's repository mappings: %w", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into repo_projects (repo, project, created_by, is_default)
+		select repo, $2, $3::jsonb, ord = 1 from unnest($1::text[]) with ordinality as mapped(repo, ord)
+	`, Repos, Project, string(author)); err != nil {
+		return fmt.Errorf("map INFRA's repositories: %w", err)
+	}
+	return nil
 }
 
 // copyRows writes rows into table's columns with one COPY.

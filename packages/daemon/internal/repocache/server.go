@@ -26,6 +26,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/volumestat"
@@ -473,7 +474,10 @@ func (c *cache) readTime(name string) (time.Time, error) {
 // GitHub, so every stage of this fetch is clocked, with no stream from a cache among them: the
 // first clone gets workspace.CacheFetchTimeout rather than an issue pod's FetchTimeout, since it is
 // the repository's one full download; a fetch into the clone keeps FetchTimeout, since it holds
-// the lock every tar waits on and brings only what GitHub gained.
+// the lock every tar waits on and brings only what GitHub gained. No clone borrows objects from
+// the cache's, since an issue pod takes a tar of it, so a clone of the cache's that the fetch did
+// not write is removed and filled afresh (workspace.FetchRequest.ReplaceForeign), where an issue
+// pod's feed is kept and fails its fetch.
 func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -488,7 +492,7 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 	if _, err := workspace.Fetch(ctx, c.opts.Run, workspace.FetchRequest{
 		Repo: c.opts.Repo, CredentialDir: c.opts.CredentialDir, Feed: c.opts.Root,
 		Token: func() (string, error) { return config.ReadSecretPointer(tokenFileEnv, c.opts.TokenFile) },
-		Log:   c.opts.Log, Clock: workspace.WallClock{}, Bound: bound,
+		Log:   c.opts.Log, Clock: clock.Real(), Bound: bound, ReplaceForeign: true,
 	}); err != nil {
 		return time.Time{}, !cloned, err
 	}

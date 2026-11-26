@@ -25,6 +25,7 @@ import (
 )
 
 func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 
@@ -55,7 +56,7 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 	}
 	t.Cleanup(natsClient.Close)
 
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), client, events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
 
 	envelopeFields := map[string]string{
@@ -119,12 +120,13 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 // comment are acknowledged with no ERROR line, no GitHub call and no database write, the freshness
 // row's last_event_at included.
 func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	checks, err := json.Marshal(cistore.Summary{
@@ -174,12 +176,13 @@ func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 // notifications.github.unknown.unknown.comment here. It carries no kind, so it is no kind intake
 // records: acknowledged with no ERROR line, no GitHub call and no write.
 func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("unknown", "unknown", "comment"), "")
@@ -202,11 +205,14 @@ func TestIntakeAcksAnEnvelopeWithNoPayloadSilently(t *testing.T) {
 // TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead: payload members are
 // additive, so a newer publisher may add a member that is not a string. No handler reads such a
 // member: the intake skips it and handles the rest of the payload. The merged pull request is
-// fetched and stored, with no ERROR line, and the event's time is recorded.
+// fetched and stored, with no ERROR line, and the event's time is recorded. Every line of the
+// package the intake's path writes, the Attributor's head attribution included, goes to the
+// intake's logger, which the row reads.
 func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/pulls/7", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, map[string]any{
@@ -226,7 +232,7 @@ func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *test
 		})
 	})
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	topic := contracts.GithubResourceSubject("acme", "widgets", "pr", "7")
@@ -261,12 +267,13 @@ func TestIntakeHandlesAMergedPullRequestEnvelopeWithAMemberItDoesNotRead(t *test
 // logs the malformed run_id at WARN, as it does for every run it cannot process. The envelope is
 // acknowledged, and nothing is written or fetched.
 func TestIntakeWarnsOfAWorkflowRunWhoseRunIDIsNotAString(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	fake := newFakeGitHub(t)
 	natsClient := intakeTestClient(t)
-	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
 	topic := contracts.GithubWorkflowSubject("acme", "widgets", "deploy_yml", "completed")
@@ -301,6 +308,7 @@ func TestIntakeWarnsOfAWorkflowRunWhoseRunIDIsNotAString(t *testing.T) {
 // not a string, cannot be routed. It is malformed: logged at ERROR, acknowledged, and nothing is
 // written or fetched.
 func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
+	t.Parallel()
 	topic := contracts.GithubResourceSubject("acme", "widgets", "pr", "7")
 	for _, envelope := range []struct{ name, payload string }{
 		{"not an object", `["pr","closed"]`},
@@ -309,10 +317,10 @@ func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
 		t.Run(envelope.name, func(t *testing.T) {
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
-			logs := captureLogs(t)
+			logs := captureIntakeLogs(t)
 			fake := newFakeGitHub(t)
 			natsClient := intakeTestClient(t)
-			startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
+			startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 			awaitBoundDurable(t, natsClient)
 
 			publishGitHubEnvelope(t, natsClient, topic, envelope.payload)
@@ -346,6 +354,7 @@ func TestIntakeLogsAMalformedEnvelopePayload(t *testing.T) {
 // stored. Otherwise a wide filter would put the handler's serial GitHub work behind traffic it
 // has no interest in.
 func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T) {
+	t.Parallel()
 	shrinkIntakeFlowControl(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -356,7 +365,7 @@ func TestIntakeDiscardsAnEnvelopeItDoesNotWantWithoutCallingGitHub(t *testing.T)
 	})
 
 	natsClient := intakeTestClient(t)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed())
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
@@ -426,9 +435,9 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	})
 
 	natsClient := intakeTestClient(t)
-	settingsCache := newSettingsCache(pool, settingsWake(t, pool), nil)
+	settingsCache := newSettingsCache(pool, settingsWake(t, pool), nil, tuningFor(t).log)
 	runSettingsCache(t, settingsCache)
-	intake := newIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache, unrenamed())
+	intake := newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), settingsCache, unrenamed())
 	startIntake(t, intake)
 	awaitBoundDurable(t, natsClient)
 
@@ -478,6 +487,7 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 // holds it whatever case the envelope writes it in; a run of a file only another repository's rule
 // names is dropped, and so is every run of a repository no source reads, with no GitHub call.
 func TestEachRunIsRoutedByItsRepositorysOwnRule(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedThreeSources(t, ctx, pool)
 	created := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
@@ -494,7 +504,7 @@ func TestEachRunIsRoutedByItsRepositorysOwnRule(t *testing.T) {
 		mu.Unlock()
 		mustEncode(t, w, smallRun(id, created))
 	})
-	intake := newIntake(nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
+	intake := newIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), events.NewBroker(), nil, unrenamed())
 	rules := readTestRules(t, ctx, pool)
 
 	runs := []struct {

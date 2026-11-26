@@ -427,9 +427,7 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 		answered <- time.Now()
 		done <- err
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, time.Minute); waiting < 1 {
-		t.Fatal("the correction never waited for the change log's lock")
-	}
+	storetest.WaitForLockWaiters(t, gate, 1)
 	pending := r.count(t, `select count(*) from delivery_changes_pending`)
 	if pending == 0 {
 		t.Fatal("the correction waits for the change log's lock with no change of its own committed: it takes the lock before it writes")
@@ -478,6 +476,7 @@ func TestACorrectionCommitsWhileTheChangeLogLockIsHeldElsewhere(t *testing.T) {
 // Before, the write's drain moved batch after batch until the outbox was empty, and the write
 // answered only then.
 func TestAReadingsWriteDrainsOneBatchOfAnotherWritersBacklog(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	minutes := func(key string, day int) json.RawMessage {

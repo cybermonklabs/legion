@@ -25,8 +25,8 @@ import (
 // one shape whatever its kind (R7), so a page draws each row kind with one renderer and a client
 // reads one type.
 //
-// Every eval answers its readings (evals.Store.Items, a reading logged under a computed eval's
-// slug among them, which its value never folds, R3) and its day rows (evals.Store.EvalDays,
+// Every eval answers its readings (evals.ItemsIn, a reading logged under a computed eval's slug
+// among them, which its value never folds, R3) and its day rows (evals.EvalDaysIn,
 // `day`). A computed eval answers besides the rows its numbers count, by its source
 // (evalComputedItems): the issues a Legion eval counts, closed in the range, and the filings
 // legion-splitting counts (`issue`, from the stored facts and filings, legionfacts.ItemRows);
@@ -36,8 +36,8 @@ import (
 // failure rows count them, evals.FailureRecordIn), each with its relation to the measure's numbers;
 // the runs a CI eval times (`run`) and, for pr-ci, each job's figures (`job`); and the open P0
 // issues with no owner (`issue`, delivery.ListUnownedP0). A delivery or CI row is answered where
-// the project's day rows counted it (eval_day_members, evals.Store.CountedIn), so the items are the
-// rows the numbers fold, under the attribution the day rows made (evals' delivery_days.go,
+// the project's day rows counted it (eval_day_members, evals.CountedIn), so the items are the rows
+// the numbers fold, under the attribution the day rows made (evals' delivery_days.go,
 // "Attribution").
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the

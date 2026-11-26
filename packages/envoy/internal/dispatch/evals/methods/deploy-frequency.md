@@ -1,6 +1,6 @@
 **How it is measured.** For each UTC day, `measures.DeployFrequencyDay` reads the runs of the deploy workflow on main that started that day. It counts each run whose production job concluded success. A run that reached production still counts when it was cancelled after that. For each counted run it also counts, in `with_prs`, whether the run shipped a pull request. `measures.FoldDeployFrequency` adds up the days of a window. It divides each sum by the length of the window in days, which gives `per_day` and `with_prs_per_day`. The Delivery page and this eval call the same fold.
 
-A deploy counts for each project whose pull requests it ships, through the issues they name. A deploy that ships no pull request of a project counts for no project, and only the Delivery page, which follows no project, counts it.
+A deploy counts for each project whose pull requests it ships, through the issues they name. A deploy that ships no pull request of a project counts for each project whose published default repository is its repository, and for no project where none is. The Delivery page, which follows no project, counts it either way.
 
 **The rule for `with_prs` changed.** dispatch://INFRA-2916 changed which deploys count as deploys with pull requests.
 

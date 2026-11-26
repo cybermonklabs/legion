@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -320,8 +321,9 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 // session while another command holds its exclusive lock, as registerMachine does across its token
 // trade and enrollment, is no identity the reread holds now. The form does not wait for that lock:
 // it sends its reread unsigned and finishes, while the lock is still held. The lock is held until
-// the row ends, so a form that waited for it would not finish within the shared wait, which would
-// fail naming it.
+// the row ends, so a form that waited for it until it was released would not finish within the
+// shared wait, which would fail naming it; and a form that waited for it a while and then gave up
+// is late against a deadline of 0, beyond the time this process was held up (requireOnTime).
 func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 	local := secrets.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
@@ -339,6 +341,8 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 		code           int
 	}
 	done := make(chan result, 1)
+	meter := startStallMeter(t)
+	start := time.Now()
 	go func() {
 		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 		done <- result{stdout, stderr, code}
@@ -352,6 +356,7 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 			return false
 		}
 	})
+	requireOnTime(t, meter, "the create while another command held the machine cache's lock", start, 0)
 	if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") ||
 		!strings.Contains(got.stderr, "another command is registering this machine's session") {
 		t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)

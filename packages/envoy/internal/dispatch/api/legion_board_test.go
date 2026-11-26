@@ -164,6 +164,7 @@ func legionCard(t *testing.T, board legionBoardResponse, key string) legionBoard
 // its root's; and the header carries the slots in use, the cap, the queue's length and the last
 // read.
 func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -254,6 +255,7 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 // alone, and `retro` has the Retro column to itself, between Accepting and Merging, so time spent
 // in retro is never shown under Merging.
 func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -286,6 +288,7 @@ func TestTheMergingColumnHoldsMergingAndAwaitingMerge(t *testing.T) {
 // roots waiting for a slot in Dispatch's rank order, which is the order the daemon's own line
 // follows once no root's wait has been answered.
 func TestTheLegionBoardQueuesByRankUntilADaemonRecordsItsWaitingLine(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -339,6 +342,7 @@ const newAdmissionShapeState = `{
 // decode records of a daemon that has rolled onto dispatch://INFRA-980, so a child holding a slot
 // is a card of its own on its root's tree and no slot holder is taken for a root.
 func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -401,6 +405,7 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 // setting but has never answered shows the board with its columns empty and the read's failure in
 // the header (the plan's A4 case).
 func TestTheLegionBoardOfADaemonThatNeverAnsweredIsEmptyWithItsFailure(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -477,6 +482,7 @@ func (d *fakeLegionDaemon) pass(t *testing.T, database *store.Store, body string
 // tree on the board and in the metrics: its chain climbs through the middle issue, which left the
 // daemon's state after Dispatch observed it in `testing` and so is still Legion's.
 func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
@@ -538,6 +544,7 @@ func TestTheBoardAndTheMetricsDropWhatTheNewestReadNoLongerCarries(t *testing.T)
 // first read's whole and the next answer the second read's whole, where a read outside that
 // transaction would have put the child's `planning` card in the second read's tree.
 func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	commits := storetest.NewCommitBetweenReads("legion_current")
 	handler, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
@@ -583,6 +590,7 @@ func TestOneBoardAnswerReadsItsCardsAndItsTreesFromOneSnapshot(t *testing.T) {
 // commit's good header over `testing`, where reading the two tables at two moments would have
 // named the failure over the cards of the read after it.
 func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	commits := storetest.NewCommitBetweenReads("legion_reads", "legion_current")
 	handler, _, _ := newTestServer(t, testServerOptions{store: storetest.TracedStore(t, database, commits)})
@@ -621,6 +629,7 @@ func TestOneBoardAnswerReadsItsHeaderAndItsCardsFromOneSnapshot(t *testing.T) {
 // still the last good read's, and no row says the refused read succeeded: the read's row and its
 // observations are one transaction.
 func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")
@@ -682,6 +691,7 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 // TestTheLegionBoardOfAProjectWithNoDaemonIsRefused: a project that names no daemon has no board,
 // which is what shows no view.
 func TestTheLegionBoardOfAProjectWithNoDaemonIsRefused(t *testing.T) {
+	t.Parallel()
 	handler, _ := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
@@ -704,6 +714,7 @@ func TestTheLegionBoardOfAProjectWithNoDaemonIsRefused(t *testing.T) {
 // TestEachProjectsLegionBoardIsItsOwn: two projects, each with a daemon of its own, are answered
 // their own boards (the spec's A4).
 func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	now := time.Now().UTC()
@@ -735,6 +746,7 @@ func TestEachProjectsLegionBoardIsItsOwn(t *testing.T) {
 // INFRA's daemon reported. So each board shows its own daemon's read, and each project's metrics
 // count its own issue, its own sessions' filings and its own daemon's observations.
 func TestEachProjectsDaemonAnswersItsOwnLegionBoardAndMetrics(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA", "LINUX")
 	infra := newFakeLegionDaemon(t, handler, "INFRA")

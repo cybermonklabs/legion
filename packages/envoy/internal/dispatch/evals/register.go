@@ -2,7 +2,9 @@ package evals
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"slices"
@@ -256,11 +258,15 @@ type Registered struct {
 // write of a min_n no read ranks by (rankedByMinN). A write that adds a series to a logged eval
 // that would then hold more than MaxEvalSeries series is refused (CodeSeriesLimit), counted under
 // the eval's lock, so two writes cannot pass the bound together; one that adds none is never
-// refused for the series the eval holds. A version that lists or unlists a logged eval's series
-// lists or unlists that series' stored day rows in the same transaction (relistDays). A write that
-// may write the eval's section, one carrying doc_text or the first of an eval, takes the
-// document's owner lock before it stores anything (lockDocument) and does the section's document
-// work there, in its read phase, queued for the commit after its versions' rows (writeMethod).
+// refused for the series the eval holds. A write that would store a version of the definition, or
+// of a series, past MaxVersionBytes as JSON is refused (CodeVersionTooLarge), judged once the
+// fields it leaves out are copied forward, under the eval's lock, so two writes each within the
+// bound cannot leave a version past it, and before it does its document work or stores anything.
+// A version that lists or unlists a logged eval's series lists or unlists that series' stored day
+// rows in the same transaction (relistDays). A write that may write the eval's section, one
+// carrying doc_text or the first of an eval, takes the document's owner lock before it stores
+// anything (lockDocument) and does the section's document work there, in its read phase, queued
+// for the commit after its versions' rows (writeMethod).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
 	written, err := s.RegisterWith(ctx, change.Project, nil, change)
 	if err != nil {
@@ -354,7 +360,45 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 		next = firstDefinition(change.Project, change.Slug, change.Caller)
 	}
 	change.applyTo(&next, w.now)
-	next.WrittenVia, next.WrittenBy = ViaRegister, change.Caller.Recorded()
+	next.Version, next.WrittenVia, next.WrittenBy, next.CreatedAt = current.Version+1, ViaRegister, change.Caller.Recorded(), w.now
+	// Every version the write would store is judged here (definitionTooLarge, seriesTooLarge),
+	// after the copy forward and before the document work and the inserts below, so a refused
+	// write stores nothing. The definition's version is stored where the eval holds none, where
+	// the write changes a field of it, and where doc_text is a method the eval's section does not
+	// hold yet, which gives it block, the id of the method's new block: it is judged holding the
+	// longer of block and the block it holds now.
+	block := uuid.NewString()
+	if !found || change.DocText.Set || !sameDefinition(current, next) {
+		judged := next
+		if (change.DocText.Set || (!found && next.DocBlock == "")) && len(judged.DocBlock) < len(block) {
+			judged.DocBlock = block
+		}
+		if err := definitionTooLarge(judged); err != nil {
+			return Registered{}, err
+		}
+	}
+	// Each version of a series the write stores, in the order the body names the series; standing
+	// is the eval's series as the write leaves them, so a series the body names twice gets a
+	// version for each change it makes.
+	standing := maps.Clone(series)
+	var seriesWrites []seriesWrite
+	for index, seriesChange := range change.Series {
+		existing, has := standing[seriesChange.Series]
+		nextSeries := existing
+		if !has {
+			nextSeries = firstSeries(evalID, seriesChange.Series, len(standing) == 0, true, "")
+		}
+		seriesChange.applyTo(&nextSeries, w.now)
+		if has && sameSeries(existing, nextSeries) {
+			continue
+		}
+		nextSeries.Version, nextSeries.CreatedAt = existing.Version+1, w.now
+		if err := seriesTooLarge(nextSeries, fmt.Sprintf("series[%d].", index)); err != nil {
+			return Registered{}, err
+		}
+		standing[nextSeries.Series] = nextSeries
+		seriesWrites = append(seriesWrites, seriesWrite{version: nextSeries, relist: has && existing.Listed != nextSeries.Listed})
+	}
 	// The section's document work runs here, before the versions are stored, and queues the
 	// document's writes for the commit: nothing where the write leaves the eval's section as it is.
 	switch {
@@ -370,7 +414,7 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 		// A method the eval's section holds already is no change: its block and the definition
 		// stand as they are.
 		if !held {
-			next.DocBlock = uuid.NewString()
+			next.DocBlock = block
 			if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
 				return Registered{}, err
 			}
@@ -380,39 +424,28 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 		if err != nil {
 			return Registered{}, err
 		}
-		next.DocBlock = uuid.NewString()
+		next.DocBlock = block
 		if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor); err != nil {
 			return Registered{}, err
 		}
 	}
 	answer.Definition = current
 	if !found || !sameDefinition(current, next) {
-		next.Version = current.Version + 1
 		stored, err := insertDefinition(ctx, w.Tx, next)
 		if err != nil {
 			return Registered{}, err
 		}
 		answer.Definition, answer.Wrote = stored, true
 	}
-	for _, seriesChange := range change.Series {
-		existing, has := series[seriesChange.Series]
-		nextSeries := existing
-		if !has {
-			nextSeries = firstSeries(evalID, seriesChange.Series, len(series) == 0, true, "")
-		}
-		seriesChange.applyTo(&nextSeries, w.now)
-		if has && sameSeries(existing, nextSeries) {
-			continue
-		}
-		nextSeries.Version = existing.Version + 1
-		stored, inserted, err := insertSeries(ctx, w.Tx, nextSeries)
+	for _, write := range seriesWrites {
+		stored, inserted, err := insertSeries(ctx, w.Tx, write.version)
 		if err != nil {
 			return Registered{}, err
 		}
 		if !inserted {
-			return Registered{}, fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", nextSeries.Version, nextSeries.Series, evalID)
+			return Registered{}, fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", write.version.Version, write.version.Series, evalID)
 		}
-		if has && existing.Listed != stored.Listed && !answer.Definition.Computed() {
+		if write.relist && !answer.Definition.Computed() {
 			if err := relistDays(ctx, w.Tx, answer.Definition, stored); err != nil {
 				return Registered{}, err
 			}
@@ -421,6 +454,92 @@ func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (
 	}
 	answer.Series = sortedSeries(series)
 	return answer, nil
+}
+
+// seriesWrite is one version of a series a register write stores, and whether it lists or unlists
+// a series the eval held (relistDays).
+type seriesWrite struct {
+	version Series
+	relist  bool
+}
+
+// versionField is one field of a version whose value grows with what a write sends, by the name a
+// body spells it with, and its value.
+type versionField struct {
+	name  string
+	value any
+}
+
+// versionSize is the bytes version, a Definition or a Series, takes as JSON encodes it, as an
+// answer that holds it writes it, and where that is past MaxVersionBytes the field of fields whose
+// value takes the most bytes as JSON; "" where the version fits.
+func versionSize(version any, fields []versionField) (int, string, error) {
+	encoded, err := json.Marshal(version)
+	if err != nil {
+		return 0, "", fmt.Errorf("encode a version: %w", err)
+	}
+	if len(encoded) <= MaxVersionBytes {
+		return len(encoded), "", nil
+	}
+	largest, most := "", -1
+	for _, field := range fields {
+		value, err := json.Marshal(field.value)
+		if err != nil {
+			return 0, "", fmt.Errorf("encode the field %s of a version: %w", field.name, err)
+		}
+		if len(value) > most {
+			largest, most = field.name, len(value)
+		}
+	}
+	return len(encoded), largest, nil
+}
+
+// definitionTooLarge refuses definition, a version of an eval's definition a write would store,
+// as it would be stored (its version number and the transaction's time set), where it takes more
+// than MaxVersionBytes as JSON (CodeVersionTooLarge): naming its largest field as a body spells it,
+// of every text and list a body sets and `actor`, the writer the version records (written_by),
+// which a bearer caller names in its body. nil where it fits.
+func definitionTooLarge(definition Definition) error {
+	size, field, err := versionSize(definition, []versionField{
+		{"name", definition.Name}, {"question", definition.Question}, {"number_rule", definition.NumberRule},
+		{"decision", definition.Decision}, {"failure_modes", definition.FailureModes}, {"unit", definition.Unit},
+		{"doc_block", definition.DocBlock}, {"target_judges", definition.TargetJudges}, {"owner_role", definition.OwnerRole},
+		{"person", definition.Person}, {"issue_key", definition.IssueKey}, {"replaced_by", definition.ReplacedBy},
+		{"links", definition.Links}, {"actor", definition.WrittenBy},
+	})
+	if err != nil || field == "" {
+		return err
+	}
+	return fieldRefusal(CodeVersionTooLarge, field, "%s", versionTooLargeReason(fmt.Sprintf("version %d of %s", definition.Version, definition.EvalID), size, field))
+}
+
+// seriesTooLarge refuses series, a version of a series a register write would store, as
+// definitionTooLarge refuses a definition's: at is what each of its fields' names starts with as
+// the body spells them, `series[3].`.
+func seriesTooLarge(series Series, at string) error {
+	size, field, err := seriesVersionSize(series, at)
+	if err != nil || field == "" {
+		return err
+	}
+	return fieldRefusal(CodeVersionTooLarge, field, "%s", versionTooLargeReason(seriesVersionName(series), size, field))
+}
+
+// seriesVersionSize is versionSize of series, each of its fields named as the body spells it after
+// at: its name, its unit and its links.
+func seriesVersionSize(series Series, at string) (int, string, error) {
+	return versionSize(series, []versionField{{at + "series", series.Series}, {at + "unit", series.Unit}, {at + "links", series.Links}})
+}
+
+// seriesVersionName names series' version in a refusal.
+func seriesVersionName(series Series) string {
+	return fmt.Sprintf("version %d of series %q of %s", series.Version, series.Series, series.EvalID)
+}
+
+// versionTooLargeReason is why a write is refused that would store version, a version of size
+// bytes as JSON whose largest field is field.
+func versionTooLargeReason(version string, size int, field string) string {
+	return fmt.Sprintf("%s would take %d bytes as JSON, and a version takes at most %d, so that every answer that holds it stays within what one statement keeps; %s takes the most of it",
+		version, size, MaxVersionBytes, field)
 }
 
 // rankedByMinN reports whether a read ranks the series series of definition's eval by its min_n:
@@ -434,7 +553,7 @@ func rankedByMinN(definition Definition, series string) bool {
 
 // relistDays writes series' listing into every day row the readings write keeps of it (writer
 // readings, the project's row and each repository's), definition being a logged eval: a window
-// read folds the listed rows alone (DayWindow), so a row stored before a version that listed its
+// read folds the listed rows alone (DayWindowIn), so a row stored before a version that listed its
 // series would otherwise stay out of every window, and one stored before a version that unlisted
 // it in. A row that holds the listing already is left as it is.
 //

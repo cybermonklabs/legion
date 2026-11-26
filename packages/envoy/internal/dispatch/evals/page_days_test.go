@@ -20,9 +20,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// The cost of a page's delivery days at ten times the stated run rate (dispatch://INFRA-2916, R14,
-// the 18:21Z ruling's day write): a page reads the deploy runs of its days a handful of times
-// whatever their number, writes them in one transaction, and logs one change of each eval.
+// The cost of a page's delivery days at ten times the stated run rate (dispatch://INFRA-2916,
+// R14): a page reads the deploy runs of its days a handful of times whatever their number, writes
+// them in one transaction, and logs one change of each eval.
 
 // pageNamingRounds is how many rounds of naming a page of delivery changes makes at most, each of
 // which reads its days at once (refresh.readDeliveries): the three of applyDelivery's items, their
@@ -98,6 +98,7 @@ func oneApplyADay(deliveries deliverytest.Fixture) []int64 {
 // each day. It commits the days' rows in one transaction, and so logs one eval_days change of each
 // eval it moved, which a view of the rows is sent as one delta.
 func TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
 	r.settle(t)
@@ -106,7 +107,7 @@ func TestAPageOfManyDaysReadsItsDeployRunsAHandfulOfTimesInOneCommit(t *testing.
 		t.Fatalf("the history holds a deploy that reached production on %d days, and the check needs at least twenty", len(runs))
 	}
 	trace := &pageTrace{writing: map[*pgx.Conn]bool{}}
-	r.registry = New(storetest.TracedStore(t, r.database, trace), r.documents, r.registry.events)
+	r.registry = New(storetest.TracedStore(t, r.database, trace), r.documents, r.registry.events, r.registry.attributor)
 	seq := r.latestSeq(t)
 	r.exec(t, "complete the production job of one deploy run of each day a minute later", `
 		update delivery_run_jobs set completed_at = completed_at + interval '1 minute'
@@ -283,7 +284,7 @@ func TestAPagesDeliveryDaysAreTimed(t *testing.T) {
 	var times *statementTimes
 	if os.Getenv(dayWriteTimingEnv) == "statements" {
 		times = &statementTimes{total: map[string]time.Duration{}, count: map[string]int{}}
-		r.registry = New(storetest.TracedStore(t, r.database, times), r.documents, r.registry.events)
+		r.registry = New(storetest.TracedStore(t, r.database, times), r.documents, r.registry.events, r.registry.attributor)
 	}
 	// pass moves the production job of the deploy run n of each of the first count days of the load
 	// by shift seconds, makes one pass, and answers its time and the delivery days it wrote; with

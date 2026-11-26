@@ -100,7 +100,7 @@ func (r *refresherRig) failure(t *testing.T, project, ref, source, signal string
 }
 
 // failureValues is project's three failure measures over window as an eval read states them: the
-// stored rows folded with each series' first day (FirstDays, DayWindow, SeriesValuesOf), each
+// stored rows folded with each series' first day (FirstDaysIn, DayWindowIn, SeriesValuesOf), each
 // eval's one series by its slug.
 func (r *refresherRig) failureValues(t *testing.T, project string, window Range) map[string]SeriesValues {
 	t.Helper()
@@ -113,11 +113,11 @@ func (r *refresherRig) failureValues(t *testing.T, project string, window Range)
 	if len(entries) != len(failureDaySlugs) {
 		t.Fatalf("%s holds %d failure measures, want %d", project, len(entries), len(failureDaySlugs))
 	}
-	firsts, err := r.registry.FirstDays(ctx, entries, nil)
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, entries, nil)
 	if err != nil {
 		t.Fatalf("read the first days of %s's failure measures: %v", project, err)
 	}
-	rows, err := r.registry.DayWindow(ctx, []string{project}, entries, nil, nil, window, nil)
+	rows, err := DayWindowIn(ctx, r.database.Pool, []string{project}, entries, nil, nil, window, nil)
 	if err != nil {
 		t.Fatalf("read %s's failure measures: %v", project, err)
 	}

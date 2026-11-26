@@ -22,14 +22,17 @@ import (
 // the boot, the Legion facts consumer's first whole read, and a few passes of each loop.
 const refresherCatchUpWait = 3 * time.Minute
 
-// seriesSpan is the first and last day of one series' all-repositories rows of a project and how
-// many rows it holds, zero days where it holds none.
+// seriesSpan is the first and last day of one series' all-repositories rows of a project, its own
+// and those of the owner keys it reads (eval_project_owners), and how many days of each deploy
+// repository they hold, zero days where they hold none.
 func seriesSpan(t *testing.T, database *store.Store, project, slug, series string) (time.Time, time.Time, int) {
 	t.Helper()
 	var first, last *time.Time
 	var rows int
 	if err := database.Pool.QueryRow(t.Context(), `
-		select min(day), max(day), count(*) from eval_days where project_key = $1 and eval_id = $2 and series = $3 and repo = ''
+		select min(d.day), max(d.day), count(distinct (d.deploy_repo, d.day))
+		from eval_project_owners o join eval_days d on d.project_key = o.owner
+		where o.project_key = $1 and d.eval_id = o.owner || substr($2, length($1) + 1) and d.series = $3 and d.repo = ''
 	`, project, evals.EvalID(project, slug), series).Scan(&first, &last, &rows); err != nil {
 		t.Fatalf("read the days of %s %s: %v", project, slug, err)
 	}
@@ -100,9 +103,9 @@ func TestTheEvalDayRefresherCatchesUpInTheDispatchProcess(t *testing.T) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	age, found, err := evals.New(database, nil, nil).RefresherAge(t.Context(), time.Now())
+	age, found, err := evals.RefresherAgeIn(t.Context(), database.Pool, time.Now())
 	if err != nil || !found || age < 0 || age > refresherCatchUpWait {
-		t.Errorf("RefresherAge answers %s, found %t, %v; want the age of a pass the process just ran", age, found, err)
+		t.Errorf("RefresherAgeIn answers %s, found %t, %v; want the age of a pass the process just ran", age, found, err)
 	}
 	t.Logf("caught up: %s; the last pass ran %s ago", state, age.Round(time.Millisecond))
 }
@@ -126,7 +129,7 @@ func databaseClock(t *testing.T, database *store.Store) time.Time {
 // refresherPassedSince reports whether the eval day-row refresher's events cursor was stamped
 // after since. Every pass stamps it with the moment the pass ran as of, after its load has seeded
 // the projects the pass owes, and a process's first pass seeds every project
-// (evals.Store.RefresherAge). So a stamp after since, the database's clock read before a process
+// (evals.RefresherAgeIn). So a stamp after since, the database's clock read before a process
 // started while no other process ran, says that process's first pass has committed, its seed of
 // every project with it.
 func refresherPassedSince(t *testing.T, database *store.Store, since time.Time) bool {

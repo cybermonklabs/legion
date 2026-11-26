@@ -61,6 +61,7 @@ func actorJSON(t *testing.T, actor model.Actor) json.RawMessage {
 // stamped. A session that wrote but never stamped a title is absent from the map, which is the
 // limit chosen for INFRA-1368: nothing here backfills a name, so SessionTitle answers its bare id.
 func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const (
 		named    = "ses_release_sender"

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -42,11 +43,22 @@ const (
 	ProjectScopeNone = oauthwire.ProjectScopeNone
 )
 
-// ScopeRead is the one OAuth scope a read-only token holds, in the answer's space-separated
+// ScopeRead is the one OAuth scope every read-only token holds, in the answer's space-separated
 // Scope: the broker's own wire name, carried here for the reason the project scopes are. Beside
-// ProjectScopeNone it is a read-only token, and beside any other project scope it is no
-// session's credential (ErrNotASession).
+// ProjectScopeNone or a narrowed project scope it is a read-only token, and beside the project
+// scope named or person it is no session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
+
+// ScopeLegionStatus is the OAuth scope the broker grants a Legion daemon's own token, in the
+// answer's space-separated Scope: the broker's own wire name, carried here for the reason
+// ScopeRead is. callerOf reads it into Caller.LegionStatus. Beside the project scope named or
+// person, shapeOf reads a token that holds it as it reads one that does not.
+const ScopeLegionStatus = oauthwire.ScopeLegionStatus
+
+// LegionDaemonSessionPrefix starts the session a Legion daemon writes its project's issues under,
+// legion-daemon:<PROJECT>: the broker's own spelling (oauthwire), carried here for the reason
+// ScopeLegionStatus is.
+const LegionDaemonSessionPrefix = oauthwire.LegionDaemonSessionPrefix
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
@@ -64,8 +76,8 @@ const ExchangeClientID = oauthwire.ExchangeClientID
 type Introspection = oauthwire.Introspection
 
 // expiryOf is when the token an answer describes stops being live, or the zero time when the
-// broker named no 'exp'. It and callerOf are functions rather than methods because the answer is
-// the broker's own type, which this package may add no method to.
+// broker named no 'exp'. It, cutOf and callerOf are functions rather than methods because the
+// answer is the broker's own type, which this package may add no method to.
 func expiryOf(answer Introspection) time.Time {
 	if answer.ExpiresAt <= 0 {
 		return time.Time{}
@@ -73,21 +85,54 @@ func expiryOf(answer Introspection) time.Time {
 	return time.Unix(answer.ExpiresAt, 0)
 }
 
-// callerOf is the Caller a live answer names, the one shape both checks hand back. The list of
-// projects is carried whole, under any scope, as the caller's own copy, and the scope beside it,
-// because a reader deciding what the token may do needs the scope itself and not only the list;
-// a read-only answer names none, which sessionCaller holds it to. The service is carried as the
-// broker answered it, which is set exactly where the person is not (sessionCaller refuses an
-// answer naming neither). ReadOnly is shapeOf's verdict on the answer, which sessionCaller reached
-// and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
-// sessionCaller lets a read-only answer through only with its switch set, which only a verifier
-// that serves one sets, so a Caller marked read-only is one such a verifier accepted.
-func callerOf(answer Introspection, shape tokenShape) Caller {
-	return Caller{
-		Session: answer.Session, Person: answer.Person, Service: answer.Service,
-		Projects: slices.Clone(answer.Projects), ProjectScope: answer.ProjectScope,
-		ReadOnly: shape == shapeReadOnly,
+// cutOf is the cut an answer names (Introspection.AsOf) in UTC, or the zero time when it names
+// none. A cut that is not an RFC 3339 time is an error, and so is one that reads as the zero
+// time, which would read as no cut at all.
+func cutOf(answer Introspection) (time.Time, error) {
+	if answer.AsOf == "" {
+		return time.Time{}, nil
 	}
+	cut, err := time.Parse(time.RFC3339Nano, answer.AsOf)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if cut.IsZero() {
+		return time.Time{}, fmt.Errorf("the cut %q is the zero time", answer.AsOf)
+	}
+	return cut.UTC(), nil
+}
+
+// callerOf is the Caller a live answer names, the one shape both checks hand back. The list of
+// projects is carried whole, under any scope, as the caller's own copy, and the scope beside it
+// as its base word (oauthwire.BaseProjectScope), because a reader deciding what the token may do
+// needs the scope itself and not only the list, and a narrowed token's projects mean what its
+// base word's do. The service is carried as the broker answered it, which is set exactly where
+// the person is not (sessionCaller refuses an answer naming neither). ReadOnly is shapeOf's
+// verdict on the answer, which sessionCaller reached and hands over as shape, and cut is the
+// answer's cut, which sessionCaller read (cutOf): callerOf runs only on an answer sessionCaller
+// accepted, and sessionCaller lets a read-only answer through only with its switch set, which
+// only a verifier that serves one sets, so a Caller marked read-only is one such a verifier
+// accepted.
+// LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// shapeOf reads it and with no slice built, since this too runs on every request a verifier
+// decides.
+func callerOf(answer Introspection, shape tokenShape, cut time.Time) Caller {
+	caller := Caller{
+		Session:      answer.Session,
+		Person:       answer.Person,
+		Service:      answer.Service,
+		Projects:     slices.Clone(answer.Projects),
+		ProjectScope: oauthwire.BaseProjectScope(answer.ProjectScope),
+		ReadOnly:     shape == shapeReadOnly,
+		Cut:          cut,
+	}
+	for word := range strings.FieldsSeq(answer.Scope) {
+		if word == ScopeLegionStatus {
+			caller.LegionStatus = true
+			break
+		}
+	}
+	return caller
 }
 
 // introspect asks the broker what token is, presenting Dispatch's own projected ServiceAccount
@@ -139,5 +184,15 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 	if answer.LegacyProject != nil {
 		return Introspection{}, ErrNotASession
 	}
+	// The person is read in its canonical form (fold.Login, which Dispatch's model.CanonicalLogin
+	// reads) here, where it is first read, so sessionCaller's checks, the cache and every Caller
+	// see that form and no later reader canonicalises it again. The broker does not canonicalise
+	// every source it names a person from: it lowers a Google sign-in's login, a machine's
+	// approver and a pod's operator, but answers the person of a BROKER_EXCHANGE_ACCOUNTS or
+	// BROKER_EXCHANGE_WORKFLOWS entry as the entry writes it. Every login Dispatch stores is
+	// canonical, the owner of a row a session writes among them, so a person taken as the broker
+	// spells it would be a login no other row or read names. A person that is empty once trimmed
+	// names nobody, and sessionCaller reads it as it reads an absent one.
+	answer.Person = fold.Login(answer.Person)
 	return answer.Introspection, nil
 }

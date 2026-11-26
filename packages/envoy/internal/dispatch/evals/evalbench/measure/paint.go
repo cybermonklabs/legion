@@ -26,7 +26,7 @@ import (
 
 // The budgets of the first paint (spec R8 and R16): database time for 84 days with an 84-day
 // compare range and for 28 days with none, the compressed body of each read of the evals' first
-// paint, and the server time of the first paint that reads the day rows of one repository. The
+// paint, and the server time of the first paint that reads one repository, from its stored cut. The
 // body budget is the evals' alone: the root's R3 keeps the row-level merge timeline out of the
 // first paint (it pages, dispatch://INFRA-2918 R13), so a read of the Delivery page
 // (paintCase.delivery) has its body measured and judged by no budget, and its database time
@@ -108,7 +108,10 @@ func gzipSize(body []byte) int {
 
 // headCases are this head's first paint: the list read at 84 days with an 84-day compare range
 // and at 28 days with none, each with no repository and with the deploy repository, and the
-// evals view the page keeps itself current over; then the Delivery timeline's (timelineCases).
+// evals view the page keeps itself current over; then the Delivery timeline's (timelineCases). The
+// reads with no repository are answered from the stored figures of the project's own rows, and
+// those with the deploy repository from the stored figures of that repository's cut
+// (evals.FiguresOffered), under the same database budget as the read of the same range with none.
 func headCases(project string, today time.Time) []paintCase {
 	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
 	list := func(w window, compare *window, repo string) string {
@@ -270,6 +273,7 @@ func paint(ctx context.Context, r *report, o options) error {
 	checks.k16()
 	checks.k2()
 	checks.probe(measured)
+	checks.fallback(measured, catalog)
 	return nil
 }
 

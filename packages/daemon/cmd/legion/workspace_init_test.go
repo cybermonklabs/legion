@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -74,10 +75,7 @@ type issueVolume struct {
 
 func newIssueVolume(t *testing.T) *issueVolume {
 	t.Helper()
-	realJJ, err := exec.LookPath("jj")
-	if err != nil {
-		t.Fatalf("workspace-init's tests drive a real jj: %v", err)
-	}
+	realJJ := fixturegit.CompiledJJ(t)
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("workspace-init's tests drive a real git: %v", err)
@@ -567,8 +565,9 @@ func TestWorkspaceInitProvisionsAtADefaultBranchWithASlash(t *testing.T) {
 // on a killed checkout and spending one of the claim's launches (INFRA-1265). The case reads the
 // bound each command of the provisioning was given (newProvisionRunner): the checkout's is
 // CheckoutTimeout, and every other command's is the runner's budget or, for a step of the shared
-// clone's own clone, what remains of workspace.CloneTimeout. The budget is what is left of the test
-// binary's deadline less 30 s, so no command a loaded machine makes slow is stopped by it.
+// clone's own clone, what remains of the shared clone's bound (workspace.CloneBound, read through
+// programbound). The budget is what is left of the test binary's deadline less 30 s, so no command
+// a loaded machine makes slow is stopped by it.
 func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	v := newIssueVolume(t).withRemote(t, "main")
 	// The checkout is what puts the tree in the workspace, so the remote's default branch carries
@@ -589,6 +588,10 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 	}
 	t.Cleanup(func() { newProvisionRunner = saved })
 
+	// The shared clone's steps share one bound, read through programbound when the clone starts:
+	// in this binary what is left of its deadline, so it is read here first, no less than the
+	// clone's own.
+	cloneBound := programbound.Of(&workspace.CloneBound)
 	started := time.Now()
 	code, stdout, stderr := workspaceInitAnswered(t, "the provisioning of LEGION-42", v.args("LEGION-42"))
 	elapsed := time.Since(started)
@@ -613,8 +616,8 @@ func TestWorkspaceInitGivesTheCheckoutABoundOfItsOwn(t *testing.T) {
 			}
 		case command.Timeout == budget:
 			budgeted++
-		case command.Timeout > workspace.CloneTimeout || command.Timeout < workspace.CloneTimeout-elapsed:
-			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, workspace.CloneTimeout)
+		case command.Timeout > cloneBound || command.Timeout < cloneBound-elapsed:
+			t.Errorf("%q ran under %s, want the runner's budget %s or what remains of the shared clone's %s", argv, command.Timeout, budget, cloneBound)
 		}
 	}
 	if checkouts != 1 || budgeted == 0 {
@@ -825,13 +828,14 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 }
 
 // A provisioning that fails — here, from a feed `fetch` never filled — is the command's failure,
-// with the failed command named, and exits 1: its cause is on the issue's volume.
+// with the failed command named, the shared clone of the feed, and exits 1: its cause is on the
+// issue's volume.
 func TestWorkspaceInitReportsAFailedProvisioning(t *testing.T) {
 	v := newIssueVolume(t)
 	v.setenv(t)
 
 	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
+	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout --shared "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming the failed clone", code, stdout, stderr)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The registry's writes and the refresher's record their changes in the change log's outbox
@@ -76,25 +77,23 @@ func race(t *testing.T, holder pgx.Tx, first, second func(ctx context.Context) e
 	defer cancel()
 	firstDone, secondDone := make(chan error, 1), make(chan error, 1)
 	go func() { firstDone <- first(ctx) }()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, lockOrderBound); waiting < 1 {
-		t.Fatalf("the first writer never reached the pause")
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	go func() { secondDone <- second(ctx) }()
 	var secondErr error
 	secondAnswered := false
-	for deadline := time.Now().Add(lockOrderBound); ; {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the second writer to wait, behind the pause or the first writer, or to answer (the writers waiting, last read)", func() (int, bool) {
 		select {
 		case secondErr = <-secondDone:
 			secondAnswered = true
+			return 0, true
 		default:
 		}
-		if secondAnswered || storetest.WaitForLockWaiters(t, holder, 2, 10*time.Millisecond) >= 2 {
-			break
+		waiting, err := storetest.LockWaiters(t.Context(), holder)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the second writer neither waited, behind the pause or the first writer, nor answered")
-		}
-	}
+		return waiting, waiting >= 2
+	})
 	for _, observe := range whileWaiting {
 		observe()
 	}
@@ -127,6 +126,7 @@ func requireNoDeadlock(t *testing.T, what string, err error) {
 // fill's uncommitted row: a deadlock. Both now land: the day holds the reading, and the days around
 // it zero rows.
 func TestAReadingsWriteAndTheZeroFillOfItsDayNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	slug := "fill-race"
 	r.write(t, slug, alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 2, "measured_at": at(4, 9, 0)}))
@@ -214,6 +214,7 @@ func collateSeriesAsADeploymentDoes(t *testing.T, r rig) {
 // (requireQueuedOnTheEvalLock), which fails once the fill stops taking the lock. Both land: each
 // series holds its readings on the 4th and the 6th and zero rows on the 5th and the 7th.
 func TestAReadingsWriteAndTheZeroFillOfTwoSeriesNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	collateSeriesAsADeploymentDoes(t, r)
 	slug := "fill-order"
@@ -314,6 +315,7 @@ func requireDepthRows(t *testing.T, r rig, slug string, want int) {
 // read the series, while a register write unlists the series. The register write now waits for
 // the readings write and then unlists every row, the ones the readings write made among them.
 func TestARegisterWriteThatUnlistsASeriesBesideAReadingsWriteUnlistsEveryRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	slug := "queue-depth"
 	depth := func(key string, day int) json.RawMessage {
@@ -346,6 +348,7 @@ func TestARegisterWriteThatUnlistsASeriesBesideAReadingsWriteUnlistsEveryRow(t *
 // holds the eval's lock from before that read, so the register write waits for it and then
 // unlists the zero rows with the rest.
 func TestARegisterWriteThatUnlistsASeriesBesideTheZeroFillUnlistsEveryRow(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	slug := "queue-depth"
 	r.write(t, slug, alice, row(t, map[string]any{"series": "depth", "row_kind": "queue", "row_key": "a", "value": 4, "measured_at": at(4, 9, 0)}))
@@ -370,6 +373,7 @@ func TestARegisterWriteThatUnlistsASeriesBesideTheZeroFillUnlistsEveryRow(t *tes
 // version 1 and waited for evals-md to write its section, and the register write, let on, waited
 // for the change log's lock: a deadlock. Both now land, each section in evals-md.
 func TestAFirstReadingAndARegisterWriteWithDocTextNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	if _, err := r.registry.Register(t.Context(), Registration{Project: r.project, Slug: "review-time", Caller: alice, Name: Set("Review time")}); err != nil {
 		t.Fatalf("register review-time: %v", err)
@@ -404,6 +408,7 @@ func TestAFirstReadingAndARegisterWriteWithDocTextNeverDeadlock(t *testing.T) {
 // deploy-frequency's newest version names the block the seed added, and deploy-wait has its
 // section.
 func TestAFirstReadingAndTheSeedNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	if _, err := r.registry.Ensure(t.Context(), r.project); err != nil {
 		t.Fatalf("seed %s: %v", r.project, err)
@@ -448,6 +453,7 @@ func TestAFirstReadingAndTheSeedNeverDeadlock(t *testing.T) {
 // its transaction is refused, as the server refuses it. Let on, every write lands: evals-md holds
 // the edit's paragraph and one section of each eval, which its doc_block names.
 func TestFirstRegistrationsBesideAnEditOfEvalsMdNeitherDeadlockNorLoseASection(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	r.write(t, "deploy-wait", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 1, "measured_at": at(4, 9, 0)}))
 	documentID := r.documentID(t, r.project)
@@ -464,6 +470,7 @@ func TestFirstRegistrationsBesideAnEditOfEvalsMdNeitherDeadlockNorLoseASection(t
 // advisory lock before they take the row, still holding no transaction id. Let on, every write
 // lands, none deadlocked, and evals-md holds the edit's paragraph and one section of each eval.
 func TestAFirstRegistrationBesideAnEarlierBuildNeitherDeadlocksNorLosesASection(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	r.write(t, "deploy-wait", alice, row(t, map[string]any{"series": "minutes", "row_kind": "run", "row_key": "a", "value": 1, "measured_at": at(4, 9, 0)}))
 	documentID := r.documentID(t, r.project)
@@ -562,9 +569,8 @@ func (f firstRegistrations) run(t *testing.T, queuedSlugs ...string) {
 		for _, registration := range queued {
 			go func() { answers <- registration.write(ctx) }()
 		}
-		if waiting := storetest.WaitForLockWaiters(t, holder, 2+len(queued), lockOrderBound); waiting < 2+len(queued) {
-			t.Errorf("%d writers wait, want %d: the paused registration, the edit and the %d queued registrations", waiting, 2+len(queued), len(queued))
-		}
+		// The paused registration, the edit and every queued registration.
+		storetest.WaitForLockWaiters(t, holder, 2+len(queued))
 		requireQueuedWithNoTransactionID(t, holder, documentID, len(queued))
 		if held := documentRowHeld(t, holder, documentID); held != f.earlierBuild {
 			t.Errorf("the paused registration holds evals-md's row: %t; want %t, which an earlier build in the fleet makes every owner lock take (store.LockOwner)", held, f.earlierBuild)
@@ -655,6 +661,7 @@ const collidingIDs = 300_000
 // Postgres ended one of them with 40P01. Taken in key order, both take the two keys in one order,
 // and both land.
 func TestTwoWritersLockingEvalsWhoseKeysCollideNeverDeadlock(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(t.Context(), lockOrderBound)
 	defer cancel()
@@ -708,13 +715,9 @@ func TestTwoWritersLockingEvalsWhoseKeysCollideNeverDeadlock(t *testing.T) {
 		return done
 	}
 	first := lock(a, b)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, lockOrderBound); waiting < 1 {
-		t.Fatalf("the writer of %s and %s never waited for the key the test holds", a, b)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	second := lock(b, c)
-	if waiting := storetest.WaitForLockWaiters(t, holder, 2, lockOrderBound); waiting < 2 {
-		t.Fatalf("the writer of %s and %s never waited, behind the test or the first writer", b, c)
-	}
+	storetest.WaitForLockWaiters(t, holder, 2)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("let the writers on: %v", err)
 	}

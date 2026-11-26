@@ -37,7 +37,7 @@ func TestTheLegionEvalsEqualTheIndependentReading(t *testing.T) {
 		t.Fatalf("load the Legion history: %v", err)
 	}
 	storeLegionFacts(t, database, loaded.Project, now)
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, now)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, now)
 	t.Logf("%s: %d issues, %d finished, %d trees (%d unobserved), first observation %s, first finished %s",
 		loaded.Project, loaded.Issues, loaded.Finished, loaded.Trees, loaded.Unobserved,
 		loaded.FirstObserved.Format(time.RFC3339), loaded.FirstFinished.Format(time.RFC3339))

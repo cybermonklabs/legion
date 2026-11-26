@@ -1,8 +1,8 @@
 // priority_speed_test.go is what the `advances` relation and the priorities read cost at a
 // deployment's size: a page of the issue listing with the relation read in place against the
-// same page without it, and the whole priorities body against the paged listing it stands
-// beside. The corpus both are measured over is one build (priority_speed_seed_test.go), and
-// what each number is held to is written at the test that holds it.
+// same page without it, and the whole priorities body and its summary against the paged listing
+// they stand beside. The corpus both are measured over is one build (priority_speed_seed_test.go),
+// and what each number is held to is written at the test that holds it.
 //
 // # One corpus, two tests
 //
@@ -32,13 +32,19 @@
 // covered it inside its noise; a change there that costs CPU and allocates nothing more is held
 // by no test now.
 //
-// The priorities read is still held to times. They are one box: this pod's Postgres, which
-// carries every other suite running beside it. The time of record is the server's own — the
-// clock covers one handler.ServeHTTP, with everything else off it — and the least of speedRuns
-// runs is reported, after speedWarmups runs that are not counted, so every timed run runs the
-// plan the server's connections run (speedCustomPlans). A busy box only ever adds to a run's
-// time, so each operation's least is the run the box reached least, and the runs interleave the
-// operations, so every operation is read over the same stretch of the run's load.
+// The priorities read is held to counts too (speedRequestWork): the statements the server sends
+// to answer it and the round trips they go in, as the traced pool it reads through sees them
+// (speedTrace), and the buffer accesses of each of those statements under both plans, counted as
+// the relation read's are, against the same counts of the paged listing it stands beside. When it
+// was timed instead (the whole body under two seconds and under five times the listing, the
+// summary under 300 ms, the least of 21 runs each), how fast the server answered decided it: on a
+// box at a load near 1,000 the body read 3.10 times the listing (47.4 ms against 15.3 ms), and a
+// server that answered each statement of the body's batch 30 ms late, as a loaded one answers
+// them, put it at 8.26 times (135.9 ms against 16.5 ms, 2026-11-22), over the bound, though the
+// read did the same work in both. The Go side of the read, which was inside those times, is held
+// in what it allocates for each relation the store holds more (speedPriorityGrowth); the encoding
+// of its body, its fixed costs and any spill of a statement to temporary files are held by no
+// test.
 package api
 
 import (
@@ -60,14 +66,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// speedRuns is how many times each priorities operation is run and timed after its warm-up runs
-// (speedWarmups), interleaved with the other two: how many runs a load that slows one operation
-// and spares another has to reach before the least of each reads it as cost. Twenty-one was sized
-// when the relation read was timed too, on that read's ratio to the page without it (2026-11-16):
-// groups of 5 passes drawn from five runs of 61 put that ratio over its bound in 31 of 100,000,
-// and groups of 11 or more in none.
-const speedRuns = 21
-
 // speedCustomPlans is how many runs of a prepared statement on one connection Postgres plans for
 // that run's own arguments before it chooses, at every run after, between such a plan and the
 // one generic plan it then makes and keeps (choose_custom_plan in PostgreSQL's
@@ -78,23 +76,39 @@ const speedRuns = 21
 // generic ones (pg_prepared_statements, 2026-11-20).
 const speedCustomPlans = 5
 
-// speedWarmups is how many times each timed operation runs before any run is timed: past the
-// runs Postgres plans for their own arguments, so every timed run runs the plan a deployment's
-// connections run from then on. With one warm-up run, the first three timed runs of the whole
-// priorities body read 22.2 to 23.0 ms and every later one 43.9 to 83.3 ms (2026-11-20): the
-// least of the runs was a reading of the plan a connection runs five times and then leaves.
-const speedWarmups = speedCustomPlans
+// speedSettleReads is how many times countSpeedStatement reads one statement, beyond the warm-up,
+// to settle its buffer count on the fewest any read made. One read past the warm-up is enough once
+// the pages' hint bits are set; a few leaves room for a reader that needs more than one to settle,
+// at a cost of a few explains a statement.
+const speedSettleReads = 5
 
 // The bounds the two tests hold their readings to, from the issue's own checks: the relation
 // read at no more than twice the same page without it, in rows and in buffer accesses (its scan's
-// allocations are held closer, speedScanAllocsPerID); the whole priorities body under two seconds
-// and under five times the paged listing; the summary under 300 ms.
+// allocations are held closer, speedScanAllocsPerID); the whole priorities body at no more than
+// five times the buffer accesses of the paged listing of every open issue, and the summary the
+// navigation rail draws on every page at no more than that listing's, which a reader already
+// waits for. The issue wrote the last two in time: the body under five times the listing's time
+// and under two seconds, the summary under 300 ms. Counted, the summary is held to the listing,
+// the read the page beside it already waits for, rather than to a number of its own; and the two
+// seconds has no count of its own: the body is a fixed number of statements
+// (priorityBodyStatements) whose work is held to the listing's.
 const (
 	speedAdvancesRatio    = 2.0
-	speedPrioritiesBound  = 2 * time.Second
 	speedPrioritiesRatio  = 5.0
-	speedPrioritySummary  = 300 * time.Millisecond
+	speedSummaryRatio     = 1.0
 	speedPriorityFullName = "the whole priorities body"
+)
+
+// The statements each priorities read is written as and the round trips they go in
+// (readPriorities): the live priorities (prioritystore.List), then their relations
+// (priorityRelationsQuery), then one batch of the statements that rest on them, which for the
+// whole body is the counts, the newest event under each priority and the two faults, and for the
+// summary the two faults alone. The corpus holds twenty priorities and 400 relations, so a read
+// that sent a statement for each priority or each relation would send dozens more.
+const (
+	priorityBodyStatements    = 6
+	prioritySummaryStatements = 4
+	priorityReadRoundTrips    = 3
 )
 
 // speedGenericBuffersRatio is the most buffer accesses the page with the relation may make under
@@ -107,27 +121,6 @@ const (
 // 3.62 times the reference, one that reads each chain row's tuples through the log's index 3.77,
 // one that walks from every issue the filters match 12.90.
 const speedGenericBuffersRatio = 3.25
-
-// speedTiming is one operation's readings: every run, in the order they were taken, so a number
-// in the report can be read against the spread it came from.
-type speedTiming struct {
-	name string
-	runs []time.Duration
-}
-
-// least is the reading of record: the quickest of the runs, the one the box's load added least
-// to, which noise can only raise.
-func (s speedTiming) least() time.Duration {
-	return slices.Min(s.runs)
-}
-
-func (s speedTiming) String() string {
-	readings := make([]string, 0, len(s.runs))
-	for _, run := range s.runs {
-		readings = append(readings, fmt.Sprintf("%.1f", msOf(run)))
-	}
-	return fmt.Sprintf("%s: %.1f ms (least of %v ms)", s.name, msOf(s.least()), readings)
-}
 
 // speedWork is the work Postgres did to answer one statement under one plan, by its own count.
 // EXPLAIN (ANALYZE, BUFFERS) runs the statement and reports, for each node of the plan it ran, how
@@ -155,18 +148,18 @@ func (w speedWork) String() string {
 
 // speedReadings is every reading the two tests report, taken over the one corpus: the page with
 // the relation read under each of its two plans and the page without it under its own, the Go
-// side of reading each (speedScanAllocs), and the three timings with what the plan counts said of
-// the runs they timed (assertSpeedPlansSettled).
+// side of reading each (speedScanAllocs), the three requests the priorities read is held by
+// (speedRequestWork), and the Go side of the body and of the summary (speedPriorityAllocs).
 type speedReadings struct {
 	advancesCustom  speedWork
 	advancesGeneric speedWork
 	advancesUnread  speedWork
 	scanRead        speedScan
 	scanUnread      speedScan
-	pagedIssues     speedTiming
-	prioritiesFull  speedTiming
-	prioritiesLite  speedTiming
-	unsettledRuns   []string
+	pagedIssues     speedRequestWork
+	prioritiesFull  speedRequestWork
+	prioritiesLite  speedRequestWork
+	priorityGrowth  speedPriorityGrowth
 }
 
 // speedScanRuns is how many scans of the page testing.AllocsPerRun averages, after the one it does
@@ -186,6 +179,31 @@ const speedScanRuns = 5
 const (
 	speedScanAllocsPerID  = 1
 	speedScanAllocsPerRow = 3
+)
+
+// The most objects the Go side of a priorities read may allocate for each `advances` relation the
+// store holds more (speedPriorityGrowth): the objects one read allocates once the store holds
+// speedCorpusMoreRelations relations more, beyond the same read over the corpus's
+// speedCorpusRelations, for each relation added. It is the read's own growth, which only the
+// relations make: the read scans each relation once (readPriorityRelations) and sends the pair of
+// arrays they make with every statement of its batch, so a read that allocated for each relation
+// more than it does reads one object a relation more here. Whatever the read allocates the same
+// at both sizes (the priorities, the counts' rows, the faults' fifty rows, the batch, the trace)
+// is in neither reading's difference: a fixed cost is held by no bound here.
+//
+// The read's whole count is not held, because it is mostly such fixed costs and moves with the
+// build: correct code allocates 10,876 to 10,878 objects for the body over the corpus in the
+// plain build and 11,069 to 11,128 under the race detector, whose sync.Pool drops one Put in four
+// (64 race readings on amd64, 40 of them the reviewer's, 2026-11-22 and 23). The growth does not
+// move with it. Correct code grows by 13.04 to 13.05 objects a relation for the whole body and
+// 9.02 for the summary in the plain build (11 readings), and by 12.96 to 13.09 and 8.96 to 9.06 in
+// the race build (12 readings); a read that copies each relation's issue key once more grows by
+// 14.04 and 10.02 (4 readings), and 13.99 to 14.09 and 9.99 to 10.04 (3 readings), all on amd64
+// in the build cluster, 2026-11-23. The bounds stand halfway between. CI's run of this package is
+// the race build on arm64, where no reading was taken.
+const (
+	speedBodyAllocsPerRelation    = 13.5
+	speedSummaryAllocsPerRelation = 9.5
 )
 
 // measuredSpeedReadings is what the first of the two tests to run left behind. It is written and
@@ -256,42 +274,97 @@ func TestAdvancesListingSpeed(t *testing.T) {
 	}
 }
 
-// TestPrioritiesReadSpeed holds the priorities read to what the page that draws it can wait for:
-// the whole body under two seconds, and under five times the paged listing of every open issue,
-// which is the read it stands beside and the one a reader already waits for; and the summary the
-// navigation rail reads under 300 ms, since it is drawn on every page. Every timed run runs the
-// plans a deployment's connections run (speedWarmups), or the times are of nothing it runs.
+// TestPrioritiesReadSpeed holds the priorities read to what the page that draws it can afford, in
+// the work it costs rather than the time it takes (speedRequestWork): the whole body in the six
+// statements and three round trips it is written as, over a store of twenty priorities and 400
+// relations, and in no more than five times the buffer accesses of the paged listing of every
+// open issue, the read it stands beside and the one a reader already waits for; and the summary
+// the navigation rail reads on every page in its four statements and three round trips, in no
+// more than that listing's buffer accesses. Hit plus read is every page a statement asked for,
+// cached or not, so the count is the read's work and not the cache's state.
+//
+// The work is counted under both plans a connection runs each statement with
+// (speedCustomPlans), each against the listing under the same kind of plan: a connection runs
+// every statement of the three requests under the plan made for its arguments five times and
+// under the generic plan from then on (twelve runs of each request on one connection gave five
+// custom plans and seven generic ones for every statement, pg_prepared_statements, PostgreSQL
+// 18.6, 2026-11-22), so the two pairs are what a reader waits for on a connection's first five
+// reads and on every read after. Correct code reads 0.39 times the listing's buffer accesses for
+// the body and 0.13 times for the summary under the plans made for their arguments (1,193 and 393
+// against 3,052), and 2.20 and 0.69 times under the generic plans (20,188 and 6,345 against 9,162).
+//
+// The rows each plan's nodes produced or threw away are reported beside the buffer accesses and
+// held to nothing: the body's statements aggregate the seed's descent through hash joins where
+// the listing walks one page through its indexes, so a row of one is not the work of a row of the
+// other. Under the generic plans the body produces 10.75 times the listing's rows (438,298 against
+// 40,786) where it accesses 2.20 times its buffers, and when the two were timed side by side the
+// body took 3.10 times the listing (47.4 ms against 15.3 ms, the least of 21 runs each).
+//
+// The Go side of each read, the scan of its rows and the building of the body, is held in what
+// it allocates for each relation the store holds more (speedBodyAllocsPerRelation,
+// speedSummaryAllocsPerRelation): the objects a read allocates over the corpus's relations and
+// over speedCorpusMoreRelations more, the faults it answers the same at both. What it allocates
+// whatever the store holds is held by no bound.
+//
+// Buffer accesses are hit and read shared blocks. A statement that spills a hash or a sort to
+// temporary files reads and writes local blocks no count here reads; the timed bound took those
+// in, and no bound holds them now.
 func TestPrioritiesReadSpeed(t *testing.T) {
 	readings := speedCorpusReadings(t)
-	t.Log(readings.pagedIssues.String())
-	t.Log(readings.prioritiesFull.String())
-	t.Log(readings.prioritiesLite.String())
-	if len(readings.unsettledRuns) > 0 {
-		t.Fatalf("the timed runs ran a plan a connection runs for no more than its first %d runs of a statement:\n%s",
-			speedCustomPlans, strings.Join(readings.unsettledRuns, "\n"))
+	paged := readings.pagedIssues
+	for _, read := range []speedRequestWork{paged, readings.prioritiesFull, readings.prioritiesLite} {
+		t.Log(read.String())
+		for _, work := range slices.Concat(read.custom, read.generic) {
+			t.Log("  " + work.String())
+		}
 	}
-	paged, full, summary := readings.pagedIssues.least(), readings.prioritiesFull.least(), readings.prioritiesLite.least()
-	ratio := float64(full) / float64(paged)
-	t.Logf("%s costs %.2fx the paged listing of every open issue, at most %.2fx", speedPriorityFullName, ratio, speedPrioritiesRatio)
-	if full > speedPrioritiesBound {
-		t.Fatalf("%s took %.1f ms over %d issues and %d priorities at the least of %d runs, want under %v",
-			speedPriorityFullName, msOf(full), speedCorpusIssues, speedCorpusPriorities, speedRuns, speedPrioritiesBound)
+	for _, held := range []struct {
+		read       speedRequestWork
+		statements int
+		ratio      float64
+	}{
+		{readings.prioritiesFull, priorityBodyStatements, speedPrioritiesRatio},
+		{readings.prioritiesLite, prioritySummaryStatements, speedSummaryRatio},
+	} {
+		read := held.read
+		if len(read.custom) != held.statements || read.roundTrips != priorityReadRoundTrips {
+			t.Errorf("%s over %d priorities and %d relations sends %d statements in %d round trips, want %d in %d",
+				read.name, speedCorpusPriorities, speedCorpusRelations, len(read.custom), read.roundTrips, held.statements, priorityReadRoundTrips)
+		}
+		for _, generic := range []bool{false, true} {
+			work, reference := read.total(generic), paged.total(generic)
+			buffers := work.buffers / reference.buffers
+			t.Logf("%s costs %.2fx the buffer accesses of %s, at most %.2fx, and %.2fx its rows",
+				work.name, buffers, reference.name, held.ratio, work.rows/reference.rows)
+			if buffers > held.ratio {
+				t.Errorf("%s reads %.0f buffer accesses against %.0f for %s (%.2fx), want at most %.2fx",
+					work.name, work.buffers, reference.buffers, reference.name, buffers, held.ratio)
+			}
+		}
 	}
-	if ratio > speedPrioritiesRatio {
-		t.Fatalf("%s took %.1f ms against the paged listing's %.1f ms, the least of %d runs each (%.2fx), want at most %.2fx",
-			speedPriorityFullName, msOf(full), msOf(paged), speedRuns, ratio, speedPrioritiesRatio)
-	}
-	if summary > speedPrioritySummary {
-		t.Fatalf("the priorities summary took %.1f ms at the least of %d runs, want under %v", msOf(summary), speedRuns, speedPrioritySummary)
+	growth := readings.priorityGrowth
+	for _, held := range []struct {
+		name    string
+		summary bool
+		bound   float64
+	}{
+		{speedPriorityFullName, false, speedBodyAllocsPerRelation},
+		{"the priorities summary", true, speedSummaryAllocsPerRelation},
+	} {
+		fewer, more := growth.allocs(held.summary)
+		perRelation := growth.perRelation(held.summary)
+		t.Logf("%s allocates %.0f objects in Go over %d relations and %.0f over %d, %.2f for each relation more, at most %.2f",
+			held.name, fewer, speedCorpusRelations, more, speedCorpusRelations+speedCorpusMoreRelations, perRelation, held.bound)
+		if perRelation > held.bound {
+			t.Errorf("%s allocates %.0f objects in Go over %d relations and %.0f over %d, %.2f for each relation more, want at most %.2f",
+				held.name, fewer, speedCorpusRelations, more, speedCorpusRelations+speedCorpusMoreRelations, perRelation, held.bound)
+		}
 	}
 }
 
-// measureSpeedCorpus builds the corpus, holds the reads to what they answer over it, counts the
-// work of the two listing texts, and takes every timing: speedWarmups passes over the three timed
-// operations that are not counted, then speedRuns passes, interleaved so a box that slows in the
-// middle of the run slows each of them alike, every other pass in the reverse order, so no
-// operation always runs on what the one before it warmed. The pool's plan counts before and after
-// the timed passes say which plans the timed runs ran (assertSpeedPlansSettled).
+// measureSpeedCorpus builds the corpus, holds the reads to what they answer over it, and counts
+// the work of each: the two listing texts under their plans and the Go side of each, and the
+// three requests the priorities read is held by.
 func measureSpeedCorpus(t *testing.T) speedReadings {
 	t.Helper()
 	corpus := seedSpeedCorpus(t)
@@ -309,11 +382,11 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 		advancesCustom:  countSpeedPage(t, corpus, "a page of 250 issues with the advances relation read, under the plan made for its arguments", withRelation, arguments, false),
 		advancesGeneric: countSpeedPage(t, corpus, "the same page under the generic plan", withRelation, arguments, true),
 		advancesUnread:  countSpeedPage(t, corpus, "the same page with the relation read switched off, under the plan made for its arguments", withoutRelation, arguments, false),
-		pagedIssues:     speedTiming{name: "the paged listing of every open issue"},
-		prioritiesFull:  speedTiming{name: speedPriorityFullName},
-		prioritiesLite:  speedTiming{name: "the priorities summary"},
 		scanRead:        speedScanAllocs(t, corpus, withRelation, arguments),
 		scanUnread:      speedScanAllocs(t, corpus, withoutRelation, arguments),
+		pagedIssues:     countSpeedRequest(t, corpus, "the paged listing of every open issue", speedPagedListingTarget),
+		prioritiesFull:  countSpeedRequest(t, corpus, speedPriorityFullName, "/api/v1/priorities"),
+		prioritiesLite:  countSpeedRequest(t, corpus, "the priorities summary", "/api/v1/priorities?summary=true"),
 	}
 	for _, read := range []speedWork{readings.advancesCustom, readings.advancesGeneric} {
 		if read.walks != readings.advancesUnread.walks+1 {
@@ -321,33 +394,99 @@ func measureSpeedCorpus(t *testing.T) speedReadings {
 				read.name, read.walks, readings.advancesUnread.walks)
 		}
 	}
-	operations := []struct {
-		into *speedTiming
-		run  func()
-	}{
-		{&readings.pagedIssues, func() { speedRequest(t, corpus, speedPagedListingTarget) }},
-		{&readings.prioritiesFull, func() { speedRequest(t, corpus, "/api/v1/priorities") }},
-		{&readings.prioritiesLite, func() { speedRequest(t, corpus, "/api/v1/priorities?summary=true") }},
-	}
-	for range speedWarmups {
-		for _, operation := range operations {
-			operation.run()
-		}
-	}
-	before := speedPlanRuns(t, corpus)
-	for pass := range speedRuns {
-		order := slices.Clone(operations)
-		if pass%2 == 1 {
-			slices.Reverse(order)
-		}
-		for _, operation := range order {
-			started := time.Now()
-			operation.run()
-			operation.into.runs = append(operation.into.runs, time.Since(started))
-		}
-	}
-	readings.unsettledRuns = assertSpeedPlansSettled(before, speedPlanRuns(t, corpus))
+	// Last, since it writes more relations into the corpus every reading above was taken over.
+	readings.priorityGrowth = growSpeedPriorities(t, corpus)
 	return readings
+}
+
+// speedPriorityAllocs reads the Go side of one priorities read, in the objects one read allocates
+// (testing.AllocsPerRun over speedScanRuns reads): readPriorities, which the route calls for the
+// whole body and for the summary (summary), with no project named, as the page asks. Its round
+// trips are in it as well. The encoding of the body, which the route does after it, is not. An
+// allocation count does not move with the box's load; a Go-side change that costs CPU and
+// allocates nothing more is not in it.
+func speedPriorityAllocs(t *testing.T, corpus speedCorpusShape, summary bool) float64 {
+	t.Helper()
+	ctx := context.Background()
+	var failed error
+	allocs := testing.AllocsPerRun(speedScanRuns, func() {
+		if _, err := corpus.server.readPriorities(ctx, []string{}, summary); err != nil {
+			failed = err
+		}
+	})
+	if failed != nil {
+		t.Fatalf("read the priorities: %v", failed)
+	}
+	if allocs < speedCorpusRelations {
+		t.Fatalf("reading the priorities over %d relations allocated %.0f objects: fewer than one a relation, so the read was not counted", speedCorpusRelations, allocs)
+	}
+	return allocs
+}
+
+// speedPriorityGrowth is the Go side of the priorities read at the store's two sizes
+// (growSpeedPriorities): the objects one read of the whole body and one of the summary allocate
+// over the corpus's speedCorpusRelations relations, and over speedCorpusMoreRelations more.
+type speedPriorityGrowth struct {
+	body, summary [2]float64
+}
+
+// allocs answers one read's two readings, over the corpus's relations and over the more.
+func (g speedPriorityGrowth) allocs(summary bool) (float64, float64) {
+	if summary {
+		return g.summary[0], g.summary[1]
+	}
+	return g.body[0], g.body[1]
+}
+
+// perRelation is the objects one read allocates for each relation the store holds more.
+func (g speedPriorityGrowth) perRelation(summary bool) float64 {
+	fewer, more := g.allocs(summary)
+	return (more - fewer) / speedCorpusMoreRelations
+}
+
+// growSpeedPriorities reads the Go side of the priorities read at two sizes of the store
+// (speedPriorityGrowth): over the corpus as it was built, then once corpus.moreRelations are
+// written. Every added relation is on a leaf issue in `triage` (seedSpeedCorpus), so the second
+// read answers the same faults, and each priority's counts in the same rows: the test stops on
+// faults that differ, and on a relation read that does not answer every relation written, since
+// then what is between the two readings is not the relations alone.
+func growSpeedPriorities(t *testing.T, corpus speedCorpusShape) speedPriorityGrowth {
+	t.Helper()
+	ctx := context.Background()
+	faults := func() string {
+		body, err := corpus.server.readPriorities(ctx, []string{}, false)
+		if err != nil {
+			t.Fatalf("read the priorities: %v", err)
+		}
+		parts := []string{fmt.Sprintf("%d priorities, %d unplaced, %d parked:", len(body.Priorities),
+			body.WorkUnderNoPriority.Count, body.PriorityWorkParked.Count)}
+		for _, issue := range body.WorkUnderNoPriority.Issues {
+			parts = append(parts, issue.Key)
+		}
+		for _, issue := range body.PriorityWorkParked.Issues {
+			parts = append(parts, fmt.Sprintf("%s(%d)", issue.Key, len(issue.Advances)))
+		}
+		return strings.Join(parts, " ")
+	}
+	growth := speedPriorityGrowth{}
+	before := faults()
+	growth.body[0], growth.summary[0] = speedPriorityAllocs(t, corpus, false), speedPriorityAllocs(t, corpus, true)
+
+	copySeededRows(t, corpus.database, "priority_tuples", seededTupleColumns, corpus.moreRelations)
+	keys, _, err := corpus.server.readPriorityRelations(ctx, corpus.priorities)
+	if err != nil {
+		t.Fatalf("read the advances relations: %v", err)
+	}
+	if len(keys) != speedCorpusRelations+speedCorpusMoreRelations {
+		t.Fatalf("the store answers %d advances relations once %d more are written, want %d",
+			len(keys), speedCorpusMoreRelations, speedCorpusRelations+speedCorpusMoreRelations)
+	}
+	if after := faults(); after != before {
+		t.Fatalf("the faults differ once %d relations more are written, so the readings are not of the relations alone:\nbefore %s\nafter  %s",
+			speedCorpusMoreRelations, before, after)
+	}
+	growth.body[1], growth.summary[1] = speedPriorityAllocs(t, corpus, false), speedPriorityAllocs(t, corpus, true)
+	return growth
 }
 
 // speedPagedListingTarget is the paged read of every open issue: one page of the most issues a
@@ -361,42 +500,65 @@ var speedPagedListingTarget = fmt.Sprintf("/api/v1/issues?open=true&limit=%d", s
 func speedPageArguments(limit, offset int) []any {
 	return []any{
 		"", []string{}, "", (*time.Time)(nil), []string{}, true, []int16{}, false,
-		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, limit, offset,
+		(*time.Time)(nil), (*time.Time)(nil), []string{}, false, false, false, false, "", "", limit, offset,
 	}
 }
 
 // countSpeedPage counts the work of one page by one statement text under one of its two plans
-// (speedWork), on one connection of the pool: once to warm the connection, whose first run of a
-// statement can read catalog pages a second does not, then twice to be counted. The generic plan
-// is the one plan_cache_mode = force_generic_plan makes a prepared statement run from its first
-// execution, the plan a connection's later runs get (speedCustomPlans), as
-// analyzeGenericListingPlan reads it. Two counts that differ are a count of something beside the
-// statement, so the test stops on them rather than hold either to the bound; a count that did not
-// answer the page, or counted nothing, is a plan this read could not see into, so it stops on
-// those too.
+// (countSpeedStatement), and stops on a count that did not answer the page's rows, which is a
+// plan this read could not see into.
 func countSpeedPage(t *testing.T, corpus speedCorpusShape, name, query string, arguments []any, generic bool) speedWork {
 	t.Helper()
-	ctx := context.Background()
-	connection, err := corpus.server.deps.Store.Pool.Acquire(ctx)
+	connection, err := corpus.database.Pool.Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("take a connection to count %s: %v", name, err)
 	}
 	defer connection.Release()
+	work := countSpeedStatement(t, connection.Conn(), name, query, arguments, generic)
+	if work.answered != speedCorpusPage {
+		t.Fatalf("%s answered %.0f rows over %d plan nodes, want the page's %d rows answered: the plan was not read, so nothing was measured",
+			name, work.answered, work.nodes, speedCorpusPage)
+	}
+	return work
+}
+
+// countSpeedStatement counts the work of one statement under one of its two plans (speedWork), on
+// connection, a connection of the untraced pool: once to warm the connection, whose first run of a
+// statement can read catalog pages a later one does not, then speedSettleReads times to be
+// counted. The generic plan is the one plan_cache_mode = force_generic_plan makes a prepared
+// statement run from its first execution, the plan a connection's later runs get
+// (speedCustomPlans), as analyzeGenericListingPlan reads it.
+//
+// The reads must agree on the plan's shape and its rows — the nodes, the walks, the rows the plan
+// produces and reads and throws away, and the rows it answers — which is the statement's work and
+// what the machine cannot move; two reads that answer different rows are a count of a different
+// plan, and the test stops. The buffer accesses are the fewest any read made (speedWork.buffers):
+// the first read of a heap page whose tuples a committed transaction wrote sets the page's hint
+// bits and, where the visibility map does not yet mark the page all-visible, fetches the heap
+// through an index-only scan, so a read before the pages settle accesses more buffers than the
+// read's own work (3,135 against 3,069 for the body's unplaced fault on a loaded arm64 CI runner,
+// 2026-11-23; a quiet amd64 node reads 3,069 every time of 40). The fewest is the settled floor,
+// the pages the plan touches once the hint bits are set, which is one number on either
+// architecture; the extra reads only ever add to it. A count of no rows or no buffer accesses is a
+// plan this read could not see into, so the test stops on that too.
+func countSpeedStatement(t *testing.T, connection *pgx.Conn, name, query string, arguments []any, generic bool) speedWork {
+	t.Helper()
+	ctx := context.Background()
 	statement, bound := "explain (analyze, buffers, format json) "+query, arguments
 	if generic {
-		for _, setup := range []string{"set plan_cache_mode = force_generic_plan", "prepare speed_page as " + query} {
+		for _, setup := range []string{"set plan_cache_mode = force_generic_plan", "prepare speed_statement as " + query} {
 			if _, err := connection.Exec(ctx, setup); err != nil {
 				t.Fatalf("prepare %s: %v", name, err)
 			}
 		}
 		defer func() {
-			for _, teardown := range []string{"deallocate speed_page", "reset plan_cache_mode"} {
+			for _, teardown := range []string{"deallocate speed_statement", "reset plan_cache_mode"} {
 				if _, err := connection.Exec(ctx, teardown); err != nil {
 					t.Errorf("%s after counting %s: %v", teardown, name, err)
 				}
 			}
 		}()
-		statement, bound = "explain (analyze, buffers, format json) execute speed_page("+speedLiterals(t, arguments)+")", nil
+		statement, bound = "explain (analyze, buffers, format json) execute speed_statement"+speedLiterals(t, arguments), nil
 	}
 	explain := func() speedWork {
 		var raw []byte
@@ -420,17 +582,130 @@ func countSpeedPage(t *testing.T, corpus speedCorpusShape, name, query string, a
 		}
 		return work
 	}
-	explain()
-	first, second := explain(), explain()
-	if first != second {
-		t.Fatalf("two counts of %s differ, %.0f rows and %.0f buffer accesses, then %.0f rows and %.0f buffer accesses: neither is the statement's work alone",
-			name, first.rows, first.buffers, second.rows, second.buffers)
+	warm := explain()
+	settled := warm
+	for range speedSettleReads {
+		read := explain()
+		if read.rows != settled.rows || read.answered != settled.answered || read.nodes != settled.nodes || read.walks != settled.walks {
+			t.Fatalf("two counts of %s answer different work, %.0f rows answering %.0f over %d nodes and %d walks and then %.0f rows answering %.0f over %d nodes and %d walks: one is a count of a different plan",
+				name, settled.rows, settled.answered, settled.nodes, settled.walks, read.rows, read.answered, read.nodes, read.walks)
+		}
+		if read.buffers < settled.buffers {
+			settled.buffers = read.buffers
+		}
 	}
-	if first.answered != speedCorpusPage || first.rows == 0 || first.buffers == 0 {
-		t.Fatalf("%s answered %.0f rows and counted %.0f rows and %.0f buffer accesses over %d plan nodes, want the page's %d rows answered: the plan was not read, so nothing was measured",
-			name, first.answered, first.rows, first.buffers, first.nodes, speedCorpusPage)
+	if settled.rows == 0 || settled.buffers == 0 {
+		t.Fatalf("%s counted %.0f rows and %.0f buffer accesses over %d plan nodes: the plan was not read, so nothing was measured",
+			name, settled.rows, settled.buffers, settled.nodes)
 	}
-	return first
+	return settled
+}
+
+// speedRequestWork is the work of one request: the statements the server sent to answer it, in
+// the order it sent them, and the round trips they went in, as the corpus's traced pool saw them
+// (speedTrace); and the work of each of those statements under each of the two plans a
+// connection runs it with (speedCustomPlans), one entry a statement in custom and in generic.
+type speedRequestWork struct {
+	name       string
+	roundTrips int
+	custom     []speedWork
+	generic    []speedWork
+}
+
+func (w speedRequestWork) String() string {
+	custom, generic := w.total(false), w.total(true)
+	return fmt.Sprintf("%s: %d statements in %d round trips, %.0f rows and %.0f buffer accesses under the plans made for their arguments, %.0f rows and %.0f buffer accesses under the generic plans",
+		w.name, len(w.custom), w.roundTrips, custom.rows, custom.buffers, generic.rows, generic.buffers)
+}
+
+// total is the work of every statement the request sent, summed, under the generic plans where
+// generic is set and under the plans made for each statement's arguments where it is not.
+func (w speedRequestWork) total(generic bool) speedWork {
+	works, plans := w.custom, "the plans made for their arguments"
+	if generic {
+		works, plans = w.generic, "the generic plans"
+	}
+	total := speedWork{name: w.name + " under " + plans}
+	for _, work := range works {
+		total.nodes += work.nodes
+		total.walks += work.walks
+		total.answered += work.answered
+		total.rows += work.rows
+		total.buffers += work.buffers
+	}
+	return total
+}
+
+// countSpeedRequest makes one GET of target on a context the corpus's trace counts (countedRead)
+// and counts what the server sent to answer it: the statements and the round trips, and the work
+// of each statement under both plans (countSpeedStatement), run again with the arguments the
+// request sent it, on a connection of the untraced pool so the counting sends nothing the trace
+// sees.
+func countSpeedRequest(t *testing.T, corpus speedCorpusShape, name, target string) speedRequestWork {
+	t.Helper()
+	ctx := context.Background()
+	corpus.trace.take()
+	speedRequest(t, context.WithValue(ctx, countedRead{}, true), corpus, target)
+	sent, roundTrips := corpus.trace.take()
+	if len(sent) == 0 {
+		t.Fatalf("%s sent no statement the trace saw, so nothing was counted", name)
+	}
+	connection, err := corpus.database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("take a connection to count %s: %v", name, err)
+	}
+	defer connection.Release()
+	work := speedRequestWork{name: name, roundTrips: roundTrips}
+	for index, statement := range sent {
+		described := fmt.Sprintf("statement %d of %s (%.60s…)", index+1, name, strings.Join(strings.Fields(statement.sql), " "))
+		work.custom = append(work.custom, countSpeedStatement(t, connection.Conn(),
+			described+" under the plan made for its arguments", statement.sql, statement.arguments, false))
+		work.generic = append(work.generic, countSpeedStatement(t, connection.Conn(),
+			described+" under the generic plan", statement.sql, statement.arguments, true))
+	}
+	return work
+}
+
+// speedTrace is roundTrips (issue_read_batch_test.go), which counts the round trips a counted
+// request sends, keeping as well every statement of that request, a batch's one by one, with the
+// arguments it was sent with, so countSpeedRequest can count the work of each.
+type speedTrace struct {
+	roundTrips
+	sent []speedStatement
+}
+
+// speedStatement is one statement a counted request sent: its text and its arguments.
+type speedStatement struct {
+	sql       string
+	arguments []any
+}
+
+// take answers the statements and the number of round trips counted since the last take.
+func (s *speedTrace) take() ([]speedStatement, int) {
+	roundTrips := len(s.roundTrips.take())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sent := s.sent
+	s.sent = nil
+	return sent, roundTrips
+}
+
+func (s *speedTrace) keep(ctx context.Context, sql string, arguments []any) {
+	if ctx.Value(countedRead{}) == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sent = append(s.sent, speedStatement{sql: sql, arguments: arguments})
+}
+
+func (s *speedTrace) TraceQueryStart(ctx context.Context, connection *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	s.keep(ctx, data.SQL, data.Args)
+	return s.roundTrips.TraceQueryStart(ctx, connection, data)
+}
+
+func (s *speedTrace) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
+	s.keep(ctx, data.SQL, data.Args)
 }
 
 // speedScan is the Go side of one page's read by one statement text: the objects one read
@@ -473,26 +748,36 @@ func speedScanAllocs(t *testing.T, corpus speedCorpusShape, query string, argume
 	return scan
 }
 
-// speedLiterals writes the page's arguments (speedPageArguments) as the literals an EXECUTE names,
-// since an EXECUTE under EXPLAIN takes no bound parameter: a string, a flag, a number, an empty
-// list and a null time are every value the page's arguments hold, and any other stops the test
-// rather than be written wrong.
+// speedLiterals writes a statement's arguments as the list an EXECUTE names after the statement,
+// since an EXECUTE under EXPLAIN takes no bound parameter: a string, a flag, a number, a list of
+// strings, an empty list of numbers and a null time are every value the arguments of the reads
+// counted here hold, and any other stops the test rather than be written wrong. A statement that
+// takes no argument is named with no list.
 func speedLiterals(t *testing.T, arguments []any) string {
 	t.Helper()
+	if len(arguments) == 0 {
+		return ""
+	}
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "''") + "'" }
 	literals := make([]string, 0, len(arguments))
 	for _, argument := range arguments {
 		switch value := argument.(type) {
 		case string:
-			literals = append(literals, "'"+strings.ReplaceAll(value, "'", "''")+"'")
+			literals = append(literals, quote(value))
 		case bool:
 			literals = append(literals, strconv.FormatBool(value))
 		case int:
 			literals = append(literals, strconv.Itoa(value))
 		case []string:
-			if len(value) > 0 {
-				t.Fatalf("write %q as a literal: only the empty list is written", value)
+			if len(value) == 0 {
+				literals = append(literals, "'{}'")
+				continue
 			}
-			literals = append(literals, "'{}'")
+			elements := make([]string, 0, len(value))
+			for _, element := range value {
+				elements = append(elements, quote(element))
+			}
+			literals = append(literals, "array["+strings.Join(elements, ", ")+"]")
 		case []int16:
 			if len(value) > 0 {
 				t.Fatalf("write %v as a literal: only the empty list is written", value)
@@ -507,83 +792,7 @@ func speedLiterals(t *testing.T, arguments []any) string {
 			t.Fatalf("write a %T as a literal: no literal is written for it", argument)
 		}
 	}
-	return strings.Join(literals, ", ")
-}
-
-// speedPrepared is one statement prepared on one connection: the connection's server process and
-// the statement's name, which pgx derives from its text.
-type speedPrepared struct {
-	backend int32
-	name    string
-}
-
-// speedPreparedRuns is how many times one prepared statement has run, each run one plan, custom
-// or generic, as pg_prepared_statements counts them, and the start of its text, which a failure
-// prints.
-type speedPreparedRuns struct {
-	runs      int64
-	statement string
-}
-
-// speedPlanRuns reads the runs of every statement prepared on every idle connection of the pool.
-// It reads them by the simple protocol, so the read prepares no statement of its own to be
-// counted.
-func speedPlanRuns(t *testing.T, corpus speedCorpusShape) map[speedPrepared]speedPreparedRuns {
-	t.Helper()
-	ctx := context.Background()
-	prepared := map[speedPrepared]speedPreparedRuns{}
-	for _, connection := range corpus.server.deps.Store.Pool.AcquireAllIdle(ctx) {
-		rows, err := connection.Query(ctx,
-			`select pg_backend_pid(), name, generic_plans + custom_plans, left(regexp_replace(statement, '\s+', ' ', 'g'), 100) from pg_prepared_statements`,
-			pgx.QueryExecModeSimpleProtocol)
-		if err != nil {
-			connection.Release()
-			t.Fatalf("read the plans prepared on a connection: %v", err)
-		}
-		for rows.Next() {
-			var key speedPrepared
-			var runs speedPreparedRuns
-			if err := rows.Scan(&key.backend, &key.name, &runs.runs, &runs.statement); err != nil {
-				rows.Close()
-				connection.Release()
-				t.Fatalf("read a prepared statement's plans: %v", err)
-			}
-			prepared[key] = runs
-		}
-		rows.Close()
-		err = rows.Err()
-		connection.Release()
-		if err != nil {
-			t.Fatalf("read the plans prepared on a connection: %v", err)
-		}
-	}
-	return prepared
-}
-
-// assertSpeedPlansSettled answers each statement the timed passes ran (its runs grew between
-// before and after) whose runs before them were fewer than speedCustomPlans: one of its timed
-// runs ran a plan made for its own arguments that a connection runs for those first runs alone.
-// A timed pass that ran no prepared statement at all is answered too, since the plans it ran
-// could not be read.
-func assertSpeedPlansSettled(before, after map[speedPrepared]speedPreparedRuns) []string {
-	unsettled := []string{}
-	ran := 0
-	for key, now := range after {
-		earlier := before[key].runs
-		if now.runs == earlier {
-			continue
-		}
-		ran++
-		if earlier < speedCustomPlans {
-			unsettled = append(unsettled, fmt.Sprintf("backend %d ran %q %d times before the timed passes and %d times in them",
-				key.backend, now.statement, earlier, now.runs-earlier))
-		}
-	}
-	if ran == 0 {
-		unsettled = append(unsettled, fmt.Sprintf("no statement prepared on the %d idle connections read ran in the timed passes, so the plans they ran are unknown", len(after)))
-	}
-	slices.Sort(unsettled)
-	return unsettled
+	return "(" + strings.Join(literals, ", ") + ")"
 }
 
 // assertSpeedPage holds one of the two texts to what it answers: the page and the whole count
@@ -629,17 +838,18 @@ func assertSpeedPage(t *testing.T, corpus speedCorpusShape, query string, argume
 	}
 }
 
-// assertSpeedPriorities holds the three timed requests to what they answer before any of them is
-// timed: the page with every open issue counted, the whole body with every priority and the
+// assertSpeedPriorities holds the three counted requests to what they answer before any of them
+// is counted: the page with every open issue counted, the whole body with every priority and the
 // relations the corpus holds, and the summary with its two counts and no list.
 func assertSpeedPriorities(t *testing.T, corpus speedCorpusShape) {
 	t.Helper()
-	page := decodeBody[model.IssueSummaryPage](t, speedRequest(t, corpus, speedPagedListingTarget))
+	ctx := context.Background()
+	page := decodeBody[model.IssueSummaryPage](t, speedRequest(t, ctx, corpus, speedPagedListingTarget))
 	if len(page.Issues) != speedCorpusPage || page.Total != speedCorpusIssues {
 		t.Fatalf("the paged listing holds %d issues of %d, want %d of %d",
 			len(page.Issues), page.Total, speedCorpusPage, speedCorpusIssues)
 	}
-	body := decodeBody[model.Priorities](t, speedRequest(t, corpus, "/api/v1/priorities"))
+	body := decodeBody[model.Priorities](t, speedRequest(t, ctx, corpus, "/api/v1/priorities"))
 	if len(body.Priorities) != speedCorpusPriorities {
 		t.Fatalf("the priorities body draws %d priorities, want the corpus's %d",
 			len(body.Priorities), speedCorpusPriorities)
@@ -653,19 +863,18 @@ func assertSpeedPriorities(t *testing.T, corpus speedCorpusShape) {
 	if advanced == 0 {
 		t.Fatal("the priorities body counts no work at all; a measurement of it measures an empty read")
 	}
-	summary := decodeBody[model.Priorities](t, speedRequest(t, corpus, "/api/v1/priorities?summary=true"))
+	summary := decodeBody[model.Priorities](t, speedRequest(t, ctx, corpus, "/api/v1/priorities?summary=true"))
 	if len(summary.Priorities) != 0 || summary.WorkUnderNoPriority.Count != body.WorkUnderNoPriority.Count {
 		t.Fatalf("the summary draws %d priorities and counts %d work under none, want none and the body's %d",
 			len(summary.Priorities), summary.WorkUnderNoPriority.Count, body.WorkUnderNoPriority.Count)
 	}
 }
 
-// speedRequest is one GET against the corpus's server, as a signed-in person makes it, and what
-// the three request measurements time: everything the server does to answer, and the
-// recorder's write of it.
-func speedRequest(t *testing.T, corpus speedCorpusShape, target string) *httptest.ResponseRecorder {
+// speedRequest is one GET against the corpus's server on ctx, as a signed-in person makes it:
+// everything the server does to answer, and the recorder's write of it.
+func speedRequest(t *testing.T, ctx context.Context, corpus speedCorpusShape, target string) *httptest.ResponseRecorder {
 	t.Helper()
-	request := httptest.NewRequest(http.MethodGet, target, bytes.NewReader(nil))
+	request := httptest.NewRequestWithContext(ctx, http.MethodGet, target, bytes.NewReader(nil))
 	request.Header.Set("X-Dispatch-User", "alice")
 	response := httptest.NewRecorder()
 	corpus.handler.ServeHTTP(response, request)

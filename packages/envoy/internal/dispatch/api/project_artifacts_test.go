@@ -23,6 +23,7 @@ func createProjectDocument(t *testing.T, handler http.Handler, project, name, co
 }
 
 func TestCreateProjectDocumentJSONAndMultipart(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -72,6 +73,7 @@ func TestCreateProjectDocumentJSONAndMultipart(t *testing.T) {
 }
 
 func TestListProjectArtifactsIncludesIssueArtifactsExceptPrimaries(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -116,6 +118,7 @@ func TestListProjectArtifactsIncludesIssueArtifactsExceptPrimaries(t *testing.T)
 }
 
 func TestProjectArtifactSlugRoutesMirrorIssueRoutes(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "CORE", "name": "Core",
@@ -158,6 +161,7 @@ func TestProjectArtifactSlugRoutesMirrorIssueRoutes(t *testing.T) {
 }
 
 func TestProjectUploadRejectsUnknownProjectAndPrimary(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	unknown := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects/NOPE/artifacts", map[string]string{
 		"name": "Design notes", "content": "# Design notes\n",

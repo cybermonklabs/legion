@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
@@ -45,6 +46,9 @@ type SettingsCache struct {
 	pool         *store.Pool
 	settingsWake <-chan struct{}
 	projectsWake <-chan struct{}
+	// log is where the cache writes a read that failed: the intakes' logger (intakeTuning.log),
+	// given at construction.
+	log *slog.Logger
 
 	current atomic.Pointer[SourceRules]
 
@@ -54,10 +58,11 @@ type SettingsCache struct {
 }
 
 // newSettingsCache builds a cache over pool's delivery settings that reads them again on each
-// signal on settingsWake, and on each signal on projectsWake that finds a moved default repository.
-// It holds nothing until Run (or reload) has read the settings.
-func newSettingsCache(pool *store.Pool, settingsWake, projectsWake <-chan struct{}) *SettingsCache {
-	return &SettingsCache{pool: pool, settingsWake: settingsWake, projectsWake: projectsWake, changed: make(chan struct{})}
+// signal on settingsWake, and on each signal on projectsWake that finds a moved default repository,
+// and logs to logger, the intakes' (startIntakes passes intakeTuning.log); a nil logger is the
+// default logger as it is now. It holds nothing until Run (or reload) has read the settings.
+func newSettingsCache(pool *store.Pool, settingsWake, projectsWake <-chan struct{}, logger *slog.Logger) *SettingsCache {
+	return &SettingsCache{pool: pool, settingsWake: settingsWake, projectsWake: projectsWake, log: cmp.Or(logger, slog.Default()), changed: make(chan struct{})}
 }
 
 // Load returns the rules of the latest read, or nil while the cache has read none. A read that
@@ -125,7 +130,7 @@ func (c *SettingsCache) reload(ctx context.Context) bool {
 	rules, err := ReadSourceRules(ctx, c.pool)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch delivery: read settings for the intakes", "error", err)
+			c.log.Error("dispatch delivery: read settings for the intakes", "error", err)
 		}
 		return false
 	}
@@ -144,7 +149,7 @@ func (c *SettingsCache) reloadIfDefaultsMoved(ctx context.Context) bool {
 	moved, err := defaultsMoved(ctx, c.pool, c.Load().defaults)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Error("dispatch delivery: read the default repositories the deploy sources read", "error", err)
+			c.log.Error("dispatch delivery: read the default repositories the deploy sources read", "error", err)
 		}
 		return false
 	}

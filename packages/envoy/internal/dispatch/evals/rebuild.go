@@ -17,14 +17,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
-// rebuild.go is the verified rebuild (dispatch://INFRA-2916, the architect's rulings of 07:59Z and
-// 08:28Z): how stored rows that serve readers are rebuilt where no input changed and every day may
-// have moved. A release (a process whose first pass finds the rows served by another build), a
-// lost change cursor, and delivery settings the rows stand built under that are not recorded each
-// rebuild the served families (eval_days_serving) aside and make what moved visible in one short
-// commit. A family no rows are served of yet, a database's or a project's first seen, has nothing
-// to keep serving: its walk builds it in the open, a day a commit, each day readable once written
-// and "no data" before, and its serving record follows the walk (recordWalkIn).
+// rebuild.go is the verified rebuild (dispatch://INFRA-2916): how stored rows that serve readers
+// are rebuilt where no input changed and every day may have moved. A release (a process whose
+// first pass finds the rows served by another build), a lost change cursor, and delivery settings
+// the rows stand built under that are not recorded each rebuild the served families
+// (eval_days_serving) aside and make what moved visible in one short commit. A family no rows are
+// served of yet, a database's or a project's first seen, has nothing to keep serving: its walk
+// builds it in the open, a day a commit, each day readable once written and "no data" before, and
+// its serving record follows the walk (recordWalkIn).
 //
 //   - The stored rows keep serving through the rebuild. A rebuild walks each family's days as a
 //     walk does (walkDays, with the walk's own builders and first input days), a batch a pass, and
@@ -56,7 +56,7 @@ import (
 // (replaceRebuild), since its staged rows may have missed what they moved; a lost cursor does too,
 // as a rebuild of every served family. Only its own build's process walks it: while two builds
 // roll, the build before the release, which served the rows when its process began, begins no
-// rebuild (releaseWatch), so the roll flips once. One whose build has not moved it for staleWalk, a
+// rebuild (releaseWatch), so the roll flips once. One whose build has not moved it for staleRebuild, a
 // build no process runs, is abandoned, and begun again by the build that finds it where it was no
 // release.
 
@@ -119,7 +119,7 @@ func (r *refresh) servingNext(ctx context.Context, family, project string) (*tim
 }
 
 // rebuildState is the rebuild that is building: its id, reason and build, whether its build has
-// not moved it for staleWalk, and its walks.
+// not moved it for staleRebuild, and its walks.
 type rebuildState struct {
 	id     int64
 	reason string
@@ -134,7 +134,7 @@ func (s *Store) readRebuild(ctx context.Context) (*rebuildState, error) {
 		select b.id, b.reason, b.built_by, b.updated_at < now() - $1::interval, w.family, w.project_key, w.next_day
 		from eval_rebuilds b left join eval_rebuild_walks w on w.rebuild_id = b.id
 		where b.state = 'building'
-	`, staleWalk)
+	`, staleRebuild)
 	if err != nil {
 		return nil, fmt.Errorf("read the rebuild that is building: %w", err)
 	}
@@ -227,7 +227,7 @@ func (r *refresh) servedWalks(ctx context.Context) ([]walkKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	built, err := figuresThrough(ctx, r.store.database.Pool, r.projects)
+	built, err := figuresThrough(ctx, r.store.database.Pool, r.projects, "")
 	if err != nil {
 		return nil, err
 	}
@@ -295,10 +295,7 @@ func replaceRebuild(ctx context.Context, tx pgx.Tx, reason, build string, walks 
 	if err := tx.QueryRow(ctx, `insert into eval_rebuilds (reason, built_by) values ($1, $2) returning id`, reason, build).Scan(&id); err != nil {
 		return fmt.Errorf("begin a rebuild for %s: %w", reason, err)
 	}
-	families, projects := make([]string, len(walks)), make([]string, len(walks))
-	for i, key := range walks {
-		families[i], projects[i] = key.family, key.project
-	}
+	families, projects := walkColumns(walks)
 	if _, err := tx.Exec(ctx, `
 		insert into eval_rebuild_walks (rebuild_id, family, project_key)
 		select $1, family, project_key from (
@@ -340,7 +337,7 @@ func (s *Store) inTx(ctx context.Context, what string, write func(tx pgx.Tx) err
 
 // rebuildDays is the rebuild's part of the pass's walks (refresh.walk): it begins the rebuild a
 // release asks for (releaseWatch) once no walk begun again rebuilds a served family in the open,
-// abandons one whose build has not moved it for staleWalk, and, of a rebuild its own build runs,
+// abandons one whose build has not moved it for staleRebuild, and, of a rebuild its own build runs,
 // builds what the pass's batch (gapBatch) has left of each of its walks of the day rows, staging
 // what differs from the stored rows. A walk of a family a walk begun again rebuilds in the open
 // waits for it. walks and serving are the walk records and serving records the pass's walks read.
@@ -352,7 +349,7 @@ func (r *refresh) rebuildDays(ctx context.Context, walks map[walkKey]walkState, 
 		return false, err
 	}
 	if rb != nil && rb.build != r.build && rb.stale {
-		// No process of its build moved it for staleWalk: none runs. A release's is no other
+		// No process of its build moved it for staleRebuild: none runs. A release's is no other
 		// build's to make; any other is, since what it rebuilds for still stands.
 		if err := r.store.inTx(ctx, "the rebuild of a build no process runs", func(tx pgx.Tx) error {
 			if rb.reason == rebuildRelease {
@@ -416,7 +413,6 @@ func (r *refresh) walkRebuild(ctx context.Context, walks map[walkKey]walkState) 
 // which the batch stages once it is built (stageDays).
 type stageBatch struct {
 	rebuild *rebuildState
-	key     walkKey
 	days    []ProjectDay
 	// loaded is each project whose first input days the batch read of the rebuild (firstOf), whose
 	// first input days, as the batch's days moved them (noteBuilt), it records.
@@ -427,17 +423,16 @@ type stageBatch struct {
 // it (walkDays, by the walk's builders and the first input days the rebuild found), staging each
 // batch and its progress in one transaction.
 func (r *refresh) rebuildWalk(ctx context.Context, rb *rebuildState, family dayFamily, key walkKey) (bool, error) {
-	r.staging = &stageBatch{rebuild: rb, key: key, loaded: map[string]bool{}}
+	r.staging = &stageBatch{rebuild: rb, loaded: map[string]bool{}}
 	r.done = map[builtDay]bool{}
 	defer func() { r.staging = nil }()
-	state := walkState{next: rb.walks[key]}
 	record := func(ctx context.Context, key walkKey, next time.Time) error {
 		return r.stageWalk(ctx, rb, family, key, next)
 	}
 	if family.walk == walkDelivery {
-		return r.walkDays(ctx, key, state, true, r.deliveryStart, r.deliveryWalkDay, record)
+		return r.walkDays(ctx, key, rb.walks[key], r.deliveryStart, r.deliveryWalkDay, record)
 	}
-	return r.walkDays(ctx, key, state, true,
+	return r.walkDays(ctx, key, rb.walks[key],
 		func(ctx context.Context) (*time.Time, error) { return r.legionStart(ctx, key.project) },
 		func(ctx context.Context, day time.Time) error { return r.writeLegion(ctx, key.project, day) },
 		record)
@@ -494,7 +489,7 @@ func (s *Store) rebuildFirsts(ctx context.Context, rb int64, family, project str
 	return firsts, nil
 }
 
-// stagedRows is a staged day row and its op.
+// stagedRow is a staged day row and its op.
 type stagedRow struct {
 	op  string
 	row DayRow
@@ -545,29 +540,18 @@ func (r *refresh) stageDays(ctx context.Context, rb *rebuildState, family dayFam
 		if err != nil {
 			return fmt.Errorf("read the stored rows of %s a rebuild built: %w", project, err)
 		}
-		stored := make(map[string]DayRow, len(held))
-		for _, row := range held {
-			stored[spanRowKey(&row)] = row
-		}
 		onDays, err := r.store.membersOn(ctx, project, family.families, dates)
 		if err != nil {
 			return err
 		}
+		var builtRows [][]DayRow
 		var built []memberKey
 		builtAt := map[memberKey]memberAt{}
 		for _, day := range days {
 			if day.Project != project {
 				continue
 			}
-			for index := range day.Rows {
-				row := &day.Rows[index]
-				key := spanRowKey(row)
-				was, found := stored[key]
-				delete(stored, key)
-				if !found || !sameDayValues(row, &was) {
-					rows = append(rows, stagedRow{op: "u", row: *row})
-				}
-			}
+			builtRows = append(builtRows, day.Rows)
 			for _, member := range day.Members {
 				key := memberKey{project: project, family: member.Family, deployRepo: member.DeployRepo, rowKey: member.RowKey}
 				if _, twice := builtAt[key]; !twice {
@@ -576,16 +560,31 @@ func (r *refresh) stageDays(ctx context.Context, rb *rebuildState, family dayFam
 				builtAt[key] = memberAt{day: measures.Midnight(day.Day), repo: member.Repo, shippedBy: member.ShippedBy}
 			}
 		}
-		for _, key := range slices.Sorted(maps.Keys(stored)) {
-			rows = append(rows, stagedRow{op: "d", row: stored[key]})
+		moved, gone := diffDayRows(held, builtRows...)
+		for _, row := range moved {
+			rows = append(rows, stagedRow{op: "u", row: *row})
 		}
-		standing, err := r.store.membersByKey(ctx, built)
+		for _, row := range gone {
+			rows = append(rows, stagedRow{op: "d", row: row})
+		}
+		// A member built that stands on one of the days is among onDays already, by its primary key;
+		// only the others are read where they stand.
+		var elsewhere []memberKey
+		for _, key := range built {
+			if _, held := onDays[key]; !held {
+				elsewhere = append(elsewhere, key)
+			}
+		}
+		standing, err := r.store.membersByKey(ctx, elsewhere)
 		if err != nil {
 			return err
 		}
 		for _, key := range built {
 			at := builtAt[key]
-			was, found := standing[key]
+			was, found := onDays[key]
+			if !found {
+				was, found = standing[key]
+			}
 			if found && was.day.Equal(at.day) && was.repo == at.repo && was.shippedBy == at.shippedBy {
 				continue
 			}
@@ -759,9 +758,9 @@ func stageRows(ctx context.Context, tx pgx.Tx, rb *rebuildState, rows []stagedRo
 // member outranks a `d` one of its key, which a later `d` leaves as it stands.
 func stageMembers(ctx context.Context, tx pgx.Tx, rb int64, members []stagedMember) error {
 	size := func(one *stagedMember) int {
-		return 8*4 + len(one.op) + len(one.key.project) + len(one.key.family) + len(one.key.deployRepo) + len(one.key.rowKey) + 2*8 + memberAtBytes(one.at)
+		return 9*4 + len(one.op) + len(one.key.project) + len(one.key.family) + len(one.key.deployRepo) + len(one.key.rowKey) + 2*8 + memberAtBytes(one.at)
 	}
-	for chunk := range statementChunks(members, paramBytes(8)+12, size) {
+	for chunk := range statementChunks(members, paramBytes(9)+12, size) {
 		count := len(chunk)
 		ops, projects, families, deployRepos, rowKeys := make([]string, count), make([]string, count), make([]string, count), make([]string, count), make([]string, count)
 		days, from := make([]*time.Time, count), make([]*time.Time, count)
@@ -940,15 +939,11 @@ func (r *refresh) foldRebuild(ctx context.Context, rb *rebuildState) (bool, erro
 		if next.After(last) {
 			continue
 		}
-		spent := walkKey{family: "rebuild " + key.family, project: key.project}
-		left := r.batched.left(spent, r.batch)
-		if left <= 0 {
+		spent := rebuildBatchKey(key)
+		end, ok := r.batched.through(spent, r.batch, *next, last)
+		if !ok {
 			pending = true
 			continue
-		}
-		end := next.AddDate(0, 0, left-1)
-		if end.After(last) {
-			end = last
 		}
 		if err := r.stageFigures(ctx, rb, key.project, *next, end, &walkProgress{key: key, next: end.AddDate(0, 0, 1)}); err != nil {
 			return false, err
@@ -980,14 +975,15 @@ func (s *Store) overlayFiguresStart(ctx context.Context, rb int64, project strin
 	return new(measures.Midnight(*first).AddDate(0, 0, 1)), nil
 }
 
-// stagedFigure is a staged figure row of either table: its op, the row the rebuild folded (nil
-// for op `d`), and the stored row it was staged against (nil where none stood).
+// stagedRange is a staged range figure row: its op, the row the rebuild folded (nil for op `d`),
+// and the stored row it was staged against (nil where none stood).
 type stagedRange struct {
 	op       string
 	key      rangeFigureKey
 	row, was *rangeFigureRow
 }
 
+// stagedDay is a staged day figure row, as stagedRange is a range's.
 type stagedDay struct {
 	op       string
 	key      dayFigureKey
@@ -996,10 +992,11 @@ type stagedDay struct {
 
 // stageFigures folds every stored figure of project whose range ends on a day from first through
 // last, and the day row of every day before one of those end days, as buildFigureEnds folds them,
-// over the stored rows overlaid with rb's staged ones (readOverlayGroups), compares each with the
-// stored figure, and stages, in one transaction, each that moved or is new (`u`) and each stored
-// one no row holds any more (`d`), each beside the stored row it was staged against, after
-// deleting what rb had staged of those end days and days; with progress, where it is not nil.
+// of every cut the stored rows or rb's staged ones hold, over the stored rows overlaid with the
+// staged ones (readOverlayGroups), compares each with the stored figure, and stages, in one
+// transaction, each that moved or is new (`u`) and each stored one no row holds any more (`d`),
+// each beside the stored row it was staged against, after deleting what rb had staged of those
+// end days and days; with progress, where it is not nil.
 func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project string, first, last time.Time, progress *walkProgress) error {
 	began := time.Now()
 	pool := r.store.database.Pool
@@ -1010,30 +1007,25 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 	byID := entriesByID(entries)
 	scope := figureScope{build: rb.build, project: project, through: last}
 	read := Range{From: first.AddDate(0, 0, -figureSpan), To: last}
-	cuts, err := readFigureCuts(ctx, pool, project, read)
+	cuts, err := readFigureCuts(ctx, pool, project, read, nil)
 	if err != nil {
 		return err
 	}
-	stagedCuts, err := pool.Query(ctx, `
-		select distinct s.repo, s.deploy_repo from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
-		where o.project_key = $2 and s.rebuild_id = $1 and s.op = 'u' and s.listed and s.day >= $3 and s.day < $4
+	staged, err := pool.Query(ctx, `
+		select distinct cut.repo, s.deploy_repo from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
+		cross join lateral (select `+cutOf("s", "$2")+` as repo) cut
+		where o.project_key = $2 and s.rebuild_id = $1 and s.op = 'u' and s.listed and s.day >= $3 and s.day < $4 and cut.repo is not null
 	`, rb.id, project, read.From, read.To)
 	if err != nil {
-		return fmt.Errorf("read the repositories of %s's staged rows: %w", project, err)
+		return fmt.Errorf("read the cuts of %s's staged rows: %w", project, err)
 	}
-	more, err := pgx.CollectRows(stagedCuts, func(row pgx.CollectableRow) (figureCut, error) {
-		var cut figureCut
-		return cut, row.Scan(&cut.repo, &cut.deployRepo)
-	})
+	more, err := pgx.CollectRows(staged, scanFigureCut)
 	if err != nil {
-		return fmt.Errorf("read the repositories of %s's staged rows: %w", project, err)
+		return fmt.Errorf("read the cuts of %s's staged rows: %w", project, err)
 	}
-	for _, cut := range more {
-		if !slices.Contains(cuts, cut) {
-			cuts = append(cuts, cut)
-		}
-	}
+	cuts = slices.Concat(cuts, more)
 	slices.SortFunc(cuts, compareFigureCuts)
+	cuts = slices.Compact(cuts)
 	evalIDs := slices.Sorted(maps.Keys(byID))
 	built := map[rangeFigureKey]rangeFigureRow{}
 	builtDays := map[dayFigureKey]dayFigureRow{}
@@ -1043,19 +1035,8 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 			return err
 		}
 		for _, evalID := range slices.Sorted(maps.Keys(groups)) {
-			group := groups[evalID]
-			for end := first; !end.After(last); end = end.AddDate(0, 0, 1) {
-				for _, n := range FigureLengths {
-					target := rangeFigureKey{repo: cut.repo, days: n, end: end, eval: evalID, deployRepo: cut.deployRepo}
-					if figures, oldest, held := group.rangeFigure(n, end); held {
-						built[target] = rangeFigureRow{rangeFigureKey: target, key: group.key, figures: figures, oldest: oldest}
-					}
-				}
-				day := dayFigureKey{repo: cut.repo, day: end.AddDate(0, 0, -1), eval: evalID, deployRepo: cut.deployRepo}
-				if figures, stamp, held := group.dayFigure(day.day); held {
-					builtDays[day] = dayFigureRow{dayFigureKey: day, key: group.key, figures: figures, stamp: stamp}
-				}
-			}
+			groups[evalID].foldEnds(evalID, cut, first, last, func(row rangeFigureRow) { built[row.rangeFigureKey] = row },
+				func(row dayFigureRow) { builtDays[row.dayFigureKey] = row })
 		}
 	}
 	storedRanges, storedDays, err := readStoredFigures(ctx, pool, project, evalIDs, first, last)
@@ -1130,7 +1111,8 @@ func (r *refresh) stageFigures(ctx context.Context, rb *rebuildState, project st
 }
 
 // readStoredFigures reads project's stored range figures ending first through last and its stored
-// day figures of the evals evalIDs of the days before them, by their keys.
+// day figures of the evals evalIDs of the days before them, by their keys: evalIDs, every eval of
+// the project, which no route bounds, in statements of at most statementBytes.
 func readStoredFigures(ctx context.Context, q delivery.Querier, project string, evalIDs []string, first, last time.Time) (map[rangeFigureKey]rangeFigureRow, map[dayFigureKey]dayFigureRow, error) {
 	rows, err := q.Query(ctx, `
 		select repo, days, end_day, eval_id, deploy_repo, fold_key, figures, oldest_updated_at from eval_range_figures
@@ -1150,22 +1132,24 @@ func readStoredFigures(ctx context.Context, q delivery.Querier, project string, 
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read %s's stored range figures: %w", project, err)
 	}
-	rows, err = q.Query(ctx, `
-		select repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp from eval_day_figures
-		where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3
-	`, project, first.AddDate(0, 0, -1), last, evalIDs)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
-	}
 	days := map[dayFigureKey]dayFigureRow{}
-	var day dayFigureRow
-	if _, err := pgx.ForEachRow(rows, []any{&day.repo, &day.day, &day.eval, &day.deployRepo, &day.key, &day.figures, &day.stamp}, func() error {
-		day.day = day.day.UTC()
-		days[day.dayFigureKey] = day
-		day.figures = nil
-		return nil
-	}); err != nil {
-		return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
+	for chunk := range statementChunks(evalIDs, paramBytes(1, project)+2*(4+8), textBytes) {
+		rows, err = q.Query(ctx, `
+			select repo, day, eval_id, deploy_repo, fold_key, figures, rows_stamp from eval_day_figures
+			where project_key = $1 and eval_id = any($4) and day >= $2 and day < $3
+		`, project, first.AddDate(0, 0, -1), last, chunk)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
+		}
+		var day dayFigureRow
+		if _, err := pgx.ForEachRow(rows, []any{&day.repo, &day.day, &day.eval, &day.deployRepo, &day.key, &day.figures, &day.stamp}, func() error {
+			day.day = day.day.UTC()
+			days[day.dayFigureKey] = day
+			day.figures = nil
+			return nil
+		}); err != nil {
+			return nil, nil, fmt.Errorf("read %s's stored day figures: %w", project, err)
+		}
 	}
 	return ranges, days, nil
 }
@@ -1174,14 +1158,14 @@ func readStoredFigures(ctx context.Context, q delivery.Querier, project string, 
 // at most statementBytes of parameters.
 func stageRanges(ctx context.Context, tx pgx.Tx, rb int64, project string, ranges []stagedRange) error {
 	size := func(one *stagedRange) int {
-		bytes := 13*4 + len(one.op) + len(one.key.repo) + len(one.key.eval) + len(one.key.deployRepo) + 2*8 + 1
+		n := 13*4 + len(one.op) + len(one.key.repo) + len(one.key.eval) + len(one.key.deployRepo) + 2*8 + 1
 		if one.row != nil {
-			bytes += len(one.row.figures) + 2*8
+			n += len(one.row.figures) + 2*8
 		}
 		if one.was != nil {
-			bytes += len(one.was.figures) + 2*8
+			n += len(one.was.figures) + 2*8
 		}
-		return bytes
+		return n
 	}
 	for chunk := range statementChunks(ranges, paramBytes(13, project)+12, size) {
 		count := len(chunk)
@@ -1219,14 +1203,14 @@ func stageRanges(ctx context.Context, tx pgx.Tx, rb int64, project string, range
 // most statementBytes of parameters.
 func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, days []stagedDay) error {
 	size := func(one *stagedDay) int {
-		bytes := 12*4 + len(one.op) + len(one.key.repo) + len(one.key.eval) + len(one.key.deployRepo) + 8 + 1
+		n := 12*4 + len(one.op) + len(one.key.repo) + len(one.key.eval) + len(one.key.deployRepo) + 8 + 1
 		if one.row != nil {
-			bytes += len(one.row.figures) + 2*8
+			n += len(one.row.figures) + 2*8
 		}
 		if one.was != nil {
-			bytes += len(one.was.figures) + 2*8
+			n += len(one.was.figures) + 2*8
 		}
-		return bytes
+		return n
 	}
 	for chunk := range statementChunks(days, paramBytes(12, project)+12, size) {
 		count := len(chunk)
@@ -1261,11 +1245,19 @@ func stageDayFigures(ctx context.Context, tx pgx.Tx, rb int64, project string, d
 
 // readOverlayGroups is readFigureGroups over the stored rows overlaid with the rebuild rb's staged
 // ones: each stored row of a computed eval a staged row of its key stands for is left out, and
-// each staged `u` row that is listed takes its place or is added. A logged eval's rows are the
-// readings write's, which no rebuild stages. A cut is one repository's rows of one deploy
-// repository, so a key within it is an owner (the project's own key, or an owner key of the
-// repository it publishes, owners.go), an eval, a series and a day: a staged row of an owner key
-// stands for that owner's row alone, beside the project's own row of the same series and day.
+// each staged `u` row that is listed takes its place or is added, its via_repository as the project
+// reads it (viaAsRead), as DayWindowIn reads a stored row's. A logged eval's rows are the
+// readings write's, which no rebuild stages. A cut's rows hold one row of each owner (the
+// project's own key, or an owner key it reads, owners.go), eval, series, repository and day: a
+// staged row of an owner key stands for that owner's row alone, beside the project's own row of
+// the same series and day, and a staged row of the project's default repository for that one
+// alone, beside its own row of the same series and day stored under legionfacts.DefaultRepo, which
+// the default's cut folds too (cutOf); so the stored rows are read with the repository each stands
+// under (WindowRow.repo: DayWindowIn answers it in the read of a repository's cut, and every row of
+// the project's own cut stands under ""), and a staged row stands for the stored row of its whole
+// key. The staged rows come after the stored ones, and newFigureGroup sorts the group into the
+// folds' one order (sortWindowRows), so each is folded where a read of the rows the flip leaves
+// folds it.
 func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope figureScope, entries map[string]Entry, evalIDs []string, cut figureCut, r Range) (map[string]*figureGroup, error) {
 	groups := map[string]*figureGroup{}
 	var read []Entry
@@ -1281,41 +1273,37 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	if len(read) == 0 || !r.From.Before(r.To) {
 		return groups, nil
 	}
-	var repos []string
-	if cut.repo != "" {
-		repos = []string{cut.repo}
-	}
-	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, DeployReposOf(scope.project, cut.deployRepo), repos, r, nil)
+	live, err := DayWindowIn(ctx, q, []string{scope.project}, read, DeployReposOf(scope.project, cut.deployRepo), cut.repos(), r, nil)
 	if err != nil {
 		return nil, err
 	}
 	type rowKey struct {
-		owner, eval, series string
-		day                 time.Time
+		owner, repo, eval, series string
+		day                       time.Time
 	}
 	shadowed := map[rowKey]bool{}
 	var added []WindowRow
 	if len(computed) > 0 {
 		rows, err := q.Query(ctx, `
-			select s.project_key, s.op, s.listed, o.project_key || substr(s.eval_id, length(o.owner) + 1), s.series, s.day, s.n, s.sum, s.num,
-				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), s.via_repository, s.updated_at
+			select s.project_key, s.repo, s.op, s.listed, `+evalIDAs("o.project_key", "s.eval_id", "o.owner")+`, s.series, s.day, s.n, s.sum, s.num,
+				s.den, s.max, s.samples, s.last_value, s.last_at, nullif(s.counts, '{}'), `+viaAsRead("s.via_repository")+`, s.updated_at
 			from eval_project_owners o join eval_rebuild_days s on s.project_key = o.owner
-			where o.project_key = $2 and s.rebuild_id = $1 and o.project_key || substr(s.eval_id, length(o.owner) + 1) = any($3)
-				and s.repo = $4 and s.deploy_repo = $5 and s.day >= $6::date and s.day < $7::date
-		`, rb, scope.project, computed, cut.repo, cut.deployRepo, r.From.UTC(), r.To.UTC())
+			where o.project_key = $2 and s.rebuild_id = $1 and `+evalIDAs("o.project_key", "s.eval_id", "o.owner")+` = any($3)
+				and `+repoCut("s", "$7::text[]", "$2")+` and s.deploy_repo = $4 and s.day >= $5::date and s.day < $6::date
+		`, rb, scope.project, computed, cut.deployRepo, r.From.UTC(), r.To.UTC(), []string{cut.repo})
 		if err != nil {
 			return nil, fmt.Errorf("read the staged rows of %s: %w", scope.project, err)
 		}
-		var op, owner string
+		var op, owner, repo string
 		var listed bool
 		var row WindowRow
 		part := &row.Part
-		if _, err := pgx.ForEachRow(rows, []any{&owner, &op, &listed, &row.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den,
+		if _, err := pgx.ForEachRow(rows, []any{&owner, &repo, &op, &listed, &row.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den,
 			&part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
-			row.Range, row.UpdatedAt, row.owner = RangeWindow, row.UpdatedAt.UTC(), owner
+			row.Range, row.UpdatedAt, row.owner, row.repo = RangeWindow, row.UpdatedAt.UTC(), owner, repo
 			part.LastRecordedAt, part.LastReading = nil, ""
 			utcPart(part)
-			shadowed[rowKey{owner: owner, eval: row.EvalID, series: part.Series, day: part.Day}] = true
+			shadowed[rowKey{owner: owner, repo: repo, eval: row.EvalID, series: part.Series, day: part.Day}] = true
 			if op == "u" && listed {
 				added = append(added, row)
 			}
@@ -1327,7 +1315,7 @@ func readOverlayGroups(ctx context.Context, q delivery.Querier, rb int64, scope 
 	}
 	byEval := map[string][]WindowRow{}
 	for _, row := range live {
-		if !shadowed[rowKey{owner: row.owner, eval: row.EvalID, series: row.Part.Series, day: row.Part.Day}] {
+		if !shadowed[rowKey{owner: row.owner, repo: row.repo, eval: row.EvalID, series: row.Part.Series, day: row.Part.Day}] {
 			byEval[row.EvalID] = append(byEval[row.EvalID], row)
 		}
 	}
@@ -1377,30 +1365,22 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 		if len(days) == 0 {
 			continue
 		}
-		named := make([]*namedDay, 0, len(days))
+		named := newPageDays(family)
 		for _, one := range days {
 			switch {
 			case family.walk == walkDelivery && !r.delivers():
 				// No project has delivery on, no delivery row: the day holds none.
-				named = append(named, &namedDay{project: one.project, day: one.day, raw: ProjectDay{Project: one.project, Day: one.day}})
+				named.add(&namedDay{project: one.project, day: one.day, raw: ProjectDay{Project: one.project, Day: one.day}})
 			case family.walk == walkDelivery:
 				read, err := r.readDelivery(ctx, one.day, nil, nil)
 				if err != nil {
 					return false, err
 				}
-				named = append(named, &namedDay{project: one.project, day: one.day, raw: read.Rows(one.project),
-					zeros: ZeroDeliveryDay(one.project, one.day, read.rules).Rows})
+				r.nameDelivery(named, read, one.project)
 			default:
-				read, err := r.store.ReadLegionDay(ctx, one.project, one.day)
-				if err != nil {
+				if err := r.nameLegion(ctx, named, one.project, one.day); err != nil {
 					return false, err
 				}
-				since, err := r.sinceOf(ctx, one.project)
-				if err != nil {
-					return false, err
-				}
-				named = append(named, &namedDay{project: one.project, day: one.day, raw: read.Rows(since),
-					zeros: ZeroLegionDay(one.project, read.Day, legionDaySlugs...).Rows})
 			}
 		}
 		firsts, err := r.store.rebuildFirsts(ctx, rb.id, family.walk, "")
@@ -1408,7 +1388,8 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 			return false, err
 		}
 		back := map[string]time.Time{}
-		for _, day := range named {
+		for _, key := range named.order {
+			day := named.days[key]
 			input, first := inputKeys(day.raw.Rows), firsts[day.project]
 			shifts := false
 			for key := range input {
@@ -1433,8 +1414,9 @@ func (r *refresh) verifyQueued(ctx context.Context, rb *rebuildState) (bool, err
 			moved = true
 			continue
 		}
-		built := make([]ProjectDay, len(named))
-		for i, day := range named {
+		built := make([]ProjectDay, len(named.order))
+		for i, key := range named.order {
+			day := named.days[key]
 			built[i] = day.finalize(firsts[day.project], true)
 			if _, folds := rb.walks[walkKey{family: walkFigures, project: day.project}]; folds {
 				spans[day.project] = spans[day.project].widen(day.day)
@@ -1543,7 +1525,7 @@ var flipStatements = []struct{ what, sql string }{
 		select s.project_key, s.eval_id, '` + writerComputation + `', s.deploy_repo, s.series, s.repo, s.day, s.listed, s.n, s.sum, s.num, s.den,
 			s.max, s.samples, s.last_value, s.last_at, s.last_recorded_at, s.last_reading, s.counts, s.via_repository, s.built_by, s.updated_at
 		from eval_rebuild_days s
-		where s.rebuild_id = $1 and s.op = 'u' and (starts_with(s.project_key, ':') or s.project_key in (select key from projects))
+		where s.rebuild_id = $1 and s.op = 'u' and (starts_with(s.project_key, '` + ownerPrefix + `') or s.project_key in (select key from projects))
 		order by s.project_key collate "C", s.eval_id collate "C", s.deploy_repo collate "C", s.series collate "C", s.repo collate "C", s.day
 		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den, max = excluded.max,
@@ -1564,7 +1546,7 @@ var flipStatements = []struct{ what, sql string }{
 		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
 		select s.project_key, s.family, s.deploy_repo, s.row_key, s.day, s.repo, s.shipped_by
 		from eval_rebuild_members s
-		where s.rebuild_id = $1 and s.op = 'u' and (starts_with(s.project_key, ':') or s.project_key in (select key from projects))
+		where s.rebuild_id = $1 and s.op = 'u' and (starts_with(s.project_key, '` + ownerPrefix + `') or s.project_key in (select key from projects))
 		order by s.project_key collate "C", s.family collate "C", s.deploy_repo collate "C", s.row_key collate "C"
 		on conflict (project_key, family, deploy_repo, row_key) do update
 		set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by
@@ -1668,8 +1650,9 @@ var flipStatements = []struct{ what, sql string }{
 // flipRebuild makes what rb staged visible in one transaction of flipStatements, marked a
 // rebuild's (MarkRebuild), so the live hub recomputes an evals view of its eval_days changes at
 // once, one change per eval: the flip of a rebuild that staged nothing writes no row, member or
-// figure and logs no change, and moves the serving record alone. The transaction first locks rb's
-// row and reads it again: a rebuild replaced since the pass read it (replaceRebuild abandoned it)
+// figure and logs no change, and moves the rebuild's state, the serving records, the walks and the
+// figures' marker alone. The transaction first locks rb's row and reads it again: a rebuild
+// replaced since the pass read it (replaceRebuild abandoned it)
 // flips nothing, and flipRebuild answers false. It then moves the change log's outbox into the
 // log, and logs how many rows each statement wrote and how long the transaction was open.
 func (r *refresh) flipRebuild(ctx context.Context, rb *rebuildState) (bool, error) {

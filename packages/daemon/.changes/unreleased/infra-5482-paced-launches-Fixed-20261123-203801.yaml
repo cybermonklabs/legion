@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+    A restart no longer puts the launches the wake pacing held back in a random order: the boot
+    reserves the turns of the launches it finds unfinished one at a time, the claim whose task was
+    queued longest ago first, so the queue it rebuilds is the one the stopped daemon was draining,
+    and a claim whose release the store refuses keeps its turn for the sweep that retries it. `legion
+    claims retry` of a claim with no process whose launch waits its paced turn runs that launch at
+    once, rather than answering `queued (a queued claim is spawned, not retried)` or `suspended (a
+    suspended claim is resumed, not retried)`. A pod the Agent Sandbox controller made again outside
+    a launch, after an eviction or a node loss, is bound to its role Secrets at its launchers' first
+    hello, so they stop looping on `rejected hello (launcher pod UID is not bound to its Secret
+    epoch)` and the roles' next launches keep the pod rather than replace it again.
+time: 2026-11-23T20:38:01Z
+custom:
+    Issue: INFRA-5482

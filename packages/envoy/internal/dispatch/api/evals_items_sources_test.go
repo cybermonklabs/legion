@@ -19,7 +19,7 @@ import (
 func TestAProjectWithNoSourceListsThePullRequestsItsDayRowsCount(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Days: 5})
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 	project := fixture.SecondProject
 	window := evals.Range{From: fixture.From, To: fixture.To}
 

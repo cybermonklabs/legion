@@ -262,14 +262,14 @@ func collectPairs(ctx context.Context, pool *store.Pool, query string, into map[
 // and the Legion rows of every project Legion works served by build (eval_days_serving: its walk
 // built them, or its rebuild's flip made them its own), no rebuild building, a day row, every
 // project that holds day rows with its stored figures built through the last end day of today
-// (evals.FiguresThrough's mark), since a first paint measured before that would read the day
-// rows, which the stored figures are there to spare it; and the keyword fill's cursor at the
-// newest event this poll read (filled). A day row keeps the build that last moved its values, so a
-// release whose rules move no value leaves them as they were. Production serves with the fill
-// caught up once its one backfill, at the deploy, is done, so evalbench's load writes the cursor as
-// caught up with the loaded log, and this waits for the fill to follow the events the server wrote
-// after the load: a paint measured while the fill still writes its batches would share the
-// database with them.
+// (eval_figures_built, the mark the stored figures' read reads), since a first paint measured
+// before that would read the day rows, which the stored figures are there to spare it; and the
+// keyword fill's cursor at the newest event this poll read (filled). A day row keeps the build
+// that last moved its values, so a release whose rules move no value leaves them as they were.
+// Production serves with the fill caught up once its one backfill, at the deploy, is done, so
+// evalbench's load writes the cursor as caught up with the loaded log, and this waits for the fill
+// to follow the events the server wrote after the load: a paint measured while the fill still
+// writes its batches would share the database with them.
 func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	var missing []string
 	if previous == nil {
@@ -346,11 +346,7 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 				last.Format(time.DateOnly), held, through.Format(time.DateOnly)))
 		}
 	}
-	rows := int64(0)
-	for _, count := range s.builtBy {
-		rows += count
-	}
-	if rows == 0 {
+	if len(s.builtBy) == 0 {
 		missing = append(missing, "a day row")
 	}
 	return missing

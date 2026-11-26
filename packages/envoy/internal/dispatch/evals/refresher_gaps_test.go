@@ -56,8 +56,10 @@ func (r *refresherRig) failingPass(t *testing.T) {
 // new first day to today with a row. Before, the new first day was written in a transaction of
 // its own, which moved the walk back, and the walk wrote the zero rows.
 func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	r.settle(t)
 	r.pass(t)
 	main := deliveries.Project
@@ -117,8 +119,10 @@ func TestAFirstDayMovedEarlierLeavesNoDayWithoutARowThoughThePassFails(t *testin
 // after it, reading the same change again, still rewrites the old run's day, which the moving write
 // recorded owed; it leaves no day owed.
 func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	main := deliveries.Project
 	var picked delivery.DeliveryPullRequest
 	var oldDay, merged time.Time
@@ -169,6 +173,7 @@ func TestARunAPullRequestLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T)
 // day. The pass after it, reading the same change again, still rewrites the day EVAL-3 left, which
 // the moving write recorded owed, and that day no longer counts EVAL-3.
 func TestADayAnIssueLeftIsRewrittenThoughThePassFailsBeforeIt(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	history := r.seedLegionEval(t)
 	r.settle(t)
@@ -231,13 +236,15 @@ func (r *refresherRig) pageAlone(t *testing.T) refreshed {
 // page that reads it writes that pull request's merge day and the days it links to from their own
 // input: no other day holds a row, so each later day with input reads "no data" until the walk
 // computes it, and no row the page wrote is a zero row of a day the walk then writes with input.
-// At 04de13fa the page wrote the zero rows of every day after the merge day through today
-// (refresh.gapsBehind), days with input among them, which read 0 until the walk reached them. Once
-// the walk has run, the database holds the delivery and CI rows, the members and the stored figures
+// A page that wrote the zero rows of every day after the merge day through today, days with input
+// among them, would leave those days reading 0 until the walk reached them. Once the walk has run,
+// the database holds the delivery and CI rows, the members and the stored figures
 // of a second database that made the same change before its first walk (expectSameAsWalk).
 func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
+	t.Parallel()
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
+	r.leaveInputsUnread(t)
 	if report := r.pageAlone(t); len(report.days) != 0 {
 		t.Fatalf("the boot's pages wrote %v, and the check needs none: a page with no cursor writes no day", report.sorted())
 	}
@@ -303,6 +310,7 @@ func TestAChangeBeforeTheFirstWalkWritesNoZeroRowOnADayWithInput(t *testing.T) {
 	}
 	walk := newRefresherRig(t)
 	walk.seedHistories(t)
+	walk.leaveInputsUnread(t)
 	open(walk)
 	walk.settle(t)
 	r.expectSameAsWalk(t, "the change read before the first walk", walk)

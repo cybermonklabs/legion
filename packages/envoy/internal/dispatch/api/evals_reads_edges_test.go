@@ -76,9 +76,7 @@ func TestTheEvalReadStatesItsVersionsOfOneSnapshot(t *testing.T) {
 	go func() {
 		answered <- evalRequest(t, handler, http.MethodGet, "/api/v1/projects/EVL/evals/review-time", nil, "")
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, time.Minute); waiting < 1 {
-		t.Fatalf("%d reads wait on eval_series, want the eval's read", waiting)
-	}
+	storetest.WaitForLockWaiters(t, holder, 1)
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit version 2: %v", err)
 	}
@@ -414,7 +412,7 @@ func TestAnEvalsLiveViewWhoseDaysEndPastTheYear9999IsRefused(t *testing.T) {
 	}
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("late", evalsLiveView("EVL", DeliveryLiveWindow{From: &from, To: &to}, "")))
-	refusal := conn.refusal(t, 5*time.Second, "late", "INVALID_QUERY")
+	refusal := conn.refusal(t, "late", "INVALID_QUERY")
 	conn.none(t, time.Second, "the refusal of a window whose days end past the year 9999")
 	t.Logf("the view over %s..%s: %s %q", from, to, refusal.Code, refusal.Message)
 }
@@ -514,7 +512,7 @@ func TestAWindowWhoseSumPassesWhatAFloatHoldsAnswersItNull(t *testing.T) {
 
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("huge", evalsLiveView("EVL", evalsDays(day(-4), day(-2)), "")))
-	snapshot := conn.snapshot(t, 5*time.Second, "huge")
+	snapshot := conn.snapshot(t, "huge")
 	requireTheListRead(t, handler, "EVL", snapshot.Body, "")
 	if series := value("the evals view's snapshot", snapshot.Body); series.Window["sum"] != nil {
 		t.Errorf("the evals view's snapshot states the window's sum %s, want null", stated(series.Window, "sum"))

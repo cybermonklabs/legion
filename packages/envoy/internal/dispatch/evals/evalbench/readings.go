@@ -9,9 +9,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -100,7 +102,7 @@ func writeReadings(ctx context.Context, database *store.Store, spec Spec, histor
 			logf("the document service did not stop cleanly: %v", err)
 		}
 	}()
-	registry := evals.New(database, documents, broker)
+	registry := evals.New(database, documents, broker, delivery.NewAttributor(refs.Renames{}))
 	for _, eval := range loggedEvals {
 		if err := register(ctx, registry, eval); err != nil {
 			return err

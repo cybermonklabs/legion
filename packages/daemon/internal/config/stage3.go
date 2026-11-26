@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -111,6 +112,36 @@ type Project struct {
 	// role the file named when it opened keeps that role, and moving the key to off ends no
 	// check that is already open.
 	ProductionCheck claim.Role
+	// DefaultSteps is `default_steps` as the file names it, nil when it names none. Every reader
+	// asks RunsByDefault, which resolves the unset field.
+	DefaultSteps []plan.Step
+}
+
+// defaultStepWords is `default_steps` for a project that names none, as the file would write it:
+// today's line up to the owner's acceptance. With the retro and the merge Legion runs after
+// them, that is today's seven phases. It is the one definition of the default steps.
+var defaultStepWords = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
+
+// unsetDefaultSteps is defaultStepWords read as steps, once.
+var unsetDefaultSteps = func() []plan.Step {
+	steps, err := plan.ParseSteps(strings.Join(defaultStepWords, " "))
+	if err != nil {
+		panic("config: the default steps are outside the plan's grammar: " + err.Error())
+	}
+	return steps
+}()
+
+// RunsByDefault is the project's default steps: the steps a task whose plan block names neither
+// steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
+// gives no plan or whose experiment's group takes none. They are `default_steps`, or today's line
+// up to the owner's acceptance for a project that names none, and for a Project the loader never
+// read, so a configuration built without the field runs today's line rather than no step. The
+// answer is the caller's own.
+func (p Project) RunsByDefault() []plan.Step {
+	if p.DefaultSteps != nil {
+		return slices.Clone(p.DefaultSteps)
+	}
+	return slices.Clone(unsetDefaultSteps)
 }
 
 // ProductionCheckOff is the one word of `production_check` that takes the check away, which the
@@ -252,7 +283,12 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		// The block and `experiments.memory` are one experiment spelled two ways, and only here
 		// are both spellings in view: the memory member is read by the mapping's own key rather
 		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		// The rules of `plan` come after it, so `plan` on `experiments.memory` gets that check's
+		// one refusal rather than the plan rules' advice to write `unit: issue`.
 		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
+			return Project{}, nil, err
+		}
+		if err := checkExperimentPlans(project.Experiments, key); err != nil {
 			return Project{}, nil, err
 		}
 	}
@@ -274,7 +310,48 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 			return Project{}, nil, fmt.Errorf("%s.production_check must be %s or %s (got %q)", key, ProductionCheckOff, claim.RoleTester, word)
 		}
 	}
+	if steps := fields["default_steps"]; steps != nil {
+		if project.DefaultSteps, err = readDefaultSteps(steps, key+".default_steps"); err != nil {
+			return Project{}, nil, err
+		}
+	}
 	return project, warnings, nil
+}
+
+// readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
+// plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
+// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
+// roles), and refuses an empty list, so the steps a task with none runs are steps this release
+// carries out. A refusal names the key, then gives every reason of both checks.
+func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
+	words, err := readStrings(value, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(words) == 0 {
+		return nil, fmt.Errorf("%s names no step", key)
+	}
+	steps := make([]plan.Step, 0, len(words))
+	for _, word := range words {
+		parsed, err := plan.ParseSteps(word)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", key, err)
+		}
+		if len(parsed) != 1 {
+			return nil, fmt.Errorf("%s names %q, which is not one step: each entry of the list is one step", key, word)
+		}
+		steps = append(steps, parsed[0])
+	}
+	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
+	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	if len(refusals) > 0 {
+		reasons := make([]string, len(refusals))
+		for i, refusal := range refusals {
+			reasons[i] = refusal.Reason
+		}
+		return nil, fmt.Errorf("%s: %s", key, strings.Join(reasons, " "))
+	}
+	return steps, nil
 }
 
 // readSlackChannels is a project's `slack_channels`: Slack channel ids, each named once. An empty
@@ -666,6 +743,40 @@ func commandError(field string, err error) error {
 	return fmt.Errorf("%s failed (%s)", field, end)
 }
 
+// resolveDispatchTokenBroker settles `dispatch_token_broker` and `dispatch_token_transition_file`,
+// refusing each misuse with a message that names the key. resolve runs it before the runtime's own
+// required keys (checkKubernetesKeys), so a file that sets the broker without dispatch_url is told
+// about the broker and not only about the URL. The broker is the daemon's own pod identity, so
+// only `runtime: kubernetes` takes either key. It also needs the exchange audience, since a
+// launch then carries no Dispatch token and each role trades its pod's exchange identity for its
+// own. The transition file holds the shared token a pod built before the setting gets, so it is
+// taken only beside the setting. A `dispatch_token_broker: false` is the setting off, which every
+// runtime runs.
+func resolveDispatchTokenBroker(file fileConfig, configDir string, cfg *Config) error {
+	broker := file.DispatchTokenBroker != nil && *file.DispatchTokenBroker
+	switch {
+	case broker && file.Kubernetes == nil:
+		return errors.New("dispatch_token_broker is not used when runtime is tmux: a tmux daemon has no pod identity to trade at the secrets broker; remove dispatch_token_broker")
+	case file.DispatchTokenTransitionFile != nil && file.Kubernetes == nil:
+		return errors.New("dispatch_token_transition_file is not used when runtime is tmux: it holds the shared Dispatch token a pod built before dispatch_token_broker gets, and a tmux daemon starts no pod; remove dispatch_token_transition_file")
+	case file.DispatchTokenTransitionFile != nil && !broker:
+		return errors.New("dispatch_token_transition_file is set but dispatch_token_broker is not true: the file holds the shared Dispatch token a pod built before dispatch_token_broker gets, so the daemon reads it only under that setting")
+	case !broker:
+		return nil
+	case file.DispatchTokenFile != nil:
+		return errors.New("dispatch_token_file and dispatch_token_broker are both set: the daemon's Dispatch credential is the bearer a file holds or its own pod identity traded at the secrets broker, never both")
+	case file.DispatchURL == nil:
+		return errors.New("dispatch_token_broker is set but dispatch_url is not")
+	case file.Kubernetes.AgentSecrets == nil || file.Kubernetes.AgentSecrets.ExchangeAudience == "":
+		return errors.New("dispatch_token_broker needs runtime.kubernetes.agent_secrets.exchange_audience: under the setting a launch carries no Dispatch token, and each role trades its pod's exchange identity for its own, which no pod carries while exchange_audience is unset")
+	}
+	cfg.DispatchTokenBroker = true
+	if file.DispatchTokenTransitionFile != nil {
+		cfg.DispatchTokenTransitionFile = underConfig(*file.DispatchTokenTransitionFile, configDir)
+	}
+	return nil
+}
+
 func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.DispatchURL != nil {
 		url, err := dispatchBase(*file.DispatchURL, "dispatch_url")
@@ -694,11 +805,13 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.GitHubApps != nil {
 		cfg.GitHubApps = *file.GitHubApps
 	}
-	// A workflow boot needs its Dispatch bearer, its intake, and its own project; each is refused
-	// here, so `legion config check` never passes a file `legion start` refuses.
+	// A workflow boot needs its Dispatch credential, its intake, and its own project; each is
+	// refused here, so `legion config check` never passes a file `legion start` refuses.
+	// The credential is the bearer dispatch_token_file names, or, under dispatch_token_broker, the
+	// daemon's own pod identity (resolveDispatchTokenBroker).
 	if file.DispatchURL != nil {
 		switch _, ok := cfg.Projects[cfg.Project]; {
-		case cfg.DispatchTokenFile == "":
+		case cfg.DispatchTokenFile == "" && !cfg.DispatchTokenBroker:
 			return errors.New(missingDispatchTokenFile)
 		case len(cfg.NatsURLs) == 0:
 			return errors.New("nats_urls is required when dispatch_url is configured: the workflow's intake reads Envoy's notification stream")

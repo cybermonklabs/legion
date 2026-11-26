@@ -153,9 +153,9 @@ func TestBlockedIsEmptyWhenNothingWaitsOnALink(t *testing.T) {
 
 // What a started issue waits on, for the release of its row, is asked only of an issue whose
 // phase keeps a row (record.KeepsSlot). The same unfinished link holds an issue in implementing
-// and holds nothing of one past its review, held from its review, or in its merge, so the rule
-// that names the wait names the phase as well and no order of the admission pass's releases
-// decides it.
+// or held from reviewing, and holds nothing of one in accepting or held from it, in retro or in
+// merging, which keep no row, so the rule that names the wait names the phase as well and no
+// order of the admission pass's releases decides it.
 func TestAStartedIssuePastItsReviewWaitsOnNothing(t *testing.T) {
 	rows := Rows([]record.DispatchIssueRow{{Key: "LEGION-9", Status: "in_progress"}})
 	for _, tc := range []struct {

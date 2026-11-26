@@ -130,12 +130,13 @@ func TestTheIntakesReadNoSettingsWhileNothingChanges(t *testing.T) {
 // Ten job events of a tracked deploy run are checked against the cached rules: none of them reads
 // the delivery settings, and they still schedule the run's read.
 func TestJobEventsReadNoSettings(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
+	jobs := newJobIntake(tuningFor(t), nil, counted, nil, newJobsFake(t).newTestClient(), clock, loadedSettingsCache(t, ctx, counted))
 
 	before := counter.reads.Load()
 	for range 10 {
@@ -153,8 +154,9 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 // first settings saved are stored and close the channel Changed handed out before them; and a
 // project whose delivery is turned off gives no rule again.
 func TestTheSettingsCacheHoldsTheRulesOfDeliveryOnProjects(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	cache := newSettingsCache(pool, nil, nil)
+	cache := newSettingsCache(pool, nil, nil, nil)
 	if cache.Load() != nil || cache.routes() {
 		t.Fatalf("a cache that has read nothing holds %+v, want nothing", cache.Load())
 	}
@@ -198,7 +200,7 @@ func TestTheCacheReloadsOnASaveAndOnADefaultRepositoryMove(t *testing.T) {
 	seeded := seedDeliverySettings(t, ctx, pool)
 	counted, counter := countedDeliveryPool(t, pool)
 	projectsWake := make(chan struct{}, 1)
-	cache := newSettingsCache(counted, settingsWake(t, counted), projectsWake)
+	cache := newSettingsCache(counted, settingsWake(t, counted), projectsWake, tuningFor(t).log)
 	runSettingsCache(t, cache)
 	waitFor(t, 5*time.Second, func() bool {
 		_, ok := cache.Load().For(deliveryRepo)

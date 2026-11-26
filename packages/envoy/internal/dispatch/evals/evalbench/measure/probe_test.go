@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// The statements of a list read as the statement log holds them: evals.Store.ReadStoredFigures'
-// range-figures read with a compare range and its day-figures read, FiguresThrough's read beside
-// them, and evals.Store.DayWindow's union of the day rows, which the list read before the stored
-// figures.
+// The statements of a list read as the statement log holds them: evals.ReadStoredFiguresIn's
+// range-figures read with a compare range and its day-figures read, the read of how far the
+// figures are built beside them, and evals.DayWindowIn's union of the day rows, which the list
+// read before the stored figures.
 const (
 	rangeFiguresRead = `select days, end_day, eval_id, fold_key, figures, oldest_updated_at from eval_range_figures
 		where project_key = any($1::text[]) and repo = $2 and eval_id = any($3::text[]) and days = $6 and end_day = $7::date
@@ -22,8 +22,12 @@ const (
 				where project_key = any($1::text[]) and repo = $2 and day >= $3::date and day < $4::date and eval_id = any($5::text[])
 					and deploy_repo = case when eval_id = any($6::text[]) then $7::text else '' end
 			`
-	figuresBuiltRead = `select project_key, through from eval_figures_built where project_key = any($1)`
-	dayRowsUnion     = `select true, eval_id, series, day, n, sum, num, den, max
+	figuresBuiltRead = `
+		select b.project_key, b.through, s.project_key is not null, s.evals, s.ready_through, s.next_day from eval_figures_built b
+		left join eval_figure_cuts_stale s on s.project_key = b.project_key and s.repo = $2
+		where b.project_key = any($1)
+	`
+	dayRowsUnion = `select true, eval_id, series, day, n, sum, num, den, max
 			from eval_days
 			where project_key = any($1::text[]) and repo = any($2) and listed and eval_id = any($3)
 			  and day >= $4::date and day < $5::date
@@ -41,17 +45,17 @@ func listRead(statements map[int64]string, params map[int64][]string) measuredCa
 }
 
 // TestTheProbeMeasuresTheListsStoredFiguresReads: at this head the list answers an offered range
-// from the stored figures (evals.Store.ReadStoredFigures), so the probe finds the range-figures
-// and day-figures reads among the read's statements, and runs each with the literals the statement
+// from the stored figures (evals.ReadStoredFiguresIn), so the probe finds the range-figures and
+// day-figures reads among the read's statements, and runs each with the literals the statement
 // log holds written in, and again without its figures column. A read that ran neither of them, as
 // one that reads the day rows' union does, fails the probe with a message naming both, so a bench
-// whose list stopped reading the stored figures exits 1. At 04de13fa the probe looked for the day
-// rows' union alone, and failed every run of the head.
+// whose list stopped reading the stored figures exits 1, and a probe that looked for the day rows'
+// union alone would fail every run of the head.
 func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 	window, compare := "'2026-11-22 00:00:00+00'", "'2026-08-30 00:00:00+00'"
 	read := listRead(map[int64]string{11: rangeFiguresRead, 12: figuresBuiltRead, 13: dayFiguresRead}, map[int64][]string{
 		11: {"'{INFRA}'", "''", "'{INFRA/a,INFRA/b}'", "'{INFRA/b}'", "'owner/deploy'", "'84'", window, "'84'", compare},
-		12: {"'{INFRA}'"},
+		12: {"'{INFRA}'", "''"},
 		13: {"'{INFRA}'", "''", compare, window, "'{INFRA/a}'", "'{INFRA/b}'", "'owner/deploy'"},
 	})
 	rangeBranch := func(columns, end string) string {
@@ -103,7 +107,7 @@ func TestTheProbeMeasuresTheListsStoredFiguresReads(t *testing.T) {
 
 	dayRows := listRead(map[int64]string{21: dayRowsUnion, 22: figuresBuiltRead}, map[int64][]string{
 		21: {"'{INFRA}'", `'{""}'`, "'{INFRA/a,INFRA/b}'", compare, window, "'2026-06-07 00:00:00+00'", compare},
-		22: {"'{INFRA}'"},
+		22: {"'{INFRA}'", "''"},
 	})
 	found, _, err = storedFiguresReads(dayRows)
 	if err == nil {

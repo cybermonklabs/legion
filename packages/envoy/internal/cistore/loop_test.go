@@ -871,18 +871,18 @@ func TestSummaryTickRefusesReclaimedClaimWhoseSnapshotWasReplaced(t *testing.T) 
 		releaseBOnce.Do(func() { close(releaseB) })
 	})
 	originalKV := replicaA.watcher.KV()
-	var keyGets int
+	var aClaimed bool
 	useKV(t, replicaA, &interleavingKV{
 		KeyValue: originalKV.Legacy(),
-		beforeGet: func(got string) {
-			if got != key {
+		afterUpdate: func(got string, _ []byte, _ uint64) {
+			if got != key || aClaimed {
 				return
 			}
-			keyGets++
-			if keyGets == 2 {
-				close(aReady)
-				<-releaseA
-			}
+			// Replica A's first write of the record in this tick is its claim; it verifies the claim
+			// from the stream's leader next (ClaimStillHeld), so it waits here, between the two.
+			aClaimed = true
+			close(aReady)
+			<-releaseA
 		},
 	})
 	t.Cleanup(func() { useKV(t, replicaA, originalKV.Legacy()) })

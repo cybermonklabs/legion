@@ -3,6 +3,7 @@ package intake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -35,6 +36,7 @@ import (
 // So the precondition is stated as what both servers hold: the consumer has delivered none of the
 // messages published before it and has none to deliver, which is the state idle is read from.
 func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t *testing.T) {
+	t.Parallel()
 	js, stream := testJetStream(t)
 	pool := migratedPool(t)
 	spec := consumerSpec(&lockedBuffer{})
@@ -107,6 +109,84 @@ func TestDispatchPositionIsIdleForARecreatedConsumerBehindPreExistingMessages(t 
 	}
 }
 
+// nats-server answers a publish once it has stored the message, and counts the message into each
+// consumer's pending only afterwards, on a goroutine of the stream's own (DispatchPosition). A
+// CONSUMER.INFO read in between counts a Dispatch consumer with a message waiting as having nothing
+// pending and nothing awaiting an ack; read idle, it let the daemon's boot reconcile decide a key
+// that waiting message would still change (internal/daemon's
+// TestReconcileHoldsAKeyTheBootListingShowsOutOfTheWorkflowStatusWindow, 1 of 20 race runs). The
+// stand-in answers that reading every time (lagStandIn's uncounted), so the gap the server leaves
+// for a moment is open for the whole row:
+//   - a GitHub message, which the Dispatch consumer's filter never matches, leaves it idle;
+//   - a Dispatch message stored after the consumer's delivered sequence makes it not idle;
+//   - with the stored-message get refused at once, or never answered until its bound passes (as
+//     NATS answers a user without the grant, and as a loaded server can), the poller's reading
+//     (DispatchPosition) keeps the counts' idle and a reconcile's (ReconcilePosition) reads not
+//     idle, each saying so at Warn.
+func TestDispatchPositionIsNotIdleWhileTheStoreHoldsAMessageTheConsumerHasNotCounted(t *testing.T) {
+	// Not parallel: its reading holds only while the stored message's read beats consumerOldestBound, 1 s, a wall-clock bound the load of tests beside it can cross.
+	ctx := context.Background()
+	served, _ := testJetStream(t)
+	standIn := &lagStandIn{JetStream: served}
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	consumers, err := OpenConsumers(ctx, standIn, migratedPool(t), spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+	standIn.uncounted = true
+	reading := func(read func(context.Context) (DispatchConsumerPosition, error)) DispatchConsumerPosition {
+		t.Helper()
+		bounded, cancel := rowRead(t)()
+		defer cancel()
+		position, err := read(bounded)
+		if err != nil {
+			t.Fatalf("reading the Dispatch consumer's position: %v", err)
+		}
+		return position
+	}
+	position := func() DispatchConsumerPosition { return reading(consumers.DispatchPosition) }
+
+	publish(t, served, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	if got := position(); !got.Idle {
+		t.Fatalf("position with only a GitHub message stored = %+v, want idle: the Dispatch consumer's filter never matches it", got)
+	}
+
+	publish(t, served, "notifications.dispatch.issue.CAPTURE-3.issue.updated", capturedIssueUpdatedEnvelope(t))
+	if got := position(); got.Idle {
+		t.Fatalf("position with a Dispatch message stored and not yet counted = %+v, want not idle", got)
+	}
+
+	never := func(ctx context.Context) (*jetstream.RawStreamMsg, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	for _, failing := range []struct {
+		name   string
+		getMsg func(context.Context) (*jetstream.RawStreamMsg, error)
+		err    string
+	}{
+		{"refused", func(context.Context) (*jetstream.RawStreamMsg, error) {
+			return nil, errors.New("nats: permissions violation")
+		}, "nats: permissions violation"},
+		{"never answered", never, context.DeadlineExceeded.Error()},
+	} {
+		standIn.getMsg = failing.getMsg
+		logs.Reset()
+		if got := position(); !got.Idle {
+			t.Fatalf("the poller's position with the stored-message get %s = %+v, want the counts' idle", failing.name, got)
+		}
+		if got := reading(consumers.ReconcilePosition); got.Idle {
+			t.Fatalf("a reconcile's position with the stored-message get %s = %+v, want not idle", failing.name, got)
+		}
+		for _, wants := range [][]string{{"its idle is its own count alone"}, {"a reconcile reads the consumer as not idle"}} {
+			if line := logLine(logs.String(), append(wants, "level=WARN", "on a loaded NATS server or because the daemon's NATS user lacks $JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS", failing.err)...); line == "" {
+				t.Fatalf("logs with the stored-message get %s = %q, want a WARN line saying %q, naming both causes and the error", failing.name, logs.String(), wants[0])
+			}
+		}
+	}
+}
+
 // rowRead returns what gives each read of a row its context: one bounded by a minute, or by what
 // is left of the test binary's deadline less a second when that is sooner (testwait.Bounded),
 // read when the read starts.
@@ -150,6 +230,7 @@ func requireNoConsumers(t *testing.T, read func() (context.Context, context.Canc
 // delivered again and dropped as a duplicate. Both ways a consumer is created do it: the boot's
 // OpenConsumers, and a SetRepositories mid-run, as a recording on a repository not heard yet makes.
 func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
+	t.Parallel()
 	for _, reopen := range []struct {
 		name string
 		open func(t *testing.T, js jetstream.JetStream, pool *pgxpool.Pool, spec ConsumerSpec, missing func()) func()
@@ -229,6 +310,7 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 // goroutine's and Lag's. CI's daemon-go job runs this package under -race (ci_job_reads.py's
 // DAEMON_RACE_PACKAGES).
 func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *testing.T) {
+	// Not parallel: each Lag it reads has to answer within consumerOldestBound, 1 s, and consumerLagBound, 2 s, wall-clock bounds the load of tests beside it can cross.
 	ctx := context.Background()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
@@ -252,6 +334,9 @@ func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *tes
 	if err != nil {
 		t.Fatalf("read the waiting Dispatch event back: %v", err)
 	}
+	// The server counts it for the consumer only after the publish's ack (awaitWaiting), and the
+	// Lag loop below wants it waiting from its first read.
+	awaitWaiting(t, stream, dispatch, 1)
 
 	const reads, creations = 50, 10
 	recreated := make(chan struct{})
@@ -317,6 +402,7 @@ func TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn(t *tes
 // found missing, as a consumer created for the first time is: what was published before it is
 // not replayed.
 func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)
@@ -363,6 +449,7 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 // none of them, and the daemon's own read of each issue's pull request heals those it would have
 // acted on.
 func TestAStoredPositionOlderThanTheStreamWarnsOfEventsThatMayHaveBeenMissed(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	createWrites(t, pool)
 	js, stream := testJetStream(t)

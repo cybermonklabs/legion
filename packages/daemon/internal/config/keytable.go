@@ -168,7 +168,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "admission_cap", Default: "`4`, or `LEGION_ADMISSION_CAP` in the daemon's environment", RequiredBy: "no",
-			Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and keeps it until it is done, and the rest wait in line.",
+			Description: "How many issues, roots and children alike, hold a slot at once; an issue takes a slot when the daemon starts it and holds it while it stands in a phase that keeps one (accepting, retro and merging keep none), and the rest wait in line.",
 			Read:        reads(readInt, func(f *fileConfig, v *int) { f.AdmissionCap = v }),
 		},
 		{
@@ -178,7 +178,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
-			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret.",
+			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret. The daemon reads it at boot and again before each launch, so an edit reaches the next launch with no restart, and an edit that leaves it missing or blank keeps the text last read.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
 		},
 		{
@@ -198,18 +198,28 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "operator_token_file", Default: "none: the boot refuses a daemon that names no operator token", RequiredBy: "yes",
-			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
+			Description: "The file holding the operator's bearer token, which `legion controller start`, `legion claims`, `legion project`, `legion intake` and `legion issue status` present and the daemon's operator routes authenticate against; make it one long random string readable by its owner alone.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.OperatorTokenFile = v }),
 		},
 		{
 			Name: "dispatch_url", Default: "the daemon runs no workflow", RequiredBy: "when runtime is kubernetes: the workflow is what launches every pod",
-			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `dispatch_token_file`, `nats_urls` and a `projects` entry for the daemon's own project.",
+			Description: "Dispatch's service base URL, never its `/mcp` endpoint, which its clients append themselves; setting it configures the workflow, which then requires `nats_urls`, a `projects` entry for the daemon's own project and a Dispatch credential: `dispatch_token_file`, or `dispatch_token_broker: true` under `runtime: kubernetes`.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.DispatchURL = v }),
 		},
 		{
-			Name: "dispatch_token_file", Default: "none: a configured `dispatch_url` is refused without it", RequiredBy: "when `dispatch_url` is configured",
+			Name: "dispatch_token_file", Default: "none: a configured `dispatch_url` is refused without it unless `dispatch_token_broker` is true", RequiredBy: "when `dispatch_url` is configured and `dispatch_token_broker` is not true",
 			Description: "The file holding the bearer token Legion's agents present to Dispatch; the daemon hands each pod its own copy, and no pod reads the operator's file.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.DispatchTokenFile = v }),
+		},
+		{
+			Name: "dispatch_token_broker", Default: "`false`: the daemon presents the bearer `dispatch_token_file` names and hands each launch a copy", RequiredBy: "no",
+			Description: "Whether the daemon's Dispatch credential is its own pod identity, traded at the secrets broker for a token of its own project, in place of `dispatch_token_file`, which it is refused beside; a launch then carries no Dispatch token, since each role trades its pod's exchange identity for its own, so only `runtime: kubernetes` takes it, with `dispatch_url` and `runtime.kubernetes.agent_secrets.exchange_audience`.",
+			Read:        reads(readBool, func(f *fileConfig, v *bool) { f.DispatchTokenBroker = v }),
+		},
+		{
+			Name: "dispatch_token_transition_file", Default: "none: a launch into a pod built before `dispatch_token_broker` was on is refused until its update round replaces the pod", RequiredBy: "no",
+			Description: "The file holding the shared Dispatch token a launch into a pod built before `dispatch_token_broker` was on gets, as every launch got it before, while that pod waits for the update round that replaces it; the daemon never calls Dispatch with it, only `dispatch_token_broker: true` takes it, and a deployment removes it once no live launch holds a Dispatch token.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.DispatchTokenTransitionFile = v }),
 		},
 		{
 			Name: "envoy_url", Default: "`http://127.0.0.1:9020`", RequiredBy: "when runtime is kubernetes: a pod cannot reach the loopback listener it defaults to",
@@ -237,8 +247,8 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
-			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod works one issue of a configured project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of a configured project",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -271,7 +281,7 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readGates, func(f *fileConfig, v *Gates) { f.Gates = v }),
 		},
 		{
-			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
+			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
 			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
@@ -356,6 +366,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "review_round_cap", Default: "`3`", RequiredBy: "no",
 			Description: "How many review rounds one pull request may take; it is the one cap left that blocks a pull request.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.ReviewRoundCap = v }),
+		},
+		{
+			Name: "github_graphql_share", Default: "`0.5`: each query is followed by a pause as long as it took", RequiredBy: "no",
+			Description: "The share of the time this daemon's merge-state queries of one GitHub App installation may keep GitHub's GraphQL API at work: after each query the next waits (1 - share) / share of the time it took, at most 15 minutes. GitHub allows an installation 60 seconds of query processing time in 60 seconds, and every daemon that reads with the same installation spends that one allowance, so a deployment sets it near 1 divided by the number of daemons sharing the installation; a value below `0.01` (one daemon in a hundred) or above 1 is refused, and so is a value that is not a finite number.",
+			Read:        reads(readShare, func(f *fileConfig, v *float64) { f.GitHubGraphQLShare = v }),
 		},
 		{
 			Name: "controller_wake_interval_seconds", RequiredBy: "no",
@@ -523,6 +538,8 @@ var nestedKeys = []memberGroup{
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
 			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the load checks each name's shape and refuses two names of one repository, and a pane working any other repository stamps nothing."},
+		{Name: "default_steps", Default: "`[" + strings.Join(defaultStepWords, ", ") + "]`, today's line up to the owner's acceptance", RequiredBy: "no",
+			Description: "The steps a task runs when its plan block names neither steps nor a sub-owner, and the steps of the one task of an issue whose owner gives no plan or whose experiment's group takes none, each entry one step: a role, or a role and the key of its agent, as `acceptance:owner`; Legion's retro and merge follow them, and the loader refuses an empty list and each list this release would refuse as a task's steps, with the reason. Name it only once every daemon that reads the file runs this release: an earlier daemon refuses the whole file (`Unknown key \"projects.<KEY>.default_steps\"`)."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",
@@ -540,11 +557,11 @@ var nestedKeys = []memberGroup{
 		{Name: "config_files", Default: "none: a mode other than `off` is refused without them", RequiredBy: "when `mode` is `on` or `random`: a memory-group role reads its memory from these files",
 			Description: "The Oh My Pi settings overlays every role of a memory-group tree names last in `PI_CONFIG_FILES`, after the deployment's own and the role's own, as absolute paths; under Kubernetes each must be a file one of the pod's mounts carries."},
 		{Name: "instructions", Default: "a memory-group role's system prompt gains nothing", RequiredBy: "no",
-			Description: "One Markdown file on the daemon's own disk, never a pod mount, whose text the daemon reads at boot and appends to every memory-group role's system prompt, after the deployment's own instructions."},
+			Description: "One Markdown file on the daemon's own disk, never a pod mount, whose text the daemon reads at boot, and again before each launch, and appends to every memory-group role's system prompt, after the deployment's own instructions."},
 	}},
 	{Path: "projects.<KEY>.experiments.<NAME>", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",
-			Description: "Which of the project's new units the experiment draws: `off` none, `on` every one into `on_variant`, `random` a draw among the variants by weight; the draw is made once and the unit keeps it."},
+			Description: "The arm each of the project's new units is given: `off` no arm, `on` the one `on_variant` names, `random` one drawn among the variants by weight; the draw is made once and the unit keeps it."},
 		{Name: "unit", Default: "`tree`", RequiredBy: "no",
 			Description: "What the experiment draws one at a time: a whole `tree`, or each `issue` on its own."},
 		{Name: "roles", Default: "every issue role", RequiredBy: "no",
@@ -562,7 +579,9 @@ var nestedKeys = []memberGroup{
 		{Name: "config_files", Default: "a unit drawn into this arm names no overlay of the arm's own", RequiredBy: "no",
 			Description: "The Oh My Pi settings overlays each role the experiment reaches (`roles`) of a unit drawn into this arm names in `PI_CONFIG_FILES`, as absolute paths; the arm that names no file is the control the others are measured against."},
 		{Name: "instructions", Default: "a role of a unit drawn into this arm gains nothing", RequiredBy: "no",
-			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
+			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot, and again before each launch, and appends to the system prompt of each role the experiment reaches (`roles`) of a unit drawn into this arm."},
+		{Name: "plan", Default: "the arm sets nothing: its issues run as with no experiment", RequiredBy: "when another arm of the experiment names it: each arm of an experiment that sets it names how its issues are done",
+			Description: "How the issues of this arm are done: `owner` writes its plan, `default` runs the project's default steps and Legion takes no plan from the owner; an experiment that names it must draw for each issue (`unit: issue`), and `experiments.memory` may not name it."},
 	}},
 	{Path: "runtime.tmux", Members: []member{
 		{Name: "pane_env", Default: "a pane is told only what the runtime tells it", RequiredBy: "no",
@@ -801,12 +820,12 @@ var nestedKeys = []memberGroup{
 			Description: "The absolute path the daemon's own projected ServiceAccount token for the broker's audience is mounted at; the daemon logs in with it at every start and keeps logging in, and the broker's `BROKER_SERVICE_LOGINS` names that account."},
 		{Name: "operator", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon logs in with its own ServiceAccount token, which no person approves, so the block names no approver; the loader refuses a file that still sets it."},
-		{Name: "audience", Default: "`agent-secrets`", RequiredBy: "no",
+		{Name: "audience", Default: "`" + DefaultAgentSecretsAudience + "`", RequiredBy: "no",
 			Description: "The audience of the projected token the daemon presents to the broker."},
 		{Name: "token_expiry_seconds", Default: "`3600`", RequiredBy: "no",
 			Description: "How long a worker's broker token lives, between 600 and 3600 seconds, the API server issuing none under 600."},
 		{Name: "exchange_audience", Default: "no pod carries an identity the broker's exchange trades", RequiredBy: "no",
-			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. Set no `exchange_audience` until your daemon, its pods and its broker carry three more changes: each role trading with a key of its own, since until then a role's own trade is refused; each session name registered at `POST /v1/oauth/exchange/pod-sessions` bound to the daemon that registered it, not only each registrar to the pods of its own daemon, since until then any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session; and the daemon choosing each role's session id rather than taking its agent's report. The daemon already holds each session id to the claim of its project that first recorded it and registers no session another of its claims holds."},
+			Description: "The audience of a second projected token every enrolled pod carries for an hour at a time, which each role is told of as `AGENT_SECRETS_MACHINE_IDENTITY=kubernetes` and `AGENT_SECRETS_MACHINE_TOKEN_FILE`, so the pod's sessions trade it at the broker's exchange (`BROKER_EXCHANGE_K8S_AUDIENCE`) for a broker token of their own; never `audience` itself, and never `runtime.kubernetes.sandbox.microvm.metadata.workload_pool` while that `metadata` is set and an issue pod runs in a microVM. A pod's own trade waits for three changes of plan E, and this release holds all three: in its daemon and its worker image, t-e-53, which makes a role trade with its own key, and t-e-39, which has the daemon choose each Oh My Pi role's session id rather than take its agent's report; and in its broker, t-e-41, which binds each session name registered at `POST /v1/oauth/exchange/pod-sessions` to the daemon that registered it, since before it any `BROKER_SERVICE_LOGINS` account can register a pod, its own daemon's among them, for another claim's session. Set `exchange_audience` only once your daemon, its worker image and its broker run this release or a later one, and only once the broker's `BROKER_POD_REGISTRARS` pairs the daemon's login account with its pods' account, since a broker with that list unset refuses every registration. The worker image must also carry an Oh My Pi that takes `--session-id`, which each new Oh My Pi role starts with: the cybermonklabs/oh-my-pi releases from v18.18.6-sami.20261117-074351 take it, the Oh My Pi this release pins among them. While the key is set, the boot refuses a worker image whose Oh My Pi does not take the flag. The daemon already holds each session id to the claim of its project that first recorded it (t-e-54) and registers no session another of its claims holds."},
 	}},
 	{Path: pluginsKey, Members: []member{
 		{Name: "pi_legion", Default: "the pair the release workflow linked into this binary, which `legion version`'s second line names", RequiredBy: "when `pi_envoy` is set: a relaunch installs the pair together or not at all",

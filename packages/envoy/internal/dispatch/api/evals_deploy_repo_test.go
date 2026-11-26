@@ -52,7 +52,7 @@ func newDeployRepoRig(t *testing.T, copied bool, before func(*deployRepoRig)) *d
 	}
 	now := end.Add(-time.Minute)
 	r := &deployRepoRig{
-		served: served, database: database, registry: evals.New(database, deps.Docs, deps.Events), fixture: fixture,
+		served: served, database: database, registry: evals.New(database, deps.Docs, deps.Events, deps.Attributor), fixture: fixture,
 		projects: []string{fixture.Project, windows[0].Spec.Project}, now: now, today: measures.Midnight(now), other: fixture.Repos[1],
 	}
 	if copied {
@@ -216,13 +216,15 @@ func (r *deployRepoRig) firstDeployDay(t *testing.T) time.Time {
 // that straddles it reads "no data" too and draws only the days from it on; a window after it reads
 // real values, a point of every day, the days with no deploy among them as 0. Each series names its
 // own first day: pr-ci that of the repository's first PR-checks run, and merge-to-production the
-// merge day of a pull request of the repository merged before its first deploy and shipped by it,
+// merge day of a pull request of the repository merged before its first deploy and shipped by it
+// (the history's attribution inputs left unread, so the issue its row names is its attribution,
+// leaveAttributionInputsUnread),
 // which reads its real lead time that day while deploy-frequency holds no point of it. No row of
 // the repository is older than its first run, the start of the history the reconcile holds for it.
 // Read from the stored figures and then from the day rows (no figures built), the answers are the
 // same bytes.
 func TestAMoveOfTheDeployRepositoryReadsTheNewRepositorysOwnHistory(t *testing.T) {
-	r := newDeployRepoRig(t, true, nil)
+	r := newDeployRepoRig(t, true, func(r *deployRepoRig) { leaveAttributionInputsUnread(t, r.database.Pool) })
 	first := r.firstDeployDay(t)
 	var since time.Time
 	if err := r.database.Pool.QueryRow(t.Context(), `select min(started_at) from delivery_runs where repo = $1`, r.other).Scan(&since); err != nil {
@@ -383,7 +385,7 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(
 		for _, shape := range shapes {
 			answer, _ := r.read(t, shape)
 			if got, want := values(t, answer), move.want(shape); !slices.Equal(got, want) {
-				index := firstLine(got, want)
+				index := firstDifferingLine(got, want)
 				t.Errorf("under %s, %s states otherwise than it should, first at item %d of %d:\n\tgot  %s\n\twant %s",
 					move.repo, shape.name, index, len(want), lineAt(got, index), lineAt(want, index))
 			}
@@ -391,8 +393,8 @@ func TestAMoveOfTheDeployRepositoryAwayAndBackWritesTheTwoRepositoriesRowsAlone(
 	}
 }
 
-// firstLine is the first index at which a and b differ.
-func firstLine(a, b []string) int {
+// firstDifferingLine is the first index at which a and b differ.
+func firstDifferingLine(a, b []string) int {
 	for index := range min(len(a), len(b)) {
 		if a[index] != b[index] {
 			return index

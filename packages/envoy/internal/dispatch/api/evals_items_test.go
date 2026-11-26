@@ -104,7 +104,7 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 
 	// A pull-request checks run that failed a job, ending the window one second past the 24 hours
 	// after its start: it started before the 24 hours the table counts and completed inside them.
@@ -176,7 +176,7 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	fixture := deliverytest.Seed(t, database.Pool, deliverytest.Spec{Seed: 2916, OneProject: true, Days: 14})
-	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events), database, fixture.To.Add(-time.Minute))
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, fixture.To.Add(-time.Minute))
 	// The Pipeline's seven days ending on the history's eleventh, and the items' range of the
 	// same days.
 	pinned := fixture.From.AddDate(0, 0, 11).Add(-time.Second)
@@ -261,7 +261,7 @@ func TestOneEvalItemsAnswerReadsItsRowsFromOneSnapshot(t *testing.T) {
 		end = fixture.To
 	}
 	now := end.Add(-time.Minute)
-	registry := evals.New(database, deps.Docs, deps.Events)
+	registry := evals.New(database, deps.Docs, deps.Events, deps.Attributor)
 	window := evalDaysEnding(7, measures.Midnight(now))
 	target := evalItemsPath(fixture.Project, evals.SlugDeployFrequency) + "?" + url.Values{
 		"from": {window.From.Format(time.RFC3339)}, "to": {window.To.Format(time.RFC3339)}, "limit": {"200"},

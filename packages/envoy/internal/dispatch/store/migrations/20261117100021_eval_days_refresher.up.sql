@@ -16,11 +16,11 @@
 -- the moment the pass that last wrote the row ran as of, which every pass stamps whether or not its
 -- feed held anything new, and on the `delivery_changes` row when a page last read the change log to
 -- its end (delivery.ChangeCursor's ReadAt), which a full page leaves where it stood; so
--- evals.Store.RefresherAge reads how long ago the last pass ran or a pass last read the whole
+-- evals.RefresherAgeIn reads how long ago the last pass ran or a pass last read the whole
 -- change log, whichever is older. A third row, `figures` (migration 20261120072042), is the stored
 -- figures' own read of the same change log, kept as the `delivery_changes` row is, which every
 -- build that writes the figures reads its eval_days and eval_versions changes from, so a change the
--- refresher's page of a build with no figures read is still folded; RefresherAge reads the two
+-- refresher's page of a build with no figures read is still folded; RefresherAgeIn reads the two
 -- feeds' rows alone. It is a table of its own rather than rows of issue_facts_cursor:
 -- legionfacts.CursorAge reads that table's oldest row as the age of the Legion facts, and a row of
 -- another loop would stand in its answer.
@@ -33,11 +33,11 @@
 -- once today's row is written; and the stored figures of one project (family `figures`, migration
 -- 20261120072042), a walk of the ranges' end days, which stands two days past tomorrow once the
 -- ranges ending two days after today are folded. A walk builds each new UTC day as it comes, in
--- the open; one begun again (a change of a repository's mapping) rebuilds every day from its first
--- input day in the open too, a batch a pass, and so does a family's first walk, over a database or
--- a project no rows are served of. Where rows are served, a release, a lost change cursor and
--- delivery settings the rows stand built under that are not recorded begin no walk: they rebuild
--- the served families aside (eval_rebuilds below).
+-- the open; a family's first walk, over a database or a project no rows are served of, builds every
+-- day from its first input day in the open too, a batch a pass, and so does a walk begun again
+-- where no rows are served. Where rows are served, a release, a lost change cursor and delivery
+-- settings the rows stand built under that are not recorded begin no walk: they rebuild the served
+-- families aside (eval_rebuilds below).
 --   built_by   the build that last moved the walk; no part of its key, so every build's process
 --              continues the one walk.
 --   next_day   the first day the walk has not built yet (of the figures walk, the first end day);
@@ -90,22 +90,22 @@
 --              them as they are.
 --   updated_at when the row was last recorded.
 --
--- eval_rebuilds holds one row per rebuild (evals/rebuild.go, the architect's rulings of 07:59Z and
--- 08:28Z): a release (a process whose first pass finds the stored rows served by another build),
--- a lost change cursor, and delivery settings the rows stand built under that are not recorded
--- rebuild the families whose rows are served (eval_days_serving) aside, in short transactions,
--- and make what moved visible in one short commit, the flip. A family no rows are served of yet (a
+-- eval_rebuilds holds one row per rebuild (evals/rebuild.go): a release (a process whose first
+-- pass finds the stored rows served by another build), a lost change cursor, and delivery settings
+-- the rows stand built under that are not recorded rebuild the families whose rows are served
+-- (eval_days_serving) aside, in short transactions, and make what moved visible in one short
+-- commit, the flip. A family no rows are served of yet (a
 -- database or a project first seen) has nothing to keep serving: its walk builds it in the open.
 -- At most one rebuild is building (eval_rebuilds_building).
 --   reason     `release`, `cursor`, `settings`, or `first` (a database whose cursors are gone over
 --              served rows).
 --   built_by   the build whose process runs it, whose rules it builds by, and which the flip records
 --              as the build that serves the rows (eval_days_serving.built_by).
---   state      `building`, then `flipped` once its flip committed, or `abandoned`: a change of a
---              repository's mapping, a rewrite of a settings change, a page that finds a
---              repository's runs gone and a lost cursor abandon the one building and begin it again,
---              and one whose build has not moved it for two days, a build no process runs, is
---              abandoned. The staged rows of one that is not building are deleted in short chunks.
+--   state      `building`, then `flipped` once its flip committed, or `abandoned`: a rewrite of a
+--              settings change, a page that finds a repository's runs gone and a lost cursor
+--              abandon the one building and begin it again, and one whose build has not moved it
+--              for two days, a build no process runs, is abandoned. The staged rows of one that is
+--              not building are deleted in short chunks.
 --   staged     whether the rows it holds in the tables below are left: false once they are deleted.
 --   began_at, updated_at   when it began, and when it last moved.
 -- eval_rebuild_walks holds one row per walk of a rebuild: the delivery and CI rows (family

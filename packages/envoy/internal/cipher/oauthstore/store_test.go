@@ -408,6 +408,8 @@ func TestSweepDeletesOnlySpentState(t *testing.T) {
 		`insert into oauth_dpop_nonces (nonce, expires_at) values ('nonce-expired', now() - interval '1 second'), ('nonce-live', now() + interval '1 minute')`,
 		`insert into oauth_access_tokens (signature, request_id, request, expires_at) values
 			('access-expired', 'r', '{}', now() - interval '1 second'), ('access-live', 'r', '{}', now() + interval '1 hour')`,
+		`insert into oauth_narrowed_access_tokens (signature, request_id, request, expires_at, jwk_thumbprint) values
+			('narrowed-expired', 'n', '{}', now() - interval '1 second', 'k'), ('narrowed-live', 'n', '{}', now() + interval '1 hour', 'k')`,
 		// rotated: its old token's grace passed, its newest is live, so all of it stays.
 		// revoked: every row inactive. lapsed: every row past its expiry. spent: its only token's
 		// grace passed with no successor. retrying: its only token is inside its grace.
@@ -428,11 +430,12 @@ func TestSweepDeletesOnlySpentState(t *testing.T) {
 		t.Fatalf("Sweep: %v", err)
 	}
 	for table, want := range map[string]string{
-		"select string_agg(signature, ',' order by signature) from oauth_device_codes":   "device-just-expired,device-live",
-		"select string_agg(jti, ',' order by jti) from oauth_dpop_proofs":                "proof-live",
-		"select string_agg(nonce, ',' order by nonce) from oauth_dpop_nonces":            "nonce-live",
-		"select string_agg(signature, ',' order by signature) from oauth_access_tokens":  "access-live",
-		"select string_agg(signature, ',' order by signature) from oauth_refresh_tokens": "retrying-1,rotated-new,rotated-old",
+		"select string_agg(signature, ',' order by signature) from oauth_device_codes":           "device-just-expired,device-live",
+		"select string_agg(jti, ',' order by jti) from oauth_dpop_proofs":                        "proof-live",
+		"select string_agg(nonce, ',' order by nonce) from oauth_dpop_nonces":                    "nonce-live",
+		"select string_agg(signature, ',' order by signature) from oauth_access_tokens":          "access-live",
+		"select string_agg(signature, ',' order by signature) from oauth_narrowed_access_tokens": "narrowed-live",
+		"select string_agg(signature, ',' order by signature) from oauth_refresh_tokens":         "retrying-1,rotated-new,rotated-old",
 	} {
 		var got string
 		if err := pool.QueryRow(ctx, table).Scan(&got); err != nil || got != want {

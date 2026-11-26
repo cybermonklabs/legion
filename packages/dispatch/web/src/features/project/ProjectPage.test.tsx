@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -18,8 +18,15 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { ProjectPage } from "./ProjectPage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function LocationProbe() {
   const location = useLocation();
@@ -103,6 +110,7 @@ function renderPage(
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ],
   login: string | null = "alice",
@@ -306,6 +314,7 @@ test("/settings selects the Settings tab, which holds the project's delivery set
     key: "CORE",
     name: "Core",
     open_asks: 0,
+    proven_sessions: false,
   };
   const page = renderPage("/projects/CORE", [core]);
   try {
@@ -340,6 +349,7 @@ test("another project's settings tab shows nothing of the last project's save", 
     key,
     name,
     open_asks: 0,
+    proven_sessions: false,
   });
   // The reader came from OTHER's settings tab to CORE's, and goes back to OTHER's.
   const page = renderPage(
@@ -676,6 +686,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Core",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
       {
         created_at: "2026-09-10T00:00:00Z",
@@ -683,6 +694,7 @@ test("a move refused on one project's board leaves no refusal above the board th
         name: "Other",
         open_asks: 0,
         gated_steps: [],
+        proven_sessions: false,
       },
     ]
   );

@@ -16,11 +16,11 @@ body: |-
   `GET /api/v1/evals` reads every project, or the ones named. A refresher keeps the day rows true
   to their inputs from the delivery change feed, issue events and a daily tick, and the live hub
   has an `evals` view that wakes when a reading, a version or a day row of its project lands.
-  The eval writes, the refresher's, the Legion facts' and every write of a repository's mapping
-  record their changes in an outbox, `delivery_changes_pending`, and never take the delivery
-  change log's lock: a drain moves them into `delivery_changes` 250 at a time, each batch a short
-  statement of its own, run by each eval write and each mapping write for one batch right after
-  its commit, by each Legion facts pass right after its commit, by the live hub before each read,
+  The eval writes, the refresher's and the Legion facts' record their changes in an outbox,
+  `delivery_changes_pending`, and never take the delivery change log's lock: a drain moves them
+  into `delivery_changes` 250 at a time, each batch a short statement of its own, run by each
+  eval write for one batch right after its commit, by each Legion facts pass right after its
+  commit, by the live hub before each read,
   by the refresher at each pass and by the server's boot before it serves, so a correction of
   1,400 readings holds no lock the delivery intake waits on, and no burst holds it longer than one
   batch.
@@ -31,9 +31,7 @@ body: |-
   write runs its reads, the title rule's read of every pull request among them, before it takes
   the change log's lock, and sends its writes after the lock in one round trip. So each table has
   one position for that lock: every path takes it before the table's row locks or in the
-  statement that ends its transaction. Every writer of a repository's mapping, the delivery
-  fixtures included, takes the mapping routes' locks, in the order the release before this one
-  takes them, so two writes of one mapping serialize while the two releases serve together.
+  statement that ends its transaction.
   A write that registers an eval writes its section of `evals-md` in the same transaction as its
   versions, readings and day rows, so no eval exists without its section: it renders the section
   before it stores anything and the section's writes go to Postgres in one batch after the eval's

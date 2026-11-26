@@ -237,12 +237,15 @@ wrong_login="$pg_user:hunter2"
 # loaded, from the package whose manifest the gate read, speaking Envoy plugin interface 1, and
 # pi-envoy publishing interface 1 from a file an @sjawhar/pi-envoy manifest owns (the gate holds
 # the Envoy entry's file to a manifest of that name) — says why anything else should never have
-# run, and fails it. The gate's contract probe reads the pi-legion manifest where Oh My Pi finds it
-# under the pane's HOME and default profile: the daemon runs with HOME=$work/home and neither
-# profile variable, and the manifest there is the checkout's own, so it declares the contract this
-# checkout's daemon requires. The gate also asks the load probe for the task agents and skills the
-# role prompts name (LEGION_PROMPT_AGENTS, LEGION_PROMPT_SKILLS) and whether each of those agents'
-# models resolves (LEGION_AGENT_MODELS), and the stub answers that they all resolve.
+# run. The gate's contract probe reads the pi-legion manifest where Oh My Pi finds it under the
+# pane's HOME and default profile: the daemon runs with HOME=$work/home and neither profile
+# variable, and the manifest there is the checkout's name and version with the `legion` block a
+# pack writes (lib/pack-plugin.sh), since the checkout's own manifest declares no contract: its
+# daemonApiVersion is the one scripts/daemon-contract.sh prints for the working tree, so it
+# declares the contract this checkout's daemon requires. The gate also asks the load probe for
+# the task agents and skills the role prompts name (LEGION_PROMPT_AGENTS, LEGION_PROMPT_SKILLS)
+# and whether each of those agents' models resolves (LEGION_AGENT_MODELS), and the stub answers
+# that they all resolve.
 (umask 077 && printf 'stage1-operator-%s\n' "$project" >"$work/operator-token")
 cat >"$work/omp" <<'EOF'
 #!/bin/sh
@@ -264,9 +267,17 @@ chmod 0755 "$work/omp"
 export LEGION_OMP_PATH="$work/omp"
 plugins="$work/home/.omp/plugins/node_modules/@sjawhar"
 mkdir -p "$plugins/pi-legion" "$plugins/pi-envoy"
-jq '{name, version, legion}' "$root/packages/pi-legion/package.json" >"$plugins/pi-legion/package.json"
+contract=$(bash "$root/scripts/daemon-contract.sh")
+jq --argjson contract "$contract" '.legion.daemonApiVersion = $contract | {name, version, legion}' \
+  "$root/packages/pi-legion/package.json" >"$plugins/pi-legion/package.json"
 jq '{name, version}' "$root/packages/pi-envoy/package.json" >"$plugins/pi-envoy/package.json"
-pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
+# PATH is handed over by value, as the other e2e scripts hand theirs to the services they start
+# through held-port.py: start_kept runs `python3` by name (lib/rig.sh), and the first python3 can
+# be a version manager's shim that starts the interpreter with a PATH of its own. mise 2026.10.11's
+# python3 shim, in a mise-activated environment, put that environment's PATH in front of the
+# entries put first, so the daemon held-port.py starts would find that environment's tmux before
+# the real one put first above.
+pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home" PATH="$PATH")
 
 # Beyond what boot needs, the file plants what the state's `settings` must show and must not
 # (LEGION-791): a review_round_cap the default would not answer, a github_apps block whose

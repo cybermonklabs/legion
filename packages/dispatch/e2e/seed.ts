@@ -104,6 +104,23 @@ const keptTables: readonly { table: string; why: string }[] = [
 // and a list of today's names repeated in this comment is a thing that migration would make
 // false with nobody reading it.
 
+// The node and tuple store (migration 20261109013400) is the one place the reset empties only
+// part of a table. Migration 20261109051232 and the type migrations after it seed one `supertag`
+// node per block type and one `attribute` node per attribute, with their base-attribute and
+// `attribute_of` tuples, and nothing writes them again until a migration runs. They are the block
+// schema the server installs (pmdoc/schemanodes) and the targets `block_pointer_targets` reads for
+// `graph_edges`, so a reset that took them would leave the instance with no block type at all.
+// So the schema read leaves these two tables out of its targets, and each is emptied by a delete
+// of its own that keeps those rows and takes every row a scenario wrote, after the projections
+// that name its nodes (`comments`, `document_blocks` and `block_refs` carry a foreign key into
+// `graph_nodes`; `graph_tuples` carries none). They are locked beside the targets, so the reset
+// still holds every table it empties. `source_event` tells the seeded rows apart for nothing: the
+// kind does, and that is what these predicates keep.
+const storeDeletes: ReadonlyArray<{ table: string; keep?: string }> = [
+  { table: "graph_tuples", keep: "from_kind IN ('supertag', 'attribute')" },
+  { table: "graph_nodes", keep: "kind IN ('supertag', 'attribute')" },
+];
+
 /** `value` as a SQL string literal, with every quote of its own doubled. psql interpolates no
  *  variable inside a quoted literal, so text reaches Postgres as written. */
 export function sqlLiteral(value: string): string {
@@ -114,6 +131,10 @@ export function sqlLiteral(value: string): string {
 // kept name is a table of this schema and into the read that leaves those tables out of the
 // targets, and one list is what makes those two the same set.
 const keptTableList = keptTables.map((kept) => sqlLiteral(kept.table)).join(", ");
+
+// The store's own tables as one SQL list, which the reset leaves out of the schema read's targets
+// and locks beside them, so the one list is what the read skips and the lock takes.
+const storeTableList = storeDeletes.map((entry) => sqlLiteral(entry.table)).join(", ");
 
 export async function insertExternalLink(issueKey: string, url: string): Promise<void> {
   await sql(
@@ -161,7 +182,8 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
 // open refetches whenever the live stream tells it to, and the server runs its own sweeps on
 // timers. So before the delete, the reset takes ACCESS EXCLUSIVE on every table it empties: each
 // ordinary table of the `public` schema that `keptTables` does not name, which the block reads
-// from pg_class at the moment it runs. It never waits while it holds one of those locks. Each
+// from pg_class at the moment it runs, and the store's two (`storeDeletes`), which it empties in
+// part. It never waits while it holds one of those locks. Each
 // try takes them all with NOWAIT. When one is held, the try lets go of every lock it took, and
 // the next try first waits for that one table while it holds none, so the wait cannot close a
 // cycle. Once it holds them all, nothing
@@ -178,6 +200,7 @@ async function resetDatabaseOnce(): Promise<void> {
     `DO $$
       DECLARE
         targets regclass[];
+        locked regclass[];
         target regclass;
         logging regclass[];
         refilled boolean;
@@ -201,13 +224,17 @@ async function resetDatabaseOnce(): Promise<void> {
         IF missing IS NOT NULL THEN
           RAISE EXCEPTION 'the reset keeps tables this schema has not got: %', missing;
         END IF;
-        -- Every ordinary table of the public schema but those, in a fixed order, which is the
-        -- order the locks below are taken in. A table a later migration adds is a target the day
-        -- it exists, with nobody naming it here.
+        -- Every ordinary table of the public schema but those and the store's own two, in a fixed
+        -- order, which is the order the locks below are taken in. A table a later migration adds
+        -- is a target the day it exists, with nobody naming it here.
         SELECT array_agg(c.oid::regclass ORDER BY c.relname) INTO targets
           FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE n.nspname = 'public' AND c.relkind = 'r'
-            AND c.relname <> ALL (ARRAY[${keptTableList}]::text[]);
+            AND c.relname <> ALL (ARRAY[${keptTableList}, ${storeTableList}]::text[]);
+        -- Every table this block empties, which is the targets plus the store's own two: the
+        -- locks cover what the scoped deletes below touch as well, so nothing writes a node or a
+        -- tuple between the projection's delete and theirs.
+        locked := targets || ARRAY[${storeTableList}]::regclass[];
         LOOP
           -- A failed try rolls back this block, releasing every lock it took.
           BEGIN
@@ -219,7 +246,7 @@ async function resetDatabaseOnce(): Promise<void> {
                 true);
               EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE', contended);
             END IF;
-            FOREACH target IN ARRAY targets LOOP
+            FOREACH target IN ARRAY locked LOOP
               EXECUTE format('LOCK TABLE %s IN ACCESS EXCLUSIVE MODE NOWAIT', target);
             END LOOP;
             EXIT;
@@ -275,6 +302,15 @@ async function resetDatabaseOnce(): Promise<void> {
             RAISE EXCEPTION 'tables still held rows after % delete passes: %', passes, deletes;
           END IF;
         END LOOP;
+        -- The store, after the projections it holds: a node may go only once the rows whose
+        -- foreign key names it are gone, which the loop above did. Each delete keeps the rows
+        -- the schema migration seeded and takes every row a scenario wrote.
+${storeDeletes
+  .map(
+    (entry) =>
+      `        DELETE FROM ${entry.table}${entry.keep === undefined ? "" : ` WHERE NOT (${entry.keep})`};`
+  )
+  .join("\n")}
         -- What RESTART IDENTITY did, for the tables that were emptied: the sequences their own
         -- columns own (pg_depend's 'a' for a serial, 'i' for an identity column). A DELETE leaves
         -- them where they stood, and the next insert would then collide with a row a trigger

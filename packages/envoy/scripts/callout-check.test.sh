@@ -19,7 +19,10 @@
 # from a clock that only the fakes move (each connection-list read 20 ms, each probe 50 ms, a
 # session the dead replica's place takes the hub's 2 s, a slow one 2.5 s). So the verdicts do not
 # depend on how fast this machine starts a process: under a load of about 1000 on 288 CPUs a wall
-# clock let one run in 20 take 5 s for the fakes alone.
+# clock let one run in 20 take 5 s for the fakes alone. For the same reason the check's own pause
+# between two reads of the list, 20 ms of wall time by default, is none here
+# (CALLOUT_CHECK_POLL_SECONDS=0): the fake read stands for it on the fake clock, and a real pause
+# would only add 2 s of waiting to each case that reads the list for the check's whole 2 s.
 #
 # It asserts that: (a) a hub that answers as the auth service does passes all six lines, in order,
 # ending `all 6 assertions passed`, the second broker is killed, and the check waits until the hub
@@ -29,14 +32,15 @@
 # reads UNKNOWN on line 5, not a pass; (d) a probe that prints nothing reads UNKNOWN; (e) an
 # admission that takes longer than 2 s after the kill FAILs line 6; (f) an exported stack missing
 # a variable the check needs refuses with exit 2, naming it; (g) a hub that never drops the killed
-# broker's connection FAILs line 6; (h) a connection list that cannot be read after the kill reads
-# UNKNOWN on line 6; (i) a hub listing one auth service connection before the kill reads UNKNOWN on
-# line 6 and kills nothing; (j) a hub whose list is read once after the kill, still naming both
-# connections, and then cannot be read FAILs line 6 with the count it last read; (k) a probe that
-# says "not admitted" in words that are not the server's FAILs lines 3 and 4; (l) with no stack
-# exported, a --database-url reaches the dev-stack.sh the check starts as LEGION_TEST_PG_DSN, never
-# in its arguments; and (m) brokers whose connections name their build after envoy-broker-callout
-# pass line 6, as the bare name does.
+# broker's connection FAILs line 6 at the check's bound, 2000 ms after the kill; (h) a connection
+# list that cannot be read after the kill reads UNKNOWN on line 6; (i) a hub listing one auth
+# service connection before the kill reads UNKNOWN on line 6 and kills nothing; (j) a hub whose
+# list is read once after the kill, still naming both connections, and then cannot be read FAILs
+# line 6 with the count it last read, at that bound; (k) a probe that says "not admitted" in words
+# that are not the server's FAILs lines 3 and 4; (l) with no stack exported, a --database-url
+# reaches the dev-stack.sh the check starts as LEGION_TEST_PG_DSN, never in its arguments; and (m)
+# brokers whose connections name their build after envoy-broker-callout pass line 6, as the bare
+# name does.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -69,17 +73,20 @@ fake() {
 
 # --- The fake clock, in milliseconds: date answers `date +%s%N` from it and refuses any other
 # call, since the check reads time in no other form; tick moves it on. The fakes are called one at
-# a time, so a plain write-and-rename is all tick needs. ---
+# a time, so tick writes the clock in place, and every fake reads its control files with the
+# shell's own read: the check reads the hub's list a hundred times in a case that waits out its
+# 2 s, and a cat or a cut per read would start that many more processes. ---
 fake date <<'EOF'
 if [ "$#" -ne 1 ] || [ "$1" != +%s%N ]; then
   echo "fake date: called as date $*; callout-check.sh reads time only as date +%s%N" >&2
   exit 2
 fi
-echo "$(cat "$control/clock")000000"
+read -r now <"$control/clock"
+echo "${now}000000"
 EOF
 fake tick <<'EOF'
-printf '%s' "$(($(cat "$control/clock") + $1))" >"$control/clock.next"
-mv "$control/clock.next" "$control/clock"
+read -r now <"$control/clock"
+printf '%s' "$((now + $1))" >"$control/clock"
 EOF
 
 # --- The fake hub's view of the second broker: alive while its stand-in runs (a zombie, which the
@@ -87,18 +94,20 @@ EOF
 # the hub still lists its connection (always with no-drop, else for drop-ms of the fake clock from
 # the first read that found it gone, which records that time), then dropped. ---
 fake hub-state <<'EOF'
-broker="$(cat "$control/second-broker")"
-state="$(cut -d' ' -f3 "/proc/$broker/stat" 2>/dev/null || true)"
+read -r broker <"$control/second-broker"
+state=""
+{ read -r _ _ state _ <"/proc/$broker/stat"; } 2>/dev/null
 if [ -n "$state" ] && [ "$state" != Z ]; then
   echo alive
   exit 0
 fi
-now="$(cat "$control/clock")"
+read -r now <"$control/clock"
 if [ ! -e "$control/dead-at.$broker" ]; then
-  printf '%s' "$now" >"$control/dead-at.$broker.next"
-  mv "$control/dead-at.$broker.next" "$control/dead-at.$broker"
+  printf '%s' "$now" >"$control/dead-at.$broker"
 fi
-if [ -e "$control/no-drop" ] || [ $((now - $(cat "$control/dead-at.$broker"))) -lt "$(cat "$control/drop-ms")" ]; then
+read -r dead_at <"$control/dead-at.$broker"
+read -r drop_ms <"$control/drop-ms"
+if [ -e "$control/no-drop" ] || [ $((now - dead_at)) -lt "$drop_ms" ]; then
   echo listed
 else
   echo dropped
@@ -135,7 +144,8 @@ if [ "$state" = listed ]; then
   exit 4
 fi
 tick 50
-if [ "$none" = true ] || [ "${AGENT_SECRETS_URL:-}" != "$(cat "$control/stack-broker")" ]; then
+read -r stack_broker <"$control/stack-broker"
+if [ "$none" = true ] || [ "${AGENT_SECRETS_URL:-}" != "$stack_broker" ]; then
   if [ -e "$control/other-words" ]; then
     echo "not admitted: nats: no servers available for connection"
   else
@@ -225,6 +235,7 @@ run_check() {
   printf '%s' "$broker_stand_in" >"${control_dir}/second-broker"
   status=0
   output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
+    CALLOUT_CHECK_POLL_SECONDS=0 \
     DEV_STACK_CALLOUT=1 \
     AGENT_SECRETS_URL="$stack_broker" \
     NATS_URLS="nats://127.0.0.1:7002" \
@@ -292,9 +303,10 @@ output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" DEV_STACK_C
   fail "a stack without DEV_STACK_NATS_MONITOR_URL: exit $status"
 echo "PASS: an exported stack missing DEV_STACK_NATS_MONITOR_URL is refused with exit 2, naming it"
 
-# (g) A hub that never drops the killed broker's connection.
+# (g) A hub that never drops the killed broker's connection. Each read of the list takes 20 ms of
+# the fake clock and nothing else moves it, so the check gives up at exactly its 2 s bound.
 run_check no-drop
-[[ "$(line 6)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout "*" ms after the kill" ]] ||
+[ "$(line 6)" = "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout 2000 ms after the kill" ] ||
   fail "a hub that never drops the killed broker's connection: line 6 is '$(line 6)'"
 [ "$status" -eq 1 ] || fail "a hub that never drops the killed broker's connection: exit $status"
 echo "PASS: a hub that never drops the killed broker's connection FAILs line 6"
@@ -317,7 +329,7 @@ echo "PASS: a hub listing one auth service connection before the kill reads UNKN
 # (j) A list read once after the kill, naming both connections still, that then cannot be read:
 # the check saw the hub keep the killed broker, so it is a FAIL with that count, not an UNKNOWN.
 run_check no-drop connz-down-late
-[[ "$(line 6)" == "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout "*" ms after the kill" ]] ||
+[ "$(line 6)" = "FAIL one broker killed and a new session admitted within 2 s: the hub still listed 2 connections named envoy-broker-callout 2000 ms after the kill" ] ||
   fail "a list read once after the kill and then unreadable: line 6 is '$(line 6)'"
 [ "$status" -eq 1 ] || fail "a list read once after the kill and then unreadable: exit $status"
 echo "PASS: a list read once after the kill and then unreadable FAILs line 6 with the count it last read"

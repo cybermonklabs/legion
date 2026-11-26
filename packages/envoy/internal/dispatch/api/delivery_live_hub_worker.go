@@ -279,6 +279,21 @@ func (h *deliveryHub) readLegionBoardView(ctx context.Context, spec deliveryLive
 	return legionBoardCompute(board, now), nil
 }
 
+// readLegionIssueView is a legion_issue view's read: GET /api/v1/issues/{key}/legion's body, through
+// the route's own readLegionIssue, so the view and the route answer one body. A key Dispatch holds
+// no issue of is that function's *apiError, NOT_FOUND in the route's words, which the hub refuses
+// the view's subscribers with once (viewReads.refusal). A project that names no daemon is the body
+// whose configured is false and never an error, so this view, unlike the board, is never refused
+// LEGION_NOT_CONFIGURED. It names no issue in read.issues: no Dispatch event moves the body, which
+// only its project's notifications and its issue's runs move (dirtyLegionProject, dirtyLegionIssue).
+func (h *deliveryHub) readLegionIssueView(ctx context.Context, spec deliveryLiveSpec, now time.Time, read *deliveryViewRead) (any, error) {
+	answer, err := h.server.readLegionIssue(ctx, spec.issue)
+	if err != nil {
+		return nil, err
+	}
+	return answer, nil
+}
+
 // readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
 // the function the route answers with (readProjectEvalList), from the query the route would be
 // sent (evalsQuery). So the body is the route's for the same query, byte for byte. A project no

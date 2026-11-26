@@ -115,7 +115,8 @@ func (s *Store) EnsureTx(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, pr
 	return PendingSeed{Seeded: seeded, store: s, write: w}, nil
 }
 
-// Committed schedules the settlement of the `evals-md` the seed wrote, publishes the document
+// Committed schedules the settlement the seed's writes of `evals-md` left owed - none where it
+// created the document and the document's seed owes none (createDocument) - publishes the document
 // events it appended and moves its change rows into the change log, as Ensure does once its own
 // transaction commits.
 func (p PendingSeed) Committed(ctx context.Context) {

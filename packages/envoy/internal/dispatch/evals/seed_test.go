@@ -118,6 +118,7 @@ func (r rig) requireSeeded(t *testing.T, project string) seededState {
 // doc_block resolves, with its series; a second Ensure writes nothing: no version of an eval or a
 // series, no section and no version of the document.
 func TestEnsureTwiceWritesOneVersionAndOneSectionPerEval(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	first, err := r.registry.Ensure(t.Context(), r.project)
 	if err != nil {
@@ -147,6 +148,7 @@ func TestEnsureTwiceWritesOneVersionAndOneSectionPerEval(t *testing.T) {
 // the section it held stands; an eval whose method block a person deleted gets a new section and a
 // version naming it, carrying its other fields forward.
 func TestEnsureAddsTheSectionsAProjectsDocumentLacks(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	if _, err := r.registry.Register(t.Context(), Registration{
 		Project: r.project, Slug: "review-latency", Caller: alice, Name: Set("Review latency"), DocText: Set("Alice's own method."),
@@ -415,6 +417,7 @@ func TestAReleaseThatDropsASeriesUnlistsIt(t *testing.T) {
 // did, it gets the catalogue's (TestASeedFillsWhatNoWriteOfATakenOverEvalSet keeps a target a
 // write set).
 func TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	r.write(t, SlugDeployFrequency, alice, row(t, map[string]any{"series": measures.SeriesDeploys, "row_kind": "deploy", "value": 3, "measured_at": at(4, 9, 0)}))
@@ -478,6 +481,7 @@ func TestASeedThatTakesOverAReadingsSlugSetsTheCataloguesTarget(t *testing.T) {
 // target, and no write of a logged eval takes a min_n, so the job series the reading registered
 // with none holds the catalogue's after the seed, as one the seed writes first does.
 func TestASeedFillsWhatNoWriteOfATakenOverEvalSet(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	minutes := row(t, map[string]any{"series": measures.SeriesMinutes, "row_kind": "pull_request", "value": 30, "measured_at": at(4, 9, 0)})
@@ -536,6 +540,7 @@ func TestASeedFillsWhatNoWriteOfATakenOverEvalSet(t *testing.T) {
 // eval no person set one on (merge-to-production) and keeps one a person set to a value
 // (pr-open-to-merge's 90), and the record survives the seed's own version.
 func TestASeedLeavesATargetAPersonSetToNoneAsNone(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	minutes := row(t, map[string]any{"series": measures.SeriesMinutes, "row_kind": "pull_request", "value": 30, "measured_at": at(4, 9, 0)})
@@ -584,6 +589,7 @@ func TestASeedLeavesATargetAPersonSetToNoneAsNone(t *testing.T) {
 // the write records doc_text although it moves no block and no text, so the seed leaves the
 // section as it is rather than writing the catalogue's method over it.
 func TestASeedLeavesAMethodAPersonSetAlone(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	r.write(t, SlugDeployFrequency, alice, row(t, map[string]any{"series": measures.SeriesDeploys, "row_kind": "deploy", "value": 3, "measured_at": at(4, 9, 0)}))
@@ -623,6 +629,7 @@ func TestASeedLeavesAMethodAPersonSetAlone(t *testing.T) {
 // series alone (rankedByMinN), and every series the seed takes over belongs to an eval that is
 // still logged.
 func TestTheSeedTakesNoCatalogueMinNAPersonSet(t *testing.T) {
+	t.Parallel()
 	entry := entryOf(t, SlugPRCI)
 	var catalogued Series
 	for _, series := range entry.series {
@@ -744,6 +751,7 @@ func TestTheRefreshersFirstPassSeedsEveryProjectAndLaterPassesTheOwed(t *testing
 // file is gone, the next pass seeds it. FILED is refused by the first pass, which seeds every
 // project, and BYPASS, made by SQL with a file of its own after it, by a later pass.
 func TestASeedRefusedForItsDocumentIsTriedAgainOnceItIsOne(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.registry.Ensure(ctx, r.project); err != nil {
@@ -860,6 +868,7 @@ func requireCatalogueHolds(t *testing.T, written map[string]map[string]bool, wan
 // eval in the catalogue, pr-ci's job series through SeriesJobs; and each catalogue series of the
 // evals with day rows is written.
 func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "api", "testdata", "golden_delivery", "fixture.json"))
 	if err != nil {
 		t.Fatalf("read the golden delivery history: %v", err)
@@ -879,10 +888,11 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 	written := map[string]map[string]bool{}
 	days, rows := 0, 0
 	for day := fixture.From; day.Before(fixture.To); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(ctx, []keptRepo{{name: settings.DeployRepo, deploys: true, rule: settings}}, day, nil, nil)
+		reads, err := r.registry.readDeliveryDays(ctx, []keptRepo{{name: settings.DeployRepo, deploys: true, rule: settings}}, []time.Time{measures.Midnight(day)}, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery day %s: %v", day.Format(time.DateOnly), err)
 		}
+		read := reads[0]
 		for _, project := range dayProjects(read) {
 			built := read.Rows(project).Rows
 			storedSeries(project, built, written)
@@ -915,6 +925,7 @@ func TestEverySeriesTheDeliveryDaysWriteIsInTheCatalogue(t *testing.T) {
 // of the six Legion evals is written, but the children cut of the splitting eval's root figures
 // (metrics.RootFigures), which count roots alone, so that cut holds no issue and no day row.
 func TestEverySeriesTheLegionDaysWriteIsInTheCatalogue(t *testing.T) {
+	t.Parallel()
 	r := newRig(t)
 	windows, project, since := seedGoldenLegionHistory(t, r)
 	first, last := goldenLegionDays(windows)

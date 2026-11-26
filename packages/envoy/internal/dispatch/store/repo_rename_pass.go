@@ -38,11 +38,12 @@ import (
 //     is how the record of production events names each pull request a row ships or blames
 //     (production_events.pull_requests), and, after `revert:`, a revert row's source_ref.
 //
-// The pass writes no other column, updated_at included, and appends no event. It never writes
-// repo_projects, the event log, the text of documents, comments, asks and messages, the reference
-// tables read from that text (refs, block_refs, graph_edges), architecture_snapshots.files, a
-// daemon's own readings (legion_current, legion_observations) or github_rate_limits, whose scope
-// names no repository.
+// Beside those fields the pass writes only the stale marks of the eval figures' cuts a rename
+// moves (markRenamedCuts). It writes no other column, updated_at included, and appends no event.
+// It never writes repo_projects, the event log, the text of documents, comments, asks and
+// messages, the reference tables read from that text (refs, block_refs, graph_edges),
+// architecture_snapshots.files, a daemon's own readings (legion_current, legion_observations) or
+// github_rate_limits, whose scope names no repository.
 //
 // A line whose table has a key with the repository in it can meet a collision: the new name gives
 // a row the key of another row. Two keys are equal when their repository is equal in lower case.
@@ -52,7 +53,7 @@ import (
 
 // repoRenameLockNamespace is the first key of the transaction advisory lock each line of the pass
 // takes ("RNAM"), with 0 as its second key. Two processes that boot at once take turns on each
-// line, and the second finds nothing left to write. It is the two-key form, which Postgres keeps
+// line, and the second finds no field left to write. It is the two-key form, which Postgres keeps
 // apart from the single-key locks. The other first keys of the two-key space are the copy locks'
 // (docs.copiedAsksLockNamespace), the owner locks' (OwnerLockNamespace), the owner lock gate's
 // (OwnerLockGateNamespace), the loop leases' (duty.leaseNamespace), the test hooks' (the api
@@ -344,7 +345,7 @@ type repoRenameLine struct {
 // INFO, under the field table.write. deletes is true where the statement deletes the colliding
 // rows of table: it returns the key of each row it deleted, as text, and each is counted and
 // logged at WARN. A step that neither writes nor deletes is a statement whose rows a write step of
-// the line counts already.
+// the line counts already, or one that writes no field of the pass (markRenamedCuts).
 type repoRenameStep struct {
 	table, where string
 	write        string
@@ -408,7 +409,8 @@ func nameLine(table, column string) repoRenameLine {
 }
 
 // ownerNamed is true where column, an owner key of the eval day rows (evals.OwnerKey), holds the
-// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers.
+// old name as its repository, in any case: the key is ':' + repository + '|' + its sharers, and
+// '|' + its lists where it carries any, which name projects alone.
 func ownerNamed(r repoRename, column string) string {
 	return `lower(split_part(` + column + `, '|', 1)) = ` + QuoteLiteral(":"+strings.ToLower(r.From))
 }
@@ -434,32 +436,87 @@ func ownerWrite(r repoRename, table string, evalIDs bool) repoRenameStep {
 	}
 }
 
-// ownerCollisions deletes each row of table under an owner key of the old name whose key, with the
-// new name for its repository, is the key of another row, as collisions does for a repo column.
-// The eval id of a row holds its owner key too (ownerWrite rewrites both), so the keys compare
-// the slug that follows it rather than the id.
-func ownerCollisions(r repoRename, table string, keys ...string) repoRenameStep {
+// ownerCollisions deletes each row of table under an owner key of the old name, in its column
+// owner, whose key, as the rename writes it, is the key of another row: a row under the renamed
+// owner key (ownerRenamed), or a row under another owner key of the old name that renames to the
+// same key and sorts first. The rename keeps what follows the repository in an owner key, its
+// sharers and its lists, so two owner keys of the old name rename to one key only where they hold
+// the old name in two spellings of case, which ownerNamed matches; two that differ in their
+// sharers or their lists, such as the plain key and a key that carries a list, rename to two
+// keys, and the rows of both stay. The eval id of a row holds its owner key too (ownerWrite
+// rewrites both), so the keys compare the slug that follows it rather than the id. The subquery
+// reads the table as the statement began, so of two rows under the old name that rename to one
+// key the one that sorts first stays for the write after this.
+func ownerCollisions(r repoRename, table, owner string, keys ...string) repoRenameStep {
 	same := ""
-	key := `'project_key', d.project_key`
+	key := `'` + owner + `', d.` + owner
 	for _, column := range keys {
 		if column == "eval_id" {
-			same += ` and substr(t.eval_id, length(t.project_key) + 1) = substr(d.eval_id, length(d.project_key) + 1)`
+			same += ` and substr(t.eval_id, length(t.` + owner + `) + 1) = substr(d.eval_id, length(d.` + owner + `) + 1)`
 		} else {
 			same += ` and t.` + column + ` = d.` + column
 		}
 		key += `, '` + column + `', d.` + column + `::text`
 	}
+	renamed := ownerRenamed(r, "d."+owner)
 	return repoRenameStep{
 		table:   table,
-		where:   ownerNamed(r, "project_key"),
+		where:   ownerNamed(r, owner),
 		deletes: true,
 		sql: `delete from ` + table + ` d
-			where ` + ownerNamed(r, "d.project_key") + `
+			where ` + ownerNamed(r, "d."+owner) + `
 			  and exists (
 				select 1 from ` + table + ` t
-				where (t.project_key = ` + ownerRenamed(r, "d.project_key") + `
-					or (` + ownerNamed(r, "t.project_key") + ` and t.project_key < d.project_key))` + same + `)
+				where (t.` + owner + ` = ` + renamed + `
+					or (` + ownerNamed(r, "t."+owner) + ` and ` + ownerRenamed(r, "t."+owner) + ` = ` + renamed + `
+						and t.` + owner + ` < d.` + owner + `))` + same + `)
 			returning jsonb_build_object(` + key + `)::text`,
+	}
+}
+
+// markRenamedCuts marks stale (eval_figure_cuts_stale) the stored eval figures' cut of the old name
+// and the cut of the new name of each project whose published default (eval_days_defaults) the
+// line's write after it moves from the old name, or that holds stored figures of a cut of the old
+// name (eval_range_figures, eval_day_figures), each name matched in any case: the old name's cut
+// under each spelling the stored figures hold it in, and, of a published default, under the old
+// name. It marks them as evals.markStaleCuts marks the cuts a move of a default moves, but for every
+// eval (evals null): a cut no mark holds at generation 1, and one a mark holds at its next
+// generation, its first paint owed and its refold to begin again from the cut's last end day
+// (ready_through and next_day null), for every eval whatever the standing mark named. It takes the
+// cuts in the byte order of their keys, the order every writer of the marks takes them in. The boot
+// folds the first paint of each mark after this pass and before it serves
+// (evals.FoldFirstPaintsAtBoot).
+//
+// It runs just before the line writes eval_days_defaults, and reads the default rows that write
+// moves for update, so it holds their locks before it writes a mark: the order evals.publishDefaults
+// takes them in, the defaults and then the marks in one transaction, so a refresher of another
+// process that publishes a move beside the pass waits for the line rather than deadlocking with
+// it. A later run finds no default left on the old name, so it marks no cut through a default and
+// leaves the mark of such a cut, and its refold, as the run before it left them; it marks again
+// only the cuts of a project that still holds stored figures of the old name, which the refold of
+// the old name's cut deletes. A project that published the new name before the rename has no cut
+// marked for its default.
+//
+// Its where is false: a mark holds no field the pass writes, and the mark of the old name's cut
+// names the old name until the refresher's refold clears it, so the count of the rows left reads no
+// mark. The line's write steps keep the line in that count until it commits, and the marks with it.
+func markRenamedCuts(r repoRename) repoRenameStep {
+	named := r.named("repo")
+	return repoRenameStep{
+		table: "eval_figure_cuts_stale",
+		where: "false",
+		sql: `with moved as (
+				select project_key from eval_days_defaults where ` + named + ` for update
+			), old as (
+				select project_key, ` + r.from() + ` as repo from moved
+				union select project_key, repo from eval_range_figures where ` + named + `
+				union select project_key, repo from eval_day_figures where ` + named + `
+			)
+			insert into eval_figure_cuts_stale (project_key, repo, generation, ready_through, next_day, evals)
+			select project_key, repo, 1, null, null, null
+			from (select project_key, repo from old union select project_key, ` + r.to() + ` from old) cut
+			order by project_key collate "C", repo collate "C"
+			on conflict (project_key, repo) do update set generation = eval_figure_cuts_stale.generation + 1, ready_through = null, next_day = null, evals = null`,
 	}
 }
 
@@ -540,13 +597,44 @@ var repoRenameLines = []repoRenameLine{
 	// members and their owed days (evals.OwnerKey, migration 20261117100006): the key holds the
 	// repository's name, and so does the eval id of each row, so the pass rewrites both. A row
 	// under the new name already (a repository renamed to one that holds rows) is left, and the
-	// old name's row of the same key goes, as every other line's collision does. The day-row
-	// refresher writes the new name's rows again from their input, and the eval_days change each
-	// write logs wakes the views that read them.
+	// old name's row of the same key goes, as every other line's collision does. The rename keeps
+	// a key's sharers and lists, so two keys of the old name meet only where they hold it in two
+	// spellings of case, and one row of the two stays; the plain key and a key that carries a list
+	// rename to two keys, and the rows of both move (ownerCollisions). The day-row refresher
+	// writes the new name's rows again from their input, and the eval_days change each write logs
+	// wakes the views that read them.
+	//
+	// The keys themselves (eval_day_owners) take the new name first, under the same rule. The
+	// eval_days change trigger records the key of each row a statement writes or deletes
+	// (eval_days_change_log, 20261117100014), so a write of the day rows first would record each
+	// renamed key, and the line would then delete and log the owner row of every key it moves as
+	// a collision. The trigger records again, too, the old key of each day row the line moves or
+	// deletes, so after the day rows the line deletes each owner row of the old name whose renamed
+	// key stands, unlogged: keys the owner write counted already.
+	//
+	// The published defaults (eval_days_defaults) take the new name in the same transaction, so
+	// the refresher sees no move of a default and marks no cut stale itself. But a project's own
+	// Legion rows of an issue whose chain names no repository are stored under
+	// legionfacts.DefaultRepo (':default'), never under a name, and a read folds them into the
+	// cut of the default the project publishes: no row of them moves, and no change the pass's
+	// writes log names them, so their stored figures stay in the old name's cut and the new
+	// name's holds none of them. So the line, just before it writes the defaults, marks both cuts
+	// of each project whose default it moves stale, every eval of them (markRenamedCuts), with
+	// those default rows locked first, the order evals.publishDefaults takes them in (defaults,
+	// then marks), so a refresher of another process publishing beside it waits rather than
+	// deadlocks. The refresher's next pass folds every marked cut again (evals.refoldStaleCuts,
+	// which every pass runs), and a read of a marked cut folds the day rows until then.
 	{
 		fields: "eval_days.project_key, eval_day_members.project_key, eval_days_owed.project_key, eval_day_owners.owner, eval_days_defaults.repo",
 		steps: func(r repoRename) []repoRenameStep {
-			var steps []repoRenameStep
+			steps := []repoRenameStep{
+				ownerCollisions(r, "eval_day_owners", "owner"),
+				{
+					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
+					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
+						` where ` + ownerNamed(r, "owner"),
+				},
+			}
 			for _, one := range []struct {
 				table string
 				keys  []string
@@ -555,20 +643,15 @@ var repoRenameLines = []repoRenameLine{
 				{"eval_day_members", []string{"family", "deploy_repo", "row_key"}},
 				{"eval_days_owed", []string{"family", "day"}},
 			} {
-				steps = append(steps, ownerCollisions(r, one.table, one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
+				steps = append(steps, ownerCollisions(r, one.table, "project_key", one.keys...), ownerWrite(r, one.table, one.table == "eval_days"))
 			}
 			return append(steps,
 				repoRenameStep{
-					table: "eval_day_owners", where: ownerNamed(r, "owner"), deletes: true,
+					table: "eval_day_owners", where: ownerNamed(r, "owner"),
 					sql: `delete from eval_day_owners d where ` + ownerNamed(r, "d.owner") + `
-						and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)
-						returning jsonb_build_object('owner', d.owner)::text`,
+						and exists (select 1 from eval_day_owners t where t.owner = ` + ownerRenamed(r, "d.owner") + `)`,
 				},
-				repoRenameStep{
-					table: "eval_day_owners", where: ownerNamed(r, "owner"), write: "owner",
-					sql: `update eval_day_owners set owner = ` + ownerRenamed(r, "owner") + `, repo = ` + r.to() +
-						` where ` + ownerNamed(r, "owner"),
-				},
+				markRenamedCuts(r),
 				nameWrite(r, "eval_days_defaults", "repo"))
 		},
 	},
