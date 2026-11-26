@@ -11,6 +11,7 @@
   "description": "Autonomous development swarm using Oh My Pi agents",
   "private": true,
   "scripts": {
+    "postinstall": "bun packages/contracts/scripts/gen-api.ts || { rm -f packages/contracts/src/dispatch-api.generated.ts packages/contracts/src/dispatch-api-v2.generated.ts || exit 1; echo 'postinstall: packages/contracts/scripts/gen-api.ts failed (above), so packages/contracts/src/dispatch-api.generated.ts and packages/contracts/src/dispatch-api-v2.generated.ts are removed: every type check that reads the Dispatch API types fails naming one until `bun run gen:api` in packages/contracts succeeds' >&2; }",
     "dispatch:local": "cd packages/dispatch && bun run dispatch:local",
     "docs:dev": "cd docs/site && bun run dev",
     "docs:build": "cd docs/site && bun run build",

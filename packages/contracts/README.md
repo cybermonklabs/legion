@@ -22,8 +22,9 @@ Run each from this directory.
 - `bun run typecheck` and `bun run lint`.
 - `bun run gen:go` rewrites the files `scripts/gen-go.ts` generates; `bun run check:go` names a
   stale one and writes nothing.
-- `bun run gen:api` rewrites `src/dispatch-api.generated.ts`; `bun run check:api` compares it and
-  writes nothing.
+- `bun run gen:api` renders `src/dispatch-api.generated.ts` and `src/dispatch-api-v2.generated.ts`
+  again; every `bun install` at the repository root already does (the root `package.json`'s
+  postinstall).
 
 ## Generated files
 
@@ -34,10 +35,20 @@ Change the source and regenerate; never edit these by hand.
   `internal/contracts/dispatch_tools_generated.go` (from `src/dispatch-tools.ts`) and
   `internal/dispatch/pmdoc/schema_generated.go` (from `schemas/block-schema.schema.json`), and
   here `src/block-schema.generated.ts`.
-- `schemas/dispatch-openapi.json` is reflected from Dispatch's Go route table. In
-  `packages/envoy`, `go run ./cmd/dispatch openapi --check` compares it with a fresh render and
-  prints the command that rewrites it.
-- `src/dispatch-api.generated.ts` is rendered from that document by `bun run gen:api`.
+- `schemas/dispatch-openapi.json` (`/api/v1`) and `schemas/dispatch-openapi-v2.json` (`/api/v2`)
+  are reflected from Dispatch's Go route table. In `packages/envoy`,
+  `go run ./cmd/dispatch openapi --check` compares each with a fresh render and prints the command
+  that rewrites it.
+- `src/dispatch-api.generated.ts` and `src/dispatch-api-v2.generated.ts` are rendered from those
+  documents, one each, by `scripts/gen-api.ts` and are in no commit, so two branches that each add
+  a route never edit one generated file. Every `bun install` renders both, and so does the
+  `typecheck` script of every package that compiles one, so `bun run typecheck` reads the
+  documents the tree holds. A `tsc` run directly, or an editor, reads the last render: run
+  `bun run gen:api` after a pull or a branch switch that changes a document. Only type checks read
+  the modules: `src/dispatch-api.ts` and `src/dispatch-api-v2.ts` re-export them with
+  `export type *`, so a type check in a tree that never ran `bun install` fails naming one.
+- `scripts/adopt-api-layout.sh` takes the modules out of a merge of main into a branch made while
+  they were committed, with git or jj.
 
 ## GitHub Topic Hierarchy
 

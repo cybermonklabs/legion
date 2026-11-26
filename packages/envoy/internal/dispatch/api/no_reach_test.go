@@ -1,6 +1,6 @@
 package api
 
-//ci:reads packages/contracts/src/dispatch-api*.ts declaredShapesUnchanged reads each version's module and the generated module it re-exports (contractsOf: dispatch-api.ts and dispatch-api.generated.ts, dispatch-api-v2.ts and dispatch-api-v2.generated.ts), runtime-relative to the repository root (repositoryRoot)
+//ci:reads packages/contracts/src/dispatch-api*.ts declaredShapesUnchanged reads each version's module (contractsOf: dispatch-api.ts and dispatch-api-v2.ts), runtime-relative to the repository root (repositoryRoot)
 
 import (
 	"bytes"
@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -50,26 +49,25 @@ var traversalWords = []string{
 	"node", "nodes", "relation", "relations", "traverse", "via",
 }
 
-// contractsModule and contractsGenerated are the two files the dashboard's /api/v1 wire shapes
-// are declared in, relative to the repository root: the module every consumer imports, and the
-// module generated from the /api/v1 document that it re-exports whole. contractsModuleV2 and
-// contractsGeneratedV2 are the same two files of /api/v2, generated from the /api/v2 document.
+// contractsModule and contractsModuleV2 are the modules the dashboard's wire shapes are declared
+// in, relative to the repository root, one per version: the module every consumer of /api/v1
+// imports, and the one a client of /api/v2 imports. Each re-exports the module generated from its
+// version's document, which every `bun install` renders and git does not hold
+// (packages/contracts/scripts/gen-api.ts), so this package reads the document instead.
 const (
-	contractsModule      = "packages/contracts/src/dispatch-api.ts"
-	contractsGenerated   = "packages/contracts/src/dispatch-api.generated.ts"
-	contractsModuleV2    = "packages/contracts/src/dispatch-api-v2.ts"
-	contractsGeneratedV2 = "packages/contracts/src/dispatch-api-v2.generated.ts"
+	contractsModule   = "packages/contracts/src/dispatch-api.ts"
+	contractsModuleV2 = "packages/contracts/src/dispatch-api-v2.ts"
 )
 
-// versionContracts is the module of one version's wire shapes and the generated module it
-// re-exports whole.
+// versionContracts is the module of one version's wire shapes and the specifier of the generated
+// module it re-exports whole.
 type versionContracts struct{ module, generated string }
 
-// contractsOf is each version's two contracts files: a route is held to those of the version it
-// is mounted under, as it is held to that version's document (openAPIDocumentPathOf).
+// contractsOf is each version's contracts module: a route is held to that of the version it is
+// mounted under, as it is held to that version's document (openAPIDocumentPathOf).
 var contractsOf = map[apiVersion]versionContracts{
-	apiV1: {module: contractsModule, generated: contractsGenerated},
-	apiV2: {module: contractsModuleV2, generated: contractsGeneratedV2},
+	apiV1: {module: contractsModule, generated: "./dispatch-api.generated"},
+	apiV2: {module: contractsModuleV2, generated: "./dispatch-api-v2.generated"},
 }
 
 // TestTheStoreAddsNoReachAndNoReadChangesShape is this child's negative control. The node and
@@ -356,17 +354,19 @@ func routesBeforeThisChild(t *testing.T, testHooks bool) []apiRoute {
 
 // declaredShapesUnchanged walks every route the table held before this child and reads the shape
 // it answers out of what the contracts package declares for the version it is mounted under: an
-// /api/v1 route out of `schemas/dispatch-openapi.json` and `dispatch-api.generated.ts`, an /api/v2
-// route out of `schemas/dispatch-openapi-v2.json` and `dispatch-api-v2.generated.ts`.
+// /api/v1 route out of `schemas/dispatch-openapi.json`, which `dispatch-api.ts` publishes, an
+// /api/v2 route out of `schemas/dispatch-openapi-v2.json`, which `dispatch-api-v2.ts` publishes.
 //
-// The chain is three links for each version, and the test holds each: the emitter renders the
-// version's rows of the table into its document, so a committed document that differs from a
-// fresh render is a table whose shapes nobody published; the version's generated module is
-// generated from that document, so every route and every schema of the document must be declared
-// there, field for field; and the version's module (`dispatch-api.ts`, `dispatch-api-v2.ts`)
-// re-exports that generated module whole, so what a consumer imports is what the table answers.
-// A field dropped from a Go type, or a module left stale beside a table that moved, breaks one of
-// the three.
+// The chain is three links for each version. The emitter renders the version's rows of the table
+// into its document, so a committed document that differs from a fresh render is a table whose
+// shapes nobody published; this test holds that link, and every route below to a path and a
+// method of its version's document. The version's generated module (`dispatch-api.generated.ts`,
+// `dispatch-api-v2.generated.ts`) is rendered from that document by every `bun install` and
+// committed nowhere, so it cannot be left stale beside a table that moved, and
+// packages/contracts/scripts/gen-api.test.ts holds the generator to declaring every path and
+// every schema of each document, field for field. And the version's module re-exports its
+// generated module whole, which this test holds, so what a consumer imports is what the table
+// answers.
 func declaredShapesUnchanged(t *testing.T) {
 	root := repositoryRoot(t)
 	routes := routesBeforeThisChild(t, true)
@@ -375,15 +375,10 @@ func declaredShapesUnchanged(t *testing.T) {
 		documentPath := openAPIDocumentPathOf(version)
 		document := committedDocument(t, root, version)
 		module := readRepositoryFile(t, root, files.module)
-		reexport := `export * from "./` + strings.TrimSuffix(filepath.Base(files.generated), ".ts") + `";`
-		if !strings.Contains(module, reexport) {
+		if !strings.Contains(module, `export type * from "`+files.generated+`";`) {
 			t.Fatalf("%s no longer re-exports the generated module, so what it declares is not what the table answers",
 				files.module)
 		}
-		generated := readRepositoryFile(t, root, files.generated)
-		declared := schemasOfGeneratedModule(t, files.generated, generated)
-		owned := splitOwnedSchemas(generated)
-
 		for _, route := range servedAt(version, routes) {
 			operations, held := document.Paths[route.Pattern]
 			if !held {
@@ -393,25 +388,6 @@ func declaredShapesUnchanged(t *testing.T) {
 			if _, served := operations[strings.ToLower(route.Method)]; !served {
 				t.Errorf("%s %s is in the table and %s declares no %s for it",
 					route.Method, route.Pattern, documentPath, strings.ToLower(route.Method))
-			}
-			if !strings.Contains(generated, `  "`+route.Pattern+`": {`) {
-				t.Errorf("%s %s is in the table and %s declares no path for it",
-					route.Method, route.Pattern, files.generated)
-			}
-		}
-		for name, schema := range document.Components.Schemas {
-			fields, held := declared[name]
-			if !held {
-				t.Errorf("%s declares the schema %s, which %s does not", documentPath, name, files.generated)
-				continue
-			}
-			want := slices.Sorted(maps.Keys(schema.Properties))
-			if !slices.Equal(fields, want) {
-				t.Errorf("%s declares %s as %v, and the route table answers %v", files.generated, name, fields, want)
-			}
-			if !owned[name] && !generatedAlias(name).MatchString(generated) {
-				t.Errorf("%s declares %s, exports no alias for it and does not name it as the split's, so no consumer imports it",
-					files.generated, name)
 			}
 		}
 	})
@@ -462,82 +438,12 @@ func committedDocument(t *testing.T, root string, version apiVersion) committedO
 	return document
 }
 
-// generatedAlias matches the exported alias of one schema. Biome wraps a long one onto a
-// second line, so the two halves are matched across whatever whitespace stands between them.
-func generatedAlias(name string) *regexp.Regexp {
-	return regexp.MustCompile(`export type ` + regexp.QuoteMeta(name) + ` =\s+` +
-		regexp.QuoteMeta(`components["schemas"]["`+name+`"];`))
-}
-
-// splitOwnedSchema matches one name of the generated module's SplitOwnedSchemaName union.
-var splitOwnedSchema = regexp.MustCompile(`"([A-Za-z_][A-Za-z0-9_]*)"`)
-
-// splitOwnedSchemas is the schema names the generated module says the hand-written split owns.
-// The generator exports no alias for those: dispatch-api.ts re-exports the /api/v1 generated
-// module and the split together, and one name cannot come from both, so the split's own export is
-// what a consumer imports (packages/contracts/scripts/gen-api.ts). The generator renders the list
-// into the module as that union, and dispatch-api-owned.ts holds the split's reading of each name
-// to the document's reading at compile time, so a Go change that moves one of these shapes reds
-// the typecheck by the name it moved.
-//
-// The list is read out of the module rather than written here, so a name the generator hands
-// back goes straight back to needing an alias of its own, and a module that renders no union at
-// all leaves every name needing one: the /api/v2 module, which dispatch-api-v2.ts re-exports
-// alone, beside no split.
-func splitOwnedSchemas(generated string) map[string]bool {
-	owned := map[string]bool{}
-	start := strings.Index(generated, "export type SplitOwnedSchemaName =")
-	if start < 0 {
-		return owned
-	}
-	union := generated[start:]
-	if end := strings.Index(union, ";"); end >= 0 {
-		union = union[:end]
-	}
-	for _, match := range splitOwnedSchema.FindAllStringSubmatch(union, -1) {
-		owned[match[1]] = true
-	}
-	return owned
-}
-
-// generatedSchemaName matches a schema's own line in the generated module: the names sit at one
-// indent inside `components.schemas`, and their fields one further in.
-var (
-	generatedSchemaName  = regexp.MustCompile(`^    ([A-Za-z_][A-Za-z0-9_]*)\??: `)
-	generatedSchemaField = regexp.MustCompile(`^      "?([A-Za-z_][A-Za-z0-9_$-]*)"?\??:(\s|$)`)
-)
-
-// schemasOfGeneratedModule reads the declarations of one version's generated module, the file at
-// path whose text is source: every schema it holds and the field names of each. The module is
-// Biome-formatted, so a schema's name sits at four spaces and its fields at six, and a field whose
-// value is an object nests deeper and is no field of the schema itself.
-func schemasOfGeneratedModule(t *testing.T, path, source string) map[string][]string {
-	t.Helper()
-	lines := strings.Split(source, "\n")
-	start := slices.Index(lines, "  schemas: {")
-	if start < 0 {
-		t.Fatalf("%s declares no components.schemas block", path)
-	}
-	schemas := map[string][]string{}
-	current := ""
-	for _, line := range lines[start+1:] {
-		if line == "  };" {
-			break
-		}
-		if name := generatedSchemaName.FindStringSubmatch(line); name != nil {
-			current = name[1]
-			schemas[current] = []string{}
-			continue
-		}
-		if field := generatedSchemaField.FindStringSubmatch(line); field != nil && current != "" {
-			schemas[current] = append(schemas[current], field[1])
-		}
-	}
-	if len(schemas) < 100 {
-		t.Fatalf("%s reads as %d schemas, which is too few to be the module", path, len(schemas))
-	}
-	for name := range schemas {
-		sort.Strings(schemas[name])
+// schemaFields is every schema of the document with the sorted names of its own fields: what the
+// module rendered from the document declares for each (gen-api.test.ts holds the two equal).
+func schemaFields(document committedOpenAPIShapes) map[string][]string {
+	schemas := make(map[string][]string, len(document.Components.Schemas))
+	for name, schema := range document.Components.Schemas {
+		schemas[name] = slices.Sorted(maps.Keys(schema.Properties))
 	}
 	return schemas
 }
@@ -1453,8 +1359,8 @@ func readsUnchanged(t *testing.T) {
 	settledCommentDeliveries(t, database, comment.ID)
 
 	root := repositoryRoot(t)
-	declared := schemasOfGeneratedModule(t, contractsGenerated, readRepositoryFile(t, root, contractsGenerated))
 	document := committedDocument(t, root, apiV1)
+	declared := schemaFields(document)
 	for _, read := range []struct{ name, target string }{
 		{"GET /api/v1/comments/{id}", "/api/v1/comments/" + comment.ID},
 		{"GET /api/v1/artifacts/{id}/blocks", "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/blocks"},
@@ -1601,7 +1507,7 @@ func (w *answerWalk) object(path string, object map[string]any, schema openAPISc
 		}
 		fieldSchema, held := schema.Properties[field]
 		if !held || (name != "" && !slices.Contains(w.declared[name], field)) {
-			w.t.Errorf("the answer carries %s, which %s does not declare for %s", fieldPath, contractsGenerated, holder)
+			w.t.Errorf("the answer carries %s, which %s does not declare for %s", fieldPath, OpenAPIDocumentPath, holder)
 			continue
 		}
 		w.paths[fieldPath] = true
@@ -1609,7 +1515,7 @@ func (w *answerWalk) object(path string, object map[string]any, schema openAPISc
 	}
 	for _, field := range schema.Required {
 		if _, answered := object[field]; !answered {
-			w.t.Errorf("%s declares %s.%s, which the answer does not carry at %s", contractsGenerated, holder, field, cmp.Or(path, "the top"))
+			w.t.Errorf("%s declares %s.%s, which the answer does not carry at %s", OpenAPIDocumentPath, holder, field, cmp.Or(path, "the top"))
 		}
 	}
 }

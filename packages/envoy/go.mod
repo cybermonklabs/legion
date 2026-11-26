@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	authelia.com/provider/oauth2 v0.3.3
 	cloud.google.com/go/auth v0.24.1
+	cloud.google.com/go/auth/oauth2adapt v0.3.0
 	cloud.google.com/go/iam v1.12.0
 	cloud.google.com/go/secretmanager v1.22.0
 	github.com/anthropics/anthropic-sdk-go v1.84.0
@@ -71,7 +72,6 @@ require (
 )
 
 require (
-	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect

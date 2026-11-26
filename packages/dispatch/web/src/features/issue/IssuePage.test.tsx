@@ -1928,6 +1928,7 @@ test("IssuePage opens a document at its current name when its slug kept an earli
     markdown: "# Notes",
     version: 1,
     token: "sha256:notes",
+    unsettled: false,
   });
   const view = renderIssuePage("/issues/CORE-1/artifacts/launch-notes");
 
