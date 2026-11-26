@@ -3910,6 +3910,46 @@ Each of the other orders was traced on INFRA-1225, which replaced the string `no
 
 That last loss is the one this order accepts, so the window between the listener and the plugin pair is the window to keep short.
 
+### An experiment arm's folder of texts in a pod
+
+An arm of an experiment may name a folder of texts (`projects.<KEY>.experiments.<name>.variants[].texts`), whose files a role the experiment reaches reads in place of Legion's own role prompt parts, agents, skills and `dispatch-first` ([An arm's folder of texts](https://cybermonklabs.github.io/legion/legion/running-legion/#an-arms-folder-of-texts) says how to cut one).
+Under this runtime the folder is read twice for each launch, so it stands at one path in the daemon's own pod and in every issue pod.
+The daemon reads it at its spec build, checks the role parts and the names the texts use, copies what it read to `<state_dir>/texts/<claim>/<generation>/folder` on its own disk and composes the role's system prompt from that copy, which reaches the launcher in the start command as every prompt does.
+The role's launcher reads the folder again, in the issue pod, for the agents and skills.
+
+A launcher of this release says `checksTexts` in its hello (`shimwire.LauncherHello.ChecksTexts`).
+A start of a launch that runs a folder carries a `texts` member (`shimwire.LauncherStart.Texts`): the folder, the fingerprint the daemon read it at, the roots of the two plugins the agent loads (the image's `/opt/legion/pi-envoy` and `/opt/legion/pi-legion`), and the root to build, `<XDG_STATE_HOME>/legion-texts/g<generation>`, which in an issue pod is `/legion/scratch/state/<role>/legion-texts/g<N>` on the issue's volume.
+The frame's own check refuses a root at any other path (`LauncherTexts.validate`).
+The start's argv names `--extension <root>` before both plugins' `--extension`, its environment names `LEGION_TEXTS_ROOT=<root>`, which pi-envoy reads at load, and its `PI_CONFIG_FILES` ends with `<root>/texts-settings.yml`, after the operator's, the role's and every arm's overlays (`agentArgv`, `mainEnvironment` and `roleOperatorEnv` in `internal/runtime/sandbox/manifest.go`).
+`LEGION_TEXTS_ROOT` is owned in every pod, so the operator's `runtime.kubernetes.pod.env` cannot name it.
+
+The launcher checks the folder in `start`, once it has answered a start id it saw before and refused a start while the role's child runs or for a generation that already exited, and before it writes anything of the generation (`prepareTexts`, `packages/daemon/internal/launcher/launcher.go`):
+
+1. It reads the folder at the start's path (`texts.Read`), and refuses a folder whose fingerprint is not the one the daemon read (`changed`), so a ConfigMap the kubelet updated between the two reads never runs half one version and half the other.
+
+2. It refuses where it cannot read pi-envoy's `dist/skills` or pi-legion's `agents` and `dist/skills` (`unreadable`), and holds each agent and skill file of the folder to the plugin file it replaces (`texts.CheckPlugins`: `digest`, `no-legion-text`, `name-differs`).
+
+3. Only then does it write: it reads the base of the settings layer, the `skills.ignoredSkills` Oh My Pi would read without it, over the start's `PI_CONFIG_FILES` before the layer, the workspace's `.omp` and the profile's `agent` directory; removes every `g<N>` directory an earlier start of the role left under `legion-texts`, following no link in them; builds the root (`texts.BuildRoot`: every pi-legion agent and pi-envoy skill, and each pi-legion skill the folder touches, as copies with the folder's files over them); and writes `texts-settings.yml` in it, the base with `*/<skill>` and `*/<skill>~*` added for each skill the folder touches.
+   A root whose build failed is removed, so no child loads part of one.
+
+A refusal over the folder answers the start with `ok: false` and a `texts` member naming the file, the cause and what the check saw (`shimwire.LauncherStartResult.Texts`).
+The daemon then composes the arm's control, Legion's prompt with none of the arm's overlays or instructions, and sends it as a second start in the same try, uncharged, under the id `start-<generation>-texts-fallback`, since the launcher answers a start that reuses a refused start's id with the same refusal.
+That second start is held to every bound a start is, and its own refusal fails the launch as any start's does.
+A refusal over anything else, such as a state home the root cannot be built in, is an ordinary refusal of the start.
+
+Two launches never reach the launcher's check and are sent the control's start alone, each logged and told to the issue as any fallback is:
+
+- **A kept pod whose launcher predates folders of texts** (`launcher-cannot-check`): its hello says no `checksTexts`, which decodes as false, and it would start the agent on an unchecked root.
+  The folder reaches that issue's roles once the pod is replaced, as an update round replaces a pod of an earlier image.
+
+- **A launch that installs the plugin pair into a kept pod after its start** (`installs-plugins`): the stale-plugin relaunch of [Contract discipline](#contract-discipline), whose install runs in the start wrapper the role's shim runs once the launcher has started the generation, so no check reads those plugins' texts before the agent loads them.
+  The decision follows the decision to replace the pod (`relaunch`), and a launch that replaces the pod installs nothing and runs the folder.
+
+A pod built before the operator's mount of the folder existed holds no folder at its path, so its launcher refuses the start (`gone`) and the role runs the control until the pod is replaced.
+The mount itself is the operator's: a whole-volume `runtime.kubernetes.pod.volume_mounts` entry at the folder's path or above it, never a `sub_path` one, and the same volume on the daemon's pod at the same path; a ConfigMap or Secret carries a folder only through `items`, one for each file at its path in the folder, since a key holds no `/`.
+The loader refuses a folder no such mount holds, boot refuses a file of it the items do not carry, and `legion config check` makes both refusals ([Configuration](#configuration)).
+A daemon of an earlier release refuses the key at load as any key it does not know, so take `texts` out of every arm before a rollback past this release.
+
 ### Configuration
 
 ```yaml

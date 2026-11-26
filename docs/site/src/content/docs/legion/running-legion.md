@@ -582,6 +582,9 @@ What each part is for:
   `PI_CONFIG_FILES` after the operator's own and the role's own, in the order the project's file
   declares the experiments, and ends its system prompt with each arm's `instructions` in that same
   order.
+  An arm may also name `texts`, the absolute path of a folder its reached roles read in place of
+  Legion's own texts ([An arm's folder of texts](#an-arms-folder-of-texts)); such an arm is no
+  control either.
   The draw is made once, when the unit is opened, and is recorded with the arm, its `plan` where it
   names one, the mode in force and the instant; the launch then follows that record and not the
   mode, so moving a mode to `off`
@@ -1100,6 +1103,267 @@ Stops on: <date>     Early looks: <none> | <what one may decide>
 Analysis: grouped by tree (<per-tree mean | random effect per tree>)
 Exposure checks: kept-pod drops from the launch log; the date any arm left the file
 ```
+
+## An arm's folder of texts
+
+An arm of an experiment can run another version of Legion's own texts: its `texts` names a folder,
+and each role the experiment reaches, of a unit drawn into that arm, reads the folder's file in
+place of Legion's wherever the folder holds one.
+The arm `shorter` below gives the reviewer of each tree it draws a reviewer prompt of its own,
+beside a control that runs Legion's:
+
+```yaml
+projects:
+  WIDGETS:
+    experiments:
+      shorter-reviews:
+        mode: random
+        roles: [reviewer]
+        variants:
+          - {name: shorter, texts: /etc/legion-texts/shorter}
+          - {name: control}
+```
+
+`texts` is a clean absolute path, and the arm may name `config_files` and `instructions` beside it.
+`legion state --json` answers it at `settings.projects.<KEY>.experiments[].variants[].texts`.
+
+### What a folder holds
+
+A folder holds files at the paths of Legion's texts, as they stand in this repository at the
+release your daemon and its worker image run, and one `manifest.json` beside them:
+
+| In the folder | Legion's text it replaces |
+| --- | --- |
+| `roles/<p>` | `packages/daemon/internal/prompts/roles/<p>`, a shared part of a role prompt |
+| `go/<p>` | `packages/daemon/internal/prompts/go/<p>`, the daemon's own part of a role prompt |
+| `agents/<name>.md` | `packages/pi-legion/agents/<name>.md`, an agent of the Legion plugin |
+| `skills/<skill>/<p>` | `skills/<skill>/<p>`, a file of a skill as the two plugins ship it |
+| `skills/dispatch-first/SKILL.md` | `skills/dispatch-first/SKILL.md`, the `dispatch-first` text every model request of a session with Dispatch carries |
+
+`manifest.json` records, for each file of the folder, the digest of **Legion's** text at that
+path, the text the file replaces, and not the digest of the file itself:
+
+```json
+{
+  "files": {
+    "roles/reviewer.md": "sha256:<64 lower-case hex>",
+    "go/reviewer.md": "sha256:<64 lower-case hex>"
+  }
+}
+```
+
+It holds no key but `files`, and it lists every file of the folder and no other.
+So the daemon can tell which release of Legion's texts the folder was cut from, and a launch never
+runs a file whose Legion text has moved on since.
+
+- **A folder replaces texts; it adds none and removes none.**
+  A file at a path where Legion has no text makes the launch fall back (below).
+  An empty file is a valid replacement of a role part or of a file of a skill, and is how a folder
+  takes such a text out; an agent's file keeps its frontmatter `name` (below).
+
+- **A role part counts only where a role the experiment reaches reads it.**
+  Each role's launch reads these parts, in this order: the architect of a root
+  `roles/architect-root.md`, `go/architect-root.md` and `go/architect-common.md`; the architect of
+  a child `roles/architect.md`, `go/architect.md` and `go/architect-common.md`; the planner, the
+  implementer, the tester and the reviewer `roles/core/common.md`, `roles/core/<role>.md`,
+  `roles/mechanics/headless.md`, `roles/<role>.md`, `go/<role>.md` and `go/worker-common.md`; the
+  merger `roles/mechanics/headless.md`, `roles/merger.md`, `go/merger.md` and
+  `go/worker-common.md`.
+  A folder holding a part that no role the experiment reaches reads is refused at boot: another
+  role's part, `go/claude-mechanics.md`, which only a role on Claude Code reads, the controller's
+  `roles/controller-root.md` and `go/controller-*.md`, since the controller runs in no experiment,
+  and `roles/core/oracle.md` and `roles/mechanics/interactive.md`, which no launch reads.
+
+- **An agent or a skill keeps its name.**
+  The frontmatter `name` of `agents/<name>.md` must be `<name>`, and a `SKILL.md` that names itself
+  must name its directory, or the launch falls back: Oh My Pi would offer Legion's copy beside the
+  folder's.
+  A skill whose files the folder holds keeps every file the folder does not hold, so a folder may
+  replace one reference of a skill and nothing else.
+
+- **Every agent and skill a text names must ship.**
+  Each `agent="<name>"`, `skill://<name>`, `/skill:<name>` and the other forms Legion's own texts
+  use, in any file of the folder, must name an agent or a skill the worker image ships, as the
+  daemon's boot read them.
+
+### Cutting a folder
+
+Cut the folder from the release tag of the Legion your daemon and its worker image run
+(`legion-v<version>`; under tmux, the release of the plugins the daemon's Oh My Pi profile has
+installed).
+This script writes Legion's text of each path you name, at that tag, into a folder, beside the
+manifest that records each one's digest; run it in a clone of this repository with its tags
+fetched (`git fetch --tags`):
+
+```sh
+#!/bin/sh
+# cut-texts.sh <tag> <folder> <path>...: writes Legion's text of each <path> at <tag> into <folder>,
+# beside the manifest.json recording each one's digest. Run it in a clone of cybermonklabs/legion.
+set -eu
+tag=$1 folder=$2
+shift 2
+entries=
+for path; do
+  case $path in
+  roles/* | go/*) source=packages/daemon/internal/prompts/$path ;;
+  agents/*) source=packages/pi-legion/$path ;;
+  skills/*) source=$path ;;
+  *) echo "cut-texts.sh: $path is under none of roles/, go/, agents/ and skills/" >&2 && exit 1 ;;
+  esac
+  mkdir -p "$folder/$(dirname "$path")"
+  git show "$tag:$source" >"$folder/$path"
+  sum=$(git show "$tag:$source" | sha256sum)
+  entries="$entries${entries:+,}
+    \"$path\": \"sha256:${sum%% *}\""
+done
+printf '{\n  "files": {%s\n  }\n}\n' "$entries" >"$folder/manifest.json"
+```
+
+```sh
+sh cut-texts.sh legion-v<version> ./shorter roles/reviewer.md go/reviewer.md
+```
+
+Then edit the files in the folder and leave `manifest.json` as the script wrote it.
+A path the tag does not hold stops the script with git's own message, which is the folder's
+`no-legion-text` before any launch meets it.
+
+**Cut it again for each release.**
+A launch holds each file's recorded digest to the text of the release it runs, so a release that
+changes Legion's text at a path the folder holds makes every launch of the arm fall back
+(`digest`) until you carry your edit over to the new text and record its digest.
+To see which of your paths a release changed, cut the same paths at the new tag into a scratch
+folder and compare the two manifests.
+A release that takes out a path, an agent or a skill your folder uses makes the launch fall back
+as well (`no-legion-text`, `unknown-agent`, `unknown-skill`).
+
+### Where the folder must be
+
+The daemon reads the folder at boot and again at each launch of the arm, so an edit reaches the
+next launch with no restart, and a role already running keeps what it launched with.
+Boot reads every declared arm's folder whatever the experiment's mode, since a unit already drawn
+into the arm still reads it, so a folder you break while the daemon runs makes launches fall back
+and then stops the next boot until you mend it or take `texts` out.
+
+Under `runtime: tmux` the folder is on the daemon's own host: the daemon copies what it read and
+checked to `<state_dir>/texts/<claim>/<generation>/folder`, and each pane reads that copy.
+
+Under `runtime: kubernetes` the folder must be at one path in the daemon's own pod and in every
+issue pod, since the role's launcher reads it again in the issue pod before the agent starts.
+Mount it through `runtime.kubernetes.pod.volume_mounts`, as a whole volume (no `sub_path`) at the
+folder's path or above it, and mount the same volume on the daemon's pod at the same path.
+A ConfigMap key holds no `/`, so a ConfigMap or Secret carries a folder only through `items`, one
+item for each file at its path in the folder, `manifest.json` among them:
+
+```yaml
+runtime:
+  kubernetes:
+    pod:
+      volumes:
+        - name: operator-texts
+          config_map:
+            name: legion-operator-texts
+            items:
+              - {key: manifest.json, path: manifest.json}
+              - {key: roles-reviewer.md, path: roles/reviewer.md}
+              - {key: go-reviewer.md, path: go/reviewer.md}
+      volume_mounts:
+        - {volume: operator-texts, mount_path: /etc/legion-texts/shorter}
+```
+
+```sh
+kubectl -n <namespace> create configmap legion-operator-texts \
+  --from-file=manifest.json=shorter/manifest.json \
+  --from-file=roles-reviewer.md=shorter/roles/reviewer.md \
+  --from-file=go-reviewer.md=shorter/go/reviewer.md
+```
+
+The loader refuses a folder under no such mount or under a `sub_path` mount, and boot refuses a
+file of the folder that a volume projecting `items` does not carry.
+A ConfigMap or Secret holds at most 1 MiB, so a folder larger than that needs a volume of another
+kind, such as a `persistent_volume_claim` or `nfs` volume every pod can mount at once, holding the
+folder's files at their paths.
+An issue pod built before the mount existed holds no folder: a launch into it falls back (`gone`)
+until the pod is replaced.
+
+### Refused at load and boot
+
+`legion config check` makes each of these refusals before anything starts, and the daemon makes
+them at boot, naming the arm's key, the folder, the file and the cause
+([The daemon will not start](/legion/legion/troubleshooting/#the-daemon-will-not-start) has a
+row for each text):
+
+- A role the experiment reaches that `worker_backends` puts on `claude`: only an Oh My Pi launch
+  reads a folder, and the architect always runs on it.
+
+- Two experiments that each give a folder to one role, which would then read two folders; name
+  the role in the `roles` of one of them alone.
+  Two arms of one experiment may each name a folder, since a unit is drawn into one arm.
+
+- A folder that is gone or cannot be read, that holds no `manifest.json` or one not of its form,
+  a file the manifest does not list or a listed file it lacks, a path outside `roles/`, `go/`,
+  `agents/` and `skills/`, or a link that leads out of the folder.
+
+- A role part no role the experiment reaches reads (above).
+
+- Under Kubernetes, a folder outside the operator's mounts, as above.
+
+A digest that is not that of Legion's text, and a path where Legion has no text, are no refusal:
+each launch falls back from them, so a release never stops a daemon whose folders were cut from the
+release before it.
+
+### When a launch falls back
+
+Each launch of a reached role checks the folder as it stands then: the daemon holds the role
+parts to its own and the names the texts use to those the image ships, and the runtime holds the
+agents and skills to the plugins the launch loads, in the daemon's process under tmux and in the
+pod's launcher under Kubernetes.
+A launch whose folder fails any check runs exactly as a launch in no arm of that experiment:
+Legion's own texts, none of the arm's `config_files` or `instructions`, and no member for the arm
+in its `legion.arms`, so its model calls are counted under no arm of that experiment while the
+unit's draw stays recorded.
+The causes, by the word the log and the notice carry:
+
+| Cause | What the check found |
+| --- | --- |
+| `gone` | The folder does not exist. |
+| `unreadable` | The folder, a file of it, or the Legion text it is compared with cannot be read. |
+| `no-manifest` | The folder holds no `manifest.json`. |
+| `manifest-unreadable` | `manifest.json` is not of its form. |
+| `unlisted` | The folder holds a file `manifest.json` does not list. |
+| `missing` | `manifest.json` lists a file the folder does not hold. |
+| `bad-path` | A path is not clean and relative, or is under none of the four trees. |
+| `link-escapes` | A link in the folder leads out of it. |
+| `digest` | The digest `manifest.json` records is not that of Legion's text at the path: the folder was cut from another release. |
+| `no-legion-text` | Legion has no text at the path. |
+| `name-differs` | An agent's or a `SKILL.md`'s frontmatter name is not the one its path gives. |
+| `unread` | No role the experiment reaches reads Legion's text at the path. |
+| `unknown-agent` | A text names an agent the worker image does not ship. |
+| `unknown-skill` | A text names a skill the worker image does not ship. |
+| `names-unread` | The daemon's boot read no list of the agents and skills the image ships, and a text names one. |
+| `launcher-cannot-check` | The issue pod's launcher predates folders of texts: a pod built from an earlier image. |
+| `installs-plugins` | The launch installs Legion's plugins into a pod it keeps, after the agent's start, so nothing can check their texts first. |
+| `changed` | The folder changed between the daemon's read and the launcher's, as during a ConfigMap's update. |
+| `two-folders` | Two experiments each give a folder to one role; the loader refuses this, so no launch meets it. |
+
+What you see of a fallback:
+
+- **The daemon's log** has one WARN line for each such launch,
+  `legion daemon launched Legion's own texts in place of an arm's folder of texts`, naming `claim`,
+  `generation`, `experiment`, `arm`, `folder`, `file` (`none` for the folder as a whole), `cause`,
+  `fingerprint` and `detail`, what the check saw.
+  Each launch whose folder passed the daemon's own checks first logs one INFO line,
+  `legion daemon launches with an arm's folder of texts`, naming each file it read with its digest.
+  At boot one INFO line says how many agents and skills the image ships, or that the daemon read
+  none, in which case every launch of a folder that names an agent or a skill falls back.
+
+- **The issue** gets one message for each claim and each cause, however often the claim
+  relaunches, beginning
+  `The <role> of <issue>, claim <claim> at generation <n>, ran Legion's own texts in place of`
+  and naming the folder, the arm, the experiment, the file and the cause.
+  A folder cut again is a new cause, and tells the issue again if it falls back.
+
+Count each such launch out of its arm's exposure, as the two cases of the
+[pre-registration](#pre-registering-an-experiment)'s part 7.
 
 ## Secrets and files
 

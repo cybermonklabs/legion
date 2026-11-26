@@ -233,6 +233,16 @@ left-out line naming no command; the log says once per session that the Dispatch
 route; and that Dispatch is not asked again for 5 minutes. Any other answer, a proxy's 404 page or
 a 200 that is no answers list included, is a failed read.
 
+A launch of an experiment arm's folder of texts names the extension root Legion built for it in
+`LEGION_TEXTS_ROOT`.
+The extension reads the variable once, at its first load in the process, and sets it to the empty
+string, so an Oh My Pi the session starts reads Legion's own texts; a value that names no
+directory is no root, and the log says so once.
+Where the root holds `skills/dispatch-first/SKILL.md`, that file is the `dispatch-first` text each
+request carries in place of the plugin's own, and where it holds `skills/`, `resources_discover`
+gives that folder in place of the plugin's own skills, so the root's copy of each skill, with the
+arm's files over it, takes the plain name; a root that holds neither leaves the plugin's own.
+
 What people wrote goes to the model in answers messages: user messages of their own, never at
 the head and never merged into a message of the conversation. A list is one message of two text
 blocks: the list, then the sentence "This list replaces every earlier list of people's answers
