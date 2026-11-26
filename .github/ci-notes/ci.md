@@ -2608,8 +2608,10 @@ built from the module's `go list ./...` rather than from the file
 (`.github/scripts/ci_job_reads.py#leg_run_packages`), so a change to only such a package's test
 files still starts envoy-go; a package added under one of the race lane's trees
 (`internal/dispatch/delivery`, `internal/dispatch/store`, `internal/kvwatch`) is refused
-unlisted by `.github/scripts/ci_job_reads.py#hold_envoy_legs` in the changes job, since leg 5 would
-run it without the race detector that `./<tree>/...` gave it on main; each leg runs in its step's mode;
+unlisted by `.github/scripts/ci_job_reads.py#hold_envoy_legs` as that file is imported, which
+fails the ci-filters and lint jobs naming it (the changes job's generation falls open and selects
+every job), since leg 5 would run it without the race detector that `./<tree>/...` gave it on
+main; each leg runs in its step's mode;
 the jobs envoy-go and envoy-go-race keep their check-run names, wait for the jobs their `needs:`
 names and pass only when every one passed, reading the results once, through
 `needs.*.result`, and writing the words

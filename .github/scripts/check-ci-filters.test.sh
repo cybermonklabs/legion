@@ -6081,12 +6081,16 @@ check "the Run names it" "$(contains " $(ask plain_run packages/daemon daemon-go
 # repository's own list is held by the import every question here starts from.)
 alone_held() { ask alone_held "$work/alone" "$1" "a b"; }
 mkdir -p "$work/alone/a" "$work/alone/b"
+# A module of its own, since the hold asks `go list -find` which test files the runner's build
+# compiles.
+printf 'module example.com/alone\n\ngo 1.21\n' > "$work/alone/go.mod"
 printf 'package a\n\nimport "testing"\n\nfunc TestOwn(t *testing.T) {}\n\nfunc TestShared(t *testing.T) {}\n\n// func TestInComment(t *testing.T) {}\n' > "$work/alone/a/a_test.go"
 printf '//go:build natslive\n\npackage a\n\nimport "testing"\n\nfunc TestTagged(t *testing.T) {}\n' > "$work/alone/a/live_test.go"
 printf '//go:build linux && (arm64 || amd64) && !race\n\npackage a\n\nimport "testing"\n\nfunc TestOnLinux(t *testing.T) {}\n' > "$work/alone/a/on_linux_test.go"
 printf '//go:build darwin || windows\n\npackage a\n\nimport "testing"\n\nfunc TestOffLinux(t *testing.T) {}\n' > "$work/alone/a/off_linux_test.go"
 printf 'package a\n\nimport "testing"\n\nfunc TestNamedDarwin(t *testing.T) {}\n' > "$work/alone/a/clock_darwin_test.go"
 printf 'package a\n\nimport "testing"\n\nfunc TestNamedLinux(t *testing.T) {}\n' > "$work/alone/a/clock_linux_arm64_test.go"
+printf '// +build darwin\n\npackage a\n\nimport "testing"\n\nfunc TestPlusBuildDarwin(t *testing.T) {}\n' > "$work/alone/a/plus_build_test.go"
 printf 'package b\n\nimport "testing"\n\nfunc TestShared(t *testing.T) {}\n' > "$work/alone/b/b_test.go"
 echo "case: the alone list holds a test its package declares and no other does"
 check "passes" "$(is "$(alone_held '{"a": ["TestOwn"]}')" held)"
@@ -6094,6 +6098,8 @@ check "and a test behind a constraint the runner's build meets passes too" "$(is
 check "and one in a file named for linux/arm64" "$(is "$(alone_held '{"a": ["TestNamedLinux"]}')" held)"
 echo "case: the alone list names a test declared only in a file named for another platform"
 check "is refused" "$(contains "$(alone_held '{"a": ["TestNamedDarwin"]}')" '^RAISED: UNIT_ALONE_TESTS names TestNamedDarwin, which no _test.go file')"
+echo "case: the alone list names a test declared only behind an old-style // +build line"
+check "is refused" "$(contains "$(alone_held '{"a": ["TestPlusBuildDarwin"]}')" '^RAISED: UNIT_ALONE_TESTS names TestPlusBuildDarwin, which no _test.go file')"
 echo "case: the alone list names a test no file declares (a rename, a deletion)"
 out=$(alone_held '{"a": ["TestGone"]}')
 check "is refused" "$(contains "$out" "^RAISED: UNIT_ALONE_TESTS names TestGone, which no _test.go file of .*/alone/a that the runner's linux/arm64 build compiles declares")"
