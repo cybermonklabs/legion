@@ -1674,7 +1674,6 @@ sleep() { command sleep 0.05; }`;
 });
 
 describe("launch environment", () => {
-
   // Catches: a pane variable in a process's arguments, where every user of the machine reads it:
   // a tester's pane carries the batch's NATS URL, credential included, and launch once handed the
   // pane to `env -i` as arguments. Every `env` launch runs after the pane's PATH is set records
@@ -1729,8 +1728,8 @@ sleep() { command sleep 0.05; }`;
         .split("\n")
         .filter((line) => line.includes(token))
         .map((line) => line.replaceAll(token, "<token>")),
-      launcherPassesPaneAsArguments: launcher.includes('exec env -i "${vars[@]}"'),
-      launcherExportsPane: launcher.includes('for var in "${vars[@]}"; do export "$var"; done'),
+      launcherPassesPaneAsArguments: launcher.includes(`exec env -i "\${vars[@]}"`),
+      launcherExportsPane: launcher.includes(`for var in "\${vars[@]}"; do export "$var"; done`),
       launcherEnv,
     }).toEqual({
       code: 0,
@@ -1742,8 +1741,6 @@ sleep() { command sleep 0.05; }`;
     });
   });
 });
-
-
 // The tester-proof world's gh routes (worker_routes), answered by the run's gh stand-in. A tester
 // finds its pull request with the worker prompt's lookup, `gh pr list --repo <the issue's
 // repository> --head legion/<issue> --state open --json number --jq '.[0].number'`
@@ -2493,7 +2490,16 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
       "set -euo pipefail",
       '. "$1"',
       '. "$2"',
-      defs("fail", "note", "given_services", "safe_url", "pg_sql", "services_up", "own_dispatch"),
+      defs(
+        "fail",
+        "note",
+        "given_services",
+        "safe_url",
+        "pg_sql",
+        "owner_only",
+        "services_up",
+        "own_dispatch"
+      ),
       'until_true() { shift 2; "$@"; }',
       "connections_needed() { per_run=117; needs=$((per_run * parallel + 20)); }",
       'nats_ready() { echo "nats_ready $1" >>"$calls"; }',
@@ -3008,6 +3014,7 @@ describe("the recorded plans answer", () => {
 const FAKE_OMP = String.raw`#!/usr/bin/env bash
 if [ "$1" = --version ]; then echo omp/1.2.3; exit 0; fi
 run=$SKILL_SCENARIO_RUN plan=$FAKE_OMP_PLAN
+env >"$run/fake-omp.env"
 note() { jq -cn --argjson at "$(date +%s%3N)" --argjson e "$1" '{at: $at} + $e' >>"$run/fake-omp.jsonl"; }
 now() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 seconds() { jq -rn --argjson ms "$1" '$ms / 1000'; }
@@ -3211,7 +3218,9 @@ describe("launch_rpc", () => {
       undefined,
       { bin, lines: [`ENVOY_NATS_URL=${url}`, "NOTE=two words"] }
     );
-    const argvLines = existsSync(argvLog) ? readFileSync(argvLog, "utf8").trimEnd().split("\n") : [];
+    const argvLines = existsSync(argvLog)
+      ? readFileSync(argvLog, "utf8").trimEnd().split("\n")
+      : [];
     const fakeOmp = path.join(run.R, "fake-omp.env");
     const fakeOmpLines = existsSync(fakeOmp)
       ? readFileSync(fakeOmp, "utf8").trimEnd().split("\n")
