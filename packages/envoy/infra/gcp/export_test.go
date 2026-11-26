@@ -235,6 +235,16 @@ func DispatchKubeconfig(endpoint, ca, name string) string {
 	return renderKubeconfig(endpoint, ca, name)
 }
 
+// DispatchIgnoredEntryWarnings are the warnings NewDispatch prints at preview for args, one for
+// each entry of privateProjects and of privateBeforeFullSwitch that is not a project key.
+func DispatchIgnoredEntryWarnings(args *DispatchArgs) ([]string, error) {
+	s, err := newDispatchSettings(args)
+	if err != nil {
+		return nil, err
+	}
+	return dispatchIgnoredEntryWarnings(s), nil
+}
+
 // DispatchListenerEnvError resolves the listener container's environment from the one NATS URL,
 // for the refusal tests, with the front door's proxy in the default namespace: nil when the URL
 // renders an environment.

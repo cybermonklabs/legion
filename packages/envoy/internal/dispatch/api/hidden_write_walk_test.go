@@ -484,6 +484,13 @@ func walkListener(t *testing.T, topics *[]string, calls *listenerCalls) *httptes
 // and s-pub follows PRIV's.
 func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	t.Helper()
+	return seedHiddenWritesOn(t, seedPrivateProjectWith)
+}
+
+// seedHiddenWritesOn is seedHiddenWrites on the seed seedWith stands up from the walk's options:
+// seedPrivateProjectWith, or one that makes PRIV private another way (seedSwitchedPrivate).
+func seedHiddenWritesOn(t *testing.T, seedWith func(*testing.T, testServerOptions) privateSeed) hiddenWriteSeed {
+	t.Helper()
 	topics := []string{}
 	calls := &listenerCalls{}
 	trace := &existenceTrace{}
@@ -493,7 +500,7 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	// every object refreshes it before it reads (readerFor), and a refresh that found it stale would
 	// ask the listener and write route_roster in whichever call of a pair came first, which the walk
 	// holds to the same listener calls and no write (callPair). The seed's agents list stores it.
-	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), trace), routeRosterTTL: time.Hour})
+	seed := seedWith(t, testServerOptions{envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), trace), routeRosterTTL: time.Hour})
 	issue := seed.issue[seedPrivate]
 	asCarol := func(method, path string, body any) *httptest.ResponseRecorder {
 		t.Helper()
