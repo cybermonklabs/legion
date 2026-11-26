@@ -677,23 +677,23 @@ func (e *Engine) besideFacts(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // keptFacts is the start facts of a step at place of w's task of issue that a way 2 runs again
 // after the task's latest fix ended (startFacts, while no fix of the task is open): where the
 // daemon holds a push of the step's own branch beside that fix (record.TaskFix.Pushed), the way kept
-// that branch (deletesAtWay), and the start, made after the fix ended, takes its commits from it
-// (Kept). The role is the role of the step's phase, a phase of a step of the plan, which admitted
-// never is; the implementer's branch beside the fix is the fix's own, which its end push took
-// whole. false for every other start.
+// that branch (deletesAtWay), and the start takes its commits from it (Kept). The fix's Way, which
+// afterFix writes before the way's start, is the record that the way ran, so no step start's moment
+// is read: no step of the task runs when the way is taken (taskStepRuns), so every start and resume
+// of a step after the fix's place from then on comes after the fix's end. The way's own start is
+// among them, and its task is composed before that start is counted (start, stepStanding), when the
+// step's latest start is still its start from before the fix ended. The role is the role of the
+// step's phase, a phase of a step of the plan, which admitted never is; the implementer's branch
+// beside the fix is the fix's own, which its end push took whole. false for every other start.
 func (e *Engine) keptFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (startFacts, bool, error) {
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
-	if err != nil || fix == nil || fix.Way != wayAfterFix || fix.EndedAt == nil || place <= fix.Place {
+	if err != nil || fix == nil || fix.Way != wayAfterFix || place <= fix.Place {
 		return startFacts{}, false, err
 	}
 	role := RoleFor(w.steps()[place-1])
 	pushed := fix.Pushed[string(role)]
 	if role == claim.RoleImplementer || pushed == "" {
 		return startFacts{}, false, nil
-	}
-	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
-	if err != nil || start.StartedAt.Before(*fix.EndedAt) {
-		return startFacts{}, false, err
 	}
 	branch, ok := e.besideBranchOf(issue, w.Task, fix.Fix, role)
 	if !ok {
@@ -1204,14 +1204,22 @@ func moveToOf(ctx context.Context) string {
 
 // copyMoveAfterFix is the head a start of a step of w's task moves the task's working copy to
 // where a fix left that copy behind: the head the task's latest fix ended at, where that fix has
-// ended with commits of its own (its end is not the head it started at) and no step of the task has
-// started since it ended. The fix pushes from a working copy of its own, so until a step starts
-// after it the task's copy stands where the fix started; the first start after it moves the copy,
-// and a later start finds the copy there or past it, where a move could take it back from a commit
-// pushed since. That is every start a fix's end leads to outside the way after it (moveToOf): a
-// restart of the task after a stop ended the fix, the retro after the end hold, a step after a way
-// that left each step its result. It answers "" for every other start, and for each task that has
-// had no fix.
+// ended with commits of its own (its end is not the head it started at) and no start since has
+// carried that move. The fix pushes from a working copy of its own, so until a step starts after it
+// the task's copy stands where the fix started; the first start after it moves the copy, and a
+// later start finds the copy there or past it, where a move could take it back from a commit made
+// since.
+//
+// Where the fix's way returned the task or ran the steps after the fix again (wayReturn,
+// wayAfterFix), the way's own start carried the move (moveToOf), and the fix's Way, which afterFix
+// writes in that start's transaction, is the record of it: every later start answers "", whatever
+// the clock read. Every other start a fix's end leads to is the one read that still decides by the
+// clock, from the step starts' moments: no step of the task started after the fix ended
+// (record.StepStart.StartedAt after record.TaskFix.EndedAt), which a clock that does not advance or
+// steps back reads wrongly. Those starts are a restart of the task after a stop, a leave or a new
+// generation ended the fix (wayNone), the retro after the end hold or a step after a way that left
+// each step its result (wayOn), and a start while the way is pending. It answers "" for every
+// other start, and for each task that has had no fix.
 func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (string, error) {
 	if !w.Stored {
 		return "", nil
@@ -1219,6 +1227,9 @@ func (e *Engine) copyMoveAfterFix(ctx context.Context, tx pgx.Tx, issue record.I
 	fix, err := e.store.LatestFix(ctx, tx, issue.Key, issue.Generation, w.Task)
 	if err != nil || fix == nil || fix.State != record.FixEnded || fix.EndedAt == nil || fix.EndHead == "" || fix.EndHead == fix.Head {
 		return "", err
+	}
+	if fix.Way == wayReturn || fix.Way == wayAfterFix {
+		return "", nil
 	}
 	for place := range w.Steps {
 		start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place + 1})
