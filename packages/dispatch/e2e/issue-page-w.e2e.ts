@@ -40,6 +40,7 @@ import {
   convertedGate,
   heldAnswer,
   owedUnless,
+  seedEventsLanded,
   type TreeAnswerWatch,
   treeAnswerOf,
   treeReadGate,
@@ -48,6 +49,7 @@ import {
 import {
   drawnIdOf,
   drawsChildPageRow,
+  type EventFrame,
   findingGate,
   focusedRowReadId,
   heldTreeAnswer,
@@ -71,6 +73,7 @@ import {
   requestedTreeRead,
   seedLenses,
   treePagesOf,
+  watchEventFrames,
 } from "./issue-page-w";
 import { expect, type Locator, type Page, type Route, test } from "./test";
 import {
@@ -128,7 +131,11 @@ import { assertPageFits } from "./unclipped";
  * - Row 3 compares a load of Conversation and a load of Graph of the issue with lenses with the
  *   same loads of an issue without them; presses `j`, the chain and the menu in Conversation; and
  *   invokes once in each outline, which sends one read of the tree, the open view's: in
- *   Conversation the read with `kind`, in Graph the read with no kind and no view.
+ *   Conversation the read with `kind`, in Graph the read with no kind and no view. Each load and
+ *   each invocation it counts is measured over a window no event reached (`measuredAlone`): the
+ *   seed's events land first (`seedEventsLanded`), and a try whose window heard an event on the
+ *   page's live socket (`watchEventFrames`) - a server duty's, which the page reads the issue or
+ *   the architecture again for - runs again, three times at most, and then fails naming them.
  * - Row 4 reads in Graph and in Conversation. In Graph: the constraints at the top level,
  *   statement 5's and statement 6's chips, and Enter on the standard's chip, which focuses the
  *   standard's row in place. In Conversation, at the issue's own address: the same two chips,
@@ -938,21 +945,81 @@ function treeReadOf(requests: readonly ApiRequest[], key: string): string | unde
   return first === undefined ? undefined : readOf(first.path);
 }
 
+/** How many times row 3 runs one measured act, a load or an invocation, before it fails for the
+ *  events of others (`measuredAlone`). */
+const MEASURED_TRIES = 3;
+
+/** The events `heard` as a failure names them: each one's type, what it is about, its id, when
+ *  the server wrote it, and when its frame arrived, in ms after the try `began`. */
+function eventsNamed(heard: readonly EventFrame[], began: number): string {
+  return heard
+    .map(
+      (event) =>
+        `${event.kind} on ${event.entity === "" ? "the workspace" : event.entity} (event ` +
+        `${event.id}, written ${event.created}) ${event.at - began} ms into the try`
+    )
+    .join(", ");
+}
+
+/**
+ * Runs `step`, one of row 3's measured acts, until a try's window hears no event on the page's
+ * live socket (`events`, `watchEventFrames`), and answers what that try answered. The page reads
+ * again for each event it hears, and a server duty writes events of its own on its own clock:
+ * the architecture import's makes the page read the project's architecture, and the edit
+ * notices', the suggestion outcomes' and the block index's read the issue. So a count over a
+ * window an event reached counts reads the act never sent. Every event spoils the window. The
+ * lens's write appends none (`writeReasoningNodes`,
+ * `packages/envoy/internal/dispatch/api/reasoning_write.go`), so no event is the invocation's
+ * own. A load's read mark of a thread (`outline-thread-read.tsx`) is sent once for each thread,
+ * so a load its own mark spoiled measures on its next try, which finds the thread read.
+ *
+ * Before each try the seed's events have landed (`seedEventsLanded`). The window runs from there
+ * to the end of `step`. The step, or its caller once this answers, reads its counts in the same
+ * turn as the window is read, so a frame or a request that comes later reaches neither. After
+ * `MEASURED_TRIES` spoiled tries it fails, naming the events each one heard. `attempt` counts the
+ * tries from 0, and `what` names the act.
+ */
+async function measuredAlone<Answer>(
+  page: Page,
+  events: readonly EventFrame[],
+  what: string,
+  step: (attempt: number) => Promise<Answer>
+): Promise<Answer> {
+  const spoiled: string[] = [];
+  for (let attempt = 0; attempt < MEASURED_TRIES; attempt += 1) {
+    await seedEventsLanded(page);
+    const from = events.length;
+    const began = Date.now();
+    const answer = await step(attempt);
+    const heard = events.slice(from);
+    if (heard.length === 0) return answer;
+    spoiled.push(`try ${attempt + 1}: ${eventsNamed(heard, began)}`);
+  }
+  throw new Error(
+    `${what}: each of its ${MEASURED_TRIES} tries heard an event it did not cause, so none ` +
+      `measured it alone; ${spoiled.join("; ")}`
+  );
+}
+
 /** Opens `view` of issue `key` at its own address and waits out the load: its requests, which
  *  `traffic` holds from the navigation on, to a 1.5 s quiet window (`expectLoadSettled`), the
- *  page's opening, and the tree read, which it answers. */
+ *  page's opening, and the tree read, which it answers. A load whose window heard an event
+ *  (`events`) is loaded again (`measuredAlone`), so `traffic` holds a load that heard none. */
 async function loadView(
   page: Page,
   traffic: ApiRequests,
+  events: readonly EventFrame[],
   tree: TreeAnswerWatch,
   key: string,
   view: Outline
 ): Promise<IssueTreeRead> {
-  traffic.reset();
-  await gotoIssue(page, presetPath(key, view));
-  await expectLoadSettled(traffic);
-  await expectOpeningLanded(page);
-  return heldAnswer(tree, `the tree read of ${key}`);
+  return measuredAlone(page, events, inView(view, `the load of ${key}`), async () => {
+    traffic.reset();
+    await gotoIssue(page, presetPath(key, view));
+    await expectLoadSettled(traffic);
+    await expectOpeningLanded(page);
+    return heldAnswer(tree, `the tree read of ${key}`);
+  });
 }
 
 /** Row 3's reading of a load of `view` of the issue `seedLenses` wrote on, `traffic` holding its
@@ -1001,6 +1068,19 @@ function expectLoadReadsNoLens(
   ).toEqual([]);
 }
 
+/** Opens the menu of lens kinds on the pre-mortem's row in `view`, as a reader does - the focus on
+ *  the row the page draws for the read id `preMortem`, `f` to its Lens act, Enter - and waits
+ *  until the menu's first kind holds the focus. */
+async function openPreMortemMenu(page: Page, view: Outline, preMortem: string): Promise<void> {
+  const row = await focusRow(page, await drawnIn(page, view, preMortem, "the pre-mortem"));
+  await pressFTo(page, lensAct(row), inView(view, "the pre-mortem's row offers no Lens act"));
+  await page.keyboard.press("Enter");
+  await expect(
+    menuItem(page, 0),
+    inView(view, "the opening of the menu lists no kind")
+  ).toBeFocused();
+}
+
 /**
  * Row 3's invocation in `view`, with the menu of lens kinds open on the pre-mortem's row and the
  * focus on its first kind: Enter invokes it, and the new lens holds the focus. It sends its write
@@ -1008,54 +1088,79 @@ function expectLoadReadsNoLens(
  * each page's request is the read `load` names, the one the view's load sent the tree route
  * (`treeReadOf`), but for its cursor. The shell's own timed reads (`SHELL_TIMED_READS`) are left
  * out: a window that spans one says nothing of the invocation, and every other request in it is
- * counted. `before` holds every lens the tree read held before it. Answers the new lens's id.
+ * counted. `before` holds every lens the tree read held before it.
+ *
+ * The count is measured alone (`measuredAlone`). Its window opens before the page goes quiet
+ * ahead of the press, and a try whose window heard an event (`events`) is spoiled. Its lens
+ * stays, and the next try opens the menu again with `openMenu` and invokes once more, so the next
+ * try's new lens is the one lens no earlier read held. Answers the lens of the try measured.
  */
 async function expectInvocationReads(
   page: Page,
   traffic: ApiRequests,
+  events: readonly EventFrame[],
   tree: TreeAnswerWatch,
   key: string,
   view: Outline,
   before: ReadonlySet<string>,
-  load: string
+  load: string,
+  openMenu: () => Promise<void>
 ): Promise<string> {
-  const treePages = treePagesOf(page);
-  traffic.reset();
-  await page.keyboard.press("Enter");
-  const made = await newLens(
-    tree,
-    before,
+  const what =
     view === "conversation"
       ? "the invocation on the pre-mortem"
-      : "the invocation on the pre-mortem in Graph"
-  );
-  await expect
-    .poll(() => focusedRowReadId(page), {
-      message: inView(view, "the lens invoked on the pre-mortem does not hold the focus"),
-    })
-    .toBe(made);
-  await expectLoadSettled(traffic);
-  const read = await treePages();
+      : "the invocation on the pre-mortem in Graph";
+  // Every lens a read held before the try under way: a spoiled try's lens joins them.
+  const held = new Set(before);
+  /** One try: after a spoiled one, the menu opened again; then the press, and what it sent. */
+  const invoke = async (attempt: number) => {
+    if (attempt > 0) {
+      // The landing on the spoiled try's lens takes back a focus nobody holds until the reader
+      // acts (`IssueTree.tsx`): a Shift, which no key of the page binds, is that act.
+      await page.keyboard.press("Shift");
+      await openMenu();
+    }
+    // The menu's opening may still have a read in flight, which is no request of the press.
+    await expectLoadSettled(traffic);
+    const treePages = treePagesOf(page);
+    traffic.reset();
+    await page.keyboard.press("Enter");
+    const made = await newLens(tree, held, what);
+    held.add(made);
+    await expect
+      .poll(() => focusedRowReadId(page), {
+        message: inView(view, "the lens invoked on the pre-mortem does not hold the focus"),
+      })
+      .toBe(made);
+    await expectLoadSettled(traffic);
+    const read = await treePages();
+    return {
+      made,
+      read,
+      sent: traffic.requests.flatMap((request) =>
+        SHELL_TIMED_READS[new URL(request.path, "http://page.invalid").pathname] === true
+          ? []
+          : [`${request.method} ${readOf(request.path)}`]
+      ),
+    };
+  };
+  const measured = await measuredAlone(page, events, inView(view, "an invocation"), invoke);
   expect(
-    traffic.requests.flatMap((request) =>
-      SHELL_TIMED_READS[new URL(request.path, "http://page.invalid").pathname] === true
-        ? []
-        : [`${request.method} ${readOf(request.path)}`]
-    ),
+    measured.sent,
     inView(
       view,
       "an invocation sends more than its write and one read of the tree, the open view's"
     )
-  ).toEqual([`POST /api/v1/issues/${key}/lenses`, ...read.map(() => `GET ${load}`)]);
+  ).toEqual([`POST /api/v1/issues/${key}/lenses`, ...measured.read.map(() => `GET ${load}`)]);
   expect(
-    read.map((one) => one.cursor),
+    measured.read.map((one) => one.cursor),
     inView(view, "the tree read an invocation sends asks for a page its read did not name")
-  ).toEqual([null, ...read.slice(0, -1).map((one) => one.next)]);
+  ).toEqual([null, ...measured.read.slice(0, -1).map((one) => one.next)]);
   expect(
-    read.at(-1)?.next,
+    measured.read.at(-1)?.next,
     inView(view, "the tree read an invocation sends stops before its last page")
   ).toBe(null);
-  return made;
+  return measured.made;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1564,7 +1669,8 @@ test("a finding's own row invokes a lens @owed", async ({ browser }) => {
 // SLOW(>=2s): two whole seeded issues each loaded at Conversation's address and at Graph's, each
 // load waited out to a 1.5 s quiet window, then `j` over every row, two chain presses, two menu
 // openings and an invocation in Conversation, and a menu opening and an invocation in Graph,
-// each waited out to that window.
+// each waited out to that window; each load and each invocation first waits a second or more for
+// the event head to rest, and runs again, three times at most, where an event reached it.
 test("the first load adds no request for lenses and reads a chain only at a press", async ({
   browser,
 }) => {
@@ -1575,8 +1681,9 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     owedUnless(await convertedGate(page, whole.key));
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
+    const events = watchEventFrames(page);
     for (const view of OUTLINES) {
-      await loadView(page, traffic, tree, whole.key, view);
+      await loadView(page, traffic, events, tree, whole.key, view);
       without[view] = ownRoutes(traffic.byRoute());
     }
   });
@@ -1587,10 +1694,11 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     const ids = await graphReadIds(page, key, lenses);
     const tree = treeAnswerOf(page);
     const traffic = watchApiRequests(page);
+    const events = watchEventFrames(page);
 
     // Conversation's load, at the issue's own address: the requests of the load without lenses,
     // and a read of the tree that names its kinds and no view.
-    const answer = await loadView(page, traffic, tree, key, "conversation");
+    const answer = await loadView(page, traffic, events, tree, key, "conversation");
     expectLoadReadsNoLens(traffic, without.conversation, lenses, "conversation");
     const conversationRead = treeReadOf(traffic.requests, key) ?? "";
     const conversationQuery = new URL(conversationRead, "http://page.invalid").searchParams;
@@ -1656,16 +1764,18 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     const made = await expectInvocationReads(
       page,
       traffic,
+      events,
       tree,
       key,
       "conversation",
       new Set(lensIdsIn(answer)),
-      conversationRead
+      conversationRead,
+      () => openPreMortemMenu(page, "conversation", ids.preMortem)
     );
 
     // Graph's load, at its own address: the requests of the load without lenses, and a read of
     // the tree with no kind and no view.
-    await loadView(page, traffic, tree, key, "graph");
+    await loadView(page, traffic, events, tree, key, "graph");
     expectLoadReadsNoLens(traffic, without.graph, lenses, "graph");
     const graphRead = treeReadOf(traffic.requests, key) ?? "";
     expect(graphRead, "Graph's load reads the tree with a kind or a view").toBe(
@@ -1677,28 +1787,17 @@ test("the first load adds no request for lenses and reads a chain only at a pres
     const held = await heldTreeAnswer(tree, "Graph's tree read", (graphAnswer) =>
       lensIdsIn(graphAnswer).includes(made)
     );
-    const graphPreMortem = await focusRow(
-      page,
-      await drawnIn(page, "graph", ids.preMortem, "the pre-mortem")
-    );
-    await pressFTo(
-      page,
-      lensAct(graphPreMortem),
-      inView("graph", "the pre-mortem's row offers no Lens act")
-    );
-    await page.keyboard.press("Enter");
-    await expect(
-      menuItem(page, 0),
-      inView("graph", "the opening of the menu lists no kind")
-    ).toBeFocused();
+    await openPreMortemMenu(page, "graph", ids.preMortem);
     await expectInvocationReads(
       page,
       traffic,
+      events,
       tree,
       key,
       "graph",
       new Set(lensIdsIn(held)),
-      graphRead
+      graphRead,
+      () => openPreMortemMenu(page, "graph", ids.preMortem)
     );
   });
 });
