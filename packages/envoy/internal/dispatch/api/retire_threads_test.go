@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// INFRA-1150, review round 1: a retired document takes no new text (docs' joinLiveWrite refuses a
+// Review round 1 of this change: a retired document takes no new text (docs' joinLiveWrite refuses a
 // live write into it), and a comment thread anchored in one stays a thread. Its resolve, its
 // reopen, the edit of one of its comments and a reply to it change the thread's own rows and write
 // nothing into the retired document: the thread's margin record reads the retirement under the

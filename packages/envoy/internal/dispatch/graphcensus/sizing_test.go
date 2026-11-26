@@ -319,7 +319,12 @@ func renderedTexts(t *testing.T, markdown string) map[string]string {
 //
 // Beside it is a second document of CORE-1, the archive: the same three versions, each written
 // before the window opened and none indexed yet, so that a test can run the block index itself
-// over them (indexTheArchive) without the window counting what the index writes.
+// over them (indexTheArchive) without the window counting what the index writes. And beside those
+// are three typed documents of CORE-1, each created before the window opened and holding one
+// version written inside it and not indexed yet (seedSizedTypedDocuments), so that a test can run
+// the block index itself over a Verification document whose check serves a requirement, a plan
+// whose tasks hold needs, serves and a size, and a requirement whose parent attribute places it
+// under the message, inside the window (indexTheTypedDocuments).
 func seedSizedHistory(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -495,6 +500,7 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 		}
 	}
 	seedSizedRelations(t, database, document, comment, message)
+	seedSizedTypedDocuments(t, database, message)
 }
 
 // seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
@@ -607,6 +613,53 @@ func seedSizedRelations(t *testing.T, database *store.Store, document, comment, 
 	} {
 		if _, err := database.Pool.Exec(ctx, step.sql, step.args...); err != nil {
 			t.Fatalf("%s: %v", step.what, err)
+		}
+	}
+}
+
+// sizedMessageMark is where the requirement document's text names the history's message, whose id
+// seedSizedTypedDocuments writes there: the requirement's parent attribute places it under that
+// message.
+const sizedMessageMark = "<message>"
+
+// sizedTypedDocuments are the three typed documents of CORE-1, in the order the block index
+// indexes them (indexTheTypedDocuments), each with whether it is a document the issue's room holds
+// once the issue converts (roleDocument): a document of one requirement, which its parent
+// attribute places under the history's message; the issue's Verification document, whose check
+// serves that requirement; and the issue's plan, whose second task needs the first, serves the
+// requirement and is sized in minutes, as a plan_task's size is written (pmdoc.Minutes).
+var sizedTypedDocuments = []struct {
+	slug, name, markdown string
+	role                 bool
+}{
+	{"requirements-md", "requirements.md", ":::requirement{#r-tuples parent=\"dispatch://CORE-1/message/" + sizedMessageMark + "\"}\n" +
+		"The store counts every tuple its writers append.\n:::\n", false},
+	{model.ArtifactSlugVerification, "verification.md", ":::check{#c-tuples serves=\"dispatch://CORE-1/artifact/requirements-md#b-r-tuples\" surface=\"cli\"}\n" +
+		"The sizing sums every term.\n:::\n", true},
+	{model.ArtifactSlugPlan, "plan.md", ":::plan_task{#t-census}\nWrite the census of the store.\n:::\n\n" +
+		":::plan_task{#t-size needs=\"dispatch://CORE-1/artifact/plan-md#b-t-census\" serves=\"dispatch://CORE-1/artifact/requirements-md#b-r-tuples\" size=\"45m\"}\n" +
+		"Size the store from the census.\n:::\n", true},
+}
+
+// seedSizedTypedDocuments writes sizedTypedDocuments as documents of CORE-1 created before the
+// window opened, each with its one version, written inside it by dana and holding its text as a
+// version write renders it (typedRender), which no block index has indexed yet. message is the
+// history's message, which the requirement's parent attribute names.
+func seedSizedTypedDocuments(t *testing.T, database *store.Store, message string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, document := range sizedTypedDocuments {
+		version := typedRender(t, strings.ReplaceAll(document.markdown, sizedMessageMark, message))
+		if _, err := database.Pool.Exec(ctx, `
+			with made as (
+				insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, created_at)
+				values ('CORE-1', 'CORE', $1, $2, 'doc', false, '{"kind":"user","id":"dana"}', now() - interval '40 days')
+				returning id
+			)
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			select made.id, 1, $3, '[{"kind":"user","id":"dana"}]' from made
+		`, document.slug, document.name, version.markdown); err != nil {
+			t.Fatalf("write %s of CORE-1 and its version 1: %v", document.slug, err)
 		}
 	}
 }
@@ -734,6 +787,7 @@ const (
 	objectBatchDrive   = "graphcensus/projects_backfill.go#writeObjectBatch"
 	scopeBatchDrive    = "graphcensus/projects_backfill.go#writeScopeBatch"
 	orphanSweepDrive   = "graphcensus/orphans.go#StateOrphanedGone"
+	typedIndexDrive    = "refs/blocks.go#Queue, over a requirement, a Verification document and a plan"
 )
 
 // sweptDocument is the address of the document the orphan sweep's drive states gone: one of
@@ -743,8 +797,12 @@ const sweptDocument = "CORE-1/swept-md"
 
 // seededDrives are the drives of the store's writers over the history seedSizedHistory wrote, one
 // after another: the block index over the archive (refs.IndexBlocks, then graphstore.Caused, as a
-// writer with no write phase runs it), the backfill's five passes, and the outbox, run whole,
-// publishing the comment's comment.created, then the receipt of its mention, then a held copy.
+// writer with no write phase runs it), the backfill's passes over the blocks, the block
+// references, the comments, the roles, the sessions and the issues, documents, asks and messages,
+// the same block index over the three typed documents, whose nodes and the message's the object
+// pass has written by then, the backfill's fill of a node's project, the block-index tick's sweep
+// of an orphaned document, and the outbox, run whole, publishing the comment's comment.created,
+// then the receipt of its mention, then a held copy.
 // The outbox publishes the comment and the receipt in two drives, so the delivered_to each states
 // is read apart: the bus's delivery of the comment to the role sizer, which the term bus_delivery
 // counts, and the delivery the mention's attempt made to ses_sized, which the term delivery counts.
@@ -873,6 +931,40 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{graphstore.KindIssue, graphstore.TupleChildOf}:           {"issue_relation"},
 			{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"document_part_of"},
 			{graphstore.KindArtifact, graphstore.TupleMentions}:       {"document_ref"},
+		},
+	}, {
+		// The same index over the one version of each of the three typed documents of CORE-1
+		// (seedSizedTypedDocuments), each written inside the window by dana, whom no write before
+		// records: a requirement its parent attribute places under alice's message, the issue's
+		// Verification document, whose check serves that requirement, and the issue's plan, whose
+		// second task needs the first, serves the requirement and writes its size. Every block is
+		// new, so each states its node's base attributes, its in_document and its part_of, its rank,
+		// placement, text_parent and text_rank and its text; each authored block - the
+		// requirement, the check and the two tasks - states dana's authored_by, beside dana's node,
+		// which the first of them makes, and what an authored block writes beyond a block's facts,
+		// which authored_pointer counts: the requirement's parent, the check's and the second
+		// task's serves and that task's needs, each a block_refs row of its kind, and that task's
+		// size in whole minutes.
+		Name: typedIndexDrive, Sites: []string{"refs/blocks.go#Queue", "graphstore/write.go#Caused"},
+		Database: database, Drive: func(t *testing.T) { indexTheTypedDocuments(t, database) },
+		Counts: map[StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:    {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:         {"block"},
+			{refs.BlockNodeKind, graphstore.AttributeProject}:       {"block"},
+			{refs.BlockNodeKind, refs.TupleInDocument}:              {"block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:            {"block"},
+			{refs.BlockNodeKind, refs.AttributeRank}:                {"block_values"},
+			{refs.BlockNodeKind, refs.AttributePlacement}:           {"block_values"},
+			{refs.BlockNodeKind, refs.TupleTextParent}:              {"block_values"},
+			{refs.BlockNodeKind, refs.AttributeTextRank}:            {"block_values"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:          {"block_text"},
+			{refs.BlockNodeKind, graphstore.TupleAuthoredBy}:        {"block_author"},
+			{refs.BlockNodeKind, pmdoc.ParentAttribute}:             {authoredPointers},
+			{refs.BlockNodeKind, "serves"}:                          {authoredPointers},
+			{refs.BlockNodeKind, graphstore.TupleNeeds}:             {authoredPointers},
+			{refs.BlockNodeKind, refs.AttributePlanSize}:            {authoredPointers},
+			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
+			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
 		},
 	}, {
 		// The backfill's fill of the project of a node an earlier build stored with none: the
@@ -1071,7 +1163,7 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 			t.Fatalf("begin the index of version %d: %v", version.number, err)
 		}
 		_, won, write, _, err := refs.IndexBlocks(ctx, tx, version.artifact, refs.OneVersion(version.artifact, version.number, version.at), version.markdown,
-			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, refs.TypedFacts{})
+			blocks, text.ExtractAt(version.markdown, sizedServerURL), nil, sizedServerURL, refs.TypedFacts{})
 		if err == nil && !won {
 			err = fmt.Errorf("the pass lost the revision fence, so it wrote nothing")
 		}
@@ -1084,6 +1176,110 @@ func indexTheArchive(t *testing.T, database *store.Store) {
 		if err != nil {
 			tx.Rollback(ctx)
 			t.Fatalf("index version %d of the archive: %v", version.number, err)
+		}
+	}
+}
+
+// typedVersion is a version of a typed document as a version write renders it
+// (pmdoc.RenderWithBlockOffsets): its markdown; its blocks with their offsets and the attributes
+// each one's opening line writes, which a plan node's values are read off (refs' planBlockValues);
+// the mentions located in it; and the pointers its typed blocks write (pmdoc.BlockPointers).
+type typedVersion struct {
+	markdown string
+	blocks   []model.ArtifactBlock
+	located  []text.Located
+	pointers []refs.Pointer
+}
+
+// typedRender reads markdown as a version write reads it and renders it, every block holding an
+// id: a typed block's is the one its opening line writes, and a paragraph takes a fresh one, which
+// markdown never writes.
+func typedRender(t *testing.T, markdown string) typedVersion {
+	t.Helper()
+	tree, err := pmdoc.Parse(markdown)
+	if err != nil {
+		t.Fatalf("parse %q: %v", markdown, err)
+	}
+	pmdoc.EnsureBlockIDs(tree)
+	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		t.Fatalf("render %q: %v", markdown, err)
+	}
+	version := typedVersion{markdown: rendered, located: text.ExtractAt(rendered, sizedServerURL)}
+	for _, offset := range offsets {
+		version.blocks = append(version.blocks, model.ArtifactBlock{
+			ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Attributes: offset.Attributes,
+		})
+	}
+	for _, pointer := range pmdoc.BlockPointers(tree) {
+		version.pointers = append(version.pointers, refs.Pointer{
+			Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets,
+		})
+	}
+	return version
+}
+
+// typedStored is one of sizedTypedDocuments as the store holds it: its id, the time its version
+// was written, whether it is a document the issue's room holds once it converts, and that version
+// as typedRender renders it again.
+type typedStored struct {
+	artifact string
+	at       time.Time
+	role     bool
+	version  typedVersion
+}
+
+// sizedTypedVersions reads the one version of each of sizedTypedDocuments, in their order, and
+// renders it again, failing the test where the render is not the text the version holds: a
+// version write's render reads back as itself, so the index reads the blocks of the text stored.
+func sizedTypedVersions(t *testing.T, database *store.Store) []typedStored {
+	t.Helper()
+	stored := make([]typedStored, 0, len(sizedTypedDocuments))
+	for _, document := range sizedTypedDocuments {
+		held := typedStored{role: document.role}
+		var markdown string
+		if err := database.Pool.QueryRow(context.Background(), `
+			select a.id::text, v.created_at, v.markdown from artifacts a
+			join artifact_versions v on v.artifact_id = a.id and v.number = 1
+			where a.issue_key = 'CORE-1' and a.slug = $1
+		`, document.slug).Scan(&held.artifact, &held.at, &markdown); err != nil {
+			t.Fatalf("read version 1 of %s of CORE-1: %v", document.slug, err)
+		}
+		if held.version = typedRender(t, markdown); held.version.markdown != markdown {
+			t.Fatalf("version 1 of %s of CORE-1 renders as %q, not as the %q it holds", document.slug, held.version.markdown, markdown)
+		}
+		stored = append(stored, held)
+	}
+	return stored
+}
+
+// indexTheTypedDocuments runs the block index over the one version of each of the typed documents
+// in turn (sizedTypedVersions), each in a transaction of its own, at the time that version was
+// written, as a version write runs it: its render's blocks, the mentions located in it and the
+// pointers its typed blocks write. No event recorded those writes, so what the index states carries
+// the sentinel.
+func indexTheTypedDocuments(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	for _, typed := range sizedTypedVersions(t, database) {
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the index of %s: %v", typed.artifact, err)
+		}
+		_, won, write, _, err := refs.IndexBlocks(ctx, tx, typed.artifact, refs.OneVersion(typed.artifact, 1, typed.at),
+			typed.version.markdown, typed.version.blocks, typed.version.located, typed.version.pointers, sizedServerURL, refs.TypedFacts{})
+		if err == nil && !won {
+			err = errLostFence
+		}
+		if err == nil {
+			err = graphstore.Caused(ctx, tx, write, graphstore.NoEvent)
+		}
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			tx.Rollback(ctx)
+			t.Fatalf("index version 1 of %s: %v", typed.artifact, err)
 		}
 	}
 }
@@ -1192,9 +1388,13 @@ func runTheOutbox(t *testing.T, database *store.Store, what, settled string) {
 // the blocks child moves; a comment with each fact its write states, its mention's delivery and the
 // bus's and a fallback copy's delivery of it; the read marks that comment and a message move, a
 // clear, a dismissal and a snooze; a message with a reply and a delivery; the events of an ask;
-// and a row of each further table a term counts (seedSizedRelations). Every term is printed with
-// the tuples a write this test states for it and its writes inside the window or the writes it is
-// assumed at, none of them zero, and the rows a day of graph_tuples is exactly their sum.
+// and a row of each further table a term counts (seedSizedRelations); and three typed documents
+// whose one version each the block index indexes inside the window (typedIndexDrive): a
+// Verification document whose check serves a requirement, a plan whose tasks hold needs, serves and
+// a size, and the requirement, whose parent attribute places it under the message, so the term
+// authored_pointer, which counts those pointers and that size, reads them. Every term is printed
+// with the tuples a write this test states for it and its writes inside the window or the writes
+// it is assumed at, none of them zero, and the rows a day of graph_tuples is exactly their sum.
 func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	database := storetest.Open(t)
 	seedSizedHistory(t, database)
@@ -1202,6 +1402,16 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	printed := sizingCensus(t, database)
 	terms := sizedTerms(t, printed)
 	resultKinds := resultWrite(t, database)
+	// Each block of the three typed documents is a block's first row inside the window, each with a
+	// text, and each block of the two of them the issue's room holds once it converts - its
+	// Verification document and its plan - takes the one author its version lists.
+	var typedBlocks, typedRoomBlocks int64
+	for _, typed := range sizedTypedVersions(t, database) {
+		typedBlocks += int64(len(typed.version.blocks))
+		if typed.role {
+			typedRoomBlocks += int64(len(typed.version.blocks))
+		}
+	}
 	for _, written := range slices.SortedFunc(maps.Keys(appended), compareWritten) {
 		counting, stated := countedBy[written]
 		if !stated {
@@ -1225,33 +1435,42 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	want := map[string]sizedTerm{
 		"comment": {tuples: 3, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
 		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1},
-		// The comment is anchored to the document.
-		"anchor_block": {tuples: 3, writes: 1},
+		// The comment is anchored to the document: its anchored_in and the part_of a comment
+		// answering nothing takes to that block, at most their retractions and their restatements.
+		"anchor_block": {tuples: 6, writes: 1},
 		// The mention's attempt to ses_sized, the comment.created the bus delivered to the role
 		// sizer, and the copy the fallback pass published to ses_copy.
 		"delivery": {tuples: 1, writes: 1}, "bus_delivery": {tuples: 1, writes: 1}, "fallback_delivery": {tuples: 1, writes: 1},
-		// Five blocks are new at version 1 and one at version 2; version 2 drops one and rewrites
-		// the callout, and version 3 brings the dropped one back, so eight rows of the window hold
-		// a text.
-		"block": {tuples: 5, writes: 6}, "block_restored": {tuples: 4, writes: 1}, "block_gone": {tuples: 1, writes: 1},
-		// Version 1 is the document's first indexed version, so it is compared with nothing,
+		// Five blocks of the window document are new at version 1 and one at version 2; version 2
+		// drops one and rewrites the callout, and version 3 brings the dropped one back, so eight
+		// of its rows hold a text; and every block of the three typed documents is new.
+		"block": {tuples: 5, writes: 6 + typedBlocks}, "block_restored": {tuples: 4, writes: 1}, "block_gone": {tuples: 1, writes: 1},
+		// Version 1 is the window document's first indexed version, so it is compared with nothing,
 		// version 2 moved one paragraph out of the callout, which takes a rank and a place in the
-		// text in its new place, and version 3 moved none.
-		movedParents: {tuples: 2, writes: 1, read: 3}, movedRanks: {tuples: 1, writes: 1}, movedTextPlaces: {tuples: 3, writes: 1},
-		// Eight rows hold a text, each a text value; six are a block's first, each a rank, a
-		// placement, a text_parent and a text_rank; one deleted a block, whose text value stays as
-		// the block's node goes gone.
-		"block_ref": {tuples: 2, writes: 1}, "block_text": {tuples: 1, writes: 8}, "block_values": {tuples: 4, writes: 6},
+		// text in its new place, and version 3 moved none; each typed document's one version is its
+		// first indexed one too.
+		movedParents: {tuples: 2, writes: 1, read: 6}, movedRanks: {tuples: 1, writes: 1}, movedTextPlaces: {tuples: 3, writes: 1},
+		// The window document's eight rows and each typed block's first hold a text, each a text
+		// value; its six first rows and each typed block's, each a rank, a placement, a text_parent
+		// and a text_rank; one deleted a block, whose text value stays as the block's node goes gone.
+		// The added paragraph's reference to CORE-1 is the one link block_ref counts.
+		"block_ref": {tuples: 2, writes: 1}, "block_text": {tuples: 1, writes: 8 + typedBlocks}, "block_values": {tuples: 4, writes: 6 + typedBlocks},
+		// The requirement's parent, the check's and the second task's serves and that task's needs,
+		// each a block_refs row of its kind, and that task's size.
+		authoredPointers: {tuples: 2, writes: 5},
 		// The document's reference to CORE-1 (seedSizedRelations). The document is CORE-1's spec,
-		// whose six first rows each take the one author their version lists.
-		"document_ref": {tuples: 2, writes: 1}, "block_author": {tuples: 1, writes: 6},
-		// Each of the window's four versions writes its node and six tuples
-		// (graphstore.VersionFacts): the window document's three, and the image's one, which
-		// states its three bytes on the image's node; both documents are an issue's, created
-		// inside the window. The window document is CORE-1's spec, so each of its three versions
-		// is taken to hold a definition_version.
-		"version": {tuples: 6, writes: 4}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
-		"query_version": {tuples: 1, writes: 3},
+		// whose six first rows each take the one author their version lists, as do the first rows of
+		// the Verification document and the plan.
+		"document_ref": {tuples: 2, writes: 1}, "block_author": {tuples: 1, writes: 6 + typedRoomBlocks},
+		// Each of the window's seven versions writes its node and six tuples
+		// (graphstore.VersionFacts): the window document's three, the image's one, which states its
+		// three bytes on the image's node, and the typed documents' one each; the window document
+		// and the image are an issue's, created inside the window, and the typed documents were
+		// created before it. The window document is CORE-1's spec, so each of its three versions is
+		// taken to hold a definition_version, and so is the version of the Verification document and
+		// the plan's.
+		"version": {tuples: 6, writes: 7}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
+		"query_version": {tuples: 1, writes: 5},
 		// The scratch document removed in the window held one version.
 		"version_removed": {tuples: 1, writes: 1},
 		// The comment is alice's first, the delivery records ses_sized and the published copy
@@ -1309,6 +1528,10 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"risk":             {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
 		"node_state":       {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		"pointer_retarget": {tuples: 2, writes: 1 * sizingWindowDays, assumed: true},
+		// No table holds a lens, so R7's delete of one with its finding reads the writes it is
+		// assumed at: each one's state gone and the retraction of the lens's part_of, has_kind and
+		// authored_by and of the finding's part_of and authored_by.
+		"node_delete": {tuples: 7, writes: 1 * sizingWindowDays, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]
@@ -1349,13 +1572,14 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		t.Errorf("the sizing projects graph_tuples at %v rows a day, want %s: the sum of every term's writes times its tuples, %d, over %d days\n%s",
 			match, wantADay, tuples, sizingWindowDays, printed)
 	}
-	// The history's seven versions, the window document's three, the image's one and the
-	// archive's three, were written before the store held a version node, so the version backfill
-	// owes each its node and six tuples once. No pass of this build's rule has stated a document
-	// of this store, so the backfill's marking owes every block of a document it would mark its
-	// rank, text and placement (unstatedBlocksOwed). The year projects every backfill's rows beside
-	// the rate: each table's backfill-rows line is the sum of the backfill lines' nodes or tuples.
-	if line := "census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=7 nodes_a_row=1 tuples_a_row=6 nodes=7 tuples=42 "; !strings.Contains(printed, line) {
+	// The history's ten versions, the window document's three, the image's one, the archive's
+	// three and the typed documents' one each, were written before the store held a version node,
+	// so the version backfill owes each its node and six tuples once. No pass of this build's rule
+	// has stated a document of this store but the typed documents, so the backfill's marking owes
+	// every block of a document it would mark its rank, text and placement (unstatedBlocksOwed). The
+	// year projects every backfill's rows beside the rate: each table's backfill-rows line is the
+	// sum of the backfill lines' nodes or tuples.
+	if line := "census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=10 nodes_a_row=1 tuples_a_row=6 nodes=10 tuples=60 "; !strings.Contains(printed, line) {
 		t.Errorf("the sizing prints no line %q:\n%s", line, printed)
 	}
 	var backfillNodes, backfillTuples int64

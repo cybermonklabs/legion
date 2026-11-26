@@ -25,6 +25,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -149,6 +150,13 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *cipher.Client
+	// LegionStatusScope turns on the refusal of three writes of a Legion issue (cmd/dispatch:
+	// DISPATCH_LEGION_STATUS_SCOPE): a write of its status, the removal of its legion label, and
+	// a move that leaves it under no labelled issue. With it on, Dispatch refuses each of them to
+	// a credential that holds neither model.ScopePerson nor model.ScopeLegionStatus, but for the
+	// status write of the architect of an issue above (legion_status_scope.go). False refuses none
+	// of them, which is every deployment that has not turned it on.
+	LegionStatusScope bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -190,6 +198,14 @@ type Deps struct {
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
+	// LiveSocketClock is what a GET /ws/live socket's read deadlines run on: the pong deadline, two
+	// heartbeats after the page's last pong, the wait for the page's close frame once the socket
+	// sent its own (liveSocketCloseWait), and the drain's wait for the rest of a frame past the read
+	// limit, liveSocketCloseWait too, which takes the pong deadline's place (endReads). Nil is
+	// clock.Real(), as a deployment leaves it; only a test sets another, a clocktest fake on which
+	// no page's reads end until the test moves it there. It is not Clock, so a test that moves the
+	// server's clock through its heartbeats ends no read with it.
+	LiveSocketClock clock.Clock
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
@@ -222,10 +238,30 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// Clock is the clock these timers of this package run on: the heartbeat on which a socket
+	// resolves its caller again (whileCallerResolves), the bound on each listener lookup of a
+	// comment's route and mentions (resolveMentionTarget's mentionLookupTimeout), the listener
+	// client's window, the take-over's tries (takeoverRetry), the related-item check's allowance
+	// (relatedBounds), an agent view's wait for its replay (agentStreamReplayTimeout) and the time
+	// each access-log line records (accesslog.HandlerOn), which a test hands AnswersLatency's
+	// clock too. Three listener lookups bound themselves on the wall clock instead
+	// (context.WithTimeout), and only the listener client's window of each runs on this clock:
+	// roleHolderMayBe, the question whether a session may hold a role (mentionLookupTimeout);
+	// listRouteRoster, the read of the listener's session list (routeRosterTimeout); and a
+	// broadcast's resolution of its recipients (resolveBroadcastSessions,
+	// broadcastResolveAllowance). Nil, which every deployment leaves it, is clock.Real(), for a
+	// server Register builds and for one built directly alike (server.clock); a test passes a
+	// clocktest.Fake and moves it.
+	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
 	// a parent's status out of line with its children's (R24) is refused 409
 	// PARENT_STATUS_CONFLICT. The zero value is off.
 	ParentStatusRule ParentStatusRule
+	// IssueTreePageSize is the most nodes one page of GET /api/v1/issues/{key}/tree answers. Zero
+	// keeps issueTreePageSize, and every deployment leaves it zero: no flag, setting or environment
+	// variable reaches it. Only this package's tests set another (testServerOptions), so a case of a
+	// few nodes reads several pages.
+	IssueTreePageSize int
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -293,6 +329,8 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -328,6 +366,9 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// Clock is the clock the API's timers and the listener client's window run on; see
+	// Deps.Clock. Nil is clock.Real().
+	Clock clock.Clock
 	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE; see Deps.ParentStatusRule.
 	ParentStatusRule ParentStatusRule
 }
@@ -359,6 +400,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
+		}
+		if input.Clock != nil {
+			options = append(options, envoy.WithClock(input.Clock))
 		}
 		envoyClient = envoy.New(envoyURL, options...)
 	}
@@ -401,6 +445,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
+		LegionStatusScope:      input.LegionStatusScope,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
@@ -415,6 +460,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		Clock:                  input.Clock,
 		ParentStatusRule:       input.ParentStatusRule,
 	}, nil
 }
@@ -464,6 +510,13 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
+	// betweenNodeRouteReads runs on a write of a node route (PATCH and DELETE of
+	// /api/v1/issues/{key}/nodes/{id}) after each read it makes with no lock held and before that
+	// attempt takes its owner locks (lockNodeRouteOwners), with the attempt's number from 1; nil,
+	// which every server the deployment builds leaves it, runs nothing. Only a test sets it: it is
+	// how a case commits a move between the read that names the locks and the read under them, to
+	// read that the route starts over and, at each attempt, answers 409 PARENT_CONTENDED.
+	betweenNodeRouteReads func(ctx context.Context, attempt int)
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -482,6 +535,14 @@ type server struct {
 	// duplicateBound), and a forced create whose check does not answer a short one, so a case's
 	// outcome is its own choice rather than its machine's speed.
 	duplicateBound time.Duration
+	// inboxStatementBound overrides the statement_timeout of the mark-all's and the dismissal's
+	// transactions (boundInboxStatements); zero, which every server the deployment builds leaves
+	// it, means inboxReadStatementTimeout. Only a test sets it (testServerOptions'
+	// inboxStatementBound): a case that holds a dismissal behind a lock of its own while it takes
+	// its steps gives the dismissal a bound past any run, so the bound Postgres keeps from the
+	// moment the dismissal queues never ends a correct run however long a loaded machine takes over
+	// those steps (INFRA-3904).
+	inboxStatementBound time.Duration
 	// beforeDuplicateRead runs at the head of the near-copy gate's read, inside its bound, and its
 	// error stands in for the read failing. Only a test sets it: it is how a case holds the read
 	// until the bound ends it, so the bound and nothing else decides that case.
@@ -889,8 +950,8 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		// The document service admits a socket by its sign-in cookie alone, so its heartbeat
 		// re-checks that cookie and nothing the request carries beside it (signInStillResolves).
 		const pattern = "/ws/doc/{room}"
-		mux.Handle("GET "+pattern, accesslog.Handler(pattern, s.whileCallerResolves(s.signInStillResolves,
-			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP)))))
+		mux.Handle("GET "+pattern, accesslog.HandlerOn(pattern, s.whileCallerResolves(s.signInStillResolves,
+			trackTransactions(s.refuseUnstorableParameters(pattern, websocket.ServeHTTP))), s.clock()))
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
@@ -1005,10 +1066,12 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 	served := compressAnswers(handler)
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
-		// pauses on is the time the line records for it, every layer of the chain included.
+		// pauses on is the time the line records for it, every layer of the chain included. The
+		// line is timed on the server's clock, which a test hands the Latency too, so the two read
+		// one clock.
 		served = timedAnswersReads(s.deps.AnswersLatency, served)
 	}
-	return accesslog.HandlerFunc(route.Pattern, served)
+	return accesslog.HandlerFuncOn(route.Pattern, served, s.clock())
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
@@ -1026,9 +1089,9 @@ const liveSocketPattern = "/ws/live"
 // a sign-in cookie - so its heartbeat resolves that same credential again
 // (callerStillResolves).
 func (s *server) liveSocketHandler(serve http.HandlerFunc) http.Handler {
-	return accesslog.Handler(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
+	return accesslog.HandlerOn(liveSocketPattern, s.whileCallerResolves(s.callerStillResolves, s.decideBrokerToken(
 		s.refuseReadOnlyToken(http.MethodGet+" "+liveSocketPattern, readEntry{},
-			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))))
+			trackTransactions(s.refuseUnstorableParameters(liveSocketPattern, serve))))), s.clock())
 }
 
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
@@ -1066,13 +1129,16 @@ func (s *server) whileCallerResolves(stillResolves func(*http.Request) error, ha
 		defer closeConnection(nil)
 		check := r.WithContext(store.WithTransactionTracking(accesslog.Detached(ctx)))
 		go func() {
-			heartbeat := time.NewTicker(s.deps.StreamHeartbeat)
+			// The heartbeat runs on the server's clock, so a test that drives a fake decides
+			// when the caller is resolved again rather than shortening the interval.
+			heartbeat := s.clock().NewTimer(s.deps.StreamHeartbeat)
 			defer heartbeat.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-heartbeat.C:
+				case <-heartbeat.C():
+					heartbeat.Reset(s.deps.StreamHeartbeat)
 					// The check resolves the admission's credential from a detached copy of
 					// the request, which for a broker-issued token on the live socket asks the
 					// broker's answer alone rather than the proof the upgrade already spent
@@ -1344,7 +1410,7 @@ func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
 // rather than of one request — a browser's cookie holds both scopes, and the shared token and a
 // service-account token hold none — and the cookie's is on the dashboard's hottest path, so
 // allocating either per request would be waste. Nothing writes a Credential or appends to its
-// Scopes: Holds reads, actingPerson copies the slice header onto the act it records, and
+// Scopes: Holds reads, actScopes copies the slice header onto the act it records, and
 // tokenScopes builds a set of its own.
 var (
 	scopelessCredential = &model.Credential{}
@@ -1419,6 +1485,19 @@ func actorNamesWriter(supplied *model.Actor) bool {
 	return supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 }
 
+// actScopes is the scopes an act records of credential: the ones of model.Scopes, which an act's
+// reader may ask about (ActorAct.Holds; DISPATCH_SCOPES and ActorActSchema in @legion/contracts).
+// legion-status, which a Legion daemon's own broker token holds and holds alone, is the
+// credential's leave to write a Legion issue's status (legion_status_scope.go), not a grant an act
+// carries, so such a credential's act records no scope. No credential holds it beside another
+// scope (model.Credential), so every other credential's scopes are recorded whole, with no copy.
+func actScopes(credential *model.Credential) []string {
+	if credential.Holds(model.ScopeLegionStatus) {
+		return nil
+	}
+	return credential.Scopes
+}
+
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
 // session in the request body, and what the token itself proved — a personal token's owner, a
 // service token's verified subject — stays attached for attribution. Neither is ever taken from
@@ -1468,7 +1547,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 			actor.Act = &model.ActorAct{
 				Session:       authenticated.ID,
 				SessionProven: true,
-				Scopes:        authenticated.Credential.Scopes,
+				Scopes:        actScopes(authenticated.Credential),
 			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
@@ -1750,7 +1829,7 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 			SessionProven: session != "" && session == credential.Session,
 			TokenID:       credential.TokenID,
 			TokenName:     credential.TokenName,
-			Scopes:        credential.Scopes,
+			Scopes:        actScopes(credential),
 		}
 	}
 	// Proven: every credential that holds the person scope proves its person - the cookie its
@@ -2059,6 +2138,15 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 		s.deps.Events.Publish(event)
 	}
 	s.storeEventDisplayTrees(ctx, events)
+}
+
+// clock is the clock the server's timers run on: Deps.Clock, clock.Real() where that is nil, for
+// a server Register builds and for one built directly alike, so no server literal sets a clock.
+func (s *server) clock() clock.Clock {
+	if s.deps.Clock != nil {
+		return s.deps.Clock
+	}
+	return clock.Real()
 }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {

@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useRef } from "react";
 
+import { inputMethodKey } from "../../lib/input-method-key";
 import { type KeyBinding, useKeymap } from "../shell/keymap";
 import { focusOnDocument } from "../shell/roving";
 import { type RowAction, rowActionSelector } from "./DecisionActions";
@@ -10,13 +11,12 @@ import { KEY_REPORTS } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { type DrawnRow, type PageRow, pathTo } from "./tree-fold";
 import { decisionBehind, nextQuestion, rowKeyOf } from "./tree-keys";
-import { inputMethodKey } from "./useNodeEditing";
 
 /**
- * The tree's keyboard: every key of the issue page's key table that acts on the tree itself,
- * and `t h`, which takes the reader to the issue's children, the outline's own rows. The chords
- * that open a view, Details or the node menu are the page's (`useIssueKeymap.ts`), because each
- * of those is an address the outline does not draw.
+ * The tree's keyboard: every key of the issue page's key table that acts on the tree itself. The
+ * chords that open a view, Details, the node menu or the children's section above the outline
+ * are the page's (`useIssueKeymap.ts`), because each of those is an address the outline does not
+ * draw.
  *
  * Every binding is registered in the page's own `issue` scope, so the registry suspends all of
  * them while a caret is in a node's text: reading mode is where no caret is, which the keymap
@@ -52,15 +52,14 @@ import { inputMethodKey } from "./useNodeEditing";
 export interface TreeKeyboard {
   /** The element the rows are drawn in, which is the tree itself. */
   readonly container: RefObject<HTMLElement | null>;
+  /** What the key list says `z` does, when it does not cycle how much of the tree is drawn. */
+  readonly cycleLabel?: string;
   /** Whether a row of the tree is being edited, which Escape in its editor leaves
    *  (`tree-leave-caret`). */
   readonly editing: boolean;
   /** Whether the page takes Escape from a row before the tree is left: a filter by words to
    *  clear or a filter to turn off comes first in the key table's order (`slots/body.tsx`). */
   readonly holdsEscape: boolean;
-  /** Takes the reader to the issue's children (`t h`): the focus on the group's first row, and
-   *  their own address. Undefined where the tree holds no child. */
-  readonly onChildren?: () => void;
   /** What `z` does: in the outline, unfolds every node the reader folded (R11); a view that
    *  draws more or less of itself by the key - the Decisions view's foot - draws it so. */
   readonly onCycle: () => void;
@@ -122,7 +121,8 @@ export type TreeSearch =
   | { readonly from: string; readonly kind: "decision" };
 
 /** One row of the tree that stands for a node. The row that pages a node's children stands for
- *  no node and takes no focus: `j` and Down on the row above it press it (`tree-next`). */
+ *  no node and takes no focus: `j` and Down on the row above it press it (`tree-next`,
+ *  `tree-arrows`). */
 type NodeRow = Extract<DrawnRow, { kind: "node" }>;
 
 const NODE_ROW = "[data-node-row]";
@@ -218,8 +218,8 @@ export function moveToRow(target: HTMLElement, options?: FocusOptions): void {
 
 export function useTreeKeymap(tree: TreeKeyboard): void {
   // The key being pressed, noted as it sets out for its target: the keymap asks a binding's
-  // `when` with no key in hand, and a binding of two keys - `j` and Down - leaves the one that
-  // scrolls a block to the browser while the other still moves the reader.
+  // `when` with no key in hand, and a key the browser scrolls by, pressed on a block that keeps
+  // its tab stop, is left to the browser while `j` and `k` still move the reader from there.
   const pressing = useRef<KeyboardEvent | null>(null);
   useEffect(() => {
     const note = (event: KeyboardEvent): void => {
@@ -329,55 +329,72 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     }
     return undefined;
   };
+  /** What `j` does wherever the reader reads, and Down from a row: from the page itself it goes
+   *  to the first row, and from a row to the next. */
+  const next = (): void => {
+    const { elements } = drawn();
+    const on = at(elements);
+    // The row that pages the children of a node is pressed from the row above it: it draws the
+    // next page of them, and the focus goes to the first row it drew.
+    const page = on === -1 ? undefined : pageAfter(on);
+    if (page !== undefined && tree.onPage !== undefined) {
+      tree.onReport("");
+      tree.onPage(page);
+      return;
+    }
+    // The control after the last row reads the read's next page from it: its rows are drawn
+    // where the read's order puts them, and the focus goes to the first row it drew.
+    if (on !== -1 && on === elements.length - 1 && tree.onMore !== undefined) {
+      tree.onReport("");
+      tree.onMore();
+      return;
+    }
+    moveTo(on === -1 ? 0 : on + 1, KEY_REPORTS.last_row);
+  };
+  /** What `k` does wherever the reader reads, and Up from a row: from the page itself it goes to
+   *  the first row, and from a row to the one before. */
+  const previous = (): void => {
+    const { elements } = drawn();
+    const on = at(elements);
+    // The control above the first row reads the older comments from it: they are drawn where the
+    // read's order puts them, and the focus goes to the first row it drew.
+    if (on === 0 && tree.onOlder !== undefined) {
+      tree.onReport("");
+      tree.onOlder();
+      return;
+    }
+    moveTo(on === -1 ? 0 : on - 1, KEY_REPORTS.first_row);
+  };
 
   useKeymap("issue", [
     // The tree is one tab stop, which Tab from the page itself enters (`treeEnterKey`).
     treeEnterKey({ moveTo, rows: () => drawn().elements }),
     {
       id: "tree-next",
-      keys: ["j", "ArrowDown"],
+      keys: "j",
       label: "Move to the next row",
       palette: false,
-      run: () => {
-        const { elements } = drawn();
-        const on = at(elements);
-        // The row that pages the children of a node is pressed from the row above it: it draws
-        // the next page of them, and the focus goes to the first row it drew.
-        const page = on === -1 ? undefined : pageAfter(on);
-        if (page !== undefined && tree.onPage !== undefined) {
-          tree.onReport("");
-          tree.onPage(page);
-          return;
-        }
-        // The control after the last row reads the read's next page from it: its rows are drawn
-        // where the read's order puts them, and the focus goes to the first row it drew.
-        if (on !== -1 && on === elements.length - 1 && tree.onMore !== undefined) {
-          tree.onReport("");
-          tree.onMore();
-          return;
-        }
-        moveTo(on === -1 ? 0 : on + 1, KEY_REPORTS.last_row);
-      },
+      run: next,
       when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
     },
     {
       id: "tree-previous",
-      keys: ["k", "ArrowUp"],
+      keys: "k",
       label: "Move to the previous row",
       palette: false,
-      run: () => {
-        const { elements } = drawn();
-        const on = at(elements);
-        // The control above the first row reads the older comments from it: they are drawn
-        // where the read's order puts them, and the focus goes to the first row it drew.
-        if (on === 0 && tree.onOlder !== undefined) {
-          tree.onReport("");
-          tree.onOlder();
-          return;
-        }
-        moveTo(on === -1 ? 0 : on - 1, KEY_REPORTS.first_row);
-      },
+      run: previous,
       when: () => reading() && !scrollsABlock() && drawn().elements.length > 0,
+    },
+    {
+      // Down and Up scroll the page from the page itself, so they move through the tree only
+      // while the reader is on a row or on a control inside one, and do there what `j` and `k`
+      // do.
+      id: "tree-arrows",
+      keys: ["ArrowDown", "ArrowUp"],
+      label: "Move to the next / previous row while one is focused",
+      palette: false,
+      run: (event) => (event.key === "ArrowDown" ? next() : previous()),
+      when: () => !scrollsABlock() && at(drawn().elements) !== -1,
     },
     {
       // Home and End are the page's own scroll keys everywhere else, so they move through the
@@ -667,29 +684,12 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       id: "tree-cycle",
       keys: "z",
-      label:
-        tree.onPin === undefined
-          ? "Unfold every row you folded"
-          : "Cycle how much of the tree is drawn",
+      label: tree.cycleLabel ?? "Cycle how much of the tree is drawn",
       run: () => {
         tree.onReport("");
         tree.onCycle();
       },
       when: reading,
-    },
-    {
-      // The children are rows of the outline, one group under the issue, which the header
-      // stands for and draws no row of, so the chord that reaches them is the tree's: it puts
-      // the focus on the group's first row and opens their own address, `/children`
-      // (`IssueTree`'s `onChildren`).
-      id: "tree-children",
-      keys: "t h",
-      label: "Move to the issue's children",
-      run: () => {
-        tree.onReport("");
-        tree.onChildren?.();
-      },
-      when: () => tree.onChildren !== undefined,
     },
     {
       // The caret goes into the node's own text where it lives, which is its document's block

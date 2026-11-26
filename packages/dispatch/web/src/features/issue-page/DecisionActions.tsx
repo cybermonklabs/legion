@@ -1,29 +1,41 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { api } from "../../api/client";
 import { refreshQueries } from "../../api/query-refresh";
-import type { AnchorInput, Artifact } from "../../api/types";
+import type { AnchorInput, Artifact, DisplayTree } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
   dangerText,
-  inputClasses,
+  focusBorder,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageLineBorder,
   pageMutedText,
+  pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { parseNodeReference } from "../refs/routes";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
+import { useDecisionHeadingWords } from "../issue/decision-heading";
+import { usePlainHeadline } from "../refs/plain-text";
+import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
-import { referenceStandIns } from "./one-line";
+import { anchorBlock, type DecisionNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
-import { chipName, RowText } from "./RowText";
-import { useKnownReferenceNames } from "./reference-names";
 import { dropViews, outlineTargets, useOutlineAnswer } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
@@ -53,17 +65,20 @@ const DECISION_BUTTON =
   "rounded-[7px] border-[1.5px] border-page-decision px-3 py-0.5 text-xs leading-5 font-semibold";
 
 /** The colours of the lines Keep and Change draw under them, by the surface they are drawn on
- *  (`useTooltips`): inside `NoTooltips`, the new page, its own pairs (`theme/classes.ts`); on
- *  today's page, `main`'s. */
+ *  (`useTooltips`): inside `NoTooltips`, the new page, its own pairs (`theme/classes.ts`), and the
+ *  Change's box in the shape the page gives every box it writes in (`MentionField`'s
+ *  `fieldClassName`); on today's page, `main`'s, and the box in the field's own. */
 const TONES = {
   main: {
     failed: dangerText,
+    field: undefined,
     muted: textMutedOnCanvas,
     rule: borderDefault,
     words: textSecondaryOnCanvas,
   },
   page: {
     failed: pageFailedText,
+    field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
     muted: pageMutedText,
     rule: pageLineBorder,
     words: pageWordsText,
@@ -75,8 +90,8 @@ const TONES = {
  * write disables or removes `control`. A focused control that is disabled drops the focus to the
  * document body (measured in Chromium: a `focusout` from Keep with no related target 45 ms
  * after its write went out), which loses a keyboard reader's place on the page, and the tree
- * then closes the body the focus held (`IssueTree.tsx`), taking Change with it. On the row the
- * focus has not left the tree, so the body stays open. The row is `NodeRow`'s `data-node-row`,
+ * then lets go of the row the focus held (`IssueTree.tsx`'s `useReleaseFocus`). On the row the
+ * focus has not left the tree, so the row stays focused. The row is `NodeRow`'s `data-node-row`,
  * and the move takes no scroll: the reader is already looking at it.
  */
 function keepFocusOnRow(control: HTMLElement): void {
@@ -102,9 +117,9 @@ function readDecisionsAgain(queryClient: QueryClient, issueKey: string): void {
 /**
  * Each decision's Change the reader has open, by the decision's own address (`Decision.ref`),
  * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
- * for a Change that is closed, or whose words are out or landed. A row's body closes once the focus
- * leaves the rows, and Keep and Change go with it; held here, above the rows, the open form and
- * its words come back as the reader left them when the body opens again, rather than being
+ * for a Change that is closed, or whose words are out or landed. A read can draw a row again
+ * under a new key, and Keep and Change leave the page with the old row; held here, above the
+ * rows, the open form and its words come back as the reader left them, rather than being
  * dropped with no word said.
  * Outside a view that holds one, a Change holds its form only while it is drawn.
  */
@@ -115,25 +130,6 @@ const ChangeDrafts = createContext<Map<string, string> | undefined>(undefined);
 export function ChangeDraftsProvider({ children }: { children: ReactNode }): ReactNode {
   const [drafts] = useState(() => new Map<string, string>());
   return <ChangeDrafts.Provider value={drafts}>{children}</ChangeDrafts.Provider>;
-}
-
-/**
- * `words` as a plain line names each reference they cite (`one-line.ts`' `referenceStandIns`):
- * an issue by its key, anything else by the name the page published for it from its one batched
- * read (`useKnownReferenceNames`), named as the quote `RowText` draws names it (`chipName`), and
- * else by its short form, so no accessible name reads a raw `dispatch://` address (root R22,
- * decision 448). A decision's controls hold no outline to read `useReferenceNames` over, so the
- * names they read are the ones the quote they label draws.
- */
-function useNamedWords(words: string): string {
-  const names = useKnownReferenceNames();
-  return useMemo(() => {
-    const references = referenceStandIns((reference) => {
-      const name = names.get(reference);
-      return name === undefined ? undefined : chipName(parseNodeReference(reference), name);
-    });
-    return references.named(references.standIn(words));
-  }, [names, words]);
 }
 
 /**
@@ -225,13 +221,29 @@ function DecisionControls({
   // (`decision-nodes.ts`): a decision whose first paragraph holds no words, whose heading is
   // empty, has none to anchor a Change to.
   const quotable = decision.heading !== "";
-  // The labels name each reference the heading cites by its name, as the quote draws it; the
-  // anchor still sends the heading as the server's text holds it (`ChangeComposer`).
-  const named = useNamedWords(decision.heading);
+  // Read once per decision node, which is a new object with each answer of the outline read: the
+  // decision's first paragraph as a reading of that block alone (`anchorBlock`), which the Change
+  // quotes, and the document it stands in, the record that paragraph is a passage of.
+  const block = useMemo(() => anchorBlock(decision), [decision]);
+  const source = useMemo(
+    () => textSourceOf("artifact", documentId, issueKey),
+    [documentId, issueKey]
+  );
+  // The heading as plain words, which Keep and Change are named after: a write's label and a
+  // form's name hold no markup (the reading list's `decision-heading-words`). The heading is the
+  // first paragraph, so the hook is handed that block as the decision's reading and its words
+  // as its text: the names read the words the Change quotes, each reference by its name
+  // (decision 448). A decision node asks no question.
+  const heading = useMemo(
+    () => ({ question: null, text: decision.heading, text_tree: block }),
+    [block, decision.heading]
+  );
+  const { reads, words: name } = useDecisionHeadingWords(heading, source);
   const keep = useKeyedWrite({
     inline: true,
     issue: issueKey,
-    label: () => `${CONTROL_LABELS.keep_decision} ${named}`,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
+    label: () => `${CONTROL_LABELS.keep_decision} ${name}`,
     method: "POST",
     // The node's own block, and the sum of the text this node showed: a decision the agent
     // changed since is refused (`409 DECISION_CHANGED`), so a Keep never stands over words the
@@ -247,6 +259,7 @@ function DecisionControls({
   });
   return (
     <>
+      {reads}
       <p className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-2">
         {decision.waiting_review ? (
           // Out of the tab order, as every control inside a row is, unless `tabStops` holds,
@@ -288,11 +301,14 @@ function DecisionControls({
       )}
       {changing && quotable ? (
         <ChangeComposer
+          block={block}
           decision={decision}
           documentId={documentId}
           issueKey={issueKey}
           focusField={!restored}
+          name={name}
           onDone={() => change(false)}
+          source={source}
         />
       ) : null}
     </>
@@ -300,32 +316,54 @@ function DecisionControls({
 }
 
 /** The change itself: a comment of the issue's, anchored to the decision's own block and words,
- *  which is the write the Decisions tab made. */
+ *  which is the write the Decisions tab made, written in the box every place a person writes a
+ *  comment in mounts (`MentionField`), with the reference picker in it (the writing list's
+ *  `decisions-change`). */
 function ChangeComposer({
+  block,
   decision,
   documentId,
   focusField,
   issueKey,
+  name,
   onDone,
+  source,
 }: {
+  /** The decision's first paragraph (`anchorBlock`), whose words the change quotes. */
+  block: DisplayTree | undefined;
   decision: DecisionNode;
   documentId: string;
   /** Whether the field takes the caret as it mounts: it does when a press on Change opened the
    *  form, and not when the form comes back with its row's body. */
   focusField: boolean;
   issueKey: string;
+  /** The decision's heading as plain words (`useDecisionHeadingWords`), which the form and its
+   *  write are named after. */
+  name: string;
   onDone: () => void;
+  /** The document the decision is a block of, the record the quote is a passage of. */
+  source: TextSource | undefined;
 }): ReactNode {
+  // The quote as the reader reads the decision: the plain-text projection of its first
+  // paragraph, so a reference in it reads as its target's name and as the words its author wrote
+  // until it resolves (R8, decision 448, the reading list's `decision-change-quote`), while the
+  // change is still anchored to that paragraph's words as the document's own text holds them
+  // (`heading`), which the server matches. Until the projection answers, the form quotes those
+  // words.
+  const { reads: quoteReads, text: quoted } = usePlainHeadline(block, undefined, {
+    source,
+    surface: "decision-change-quote",
+  });
   const drafts = useContext(ChangeDrafts);
   // The words the reader typed before the body last closed, if it did.
   const [body, setBody] = useState(() => drafts?.get(decision.ref) ?? "");
   const queryClient = useQueryClient();
   const tones = TONES[useTooltips() ? "main" : "page"];
-  const fieldId = useId();
-  const named = useNamedWords(decision.heading);
+  const field = useRef<MentionFieldHandle | null>(null);
   const send = useKeyedWrite({
     inline: true,
-    label: () => `${CONTROL_LABELS.change_decision} ${named}`,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
+    label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
@@ -372,10 +410,16 @@ function ChangeComposer({
   // to change a decision is left where they are there to type however many frames React takes
   // over the commit, and whether they asked with the pointer or with the row's own key
   // (`useTreeKeymap.ts`'s `tree-change`). A form that comes back with its row's body takes none
-  // (`focusField`): the reader moved to the row, not into the field.
+  // (`focusField`): the reader moved to the row, not into the field. The caret goes in from the
+  // commit that mounts the field, as `autoFocus` puts it there, through the handle the field
+  // gives its host.
+  useLayoutEffect(() => {
+    if (focusField) field.current?.textarea()?.focus();
+  }, [focusField]);
   return (
     <form
-      aria-label={`${CONTROL_LABELS.change_decision} ${named}`}
+      // A form's name holds no markup: the reading list's `decision-heading-words`.
+      aria-label={`${CONTROL_LABELS.change_decision} ${name}`}
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
@@ -394,22 +438,24 @@ function ChangeComposer({
         data-testid="decision-quote"
         {...authorText}
       >
-        <RowText markdown={decision.heading} />
+        {quoteReads}
+        {quoted?.text ?? decision.heading}
       </blockquote>
-      <label className={`text-xs ${tones.muted}`} htmlFor={fieldId} {...pageChrome}>
-        {CONTROL_LABELS.your_change}
-      </label>
-      <textarea
-        // biome-ignore lint/a11y/noAutofocus: the form mounts because a reader asked to type in it
-        autoFocus={focusField}
-        className={`block w-full min-w-0 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
-        id={fieldId}
-        onChange={(event) => {
-          setBody(event.target.value);
-          drafts?.set(decision.ref, event.target.value);
+      <MentionField
+        body={body}
+        className="text-sm"
+        fieldClassName={tones.field}
+        fieldRef={field}
+        hintClassName={`text-xs ${tones.muted}`}
+        issueKey={issueKey}
+        label={CONTROL_LABELS.your_change}
+        labelClassName={`block text-xs ${tones.muted}`}
+        onChange={(change) => {
+          setBody(change.body);
+          drafts?.set(decision.ref, change.body);
         }}
         rows={3}
-        value={body}
+        writing={dispatchWritingBox("decisions-change", "comment")}
       />
       {send.error === null ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>

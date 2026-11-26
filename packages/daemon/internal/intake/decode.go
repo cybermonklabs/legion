@@ -363,7 +363,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			Priority     json.RawMessage `json:"priority"`
 			Labels       []string        `json:"labels"`
 			ResolvedRepo json.RawMessage `json:"resolved_repo"`
-			// An event of a Dispatch of dispatch://INFRA-1253's release on carries needs beside
+			// An event of a Dispatch of the issue-tree spec's release on carries needs beside
 			// blocked_by, and is read by needs (dispatch.WaitsOf). An event retained from a Dispatch
 			// that sent neither decodes to no blockers, as an issue waiting on nothing does: unlike
 			// a missing repository, which the consumer fills, nothing reads an absence here.
@@ -793,6 +793,13 @@ func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMess
 			return nil, nil
 		}
 		return PullRequestDequeued{Repo: repo, Number: number, HeadSHA: sha}, nil
+	case "review_requested", "review_request_removed":
+		// A review request opened or withdrawn moves what a `blocked` head's round waits on, and
+		// the read it asks for counts the requests; one with no head names none to read for.
+		if sha == "" {
+			return nil, nil
+		}
+		return PullRequestReviewRequests{Repo: repo, Number: number, HeadSHA: sha}, nil
 	default:
 		return nil, nil
 	}

@@ -1,5 +1,5 @@
 -- This migration writes the type nodes of the store alone: it moves the `supertag` node
--- `criterion` to a block type, writes six `attribute` nodes, sets the attributes of the attribute
+-- `criterion` to a block type, writes eight `attribute` nodes, sets the attributes of the attribute
 -- node plan_task/needs to what the seed (20261109051232_graph_supertags) left on it with its scope
 -- out and its items in, sets the attributes of the seven other block type supertag nodes
 -- (callout, ask, requirement, plan_task, check, decision and reading) to what

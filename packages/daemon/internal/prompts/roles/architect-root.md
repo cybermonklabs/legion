@@ -108,11 +108,13 @@ Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
 Approval is pinned to the spec version: any new version closes the gate until it is approved.
-A person's answer, resolve or decline of an ask writes one version. That version changes only the
-server-owned attributes of the ask's block: `state`, and `answered_by` and `answered_at` where the
-ask is answered. Dispatch carries a standing approval across it, and an approval request stays
-with whoever held its turn. An issue's close and reopen each write one version too: the close's
-carries no approval, so the approval reads stale until the reopen's version carries it.
+A person's answer, resolve or decline of an ask writes one version.
+When the answer, resolve or decline is that version's whole change, the version changes only the server-owned attributes of the ask's block:
+`state`, and `answered_by` and `answered_at` where the ask is answered.
+Dispatch carries a standing approval across it, and an approval request stays with whoever held its turn.
+The version carries the approval only when the person's answer, resolve or decline is its whole change.
+If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
+An issue's close and reopen each write one version too: the close's carries no approval, so the approval reads stale until the reopen's version carries it.
 Dispatch carries the approval to a new version in two cases.
 The first is a version whose text is exactly the text of the version they approved, with no ask
 block in it decided since, such as an accidental edit undone exactly. The second is a version
@@ -201,9 +203,12 @@ goes to the controller, which gives it to the tree that owns that code, and a pr
 decision is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
 must make, yours, one a worker escalated or one a child's architect sent you, is an ask block you
-write in the root spec; after approval its new version closes the gate. The human's answer writes
-one version, which changes only the block's server-owned attributes, and Dispatch carries the
-approval across it. When the answer changes the spec's text outside the block, rewrite
+write in the root spec; after approval its new version closes the gate.
+The human's answer writes one version.
+When the answer is that version's whole change, the version changes only the block's server-owned attributes, and Dispatch carries the approval across it.
+The version carries the approval only when the person's answer, resolve or decline is its whole change.
+If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
+When the answer changes the spec's text outside the block, rewrite
 that text. Then request approval again
 with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a
 human can do is a `dispatch ask`.

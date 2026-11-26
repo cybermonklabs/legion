@@ -97,15 +97,14 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	},
 	// A create naming a repository writes it in the issue row's insert and reads or locks no other
 	// row for it. Its read phase, under the project's owner lock, holds its spec's seed, task count
-	// and reference index, all of the harness's size, and its write advice. Its spec is a document
-	// the spec query's record covers, so once the batch has run the fill reads that record by the
-	// walk of the store as the batch left it and writes the spec's version_renders row (R14, R15;
-	// createFill).
+	// and reference index, all of the harness's size, and its write advice. Its spec's
+	// version_renders row goes in the queued batch with its record's digest owed, which the fill
+	// after the COMMIT records in a transaction of its own (R15, docs' fillOwedDigests).
 	{
 		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue)",
-		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(16,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row and its artifact row - "+
-				"the two reads that load the issue it answers with, the queued batch, "+createFill+" and its COMMIT"),
+		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(10,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
+				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
 	},
 	// A near copy whose refusal's near_copy_checks row could not be written goes in unchecked
 	// (nearCopyOutcome.unrecorded) and writes its own row in its transaction (recordInTx,
@@ -113,13 +112,12 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// lock it takes in its read phase, where its spec's seed, task count and reference index, all
 	// of the harness's size, and its write advice run. The refusal's own write, which errs, is a
 	// statement of its own before the transaction opens (recordNearCopyRefusal), and holds no
-	// transaction id of the create's. Its spec's version_renders row is filled as every create's is
-	// (createFill).
+	// transaction id of the create's.
 	{
 		name: "the issue create of a near copy whose refusal was not recorded", route: "POST /api/v1/issues past an unrecorded refusal (createIssue, writeNearCopyCheck)",
-		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(17,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row and its artifact row - "+
-				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch, "+createFill+" and its COMMIT"),
+		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(11,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
+				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch and its COMMIT"),
 	},
 	// A patch stating a relation to a priority decides the revision rule on the issue it read
 	// under its owner lock (refuseAdvancesRevision) and writes the relation after the row's own
@@ -137,15 +135,14 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// reference index and the write advice - still holds no transaction id; writeBlockedBy reads
 	// the target's project and walks the wait graph inside the write phase, under those locks,
 	// and the event it appends names the blocker among its changed references, which one more read
-	// resolves (refs.resolveIssueTargets). A window with one blocker and a wait graph one link deep,
-	// and the fill of its spec's version_renders row (createFill).
+	// resolves (refs.resolveIssueTargets). A window with one blocker and a wait graph one link deep.
 	{
 		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a blocked_by target in another project (createIssue, lockIssueDependencyWrite, writeBlockedBy)",
-		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(21,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, "+
+		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(14,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, "+
 				"the target's project read, the wait walk, the blocked_by delete and insert and its artifact row - "+
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
-				"the queued batch, "+createFill+" and its COMMIT"),
+				"the queued batch and its COMMIT"),
 	},
 	// A patch naming a blocker in another project takes the same locks before the issue's owner
 	// lock, and its write phase is the row's update and writeBlockedBy's reads and writes.
@@ -157,18 +154,6 @@ var issueRouteXidWindows = []routeXidWindowCase{
 				"the batch appending issue.updated and its COMMIT"),
 	},
 }
-
-// createFill names what a create runs once its batch has run to fill its spec's version_renders
-// row (docs' writeStatedRenders): it reads the record of the spec's query at one cut, by the walk
-// of the issue's tree as the batch left the store (R14, R15) - the cut, the read of the issue's
-// conversation, which holds no item yet, the one read of the tree, every level of it
-// (refs.TreeSubtrees), the read of the issues above the issue and that of the issue a view shows -
-// and writes the row, with the record's digest (R15). The spec is the create's own, so which query
-// covers it is read off the address the create registered (docs' readStatedDocuments), by no
-// statement.
-const createFill = "the fill, which reads the spec query's record of the issue at one cut once the batch has run (R14, R15) - " +
-	"the cut, the read of the issue's conversation, the one read of the tree, every level of it, the read of the issues above the issue and that of the issue a view shows - " +
-	"the version_renders row it writes with the record's digest (R15)"
 
 // readyIssueReopen drives PATCH /api/v1/issues/{key} reopening a closed issue whose close
 // withdrew an anchored ask and the ask settlement opened from the spec's `:::ask` block, so the

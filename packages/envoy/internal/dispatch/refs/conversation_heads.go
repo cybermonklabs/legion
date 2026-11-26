@@ -33,8 +33,9 @@ type headItemOwner struct {
 // answered in conversationNodes' order. It is false, and reads nothing, where a comment of page
 // holds no head row of its conversation columns, or it or one of its blocks is a node the store
 // holds reserved for its author, whom the loaders' predicate compares with who and the rows do not:
-// the caller reads ConversationPageNodes then.
-func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page CommentPage, heads *HeadTree) ([]ExcerptedNode, bool, error) {
+// the caller reads ConversationPageNodes then. serverURL is the deployment whose dashboard URLs
+// each excerpt is cut around, as ConversationNodes cuts them.
+func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Actor, issueKey string, at time.Time, page CommentPage, heads *HeadTree, serverURL string) ([]ExcerptedNode, bool, error) {
 	blocksOf := headCommentBlocks(heads)
 	ids := make([]string, 0, len(page.IDs))
 	written := make([]time.Time, 0, len(page.IDs))
@@ -118,10 +119,10 @@ func ConversationPageNodesOfHeads(ctx context.Context, q Queryer, who model.Acto
 		if !found {
 			continue
 		}
-		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+		nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
 		for _, block := range blocks[[2]string{item.otherKind, item.otherID}] {
 			if node, found := resolved[[2]string{block.otherKind, block.otherID}]; found {
-				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node)})
+				nodes = append(nodes, ExcerptedNode{Node: node.GraphNode, Excerpt: excerptOf(node, serverURL)})
 			}
 		}
 	}
@@ -204,7 +205,9 @@ func headItemProject(owners map[[2]string]headItemOwner, issueKey, artifactID *s
 	return project, slug
 }
 
-// headCommentNode is the comment id as loadCommentNodes resolves it, from its head row.
+// headCommentNode is the comment id as loadCommentNodes resolves it, from its head row: its parent
+// the comment it answers, else its thread's head, else its ask (commentReplyParent), and a comment
+// that answers none of them the document it is written on, else its issue.
 func headCommentNode(id string, head *HeadRow, owners map[[2]string]headItemOwner) (resolvedNode, error) {
 	item := head.Item
 	project, slug := headItemProject(owners, item.IssueKey, item.ArtifactID)
@@ -229,13 +232,9 @@ func headCommentNode(id string, head *HeadRow, owners map[[2]string]headItemOwne
 			}
 		}
 	}
-	switch parent := document.parent(); {
-	case item.RepliesToBlock != nil:
-		node.Parent = itemBlockParent(item.IssueKey, project, slug, *item.RepliesToBlock)
-	case item.ReplyTo != nil:
-		node.Parent = itemParent(string(ItemComment), item.IssueKey, project, slug, *item.ReplyTo)
-	case item.AskID != nil:
-		node.Parent = itemParent(string(ItemAsk), item.IssueKey, project, slug, *item.AskID)
+	switch reply, parent := commentReplyParent(item.IssueKey, project, slug, item.Answers, item.ReplyTo, item.AskID), document.parent(); {
+	case reply != nil:
+		node.Parent = reply
 	case parent != nil:
 		node.Parent, node.ParentVersion = parent, item.Version
 	default:

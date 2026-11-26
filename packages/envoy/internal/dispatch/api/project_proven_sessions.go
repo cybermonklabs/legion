@@ -2,10 +2,8 @@ package api
 
 import (
 	"context"
-	"errors"
 	"net/http"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -75,10 +73,6 @@ func (s *server) setProjectProvenSessions(w http.ResponseWriter, r *http.Request
 // already as asked changes nothing: the update names `proven_sessions is distinct from $2`, so
 // it touches no row, and no event is appended.
 func (s *server) storeProjectProvenSessions(ctx context.Context, key string, actor model.Actor, on bool) error {
-	project, err := s.loadProject(ctx, s.deps.Store.Pool, key)
-	if err != nil {
-		return err
-	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return err
@@ -87,21 +81,27 @@ func (s *server) storeProjectProvenSessions(ctx context.Context, key string, act
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (putProjectGatedSteps says why: the other order deadlocks with an issue create). The lock
 	// assigns no transaction id; the update is the first statement that writes.
-	if err := store.LockOwner(ctx, tx, store.ProjectOwner(project.Key)); err != nil {
+	if err := store.LockOwner(ctx, tx, store.ProjectOwner(key)); err != nil {
 		return err
 	}
-	// The update returns the gated steps too, read under the owner lock, so the event carries
-	// the row as this write left it.
-	if err := tx.QueryRow(ctx, `
+	// The row is read under the owner lock, which every writer of the row takes first, so the
+	// event carries the row as this write leaves it; the read comes before the update, so it adds
+	// no statement to the window an open transaction id holds (putProjectGatedSteps).
+	project, err := s.loadProject(ctx, tx, key)
+	if err != nil {
+		return err
+	}
+	written, err := tx.Exec(ctx, `
 		update projects set proven_sessions = $2
 		where key = $1 and proven_sessions is distinct from $2
-		returning gated_steps, proven_sessions
-	`, project.Key, on).Scan(&project.GatedSteps, &project.ProvenSessions); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
+	`, key, on)
+	if err != nil {
 		return err
 	}
+	if written.RowsAffected() == 0 {
+		return nil
+	}
+	project.ProvenSessions = on
 	event, err := s.appendEvent(ctx, tx, projectOwner(project.Key).event("project.updated", actor, project))
 	if err != nil {
 		return err

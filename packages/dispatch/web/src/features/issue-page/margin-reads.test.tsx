@@ -12,6 +12,7 @@ import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference } from "../refs/routes";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
+import { issueAskThreadsQuery } from "./useIssueTree";
 import { appClient, focusPastStaleness, restoreWindowFocus } from "./window-focus-fixture";
 
 const OWNER: MarginOwner = { key: "CORE-1", kind: "issue" };
@@ -38,6 +39,7 @@ interface MarginReads {
   readonly getMyState: Mock<typeof api.getMyState>;
   readonly listComments: Mock<typeof api.listComments>;
   readonly listIssueAsks: Mock<typeof api.listIssueAsks>;
+  readonly listIssueAskThreads: Mock<typeof api.listIssueAskThreads>;
 }
 
 /** Each of the margin's reads, answered empty. */
@@ -47,6 +49,7 @@ function stubMarginReads(): MarginReads {
     getMyState: spyOn(api, "getMyState").mockResolvedValue({}),
     listComments: spyOn(api, "listComments").mockResolvedValue([]),
     listIssueAsks: spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    listIssueAskThreads: spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
   };
   restore = () => {
     for (const read of Object.values(reads)) read.mockRestore();
@@ -96,10 +99,15 @@ function renderMargin(client: QueryClient, inDrawer: MarginDrawer | undefined, s
 async function firstAnswers(
   client: QueryClient,
   reads: MarginReads,
+  inDrawer: boolean,
   decisions?: Mock<typeof api.getIssueDecisions>
 ): Promise<void> {
   await waitFor(() => {
-    for (const read of Object.values(reads)) expect(read).toHaveBeenCalledTimes(1);
+    expect(reads.getInbox).toHaveBeenCalledTimes(1);
+    expect(reads.getMyState).toHaveBeenCalledTimes(1);
+    expect(reads.listComments).toHaveBeenCalledTimes(1);
+    expect(reads.listIssueAsks).toHaveBeenCalledTimes(inDrawer ? 0 : 1);
+    expect(reads.listIssueAskThreads).toHaveBeenCalledTimes(inDrawer ? 1 : 0);
     if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(1);
     expect(client.isFetching()).toBe(0);
   });
@@ -128,13 +136,14 @@ test.each(
   const client = appClient();
   const view = renderMargin(client, drawer, spec);
   try {
-    await firstAnswers(client, reads, decisions);
+    await firstAnswers(client, reads, true, decisions);
     await focusPastStaleness(client);
     await waitFor(() => {
       expect(reads.getInbox).toHaveBeenCalledTimes(2);
       expect(reads.getMyState).toHaveBeenCalledTimes(2);
     });
-    expect(reads.listIssueAsks).toHaveBeenCalledTimes(1);
+    expect(reads.listIssueAsks).not.toHaveBeenCalled();
+    expect(reads.listIssueAskThreads).toHaveBeenCalledTimes(1);
     expect(reads.listComments).toHaveBeenCalledTimes(1);
     if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(1);
   } finally {
@@ -152,7 +161,7 @@ test.each(
   const client = appClient();
   const view = renderMargin(client, undefined, spec);
   try {
-    await firstAnswers(client, reads, decisions);
+    await firstAnswers(client, reads, false, decisions);
     await focusPastStaleness(client);
     await waitFor(() => {
       expect(reads.getInbox).toHaveBeenCalledTimes(2);
@@ -163,6 +172,26 @@ test.each(
     });
   } finally {
     view.unmount();
+  }
+});
+
+test("the new page's margin sends no plain asks read when the outline holds the thread read", async () => {
+  const reads = stubMarginReads();
+  const client = appClient();
+  const { queryKey } = issueAskThreadsQuery(OWNER.key);
+  client.setQueryData(queryKey, []);
+  const view = renderMargin(client, drawer);
+  try {
+    await waitFor(() => {
+      expect(reads.listComments).toHaveBeenCalledTimes(1);
+      expect(client.isFetching()).toBe(0);
+    });
+    expect(reads.listIssueAsks).not.toHaveBeenCalled();
+    expect(reads.listIssueAskThreads).not.toHaveBeenCalled();
+    expect(client.getQueryCache().find({ exact: true, queryKey })?.getObserversCount()).toBe(1);
+  } finally {
+    view.unmount();
+    client.clear();
   }
 });
 

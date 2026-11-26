@@ -8,9 +8,9 @@ package main
 // that seeds each arm through that arm's own API, the clock, the order statistic and the table
 // every reading is printed in. #3178's two cost checks that first used it, c-write-cost and
 // c-read-cost, are gone from main; the readers they used stay in read_cost_test.go and
-// write_cost_test.go, and the INFRA-1098 tree's branches build their own cost tools on this file,
-// as cybermonklabs/legion#4193's c-read-cost, TestThePredicateAndTheLensReadsGetNoSlower
-// (predicate_lens_read_cost_test.go), does.
+// write_cost_test.go, and the INFRA-1098 tree's branches build their own cost tools on this file.
+// cybermonklabs/legion#4193's c-read-cost, TestThePredicateAndTheLensReadsGetNoSlower
+// (predicate_lens_read_cost_test.go), is one.
 //
 // # The two arms, and why each has a database of its own
 //
@@ -100,7 +100,8 @@ type costArm struct {
 	// head reports this working copy's build, the arm the budgets are taken on.
 	head bool
 	// server is the process, databaseURL its database and pool the test's own connections to
-	// that database, which seed it, read its row counts and take the block-index lease.
+	// that database, which seed it, read its row counts and take the block-index lease and the
+	// reference forms drain's.
 	server      *dispatchProcess
 	databaseURL string
 	pool        *pgxpool.Pool
@@ -447,14 +448,17 @@ func costBlockIndexDrained(t *testing.T, arm *costArm, within time.Duration) {
 	}
 }
 
-// costLeaseWait bounds the wait for the block-index lease. A pass reads one batch of each queue
-// it serves and gives the lease back, so this is a hang guard on a wait nothing healthy reaches.
+// costLeaseWait bounds the wait for the block-index lease and the forms drain's. A pass reads one
+// batch of each queue it serves and gives its lease back, so this is a hang guard on a wait
+// nothing healthy reaches.
 const costLeaseWait = 5 * time.Minute
 
-// costHoldBlockIndex takes the block-index pass's own lease on this arm and answers the call
-// that gives it back, so no tick runs while a window is measured (holdBlockIndexLease,
-// block_index_lease_test.go).
-func costHoldBlockIndex(t *testing.T, arm *costArm) func() {
+// costHoldBlockIndex takes the block-index pass's own lease and the reference forms drain's on this
+// arm and answers the hold that gives them back (holdBlockIndexLease, block_index_lease_test.go),
+// so neither a tick nor a drain pass runs while a window is measured. A reading of the tick's own
+// work gives the block-index lease back alone (blockIndexHold.giveBackIndex) and the drain's once
+// the reading ends.
+func costHoldBlockIndex(t *testing.T, arm *costArm) *blockIndexHold {
 	t.Helper()
 	return holdBlockIndexLease(t, arm.pool, arm.name, costLeaseWait, arm.server.Output.String)
 }

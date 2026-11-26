@@ -35,8 +35,12 @@ const (
 // before_merge result states the negative control that would have caught its failure.
 const codeNegativeControlRequired = "NEGATIVE_CONTROL_REQUIRED"
 
-// codeAnsweredAskKept refuses a document write by a credential with no person scope that would
-// drop or retype the block of an answered ask (docs.ErrAnsweredAskKept).
+// codeAnsweredAskKept refuses a write by a caller who is no person (docs.CallerIsPerson) that would
+// change, move or remove a person's decision (R32, docs.PersonDecisionOf): a document edit or an
+// upload that takes an answered ask's block or a decision a person decided out of its document,
+// retypes it or changes its words (docs.ErrAnsweredAskKept), a move or a delete of one through the
+// node routes, and its state set overtaken or live through the state route, or on an answered
+// ask's own node proposed too (refusePersonDecisionState).
 const codeAnsweredAskKept = "ANSWERED_ASK_KEPT"
 
 // codeDecisionsAreNodes refuses an upload or a create of a decisions document on an issue
@@ -50,7 +54,7 @@ const codeDecisionsQuery = "DECISIONS_QUERY"
 
 // codeNodeInOtherIssue refuses a document write addressed through one issue that names a node of
 // another issue, naming the node's own issue (refuseNodesOfOtherIssues, D3 of
-// dispatch://INFRA-1253's plan).
+// the issue-tree plan).
 const codeNodeInOtherIssue = "NODE_IN_OTHER_ISSUE"
 
 // codeRequirementBelongsToAncestor refuses a document write that adds a requirement node to an

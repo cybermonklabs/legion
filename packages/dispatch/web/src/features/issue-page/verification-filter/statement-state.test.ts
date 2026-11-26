@@ -513,8 +513,7 @@ function issueTree(checks: readonly CheckBlock[]): TreeNode {
 
 // The tree read a check's state from `checkState` alone while this body turned it over at the
 // commit the page names, so one check read two states. The regressed check above read Passed on
-// its row and was off the fold's frontier, so its statement arrived folded with the regression
-// inside it, and the filter row counted nothing failing, while this body read it Failed; a fail
+// its row, and the filter row counted nothing failing, while this body read it Failed; a fail
 // that stands at another commit read Failed on the row and in the count, and Out of date here.
 // The tree's node holds the one reading this body draws (`checkStanding`), which is the server's.
 test("a check reads one state on its row, in the fold, in the filter row and in the body", () => {
@@ -533,7 +532,7 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
   const tree = issueTree([regressed]);
   expect(placed(tree, "c-one")?.state).toBe("failed");
   expect(bodyStates(tree, [regressed])).toEqual(["failed"]);
-  // The check is open and unanswered, so the fold opens its statement down to it.
+  // Every branch is drawn open (R11), the statement's down to its check.
   const rows = treeRows(tree);
   expect(rows.find((row) => row.kind === "node" && row.node.id === statement)).toMatchObject({
     expanded: true,

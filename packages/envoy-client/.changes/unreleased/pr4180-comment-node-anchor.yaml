@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `dispatch read --ref dispatch://KEY/comment/<id>` and `dispatch read --ref dispatch://KEY/comments`
+  ask Dispatch for the node each comment's anchor names (`?node_anchor=true`) and print it on the
+  comment's anchor line after the quote, with the node's state: `> bound · on lens/<uuid> (live)`.
+  So a comment on the text of a lens, a finding, a risk, a constraint or a result, whose anchor the
+  comment reads answer as null, reads with its node and its quote, and a comment on a block of a
+  document names that block. A node whose state is `gone` was deleted after the comment was written.
+  A Dispatch older than the member ignores the parameter, and the line prints the quote alone, as
+  before.
+time: 2026-11-25T18:00:00Z
+custom:
+    Issue: pr4180

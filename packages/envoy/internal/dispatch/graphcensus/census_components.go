@@ -14,7 +14,7 @@ import (
 
 // componentProjections are the census's kinds of the architecture components' relations
 // (projections), each held triple by triple (projection.tuples) against the tuples the store
-// states now (dispatch://INFRA-1253 R9): components.parent against each component's part_of,
+// states now (R9 of the issue-tree spec): components.parent against each component's part_of,
 // each component_depends row against the depends_on of its pair, and each issue_component_members
 // row against the affects of its issue and its component. A row that names no node is a row a
 // process of the release before wrote, which graph_edges' old arm answers until the backfill names
@@ -80,7 +80,7 @@ var componentBackfills = []backfillPass{
 
 // componentRowUnmarked is the test that the components row aliased c is one its marker does not
 // mark: it names no node, or it names a parent its node's part_of does not name
-// (store.ComponentParentMoved, R9 of dispatch://INFRA-1253), which graph_edges' old part_of arm
+// (store.ComponentParentMoved, R9 of the issue-tree spec), which graph_edges' old part_of arm
 // answers. A row past the store's bound, its own address or its parent's, is no node of the store
 // and is left out (componentFits).
 const componentRowUnmarked = `(c.node_kind is null or (c.parent is not null and ` + store.ComponentParentMoved + `))`
@@ -101,7 +101,7 @@ type componentRow struct {
 // backfillComponents states, for every components row its marker does not mark, the component's
 // node and its part_of to the parent its row names, dated at its snapshot's imported_at, as
 // graph_edges' old arm dates the edge, and names the node on the row in the transaction that
-// states them, so a second run reads no row the first one wrote (dispatch://INFRA-1149's
+// states them, so a second run reads no row the first one wrote (the graph-store spec's
 // r-view-end contract). It walks the rows in their primary key's order, one batch a transaction
 // (writeComponentBatch).
 func backfillComponents(ctx context.Context, database *store.Store) (KindBackfill, error) {

@@ -87,6 +87,11 @@ type PgVersioned struct {
 	// NewPgVersioned sets it to maxUpdateItems, whose comment states the rule; a test lowers it
 	// (shrinkPendingItems) to make a log that does not fold out of a few dozen items.
 	maxPendingItems int
+	// closeMargin is how long after an issue's close this store's append gate still takes a
+	// browser update the room observed as one made while the issue was open (observedBeforeClose).
+	// NewPgVersioned sets it to the package's closeMargin; New sets Deps.CloseMargin where a test
+	// gave one.
+	closeMargin time.Duration
 	// noteStored is the note of the Service that took this store last (New), which each append
 	// gives the version it committed and each load the head it read (noteStoredUpdates), so the
 	// Service's compaction queue checks the room. Nil for a store no Service took.
@@ -119,6 +124,7 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 		store:           database,
 		foldSlots:       make(chan struct{}, bufferedFolds),
 		maxPendingItems: maxUpdateItems,
+		closeMargin:     closeMargin,
 	}
 }
 
@@ -240,7 +246,7 @@ func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, updat
 // document is edited in, in one statement (lockArtifactRoom), and appends only where that room is
 // artifactID itself. An update its caller built on a document's own Yjs document - a settlement's
 // repair of the document's room, a live write, a seed - is refused once the document moved into
-// its issue's room (ErrRoomMoved, dispatch://INFRA-1253 R5), and a write to the issue's room
+// its issue's room (ErrRoomMoved, R5 of the issue-tree spec), and a write to the issue's room
 // addresses it by its tree artifact's own id.
 func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, artifactID string, update []byte, contentChanged bool) (persistence.Version, error) {
 	if err := refuseUpdateItemCap(update); err != nil {

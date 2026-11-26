@@ -1,12 +1,14 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -176,8 +178,16 @@ const inboxReadMarkAgentReplies = `
 // magnitude of headroom for a busier server and cuts no honest request off. The ceiling
 // matters because this transaction holds its owners' locks in shared mode: every comment, answer and
 // issue message on those owners waits behind a statement that hangs, so one that cannot finish
-// is better killed, which rolls the transaction back and frees them.
-const inboxReadStatementTimeout = "10s"
+// is better killed, which rolls the transaction back and frees them. The dismissal's transaction
+// (dismissInboxThreads) holds the same locks and takes the same bound.
+const inboxReadStatementTimeout = 10 * time.Second
+
+// boundInboxStatements is the statement the mark-all's and the dismissal's transactions open with:
+// every statement after it is bounded by inboxReadStatementTimeout, unless a test set a bound of
+// its own (server.inboxStatementBound).
+func (s *server) boundInboxStatements() string {
+	return fmt.Sprintf("set local statement_timeout = '%dms'", cmp.Or(s.inboxStatementBound, inboxReadStatementTimeout).Milliseconds())
+}
 
 // inboxReadPriorityLevels are the priorities a request names, as the Inbox's filter writes them,
 // against the issues.priority each stands for. inboxReadNone is the value that stands for the
@@ -580,15 +590,17 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // second reads the tuple the first committed and appends none.
 //
 // Six writers write a node only because a run asked them to name what they changed: an issue's
-// own field write made for a run (patchIssue), an edit of an ask's or a comment's words made for
-// one (editAsk, editComment), and an edit or a delete of an issue message or a delete of a
-// comment made for one (editMessage, deleteMessage, deleteComment). Each takes its owner's lock
-// first - the issue's for the PATCH (lockPatchOwners), the owner of the ask, the comment or the
-// message for the others - and plans the node in its read phase (graphstore.PlanChangedForRun).
-// Its write phase writes its row (the issue's, or the ask's, the comment's or the message's) and
-// every document it writes, then the node (graphstore.QueueNodes), the last node row its
-// transaction takes, then its own event, and then what that node states with its changed_by_run
-// under that event (graphstore.QueueCaused).
+// own field write made for a run (writeIssue, the write core the PATCH and each step of a status
+// change run), an edit of an ask's or a comment's words made for one (editAsk, editComment), and
+// an edit or a delete of an issue message or a delete of a comment made for one (editMessage,
+// deleteMessage, deleteComment). Each takes its owner's lock first - for writeIssue the issue's
+// owner lock, which it takes itself before it reads the issue (lockPatchOwners, or
+// lockPatchOwnersAndParent for a write of the status or the parent), and the owner of the ask,
+// the comment or the message for the others - and plans the node in its read phase
+// (graphstore.PlanChangedForRun). Its write phase writes its row (the issue's, or the ask's, the
+// comment's or the message's) and every document it writes, then the node (graphstore.QueueNodes),
+// the last node row its transaction takes, then its own event, and then what that node states with
+// its changed_by_run under that event (graphstore.QueueCaused).
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {
@@ -598,7 +610,7 @@ func (s *server) markInboxReadThreads(
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
+	if _, err := tx.Exec(ctx, s.boundInboxStatements()); err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
 	}
 	read, err := readInboxReadThreads(ctx, tx, actor, login,

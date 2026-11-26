@@ -176,7 +176,7 @@ func requirementsSpec(ids []string) string {
 	return spec.String()
 }
 
-// c-placement-and-coverage, its placement half (T7 of dispatch://INFRA-1253's plan; T18 adds the
+// c-placement-and-coverage, its placement half (T7 of the issue-tree plan; T18 adds the
 // move through its route and the coverage reads through T16a's): placement and coverage are two
 // relations. One check serves three requirements and keeps one place: one node, one id, one
 // part_of to the first requirement of the pointer's written order that is a node of its own issue,
@@ -272,11 +272,12 @@ func TestPlacementAndCoverageAreTwoRelations(t *testing.T) {
 		}
 	}
 
-	// This document itself, its INFRA-1098 and INFRA-1253 references rewritten to TREE-1 and
-	// TREE-2, indexed into a child of a parent closed as done, each holding the requirements the
-	// document's serves name of it (a child under a done ancestor holds requirements of its own).
-	// The parent is closed before the child is created: a child born converted under a parent
-	// whose requirements stand is a view, and its create with a requirement is refused.
+	// This document itself, its references to the graph-model root spec and to the issue-tree spec
+	// rewritten to TREE-1 and TREE-2, indexed into a child of a parent closed as done, each holding
+	// the requirements the document's serves name of it (a child under a done ancestor holds
+	// requirements of its own). The parent is closed before the child is created: a child born
+	// converted under a parent whose requirements stand is a view, and its create with a
+	// requirement is refused.
 	verification, err := os.ReadFile("testdata/infra-1253-verification.md")
 	if err != nil {
 		t.Fatalf("read the Verification document's copy: %v", err)

@@ -14,10 +14,11 @@ import "fmt"
 // askSearchTextOf), so that nothing of the oracle is built from the package's own helpers: an
 // oracle sharing a helper with the statement under test changes with it, and the comparison then
 // holds nothing. The cost is that an edit to a part of these statements this change leaves alone
-// has to be copied here too, which is what the equality tests report when it is not -
-// INFRA-1042's one scored list across the kinds (mainFusedSQL for search and mainRelatedFusedSQL
-// for the related-item check, ts_rank_cd's normalisation flag, a page that names no kind) and
-// INFRA-1150's text of an ask hit, its answer read from the ask's node (askSearchTextOf), are
+// has to be copied here too,
+// which is what the equality tests report when it is not - INFRA-1042's one scored list across
+// the kinds (mainFusedSQL for search and mainRelatedFusedSQL for the related-item check,
+// ts_rank_cd's normalisation flag, a page that names no kind) and this change's text of an ask
+// hit, its answer read from the ask's node (askSearchTextOf), are
 // copied below for exactly that reason, so the only thing these statements still answer
 // differently by is their document arm.
 //
@@ -124,7 +125,7 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // own lateral over artifact_versions reads the page's documents' markdown for the snippet, and
 // tests no tsquery.
 //
-// One output column is not main's. Where the package's page names the block a meaning hit
+// Two output columns are not main's. Where the package's page names the block a meaning hit
 // matched (hit.block_id, INFRA-370), this writes a literal null. The package computes that column
 // in a lateral over r.covers, and no row either body here hands this page carries any: a keyword
 // leg writes null for covers, and so do main's meaning arms, which know no windows. unnest of no
@@ -132,7 +133,10 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // The null written here is therefore that column's own value rather than a stand-in, and the
 // lateral's twenty-five lines are not copied into a place where they could only ever answer
 // null. The two statements whose rows can carry covers are this release's own meaning ones, and
-// they are held against this release's own page (searchQueryMeaningOverMainsDocumentArm).
+// they are held against this release's own page (searchQueryMeaningOverMainsDocumentArm). The
+// other is the text the headline is cut from, which the package selects beside the headline for
+// the snippet's reading (pmdoc.SearchSnippet); it is copied here as the package
+// writes it, a lateral the headline reads too, since its value is a row's own.
 func mainSearchPageAndTailSQL(legsSource string) string {
 	return fmt.Sprintf(`page as (
   select l.*, f.score
@@ -144,11 +148,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
        r.issue_key, r.issue_title, r.issue_status,
        r.owner_project, r.owner_slug, r.owner_artifact_id::text, r.owner_name,
        ar.slug, ar.name, coalesce(ar.is_primary, false), r.id, r.block_id, null::text, r.score::float8,
-       ts_headline('english',
-         search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
-              then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
-              else left(txt.text, 4000) end),
-         q.tsq, $5) as headline
+       ts_headline('english', src.text, q.tsq, $5) as headline, src.text
   from totals t cross join q
   left join (page r left join artifacts ar on ar.id = r.artifact_id) on true
   -- Mirrors the kind arms in kinds above (issue/document/comment/ask/message -> table and text
@@ -182,6 +182,11 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
       when 'message' then (select m.body from messages m where m.id = r.id::uuid)
     end as text
   ) txt on true
+  left join lateral (
+    select search_text(case when q.term <> '' and strpos(lower(txt.text), lower(q.term)) > 0
+             then substr(txt.text, greatest(1, strpos(lower(txt.text), lower(q.term)) - 1500), 4000)
+             else left(txt.text, 4000) end) as text
+  ) src on true
  order by r.score desc, r.updated_at desc, r.id
 `, legsSource)
 }

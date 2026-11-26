@@ -38,6 +38,7 @@ const (
 	issueLinkBatchDrive        = "graphcensus/census_issues.go#writeIssueLinkBatch"
 	referenceBatchDrive        = "graphcensus/census_refs.go#writeReferenceBatch"
 	anchorBatchDrive           = "graphcensus/census_anchors.go#writeAnchorBatch"
+	keepSumBatchDrive          = "graphcensus/census_keeps.go#writeKeepSumBatch"
 	resultBatchDrive           = "graphcensus/census_results.go#writeResultBatch"
 	resultRetractionBatchDrive = "graphcensus/census_results.go#writeResultRetractionBatch"
 	componentBatchDrive        = "graphcensus/census_components.go#writeComponentBatch"
@@ -167,7 +168,8 @@ func resultKindsCounted() map[StoredKind][]string {
 // issues, each its node and a row naming it, and alice's person node. Each pass
 // reads every row of its kind its marker does not mark, so the drives run in an order in which no
 // pass reads a row a drive before it stood up: the rebuild, which reads every document, comes
-// last, and none of the passes reads a row of another's table.
+// after every drive but the Keep pass's, whose document's pointer it would read as a reference, and
+// none of the passes reads a row of another's table.
 func passDrives(t *testing.T) []StoreDrive {
 	t.Helper()
 	ctx := context.Background()
@@ -269,8 +271,9 @@ func passDrives(t *testing.T) []StoreDrive {
 	}, {
 		// The anchor pass (backfillAnchoredIn) over a comment this build wrote with its node,
 		// anchored on a block of a document of DRIVE-1, whose node states no anchored_in, as a
-		// process of the release before leaves the row it anchors: the comment's anchored_in,
-		// which the term anchor_block counts.
+		// process of the release before leaves the row it anchors: the comment's anchored_in and,
+		// since it answers nothing, its part_of to the same block (graphstore.AnchorRelation), which
+		// the term anchor_block counts.
 		Name: anchorBatchDrive, Database: database,
 		Sites: []string{"graphcensus/census_anchors.go#writeAnchorBatch", "graphstore/write.go#Write"},
 		Ready: func(t *testing.T) {
@@ -292,8 +295,11 @@ func passDrives(t *testing.T) []StoreDrive {
 				return err
 			})
 		},
-		Drive:  drivenPass(database, backfillAnchoredIn),
-		Counts: map[StoredKind][]string{{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"}},
+		Drive: drivenPass(database, backfillAnchoredIn),
+		Counts: map[StoredKind][]string{
+			{graphstore.KindComment, graphstore.TupleAnchoredIn}: {"anchor_block"},
+			{graphstore.KindComment, graphstore.TuplePartOf}:     {"anchor_block"},
+		},
 	}, {
 		// The result pass (backfillResults) over a failed result a release before this one
 		// recorded, by alice, of check c1 of DRIVE-1's Verification document, its row and no
@@ -457,6 +463,23 @@ func passDrives(t *testing.T) []StoreDrive {
 			}
 		},
 		Counts: map[StoredKind][]string{{graphstore.KindArtifact, graphstore.TupleMentions}: {"document_ref"}},
+	}, {
+		// The Keep pass (backfillKeepSums) over a Keep a release before this one made, by alice, of a
+		// decision of a document of DRIVE-1 that carries shaped, summed over its words with shaped:
+		// the decision's kept_text_sum, rewritten to the sum of its words without shaped, which the
+		// term keep counts. It comes after the rebuild, which would otherwise read the document's
+		// pointer as a reference of its own.
+		Name: keepSumBatchDrive, Database: database,
+		Sites: []string{"graphcensus/census_keeps.go#writeKeepSumBatch"},
+		Ready: func(t *testing.T) {
+			document, _ := drivenDocument(t, database, "kept-md")
+			issue := drivenIssue
+			pointer := refs.BlockRef(refs.ArtifactRef(&issue, drivenProject, nil, "kept-md", "doc", false), "r1")
+			kept := seedShapedDecisions(t, database, document, pointer, "We keep the node store.")[0]
+			keepAsTheReleaseBefore(t, database, document, kept, kept.shaped)
+		},
+		Drive:  drivenPass(database, backfillKeepSums),
+		Counts: map[StoredKind][]string{{refs.BlockNodeKind, refs.ValueKeptTextSum}: {"keep"}},
 	}}
 }
 

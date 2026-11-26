@@ -528,8 +528,8 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // the run reads the setting on each before it seeds. Both builds are read in one loop, one reading
 // on each in each turn, the build that goes first alternating, after one warm-up reading on each
 // that is not counted (costInterleaved). The corpus is vacuumed and analysed after the seed and the
-// backfill (costArm.vacuumAnalyze), and the block-index lease of each build is held while the
-// readings are taken (costHoldBlockIndex).
+// backfill (costArm.vacuumAnalyze), and the block-index lease and the reference forms drain's of
+// each build are held while the readings are taken (costHoldBlockIndex).
 // It takes 200 readings of each read over each shape on each build and prints the nearest-rank
 // p50, p95 and p99. A read whose p50 at this head is more than 1.25 times its p50 at the base
 // build fails the test, and the failure prints the read, the shape and both builds' readings. The
@@ -614,9 +614,10 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 		dropPredicateCostInboundIndexes(t, head, shapes[head][inbound])
 	}
 
-	// No tick of either server's own runs inside a measured window.
+	// No tick of either server's block index and no pass of its forms drain runs inside a measured
+	// window.
 	for _, arm := range builds {
-		defer costHoldBlockIndex(t, arm)()
+		defer costHoldBlockIndex(t, arm).giveBack()
 	}
 
 	reads := predicateCostReads()

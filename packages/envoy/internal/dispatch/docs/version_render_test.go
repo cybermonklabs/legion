@@ -369,6 +369,12 @@ func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
 // place in the text is read as of the row's time. And the versions an issue room's settlement
 // writes each render their stored bytes, each block's text value being its slice of its own
 // fragment's rendering (renderStepFragments).
+//
+// Last, a version whose tree does not render as its stored markdown keeps its stored bytes, and
+// the census refuses on it, until a quiet tick restates it or closes its mark
+// (renderStepTreeMismatch), and the reconciliation's pass that states an uploaded version first
+// carries the upload's carry to it, naming the version the person approved
+// (renderStepCarryOfACarry).
 func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -472,6 +478,12 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		}},
 		{"each version an issue room's settlement writes renders its own fragment's bytes", func(t *testing.T, rig *renderRig) {
 			renderStepFragments(t, rig, service, server.URL)
+		}},
+		{"a version whose tree does not render as its stored markdown keeps its stored bytes until a quiet tick repairs or closes its mark", func(t *testing.T, rig *renderRig) {
+			renderStepTreeMismatch(t, rig, service)
+		}},
+		{"the pass that states an uploaded version first carries the carry to it, naming the version the person approved", func(t *testing.T, rig *renderRig) {
+			renderStepCarryOfACarry(t, rig, service)
 		}},
 	} {
 		t.Run(step.name, func(t *testing.T) { step.run(t, rig) })
@@ -1106,15 +1118,15 @@ func renderStepTextColumns(t *testing.T, rig *renderRig) {
 	}
 }
 
-// TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord: over a walk holding an answered ask's node
-// with a reading under it, the block that shows that ask in the spec, an ask nobody has answered
-// with a reading under its block, a decision with a reading under it, and a requirement, the
-// decisions query takes each ask's own node, the decision, the reading under the decision and the
-// reading under the answered ask's node, and nothing else: neither block of an ask nor the reading
-// in the ask nobody has answered, which is no reading yet; and a record of the decisions query is
-// refused, through ReadQueryRecord and through the walk's own builder, with the error a query no
-// definition names is refused with, so no version records its digest.
-func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
+// TestTheDecisionsQueryTakesItsNodes: over a walk holding an answered ask's node with a reading
+// under it, the block that shows that ask in the spec, an ask nobody has answered with a reading
+// under its block, a decision with a reading under it, and a requirement, the decisions query takes
+// each ask's own node, the decision, the reading under the decision and the reading under the
+// answered ask's node, and nothing else: neither block of an ask nor the reading in the ask nobody
+// has answered, which is no reading yet. Its record is built by that rule, as every query's is
+// (queryDefinitions; R14 gives the decisions query definition_version 1, and each of its versions
+// holds its record's digest, R15).
+func TestTheDecisionsQueryTakesItsNodes(t *testing.T) {
 	issue := refs.Target{Kind: graphstore.KindIssue, ID: "CORE-1"}
 	ask := refs.Target{Kind: graphstore.KindAsk, ID: "5d1f6a3e-0c4b-4f7e-9b1a-2c3d4e5f6a7b"}
 	open := refs.Target{Kind: graphstore.KindAsk, ID: "6e2a7b4f-1d5c-4a8f-8c2b-3d4e5f6a7b8c"}
@@ -1146,12 +1158,7 @@ func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
 		t.Errorf("the decisions query takes %v (defined %t), want %v: each ask's own node, the decision, the reading under it and the reading under the answered ask",
 			addresses, defined, want)
 	}
-
-	const refused = `the query "decisions" has no record`
-	if _, err := ReadQueryRecord(context.Background(), nil, issue.ID, graphstore.QueryDecisions, refs.TreeCut{}); err == nil || err.Error() != refused {
-		t.Errorf("ReadQueryRecord of the decisions query answers %v, want it refused: %s", err, refused)
-	}
-	if _, err := tree.QueryRecord(context.Background(), nil, graphstore.QueryDecisions); err == nil || err.Error() != refused {
-		t.Errorf("the walk's record of the decisions query answers %v, want it refused: %s", err, refused)
+	if _, built := queryDefinitions[graphstore.QueryDecisions]; !built {
+		t.Errorf("no definition builds the record of the decisions query, want its versions to hold their record's digest")
 	}
 }

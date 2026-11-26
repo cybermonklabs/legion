@@ -27,6 +27,8 @@ import (
 
 	brokerstoretest "github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -196,6 +198,9 @@ type testServerOptions struct {
 	// goroutines out; a test that stops the server before it ends (the socket's) passes one it
 	// can cancel itself. It must end by the test's end, so derive it from t.Context().
 	lifetime context.Context
+	// clock is the server's Deps.Clock, which its timers and the listener client's window run
+	// on: nil is clock.Real(), and a test that drives a timer passes a clocktest.Fake.
+	clock clock.Clock
 	// streamHeartbeat replaces the sockets' fifteen-second heartbeat.
 	streamHeartbeat time.Duration
 	// takeoverWindow replaces the listener take-over window (Deps.ListenerTakeoverWindow); zero is
@@ -212,6 +217,11 @@ type testServerOptions struct {
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
+	// liveSocketClock is the server's Deps.LiveSocketClock, which a live socket's pong deadline, its
+	// wait for the page's close frame and its drain of a frame past the read limit run on: nil is
+	// clock.Real(), and a test whose sockets must not end on a late pong passes clocktest.Held(), or
+	// a fake it moves to each deadline.
+	liveSocketClock clock.Clock
 	// liveKinds adds view kinds to the ones a live socket serves beside the delivery views, or
 	// replaces them, before any socket opens.
 	liveKinds map[string]liveKind
@@ -229,6 +239,10 @@ type testServerOptions struct {
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
 	duplicateBound time.Duration
+	// inboxStatementBound is the mark-all's and the dismissal's statement_timeout
+	// (server.inboxStatementBound); zero keeps production's inboxReadStatementTimeout. A case that
+	// holds a dismissal behind a lock of its own passes pastTheRun (seedHeldInboxRead).
+	inboxStatementBound time.Duration
 	// mentionLookupBound is the server's bound on each listener lookup a comment's creation
 	// makes, by the target looked up (server.mentionLookupBound); nil keeps production's
 	// mentionLookupTimeout. A case whose verdict needs a lookup the listener answers to count as
@@ -249,12 +263,22 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// legionStatusScope is Deps.LegionStatusScope (DISPATCH_LEGION_STATUS_SCOPE): R26's refusal
+	// of a write that sets a Legion issue's status, takes the legion label off an issue, or moves
+	// a Legion issue out from under every labelled issue, from a credential that holds neither
+	// the person scope nor the legion-status scope. False is the deployment that has not turned
+	// it on, which every test but legion_status_scope_test.go's runs as.
+	legionStatusScope bool
 	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server (Deps.ParentStatusRule).
 	parentStatusRule bool
 	// listenerRosterUncached is Deps.ListenerRosterUncached: every read of the listener's session
 	// list asks the listener and stores no copy, as the browser suite's server runs
 	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
 	listenerRosterUncached bool
+	// issueTreePageSize is Deps.IssueTreePageSize, the most nodes one page of the tree read
+	// answers; zero keeps issueTreePageSize, as every deployment does. A test of paging sets a
+	// few, so a small issue reads several pages.
+	issueTreePageSize int
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -424,13 +448,17 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		BuildCommit:            options.buildCommit,
 		OutboxPublishes:        options.outboxPublishes,
 		Metrics:                options.metrics,
+		LegionStatusScope:      options.legionStatusScope,
 		ParentStatusRule:       ParentStatusRule{on: options.parentStatusRule},
 		ListenerRosterUncached: options.listenerRosterUncached,
+		Clock:                  options.clock,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
+	deps.IssueTreePageSize = options.issueTreePageSize
+	deps.LiveSocketClock = options.liveSocketClock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)
@@ -438,6 +466,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		served.agentWatchInterval = options.agentWatchInterval
 	}
 	served.duplicateBound = options.duplicateBound
+	served.inboxStatementBound = options.inboxStatementBound
 	served.mentionLookupBound = options.mentionLookupBound
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
@@ -476,6 +505,34 @@ func waitBackgroundOf(t testing.TB, served *server) {
 // may retry its record on that lifetime, which nothing here cancels.
 func directServer(deps Deps) *server {
 	return &server{deps: deps, lifetime: context.Background()}
+}
+
+// awaitArmedAt waits until a timer for at is pending on fake, the server's clock, and fails naming
+// what and the deadlines it last saw when none ever is. It looks for the one deadline rather than a
+// count, since the server's other timers on the same fake may be pending beside it.
+func awaitArmedAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time) {
+	t.Helper()
+	testwait.Until(t, what+" armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		return armed, slices.ContainsFunc(armed, at.Equal)
+	})
+}
+
+// awaitArmedCountAt waits until at least count timers for at are pending on fake, the server's
+// clock: a row with count sockets open moves the clock to their heartbeat only once each of them
+// has armed it, so none is armed after the move and fires off a heartbeat the row did not drive.
+func awaitArmedCountAt(t *testing.T, fake *clocktest.Fake, what string, at time.Time, count int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%s armed %d times for %s", what, count, at.Format(time.RFC3339Nano)), func() ([]time.Time, bool) {
+		armed := fake.Armed()
+		n := 0
+		for _, deadline := range armed {
+			if deadline.Equal(at) {
+				n++
+			}
+		}
+		return armed, n >= count
+	})
 }
 
 // writeSessionRecord answers GET /v1/registry/{session_id} from the rows a stub listener also

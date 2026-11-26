@@ -80,13 +80,18 @@ export async function refuseOpenDecisionBlocks(
   let live: Promise<{ readonly served: boolean; readonly asks: readonly TextAsk[] }> | undefined;
   const liveText = () =>
     (live ??= client.docRead(artifact.id).then((text) => ({
+      // kept for one release: release-before-text
       served: text.asks !== undefined && text.asks !== null,
       asks: liveTextAsks(text),
     })));
+  // The state a version's opening line records for its block, which decides a block only against
+  // a Dispatch of the release before, whose live text sends no `asks`.
+  // kept for one release: release-before-text
   const stateOf = (line: string): string | undefined => /\bstate="(\w+)"/.exec(line)?.[1];
   // A version of the release before shows open a block whose ask is answered or closed until the
   // version its settlement writes the answer into; a waived one (resolved) gets the decision
   // written in.
+  // kept for one release: release-before-text
   const stillOpen = (named: string, state: string): string =>
     state === "answered"
       ? `${named}, answered but still open in version ${latest}: it settles into a version on its own in about two seconds; wait for that version`
@@ -126,13 +131,20 @@ export async function refuseOpenDecisionBlocks(
     const openers = askOpeners(openerLines, block.id);
     const states = openers.map(stateOf);
     if (states.length === 0) return `${named}, which version ${latest} does not hold yet`;
+    // kept for one release: release-before-text
     const recordsOpen = states.includes("open");
+    // kept for one release: release-before-text
     const recordsSettled = !recordsOpen && states.every((state) => state !== undefined);
     if (ask !== undefined) {
       const open = ask.state === "open";
+      // A Dispatch of this release sends `asks`, and the ask's own state decides. One of the
+      // release before sends none, and there a version that records the block open while its ask
+      // is not waits for the version that holds the answer.
+      // kept for one release: release-before-text
       if ((!recordsOpen && !recordsSettled) || recordsOpen === open || (await liveText()).served) {
         return open ? named : undefined;
       }
+      // kept for one release: release-before-text
       return recordsOpen ? stillOpen(named, ask.state) : undefined;
     }
     // A copy, judged by its source, which is read off the block's own opening lines alone
@@ -140,7 +152,9 @@ export async function refuseOpenDecisionBlocks(
     // (in code, a fence opened on a footnote's label line included, or in front matter) names no
     // ask Dispatch recorded.
     const text = await liveText();
+    // kept for one release: release-before-text
     if (!text.served && recordsSettled) return undefined;
+    // kept for one release: release-before-text
     if (!text.served && recordsOpen) return openCopy(named, openerAsks(openers));
     const copies = text.asks.filter((copy) => copy.block_id === block.id);
     const settled =

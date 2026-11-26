@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
@@ -10,12 +18,13 @@ import { CONTENTS_PANE_QUERY } from "../contents-frame";
 import { bringOnScreen } from "../identity-block";
 import { pageChrome } from "../page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
-import { isFilter } from "../presets";
 import { NextPageWords } from "../TreeRows";
 import { TAB_STOP_ROW } from "../tree-focus";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
 import {
+  outlineOf,
+  outlineQuery,
   resetViews,
   subscribeTreeFreshness,
   TREE_VIEWS,
@@ -41,10 +50,11 @@ import {
  *
  * A filter whose own nodes Conversation's read does not hold has its view read sent with a load
  * of Conversation or of a filter, and held as the others are, for its count and, for Plan, for
- * "How it gets done" (R4, R13): Plan always, since Conversation's read holds no plan task, and
- * Spec and Verification where the issue has children, whose design blocks and checks Spec and
- * Verification draw (`sentWithLoad`). That filter, turned on, sends no second read. Graph sends
- * none for a count: each is read off Graph's read.
+ * "How it gets done" (R4, R13): Plan always, since Conversation's read holds no plan task; Spec
+ * where the issue is a child, whose Spec view holds the requirements of its parent's spec it
+ * serves; and Verification where the issue has children and Conversation's answer, once it
+ * answers, holds no check of an issue under it (`sentWithLoad`). That filter, turned on, sends no
+ * second read. Graph sends none for a count: each is read off Graph's read.
  *
  * On Spec it also sends Conversation's read from 1024 px up, where the Contents pane beside the
  * view reads it (R13): Spec's own readers watch that read and send nothing (`useTreeRead`), since
@@ -70,6 +80,16 @@ export function ViewReadProvider({
 }): ReactNode {
   const queryClient = useQueryClient();
   const key = issue.key;
+  // Conversation's answer, watched and never sent here: whether it holds the checks of the issues
+  // under this one says whether Verification's view read goes with the load (`sentWithLoad`).
+  const conversation = useQuery({ ...outlineQuery(key, "conversation"), enabled: false }).data;
+  const holdsChildCheck = useMemo(
+    () =>
+      conversation?.nodes?.some(
+        (node) => node.supertag === "check" && node.issue !== undefined && node.issue !== key
+      ) ?? false,
+    [conversation, key]
+  );
   // Whether the views of a past load are dropped. No view is read before then: a view read as the
   // stage mounts would be dropped by that reset and read a second time.
   const [dropped, setDropped] = useState(false);
@@ -90,7 +110,10 @@ export function ViewReadProvider({
           <ViewRead
             issueKey={key}
             key={view}
-            on={preset === view || sentWithLoad(view, preset, issue)}
+            on={
+              preset === view ||
+              sentWithLoad(view, preset, issue, conversation !== undefined, holdsChildCheck)
+            }
             view={view}
           />
         ))}
@@ -100,12 +123,29 @@ export function ViewReadProvider({
 }
 
 /** Whether a load of `preset` sends `view`'s read with it (`ViewReadProvider`): a load of
- *  Conversation or of a filter, for Plan always and for Spec and Verification where the issue has
- *  children. The decisions view is never one: Conversation's read holds the decisions, and the
- *  Decisions filter's count is read off the tree (`presets.ts`' `filterSignals`). */
-function sentWithLoad(view: TreeView, preset: Preset, issue: IssueDetails): boolean {
-  if (view === "decisions" || (preset !== "conversation" && !isFilter(preset))) return false;
-  return view === "plan" || (issue.children ?? []).length > 0;
+ *  Conversation or of a filter, for Plan always, for Spec where the issue is a child, and for
+ *  Verification where the issue has children and Conversation's answer holds no check of an
+ *  issue under it, which is not known until that answer is held. The decisions view is never
+ *  one: Conversation's read holds the decisions, and the Decisions filter's count is read off the
+ *  tree (`presets.ts`' `filterSignals`). */
+function sentWithLoad(
+  view: TreeView,
+  preset: Preset,
+  issue: IssueDetails,
+  conversationHeld: boolean,
+  holdsChildCheck: boolean
+): boolean {
+  if (outlineOf(preset) !== "conversation") return false;
+  switch (view) {
+    case "plan":
+      return true;
+    case "spec":
+      return issue.parent !== null;
+    case "verification":
+      return (issue.children ?? []).length > 0 && conversationHeld && !holdsChildCheck;
+    case "decisions":
+      return false;
+  }
 }
 
 /**

@@ -828,13 +828,14 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 }
 
 // A provisioning that fails — here, from a feed `fetch` never filled — is the command's failure,
-// with the failed command named, and exits 1: its cause is on the issue's volume.
+// with the failed command named, the shared clone of the feed, and exits 1: its cause is on the
+// issue's volume.
 func TestWorkspaceInitReportsAFailedProvisioning(t *testing.T) {
 	v := newIssueVolume(t)
 	v.setenv(t)
 
 	code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
+	if code != 1 || !strings.Contains(stderr, "git clone --quiet --no-checkout --shared "+filepath.Join(v.feed, "acme", "widgets.git")) || stdout != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 1 naming the failed clone", code, stdout, stderr)
 	}
 }

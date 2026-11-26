@@ -3473,6 +3473,144 @@
     }
   },
   {
+    "name": "bare-addresses-the-tokenizer-reads-inside-an-address",
+    "markdown": "Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today.\n\nSee dispatch://CORE-1/a_www.example.com/x first.\n\nSee dispatch://CORE-1/x;https://example.com/y first.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/a_www.example.com/x first."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000003"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/x;https://example.com/y first."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQwBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQE0QW5zd2VyIGRpc3BhdGNoOi8vQ09SRS0xL2Fzay9hMT94PWZvb0BiYXIuY29tIHRvZGF5LigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwlwYXJhZ3JhcGgHAAE3BgQAATgwU2VlIGRpc3BhdGNoOi8vQ09SRS0xL2Ffd3d3LmV4YW1wbGUuY29tL3ggZmlyc3QuKAABNwdibG9ja0lkAXcIYi0wMDAwMDKHATcDCXBhcmFncmFwaAcAAWoGBAABazRTZWUgZGlzcGF0Y2g6Ly9DT1JFLTEveDtodHRwczovL2V4YW1wbGUuY29tL3kgZmlyc3QuKAABagdibG9ja0lkAXcIYi0wMDAwMDMA",
+    "rendered_by_milkdown": "Answer dispatch://CORE-1/ask/a1?x=foo\\@bar.com today.\n\nSee dispatch://CORE-1/a\\_www\\.example.com/x first.\n\nSee dispatch://CORE-1/x;https\\://example.com/y first.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Answer dispatch://CORE-1/ask/a1?x=foo@bar.com today."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/a_www.example.com/x first."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/x;https://example.com/y first."
+        }
+      ]
+    }
+  },
+  {
+    "name": "bare-person-address-holding-a-dot",
+    "markdown": "Ask dispatch://person/john.doe@example.com now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/john.doe@example.com now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQQBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEvQXNrIGRpc3BhdGNoOi8vcGVyc29uL2pvaG4uZG9lQGV4YW1wbGUuY29tIG5vdy4oAAEAB2Jsb2NrSWQBdwhiLTAwMDAwMQA=",
+    "rendered_by_milkdown": "Ask dispatch://person/john.doe\\@example.com now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Ask dispatch://person/john.doe@example.com now."
+        }
+      ]
+    }
+  },
+  {
+    "name": "bare-person-address-holding-a-hyphen",
+    "markdown": "Ask dispatch://person/person-2@example.com now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask dispatch://person/person-2@example.com now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQQBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEvQXNrIGRpc3BhdGNoOi8vcGVyc29uL3BlcnNvbi0yQGV4YW1wbGUuY29tIG5vdy4oAAEAB2Jsb2NrSWQBdwhiLTAwMDAwMQA=",
+    "rendered_by_milkdown": "Ask dispatch://person/person-2\\@example.com now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Ask dispatch://person/person-2@example.com now."
+        }
+      ]
+    }
+  },
+  {
     "name": "bare-url-trailing-punctuation",
     "markdown": "\"HTTP 401: Bad credentials (https://api.github.com/graphql)\" while CI ran\n\nSee https://x.test/a, https://x.test/b. and https://x.test/c; then https://x.test/d: or https://x.test/e!\n\nQuoted \"https://x.test/f\" and 'https://x.test/g' and (https://x.test/h(i)) and https://x.test/j_ and https://x.test/k*.\n\nA trail before more text continues the URL: https://x.test/l.m and https://x.test/n;o and https://x.test/p\"q.\n\nReferences and brackets: https://x.test/r&amp; and https://x.test/s] and https://x.test/t](u) and https://x.test/v]w.\n\nBackslashes, asterisks and letters outside ASCII are the URL's: https://x.test/a\\b https://x.test/a*b https://x.test/café\n\nAny case: HTTPS://X.TEST/Y and Www.x.test/z; no ftp://x.test/w\n\n| cell | text |\n| --- | --- |\n| x | \"HTTP 401: Bad credentials (https://api.github.com/graphql)\" while |\n| y | see \"https://x.test/a\"; and 'https://x.test/b'! |\n",
     "pm_json": {
@@ -39982,6 +40120,92 @@
     }
   },
   {
+    "name": "link-addresses-after-a-bracket-no-link-opens",
+    "markdown": "Mail \\[w](dispatch://ACME-1)me@example.com now.\n\nMail \\[w](dispatch://ACME-1)<me@example.com> now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "me@example.com"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail [w](dispatch://ACME-1)"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "me@example.com"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "ARABAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEbTWFpbCBbd10oZGlzcGF0Y2g6Ly9BQ01FLTEphgEcBGxpbmsteyJocmVmIjoibWFpbHRvOm1lQGV4YW1wbGUuY29tIiwidGl0bGUiOm51bGx9hAEdDm1lQGV4YW1wbGUuY29thgErBGxpbmsEbnVsbIQBLAUgbm93LigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwlwYXJhZ3JhcGgHAAEzBgQAATQbTWFpbCBbd10oZGlzcGF0Y2g6Ly9BQ01FLTEphgFPBGxpbmsteyJocmVmIjoibWFpbHRvOm1lQGV4YW1wbGUuY29tIiwidGl0bGUiOm51bGx9hAFQDm1lQGV4YW1wbGUuY29thgFeBGxpbmsEbnVsbIQBXwUgbm93LigAATMHYmxvY2tJZAF3CGItMDAwMDAyAA==",
+    "rendered_by_milkdown": "Mail \\[w]\\(dispatch://ACME-1)<me@example.com> now.\n\nMail \\[w]\\(dispatch://ACME-1)<me@example.com> now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Mail [w](dispatch://ACME-1)me@example.com now."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Mail [w](dispatch://ACME-1)me@example.com now."
+        }
+      ]
+    }
+  },
+  {
     "name": "link-delimiters",
     "markdown": "[paren](<https://example.com/a(b)> \"say \\\"hi\\\"\")\n",
     "pm_json": {
@@ -40020,6 +40244,208 @@
           "strong": [],
           "struck": [],
           "text": "paren"
+        }
+      ]
+    }
+  },
+  {
+    "name": "links-after-an-address-written-in-full",
+    "markdown": "See dispatch://CORE-1/x;<https://a.test> now.\n\nSee dispatch://CORE-1/a_[www.a.test](http://www.a.test) now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/x;"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "https://a.test",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "https://a.test"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "See dispatch://CORE-1/a_"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "http://www.a.test",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "www.a.test"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "ARABAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEYU2VlIGRpc3BhdGNoOi8vQ09SRS0xL3g7hgEZBGxpbmsmeyJocmVmIjoiaHR0cHM6Ly9hLnRlc3QiLCJ0aXRsZSI6bnVsbH2EARoOaHR0cHM6Ly9hLnRlc3SGASgEbGluawRudWxshAEpBSBub3cuKAABAAdibG9ja0lkAXcIYi0wMDAwMDGHAQADCXBhcmFncmFwaAcAATAGBAABMRhTZWUgZGlzcGF0Y2g6Ly9DT1JFLTEvYV+GAUkEbGluayl7ImhyZWYiOiJodHRwOi8vd3d3LmEudGVzdCIsInRpdGxlIjpudWxsfYQBSgp3d3cuYS50ZXN0hgFUBGxpbmsEbnVsbIQBVQUgbm93LigAATAHYmxvY2tJZAF3CGItMDAwMDAyAA==",
+    "rendered_by_milkdown": "See dispatch://CORE-1/x;<https://a.test> now.\n\nSee dispatch://CORE-1/a\\_[www.a.test](http://www.a.test) now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/x;https://a.test now."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "See dispatch://CORE-1/a_www.a.test now."
+        }
+      ]
+    }
+  },
+  {
+    "name": "links-followed-by-a-word-or-an-email",
+    "markdown": "Ask [@Bob](dispatch://agent/abc)hello, then [w](dispatch://ACME-1)word.\n\nMail [w](dispatch://ACME-1)me@example.com now.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Ask "
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://agent/abc",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "@Bob"
+            },
+            {
+              "type": "text",
+              "text": "hello, then "
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "w"
+            },
+            {
+              "type": "text",
+              "text": "word."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "Mail "
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "dispatch://ACME-1",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "w"
+            },
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "mailto:me@example.com",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "me@example.com"
+            },
+            {
+              "type": "text",
+              "text": " now."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "ARcBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQEEQXNrIIYBBQRsaW5rLHsiaHJlZiI6ImRpc3BhdGNoOi8vYWdlbnQvYWJjIiwidGl0bGUiOm51bGx9hAEGBEBCb2KGAQoEbGluawRudWxshAELDGhlbGxvLCB0aGVuIIYBFwRsaW5rKXsiaHJlZiI6ImRpc3BhdGNoOi8vQUNNRS0xIiwidGl0bGUiOm51bGx9hAEYAXeGARkEbGluawRudWxshAEaBXdvcmQuKAABAAdibG9ja0lkAXcIYi0wMDAwMDGHAQADCXBhcmFncmFwaAcAASEGBAABIgVNYWlsIIYBJwRsaW5rKXsiaHJlZiI6ImRpc3BhdGNoOi8vQUNNRS0xIiwidGl0bGUiOm51bGx9hAEoAXeGASkEbGluawRudWxshgEqBGxpbmsteyJocmVmIjoibWFpbHRvOm1lQGV4YW1wbGUuY29tIiwidGl0bGUiOm51bGx9hAErDm1lQGV4YW1wbGUuY29thgE5BGxpbmsEbnVsbIQBOgUgbm93LigAASEHYmxvY2tJZAF3CGItMDAwMDAyAA==",
+    "rendered_by_milkdown": "Ask [@Bob](dispatch://agent/abc)hello, then [w](dispatch://ACME-1)word.\n\nMail [w](dispatch://ACME-1)<me@example.com> now.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Ask @Bobhello, then wword."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "Mail wme@example.com now."
         }
       ]
     }
@@ -76320,7 +76746,7 @@
         }
       ]
     },
-    "yjs_update_v1_b64": "AUABAAcBC3Byb3NlbWlycm9yAwtyZXF1aXJlbWVudAcAAQADCXBhcmFncmFwaAcAAQEGBAABAjtUaGUgaXNzdWUgcGFnZSBsaXN0cyBldmVyeSBvcGVuIGFzaywgdGhlIG1vc3QgdXJnZW50IGZpcnN0LigAAQEHYmxvY2tJZAF3CGItMDAwMDAxKAABAAZzZXJ2ZXMBfygAAQAGcGFyZW50AX8oAAEAB2Jsb2NrSWQBdwJyMYcBAAMLcmVxdWlyZW1lbnQHAAFCAwlwYXJhZ3JhcGgHAAFDBgQAAUQgQW4gYW5zd2VyZWQgYXNrIGxlYXZlcyB0aGUgbGlzdC4oAAFDB2Jsb2NrSWQBdwhiLTAwMDAwMigAAUIGc2VydmVzAX8oAAFCBnBhcmVudAF/KAABQgdibG9ja0lkAXcCcjKHAUIDCXBsYW5fdGFzawcAAWkDCXBhcmFncmFwaAcAAWoGBAABaylSZWFkIHRoZSBpc3N1ZSdzIG9wZW4gYXNrcyBhbmQgZHJhdyB0aGVtLigAAWoHYmxvY2tJZAF3CGItMDAwMDAzKAABaQZzZXJ2ZXMBdQF3J2Rpc3BhdGNoOi8vQ09SRS0xL2FydGlmYWN0L3BsYW4tbWQjYi1yMSgAAWkFbmVlZHMBfygAAWkFc3RlcHMBfygAAWkEc2l6ZQF/KAABaQZwYXJlbnQBfygAAWkHYmxvY2tJZAF3AnQxhwFpAwlwbGFuX3Rhc2sHAAGcAQMJcGFyYWdyYXBoBwABnQEGBAABngE8U29ydCB0aGUgZHJhd24gYXNrcyBieSB1cmdlbmN5LCB0aGVuIGRyb3AgdGhlIGFuc3dlcmVkIG9uZXMuKAABnQEHYmxvY2tJZAF3CGItMDAwMDA0KAABnAEGc2VydmVzAXUCdydkaXNwYXRjaDovL0NPUkUtMS9hcnRpZmFjdC9wbGFuLW1kI2ItcjF3J2Rpc3BhdGNoOi8vQ09SRS0xL2FydGlmYWN0L3BsYW4tbWQjYi1yMigAAZwBBW5lZWRzAXUBdydkaXNwYXRjaDovL0NPUkUtMS9hcnRpZmFjdC9wbGFuLW1kI2ItdDEoAAGcAQVzdGVwcwF/KAABnAEEc2l6ZQF/KAABnAEGcGFyZW50AX8oAAGcAQdibG9ja0lkAXcCdDKHAZwBAwVjaGVjawcAAeIBAwlwYXJhZ3JhcGgHAAHjAQYEAAHkATpUaGUgaXNzdWUgcGFnZSBkcmF3cyB0aGUgb3BlbiBhc2tzLCB0aGUgbW9zdCB1cmdlbnQgZmlyc3QuKAAB4wEHYmxvY2tJZAF3CGItMDAwMDA1KAAB4gEGc2VydmVzAXUBdydkaXNwYXRjaDovL0NPUkUtMS9hcnRpZmFjdC9wbGFuLW1kI2ItcjEoAAHiAQdzdXJmYWNlAXcHYnJvd3NlcigAAeIBA3J1bgF3H2J1biB0ZXN0IHdlYi9zcmMvZmVhdHVyZXMvaXNzdWUoAAHiAQR3aGVuAXcMYmVmb3JlX21lcmdlKAAB4gEQbmVnYXRpdmVfY29udHJvbAF3K0RyYXcgdGhlIGFza3MgdW5zb3J0ZWQgYW5kIHdhdGNoIHRoaXMgZmFpbC4oAAHiAQhjaV9jaGVjawF/KAAB4gEGcGFyZW50AX8oAAHiAQdibG9ja0lkAXcCazGHAeIBAwVjaGVjawcAAagCAwlwYXJhZ3JhcGgHAAGpAgYEAAGqAkFObyBhbnN3ZXJlZCBhc2sgaXMgZHJhd24sIHdyaXR0ZW4gYXMgYSBjbGFpbSB3aXRoIG5vdGhpbmcgdG8gcnVuLigAAakCB2Jsb2NrSWQBdwhiLTAwMDAwNigAAagCBnNlcnZlcwF1AXcnZGlzcGF0Y2g6Ly9DT1JFLTEvYXJ0aWZhY3QvcGxhbi1tZCNiLXIyKAABqAIHc3VyZmFjZQF/KAABqAIDcnVuAX8oAAGoAgR3aGVuAXcLYWZ0ZXJfbWVyZ2UoAAGoAhBuZWdhdGl2ZV9jb250cm9sAX8oAAGoAghjaV9jaGVjawF/KAABqAIGcGFyZW50AX8oAAGoAgdibG9ja0lkAXcCazIA",
+    "yjs_update_v1_b64": "AUQBAAcBC3Byb3NlbWlycm9yAwtyZXF1aXJlbWVudAcAAQADCXBhcmFncmFwaAcAAQEGBAABAjtUaGUgaXNzdWUgcGFnZSBsaXN0cyBldmVyeSBvcGVuIGFzaywgdGhlIG1vc3QgdXJnZW50IGZpcnN0LigAAQEHYmxvY2tJZAF3CGItMDAwMDAxKAABAAZzZXJ2ZXMBfygAAQAGcGFyZW50AX8oAAEAB2Jsb2NrSWQBdwJyMYcBAAMLcmVxdWlyZW1lbnQHAAFCAwlwYXJhZ3JhcGgHAAFDBgQAAUQgQW4gYW5zd2VyZWQgYXNrIGxlYXZlcyB0aGUgbGlzdC4oAAFDB2Jsb2NrSWQBdwhiLTAwMDAwMigAAUIGc2VydmVzAX8oAAFCBnBhcmVudAF/KAABQgdibG9ja0lkAXcCcjKHAUIDCXBsYW5fdGFzawcAAWkDCXBhcmFncmFwaAcAAWoGBAABaylSZWFkIHRoZSBpc3N1ZSdzIG9wZW4gYXNrcyBhbmQgZHJhdyB0aGVtLigAAWoHYmxvY2tJZAF3CGItMDAwMDAzKAABaQZzZXJ2ZXMBdQF3J2Rpc3BhdGNoOi8vQ09SRS0xL2FydGlmYWN0L3BsYW4tbWQjYi1yMSgAAWkFbmVlZHMBfygAAWkFc3RlcHMBfygAAWkEc2l6ZQF/KAABaQZza2lsbHMBfygAAWkEZG9jcwF/KAABaQZwYXJlbnQBfygAAWkHYmxvY2tJZAF3AnQxhwFpAwlwbGFuX3Rhc2sHAAGeAQMJcGFyYWdyYXBoBwABnwEGBAABoAE8U29ydCB0aGUgZHJhd24gYXNrcyBieSB1cmdlbmN5LCB0aGVuIGRyb3AgdGhlIGFuc3dlcmVkIG9uZXMuKAABnwEHYmxvY2tJZAF3CGItMDAwMDA0KAABngEGc2VydmVzAXUCdydkaXNwYXRjaDovL0NPUkUtMS9hcnRpZmFjdC9wbGFuLW1kI2ItcjF3J2Rpc3BhdGNoOi8vQ09SRS0xL2FydGlmYWN0L3BsYW4tbWQjYi1yMigAAZ4BBW5lZWRzAXUBdydkaXNwYXRjaDovL0NPUkUtMS9hcnRpZmFjdC9wbGFuLW1kI2ItdDEoAAGeAQVzdGVwcwF/KAABngEEc2l6ZQF/KAABngEGc2tpbGxzAX8oAAGeAQRkb2NzAX8oAAGeAQZwYXJlbnQBfygAAZ4BB2Jsb2NrSWQBdwJ0MocBngEDBWNoZWNrBwAB5gEDCXBhcmFncmFwaAcAAecBBgQAAegBOlRoZSBpc3N1ZSBwYWdlIGRyYXdzIHRoZSBvcGVuIGFza3MsIHRoZSBtb3N0IHVyZ2VudCBmaXJzdC4oAAHnAQdibG9ja0lkAXcIYi0wMDAwMDUoAAHmAQZzZXJ2ZXMBdQF3J2Rpc3BhdGNoOi8vQ09SRS0xL2FydGlmYWN0L3BsYW4tbWQjYi1yMSgAAeYBB3N1cmZhY2UBdwdicm93c2VyKAAB5gEDcnVuAXcfYnVuIHRlc3Qgd2ViL3NyYy9mZWF0dXJlcy9pc3N1ZSgAAeYBBHdoZW4BdwxiZWZvcmVfbWVyZ2UoAAHmARBuZWdhdGl2ZV9jb250cm9sAXcrRHJhdyB0aGUgYXNrcyB1bnNvcnRlZCBhbmQgd2F0Y2ggdGhpcyBmYWlsLigAAeYBCGNpX2NoZWNrAX8oAAHmAQZwYXJlbnQBfygAAeYBB2Jsb2NrSWQBdwJrMYcB5gEDBWNoZWNrBwABrAIDCXBhcmFncmFwaAcAAa0CBgQAAa4CQU5vIGFuc3dlcmVkIGFzayBpcyBkcmF3biwgd3JpdHRlbiBhcyBhIGNsYWltIHdpdGggbm90aGluZyB0byBydW4uKAABrQIHYmxvY2tJZAF3CGItMDAwMDA2KAABrAIGc2VydmVzAXUBdydkaXNwYXRjaDovL0NPUkUtMS9hcnRpZmFjdC9wbGFuLW1kI2ItcjIoAAGsAgdzdXJmYWNlAX8oAAGsAgNydW4BfygAAawCBHdoZW4BdwthZnRlcl9tZXJnZSgAAawCEG5lZ2F0aXZlX2NvbnRyb2wBfygAAawCCGNpX2NoZWNrAX8oAAGsAgZwYXJlbnQBfygAAawCB2Jsb2NrSWQBdwJrMgA=",
     "rendered_by_milkdown": ":::requirement{#r1}\nThe issue page lists every open ask, the most urgent first.\n:::\n\n:::requirement{#r2}\nAn answered ask leaves the list.\n:::\n\n:::plan_task{#t1 serves=\"dispatch://CORE-1/artifact/plan-md#b-r1\"}\nRead the issue's open asks and draw them.\n:::\n\n:::plan_task{#t2 serves=\"dispatch://CORE-1/artifact/plan-md#b-r1 dispatch://CORE-1/artifact/plan-md#b-r2\" needs=\"dispatch://CORE-1/artifact/plan-md#b-t1\"}\nSort the drawn asks by urgency, then drop the answered ones.\n:::\n\n:::check{#k1 serves=\"dispatch://CORE-1/artifact/plan-md#b-r1\" surface=\"browser\" run=\"bun test web/src/features/issue\" when=\"before_merge\" negative_control=\"Draw the asks unsorted and watch this fail.\"}\nThe issue page draws the open asks, the most urgent first.\n:::\n\n:::check{#k2 serves=\"dispatch://CORE-1/artifact/plan-md#b-r2\" when=\"after_merge\"}\nNo answered ask is drawn, written as a claim with nothing to run.\n:::\n",
     "reading": {
       "tables": [],

@@ -1,6 +1,6 @@
 name: CI job lint
 
-# The steps of ci.yaml's `lint` job, in a file of its own, and the private-name check of the
+# The steps of `.github/workflows/ci.yaml#lint` job, in a file of its own, and the private-name check of the
 # repository in a job beside it (private-names, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
@@ -10,25 +10,25 @@ name: CI job lint
 #
 # Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
 # it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
-# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
       changes-result:
         description: >-
-          ci.yaml's `needs.changes.result`: the two notices steps below run when `changes` did
+          `.github/workflows/ci.yaml#needs.changes.result`: the two notices steps below run when `changes` did
           not succeed, as they do in ci.yaml.
         type: string
         required: true
       go_notices:
         description: >-
-          ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps below run when
+          `.github/workflows/ci.yaml#needs.changes.outputs.go_notices`: the two notices steps below run when
           that filter matched.
         type: string
         required: true
@@ -126,11 +126,11 @@ jobs:
       # with: this job also runs on the bypass check's dispatched run at main's tip, where the
       # change has already merged. The condition tests `github.event_name` and no output of the
       # `changes` job, which rules 2 and 3 of .github/scripts/check-ci-filters.sh require of a
-      # step in this job.
-      - name: "Check the daemon API contract: the files that hold its number agree, and a change to it declares a number above the base's"
+      # step in this job. The check fetches its base from origin with git, one commit deep and
+      # without blobs; the checkout keeps no credentials, so that fetch is anonymous, and the
+      # step needs no token.
+      - name: "Check the daemon API contract: no numbered entry is added or renumbered, an entry and its fixture stay, and no file commits a number"
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: .github/scripts/check-daemon-api-contract.sh
 
       - name: Check the release workflows keep credentials out of jobs that run dependency code
@@ -144,8 +144,10 @@ jobs:
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
 
-      # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
-      # keyed on the Go version this step installs.
+      # No setup-go cache: gofmt needs none, nor does the citation check's go run of its scanner,
+      # which compiles only standard-library packages (4 s from an empty build cache, measured on
+      # a development machine), and the notices step at the end of this job keeps its own
+      # (go-notices, the restore right after this step), keyed on the Go version this installs.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -154,68 +156,16 @@ jobs:
           token: ''
           cache: false
 
-      # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
-      # inside packages/daemon), so it is formatted here with the daemon.
-      - name: Check the Go daemon's formatting
-        run: |
-          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go)
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
-            echo "$unformatted"
-            exit 1
-          fi
-
-      - name: Setup Bun
-        uses: ./.github/actions/setup-bun
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
-      # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a
-      # difference here is what a reader's own `bun install` would write.
-      - name: Check bun.lock agrees with the workspace manifests
-        run: |
-          bun install --lockfile-only
-          if ! git diff --exit-code bun.lock; then
-            echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing"
-            exit 1
-          fi
-
-      # A package's `bun run lint` checks only the paths its recipe names. This is the command the
-      # root README.md's "Development" section documents, over the whole tree, so a fixture,
-      # config or test file that Biome would rewrite fails here instead of on the next person who
-      # runs it.
-      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
-      - name: Check the whole tree with Biome
-        run: bunx biome check --diagnostic-level=warn --max-diagnostics=none .
-
-      # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
-      # floor, so a live proof that starts one, and a script or page that installs one, must name
-      # one the floor takes. The test scans every tracked shell script and every tracked text file
-      # for those, so it runs here, on every change, and only here: the test job's bun test of
-      # scripts/e2e/lib leaves this file out.
-      - name: Check every NATS server a script starts or installs is one the floor takes
-        run: bun test scripts/e2e/lib/nats-image.test.ts
-
-      # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
-      # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
-      # loads with `bun build --metafile`, and holds every such file to that gate's filter in the
-      # filters this run's changes job computed, so the TypeScript half of what those filters must
-      # select is derived rather than hand-kept. In this job because the ci-filters job has neither
-      # Bun nor node_modules, and because this one is gated by no `changes` output, so a change
-      # anywhere can start it.
-      - name: Check every Bun gate's filter selects the files its typecheck compiles
-        env:
-          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
-        run: .github/scripts/check-ts-filters.sh
-
-      # The notices step below builds go-licenses and loads every release binary's modules. It
-      # keeps them in a cache family of its own, go-notices, which ci-caches.yaml fills again from
-      # its newest entry on every push to main. Keyed on the go.sum files it would leave a 2.2 GB
-      # entry per key change; keyed on the Go version, a go.sum change only downloads the changed
-      # modules and rebuilds the changed packages, since Go's build cache is content-addressed.
-      # Restored only when the notices step runs.
+      # The notices step at the end of this job builds go-licenses and loads every release binary's
+      # modules. It keeps them in a cache family of its own, go-notices, which ci-caches.yaml fills
+      # again from its newest entry on every push to main. Keyed on the go.sum files it would leave
+      # a 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
+      # changed modules and rebuilds the changed packages, since Go's build cache is
+      # content-addressed. Restored only when the notices step runs, and here, before every step
+      # that can run go: the NATS floor test below runs `go build`, whose modules are read-only
+      # files tar cannot replace, so a restore after it logged 1,139 `Cannot open: File exists`
+      # lines and `Cache not found` (job 138186405808). That build now reads this entry too.
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
       # families put it after: the entry holds go-licenses, a program of the runner that built it,
@@ -241,6 +191,78 @@ jobs:
             ~/.cache/legion
           key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
+
+      # The skill-scenario rig's daemon-pane.go belongs to no module (it runs with `go run -overlay`
+      # inside packages/daemon), so it is formatted here with the daemon, and so is the citation
+      # check's Go scanner, .github/scripts/ci_citations_code.go, which `go run` runs alone.
+      - name: Check the Go daemon's formatting
+        run: |
+          unformatted=$(gofmt -l packages/daemon packages/pi-legion/scripts/skill-scenarios/daemon-pane.go .github/scripts/ci_citations_code.go)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l lists files that are not gofmt-formatted; run gofmt -w on them:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      # A citation under .github is one token, a path and a name, never a line: a line number
+      # drifts with every edit of the cited file, and a rename anywhere in the repository can
+      # break a name, so this job, which every change runs, holds them
+      # (.github/ci-notes/ci.md#a-citation-names-a-symbol-never-a-line). Its test runs first.
+      # After the install and setup-go: the check reads each cited TypeScript and JavaScript
+      # file through the typescript package under node_modules, with Bun, and each cited Go file
+      # through go/scanner, with go run.
+      - name: Test the citation check
+        run: .github/scripts/ci-citations.test.sh
+
+      - name: Check every citation under .github is a token whose file holds its name
+        run: .github/scripts/ci_citations.py
+
+      # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
+      # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a
+      # difference here is what a reader's own `bun install` would write.
+      - name: Check bun.lock agrees with the workspace manifests
+        run: |
+          bun install --lockfile-only
+          if ! git diff --exit-code bun.lock; then
+            echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing"
+            exit 1
+          fi
+
+      # A package's `bun run lint` checks only the paths its recipe names. This is the command the
+      # root README.md's "Development" section documents, over the whole tree, so a fixture,
+      # config or test file that Biome would rewrite fails here instead of on the next person who
+      # runs it. The script runs `biome check .` with every diagnostic shown, and also fails on each
+      # file Biome skips for its size, which Biome reports only as an info diagnostic while it exits 0.
+      # why: .github/ci-notes/ci.md#why-every-biome-step-prints-every-warning-and-error
+      - name: Check the whole tree with Biome
+        run: .github/scripts/check-biome-tree.sh
+
+      # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
+      # floor, so a live proof that starts one, and a script or page that installs one, must name
+      # one the floor takes. The test scans every tracked shell script and every tracked text file
+      # for those, so it runs here, on every change, and only here: the test job's bun test of
+      # scripts/e2e/lib leaves this file out. It runs `go build` of natsversion's natsfloor
+      # (nats-image.test.ts), so it stays after the go-notices restore above.
+      - name: Check every NATS server a script starts or installs is one the floor takes
+        run: bun test scripts/e2e/lib/nats-image.test.ts
+
+      # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
+      # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
+      # loads with `bun build --metafile`, and holds every such file to that gate's filter in the
+      # filters this run's changes job computed, so the TypeScript half of what those filters must
+      # select is derived rather than hand-kept. In this job because the ci-filters job has neither
+      # Bun nor node_modules, and because this one is gated by no `changes` output, so a change
+      # anywhere can start it.
+      - name: Check every Bun gate's filter selects the files its typecheck compiles
+        env:
+          CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
+        run: .github/scripts/check-ts-filters.sh
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and

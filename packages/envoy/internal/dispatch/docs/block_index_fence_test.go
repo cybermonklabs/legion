@@ -164,14 +164,15 @@ func writeVersionThroughTheRealPath(t *testing.T, service *Service, artifactID, 
 // writeVersion is the version write a request runs, in tx: NamedVersion in a transaction joined
 // to the document service, after ApplyOps of ops where there are any, as api's editArtifact runs
 // an edit that names its version (createNamedVersion runs NamedVersion alone); the version's own
-// event after it; and what the block index stated appended under that event, as api's
-// commitArtifactVersionEvent does; then the commit. The routes take the owner's lock before those
-// calls (requireOpenOwner, requireOpenOwnerStatus); writeVersion takes none, so the owner's lock
-// its transaction holds is the one the document service's calls take themselves: ApplyOps'
-// joinLiveWrite, or with no ops joinRead under NamedVersion's capture, and NamedVersion's own. The
-// event is appended at once (documentEvent), where the route queues it for its write phase. It
-// answers the version and that event, and an error rather than failing the test, so a write run
-// off the test's goroutine can write a version too.
+// event after it; and what the block index stated appended under that event, with the head rows
+// of the nodes it names, as api's commitArtifactVersionEvent queues both; then the commit. The
+// routes take the owner's lock before those calls (requireOpenOwner, requireOpenOwnerStatus);
+// writeVersion takes none, so the owner's lock its transaction holds is the one the document
+// service's calls take themselves: ApplyOps' joinLiveWrite, or with no ops joinRead under
+// NamedVersion's capture, and NamedVersion's own. The event is appended at once (documentEvent),
+// where the route queues it for its write phase. It answers the version and that event, and an
+// error rather than failing the test, so a write run off the test's goroutine can write a version
+// too.
 func writeVersion(ctx context.Context, service *Service, tx pgx.Tx, artifactID string, ops []model.EditOp, summary string) (VersionResult, int64, error) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	joined, ledger := service.Join(ctx, tx)
@@ -199,7 +200,11 @@ func writeVersion(ctx context.Context, service *Service, tx pgx.Tx, artifactID s
 	if err != nil {
 		return VersionResult{}, 0, err
 	}
-	if err := causeInWritePhase(joined, tx, result.Blocks, event); err != nil {
+	if err := write(joined, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, result.Blocks, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(result.Blocks))
+		return nil
+	}); err != nil {
 		return VersionResult{}, 0, fmt.Errorf("append what the version's block index stated: %w", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -398,7 +403,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	// The stale pass runs on to its commit, and the fence refuses it.
 	const staleVersion = 1
 	before := highestTuple(t, database)
-	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, document, refs.OneVersion(document, staleVersion, time.Now()), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, document, refs.OneVersion(document, staleVersion, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the stale pass: %v", err)
 	}
@@ -437,7 +442,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 		t.Fatalf("begin the control pass: %v", err)
 	}
 	defer controlTx.Rollback(ctx)
-	_, won, write, _, err = refs.IndexBlocks(ctx, controlTx, document, refs.OneVersion(document, third, time.Now()), staleMarkdown, staleBlocks, nil, nil, refs.TypedFacts{})
+	_, won, write, _, err = refs.IndexBlocks(ctx, controlTx, document, refs.OneVersion(document, third, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the control pass: %v", err)
 	}
@@ -1194,21 +1199,32 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 // The fence is the block index's record of the version it indexes on its write phase
 // (BlockIndexing.queueStand), which the plan queues only where it won the fence: of one
 // document's version, or of the version of each document an issue room's pass covers, under the
-// tree artifact's owner row (T12a of this branch's plan). The room reconciliation
-// (indexOwedRoom) adds one: under that row, in the pass's transaction, it clears the mark of each
-// artifact of the room the pass covers no version of. The reconciliation of one document
-// (indexOwedDocument) adds another: under the document's owner lock, where the document holds no
-// markdown version to index, it clears the document's marks and states it at the version it
-// leaves.
+// tree artifact's owner row (T12a of this branch's plan). The room's pass (stateRoom) adds one:
+// under that row, in the pass's transaction, it clears the mark of each artifact of the room the
+// pass covers no version of. It runs in the reconciliation of the room (indexOwedRoom) and in the
+// repair of a version of the room marked tree_mismatch (repairRoomMismatch), each of which takes
+// that row (lockArtifactOwner on the tree artifact) before it reads what the pass writes. The
+// reconciliation of one document (indexOwedDocument) adds another: under the document's owner
+// lock, where the document holds no markdown version to index, it clears the document's marks and
+// states it at the version it leaves. The drain of a query mark (queueRevisionStand) sends the
+// fence's own statement, by its name: under the issue's owner lock, in the drain's batch, it stands
+// the index of a version that stores the bytes of the version before it at the new version, where
+// it stood at that one.
 var fencedWriters = []struct{ file, function string }{
 	{"refs/block_stand.go", "func (b BlockIndexing) queueStand("},
-	{"docs/block_index.go", "func (s *Service) indexOwedRoom("},
+	{"docs/block_index.go", "func (s *Service) stateRoom("},
 	{"docs/block_index.go", "func (s *Service) indexOwedDocument("},
+	{"docs/version_render.go", "func queueRevisionStand("},
 }
 
 // owedRowWrite matches one statement of a Go source file that writes document_block_versions,
 // up to the backtick that ends it.
 var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_block_versions\\b[^`]*")
+
+// fenceStatementSend matches one use of the revision fence's statement by its name
+// (refs.RevisionFenceStatement), which writes a revision into document_block_versions wherever it
+// is sent, though the file that sends it holds none of its text. Its declaration is no send.
+var fenceStatementSend = regexp.MustCompile(`\bRevisionFenceStatement\b`)
 
 // requireOnlyTheFenceWritesTheOwedRow reads the source tree and fails on any statement that
 // writes a revision into document_block_versions outside the fenced writers. Each part of a
@@ -1217,9 +1233,11 @@ var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_blo
 // revision where any part does. A set that assigns the revision null owes the document an index
 // and asserts nothing, so it is allowed wherever it is, and it excuses no other part of its
 // statement: an insert whose column list names `version` is the fence's alone even where its
-// conflict arm sets `version = null`. A backfill or a repair that wrote one would be caught here
-// rather than in production. Each fenced writer must hold such a statement, so the list names no
-// writer that is gone.
+// conflict arm sets `version = null`. A send of the fence's own statement by its name
+// (refs.RevisionFenceStatement, fenceStatementSend) is held to the same writers, so a new caller
+// of it fails here until it is named. A backfill or a repair that wrote one would be caught here
+// rather than in production. Each fenced writer must hold such a statement or such a send, so the
+// list names no writer that is gone.
 func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	t.Helper()
 	found := 0
@@ -1241,16 +1259,23 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 				continue
 			}
 			found++
-			enclosing := enclosingFunction(text, match[0])
-			fenced := false
-			for index, writer := range fencedWriters {
-				if strings.HasSuffix(filepath.ToSlash(file), writer.file) && strings.HasPrefix(enclosing, writer.function) {
-					fenced, wrote[index] = true, true
-				}
-			}
-			if !fenced {
+			if !heldToTheFence(file, enclosingFunction(text, match[0]), wrote) {
 				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writers %+v:\n%s",
-					file, enclosing, fencedWriters, statement)
+					file, enclosingFunction(text, match[0]), fencedWriters, statement)
+			}
+		}
+		// A send of the fence's statement by its name writes the same revision as its text: each
+		// is held to the fenced writers too, read off the code alone, so a comment naming the
+		// statement sends nothing.
+		code := goLineComment.ReplaceAllString(text, "")
+		for _, match := range fenceStatementSend.FindAllStringIndex(code, -1) {
+			if strings.HasSuffix(code[:match[0]], "var ") {
+				continue
+			}
+			found++
+			if enclosing := enclosingFunction(code, match[0]); !heldToTheFence(file, enclosing, wrote) {
+				t.Errorf("%s sends the revision fence's statement (refs.RevisionFenceStatement) in %q, outside the fenced writers %+v",
+					file, enclosing, fencedWriters)
 			}
 		}
 	}
@@ -1262,6 +1287,18 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 			t.Errorf("%s %s writes no revision into document_block_versions: the fenced writer this test names is not where it looks", writer.file, writer.function)
 		}
 	}
+}
+
+// heldToTheFence reports whether the function enclosing, of file, is one of fencedWriters, and
+// marks it in wrote where it is.
+func heldToTheFence(file, enclosing string, wrote []bool) bool {
+	fenced := false
+	for index, writer := range fencedWriters {
+		if strings.HasSuffix(filepath.ToSlash(file), writer.file) && strings.HasPrefix(enclosing, writer.function) {
+			fenced, wrote[index] = true, true
+		}
+	}
+	return fenced
 }
 
 // outsideTheFence is the writer R23 reads as outside the fence: the item block pass, which writes

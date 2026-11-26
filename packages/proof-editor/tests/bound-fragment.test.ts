@@ -11,8 +11,8 @@ import { createHeadlessProof } from "../src/lib-headless.js";
 import { withDomWindow } from "./dom-window";
 
 /**
- * The fragment of the host's Yjs document an editor binds (INFRA-1253). An issue's room is one
- * document holding one fragment per document of the issue, each named by that document's
+ * The fragment of the host's Yjs document an editor binds (the issue-tree spec). An issue's room is
+ * one document holding one fragment per document of the issue, each named by that document's
  * artifact id, beside the issue's own fragment, `prosemirror`; the host names the fragment its
  * document is, and an editor given no name binds `prosemirror`, the whole of a room that is its
  * own document.

@@ -214,13 +214,14 @@ test("the Verification filter is readable @phone", async ({ browser }) => {
       // under it, and the table's three columns stand at 38, 36 and 26 per cent of its width; at
       // 760 px and below the body is its column less 20 px with 10 px above it, no heading is
       // drawn, and each statement is a card with a 4 px left edge and 8 px corners, 8 px from the
-      // next.
+      // next. From 1024 px up the Contents pane stands beside the view (R13), so the column is
+      // what the frame leaves beside the pane, read from the frame itself.
       const frame = await verificationFrame(page);
       expect(frame.page.scroll, `the page scrolls sideways at ${width} px`).toBeLessThanOrEqual(
         frame.page.viewport
       );
       if (width === 1440 || width === 1024) {
-        const measure = width === 1440 ? 1180 : frame.body.parent - 48;
+        const measure = Math.min(1180, frame.body.parent - 48);
         expect(
           Math.abs(frame.body.width - measure),
           `the body is ${frame.body.width} px wide, not ${measure} px, at ${width} px`
@@ -789,13 +790,13 @@ test("the Verification view draws a check's links, its agent's role and a child'
 });
 
 // Row 4. From the issue's own address `t k` turns the view on with the focus on the issue's row
-// and the view's top on screen, and asks the server for nothing the first load did not but the
-// view's own read of the tree, which a filter sends the first time it is on in a load; Tab
-// alone then reaches the chips, a check's words, the copy control its facts draw and its line of
-// earlier results, in reading order, and Enter works each one; the tree answers the outline's
-// keys, and a press on a result's cell or on a statement's words opens a check's facts; axe finds
-// no break of the tree's structure; `t k` from a row turns the view off; and the view's own
-// address leaves the focus on the issue's row.
+// and the view's top on screen, and asks the server for nothing the first load did not: the view's
+// read of the tree came with the load, which R4 sends for this seed's issue, a parent whose
+// Conversation's read holds no check of its children. Tab alone then reaches the chips, a check's
+// words, the copy control its facts draw and its line of earlier results, in reading order, and
+// Enter works each one; the tree answers the outline's keys, and a press on a result's cell or on a
+// statement's words opens a check's facts; axe finds no break of the tree's structure; `t k` from a
+// row turns the view off; and the view's own address leaves the focus on the issue's row.
 // SLOW(>=2s): a whole seeded issue loaded and waited out to a quiet window twice, a walk of up to
 // 40 Tabs and some twenty keys and presses each waited on, an axe pass, and a third load.
 test("the Verification view is worked by the keyboard alone", async ({ browser }) => {
@@ -819,13 +820,17 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
 
     // From the issue's own address, with the focus on the page, `t k` turns the view on, leaves
     // the focus on the issue's row inside it with the view's top on screen under the header's
-    // band, and asks the server for nothing the first load did not but the view's read of the
-    // tree (`?view=verification`).
+    // band, and asks the server for nothing the first load did not: the first load sent the view's
+    // read of the tree (`?view=verification`) with it.
     const traffic = watchApiRequests(page);
     await gotoIssue(page, presetPath(seeded.key, "conversation"));
     await expectLoadSettled(traffic);
     await expectIssuePageDrawn(page);
     const loaded = new Set(traffic.requests.map((request) => request.path));
+    expect(
+      loaded.has(`/api/v1/issues/${seeded.key}/tree?view=verification`),
+      "the first load sent no read of the Verification view"
+    ).toBe(true);
     traffic.reset();
     await expectOpeningLanded(page);
     await focusThePage(page);
@@ -860,8 +865,8 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
       traffic.requests
         .filter((request) => !loaded.has(request.path))
         .map((request) => `${request.method} ${request.path}`),
-      "t k sent a request under /api/ to a path the first load did not, beside the view's read"
-    ).toEqual([`GET /api/v1/issues/${seeded.key}/tree?view=verification`]);
+      "t k sent a request under /api/ to a path the first load did not"
+    ).toEqual([]);
 
     // Tab alone, at most 40 presses, reaches each control in reading order, and Enter works it.
     const tabTo = tabWalk(page, 40);

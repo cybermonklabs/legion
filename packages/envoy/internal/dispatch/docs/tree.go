@@ -16,7 +16,7 @@ import (
 
 // fragmentName is the fragment of a room's Yjs document that holds the document of a room that is
 // its own document, and, in an issue room, the nodes written into the issue rather than into a
-// document: the tree artifact's own fragment (D3 of dispatch://INFRA-1253's plan). A document
+// document: the tree artifact's own fragment (D3 of the issue-tree plan). A document
 // converted into an issue room holds a fragment of that room named by its own artifact id
 // (fragmentOf), so a read of a room names the fragments it reads (treeOfFragments).
 const fragmentName = "prosemirror"

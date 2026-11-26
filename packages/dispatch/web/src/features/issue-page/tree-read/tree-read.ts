@@ -34,7 +34,7 @@ import type {
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { parseIssuePath } from "../../refs/routes";
 import { writesOf } from "../../writes/write-store";
-import { issueAddress } from "../issue-address";
+import { presetOf } from "../issue-address";
 import type { Preset } from "../page-words";
 import { isFilter } from "../presets";
 import {
@@ -114,19 +114,31 @@ export function dropViews(queryClient: QueryClient, key: string): void {
  *  read with `kind` repeated for `CONVERSATION_KINDS` - and Graph, which draws the tree read with
  *  no view. Each outline's read stands under a key of its own, both under the tree's
  *  (`issueTreeKey`), so every event of the issue reaches both. */
-export type Outline = "conversation" | "graph";
+type Outline = "conversation" | "graph";
 
-/** The tree route's query as the page writes it: the route's own (`view`, `cursor`,
- *  `comments_before`), with `kind`, the filter by node kind, which the generated contract does not
- *  name yet. `routeUrl` writes a list as one `kind=` per value (`paths.ts`' `pathWithQuery`). */
-type TreeQuery = RouteQuery<"/api/v1/issues/{key}/tree", "get"> & {
-  readonly kind?: readonly string[];
+/** The tree route's query as the page writes it: the route's own (`view`, `kind`, `v`, `cursor`,
+ *  `comments_before`). `routeUrl` writes a list as one `kind=` per value (`paths.ts`'
+ *  `pathWithQuery`). */
+type TreeQuery = RouteQuery<"/api/v1/issues/{key}/tree", "get">;
+
+/** What each outline's read asks the route for, beside a page's `cursor` or `comments_before`.
+ *  Listed in the order the tree's subscription asks for them (`subscribeTreeFreshness`). */
+const OUTLINE_QUERIES: Readonly<Record<Outline, TreeQuery>> = {
+  graph: {},
+  conversation: { kind: [...CONVERSATION_KINDS] },
 };
 
-/** What each outline's read asks the route for, beside a page's `cursor` or `comments_before`. */
-const OUTLINE_QUERIES: Readonly<Record<Outline, TreeQuery>> = {
-  conversation: { kind: CONVERSATION_KINDS },
-  graph: {},
+/** The key an outline's answer stands under for issue `key`: Graph's is the tree's own key,
+ *  Conversation's its own under it. A case for each outline and no default, so an outline added
+ *  to `Outline` has no key until it is given one here, and each key is written by its own name,
+ *  which the census of query keys reads (`api/corrected-post-families.test.ts`). */
+const outlineKey = (outline: Outline, key: string): QueryKey => {
+  switch (outline) {
+    case "graph":
+      return issueTreeKey(key);
+    case "conversation":
+      return conversationTreeKey(key);
+  }
 };
 
 /** How far back the older comment pages the reader loaded into an outline read reach, by the
@@ -325,37 +337,43 @@ const TREE_FRESH = {
   retryOnMount: mayReadOnMount,
 } as const;
 
-/** The issue's whole tree, one query over the pages read (`readTree`): Graph's read (R10), the
- *  tree read with no view. */
-export const issueTreeQuery = (key: string) =>
-  queryOptions({
-    ...TREE_FRESH,
-    queryKey: issueTreeKey(key),
-    queryFn: (context) => readTree(key, OUTLINE_QUERIES.graph, context),
-  });
-
-/** The read of `outline`, one query over the pages read (`readTree`): Graph's under the tree's own
- *  key (`issueTreeQuery`), Conversation's under its own (`conversationTreeKey`), the kinds it
- *  names the last member of its key, in their one order, so its key is the same in every load.
- *  Both are kept fresh as the tree read is (`TREE_FRESH`, `subscribeTreeFreshness`). */
+/** The read of `outline`, one query over the pages read (`readTree`), under its key
+ *  (`outlineKey`): Graph's under the tree's own key (`issueTreeQuery`), Conversation's under
+ *  its own (`conversationTreeKey`), the kinds it names the last member of its key, in their one
+ *  order, so its key is the same in every load. Both are kept fresh as the tree read is
+ *  (`TREE_FRESH`, `subscribeTreeFreshness`). */
 export const outlineQuery = (key: string, outline: Outline) =>
   queryOptions({
     ...TREE_FRESH,
-    queryKey: outline === "graph" ? issueTreeKey(key) : conversationTreeKey(key),
+    queryKey: outlineKey(outline, key),
     queryFn: (context) => readTree(key, OUTLINE_QUERIES[outline], context),
   });
+
+/** The issue's whole tree: Graph's read, with no view. */
+export const issueTreeQuery = (key: string) => outlineQuery(key, "graph");
+
+function viewRouteQuery(view: TreeView, version: number | undefined): TreeQuery {
+  return version === undefined ? { view } : { view, v: version };
+}
 
 /** One view of the issue's tree, one query over the pages read (`readTree`). A plain query rather
  *  than one per page, so an observer that is never enabled can watch a view a slot read. A filter
  *  turned on (`ViewReadProvider`) reads its view as any new observer of the tree's reads does
  *  (`TREE_FRESH`): where the view was never read, where a write or an event marked its answer
  *  stale, and, where its read was refused, only where it was asked for again since. A filter
- *  turned off and on again asks for nothing, so it reads a refused view no more. */
-export const viewQuery = (key: string, view: TreeView) =>
+ *  turned off and on again asks for nothing, so it reads a refused view no more. A read at a
+ *  `version` asks for the view at that version (`v`) on each page it reads, and is a read of its
+ *  own: its key is the view's with `{ v: version }` after it, still under the tree's, so every
+ *  event of the issue reaches it, while the read at none sends no `v` and keeps the view's key
+ *  (`viewKey`). */
+export const viewQuery = (key: string, view: TreeView, version?: number) =>
   queryOptions({
     ...TREE_FRESH,
-    queryKey: viewKey(key, view),
-    queryFn: (context) => readTree(key, { view }, context),
+    queryKey:
+      version === undefined
+        ? viewKey(key, view)
+        : ([...viewKey(key, view), { v: version }] as const),
+    queryFn: (context) => readTree(key, viewRouteQuery(view, version), context),
   });
 
 /** Which outline read a load of `preset` holds (R1, R4, R13): Graph's in Graph (R10),
@@ -396,8 +414,7 @@ interface OutlineChoice {
 function useOutlineChoice(): OutlineChoice {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
-  const preset =
-    route === undefined ? "conversation" : issueAddress(route, "", "", undefined).preset;
+  const preset = route === undefined ? "conversation" : presetOf(route);
   const outline = outlineOf(preset);
   return {
     filter: TREE_FILTERS.find((filter) => filter === preset),
@@ -424,6 +441,11 @@ function observedOutline(key: string, { outline, sends }: OutlineChoice) {
   };
 }
 
+function useOutlineRead(key: string) {
+  const choice = useOutlineChoice();
+  return { choice, read: useQuery(observedOutline(key, choice)) };
+}
+
 /** Sends Conversation's read of issue `key` where nothing has sent it (`outlineBegun`), and
  *  nothing where the cache holds it sent, so a load reads it once (R13): what the Outline sheet
  *  calls as it opens, which on Spec below 1024 px is the first reader that sends it, and what the
@@ -437,10 +459,10 @@ export function useStartOutlineRead(key: string): () => void {
   }, [key, queryClient]);
 }
 
-/** One role's blocks from the tree read, answered as the blocks read of that role's document
- *  answered them (`artifactBlocksQuery`), so a caller's lines that read these members stay as
- *  they are. The state is the tree read's own; whether that read runs is read apart, by the views
- *  that draw it (`useTreeReadRunning`). */
+/** One role's blocks from the read that holds them (`TreeRead.blocksOf`), answered as the blocks
+ *  read of that role's document answered them (`artifactBlocksQuery`), so a caller's lines that
+ *  read these members stay as they are. The state is that read's own; whether that read runs is
+ *  read apart, by the views that draw it (`useBlocksRunning`). */
 export interface TreeBlocksRead {
   readonly data: TreeBlock[] | undefined;
   readonly errorUpdateCount: number;
@@ -504,7 +526,7 @@ export interface TreeRead {
  * pending: nothing is out, and the reads that wait on every read of the page do not wait on it.
  */
 export function useTreeRead(issue: IssueDetails): TreeRead {
-  const choice = useOutlineChoice();
+  const { choice, read } = useOutlineRead(issue.key);
   const { filter } = choice;
   const {
     data: answer,
@@ -514,7 +536,7 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     isPending,
     isSuccess,
     refetch,
-  } = useQuery(observedOutline(issue.key, choice));
+  } = read;
   const sent = choice.outline !== undefined && (choice.sends || fetchStatus !== "idle");
   const view = useQuery({ ...viewQuery(issue.key, filter ?? TREE_FILTERS[0]), enabled: false });
   const viewAnswer = filter === undefined ? undefined : view.data;
@@ -522,7 +544,9 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
     () => byRole((role) => blocksOfRole(role === filter ? viewAnswer : answer, role, issue)),
     [answer, filter, issue, viewAnswer]
   );
-  const { errorUpdateCount: viewErrors, isError: viewRefused, refetch: viewRefetch } = view;
+  const viewErrors = filter === undefined ? 0 : view.errorUpdateCount;
+  const viewRefused = filter !== undefined && view.isError;
+  const viewRefetch = view.refetch;
   const blocksOf = useMemo(
     () =>
       byRole(
@@ -552,13 +576,18 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
   );
 }
 
-/** Whether the outline read the page holds (`OutlineChoice`) of issue `key` runs (TanStack
- *  Query's `isFetching`): its first read, a refresh, or a Retry. An observer of its own beside
- *  `useTreeRead`'s, which reads none of it, so a reader of the tree is drawn again as each read of
- *  it starts and ends only where it reads this: a view that draws a failed read's Retry busy while
- *  it runs. */
-export function useTreeReadRunning(key: string): boolean {
-  return useQuery(observedOutline(key, useOutlineChoice())).isFetching;
+/** Whether the read that holds `role`'s blocks of issue `key` runs (TanStack Query's
+ *  `isFetching`): its first read, a refresh, or a Retry. That read is the one `useTreeRead`'s
+ *  `blocksOf` takes them from: under `role`'s own filter its view read, and else the outline read
+ *  the page holds (`OutlineChoice`). Observers of their own beside `useTreeRead`'s, which reads
+ *  none of it, so a reader of the tree is drawn again as each read of it starts and ends only
+ *  where it reads this: a view that draws a failed read's Retry busy while it runs, and asks
+ *  nothing more of it meanwhile. Neither sends anything the page would not: the view is watched
+ *  and never sent, as `useTreeRead` watches it. */
+export function useBlocksRunning(key: string, role: TreeFilter): boolean {
+  const { choice, read } = useOutlineRead(key);
+  const view = useQuery({ ...viewQuery(key, choice.filter ?? TREE_FILTERS[0]), enabled: false });
+  return role === choice.filter ? view.isFetching : read.isFetching;
 }
 
 /** The answer of the outline read the page holds (`OutlineChoice`) of issue `key`, watched and
@@ -585,8 +614,10 @@ export interface OlderComments {
  *  Contents list. Neither reads anything until it is pressed. */
 export function useOlderComments(issue: IssueDetails): OlderComments {
   const queryClient = useQueryClient();
-  const choice = useOutlineChoice();
-  const answer = useQuery(observedOutline(issue.key, choice)).data;
+  const {
+    choice,
+    read: { data: answer },
+  } = useOutlineRead(issue.key);
   const outline = choice.outline;
   const remain =
     outline !== undefined && answer !== undefined && olderCommentsBefore(answer) !== undefined;
@@ -603,6 +634,36 @@ export function useOlderComments(issue: IssueDetails): OlderComments {
 /** The older comment pages out, by client, each by its query and the position it reads from
  *  (`readOlderComments`). */
 const commentPagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
+
+/** Starts a page read only if that client has no matching read out. */
+function joinedPage(
+  pagesOut: WeakMap<QueryClient, Map<string, Promise<void>>>,
+  client: QueryClient,
+  page: string,
+  readPage: () => Promise<void>
+): Promise<void> {
+  let pages = pagesOut.get(client);
+  if (pages === undefined) {
+    pages = new Map();
+    pagesOut.set(client, pages);
+  }
+  const reading = pages.get(page);
+  if (reading !== undefined) return reading;
+  const read = readPage().finally(() => pages.delete(page));
+  pages.set(page, read);
+  return read;
+}
+
+function writeKeepingStale(
+  client: QueryClient,
+  query: Pick<Query, "state">,
+  queryKey: QueryKey,
+  answer: TreeAnswer
+): void {
+  const stale = query.state.isInvalidated;
+  client.setQueryData(queryKey, answer);
+  if (stale) void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+}
 
 /**
  * Reads the next older comment page of `outline`'s read of issue `key` (R15), one request with
@@ -627,46 +688,38 @@ export function readOlderComments(
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const before = held === undefined ? undefined : olderCommentsBefore(held);
   if (before === undefined) return Promise.resolve();
-  let out = commentPagesOut.get(queryClient);
-  if (out === undefined) {
-    out = new Map();
-    commentPagesOut.set(queryClient, out);
-  }
-  const pages = out;
-  const page = `${hashKey(queryKey)} ${before}`;
-  const reading = pages.get(page);
-  if (reading !== undefined) return reading;
-  const read = api
-    .getIssueTree(key, { ...OUTLINE_QUERIES[outline], comments_before: before })
-    .then((older) => {
-      const now = queryClient.getQueryData<TreeAnswer>(queryKey);
-      const query = queryClient.getQueryCache().find({ exact: true, queryKey });
-      if (now === undefined || query === undefined || olderCommentsBefore(now) !== before) return;
-      const merged = mergeCommentPage(now, older);
-      commentPagesOf.set(query, { reached: olderCommentsBefore(merged) ?? null });
-      const stale = query.state.isInvalidated;
-      queryClient.setQueryData(queryKey, merged);
-      if (stale) void queryClient.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
-    })
-    .finally(() => pages.delete(page));
-  pages.set(page, read);
-  return read;
+  return joinedPage(commentPagesOut, queryClient, `${hashKey(queryKey)} ${before}`, () =>
+    api
+      .getIssueTree(key, { ...OUTLINE_QUERIES[outline], comments_before: before })
+      .then((older) => {
+        const now = queryClient.getQueryData<TreeAnswer>(queryKey);
+        const query = queryClient.getQueryCache().find({ exact: true, queryKey });
+        if (now === undefined || query === undefined || olderCommentsBefore(now) !== before) return;
+        const merged = mergeCommentPage(now, older);
+        commentPagesOf.set(query, { reached: olderCommentsBefore(merged) ?? null });
+        writeKeepingStale(queryClient, query, queryKey, merged);
+      })
+  );
 }
 
 /** A read whose pages past the first the page reads one at a time (R15): an outline's
  *  (`Outline`) or a view's (`TreeView`), the decisions view among them. */
-export type PagedRead = Outline | TreeView;
+type PagedRead = Outline | TreeView;
 
 /** What `read` asks the tree route for beside a page's `cursor`, and the key its answer stands
- *  under in the cache. */
+ *  under in the cache: a view's at `version` where it is read at one (`viewQuery`). */
 function pagedQuery(
   key: string,
-  read: PagedRead
+  read: PagedRead,
+  version: number | undefined
 ): { readonly query: TreeQuery; readonly queryKey: QueryKey } {
   if (read === "conversation" || read === "graph") {
     return { query: OUTLINE_QUERIES[read], queryKey: outlineQuery(key, read).queryKey };
   }
-  return { query: { view: read }, queryKey: viewKey(key, read) };
+  return {
+    query: viewRouteQuery(read, version),
+    queryKey: viewQuery(key, read, version).queryKey,
+  };
 }
 
 /** The next pages out, by client, each by its query and the cursor it reads
@@ -689,29 +742,21 @@ const treePagesOut = new WeakMap<QueryClient, Map<string, Promise<void>>>();
  * no write of the issue (`subscribeTreeFreshness`), and marks how far the read has got
  * (`treePagesOf`), so a read made again reads as far (`readTree`). A query an event or a write had
  * marked stale stays marked, so the read it owes is still made. A refused page leaves the answer
- * as it was, and the press may be made again.
+ * as it was, and the press may be made again. A view read at a `version` (`viewQuery`) reads its
+ * next page at that version too, under its own key.
  */
 export function readNextTreePage(
   queryClient: QueryClient,
   key: string,
-  read: PagedRead
+  read: PagedRead,
+  version?: number
 ): Promise<void> {
-  const { query, queryKey } = pagedQuery(key, read);
+  const { query, queryKey } = pagedQuery(key, read, version);
   const held = queryClient.getQueryData<TreeAnswer>(queryKey);
   const cursor = held === undefined ? undefined : nextTreeCursor(held);
   if (cursor === undefined) return Promise.resolve();
-  let out = treePagesOut.get(queryClient);
-  if (out === undefined) {
-    out = new Map();
-    treePagesOut.set(queryClient, out);
-  }
-  const pages = out;
-  const page = `${hashKey(queryKey)} ${cursor}`;
-  const reading = pages.get(page);
-  if (reading !== undefined) return reading;
-  const next = api
-    .getIssueTree(key, { ...query, cursor })
-    .then((answered) => {
+  return joinedPage(treePagesOut, queryClient, `${hashKey(queryKey)} ${cursor}`, () =>
+    api.getIssueTree(key, { ...query, cursor }).then((answered) => {
       const now = queryClient.getQueryData<TreeAnswer>(queryKey);
       const cached = queryClient.getQueryCache().find({ exact: true, queryKey });
       if (now === undefined || cached === undefined || nextTreeCursor(now) !== cursor) return;
@@ -723,13 +768,9 @@ export function readNextTreePage(
         pages: (walk?.pages ?? 1) + 1,
         walked: (walk?.walked ?? now.nodes?.length ?? 0) + (answered.nodes?.length ?? 0),
       });
-      const stale = cached.state.isInvalidated;
-      queryClient.setQueryData(queryKey, mergeTreePages([now, answered]));
-      if (stale) void queryClient.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
+      writeKeepingStale(queryClient, cached, queryKey, mergeTreePages([now, answered]));
     })
-    .finally(() => pages.delete(page));
-  pages.set(page, next);
-  return next;
+  );
 }
 
 /** The next page of a read whose answer names one (`cursor`, R15): how many nodes the read holds
@@ -744,8 +785,10 @@ export interface NextTreePage {
 /** The next page of the outline read the page holds (`OutlineChoice`), for the control after the
  *  outline's last row; undefined while its answer names none. It reads nothing until asked. */
 export function useNextTreePage(issue: IssueDetails): NextTreePage | undefined {
-  const choice = useOutlineChoice();
-  const answer = useQuery(observedOutline(issue.key, choice)).data;
+  const {
+    choice,
+    read: { data: answer },
+  } = useOutlineRead(issue.key);
   return useNextPage(issue.key, choice.outline, answer);
 }
 
@@ -777,29 +820,53 @@ function useNextPage(
   );
 }
 
+/** How the reading of a read's next pages for a node no page read yet holds stands
+ *  (`useReadUntilHeld`). */
+export interface PagesReading {
+  /** Whether a next page is being read: out, or asked for as the reading's effect runs. */
+  readonly reading: boolean;
+  /** Whether the page the reading last asked for was refused, while the read still names that
+   *  page as its next: nothing past it is read until a read of it answers. */
+  readonly refused: boolean;
+}
+
 /**
- * Reads the next pages of the outline read the page holds, one at a time, while `wanted`: an
- * address, a chip or a key names a node no page read yet holds (R15). Each page merged draws the
- * tree again, and the caller says again whether it holds the node, so the reading ends with the
- * page that brings it, or with the last page. Answers whether it is still reading, which the
- * address's landing waits on as it waits on the reads the tree is built from: once the node is
- * drawn it lands on it, and once no page is left it falls back as it does today. A page refused
- * ends the reading at its cursor, and the landing goes on as it would with no page left.
+ * Reads the next pages of the outline read the page holds, or of `outline`'s read where one is
+ * given, one at a time, while `wanted`: an address, a chip or a key names a node no page read yet
+ * holds (R15). Each page merged draws the tree again, and the caller says again whether it holds
+ * the node, so the reading ends with the page that brings it, or with the last page. Answers
+ * whether it is still reading, which the address's landing waits on as it waits on the reads the
+ * tree is built from: once the node is drawn it lands on it, and once no page is left it falls
+ * back as it does today. A page refused stops the reading at its cursor, and the hook answers it
+ * refused for as long as the read names that page as its next: that is no last page, so the
+ * address's landing waits on it as on a page out, and the control after the outline's last row,
+ * which reads that page again, stays as its Retry; once that page answers, the reading goes on.
+ * `outline`'s read, where it is given, is watched and never sent here: the caller sends it.
  */
-export function useReadUntilHeld(issue: IssueDetails, wanted: boolean): boolean {
+export function useReadUntilHeld(
+  issue: IssueDetails,
+  wanted: boolean,
+  outline?: Outline
+): PagesReading {
   const queryClient = useQueryClient();
   const choice = useOutlineChoice();
-  const answer = useQuery(observedOutline(issue.key, choice)).data;
-  const { outline } = choice;
+  const read = outline ?? choice.outline;
+  const answer = useQuery(
+    outline === undefined
+      ? observedOutline(issue.key, choice)
+      : { ...outlineQuery(issue.key, outline), enabled: false }
+  ).data;
   const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
   // The cursor whose page was refused, past which nothing is read for the address.
-  const [refused, setRefused] = useState<string | undefined>(undefined);
-  const reading = wanted && outline !== undefined && cursor !== undefined && cursor !== refused;
+  const [refusedAt, setRefusedAt] = useState<string | undefined>(undefined);
+  const named = wanted && read !== undefined && cursor !== undefined;
+  const refused = named && cursor === refusedAt;
+  const reading = named && !refused;
   useEffect(() => {
-    if (!reading || outline === undefined || cursor === undefined) return;
-    readNextTreePage(queryClient, issue.key, outline).catch(() => setRefused(cursor));
-  }, [cursor, issue.key, outline, queryClient, reading]);
-  return reading;
+    if (!reading || read === undefined || cursor === undefined) return;
+    readNextTreePage(queryClient, issue.key, read).catch(() => setRefusedAt(cursor));
+  }, [cursor, issue.key, queryClient, read, reading]);
+  return { reading, refused };
 }
 
 /** `make`'s value for each role, made on the first ask for that role and the same value on
@@ -883,15 +950,16 @@ export function subscribeTreeFreshness(queryClient: QueryClient, key: string): (
   };
 }
 
-/** Each outline read the page may hold of issue `key`, each by its own key: Graph's, the tree
- *  read, and Conversation's (`Outline`). Each is kept fresh as the tree read is
- *  (`subscribeTreeFreshness`), and a view follows whichever the page holds; a write whose answer
- *  changes what the outline draws reads them again by the same targets (`DecisionActions.tsx`). */
+/** Each outline read the page may hold of issue `key`, each by its own key (`outlineKey`):
+ *  Graph's, the tree read, and Conversation's (`OUTLINE_QUERIES`). Each is kept fresh as the tree
+ *  read is (`subscribeTreeFreshness`), and a view follows whichever the page holds; a write whose
+ *  answer changes what the outline draws reads them again by the same targets
+ *  (`DecisionActions.tsx`). */
 export function outlineTargets(key: string): readonly RefreshTarget[] {
-  return [
-    { exact: true, queryKey: issueTreeKey(key) },
-    { exact: true, queryKey: conversationTreeKey(key) },
-  ];
+  return (Object.keys(OUTLINE_QUERIES) as Outline[]).map((outline) => ({
+    exact: true,
+    queryKey: outlineKey(outline, key),
+  }));
 }
 
 /** One issue's subscription (`subscribeTreeFreshness`), and how many stages hold it. */
@@ -912,9 +980,13 @@ function watchTree(
 ): TreeFreshness {
   const cache = queryClient.getQueryCache();
   const writes = writesOf(queryClient);
+  // Each outline read the page may hold: Graph's, the tree read, and Conversation's
+  // (`OUTLINE_QUERIES`). Each is kept fresh as the tree read is, and a view follows whichever the
+  // page holds.
   const outlines = outlineTargets(key);
+  // Each view's reads, by the view's key as a prefix: its read at no version, under that key, and
+  // each read of it at a version (`viewQuery`), under that key with `{ v }` after it.
   const views: readonly RefreshTarget[] = TREE_VIEWS.map((view) => ({
-    exact: true,
     queryKey: viewKey(key, view),
   }));
   const treeAndViews: readonly RefreshTarget[] = [...outlines, ...views];
@@ -982,9 +1054,8 @@ function watchTree(
     // that ended it, and after it is marked valid, so the ask is heard.
     if (owedOnRefusal.has(hash) && query.state.fetchStatus === "idle") {
       owedOnRefusal.delete(hash);
-      const target =
-        action.type === "error" ? treeAndViews.find((one) => matchQuery(one, query)) : undefined;
-      if (target !== undefined) {
+      if (action.type === "error") {
+        const target: RefreshTarget = { exact: true, queryKey: query.queryKey };
         queueMicrotask(() => {
           if (!stopped) refreshQueries(queryClient, [target]);
         });
@@ -999,11 +1070,11 @@ function watchTree(
   // ends refused.
   const takeRefused = (): RefreshTarget[] => {
     const refused: RefreshTarget[] = [];
-    for (const target of treeAndViews) {
-      const query = cache.find(target);
-      if (query === undefined) continue;
+    for (const query of treeAndViews.flatMap((target) => cache.findAll(target))) {
       if (query.state.fetchStatus !== "idle") owedOnRefusal.add(query.queryHash);
-      else if (query.state.status === "error") refused.push(target);
+      else if (query.state.status === "error") {
+        refused.push({ exact: true, queryKey: query.queryKey });
+      }
     }
     return refused;
   };
@@ -1061,11 +1132,10 @@ function watchTree(
     releaseReads();
     const owed = !liveFeedUp(queryClient)
       ? treeAndViews
-      : treeAndViews.filter((target) => {
-          const query = cache.find(target);
-          if (query === undefined) return false;
-          return owedReads.has(query.queryHash) || query.state.isInvalidated;
-        });
+      : treeAndViews
+          .flatMap((target) => cache.findAll(target))
+          .filter((query) => owedReads.has(query.queryHash) || query.state.isInvalidated)
+          .map((query): RefreshTarget => ({ exact: true, queryKey: query.queryKey }));
     owedReads.clear();
     if (owed.length > 0) refreshQueries(queryClient, owed);
   };
