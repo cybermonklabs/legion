@@ -51,9 +51,10 @@ var retroWakeInterval = "interval '" + strconv.FormatInt(int64(RetroWakeWindow/t
 // RetroWakeHoldsSQL is the predicate of a tree whose root's architect takes the wake of a retro's
 // finding, over root, an SQL expression of the tree root's key, and now, one of the moment it is
 // read at: a retro after the close of an issue of the tree is open (run_retros: opened, not ended),
-// or one ended no earlier than RetroWakeWindow before now. A tree past its linger counts only an
-// open retro: the end of its last one closed it again (the workflow's closeTreeAfterRetros), and
-// a wake after that would reopen its lifecycle with nothing left to close it again.
+// or one ended no earlier than RetroWakeWindow before now. It holds in a tree past its linger too:
+// the end of such a tree's last retro leaves its close until that hour has passed (the workflow's
+// closeTreeAfterRetros), so the architect a finding wakes there runs in the lifecycle the retro
+// ran in, and the close that comes due then stops it again.
 //
 // It is the one statement of that rule, and every reader of it embeds this text: the record's read
 // (record.Postgres.TreeTakesRetroWake), which the workflow's wake of a root architect, the outbox's
@@ -61,10 +62,8 @@ var retroWakeInterval = "interval '" + strconv.FormatInt(int64(RetroWakeWindow/t
 // holds the root's pod for the architect so woken (store's retroHoldsPod). The store reads now as
 // its own clock (now()); the record's read is given the caller's.
 func RetroWakeHoldsSQL(root, now string) string {
-	return `exists (select 1 from run_retros rw join issues rwroot on rwroot.key = rw.tree
-		where rw.tree = ` + root + ` and rw.opened_at is not null and (rw.ended_at is null
-			or (rw.ended_at >= ` + now + ` - ` + retroWakeInterval + `
-				and (rwroot.linger_until is null or rwroot.linger_until > ` + now + `))))`
+	return `exists (select 1 from run_retros rw where rw.tree = ` + root + ` and rw.opened_at is not null
+		and (rw.ended_at is null or rw.ended_at >= ` + now + ` - ` + retroWakeInterval + `))`
 }
 
 // IdleClaim is one claim of an issue's pod as the idle rule reads it. Every field comes from the

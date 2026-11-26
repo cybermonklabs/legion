@@ -56,24 +56,30 @@
 -- There is no down file. This directory keeps none — migrations here are forward-only and no
 -- .down.sql file exists — so the way back is the one transaction that closes this header, its last
 -- paragraph (migrations.WayBack), run with every daemon of the database stopped and before the
--- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The two deletes of
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. The three deletes of
 -- queued rows are owed to the release before: it decodes an outbox payload strictly
--- (record.DecodeOutboxPayload, DisallowUnknownFields) and knows neither the kind retro_bound nor a
--- supervise row's retroRun or retroWake, so it would fail each such row at every attempt, and its
--- issue's lifecycle lane behind it. Each deleted row is a bound or a retro task or a root
--- architect's wake that a release which runs no retro after a close owes nobody. That release names
--- neither the table nor the two columns in any read or write, so it boots with them standing: the
--- drops and the delete of this version's row are owed to the roll-forward. With them gone,
--- store.apply finds no row of this version and runs this file again, which fills run_retros from
--- the issues as they stand then. What the way back costs is each retro after a close open at the
--- rollback: the roll-forward opens none again, and its agent's next completion is refused as one on
--- a done issue. The kind check keeps retro_bound, which admits every kind the release before writes.
--- The outbox, claims and pending_task_deliveries hold the rows of every project that shares the
--- database, so every daemon of one database moves back, and forward, together.
+-- (record.DecodeOutboxPayload, DisallowUnknownFields) and knows neither the kind retro_bound, nor a
+-- supervise row's retroRun or retroWake, nor a linger_close row's retrosEnded, so it would fail
+-- each such row at every attempt, and its issue's lifecycle lane behind it. Each deleted row is a
+-- bound or a retro task or a root architect's wake that a release which runs no retro after a close
+-- owes nobody, or the close a tree past its linger owes the hour after its last retro after a close
+-- ended. That release names neither the table nor the two columns in any read or write, so it boots
+-- with them standing: the drops and the delete of this version's row are owed to the roll-forward.
+-- With them gone, store.apply finds no row of this version and runs this file again, which fills
+-- run_retros from the issues as they stand then. What the way back costs is each retro after a
+-- close open at the rollback: the roll-forward opens none again, and its agent's next completion is
+-- refused as one on a done issue. It costs as well the close of what a tree's linger left to its
+-- retros after a close: a tree whose linger ended while one was open, or whose last one ended within
+-- the hour before the rollback, keeps the claims and the workspace of each such retro's issue, and
+-- its Sandbox, until a todo on its root re-admits the tree and its next linger ends. The kind check
+-- keeps retro_bound, which admits every kind the release before writes. The outbox, claims and
+-- pending_task_deliveries hold the rows of every project that shares the database, so every daemon
+-- of one database moves back, and forward, together.
 --
 -- begin;
 -- delete from outbox where kind = 'retro_bound';
 -- delete from outbox where kind = 'supervise' and (payload ? 'retroRun' or payload ? 'retroWake');
+-- delete from outbox where kind = 'linger_close' and payload ? 'retrosEnded';
 -- alter table claims drop column if exists serving_retro_run;
 -- alter table pending_task_deliveries drop column if exists retro_run;
 -- drop table if exists run_retros;

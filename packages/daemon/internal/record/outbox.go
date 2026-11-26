@@ -1407,9 +1407,14 @@ type GateSeed struct {
 
 func (GateSeed) OutboxKind() OutboxKind { return OutboxKindGateSeed }
 
-// LingerClose records the issue generation whose linger should close.
+// LingerClose records the issue generation whose linger should close. RetrosEnded, set, makes it
+// the close a tree past its linger still owes once the hour after its last retro after a close
+// ended (at RetrosEnded) has passed: the end of that retro queues it, due then, and it closes what
+// the linger's end left to the tree's retros (the workflow's closeTreeAfterRetros and
+// closeAfterRetros). A row with none is the linger's own end.
 type LingerClose struct {
-	Generation uint64 `json:"generation"`
+	Generation  uint64     `json:"generation"`
+	RetrosEnded *time.Time `json:"retrosEnded,omitempty"`
 }
 
 func (LingerClose) OutboxKind() OutboxKind { return OutboxKindLingerClose }

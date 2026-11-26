@@ -64,6 +64,10 @@ const (
 // while leaving each pass as far apart as the work it does.
 const idleRigTick = 250 * time.Millisecond
 
+// idleRigLinger is the rig's `linger_hours`: the 72 hours a deployment defaults to, long enough
+// that a tree a test closes lingers until the test brings its end forward (endLinger).
+const idleRigLinger = 72 * time.Hour
+
 // idleRigOutboxSweep is how often the rig's daemon sweeps its outbox lanes (overrides.outboxSweep,
 // outboxLease in production). A row the rig makes due or frees behind the daemon, such as a
 // teardown or a start whose slot opened, runs at the next sweep, and at outboxLease that is up to
@@ -125,22 +129,31 @@ type idleWakeRig struct {
 	done   chan error
 }
 
-// idleRigIssue is one issue of the rig: its key, the pod its claims run in, and the role that pod
-// runs.
+// idleRigIssue is one issue of the rig: its key, the key of its tree's root (its own key, but for a
+// child of another rig issue's tree, idleRigChildOf), the pod its claims run in, and the role that
+// pod runs.
 type idleRigIssue struct {
 	// name is what the test calls the issue; key is the issue key its project gives it.
 	name string
 	key  string
+	tree string
 	pod  string
 	role claim.Role
 }
 
+// idleRigChildOf names, by the name a test calls it, each issue of the rig that is a child in the
+// tree of another rig issue, the root, rather than a root of its own, and that root's name: INFRA-
+// 5602's s27, whose linger's end closes the root while the child's retro after its close is open.
+// A root is seeded before its child, which holds no admission slot and no lifecycle of its own, and
+// whose implementer's claim is bound to the root's tree.
+var idleRigChildOf = map[string]string{idleRigPastLingerChild: idleRigPastLinger}
+
 // newIdleWakeRig readies every part, boots the daemon, and waits until every seeded issue's pod
-// runs its role, in order, with one issue per name given. Each issue is its own tree root, in the
-// workflow at `implementing` with its implementer's claim suspended by the daemon, a source the
-// boot's resume by rule acts on (supervise.SuspendSource.ByRule): the boot itself resumes each
-// claim, and that launch is what makes the pod, its launcher and its role process, which can all
-// start before the boot returns.
+// runs its role, in order, with one issue per name given. Each issue is its own tree root, or a
+// child in the tree of the root idleRigChildOf names, in the workflow at `implementing` with its
+// implementer's claim suspended by the daemon, a source the boot's resume by rule acts on
+// (supervise.SuspendSource.ByRule): the boot itself resumes each claim, and that launch is what
+// makes the pod, its launcher and its role process, which can all start before the boot returns.
 //
 // plans is what the role process of each issue it names does, by the name the test calls the
 // issue; an issue it does not name, and every issue when plans is nil, runs the default plan. They
@@ -161,6 +174,11 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	// One admission slot per issue of the rig, and a cap with room for them all: an issue the
 	// daemon has not admitted is one its boot lingers closed.
 	cfg.AdmissionCap = len(issues) + 4
+	// A tree a person closes lingers as it does in a deployment (`linger_hours`, 72 by default),
+	// so its linger's end comes when a test brings it forward (endLinger) and not at once, which a
+	// zero linger, the test configuration's, would make it: the close of INFRA-5602's s16, s21 and
+	// s27 each wait on what the close leaves before the linger ends.
+	cfg.Linger = idleRigLinger
 	// Every launcher of the rig reaches that database through its generation's proxy, which
 	// carries the launcher's own startup packet to it unchanged, so the password the rig's DSN
 	// names has to be in the environment before the first launcher starts
@@ -202,7 +220,11 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig.kube.run(t)
 
 	for i, name := range issues {
-		rig.issues = append(rig.issues, rig.seed(name, cfg.Project+"-"+strconv.Itoa(i+1), i))
+		key, tree := cfg.Project+"-"+strconv.Itoa(i+1), ""
+		if root, child := idleRigChildOf[name]; child {
+			tree = rig.issue(root).key
+		}
+		rig.issues = append(rig.issues, rig.seed(name, key, i, tree))
 	}
 	for name, plan := range plans {
 		issue := rig.issue(name)
@@ -358,11 +380,18 @@ func (r *idleWakeRig) podReady(pod, uid string, roles map[string]string) {
 
 // seed records one issue, its tree's lifecycle and its implementer's suspended claim, as
 // check_wake_test.go's rig seeds a claim the daemon will resume. The issue is its own tree root,
-// in the workflow at `implementing`, so the idle rule reads a live tree and the backstop has a
-// phase worker to arm for (workflow.BackstopRole).
-func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
+// or, where parent names the root it is a child of (idleRigChildOf), a child in that root's tree,
+// which holds no slot and opens no lifecycle of its own: its claim binds the root's. Either is in
+// the workflow at `implementing`, so the idle rule reads a live tree and the backstop has a phase
+// worker to arm for (workflow.BackstopRole).
+func (r *idleWakeRig) seed(name, key string, index int, parent string) idleRigIssue {
 	r.t.Helper()
-	r.board.show(key, "in_progress")
+	tree, root := key, parent == ""
+	var above *string
+	if !root {
+		tree, above = parent, &parent
+	}
+	r.board.place(key, "in_progress", parent, root)
 	token, err := claim.NewToken(r.project, key, claim.RoleImplementer)
 	if err != nil {
 		r.t.Fatal(err)
@@ -376,10 +405,13 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Project: r.cfg.Project,
-			Tree: key, Title: "An idle pod", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-			HandedOver: true, Rank: "U",
+			Tree: tree, Parent: above, Title: "An idle pod", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+			HandedOver: root, Rank: "U",
 		}); err != nil {
 			return err
+		}
+		if !root {
+			return nil
 		}
 		if err := r.records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: index, AdmittedAt: time.Now()}); err != nil {
 			return err
@@ -394,17 +426,19 @@ func (r *idleWakeRig) seed(name, key string, index int) idleRigIssue {
 	}); err != nil {
 		r.t.Fatalf("record issue %s: %v", key, err)
 	}
-	if _, err := st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
-		r.t.Fatalf("open the lifecycle of %s: %v", key, err)
+	if root {
+		if _, err := st.OpenTreeLifecycle(ctx, r.project, key, treelifecycle.AuthorityWorkflow); err != nil {
+			r.t.Fatalf("open the lifecycle of %s: %v", key, err)
+		}
 	}
 	if _, err := st.AdmitClaim(ctx, supervise.Claim{
-		Token: token, Project: r.project, Tree: key, Issue: key, Role: claim.RoleImplementer, Generation: 1,
+		Token: token, Project: r.project, Tree: tree, Issue: key, Role: claim.RoleImplementer, Generation: 1,
 		State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
 	}); err != nil {
 		r.t.Fatalf("record the suspended implementer of %s: %v", key, err)
 	}
 	writePrompt(r.t, r.cfg, token)
-	return idleRigIssue{name: name, key: key, pod: sandbox.SandboxName(token), role: claim.RoleImplementer}
+	return idleRigIssue{name: name, key: key, tree: tree, pod: sandbox.SandboxName(token), role: claim.RoleImplementer}
 }
 
 // idleRigPullNumber is the pull request number of an issue, derived from its key so each issue has

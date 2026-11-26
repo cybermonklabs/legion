@@ -69,16 +69,17 @@ func runNothing(context.Context, pgx.Tx) error { return nil }
 // runs (Store.AdmitClaim, Store.CheckLaunch), and nothing else opens a tree past its linger again
 // but a re-admission, which no closed issue gets. The reopen is the next epoch under the
 // workflow, as admission's re-admission opens one (treelifecycle.Open), and the workflow closes
-// it again once the last retro after a close of the tree ends (its closeTreeAfterRetros), whose
-// tree_close reserves this epoch's cleanup.
+// it again the hour after the last retro after a close of the tree ends (its
+// closeTreeAfterRetros), whose tree_close reserves this epoch's cleanup.
 //
 // It answers the lifecycle and whether this call reopened it. A tree absent from the table
-// reopens nothing, and neither does one open under the workflow: its linger has not ended, so
-// the start runs in the epoch the tree holds. A cleanup reserved and not yet confirmed is a wait
-// (treelifecycle.ErrCleanupReserved): the release that confirms it retires the claims a reopen
-// would launch into, so the reopen follows the confirmation, on the start row's backoff. A tree
-// the operator holds is refused (treelifecycle.ErrAuthorityHeld): the workflow records nothing
-// that acts on such a tree's claims.
+// reopens nothing, and neither does one open under the workflow: its linger has not ended, or it
+// ended while a retro after a close of the tree was open, which reserves no cleanup
+// (ReserveWorkflowTreeCleanup), so the start runs in the epoch the tree holds. A cleanup reserved
+// and not yet confirmed is a wait (treelifecycle.ErrCleanupReserved): the release that confirms it
+// retires the claims a reopen would launch into, so the reopen follows the confirmation, on the
+// start row's backoff. A tree the operator holds is refused (treelifecycle.ErrAuthorityHeld): the
+// workflow records nothing that acts on such a tree's claims.
 //
 // A tree whose cleanup has started reopens under the shared serializer (treelifecycle.Serialize),
 // the lock every other writer of a lifecycle takes, so it orders against the cleanup's
@@ -167,6 +168,16 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 // that never had a lifecycle: a root that left admission's waiting line before a slot opened its
 // tree lingers like any root, but its tree holds nothing a cleanup releases (a carried child's
 // own Sandbox is the orphan sweep's once that linger ends, IssueSandboxHome).
+//
+// Nor does a fresh reservation start while a retro Legion runs after the close of an issue of the
+// tree is open (run_retros: opened, not ended; INFRA-5602's P8). The linger's end applies at its
+// deadline with such a retro open and closes every other claim of the tree, whose tree_close
+// retires its claim through the outbox's ordinary fences, but the retro keeps its agent and its
+// pod: a reservation would refuse every launch into the tree (CheckLaunch) and wait for that agent
+// to retire (pendingTreeClaims), so the agent an idle release took, and the root architect a
+// finding of it wakes, could not come back while the retro runs. The workflow writes the close of
+// what that end left once the tree's last open retro has ended, and its tree_close reserves the
+// cleanup then.
 func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error) {
 	var lifecycle treelifecycle.Lifecycle
 	var reserved bool
@@ -195,14 +206,15 @@ func (s *Store) ReserveWorkflowTreeCleanup(ctx context.Context, project, tree st
 			return nil
 		}
 		var generation int64
-		var lingering bool
+		var lingering, retroOpen bool
 		// Issue keys are unique across projects; the issue row carries the Dispatch project key while
 		// project here is the normalized runtime project, so the key alone names the root.
-		if err := tx.QueryRow(ctx, `select generation, linger_until is not null from issues
-			where key = $1 for update`, tree).Scan(&generation, &lingering); err != nil {
+		if err := tx.QueryRow(ctx, `select generation, linger_until is not null,
+			exists (select 1 from run_retros where tree = $1 and opened_at is not null and ended_at is null)
+			from issues where key = $1 for update`, tree).Scan(&generation, &lingering, &retroOpen); err != nil {
 			return fmt.Errorf("read workflow tree %s: %w", tree, err)
 		}
-		if uint64(generation) != rootGeneration || !lingering {
+		if uint64(generation) != rootGeneration || !lingering || retroOpen {
 			return nil
 		}
 		lifecycle, err = treelifecycle.ReserveCleanup(ctx, tx, project, tree, treelifecycle.AuthorityWorkflow)

@@ -9,11 +9,15 @@ body: |-
     session: it resumes a suspended claim in a new pod, relaunches a retired one in its kept session,
     and launches one that never started. The task says that the issue is closed, that the retro moves
     it nowhere, and that a requirement the retro finds unmet goes to the tree's root architect, which
-    a message to its role topic wakes while a retro of its tree is open. A retro that runs at the
-    close keeps its turn. The retro ends with its report, 24 hours after its start with no rating, or
-    at a `todo` that runs the issue again. `dispatch steps` shows it as a retro row with its start and
-    its end, and the linger of a finished tree waits for it. An issue whose last run had its retro,
-    and an issue that Legion never started, get none.
+    a message to its role topic wakes while a retro of its tree is open, or within the hour after the
+    last one ended. A retro that runs at the close keeps its turn. The retro ends with its report, 24
+    hours after its start with no rating, or at a `todo` that runs the issue again. `dispatch steps`
+    shows it as a retro row with its start and its end. The retro holds no other issue: the linger of
+    a finished tree ends at its deadline, hands over each waiting child and closes the rest of the
+    tree, and keeps only the retro's agent, its pod and the tree's lifecycle, whose cleanup waits
+    until the tree's last retro has ended and, for a tree past its linger, the hour after it, so that
+    a finding the retro published at its end still wakes the root architect. An issue whose last run
+    had its retro, and an issue that Legion never started, get none.
 
     `POST /legion/v1/handoff/complete` on a `done` issue now takes that retro's report from its agent
     (daemon API contract entry `20261126014218`, `retro-after-close`): `summary`, `planRating` and

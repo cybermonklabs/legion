@@ -31,18 +31,27 @@ import (
 // report: 24 hours from the start of the retro's step row, and never sooner. At the bound the
 // retro ends as stopped with no rating, its claim is closed, and a later completion is refused
 // with the reason (record.RetroEndBound). It is well past the longest retro measured when the
-// bound was chosen and inside the 72-hour default linger, which waits for the retro
-// (lingerExpired).
+// bound was chosen. The tree's linger does not wait for it: the linger's end applies at its
+// deadline and leaves the claims and the workspace of the retro's issue to the end of the tree's
+// last open retro (lingerExpired, closeTreeAfterRetros).
 const RetroAfterCloseBound = 24 * time.Hour
 
 // LingerEventID is the event id a tree's linger expiry is applied under, with source "outbox"
 // (intake.LingerExpired, the linger_close row of root at generation): applied once, it closes the
 // tree, and the store keeps the id as processed. The end of the last retro after a close of a tree
-// past its linger reads it (closeTreeAfterRetros): a tree whose expiry already applied is closed
-// again by that end's own rows, since a second linger_close row under the same id would apply
-// nothing.
+// past its linger reads it (closeTreeAfterRetros): a tree whose expiry already applied is owed the
+// close of what that expiry left, which a second linger_close row under the same id would never
+// apply, so that close goes under an event of its own (LingerAfterRetrosEventID).
 func LingerEventID(root string, generation uint64) string {
 	return fmt.Sprintf("linger:%s:%d", root, generation)
+}
+
+// LingerAfterRetrosEventID is the event id of the close a tree past its linger owes once the hour
+// after the end of its last retro after a close, at ended, has passed (intake.LingerExpired with
+// RetrosEnded, closeAfterRetros): one for each such end, so a tree a later retro reopened after
+// one such close is closed again by the next.
+func LingerAfterRetrosEventID(root string, generation uint64, ended time.Time) string {
+	return fmt.Sprintf("%s:retros-ended:%s", LingerEventID(root, generation), ended.UTC().Format(time.RFC3339Nano))
 }
 
 // retroAgentRole is the role whose agent does issue's retro after its close: the one place that
@@ -446,7 +455,8 @@ func (e *Engine) nameRetroEnd(ctx context.Context, tx pgx.Tx, issue record.Issue
 // suspension written now would stand above its start and stop the architect before it took the
 // task. Its idle release stops it once its turn on the finding ends (pods.IdleView.RetroHolds); the
 // root's IssueSuspend still goes, and waits while the architect's process runs
-// (store.IssueSuspension). A tree past its linger closes again (closeTreeAfterRetros).
+// (store.IssueSuspension). A tree past its linger closes again once the hour after its last retro's
+// end has passed (closeTreeAfterRetros).
 func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue record.Issue, ended record.RunRetro) error {
 	if InWorkflow(issue) {
 		return nil
@@ -502,19 +512,27 @@ func (e *Engine) finishRetroAfterClose(ctx context.Context, tx pgx.Tx, issue rec
 			}
 		}
 	}
-	return e.closeTreeAfterRetros(ctx, tx, *root, open)
+	if ended.EndedAt == nil {
+		return fmt.Errorf("finish the retro after the close of %s run %d: the record names no end", issue.Key, ended.Generation)
+	}
+	return e.closeTreeAfterRetros(ctx, tx, *root, open, *ended.EndedAt)
 }
 
-// closeTreeAfterRetros closes root's tree again once the last open retro after a close of a tree
-// past its linger has ended, open being the tree's retros still open: the retro reopened the
-// tree's lifecycle for its agent, and nothing else would close it. Where the linger's expiry has
-// not applied — it waited for the retro (lingerExpired) — a linger_close row due now applies it,
-// as the close of the tree's last production check re-arms it (closeCheck). Where it applied
-// already, a second row under the same event would apply nothing (LingerEventID), so the end writes
-// the close itself: a tree_close of every member's claims and the removal of every member's
-// workspace (closeTreeRows). A tree with a retro or a production check still open, or whose linger
-// still runs, waits for that.
-func (e *Engine) closeTreeAfterRetros(ctx context.Context, tx pgx.Tx, root record.Issue, open []record.RunRetro) error {
+// closeTreeAfterRetros leaves the close of root's tree, past its linger, to the hour after the end
+// of its last open retro after a close: ended is when the retro that just ended did, as the record
+// holds it, and open the tree's retros still open. The linger's end applied at its deadline and left
+// the claims and the workspace of each issue whose retro after its close was open (lingerExpired),
+// and a retro owed in the tree since then reopened its lifecycle for its agent (P8): nothing else
+// closes either. The close is not written now. The retro's agent publishes its finding to the root
+// architect's role topic and reports a moment later, and the wake the listener reports for that
+// finding, within the hour it keeps the message, brings the root architect back in the lifecycle the
+// retro ran in (retroWake, P6): a close written at the report would retire the architect and
+// reserve the lifecycle's cleanup before that wake came, and the wake would then reopen the
+// lifecycle with nothing left to close it. So the end queues that close due once the hour has passed
+// (closeAfterRetros), which writes it then unless a retro of the tree is open again. A tree with a
+// retro or a production check still open, or whose linger still runs, is left as it is, and so is
+// one whose linger's end has not applied yet: its own row closes the whole tree when it does.
+func (e *Engine) closeTreeAfterRetros(ctx context.Context, tx pgx.Tx, root record.Issue, open []record.RunRetro, ended time.Time) error {
 	if len(open) > 0 || root.LingerUntil == nil || e.now().Before(*root.LingerUntil) {
 		return nil
 	}
@@ -523,24 +541,86 @@ func (e *Engine) closeTreeAfterRetros(ctx context.Context, tx pgx.Tx, root recor
 		return err
 	}
 	expired, err := e.store.Processed(ctx, tx, "outbox", LingerEventID(root.Key, root.Generation))
-	if err != nil {
+	if err != nil || !expired {
 		return err
 	}
-	if !expired {
-		e.logOnCommit(ctx, "workflow: the last open retro after a close of a tree past its linger ended; the tree's close is re-armed", "tree", root.Key,
-			"generation", root.Generation)
-		return e.enqueue(ctx, tx, root.Key, record.LingerClose{Generation: root.Generation})
+	due := ended.Add(pods.RetroWakeWindow)
+	e.logOnCommit(ctx, "workflow: the last open retro after a close of a tree past its linger ended; the tree closes again once the hour Envoy keeps a finding's message has passed",
+		"tree", root.Key, "generation", root.Generation, "due", due)
+	return e.enqueueAt(ctx, tx, root.Key, record.LingerClose{Generation: root.Generation, RetrosEnded: &ended}, due)
+}
+
+// closeAfterRetros is the close of root's tree, past its linger, coming due the hour after its last
+// retro after a close ended, at ended (closeTreeAfterRetros): the close of what the linger's end
+// left to the tree's retros, and of what they brought back since. That is each member a retro after
+// a close of which ended at the linger's deadline or later — the claims and the workspace of an
+// issue whose retro was open at the deadline, which the linger's end did not close, and those of an
+// issue whose retro, owed after the deadline, relaunched its agent and provisioned its workspace
+// again in the lifecycle it reopened — and the root, where a retro's wake brought its architect back
+// since the linger's end retired it: a tree_close of each role of each of them, which retires those
+// claims and reserves the lifecycle's cleanup (store's ReserveWorkflowTreeCleanup), and the removal
+// of each one's workspace (closeTreeRows). A retro of the tree open again is left to close the tree
+// itself when it ends, and a close queued for an end that a later one followed is left to the
+// later one's, so each end of the tree's last open retro closes the tree once. A close that comes
+// before its hour has passed, as the engine's clock reads it, waits for it.
+func (e *Engine) closeAfterRetros(ctx context.Context, tx pgx.Tx, root record.Issue, ended time.Time) (intake.Result, error) {
+	open, err := e.store.OpenRetrosOfTree(ctx, tx, root.Tree)
+	if err != nil || len(open) > 0 {
+		return intake.Result{}, err
+	}
+	since, err := e.store.RetrosOfTreeEndedSince(ctx, tx, root.Tree, *root.LingerUntil)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if len(since) > 0 && since[len(since)-1].EndedAt.After(ended) {
+		return intake.Result{}, nil
+	}
+	if due := ended.Add(pods.RetroWakeWindow); e.now().Before(due) {
+		return intake.Result{}, wait.Until(due, fmt.Sprintf("the close of tree %s waits for the hour after its last retro after a close ended, at %s",
+			root.Key, ended.UTC().Format(time.RFC3339)))
+	}
+	left := make(map[string]bool, len(since)+1)
+	for _, retro := range since {
+		left[retro.Issue] = true
+	}
+	if !left[root.Key] {
+		back, err := e.architectBack(ctx, tx, root)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		left[root.Key] = back
 	}
 	members, err := e.treeMembers(ctx, tx, root)
 	if err != nil {
-		return err
+		return intake.Result{}, err
 	}
-	if err := e.closeTreeRows(ctx, tx, root, members); err != nil {
-		return err
+	var closing []record.Issue
+	var keys []string
+	for _, member := range members {
+		if left[member.Key] {
+			closing, keys = append(closing, member), append(keys, member.Key)
+		}
 	}
-	e.logOnCommit(ctx, "workflow: the last open retro after a close of a tree past its linger ended; the tree closes again", "tree", root.Key,
-		"generation", root.Generation, "issues", len(members))
-	return e.closeLinger(ctx, root.Tree)
+	if err := e.closeTreeRows(ctx, tx, root, closing); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: the hour after the last retro after a close of a tree past its linger ended has passed; the tree closes again",
+		"tree", root.Key, "generation", root.Generation, "issues", keys)
+	return intake.Result{}, e.closeLinger(ctx, root.Tree)
+}
+
+// architectBack is whether the architect of root holds a claim that has not retired: one a retro's
+// wake relaunched in the tree's lifecycle after the linger's end retired it (retroWake).
+func (e *Engine) architectBack(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
+	token, err := stepClaim(root, root.Key, claim.RoleArchitect)
+	if err != nil {
+		return false, err
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, root.Key, claim.RoleArchitect, root.Generation)
+	if err != nil {
+		return false, err
+	}
+	return run.Claim != nil && run.Claim.State != supervise.StateRetired, nil
 }
 
 // retroWake wakes the architect of a tree root whose claim the tree's close suspended, or the
@@ -591,12 +671,13 @@ func retroWakeStart(queued record.QueuedSupervise) bool {
 // (record.SuperviseRequest.RetroWake) stands no more at now, and "" while it stands: root is its
 // tree's root, the tree has left the workflow or lingers (record.Stopped), and it takes such a wake
 // (record.Store.TreeTakesRetroWake: a retro after the close of an issue of the tree is open, or the
-// last one ended within the hour Envoy keeps the finding's message, in a tree not past its
-// linger). A tree that runs again starts its architect itself, and a tree past that hour has
-// nothing more for it to hear. It is the one rule both ends of that wake read: the outbox's start of
-// it (internal/daemon's retroWakeHolds) and the send of its task (internal/daemon's
-// workflowRuntime.retroWakeHolds, supervise.Deps.RetroWakeHolds), which drops a task the tree's
-// readmission, or that hour's end, left on the architect's claim.
+// last one ended within the hour Envoy keeps the finding's message, whatever the tree's linger,
+// since the close of a tree past its linger waits that hour out: closeTreeAfterRetros). A tree that
+// runs again starts its architect itself, and a tree past that hour has nothing more for it to hear.
+// It is the one rule both ends of that wake read: the outbox's start of it (internal/daemon's
+// retroWakeHolds) and the send of its task (internal/daemon's workflowRuntime.retroWakeHolds,
+// supervise.Deps.RetroWakeHolds), which drops a task the tree's readmission, or that hour's end,
+// left on the architect's claim.
 func RetroWakeStands(ctx context.Context, records record.Store, tx pgx.Tx, root record.Issue, now time.Time) (string, error) {
 	switch {
 	case !claim.IsTreeRoot(root.Key, root.Tree):
@@ -608,7 +689,7 @@ func RetroWakeStands(ctx context.Context, records record.Store, tx pgx.Tx, root 
 	if err != nil || takes {
 		return "", err
 	}
-	return "no retro after a close of the tree is open, and the last one ended over an hour ago or the tree is past its linger", nil
+	return "no retro after a close of the tree is open, and the last one ended over an hour ago", nil
 }
 
 // retroWakeOwed is whether root's architect has a retro's wake still to take: its start queued

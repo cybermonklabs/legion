@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
@@ -1294,39 +1297,103 @@ func TestARootClosedInItsRetroKeepsItsTurn(t *testing.T) {
 	}
 }
 
-// The end of a tree's linger waits for an open retro after a close of the tree, as it waits for an
-// open production check: the retro's agent works in the tree's Sandbox, which the end deletes. The
-// expiry is a wait until the retro's bound, writes no tree_close, and the end applies once the
-// retro has ended.
-func TestALingerWaitsForAnOpenRetroAfterAClose(t *testing.T) {
+// s10: an open retro after a close holds no other issue (P8, as the architect ruled in
+// dispatch://INFRA-5602/comment/cb340baf-4cb2-4c11-8ae2-801e623daa5e). The root is closed while a
+// child that never started waits at admitted, and the root's run had no retro, so its close opens
+// the root's own. The linger's end applies at its deadline with that retro open: it hands the
+// waiting child over at once and writes every close row of the tree but the root's, whose retro
+// keeps its agent and its pod. The root's report ends the tree's last open retro, past the linger,
+// and leaves the close of what the end left to the hour after it, for the wake of a finding the
+// retro published (closeTreeAfterRetros): a linger_close row due then. Applied before that hour,
+// the close waits; once it has passed, it writes the root's rows, a tree_close of each of its roles
+// and the removal of its workspace, and none of the child's again.
+func TestALingersEndAtItsDeadlineDefersOnlyTheCloseOfAnOpenRetrosIssue(t *testing.T) {
 	t.Parallel()
 	r := newRetroRig(t)
 	r.root(t, phase.Admitted)
+	r.member(t, "LEGION-209", "LEGION-208", phase.Admitted, 43)
 	r.runTo(t, "LEGION-208", phase.Implementing)
 	r.person(t, "LEGION-208", "done")
+	recordTheStatusAMoveShows(t, r.pool, "LEGION-208", "done")
 	lingering(t, r.pool, "LEGION-208")
+	if row, found := runRetroOf(t, r.pool, "LEGION-208", 1); !found || !row.open() {
+		t.Fatalf("the root's run_retros row after its close = %+v (found %t), want its retro after the close open", row, found)
+	}
+	apply := func(id string, fact intake.LingerExpired) error {
+		_, err := intake.ApplyFact(context.Background(), r.pool, "outbox", id, fact, r.engine, admissionStub{})
+		return err
+	}
+	// closes counts the tree_close rows of each issue and role, and the workspace removals of each
+	// issue, the outbox holds newer than mark.
+	closes := func(mark int64) map[string]int {
+		t.Helper()
+		got := map[string]int{}
+		for _, key := range []string{"LEGION-208", "LEGION-209"} {
+			for _, request := range supervisesSince(t, r.pool, key, mark) {
+				if request.Op == "tree_close" {
+					got[key+"/"+string(request.Role)]++
+				}
+			}
+			got[key+"/workspace"] += len(rowsSince(t, r.pool, key, string(record.OutboxKindWorkspaceRemove), mark))
+		}
+		return got
+	}
+	everyRow := func(key string) map[string]int {
+		want := map[string]int{key + "/workspace": 1}
+		for _, role := range claim.Roles {
+			want[key+"/"+string(role)] = 1
+		}
+		return want
+	}
 
 	r.at(2 * time.Hour)
-	expiry := intake.LingerExpired{Issue: "LEGION-208", Generation: 1}
-	_, err := intake.ApplyFact(context.Background(), r.pool, "outbox", "linger:LEGION-208:1", expiry, r.engine, admissionStub{})
-	if !errors.Is(err, wait.ErrWaiting) {
-		t.Fatalf("the linger's end with a retro open = %v, want a wait", err)
+	deadline := r.mark(t)
+	if err := apply(LingerEventID("LEGION-208", 1), intake.LingerExpired{Issue: "LEGION-208", Generation: 1}); err != nil {
+		t.Fatalf("the linger's end with the root's retro open = %v, want it applied at its deadline", err)
 	}
-	if at, ok := wait.UntilAt(err); !ok || !at.Equal(retroOpened.Add(RetroAfterCloseBound)) {
-		t.Fatalf("the wait names %s (%t), want the retro's bound %s", at, ok, retroOpened.Add(RetroAfterCloseBound))
+	if fences, writes := handoverFences(t, r.pool), rowsSince(t, r.pool, "LEGION-209", string(record.OutboxKindDispatchStatus), deadline); !slices.Equal(fences, []string{"LEGION-209"}) || len(writes) != 1 {
+		t.Fatalf("the linger's end handed over %v with %d status writes of LEGION-209, want LEGION-209 handed over at once with one write", fences, len(writes))
 	}
-	if closes := superviseRequests(t, r.pool, "tree_close"); len(closes) != 0 {
-		t.Fatalf("tree_close rows while the retro is open = %v, want none", closes)
+	want := everyRow("LEGION-209")
+	want["LEGION-208/workspace"] = 0
+	if got := closes(deadline); !maps.Equal(got, want) {
+		t.Fatalf("close rows at the linger's end = %v, want %v: every row of the child and none of the root, whose retro is open", got, want)
 	}
 
+	r.at(3 * time.Hour)
+	reported := r.mark(t)
 	if result := r.report(t, "LEGION-208", 1); result.Refusal != nil {
-		t.Fatalf("the root's retro report was refused: %+v", result.Refusal)
+		t.Fatalf("the report of the root's retro past its linger was refused: %+v", result.Refusal)
 	}
-	if _, err := intake.ApplyFact(context.Background(), r.pool, "outbox", "linger:LEGION-208:1", expiry, r.engine, admissionStub{}); err != nil {
-		t.Fatalf("the linger's end once the retro ended: %v", err)
+	ended, found := runRetroOf(t, r.pool, "LEGION-208", 1)
+	if !found || ended.ended == nil {
+		t.Fatalf("the root's run_retros row after its report = %+v (found %t), want it ended", ended, found)
 	}
-	if closes := superviseRequests(t, r.pool, "tree_close"); closes["LEGION-208/architect"] != 1 {
-		t.Fatalf("tree_close rows once the retro ended = %v, want the tree closed", closes)
+	deferred := rowsSince(t, r.pool, "LEGION-208", string(record.OutboxKindLingerClose), reported)
+	if len(deferred) != 1 || !deferred[0].nextAt.Equal(ended.ended.Add(pods.RetroWakeWindow)) {
+		t.Fatalf("linger_close rows at the end of the tree's last retro = %+v, want one due the hour after its end, %s", deferred, ended.ended.Add(pods.RetroWakeWindow))
+	}
+	var queued record.LingerClose
+	if err := json.Unmarshal(deferred[0].payload, &queued); err != nil || queued.RetrosEnded == nil || !queued.RetrosEnded.Equal(*ended.ended) {
+		t.Fatalf("the deferred close = %s (%v), want it to name the retro's end %s", deferred[0].payload, err, ended.ended)
+	}
+	if got := closes(reported); got["LEGION-208/architect"] != 0 || got["LEGION-208/workspace"] != 0 {
+		t.Fatalf("close rows of the root at its retro's end = %v, want none before the hour has passed", got)
+	}
+	fact := intake.LingerExpired{Issue: "LEGION-208", Generation: 1, RetrosEnded: queued.RetrosEnded}
+	id := LingerAfterRetrosEventID("LEGION-208", 1, *queued.RetrosEnded)
+	if err := apply(id, fact); !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the deferred close before its hour = %v, want a wait", err)
+	}
+
+	r.at(3*time.Hour + pods.RetroWakeWindow + time.Minute)
+	if err := apply(id, fact); err != nil {
+		t.Fatalf("the deferred close once its hour has passed = %v, want it applied", err)
+	}
+	want = everyRow("LEGION-208")
+	want["LEGION-209/workspace"] = 0
+	if got := closes(reported); !maps.Equal(got, want) {
+		t.Fatalf("close rows once the hour after the retro's end has passed = %v, want %v: the root's rows, which the linger's end left, and none of the child's again", got, want)
 	}
 }
 

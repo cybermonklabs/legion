@@ -1752,7 +1752,8 @@ A daemon restart retries the stored effect.
 Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions, and a claim whose session supervise's `forgetSession` has dropped starts a new one;
 the issue pod's launch turn orders a concurrent resume after any suspension already in flight.
 
-Linger expiry reserves its tree only while the root still lingers at the close's generation, so a re-admission that committed first fences it;
+Linger expiry reserves its tree only while the root still lingers at the close's generation, so a re-admission that committed first fences it, and not while a retro Legion runs after the close of an issue of the tree is open:
+that retro keeps its agent and its pod, so the expiry's close rows retire every other claim of the tree without a reservation, and the close of what they left, written once the tree's last such retro has ended and the hour after it has passed, reserves the cleanup ([The retro after a close](https://cybermonklabs.github.io/legion/legion/concepts/#the-retro-after-a-close));
 an operator close reserves after it authenticated the root close.
 Either reservation comes before the census, which then reads every stored claim of the tree, including one that persisted before the reservation but has not launched yet, and deletes nothing until all of them retired.
 A reservation that is not confirmed resumes on the next attempt, even after a re-admission, and stays the new start's wait until API confirmation:
@@ -3130,10 +3131,11 @@ When an issue that Legion started closes and its last run had no retro, that rel
 Its migration `20261125213821_run_retros` adds the table `run_retros`, one row for each issue and run: when the run started, when its retro started, and the retro after the issue's close, with when it opened, its bound, its agent, its end and its outcome.
 It adds the columns `claims.serving_retro_run` and `pending_task_deliveries.retro_run`, the run of the retro after a close that a claim serves and that a pending task is of.
 It writes the outbox's kind check (`outbox_kind_check`) again, as the list of `20261119203047_design_news` with `retro_bound` added.
-A `retro_bound` row ends a retro after a close that nobody reported at its bound, a `supervise` start that carries `retroRun` hands the retro's task to its agent, and one that carries `retroWake` wakes the architect of a closed tree's root for a message to its role topic while a retro of that tree is open.
+A `retro_bound` row ends a retro after a close that nobody reported at its bound, a `supervise` start that carries `retroRun` hands the retro's task to its agent, and one that carries `retroWake` wakes the architect of a closed tree's root for a message to its role topic while a retro of that tree is open or within the hour after the last one ended.
+A `linger_close` row that carries `retrosEnded` is the close a tree past its linger owes once the hour after its last retro after a close ended has passed: the claims and the workspace of each issue whose retro its linger's end left open, and of the root architect a finding woke.
 
 **Those queued rows must go before the earlier image is pinned.**
-The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind `retro_bound` nor a `supervise` row's `retroRun` or `retroWake`.
+The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields` in `record/outbox.go`) and knows neither the kind `retro_bound`, nor a `supervise` row's `retroRun` or `retroWake`, nor a `linger_close` row's `retrosEnded`.
 So it fails each such row at every attempt, and its issue's lifecycle lane behind it.
 That release names neither the table nor the two columns in any read or write, so it boots with them standing.
 Run the way back below with every daemon of the database stopped and before the release before starts, in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session:
@@ -3142,6 +3144,7 @@ Run the way back below with every daemon of the database stopped and before the 
 begin;
 delete from outbox where kind = 'retro_bound';
 delete from outbox where kind = 'supervise' and (payload ? 'retroRun' or payload ? 'retroWake');
+delete from outbox where kind = 'linger_close' and payload ? 'retrosEnded';
 alter table claims drop column if exists serving_retro_run;
 alter table pending_task_deliveries drop column if exists retro_run;
 drop table if exists run_retros;
@@ -3150,14 +3153,15 @@ commit;
 ```
 
 The header of `20261125213821_run_retros.up.sql` carries this same block as its last paragraph, which `migrations.WayBack` returns.
-The two deletes of queued rows are owed to the release before.
-Each row they delete is a bound, a retro's task or a root architect's wake, which a release that runs no retro after a close owes nobody.
+The three deletes of queued rows are owed to the release before.
+Each row they delete is a bound, a retro's task or a root architect's wake, which a release that runs no retro after a close owes nobody, or the close a tree past its linger owes the hour after its last retro after a close ended.
 The drops and the delete of the version row are owed to the roll-forward.
 With them gone, `store.apply` finds no row of this version and runs the file again, which fills `run_retros` from the issues as they stand then.
 The kind check keeps `retro_bound`, which admits every kind the release before writes, so the block needs no statement for it.
 
 **What the rollback costs.**
 What the way back costs is each retro after a close that is open at the rollback: the roll-forward opens none again, and its agent's next completion is refused as one on a `done` issue.
+It costs as well the close of what a tree's linger left to its retros after a close: a tree whose linger ended while one was open, or whose last one ended within the hour before the rollback, keeps the claims and the workspace of each such retro's issue, and its Sandbox, until a `todo` on its root re-admits the tree and its next linger ends.
 While the release before runs, an issue that closes with no retro in its last run gets no retro.
 
 **Every daemon sharing the database moves together.**

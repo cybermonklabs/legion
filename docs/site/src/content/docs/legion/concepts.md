@@ -755,7 +755,12 @@ sends its findings in the same way.
 The retro ends with its report, which rates the plan as every retro does, or 24 hours after it
 starts, with no rating. A `todo` that runs the issue again also ends it. The issue's status stays
 as the close left it. `dispatch steps --issue <KEY>` shows the retro as a run of the issue's retro
-step, and the linger of a finished tree waits until each such retro ends.
+step.
+
+The retro holds no other issue. The linger of a finished tree ends at its deadline, as it does
+with no retro: Legion hands over each child that waits and closes the rest of the tree. Only the
+retro's agent and its pod stay. When the last retro of a tree past its linger ends, the tree
+closes one hour later, so that a finding the retro sent at its end still wakes the root architect.
 
 ## Supervision
 

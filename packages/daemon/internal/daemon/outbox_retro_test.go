@@ -49,11 +49,22 @@ func retroClosedChild() record.Issue {
 		Tree: "LEGION-208", Parent: &parent, Title: "child", Phase: phase.Done, Generation: 2, Status: "done", Rank: "V"}
 }
 
-// The session the retro's agent kept from the run, which every relaunch of it must resume.
+// The session the retro's agent kept from the run, which every relaunch of it must resume, and the
+// one a root architect kept in a test that relaunches both (claimOfSession).
 const (
 	retroAgentSession     = "ses_implementer"
 	retroAgentSessionFile = "/sessions/implementer.jsonl"
+	retroArchitectSession = "ses_architect"
 )
+
+// sessionFileOf is the session file the claim that kept session left: retroAgentSessionFile for
+// the retro's agent, and a file of its own for any other.
+func sessionFileOf(session string) string {
+	if session == retroAgentSession {
+		return retroAgentSessionFile
+	}
+	return "/sessions/" + strings.TrimPrefix(session, "ses_") + ".jsonl"
+}
 
 // retroOutboxRig is the outbox of one project over a database of its own, with the daemon's claim
 // store (so a restart reads back what the claims wrote) and the fake runtime under its supervisor.
@@ -118,9 +129,17 @@ func newRetroOutboxRig(t *testing.T, issues []record.Issue, handlers ...intake.H
 // registered, so a resumed or relaunched claim can be brought up as its process brings it.
 func (r *retroOutboxRig) claimOf(issue record.Issue, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource) (*supervise.Machine, claim.Token) {
 	r.t.Helper()
+	return r.claimOfSession(issue, role, state, by, retroAgentSession)
+}
+
+// claimOfSession is claimOf with the session the claim kept named: two claims of one daemon cannot
+// record one session or one session file, so a test that relaunches two roles gives each its own
+// (sessionFileOf, readyUpAs, relaunchedInSession).
+func (r *retroOutboxRig) claimOfSession(issue record.Issue, role claim.Role, state supervise.ClaimState, by supervise.SuspendSource, session string) (*supervise.Machine, claim.Token) {
+	r.t.Helper()
 	token := mustClaimToken(r.t, issue.Key, role)
 	machine, _, err := r.sup.Create(r.ctx, supervise.Claim{Token: token, Project: "legion", Tree: issue.Tree, TreeEpoch: 1, Issue: issue.Key, Role: role,
-		Generation: 1, State: state, SuspendedBy: by, Session: retroAgentSession, SessionFile: retroAgentSessionFile}, "")
+		Generation: 1, State: state, SuspendedBy: by, Session: session, SessionFile: sessionFileOf(session)}, "")
 	if err != nil {
 		r.t.Fatalf("record the %s %s of %s: %v", state, role, issue.Key, err)
 	}
@@ -198,13 +217,19 @@ func (r *retroOutboxRig) wakeEngine() *workflow.Engine {
 // waiting for a task to be sent: the hello, the registration with its session, and its ready.
 func readyUp(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token) {
 	t.Helper()
+	readyUpAs(ctx, t, machine, token, retroAgentSession)
+}
+
+// readyUpAs is readyUp for a claim that kept session (claimOfSession).
+func readyUpAs(ctx context.Context, t *testing.T, machine *supervise.Machine, token claim.Token, session string) {
+	t.Helper()
 	machine.Wait()
 	generation := machine.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
-		supervise.RequestRegister{Claim: token, Generation: generation, Session: retroAgentSession, SessionFile: retroAgentSessionFile,
-			CapabilityHash: []byte("capability-of-" + retroAgentSession)},
-		supervise.RequestReady{Claim: token, Generation: generation, Session: retroAgentSession},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: sessionFileOf(session),
+			CapabilityHash: []byte("capability-of-" + session)},
+		supervise.RequestReady{Claim: token, Generation: generation, Session: session},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {
 			t.Fatalf("handle %T for %s: %v", ev, token, err)
@@ -286,13 +311,20 @@ func heldRetroTask(t *testing.T, machine *supervise.Machine, id int64, issue rec
 // resuming the session file it kept, and never spawned it afresh.
 func relaunchedInItsSession(t *testing.T, rt *fake.Runtime, token claim.Token) {
 	t.Helper()
+	relaunchedInSession(t, rt, token, retroAgentSession)
+}
+
+// relaunchedInSession is relaunchedInItsSession for a claim that kept session (claimOfSession).
+func relaunchedInSession(t *testing.T, rt *fake.Runtime, token claim.Token, session string) {
+	t.Helper()
+	file := sessionFileOf(session)
 	var resumes, spawns int
 	for _, call := range rt.Calls() {
 		switch {
 		case call.Method == "Resume" && call.Spec.Claim == token:
 			resumes++
-			if call.Spec.ResumeSessionFile != retroAgentSessionFile {
-				t.Fatalf("the runtime resumed %s from %q, want the session file it kept, %q", token, call.Spec.ResumeSessionFile, retroAgentSessionFile)
+			if call.Spec.ResumeSessionFile != file {
+				t.Fatalf("the runtime resumed %s from %q, want the session file it kept, %q", token, call.Spec.ResumeSessionFile, file)
 			}
 		case call.Method == "Spawn" && call.Spec.Claim == token:
 			spawns++
@@ -721,27 +753,59 @@ func TestARetroAndALookOfOneClaimAreServedInTurn(t *testing.T) {
 // lingers, its linger's end retires every claim and confirms the tree's cleanup, and a person
 // then sets it done, whose run had no retro. The retro's start reopens the tree's lifecycle for
 // it, at the next epoch, provisions the workspace the linger removed and relaunches the retired
-// implementer in the session it kept. At the retro's end, its report, the tree closes again: the
-// agent's claim is retired and the reopened epoch's cleanup is confirmed.
+// implementer in the session it kept. The retro is the tree's only open one: its agent publishes a
+// finding to the root architect's role topic and reports at once (P6). The report ends the retro
+// and retires its agent, and leaves the tree's close to the hour Envoy keeps the finding's message,
+// so the wake the listener reports for it relaunches the architect the linger's end retired, in its
+// kept session, in the reopened epoch, and the woken process is sent the wake's task. Once that
+// hour has passed the tree closes again: the architect is retired, the reopened epoch's cleanup is
+// confirmed and the workspace the retro ran in is removed.
 func TestARetroAfterTheLingerReopensAndClosesTheTree(t *testing.T) {
 	t.Parallel()
 	until := time.Now().Add(-time.Minute)
 	root := checkRoot()
 	root.Status, root.LingerUntil = "backlog", &until
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
-	r := newRetroOutboxRig(t, []record.Issue{root}, engine)
+	r := newRetroOutboxRig(t, []record.Issue{root})
+	podRecords, err := r.st.PodRecordsOf("LEGION")
+	if err != nil {
+		t.Fatalf("read the project's pod records: %v", err)
+	}
+	clock := time.Now()
+	engine := workflow.New(r.records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
+		Linger: time.Hour, Pods: podRecords, Clock: func() time.Time { return clock }}, quietLogger())
+	r.runner.handlers = append(r.runner.handlers, engine)
 	machine, token := r.claimOf(root, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByDaemon)
-
-	// The linger ends: its close retires the implementer, removes the workspace and confirms the
-	// tree's cleanup.
-	applyFact(t, r.pool, "outbox", "linger:LEGION-208:1", intake.LingerExpired{Issue: root.Key, Generation: root.Generation}, engine)
-	for range 2 {
-		if err := r.runner.RunOnce(r.ctx); err != nil {
-			t.Fatalf("run the linger's end: %v", err)
+	architect, architectToken := r.claimOfSession(root, claim.RoleArchitect, supervise.StateSuspended, supervise.SuspendedByDaemon, retroArchitectSession)
+	drain := func(what string) {
+		t.Helper()
+		for range 3 {
+			if err := r.runner.RunOnce(r.ctx); err != nil {
+				t.Fatalf("run %s: %v", what, err)
+			}
 		}
 	}
-	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("the implementer after the linger's end = %s, want retired", got)
+
+	// The linger ends: its close retires the implementer and the architect, removes the workspace
+	// and confirms the tree's cleanup.
+	applyFact(t, r.pool, "outbox", "linger:LEGION-208:1", intake.LingerExpired{Issue: root.Key, Generation: root.Generation}, engine)
+	drain("the linger's end")
+	// A close row that waited on the census (cleanup waits for every claim to retire) runs again
+	// on its backoff; let each finish now, so none is left to run in the reopened epoch.
+	for range 10 {
+		var left int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from outbox where kind = 'supervise' and payload->>'op' = 'tree_close'`).Scan(&left); err != nil {
+			t.Fatalf("count the close rows left: %v", err)
+		}
+		if left == 0 {
+			break
+		}
+		if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = now() where kind = 'supervise' and payload->>'op' = 'tree_close'`); err != nil {
+			t.Fatalf("bring the close rows due: %v", err)
+		}
+		drain("the close rows that waited")
+	}
+	if got, gotArchitect := machine.Claim().State, architect.Claim().State; got != supervise.StateRetired || gotArchitect != supervise.StateRetired {
+		t.Fatalf("the implementer and the architect after the linger's end = %s and %s, want both retired", got, gotArchitect)
 	}
 	if lc := r.lifecycle(root.Tree); !lc.CleanupStarted || lc.CleanupConfirmedAt.IsZero() || lc.Epoch != 1 {
 		t.Fatalf("the lifecycle after the linger's end = %+v, want epoch 1's cleanup confirmed", lc)
@@ -752,38 +816,79 @@ func TestARetroAfterTheLingerReopensAndClosesTheTree(t *testing.T) {
 	root.Status = "done"
 	putOutboxIssue(t, r.pool, r.records, root)
 	run := r.openRetroAfterClose(root, token)
-	if err := r.runner.execute(r.ctx, retroStart(t, root, claim.RoleImplementer, run, 80)); err != nil {
+	// The start's row id is below the ids of the rows the retro's end writes, as a real start's is:
+	// the close of the agent's claim is a stop that a newer start would supersede (workflow.StopActs).
+	const startRow = 1
+	if err := r.runner.execute(r.ctx, retroStart(t, root, claim.RoleImplementer, run, startRow)); err != nil {
 		t.Fatalf("the retro start in the tree past its linger = %v, want the lifecycle reopened and the implementer relaunched", err)
 	}
 	if lc := r.lifecycle(root.Tree); !lc.OpenUnderWorkflow() || lc.Epoch != 2 {
 		t.Fatalf("the lifecycle after the retro's start = %+v, want epoch 2 open under the workflow", lc)
 	}
-	if got := machine.Claim(); got.State == supervise.StateRetired || got.TreeEpoch != 2 || got.LastStartRow != 80 {
-		t.Fatalf("the implementer after the retro's start = %s in epoch %d with last start %d, want relaunched by row 80 in epoch 2",
-			got.State, got.TreeEpoch, got.LastStartRow)
+	if got := machine.Claim(); got.State == supervise.StateRetired || got.TreeEpoch != 2 || got.LastStartRow != startRow {
+		t.Fatalf("the implementer after the retro's start = %s in epoch %d with last start %d, want relaunched by row %d in epoch 2",
+			got.State, got.TreeEpoch, got.LastStartRow, startRow)
 	}
 	if got := r.provisioned.Load(); got != 1 {
 		t.Fatalf("the retro's start provisioned %d workspaces, want the one the linger removed, again", got)
 	}
 	relaunchedInItsSession(t, r.rt, token)
-	heldRetroTask(t, machine, 80, root, run)
+	heldRetroTask(t, machine, startRow, root, run)
+	// The agent's process comes up, as it does in a deployment: its report then finds a claim to
+	// close, which a launching one is not.
+	bringUp(r.ctx, t, machine, token)
 
-	// The retro's report ends it, and the tree, past its linger, closes again.
+	// The retro's agent reports at once after it publishes its finding: the report ends the tree's
+	// last open retro, and the listener's report of the finding's message wakes the architect.
 	applyFact(t, r.pool, "api", fmt.Sprintf("retro-after-close:%s:%d", root.Key, run), intake.RetroReport{Issue: root.Key, Claim: token,
 		Generation: run, PlanRating: record.PlanRating{Rating: 4, Reason: "The plan fit the work."}}, engine)
-	for range 2 {
-		if err := r.runner.RunOnce(r.ctx); err != nil {
-			t.Fatalf("run the retro's end: %v", err)
+	applyFact(t, r.pool, "listener", "finding-of-"+root.Key, intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(architectToken),
+		At: time.Now(), Report: "finding-of-" + root.Key}, engine)
+	drain("the retro's end and the finding's wake")
+	if got := machine.Claim().State; got != supervise.StateRetired {
+		t.Fatalf("the implementer after the retro's end = %s, want retired", got)
+	}
+	if got := architect.Claim(); got.State == supervise.StateRetired || got.TreeEpoch != 2 || got.Pending == nil || !got.Pending.RetroWake() {
+		t.Fatalf("the architect after the finding's wake = %s in epoch %d holding %+v, want it relaunched in epoch 2 holding the wake's task",
+			got.State, got.TreeEpoch, got.Pending)
+	}
+	relaunchedInSession(t, r.rt, architectToken, retroArchitectSession)
+	if lc := r.lifecycle(root.Tree); !lc.OpenUnderWorkflow() || lc.Epoch != 2 {
+		t.Fatalf("the lifecycle within the hour after the retro's end = %+v, want epoch 2 still open: the tree's close waits that hour out", lc)
+	}
+	readyUpAs(r.ctx, t, architect, architectToken, retroArchitectSession)
+	awaitSent(t, architect)
+	if prompts := r.promptsOf(architectToken); len(prompts) != 1 || !strings.Contains(prompts[0].Message, string(architectToken)) {
+		t.Fatalf("the woken architect's process was sent %+v, want the one wake task naming its role topic token %s", prompts, architectToken)
+	}
+
+	// The architect's turn on the finding ends and the idle release stops it, which the root's pod
+	// suspension, ahead of the tree's close in the root's lane, waits for.
+	if err := architect.Handle(r.ctx, supervise.RequestSuspend{Claim: architectToken, Reason: "the issue's pod is released", By: supervise.SuspendedByReleased}); err != nil {
+		t.Fatalf("release the woken architect: %v", err)
+	}
+	drain("the root's pod suspension")
+
+	// The hour passes, and the tree, past its linger, closes again.
+	clock = clock.Add(pods.RetroWakeWindow + time.Minute)
+	// Each row that waited on another runs again on its backoff, which the test brings forward.
+	for range 10 {
+		if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = now() where next_at > now()`); err != nil {
+			t.Fatalf("bring the tree's close and the rows ahead of it due: %v", err)
+		}
+		drain("the tree's close the hour after its last retro ended")
+		if architect.Claim().State == supervise.StateRetired {
+			break
 		}
 	}
-	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("the implementer after the retro's end = %s, want retired: the tree closed again", got)
+	if got := architect.Claim().State; got != supervise.StateRetired {
+		t.Fatalf("the architect once the hour has passed = %s, want retired: the tree closed again", got)
 	}
 	if lc := r.lifecycle(root.Tree); !lc.CleanupStarted || lc.CleanupConfirmedAt.IsZero() || lc.Epoch != 2 {
-		t.Fatalf("the lifecycle after the retro's end = %+v, want epoch 2's cleanup confirmed", lc)
+		t.Fatalf("the lifecycle once the hour has passed = %+v, want epoch 2's cleanup confirmed", lc)
 	}
 	if got := r.removed.Load(); got <= removedAtLinger {
-		t.Fatalf("the retro's end removed no workspace (%d removals, %d at the linger's end), want the one the retro ran in removed", got, removedAtLinger)
+		t.Fatalf("the tree's close removed no workspace (%d removals, %d at the linger's end), want the one the retro ran in removed", got, removedAtLinger)
 	}
 }
 
@@ -991,8 +1096,8 @@ func retroWakeRow(t *testing.T, root record.Issue, id int64) record.OutboxRow {
 // after a close of its tree (INFRA-5602's P6): it resumes the architect while one is open, and for
 // the hour Envoy keeps the message after the tree's last one ended (pods.RetroWakeWindow), since
 // the retro's agent reports a moment after it publishes and its report can end that retro before
-// this row runs. It finishes without acting, and starts and resumes nothing, once that hour has
-// passed, in a tree past its linger, whose last retro's end closed it again, and in a tree that
+// this row runs; in a tree past its linger too, whose close waits that hour out. It finishes
+// without acting, and starts and resumes nothing, once that hour has passed, and in a tree that
 // runs again.
 func TestARetroWakeStartIsFencedOnTheHourAfterTheTreesLastRetroEnded(t *testing.T) {
 	t.Parallel()
@@ -1012,7 +1117,7 @@ func TestARetroWakeStartIsFencedOnTheHourAfterTheTreesLastRetroEnded(t *testing.
 			r.endRetroAfterCloseAt(root, run, time.Now().Add(-time.Hour-time.Minute), record.RetroOutcomePassed, record.RetroEndReport)
 			return root
 		}},
-		{name: "the tree is past its linger, its last retro ended a minute ago", fence: func(r *retroOutboxRig, root record.Issue, run uint64) record.Issue {
+		{name: "the tree is past its linger, its last retro ended a minute ago", acts: true, fence: func(r *retroOutboxRig, root record.Issue, run uint64) record.Issue {
 			r.endRetroAfterCloseAt(root, run, time.Now().Add(-time.Minute), record.RetroOutcomePassed, record.RetroEndReport)
 			until := time.Now().Add(-30 * time.Second)
 			root.LingerUntil = &until

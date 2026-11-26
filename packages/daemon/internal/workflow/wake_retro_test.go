@@ -79,8 +79,8 @@ func TestAMessageToTheRootArchitectOfAClosedTreeWakesItWhileARetroIsOpen(t *test
 // the message for an hour (pods.RetroWakeWindow), and for that hour after the tree's last retro
 // after a close ended, the root architect the tree's close suspended is woken for it as while a
 // retro is open: one start of the architect marked as a retro's wake. Here the root's own retro is
-// the tree's only one. A message more than that hour after the end wakes nothing, and neither does
-// one to a tree past its linger, whose last retro's end closed it again (closeTreeAfterRetros).
+// the tree's only one. A message more than that hour after the end wakes nothing. A tree past its
+// linger is woken within that hour as well: its close waits that hour out (closeTreeAfterRetros).
 func TestARetroWakeStandsForTheHourAfterTheTreesLastRetroEnded(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -91,7 +91,8 @@ func TestARetroWakeStandsForTheHourAfterTheTreesLastRetroEnded(t *testing.T) {
 	}{
 		{name: "the tree's last retro ended a minute before the message", linger: 3 * time.Hour, after: time.Minute, wakes: true},
 		{name: "the tree's last retro ended more than an hour before the message", linger: 3 * time.Hour, after: time.Hour + time.Minute},
-		{name: "the tree is past its linger", linger: 30 * time.Minute, after: 31 * time.Minute},
+		{name: "the tree is past its linger, its last retro ended within the hour", linger: 30 * time.Minute, after: 31 * time.Minute, wakes: true},
+		{name: "the tree is past its linger, its last retro ended more than an hour before the message", linger: 30 * time.Minute, after: time.Hour + time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

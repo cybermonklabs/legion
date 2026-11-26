@@ -228,16 +228,26 @@ func (s *Postgres) OpenRetrosOfTree(ctx context.Context, tx pgx.Tx, tree string)
 
 // TreeTakesRetroWake is whether the architect of tree's root takes the wake of a retro's finding at
 // now, the caller's clock: a retro after the close of an issue of the tree is open, or one ended no
-// earlier than pods.RetroWakeWindow before now, in a tree not past its linger
-// (pods.RetroWakeHoldsSQL, which the pod gate embeds too). A retro's agent publishes its finding and
-// reports a moment later, so the wake of the finding can come after the report ended the tree's last
-// open retro, for as long as Envoy keeps the message.
+// earlier than pods.RetroWakeWindow before now, whatever the tree's linger (pods.RetroWakeHoldsSQL,
+// which the pod gate embeds too). A retro's agent publishes its finding and reports a moment later,
+// so the wake of the finding can come after the report ended the tree's last open retro, for as
+// long as Envoy keeps the message.
 func (s *Postgres) TreeTakesRetroWake(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error) {
 	var takes bool
 	if err := tx.QueryRow(ctx, `select `+pods.RetroWakeHoldsSQL("$1", "$2::timestamptz"), tree, now).Scan(&takes); err != nil {
 		return false, fmt.Errorf("read whether the root architect of tree %s takes a retro's wake: %w", tree, err)
 	}
 	return takes, nil
+}
+
+// RetrosOfTreeEndedSince is every retro after a close of the tree's issues that ended at since or
+// later, by its end, then by issue: the retros whose claims and workspaces a tree past its linger
+// still owes the close of once they have ended (the workflow's closeAfterRetros), with since the
+// linger's deadline.
+func (s *Postgres) RetrosOfTreeEndedSince(ctx context.Context, tx pgx.Tx, tree string, since time.Time) ([]RunRetro, error) {
+	return queryRunRetros(ctx, tx, fmt.Sprintf("read the retros after a close of tree %s ended since %s", tree, since.UTC().Format(time.RFC3339)),
+		`select `+runRetroColumns+` from run_retros where tree = $1 and opened_at is not null and ended_at >= $2
+		order by ended_at, issue, generation`, tree, since)
 }
 
 // CarryRunRetro copies the run's start and its retro's start from generation fromGen to toGen of

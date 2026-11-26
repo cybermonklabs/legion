@@ -4264,10 +4264,17 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 
 // linger is a tree's linger coming due (record.LingerClose): the expiry is applied once, under the
 // event workflow.LingerEventID names, which the end of the last retro after a close of a tree past
-// its linger reads to tell an expiry that already closed the tree from one still to come.
+// its linger reads to tell an expiry that already closed the tree from one still to come. A row
+// that names RetrosEnded is the close that end left until the hour after it had passed, applied
+// under an event of that end's own (workflow.LingerAfterRetrosEventID), so a retro that reopens the
+// tree after one such close is closed again by its own.
 func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload record.LingerClose) error {
-	_, err := intake.ApplyFact(ctx, r.pool, "outbox", workflow.LingerEventID(row.Issue, payload.Generation), intake.LingerExpired{
-		Issue: row.Issue, Generation: payload.Generation,
+	id := workflow.LingerEventID(row.Issue, payload.Generation)
+	if payload.RetrosEnded != nil {
+		id = workflow.LingerAfterRetrosEventID(row.Issue, payload.Generation, *payload.RetrosEnded)
+	}
+	_, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.LingerExpired{
+		Issue: row.Issue, Generation: payload.Generation, RetrosEnded: payload.RetrosEnded,
 	}, r.handlers...)
 	if err != nil {
 		return fmt.Errorf("apply linger expiration for %s: %w", row.Issue, err)
@@ -4463,10 +4470,10 @@ func (r *outbox) retroHolds(ctx context.Context, row record.OutboxRow, payload r
 // takes such a wake, a retro after the close of an issue of the tree open or the last one ended
 // within the hour Envoy keeps the finding's message (pods.RetroWakeWindow). That hour is what
 // keeps the wake standing behind the retro's own report, which can end the tree's last open retro
-// the moment after its agent published the finding. A tree re-admitted since (its root running
-// again, at a later generation) starts its architect itself, and a tree past that hour, or past
-// its linger, has nothing more for it to hear: either leaves the row nothing to start, and it
-// finishes without acting, logged with why.
+// the moment after its agent published the finding, in a tree past its linger too, whose close
+// waits that hour out. A tree re-admitted since (its root running again, at a later generation)
+// starts its architect itself, and a tree past that hour has nothing more for it to hear: either
+// leaves the row nothing to start, and it finishes without acting, logged with why.
 func (r *outbox) retroWakeHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (bool, error) {
 	why := ""
 	if payload.Generation != issue.Generation {
@@ -4487,12 +4494,14 @@ func (r *outbox) retroWakeHolds(ctx context.Context, row record.OutboxRow, paylo
 }
 
 // reopenTreeForRetro reopens the lifecycle of issue's tree for a start of a retro after a close
-// that a fence let through (retroHolds, retroWakeHolds), where the tree is past its linger: the
-// linger's end retired every claim of the tree and confirmed its cleanup, so no claim launches
-// there until a lifecycle is open again (store.Store.ReopenTreeForRetro). A tree still open
-// changes nothing, and a cleanup reserved and not yet confirmed is a wait
-// (treelifecycle.ErrCleanupReserved): the row runs again once the release confirms, and reopens
-// then. The workflow closes the tree again when the last retro after a close of it ends.
+// that a fence let through (retroHolds, retroWakeHolds), where the tree is past its linger and its
+// cleanup confirmed: that linger's end retired every claim of the tree, so no claim launches there
+// until a lifecycle is open again (store.Store.ReopenTreeForRetro). A tree still open changes
+// nothing — one whose linger has not ended, and one whose linger ended while a retro after a close
+// of it was open, which reserves no cleanup — and a cleanup reserved and not yet confirmed is a
+// wait (treelifecycle.ErrCleanupReserved): the row runs again once the release confirms, and
+// reopens then. The workflow closes the tree again the hour after the last retro after a close of
+// it ends.
 func (r *outbox) reopenTreeForRetro(ctx context.Context, row record.OutboxRow, issue record.Issue) error {
 	lifecycle, reopened, err := r.trees.ReopenTreeForRetro(ctx, r.project, issue.Tree)
 	if err != nil {

@@ -220,9 +220,10 @@ func TestTheRunRetroMigrationFillsTheCurrentRuns(t *testing.T) {
 // The way back of 20261125213821, the last paragraph of its header (migrations.WayBack), is what
 // an operator runs with every daemon stopped before the release before starts. That release
 // decodes an outbox payload strictly (record.DecodeOutboxPayload, DisallowUnknownFields), so each
-// queued row this release writes and it does not know is deleted: a retro_bound row, and a
-// supervise start that carries retroRun or retroWake. Every other row stands, a start that
-// carries a look among them. The way back drops the table and the two columns of the serving
+// queued row this release writes and it does not know is deleted: a retro_bound row, a
+// supervise start that carries retroRun or retroWake, and a linger_close row that carries
+// retrosEnded. Every other row stands, a start that carries a look and a linger's own close among
+// them. The way back drops the table and the two columns of the serving
 // marker and the migration's version row, so the roll-forward's Migrate applies the file again,
 // which fills run_retros from the issues as they stand then. The claim and the delivery the
 // columns were on stay, as the release before wrote them.
@@ -252,6 +253,8 @@ func TestTheRunRetroMigrationsWayBackRemovesWhatTheReleaseBeforeCannotRead(t *te
 	queue("supervise", `{"op": "start", "tree": "LEGION-5101", "role": "implementer", "generation": 1, "task": "a phase"}`)
 	queue("supervise", `{"op": "suspend", "tree": "LEGION-5101", "role": "implementer", "generation": 1}`)
 	queue("retro_bound", `{"generation": 2}`)
+	queue("linger_close", `{"generation": 1, "retrosEnded": "2026-11-26T10:00:00Z"}`)
+	queue("linger_close", `{"generation": 1}`)
 
 	seed.exec(wayBackOf(t, runRetrosVersion, runRetrosRelease))
 
@@ -267,8 +270,9 @@ func TestTheRunRetroMigrationsWayBackRemovesWhatTheReleaseBeforeCannotRead(t *te
 		`supervise {"op": "start", "role": "implementer", "tree": "LEGION-5101", "checkLook": 1, "generation": 1}`,
 		`supervise {"op": "start", "role": "implementer", "task": "a phase", "tree": "LEGION-5101", "generation": 1}`,
 		`supervise {"op": "suspend", "role": "implementer", "tree": "LEGION-5101", "generation": 1}`,
+		`linger_close {"generation": 1}`,
 	}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("the queued rows after the way back = %q, want %q: each retro_bound row and each start that carries retroRun or retroWake deleted, every other row kept", got, want)
+		t.Fatalf("the queued rows after the way back = %q, want %q: each retro_bound row, each start that carries retroRun or retroWake and each linger_close row that carries retrosEnded deleted, every other row kept", got, want)
 	}
 	if got, want := rowsAsText(t, store, `select count(*)::text from claims where token = 'legion-LEGION-5101-implementer'`), []string{"1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("claims of the retro's agent after the way back = %v, want the claim kept: the columns went, the row did not", got)

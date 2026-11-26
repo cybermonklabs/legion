@@ -586,19 +586,28 @@ func (e *Engine) handOver(ctx context.Context, tx pgx.Tx, root, child record.Iss
 	return e.enqueue(ctx, tx, child.Key, record.HandOverStatusWrite("todo", child.Status, root.Tree, root.Generation))
 }
 
-// lingerExpired closes the tree whose root's linger elapsed at the generation the fact names: a
-// tree_close of every member's claims, the removal of every member's workspace (closeTreeRows),
-// and the hand-over of each member unfinishedHandOvers names — every member a root that stayed
-// done left in the workflow, or, under a root that did not, one left awaiting its merge with its
-// pull request open. The close waits while a member's production check is open: the check's looks
-// run in the tree's Sandbox, on its volume, which the close deletes, so the fact returns a wait
-// naming the moment the earliest open check is bound to have ended its last look (its bound plus
-// the look bound), rolls back unapplied, and its row runs again then — or sooner, since the close
-// of the tree's last open check re-arms the row (closeCheck). It waits the same way while a retro
-// after a close of the tree is open, whose agent works in the tree's Sandbox too, until the
-// earliest such retro's bound — or sooner, since the end of the tree's last open retro re-arms the
-// row (closeTreeAfterRetros). A tree whose root was reopened, or that lingers at a later
-// generation, changes nothing.
+// lingerExpired closes the tree whose root's linger elapsed at the generation the fact names, at
+// its deadline: a tree_close of every member's claims, the removal of every member's workspace
+// (closeTreeRows), and the hand-over of each member unfinishedHandOvers names — every member a
+// root that stayed done left in the workflow, or, under a root that did not, one left awaiting its
+// merge with its pull request open. The close waits while a member's production check is open:
+// the check's looks run in the tree's Sandbox, on its volume, which the close deletes, so the fact
+// returns a wait naming the moment the earliest open check is bound to have ended its last look
+// (its bound plus the look bound), rolls back unapplied, and its row runs again then — or sooner,
+// since the close of the tree's last open check re-arms the row (closeCheck).
+//
+// An open retro after a close holds no other issue (P8 of dispatch://INFRA-5602, as its architect
+// ruled in dispatch://INFRA-5602/comment/cb340baf-4cb2-4c11-8ae2-801e623daa5e): the retro moves
+// nothing, so it delays no hand-over, admission or start. The close applies at its deadline with
+// such a retro open, hands each member over as it does with none, and writes every close row but
+// the tree_close rows and the workspace removal of each member whose retro after its close is open:
+// that retro keeps its agent and its pod. Nor is the tree's cleanup reserved while it is open
+// (store's ReserveWorkflowTreeCleanup), so the tree's lifecycle stays open for the retro's agent,
+// which an idle release takes and a message to its role topic wakes, and for the root architect a
+// finding of it wakes (retroWake), which the close retired. The end of the tree's last open retro
+// writes the close of what is left once the hour Envoy keeps a finding's message has passed
+// (closeTreeAfterRetros): a fact naming RetrosEnded is that close coming due (closeAfterRetros). A
+// tree whose root was reopened, or that lingers at a later generation, changes nothing.
 func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.LingerExpired) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Generation != fact.Generation || !issue.Lingers() {
@@ -613,22 +622,31 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 		return intake.Result{}, wait.Until(earliest.BoundAt.Add(CheckLookBound),
 			fmt.Sprintf("tree %s lingers past its deadline; member %s's production check is open", issue.Key, earliest.Issue))
 	}
+	if fact.RetrosEnded != nil {
+		return e.closeAfterRetros(ctx, tx, *issue, *fact.RetrosEnded)
+	}
 	retros, err := e.store.OpenRetrosOfTree(ctx, tx, issue.Tree)
 	if err != nil {
 		return intake.Result{}, err
-	}
-	if len(retros) > 0 {
-		return intake.Result{}, wait.Until(*retros[0].BoundAt,
-			fmt.Sprintf("tree %s lingers past its deadline; member %s's retro after its close is open", issue.Key, retros[0].Issue))
 	}
 	members, err := e.treeMembers(ctx, tx, *issue)
 	if err != nil {
 		return intake.Result{}, err
 	}
-	if err := e.closeTreeRows(ctx, tx, *issue, members); err != nil {
+	var closing []record.Issue
+	var kept []string
+	for _, member := range members {
+		if slices.ContainsFunc(retros, func(retro record.RunRetro) bool { return retro.Issue == member.Key }) {
+			kept = append(kept, member.Key)
+			continue
+		}
+		closing = append(closing, member)
+	}
+	if err := e.closeTreeRows(ctx, tx, *issue, closing); err != nil {
 		return intake.Result{}, err
 	}
-	e.logOnCommit(ctx, "workflow: linger closed the tree", "tree", issue.Key, "generation", issue.Generation, "issues", len(members))
+	e.logOnCommit(ctx, "workflow: linger closed the tree", "tree", issue.Key, "generation", issue.Generation, "issues", len(members),
+		"retrosOpen", kept)
 	handed, err := e.unfinishedHandOvers(ctx, tx, *issue, members)
 	if err != nil {
 		return intake.Result{}, err
@@ -653,9 +671,9 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 // closeTreeRows queues the close of root's tree over members, its issues: a tree_close of every
 // role of every member and the removal of every member's workspace. Each row names the root
 // generation whose linger it closes: a member keeps its own generation across re-admission, so only
-// that tells this linger's rows from a later one's. The linger's expiry writes them
-// (lingerExpired), and so does the end of the last retro after a close of a tree whose expiry
-// applied before that retro reopened it (closeTreeAfterRetros).
+// that tells this linger's rows from a later one's. The linger's expiry writes them for every
+// member but one whose retro after its close is open (lingerExpired), and the close the end of the
+// tree's last open retro queued writes them for what that expiry left (closeAfterRetros).
 func (e *Engine) closeTreeRows(ctx context.Context, tx pgx.Tx, root record.Issue, members []record.Issue) error {
 	for _, member := range members {
 		for _, role := range claim.Roles {

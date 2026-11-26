@@ -2202,8 +2202,10 @@ type Store interface {
 	OpenRetrosOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]RunRetro, error)
 	// TreeTakesRetroWake is whether the architect of tree's root takes the wake of a retro's
 	// finding at now: a retro after a close of the tree is open, or the last one ended within
-	// pods.RetroWakeWindow of now, in a tree not past its linger.
+	// pods.RetroWakeWindow of now, whatever the tree's linger. RetrosOfTreeEndedSince is every
+	// retro after a close of tree's issues that ended at since or later, by its end.
 	TreeTakesRetroWake(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	RetrosOfTreeEndedSince(ctx context.Context, tx pgx.Tx, tree string, since time.Time) ([]RunRetro, error)
 	// CarryRunRetro copies the run's start and its retro's start from generation fromGen to toGen
 	// of the same issue, in toTree, for an orphan carried into a tree of its own.
 	CarryRunRetro(ctx context.Context, tx pgx.Tx, issue string, fromGen, toGen uint64, toTree string) error
