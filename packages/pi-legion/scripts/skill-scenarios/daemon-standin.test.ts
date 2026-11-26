@@ -233,14 +233,15 @@ interface SeenRequest {
   readonly authorization: string | null;
 }
 
-/** A stub of the run's Dispatch that holds one plan document `artifactId` of `issue`, at latest
- *  version `latest`, with `version`'s markdown and blocks as Dispatch's version read answers them
+/** A stub of the run's Dispatch that holds one plan document `artifactId` of `issue` (null: a
+ *  document on no issue), at latest version `latest`, with `version`'s markdown and blocks as
+ *  Dispatch's version read answers them
  *  (`GET /api/v1/artifacts/{id}/versions/{n}?blocks=true`). With `documentStatus`, the document
  *  read is refused with that status; with `versionAnswer`, the version read answers what it
  *  returns at the time of the read. It records each request. */
 function stubDispatch(document: {
   readonly artifactId: string;
-  readonly issue: string;
+  readonly issue: string | null;
   readonly latest: number;
   readonly version: number;
   readonly markdown: string;
@@ -476,12 +477,13 @@ test("register_plan answers 500 naming the entry's exit and its stderr's last li
   }
 });
 
-/** A stand-in with a planted label and a stub Dispatch of one document of LWEVAL-8 at latest
- *  version 3, whose version 2 holds one plan task. `body` gets a call of register_plan for one
- *  version of it, the stand-in, the requests Dispatch saw, the entry's directory and the
- *  document's id. */
+/** A stand-in with a planted label and a stub Dispatch of one document of LWEVAL-8 (or of the
+ *  issue `dispatchOptions` names) at latest version 3, whose version 2 holds one plan task. `body`
+ *  gets a call of register_plan for LWEVAL-8 at one version of it, the stand-in, the requests
+ *  Dispatch saw, the entry's directory and the document's id. */
 async function withPlanCheck(
   dispatchOptions: {
+    readonly issue?: string | null;
     readonly documentStatus?: number;
     readonly versionAnswer?: () => Record<string, unknown>;
   },
@@ -557,6 +559,23 @@ test("register_plan answers 502 when the run's Dispatch fails its read, and runs
       expect(planStatuses(standin)).toEqual([502]);
     }
   );
+});
+
+// Catches: a register_plan that reads a document on no issue (Dispatch's `issue_key` null) as a
+// failed read and answers 502 DISPATCH_FAILED, which tells the agent to try again, where the
+// label's route answers 404 ARTIFACT_NOT_ON_ISSUE (architect.go).
+test("register_plan refuses a document on no issue 404 ARTIFACT_NOT_ON_ISSUE, and runs no entry", async () => {
+  await withPlanCheck({ issue: null }, async ({ registerPlan, standin, entryDir, artifactId }) => {
+    writeFileSync(path.join(entryDir, "planted-answer.json"), RAN_ANYWAY);
+    const response = await registerPlan(2);
+    expect(response.status).toBe(404);
+    expect(LegionErrorResponse.parse(await response.json())).toMatchObject({
+      code: "ARTIFACT_NOT_ON_ISSUE",
+      error: `${artifactId} is not a document of LWEVAL-8`,
+    });
+    expect(existsSync(path.join(entryDir, "request-seen.json"))).toBe(false);
+    expect(planStatuses(standin)).toEqual([404]);
+  });
 });
 
 // Catches: a register_plan that takes another issue's document, or a plan for an issue outside the

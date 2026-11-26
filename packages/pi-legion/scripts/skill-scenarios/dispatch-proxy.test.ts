@@ -76,6 +76,7 @@ function plansAnswer(project: string, key: (n: number) => string, planIds: reado
 
 interface Recording {
   readonly answerFile: string;
+  /** `plans-answer.source`, beside the answer, where the proxy reads it. */
   readonly sourceFile: string;
   /** The body the proxy must serve: the recording with every key mapped. */
   readonly served: string;
@@ -192,17 +193,7 @@ async function withProxy(
 ): Promise<void> {
   const log = path.join(dir, "dispatch-proxy.jsonl");
   const child = Bun.spawn(
-    [
-      process.execPath,
-      PROXY,
-      "0",
-      upstream,
-      log,
-      "--plans",
-      recording.answerFile,
-      RUN_PROJECT,
-      recording.sourceFile,
-    ],
+    [process.execPath, PROXY, "0", upstream, log, "--plans", recording.answerFile, RUN_PROJECT],
     { stdin: "ignore", stdout: "pipe", stderr: "pipe" }
   );
   try {
@@ -359,7 +350,6 @@ function startRefused(recording: Recording) {
       "--plans",
       recording.answerFile,
       RUN_PROJECT,
-      recording.sourceFile,
     ],
     { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 50_000 }
   );

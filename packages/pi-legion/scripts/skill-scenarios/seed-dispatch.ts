@@ -1,7 +1,6 @@
 // What seed.ts and owner-walk-seed.ts share of a run's scratch Dispatch: the person who files a
-// run's issues and answers its asks, Dispatch's approval answer, a read as the agent bearer, and
-// every handoff record of an issue. e2e/api.ts, which this module imports, reads its port
-// (DISPATCH_E2E_PORT) when it loads.
+// run's issues and answers its asks, Dispatch's approval answer, and every handoff record of an
+// issue. e2e/api.ts, which this module imports, reads its port (DISPATCH_E2E_PORT) when it loads.
 import type { Handoff, HandoffSummary } from "@legion/contracts";
 import { baseUrl, e2eAgentToken } from "../../../dispatch/e2e/api";
 
@@ -11,7 +10,7 @@ export const PERSON = "alice";
 export const APPROVE = "Approve";
 
 /** `GET route` as the agent bearer, its JSON answer; a refusal names the route and Dispatch's answer. */
-export async function agentGet<T>(route: string): Promise<T> {
+async function agentGet<T>(route: string): Promise<T> {
   const response = await fetch(new URL(route, baseUrl), {
     headers: { Authorization: `Bearer ${e2eAgentToken}` },
   });

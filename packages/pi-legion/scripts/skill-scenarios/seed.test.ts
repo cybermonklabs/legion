@@ -1372,7 +1372,8 @@ describe("owner-walk", () => {
 
 describe("capture-scored", () => {
   // Catches: a capture that keeps only the newest plan, or drops a version's authors, so the
-  // scorer cannot tell which session wrote which version.
+  // scorer cannot tell which session wrote which version; and one that captures from a fixture
+  // that is not the seed's whole fixture, which the scorer then refuses after the run.
   test("capture-scored keeps each plan version with its author", async () => {
     dispatch.issue("LWEVAL-6", "Finish the CSV importer", "LWEVAL-4");
     const other = { kind: "session", id: "ses-other" } as const;
@@ -1405,13 +1406,43 @@ describe("capture-scored", () => {
     });
     const dir = runDir();
     const file = path.join(dir, "fixture.json");
-    writeFileSync(
-      file,
-      `${JSON.stringify({ scenario: "owner-walk", issues: [{ key: "LWEVAL-6" }] })}\n`
+    const fixture = {
+      scenario: "owner-walk",
+      kind: "root",
+      project: "LWEVAL",
+      owner: "LWEVAL-4",
+      planned: "LWEVAL-6",
+      issues: [
+        {
+          key: "LWEVAL-6",
+          part: "planned",
+          title: "Finish the CSV importer",
+          parent: "LWEVAL-4",
+          status: "backlog",
+          spec: { artifact: "art-spec", approvedVersion: null },
+        },
+      ],
+      earlier: {
+        key: "LWEVAL-5",
+        record: { id: "h-0", version: 1 },
+        session: "rig-implementer-e1",
+        pr: 7,
+        head: "a".repeat(40),
+      },
+      plans: [],
+    };
+    const partial = Object.fromEntries(
+      Object.entries(fixture).filter(([key]) => key !== "planned")
     );
+    writeFileSync(file, `${JSON.stringify(partial)}\n`);
+    const reads = dispatch.calls.length;
+    await expect(ownerWalkSeed.captureScored(file, dir)).rejects.toThrow("planned");
+    expect(dispatch.calls.length).toBe(reads);
+    expect(existsSync(path.join(dir, "captured.json"))).toBe(false);
+    writeFileSync(file, `${JSON.stringify(fixture)}\n`);
     await ownerWalkSeed.captureScored(file, dir);
     const captured = JSON.parse(readFileSync(path.join(dir, "captured.json"), "utf8"));
-    expect(captured.fixture).toEqual({ scenario: "owner-walk", issues: [{ key: "LWEVAL-6" }] });
+    expect(captured.fixture).toEqual(fixture);
     expect(captured.issues).toHaveLength(1);
     expect(captured.issues[0]).toMatchObject({
       key: "LWEVAL-6",

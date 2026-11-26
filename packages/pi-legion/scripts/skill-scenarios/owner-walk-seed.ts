@@ -5,7 +5,7 @@
 //     owner-walk's world under LWEVAL, for an owner of <kind> (root or child), from
 //     worlds/owner-walk/ (owner-walk.ts names each file). <answer> is the run's plans-answer.json,
 //     the recorded plans answer the proxy serves, and plans-answer.source beside it is its source
-//     ({commit, sha256, keyMap}); the answer is held to its source as readPlansAnswer
+//     ({commit, sha256, keyMap}); the answer is held to its source as readRecordedPlans
 //     (scored-runs-contracts.ts) holds it, so an answer whose sha256 is not the source's is refused,
 //     as is a key map that does not map the answer's project to LWEVAL and each of its issues to a
 //     key of LWEVAL, and nothing else. It files, in this order: each recorded issue, closed, with
@@ -18,10 +18,10 @@
 //     owner's issue, with no plan. Each approval request is opened as OWNER_WALK_SEEDER, never the
 //     run's session. Writes the fixture (OwnerWalkFixture) to <file>.
 //   seed.ts capture-scored <file> <run dir>   (captureScored)
-//     the world's Dispatch records after a scored run: each issue <file>'s `issues` names, with its
-//     status, every document with every version (its authors and its markdown) and every handoff
-//     record with its author and body, as captured.json in <run dir> (Captured), the fixture beside
-//     them.
+//     the world's Dispatch records after a scored run: each issue of the fixture <file>
+//     (OwnerWalkFixture), with its status, every document with every version (its authors and its
+//     markdown) and every handoff record with its author and body, as captured.json in <run dir>
+//     (Captured), the fixture beside them.
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -42,9 +42,8 @@ import {
   OWNER_WALK_KINDS,
   OWNER_WALK_PROJECT,
   OwnerWalkFixture,
-  PlansAnswerSource,
   type RecordedPlan,
-  readPlansAnswer,
+  readRecordedPlans,
 } from "./scored-runs-contracts";
 import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
 
@@ -91,14 +90,12 @@ export async function ownerWalkIssues(
 ): Promise<void> {
   if (!(OWNER_WALK_KINDS as readonly string[]).includes(kind))
     throw new Error(`${kind} is no kind of owner; the kinds are ${OWNER_WALK_KINDS.join(" and ")}`);
-  const sourceFile = path.join(path.dirname(answerFile), "plans-answer.source");
   let plans: RecordedPlan[];
   try {
-    const source = PlansAnswerSource.parse(JSON.parse(readFileSync(sourceFile, "utf8")));
-    plans = readPlansAnswer(readFileSync(answerFile), source, OWNER_WALK_PROJECT).plans;
+    plans = readRecordedPlans(answerFile, OWNER_WALK_PROJECT).held.plans;
   } catch (error) {
     throw new Error(
-      `the seed takes the answer the capture recorded, no other: ${answerFile}, with its source ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`
+      `the seed takes the answer the capture recorded, no other: ${error instanceof Error ? error.message : String(error)}`
     );
   }
   const recordFile = path.join(OWNER_WALK_DIR, "earlier-implement.json");
@@ -200,13 +197,10 @@ export async function ownerWalkIssues(
 
 /** `capture-scored <file> <run dir>`: captured.json, the world's Dispatch records after the run. */
 export async function captureScored(file: string, runDir: string): Promise<void> {
-  const fixture = z.record(z.string(), z.unknown()).parse(JSON.parse(readFileSync(file, "utf8")));
-  const named = z
-    .looseObject({ issues: z.array(z.looseObject({ key: z.string().min(1) })) })
-    .parse(fixture);
+  const fixture = OwnerWalkFixture.parse(JSON.parse(readFileSync(file, "utf8")));
   const reader = { as: "agent" } as const;
   const issues: Captured["issues"] = [];
-  for (const { key } of named.issues) {
+  for (const { key } of fixture.issues) {
     const issue = await getIssue(key, reader);
     const artifacts: Captured["issues"][number]["artifacts"] = [];
     for (const artifact of issue.artifacts ?? []) {

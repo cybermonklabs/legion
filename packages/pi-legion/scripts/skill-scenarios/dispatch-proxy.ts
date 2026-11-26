@@ -12,31 +12,29 @@
  * log: the run's record of what the agents asked of Dispatch. `query` is the raw query without its
  * `?`, and `""` for none.
  *
- * `<key map>` is the recording's `plans-answer.source` (`PlansAnswerSource`): the commit it was
- * captured at, the sha256 of the recorded body, and the map from its project key and issue keys to
- * the run's. The proxy refuses to start, exit 2 naming what is wrong, unless the recording is held
- * to its source as scored-runs-contracts.ts's readPlansAnswer holds it: its sha256 is the source's
- * (both sums named), it is a plans answer in JSON, and the map takes the recording's project to
- * `<project>` and each of its issues to a key of `<project>`. A key is replaced where it is whole
- * (mapRecordedKeys: no letter, digit, `-` or `_` stands beside it), so a key that begins another
- * (`P-1` and `P-12`) replaces only itself. Only the strings that hold a key are written again;
- * every other byte of the recording is served as recorded.
+ * The recording's source is `plans-answer.source` beside `<answer>` (`PlansAnswerSource`): the
+ * commit it was captured at, the sha256 of the recorded body, and the map from its project key and
+ * issue keys to the run's. The proxy refuses to start, exit 2 naming what is wrong, unless the
+ * recording is held to its source as scored-runs-contracts.ts's readRecordedPlans holds it: its
+ * sha256 is the source's (both sums named), it is a plans answer in JSON, and the map takes the
+ * recording's project to `<project>` and each of its issues to a key of `<project>`. A key is
+ * replaced where it is whole (mapRecordedKeys: no letter, digit, `-` or `_` stands beside it), so
+ * a key that begins another (`P-1` and `P-12`) replaces only itself. Only the strings that hold a
+ * key are written again; every other byte of the recording is served as recorded.
  *
- * Usage: `bun dispatch-proxy.ts <port> <upstream> <log> [--plans <answer> <project> <key map>]`
+ * Usage: `bun dispatch-proxy.ts <port> <upstream> <log> [--plans <answer> <project>]`
  * Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's
  * pick).
  */
-import { readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import {
   type DispatchProxyLine,
   mapRecordedKeys,
-  PlansAnswerSource,
-  readPlansAnswer,
+  type RecordedPlansFiles,
+  readRecordedPlans,
 } from "./scored-runs-contracts";
 
-const USAGE =
-  "usage: bun dispatch-proxy.ts <port> <upstream> <log> [--plans <answer> <project> <key map>]";
+const USAGE = "usage: bun dispatch-proxy.ts <port> <upstream> <log> [--plans <answer> <project>]";
 
 function refuse(message: string): never {
   console.error(`dispatch-proxy: ${message}`);
@@ -45,7 +43,7 @@ function refuse(message: string): never {
 
 const [portArg, upstreamArg, logFile, ...rest] = Bun.argv.slice(2);
 if (portArg === undefined || upstreamArg === undefined || logFile === undefined) refuse(USAGE);
-if (rest.length !== 0 && (rest.length !== 4 || rest[0] !== "--plans")) refuse(USAGE);
+if (rest.length !== 0 && (rest.length !== 3 || rest[0] !== "--plans")) refuse(USAGE);
 /** The upstream server's root, with no trailing `/`, which each request's path follows. */
 const upstream = upstreamArg.replace(/\/+$/, "");
 if (!URL.canParse(upstream)) refuse(`the upstream ${upstreamArg} is no URL; ${USAGE}`);
@@ -69,32 +67,21 @@ function mapKeys(raw: string, keyMap: Readonly<Record<string, string>>): string 
 
 /** The plans read the proxy answers, and the body it answers it with; undefined without
  *  `--plans`. */
-const plans =
-  rest.length === 0 ? undefined : recordedPlans(rest[1] ?? "", rest[2] ?? "", rest[3] ?? "");
+const plans = rest.length === 0 ? undefined : recordedPlans(rest[1] ?? "", rest[2] ?? "");
 
 function recordedPlans(
   answerFile: string,
-  project: string,
-  sourceFile: string
+  project: string
 ): { readonly path: string; readonly body: string } {
-  let raw: Buffer;
-  let source: PlansAnswerSource;
+  let recording: RecordedPlansFiles;
   try {
-    raw = readFileSync(answerFile);
-    source = PlansAnswerSource.parse(JSON.parse(readFileSync(sourceFile, "utf8")));
+    recording = readRecordedPlans(answerFile, project);
   } catch (error) {
-    refuse(`cannot read the recording ${answerFile} and its source ${sourceFile}: ${error}`);
-  }
-  try {
-    readPlansAnswer(raw, source, project);
-  } catch (error) {
-    refuse(
-      `the recording ${answerFile}, with its source ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`
-    );
+    refuse(`the recording ${error instanceof Error ? error.message : String(error)}`);
   }
   return {
     path: `/api/v1/projects/${encodeURIComponent(project)}/plans`,
-    body: mapKeys(raw.toString("utf8"), source.keyMap),
+    body: mapKeys(recording.raw.toString("utf8"), recording.source.keyMap),
   };
 }
 

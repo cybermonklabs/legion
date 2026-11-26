@@ -12,6 +12,8 @@
  * label reads is absolute, because that binary runs in its own package directory.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { z } from "zod";
 
 const nonEmpty = z.string().min(1);
@@ -59,15 +61,27 @@ export type PodCallLine = z.infer<typeof PodCallLine>;
 export const ClausePass = z.union([z.boolean(), z.literal("pending")]);
 export type ClausePass = z.infer<typeof ClausePass>;
 
-/** A clause of a run: the check's sentence, its verdict, the evidence for it, and the counts it
- * read, each by name. */
+/** A clause of a run: its id (the stage clause's id, or the bound's), the check's sentence, its
+ * verdict, the evidence for it, and the counts it read, each by name. A reader names a clause by
+ * its id alone: the sentence is for a person, and a sentence reworded must not change a count. */
 export const ScoreClause = z.strictObject({
+  id: nonEmpty,
   clause: nonEmpty,
   pass: ClausePass,
   evidence: nonEmpty,
   counts: z.record(nonEmpty, count),
 });
 export type ScoreClause = z.infer<typeof ScoreClause>;
+
+/** A run's clauses: at least one, no two of one id. */
+const ScoreClauses = z
+  .array(ScoreClause)
+  .min(1)
+  .superRefine((clauses, context) => {
+    const ids = clauses.map((clause) => clause.id);
+    for (const id of new Set(ids.filter((id, at) => ids.indexOf(id) !== at)))
+      context.addIssue({ code: "custom", message: `two clauses have the id ${id}` });
+  });
 
 /** A fact reported beside the clauses. It changes no verdict. */
 export const Reported = z.strictObject({
@@ -102,7 +116,7 @@ export type Reach = z.infer<typeof Reach>;
 /** `score.json`: the run's clauses, what is reported beside them, and its reach. */
 export const Score = z.strictObject({
   run: nonEmpty,
-  clauses: z.array(ScoreClause).min(1),
+  clauses: ScoreClauses,
   reported: z.array(Reported),
   reach: z.array(Reach),
 });
@@ -125,7 +139,7 @@ export const ScoredRow = z
     label: nonEmpty,
     case: nonEmpty,
     pass: ClausePass,
-    clauses: z.array(ScoreClause).min(1),
+    clauses: ScoreClauses,
     reach: z.array(Reach),
   })
   .superRefine((row, context) => {
@@ -494,7 +508,7 @@ export type OwnerWalkFixture = z.infer<typeof OwnerWalkFixture>;
  * every version (its authors and its markdown), and every handoff record with its author and
  * body. */
 export const Captured = z.strictObject({
-  fixture: jsonObject,
+  fixture: OwnerWalkFixture,
   issues: z.array(
     z.strictObject({
       key: nonEmpty,
@@ -616,12 +630,42 @@ export interface HeldPlansAnswer {
   plans: RecordedPlan[];
 }
 
+/** The source of a recorded plans answer: `plans-answer.source`, beside the answer. */
+export const PLANS_SOURCE = "plans-answer.source";
+
+/** A recorded plans answer as readRecordedPlans reads it: its raw bytes, its source, and the
+ * answer held to that source. */
+export interface RecordedPlansFiles {
+  raw: Buffer;
+  source: PlansAnswerSource;
+  held: HeldPlansAnswer;
+}
+
+/**
+ * The recorded plans answer in `answerFile`, held to its source beside it (PLANS_SOURCE) by
+ * readPlansAnswer for `project`: its raw bytes, its source and the held answer. A file it cannot
+ * read, a source that does not parse and an answer its source does not hold all throw one error
+ * that names both files. The proxy, the seed, the world builder and the scorer read a recording
+ * only through this.
+ */
+export function readRecordedPlans(answerFile: string, project: string): RecordedPlansFiles {
+  const sourceFile = path.join(path.dirname(answerFile), PLANS_SOURCE);
+  try {
+    const raw = readFileSync(answerFile);
+    const source = PlansAnswerSource.parse(JSON.parse(readFileSync(sourceFile, "utf8")));
+    return { raw, source, held: readPlansAnswer(raw, source, project) };
+  } catch (error) {
+    throw new Error(
+      `${answerFile}, with its source ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 /**
  * The recorded plans answer `raw`, held to its source: its sha256 is the source's, it is a plans
  * answer, and the source's key map takes its project to `project`, each of its issues to a key of
  * `project`, no two of them to one key, and nothing the answer does not hold. Anything else
- * throws, naming each fault: the proxy, the seed, the world builder and the scorer read the
- * recording only through this.
+ * throws, naming each fault. readRecordedPlans reads a recording from its files through this.
  */
 export function readPlansAnswer(
   raw: Uint8Array,

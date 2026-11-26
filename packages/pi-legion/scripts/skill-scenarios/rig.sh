@@ -2418,7 +2418,7 @@ scored_session() {
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   # The agent's Dispatch: the proxy, which answers the plans read with the recorded answer.
   start_process proxy bun "$here/dispatch-proxy.ts" 0 "http://127.0.0.1:$dispatch_port" "$R/dispatch-proxy.jsonl" \
-    --plans "$R/plans-answer.json" "$owner_walk_project" "$R/plans-answer.source"
+    --plans "$R/plans-answer.json" "$owner_walk_project"
   await_start proxy "$proxy_pid" 30 "the Dispatch proxy to listen" grep -q '^listening on ' "$R/logs/proxy.log"
   # The pane, and the launch through the label's composer and runtime.
   base_env

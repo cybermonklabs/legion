@@ -38,12 +38,13 @@
  * its body. Before it reads a block it refuses what the label's route refuses before it reads one
  * (`api/plan.go`, planOwner and documentOfIssue): 403 `ISSUE_OUTSIDE_TREE` for an issue outside the
  * claim's tree (the claim's issue, and each issue of `--issues` in its tree), and 404
- * `ARTIFACT_NOT_ON_ISSUE` for a document Dispatch does not hold, or holds on another issue than the
- * request's. Neither runs the entry. An entry that exits non-zero is answered 500, naming its exit
- * and the last line of its stderr; so is an entry that leaves no answer, an answer whose status no
- * response carries (below 200, or a body on a status that has none), and a stand-in started
- * without `--label` or `--dispatch`: it never answers a plan on its own. A read of the run's
- * Dispatch that fails, and a version whose blocks cannot be read, are answered 502.
+ * `ARTIFACT_NOT_ON_ISSUE` for a document Dispatch does not hold, holds on no issue, or holds on
+ * another issue than the request's. Neither runs the entry. An entry that exits non-zero is
+ * answered 500, naming its exit and the last line of its stderr; so is an entry that leaves no
+ * answer, an answer whose status no response carries (below 200, or a body on a status that has
+ * none), and a stand-in started without `--label` or `--dispatch`: it never answers a plan on its
+ * own. A read of the run's Dispatch that fails, and a version whose blocks cannot be read, are
+ * answered 502.
  *
  * Every request appends one JSON line to the log file: `{at, path, status, grantId?, sessionId?,
  * mintedGrantId?, handoffId?, handoffVersion?, body?}` (C3's `StandinLogLine`), the run's record of
@@ -378,9 +379,10 @@ function resolveGrant(grantId: string): Response | undefined {
 }
 
 /** What Dispatch's document read answers (`GET /api/v1/artifacts/{id}`), as far as the stand-in
- * reads it: the issue the document is on, and its latest version. */
+ * reads it: the issue the document is on, null for a document on no issue, and its latest
+ * version. */
 const DispatchDocument = z.object({
-  issue_key: z.string(),
+  issue_key: z.string().nullable(),
   approval: z.object({ latest_version: z.number().int().positive() }),
 });
 

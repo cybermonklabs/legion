@@ -35,7 +35,7 @@
  *     Writes the run's world.json (OwnerWalkWorld): the case, the stage, its form's guidance and
  *     questions, and the plans read's project and keys as the run's Dispatch holds them: the run
  *     keys of the recorded answer's issues, read with plans-answer.source beside the answer
- *     (scored-runs-contracts.ts readPlansAnswer). Forms A, C and D take the two model ids, which
+ *     (scored-runs-contracts.ts readRecordedPlans). Forms A, C and D take the two model ids, which
  *     the guidance names; forms B and E take none and ignore them.
  *   owner-walk.ts guidance <world.json> <out>
  *     Writes the world's guidance file to <out>, its two model placeholders filled with the world's
@@ -55,9 +55,8 @@ import {
   type OwnerWalkForm,
   type OwnerWalkKind,
   OwnerWalkWorld,
-  PlansAnswerSource,
   type RecordedPlan,
-  readPlansAnswer,
+  readRecordedPlans,
 } from "./scored-runs-contracts";
 
 /** The world's files. */
@@ -451,7 +450,7 @@ export function questionsOf(form: OwnerWalkForm): string[] {
 
 /** The run's world: its case, its stage, its form's guidance with the two model ids, its form's
  * questions, and the plans read's project and keys: the run keys of the recorded answer's issues,
- * `plans` as readPlansAnswer answers them. */
+ * `plans` as readRecordedPlans answers them. */
 export function ownerWalkWorld(input: {
   case: OwnerWalkCase;
   stage: string;
@@ -533,14 +532,12 @@ function main(argv: string[]): void {
           console.log(`${caseName({ kind, form, family })} ${stage.runs[form]}`);
   } else if (command === "world" && (rest.length === 4 || rest.length === 6)) {
     const [name = "", stage = "", answerFile = "", out = "", claude, gpt] = rest;
-    const sourceFile = path.join(path.dirname(answerFile), "plans-answer.source");
     let plans: RecordedPlan[];
     try {
-      const source = PlansAnswerSource.parse(JSON.parse(readFileSync(sourceFile, "utf8")));
-      plans = readPlansAnswer(readFileSync(answerFile), source, OWNER_WALK_PROJECT).plans;
+      plans = readRecordedPlans(answerFile, OWNER_WALK_PROJECT).held.plans;
     } catch (error) {
       throw new Error(
-        `the recorded plans answer ${answerFile}, with its source ${sourceFile}: ${error instanceof Error ? error.message : String(error)}`
+        `the recorded plans answer ${error instanceof Error ? error.message : String(error)}`
       );
     }
     const world = ownerWalkWorld({

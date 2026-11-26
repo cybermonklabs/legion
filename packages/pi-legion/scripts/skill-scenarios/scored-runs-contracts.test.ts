@@ -377,9 +377,15 @@ test("a judgment with a verdict other than pass or fail does not parse", () => {
   ).toEqual([]);
 });
 
-/** A clause of a run's score or row, with planted evidence. */
-function clause(name: string, pass: boolean | "pending") {
-  return { clause: name, pass, evidence: `evidence-marker ${name}`, counts: {} };
+/** A clause of a run's score or row, by its id, with a planted sentence and evidence. */
+function clause(id: string, pass: boolean | "pending") {
+  return {
+    id,
+    clause: `sentence-marker ${id}`,
+    pass,
+    evidence: `evidence-marker ${id}`,
+    counts: {},
+  };
 }
 
 const REACH = [
@@ -510,6 +516,15 @@ test("a score's clause may be pending, and a clause whose pass is another word d
       "a clause with an unknown field": [
         Score,
         { ...score, clauses: [{ ...clause("read", true), judged: true }] },
+      ],
+      "a clause with no id": [Score, { ...score, clauses: [without(clause("read", true), "id")] }],
+      "two clauses of one id": [
+        Score,
+        { ...score, clauses: [clause("read", true), clause("read", false)] },
+      ],
+      "a row's two clauses of one id": [
+        RunRow,
+        { ...SCORED_ROW, clauses: [clause("read", false), clause("read", false)] },
       ],
     })
   ).toEqual([]);

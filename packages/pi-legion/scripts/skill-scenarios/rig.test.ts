@@ -2627,6 +2627,7 @@ describe("rig.sh cell", () => {
     };
     writeFileSync(path.join(dir, "world.json"), `${JSON.stringify(world)}\n`);
     const clauses = Object.entries(passes).map(([id, pass]) => ({
+      id,
       clause: sentence(id),
       pass,
       evidence: `${id}: planted`,
@@ -3287,7 +3288,7 @@ describe("the reach lines", () => {
       label: "head",
       case: "root-B-claude",
       pass: false,
-      clauses: [{ clause: "c", pass: false, evidence: "e", counts: {} }],
+      clauses: [{ id: "c", clause: "c", pass: false, evidence: "e", counts: {} }],
       reach,
     });
     plantRow(

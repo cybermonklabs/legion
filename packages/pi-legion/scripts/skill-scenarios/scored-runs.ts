@@ -47,18 +47,16 @@ import {
   CellLine,
   DispatchProxyLine,
   FAMILIES,
-  type HeldPlansAnswer,
   Judgment,
   mapRecordedKeys,
   OWNER_WALK_KINDS,
-  OwnerWalkFixture,
+  type OwnerWalkFixture,
   OwnerWalkWorld,
-  PlansAnswerSource,
   REACH_HOSTS,
   Reach,
   type Reported,
   RunRow,
-  readPlansAnswer,
+  readRecordedPlans,
   Score,
   type ScoreClause,
   type ScoredRow,
@@ -221,8 +219,9 @@ export function modelProblem(dir: string, entries: SessionEntry[]): string | und
 
 // owner-walk.
 
-/** The clause a run cut at its bound fails: the part's rule beside the check's sentences. */
-export const BOUND_CLAUSE = "the run ended within its bound";
+/** The clause a run cut at its bound fails: the part's rule beside the check's sentences, with an
+ * id no stage clause has. */
+export const BOUND_CLAUSE = { id: "bound", sentence: "the run ended within its bound" } as const;
 
 /** The text of a message's text parts. */
 const textOf = (entry: SessionEntry) =>
@@ -405,7 +404,7 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
     );
   const stage = stageOf(world.stage);
   const captured = Captured.parse(readJson(dir, "captured.json"));
-  const fixture = OwnerWalkFixture.parse(captured.fixture);
+  const fixture = captured.fixture;
   const planned = captured.issues.find((issue) => issue.key === fixture.planned);
   if (planned === undefined) throw new Error(`captured.json holds no issue ${fixture.planned}`);
   const planDocument = planned.artifacts.find((artifact) => artifact.name === "plan.md");
@@ -469,6 +468,7 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
     if (clause.rule !== undefined) {
       const result = clause.rule(evidence);
       return {
+        id: clause.id,
         clause: clause.sentence,
         pass: result.pass,
         evidence: `${clause.id}: ${result.evidence}`,
@@ -478,12 +478,14 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
     const item = judgment?.items.find((each) => each.item === clause.id);
     return item === undefined
       ? {
+          id: clause.id,
           clause: clause.sentence,
           pass: "pending",
           evidence: `${clause.id}: waiting for judgment.json's item ${clause.id} (rubrics/owner-walk.md)`,
           counts: {},
         }
       : {
+          id: clause.id,
           clause: clause.sentence,
           pass: item.verdict === "pass",
           evidence: `${clause.id}: ${item.verdict}, by ${judgment?.by}: ${item.why}`,
@@ -493,7 +495,8 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
   if (bound) {
     const held = path.join(dir, "held.txt");
     clauses.push({
-      clause: BOUND_CLAUSE,
+      id: BOUND_CLAUSE.id,
+      clause: BOUND_CLAUSE.sentence,
       pass: false,
       evidence: existsSync(held)
         ? readFileSync(held, "utf8").trim() || "held.txt is empty"
@@ -504,17 +507,10 @@ export function ownerWalk(dir: string, run: string, label: string): Score {
 
   // Reported beside the clauses. The recorded reasons are mapped as the proxy served them
   // (mapRecordedKeys), so they are the text the agent read.
-  const source = PlansAnswerSource.parse(readJson(dir, "plans-answer.source"));
-  const answerFile = path.join(dir, "plans-answer.json");
-  if (!existsSync(answerFile)) throw new Error("the run holds no plans-answer.json");
-  let recorded: HeldPlansAnswer;
-  try {
-    recorded = readPlansAnswer(readFileSync(answerFile), source, world.plansProject);
-  } catch (error) {
-    throw new Error(
-      `plans-answer.json, with plans-answer.source: ${error instanceof Error ? error.message : String(error)}`
-    );
-  }
+  const { source, held: recorded } = readRecordedPlans(
+    path.join(dir, "plans-answer.json"),
+    world.plansProject
+  );
   const reasons = recorded.answer.issues
     .flatMap((issue) =>
       (issue.ratings ?? []).map((rating) => mapRecordedKeys(rating.reason ?? "", source.keyMap))
@@ -590,7 +586,7 @@ interface CellGroup {
   label: string;
   cell: string;
   count: number;
-  control: { id: string; clause: string; fewerThan: number } | undefined;
+  control: { id: string; fewerThan: number } | undefined;
   rows: { n: number; row: RunRow }[];
 }
 
@@ -612,13 +608,7 @@ function cellOf(
       stage.runs[owner.form] *
       (control === undefined ? 1 : OWNER_WALK_KINDS.length * FAMILIES.length),
     control:
-      control === undefined
-        ? undefined
-        : {
-            id: control.clause,
-            clause: stage.clauses.find((clause) => clause.id === control.clause)?.sentence ?? "",
-            fewerThan: control.fewerThan,
-          },
+      control === undefined ? undefined : { id: control.clause, fewerThan: control.fewerThan },
     rows: [],
   };
 }
@@ -641,11 +631,9 @@ function cellLine(scenario: string, group: CellGroup): CellLine {
   const scored = scoredOf(group);
   const verdicts = scored.map((row) => {
     if (group.control === undefined) return row.pass;
-    const counted = row.clauses.find((clause) => clause.clause === group.control?.clause);
+    const counted = row.clauses.find((clause) => clause.id === group.control?.id);
     if (counted === undefined)
-      throw new Error(
-        `${row.run} holds no clause "${group.control.clause}", which its control counts`
-      );
+      throw new Error(`${row.run} holds no clause ${group.control.id}, which its control counts`);
     return counted.pass;
   });
   const passes = verdicts.filter((verdict) => verdict === true).length;
@@ -724,7 +712,7 @@ export function cells(runsDir: string, scenario: string): CellLine[] {
  *   - A case form's cell is the case's runs at `count`, the count its batch ran to:
  *     `cell <scenario> <label> <case>: <n> runs, <s> scored, <e> rig errors, count <count>; each
  *     clause: <id> <passes> of <s>[ (<p> pending)], …; runs passed <passes> of <s>; verdict <v>`.
- *   - A control form's cell is the control's own, as cells() gives it: every owner's runs of the
+ *   - A control form's cell is the control's own, the cell cells() keys: every owner's runs of the
  *     form under the label, at the control's count, whatever `count` is: `cell <scenario> <label>
  *     <case>: the control <stage>/<form> over every owner: <n> runs, <s> scored, <e> rig errors,
  *     count <c>; <clause id> <passes> of <s>[ (<p> pending)]; it passes when fewer than <bound>
@@ -759,9 +747,7 @@ export function caseCell(
   const errors = group.rows.filter(({ row }) => row.outcome === "rig-error").length;
   if (group.control !== undefined) {
     const { id, fewerThan } = group.control;
-    const cell =
-      cells(runsDir, scenario).find((line) => line.label === label && line.cell === group.cell) ??
-      cellLine(scenario, { ...group, rows: [] });
+    const cell = cellLine(scenario, group);
     const pending = cell.pending > 0 ? ` (${cell.pending} pending)` : "";
     return `${head}: the control ${cell.cell} over every owner: ${group.rows.length} runs, ${cell.scored} scored, ${errors} rig errors, count ${cell.count}; ${id} ${cell.passes} of ${cell.scored}${pending}; it passes when fewer than ${fewerThan} pass ${id}; verdict ${cell.verdict}`;
   }
@@ -769,17 +755,15 @@ export function caseCell(
   const counted = { ...group, count };
   const scored = scoredOf(counted);
   const line = cellLine(scenario, counted);
-  // Each clause by its id, in the order the scored runs first name it; a clause of no stage id (the
-  // bound's) by its sentence.
+  // Each clause by its id, in the order the scored runs first name it.
   const tallies = new Map<string, { passes: number; pending: number; of: number }>();
   for (const row of scored)
     for (const clause of row.clauses) {
-      const id = stage.clauses.find((each) => each.sentence === clause.clause)?.id ?? clause.clause;
-      const tally = tallies.get(id) ?? { passes: 0, pending: 0, of: 0 };
+      const tally = tallies.get(clause.id) ?? { passes: 0, pending: 0, of: 0 };
       tally.of += 1;
       if (clause.pass === true) tally.passes += 1;
       if (clause.pass === "pending") tally.pending += 1;
-      tallies.set(id, tally);
+      tallies.set(clause.id, tally);
     }
   const each = [...tallies]
     .map(

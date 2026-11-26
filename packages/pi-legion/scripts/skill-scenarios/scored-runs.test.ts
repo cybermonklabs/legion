@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { OWNER_WALK_STAGES, ownerWalkWorld, questionsOf } from "./owner-walk";
@@ -24,9 +24,9 @@ function sentence(id: string): string {
   if (clause === undefined) throw new Error(`the guidance stage has no clause ${id}`);
   return clause.sentence;
 }
-/** A score's clause, by the id of its check sentence. */
+/** A score's clause, by its id. */
 function clauseOf(clauses: readonly ScoreClause[], id: string): ScoreClause {
-  const found = clauses.find((clause) => clause.clause === sentence(id));
+  const found = clauses.find((clause) => clause.id === id);
   if (found === undefined) throw new Error(`the score holds no clause ${id}`);
   return found;
 }
@@ -434,11 +434,9 @@ describe("ownerWalk's program clauses", () => {
     const plan = planOf("implementer reviewer", "Finish the importer.");
     const d = plant(runs, { form: "D", label: "ctl-D", plan, proxy: readFirst });
     const e = plant(runs, { form: "E", label: "ctl-E", plan, proxy: readFirst });
-    expect(ownerWalk(d.dir, d.name, "ctl-D").clauses.map((clause) => clause.clause)).toEqual([
-      sentence("read"),
-    ]);
-    expect(ownerWalk(e.dir, e.name, "ctl-E").clauses.map((clause) => clause.clause)).toEqual([
-      sentence("choices"),
+    expect(ownerWalk(d.dir, d.name, "ctl-D").clauses.map((clause) => clause.id)).toEqual(["read"]);
+    expect(ownerWalk(e.dir, e.name, "ctl-E").clauses.map((clause) => clause.id)).toEqual([
+      "choices",
     ]);
   });
 });
@@ -545,6 +543,7 @@ function plantRow(
   writeFileSync(path.join(dir, "row.json"), `${JSON.stringify(RunRow.parse(row))}\n`);
 }
 const clause = (id: string, pass: boolean | "pending"): ScoreClause => ({
+  id,
   clause: sentence(id),
   pass,
   evidence: `${id} planted`,
@@ -597,6 +596,31 @@ describe("cells", () => {
       {
         scenario: "owner-walk",
         label: "ctl-D-strict",
+        cell: "guidance/D",
+        count: 12,
+        scored: 12,
+        passes: 6,
+        pending: 0,
+        verdict: "fail",
+      },
+    ]);
+  });
+
+  // Catches: a cell that finds the clause its control counts by the clause's sentence, so a
+  // sentence reworded after a run was scored stops matching the run's clause.
+  test("a control counts its clause by id, whatever sentence the run's row holds", () => {
+    const runs = fresh();
+    plantControl(runs, "D", "ctl-D", (owner) => owner < 6);
+    for (const name of readdirSync(runs)) {
+      const file = path.join(runs, name, "row.json");
+      const row = JSON.parse(readFileSync(file, "utf8"));
+      for (const each of row.clauses) each.clause = `an older sentence of ${each.id}`;
+      writeFileSync(file, `${JSON.stringify(row)}\n`);
+    }
+    expect(cells(runs, "owner-walk")).toEqual([
+      {
+        scenario: "owner-walk",
+        label: "ctl-D",
         cell: "guidance/D",
         count: 12,
         scored: 12,
