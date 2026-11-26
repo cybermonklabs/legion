@@ -30,9 +30,14 @@ function paragraphEnd(words: HTMLElement): readonly [Node, number] {
   return [paragraph, paragraph.childNodes.length];
 }
 
-/** Draws `html` as a statement's drawn words and reads a press at the point (1, 2), where the
- *  browser's `caretPositionFromPoint` finds the place `place` reads in them. */
-function pressAt(html: string, place: (words: HTMLElement) => readonly [Node, number]): CaretAt {
+/** Draws `html` as a statement's drawn words and reads a press at the point `at`, (1, 2) where
+ *  none is given, where the browser's `caretPositionFromPoint` finds the place `place` reads in
+ *  them. */
+function pressAt(
+  html: string,
+  place: (words: HTMLElement) => readonly [Node, number],
+  [atX, atY]: readonly [number, number] = [1, 2]
+): CaretAt {
   const words = document.createElement("div");
   words.setAttribute("data-node-words", "");
   words.innerHTML = html;
@@ -42,15 +47,32 @@ function pressAt(html: string, place: (words: HTMLElement) => readonly [Node, nu
     const [offsetNode, offset] = place(words);
     Object.defineProperty(document, "caretPositionFromPoint", {
       configurable: true,
-      value: (x: number, y: number) => (x === 1 && y === 2 ? { offsetNode, offset } : null),
+      value: (x: number, y: number) => (x === atX && y === atY ? { offsetNode, offset } : null),
     });
-    return pressInWords(words, 1, 2);
+    return pressInWords(words, atX, atY);
   } finally {
     if (original === undefined) Reflect.deleteProperty(document, "caretPositionFromPoint");
     else Object.defineProperty(document, "caretPositionFromPoint", original);
     words.remove();
   }
 }
+
+/** What `run` answers while every element draws `line` as its one line. happy-dom lays nothing
+ *  out and gives each element a box of no size at the page's corner, which the press at (1, 2)
+ *  is past, so a case of a press inside an atom gives the atom a line that holds the press. */
+function withLine<Answer>(line: DOMRect, run: () => Answer): Answer {
+  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
+    () => [line] as unknown as DOMRectList
+  );
+  try {
+    return run();
+  } finally {
+    lines.mockRestore();
+  }
+}
+
+/** A line that holds the press at (1, 2). */
+const AROUND_PRESS = new DOMRect(-10, -8, 60, 20);
 
 const AFTER = " first, then the rest.";
 /** Words with inline html in them, and words with a hard break in them. */
@@ -136,7 +158,7 @@ test("a press at the end of the text before a break, inside an atom or at the wo
   const end = pressIn(BROKEN, "Line one.", "Line one.".length);
   expect(end).toEqual({ x: 1, y: 2, offset: 9, word: ["Line ", "one.Line", " two,", 4] });
   expect(end.next).toBeUndefined();
-  const atom = pressIn(KEPT, "<name>", 2);
+  const atom = withLine(AROUND_PRESS, () => pressIn(KEPT, "<name>", 2));
   expect(atom).toEqual({ x: 1, y: 2, offset: "Kept by ".length });
   expect(atom.next).toBeUndefined();
   const start = pressIn(BROKEN, "Line one.", 0);
@@ -187,8 +209,10 @@ test("a press past an atom that ends the words says the caret goes after it", ()
 
 test("a press inside an atom that ends the words goes before it", () => {
   for (const [atom, inside] of ATOMS) {
-    const at = pressAt(`<p>${NOTE}${atom}</p>`, (words) =>
-      inside(words.firstElementChild?.lastElementChild ?? words)
+    const at = withLine(AROUND_PRESS, () =>
+      pressAt(`<p>${NOTE}${atom}</p>`, (words) =>
+        inside(words.firstElementChild?.lastElementChild ?? words)
+      )
     );
     expect(at, atom).toEqual(AT_NOTE_END);
     expect(at.next, atom).toBeUndefined();
@@ -200,11 +224,12 @@ test("a press inside an atom that ends the words goes before it", () => {
 // HTML's text. Such a place inside an atom the editor holds no text of is read by the atom's last
 // line: a point past its end, on that line, goes after the atom, as a press past the end of the
 // words does, or at the start of the text after it where text follows on the next line. A point on
-// that line's end, inside the line or on a line before it stays inside the atom, at its start. The
-// end is the line's right edge where the atom runs left to right, and its left edge where it runs
-// right to left. A reference is text the editor holds, so a place inside one stays there, and
-// neither that place nor one in the text after an atom reads a line of the atom. happy-dom lays
-// nothing out, so each case gives the atom's last line, placed from the press at (1, 2).
+// that line's end, inside the line or on a line of the atom before its last stays inside the atom,
+// at its start. The end is the line's right edge where the atom runs left to right, and its left
+// edge where it runs right to left. A reference is text the editor holds, so a place inside one
+// stays there, and neither that place nor one in the text after an atom reads a line of the atom.
+// happy-dom lays nothing out, so each case gives the atom's lines, placed from the press at
+// (1, 2).
 test("a press the browser answers inside an atom, past the end of its last line, says the caret goes after it", () => {
   const html = '<span data-type="html">&lt;name&gt;</span>';
   const after: CaretAt = { ...AT_NOTE_END, next: true };
@@ -216,8 +241,9 @@ test("a press the browser answers inside an atom, past the end of its last line,
       return [atom.firstChild ?? atom, "<name>".length];
     });
   let line = new DOMRect();
+  let earlier: DOMRect | undefined;
   const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
-    () => [line] as unknown as DOMRectList
+    () => (earlier === undefined ? [line] : [earlier, line]) as unknown as DOMRectList
   );
   try {
     for (const past of [1, 10, 40, 100]) {
@@ -239,21 +265,23 @@ test("a press the browser answers inside an atom, past the end of its last line,
       const rtl = `<p style="direction: rtl">${NOTE}${html}</p>`;
       expect(pressPast(rtl), `${past} px past, right to left`).toEqual(after);
     }
-    // On the end of the atom's last line, inside the line, on a line before it, and past the right
-    // edge of a line that runs right to left, whose end is its left edge.
+    // On the end of the atom's last line, inside the line, on the atom's line before its last,
+    // and past the right edge of a line that runs right to left, whose end is its left edge.
     const stays = [
-      [new DOMRect(-59, -8, 60, 20), "ltr"],
-      [new DOMRect(-30, -8, 60, 20), "ltr"],
-      [new DOMRect(-99, 20, 60, 20), "ltr"],
-      [new DOMRect(-60, -8, 60, 20), "rtl"],
+      [new DOMRect(-59, -8, 60, 20), "ltr", undefined],
+      [new DOMRect(-30, -8, 60, 20), "ltr", undefined],
+      [new DOMRect(-99, 20, 60, 20), "ltr", new DOMRect(-30, -8, 60, 20)],
+      [new DOMRect(-60, -8, 60, 20), "rtl", undefined],
     ] as const;
-    for (const [box, direction] of stays) {
+    for (const [box, direction, before] of stays) {
       line = box;
+      earlier = before;
       const at = pressPast(`<p style="direction: ${direction}">${NOTE}${html}</p>`);
       const name = `${direction} line ${box.left} to ${box.right}, ${box.top} to ${box.bottom}`;
       expect(at, name).toEqual(AT_NOTE_END);
       expect(at.next, name).toBeUndefined();
     }
+    earlier = undefined;
     // A point past the end of the line, which a place in a reference or in the text after an atom
     // reads nothing of.
     line = new DOMRect(-60, -8, 60, 20);
@@ -274,6 +302,39 @@ test("a press the browser answers inside an atom, past the end of its last line,
       word: ["by  ", "first,", " then", 2],
     });
     expect(lines, "a press off an uncounted atom laid the atom out").not.toHaveBeenCalled();
+  } finally {
+    lines.mockRestore();
+  }
+});
+
+// Chromium answers a place inside an atom for every point past it on its line, whatever the
+// point's height in that line, and an atom's box is as tall as its font, not as its line: a
+// raised footnote reference stood at 1.4 to 14.4 px in a line of 0 to 24 px, and inline HTML at
+// 147 to 165 px in a line of 144 to 168 px. A press past the atom under its box, or over it, is
+// past it all the same, and the caret goes after the atom.
+test("a press past a footnote reference that ends the words, below its raised box, says the caret goes after it", () => {
+  const cases = [
+    ['<sup data-type="footnote_reference">1</sup>', new DOMRect(100, 1.4, 6, 13), 20],
+    ['<span data-type="html">&lt;name&gt;</span>', new DOMRect(100, 147, 40, 18), 145],
+  ] as const;
+  let box = new DOMRect();
+  const lines = spyOn(HTMLElement.prototype, "getClientRects").mockImplementation(
+    () => [box] as unknown as DOMRectList
+  );
+  try {
+    for (const [atom, drawn, y] of cases) {
+      box = drawn;
+      const x = drawn.right + 4;
+      const at = pressAt(
+        `<p>${NOTE}${atom}</p>`,
+        (words) => {
+          const inside = words.firstElementChild?.lastElementChild ?? words;
+          return [inside.firstChild ?? inside, inside.textContent?.length ?? 0];
+        },
+        [x, y]
+      );
+      expect(at, atom).toEqual({ ...AT_NOTE_END, next: true, x, y });
+    }
   } finally {
     lines.mockRestore();
   }

@@ -9,10 +9,15 @@ import { isLiveSocket, watchApiRequests, watchTraffic } from "../traffic";
 // the clock. Each such row reads every watcher before it asserts, so a failure names each watcher
 // that failed it.
 
+/** The frame a stand-in page loads its documents into, which the watchers compare a request's
+ *  frame with. */
+const MAIN_FRAME = {};
+
 /** A page whose request events the row fires itself: the only part of a page the watchers touch. */
 function eventPage(): { page: Page; emit(event: string, request: Request): void } {
   const handlers = new Map<string, ((request: Request) => void)[]>();
   const page = {
+    mainFrame: () => MAIN_FRAME,
     on: (event: string, handler: (request: Request) => void) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
@@ -25,9 +30,15 @@ function eventPage(): { page: Page; emit(event: string, request: Request): void 
   };
 }
 
-/** A request as the watchers read it: its URL and its method. */
-function request(url: string): Request {
-  return { method: () => "GET", url: () => url } as unknown as Request;
+/** A request as the watchers read it: its URL, its method, and whether it loads a new document
+ *  into the page's main frame (`load`). */
+function request(url: string, load = false): Request {
+  return {
+    frame: () => MAIN_FRAME,
+    isNavigationRequest: () => load,
+    method: () => "GET",
+    url: () => url,
+  } as unknown as Request;
 }
 
 /** Both watchers by name, as far as this file reads them: whether the page has gone quiet. */
@@ -77,6 +88,24 @@ test("a read still in flight keeps the page from going quiet", () => {
       ends.map((end) => ({ end, ended: true, inFlight: false, watcher }))
     )
   );
+});
+
+// A full load of another page ends every request of the page it leaves, and Playwright reports
+// no end for some of them: in a run of the browser suite a watch started on Settings still held
+// three of its reads in flight after a load of an issue, so that issue page never went quiet. A
+// watcher drops what is in flight when a load of a new document into the main frame starts.
+test("a request that a navigation leaves with no answer does not keep the page from going quiet", () => {
+  const quiet = watchers.map(([watcher, watch]) => {
+    const { emit, page } = eventPage();
+    const traffic = watch(page);
+    emit("request", request("http://127.0.0.1/api/v1/signins"));
+    const load = request("http://127.0.0.1/issues/LAY-3", true);
+    emit("request", load);
+    const loading = traffic.quietFor(0);
+    emit("requestfinished", load);
+    return { loaded: traffic.quietFor(0), loading, watcher };
+  });
+  expect(quiet).toEqual(watchers.map(([watcher]) => ({ loaded: true, loading: false, watcher })));
 });
 
 // `e2e/refetch-budget.e2e.ts` keeps a watcher of its own, which this file does not drive, and
