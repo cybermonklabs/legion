@@ -280,19 +280,28 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 	return nil
 }
 
-// queueDeletesAfterOldRuns queues each deletion a leave or a new generation requested only after
-// this fact ended every open start of that task's old generation. The old generation's agent can
-// push until its own start ends, so the earlier dropFixWay must not queue the deletion yet.
+// queueDeletesAfterOldRuns queues each deletion a leave or a new generation asked for, once this
+// fact's settle has ended every open start of that task's old generation. The old generation's
+// agent can push until its own start ends, so dropFixWay asks for the deletion and queues none.
+// Where a start of that task is still open, this queues nothing and says so: the branches stay,
+// which loses no commit, and the next end of the task queues the deletion.
 func (e *Engine) queueDeletesAfterOldRuns(ctx context.Context, tx pgx.Tx, runs *factRuns) error {
 	for task, issue := range runs.deleteAfterOldRuns {
 		starts, err := e.store.StepRuns(ctx, tx, []string{task.issue})
 		if err != nil {
 			return err
 		}
+		open := false
 		for _, start := range starts {
 			if start.Generation == task.generation && start.Place.Task == task.place.Task && start.Run == record.RunOpen {
-				return fmt.Errorf("the old generation of task %s of %s still has an open start at %s/%d", task.place.Task, task.issue, start.Place.Kind, start.Place.Place)
+				open = true
+				e.logOnCommit(ctx, "workflow: the branches beside a fix stay while a start of its task is open", "issue", task.issue,
+					"generation", task.generation, "task", task.place.Task, "kind", start.Place.Kind, "place", start.Place.Place)
+				break
 			}
+		}
+		if open {
+			continue
 		}
 		if err := e.queueBesideDelete(ctx, tx, issue, task.place.Task, 0); err != nil {
 			return err
