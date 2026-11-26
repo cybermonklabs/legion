@@ -105,6 +105,7 @@ func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
 }
 
 func TestTheGeneratedBuildersWriteTheSharedFixturesNames(t *testing.T) {
+	t.Parallel()
 	builders := map[string]func(args []string) string{
 		"dispatchIssueSubject": func(args []string) string { return DispatchIssueSubject(args[0], args[1], args[2]) },
 		"agentSubject":         func(args []string) string { return AgentSubject(args[0], args[1]) },
@@ -125,6 +126,7 @@ func TestTheGeneratedBuildersWriteTheSharedFixturesNames(t *testing.T) {
 }
 
 func TestAnIssueKeyNamesItsProject(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).IssueProject {
 		if project, ok := IssueProject(row.Key); project != row.Project || ok != row.OK {
 			t.Errorf("IssueProject(%q) = %q, %v; want %q, %v", row.Key, project, ok, row.Project, row.OK)
@@ -133,6 +135,7 @@ func TestAnIssueKeyNamesItsProject(t *testing.T) {
 }
 
 func TestALegionRoleNamesItsTokensProject(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).RoleProject {
 		if got := RoleProject(row.Role); got != row.Project {
 			t.Errorf("RoleProject(%q) = %q, want %q", row.Role, got, row.Project)
@@ -141,6 +144,7 @@ func TestALegionRoleNamesItsTokensProject(t *testing.T) {
 }
 
 func TestEachFamilysNameIsReadForItsProject(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).SubjectProject {
 		project, repo, ok := SubjectProject(row.Subject)
 		if project != row.Project || repo != row.Repo || ok != row.OK {
@@ -150,6 +154,7 @@ func TestEachFamilysNameIsReadForItsProject(t *testing.T) {
 }
 
 func TestAnOldFormTopicReadsAsItsNewForm(t *testing.T) {
+	t.Parallel()
 	fixture := readSubjectProjectFixture(t)
 	for _, row := range fixture.CanonicalTopic {
 		canonical, legacy := CanonicalTopic(row.Topic)
@@ -166,6 +171,7 @@ func TestAnOldFormTopicReadsAsItsNewForm(t *testing.T) {
 }
 
 func TestANewFormTopicNamesItsOldForm(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).LegacyTwin {
 		twin, ok := LegacyTwin(row.Canonical)
 		want := ""
@@ -179,6 +185,7 @@ func TestANewFormTopicNamesItsOldForm(t *testing.T) {
 }
 
 func TestAClaimedRoleReadsInEitherForm(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).CanonicalRole {
 		project, name, legacy := CanonicalRole(row.Role)
 		if project != row.Project || name != row.Name || legacy != row.Legacy {
@@ -188,6 +195,7 @@ func TestAClaimedRoleReadsInEitherForm(t *testing.T) {
 }
 
 func TestATopicsFormsAreItselfAndItsOtherForm(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).TopicForms {
 		if got := TopicForms(row.Topic); !slices.Equal(got, row.Forms) {
 			t.Errorf("TopicForms(%q) = %q, want %q", row.Topic, got, row.Forms)
@@ -200,6 +208,7 @@ func TestATopicsFormsAreItselfAndItsOtherForm(t *testing.T) {
 // another project, and by its project and name only when the project differs; each key reads back
 // to the pair it was written from.
 func TestARoleClaimIsKeyedByItsBareNameUnlessItsProjectDiffers(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).RoleClaimKey {
 		if got := RoleClaimKey(row.Project, row.Role); got != row.Key {
 			t.Errorf("RoleClaimKey(%q, %q) = %q, want %q", row.Project, row.Role, got, row.Key)
@@ -214,6 +223,7 @@ func TestARoleClaimIsKeyedByItsBareNameUnlessItsProjectDiffers(t *testing.T) {
 // project; a name of the family whose key is in neither form, and a name of any other family,
 // carries none.
 func TestAnIssueEventNamesItsKeyInEitherForm(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).IssueEventKey {
 		key, legacy, ok := IssueEventKey(row.Subject)
 		if key != row.Key || legacy != row.Legacy || ok != row.OK {
@@ -229,6 +239,7 @@ func TestAnIssueEventNamesItsKeyInEitherForm(t *testing.T) {
 // request the rule refuses is an error, never a claim keyed under a project the role does not work
 // for.
 func TestAClaimsProjectIsItsRolesOrTheOneItAsksFor(t *testing.T) {
+	t.Parallel()
 	for _, row := range readSubjectProjectFixture(t).ClaimProject {
 		project, err := ClaimProject(row.Role, row.Requested)
 		if row.Error {
@@ -247,6 +258,7 @@ func TestAClaimsProjectIsItsRolesOrTheOneItAsksFor(t *testing.T) {
 // the bus census (internal/bus subject_project_coverage_test.go) compares with the stream's own
 // subjects.
 func TestEverySubjectProjectFamilyIsAPrefixAndWildcard(t *testing.T) {
+	t.Parallel()
 	families := SubjectProjectFamilies()
 	if want := readSubjectProjectFixture(t).Families; !slices.Equal(families, want) {
 		t.Fatalf("SubjectProjectFamilies = %q, want the shared cases' %q", families, want)

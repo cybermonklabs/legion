@@ -280,12 +280,45 @@ check "so is a job" "$(contains "$(legs "$root" other 1)" '^exit=2$')"
 check "and elsewhere is no job" "$(contains "$(legs "$root" elsewhere 1)" '^exit=2$')"
 
 echo "case: a go list that fails"
+# Only the go.mod fails it: under -find an import no cache holds fails nothing (the next case), so
+# this one breaks the module file alone.
 root=$(tree broken "$whole")
-printf 'package a\n\nimport "example.com/missing/dep"\n' > "$root/mod/a/a.go"
 printf 'not a go.mod\n' > "$root/mod/go.mod"
 out=$(legs "$root" job 1)
 check "fails rather than compare with nothing" "$(contains "$out" '^exit=1$')"
 check "saying the packages are unknown" "$(contains "$(err)" 'failed (its errors are above), so which packages the legs must run is unknown')"
+
+echo "case: a package importing a module no cache holds is listed with no network"
+# The changes job runs go_legs.py on a cold module cache. In a workspace, a go list that may reach
+# a proxy resolves the import by downloading its module into the cache and writing its checksum to
+# go.work.sum, so this case gives it one that answers: a file:// proxy serving the imported module,
+# with the checksum database off. The listing must still print every package, a's among them, and
+# leave the module cache empty and no go.work.sum behind; a go_legs.py whose listing could reach
+# the proxy (GOPROXY=off left out) downloads the module here and fails the last two checks.
+root=$(tree offline "$whole")
+printf 'module example.com/mod\n\ngo 1.21\n\nrequire example.com/notcached v1.0.0\n' > "$root/mod/go.mod"
+printf 'package a\n\nimport _ "example.com/notcached/pkg"\n' > "$root/mod/a/a.go"
+printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
+proxy="$work/offline-proxy/example.com/notcached/@v"
+mkdir -p "$proxy"
+printf 'v1.0.0\n' > "$proxy/list"
+printf '{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}\n' > "$proxy/v1.0.0.info"
+printf 'module example.com/notcached\n\ngo 1.21\n' > "$proxy/v1.0.0.mod"
+python3 - "$proxy/v1.0.0.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("example.com/notcached@v1.0.0/go.mod", "module example.com/notcached\n\ngo 1.21\n")
+    z.writestr("example.com/notcached@v1.0.0/pkg/pkg.go", "package pkg\n")
+PY
+out=$(GOWORK="$root/go.work" GOPROXY="file://$work/offline-proxy" GOSUMDB=off GONOSUMDB='*' \
+  GOMODCACHE="$work/offline-modcache" legs "$root" job 1)
+check "the leg passes" "$(contains "$out" '^exit=0$')"
+check "printing the package that imports it" "$(contains "$out" '^\./a/$')"
+check "and downloads nothing into the module cache" "$(is "$(find "$work/offline-modcache" -type f 2>/dev/null | wc -l | tr -d ' ')" 0)"
+check "and writes no go.work.sum" "$(is "$([ -e "$root/go.work.sum" ] && echo written || echo none)" none)"
+# Go writes a module cache read-only; a listing that downloaded leaves it so, and the trap's rm
+# could not remove it.
+chmod -R u+w "$work/offline-modcache" 2>/dev/null || true
 
 echo "case: the leg's step, a pipe to xargs under pipefail, fails when the check fails"
 root=$(tree step 'mod:

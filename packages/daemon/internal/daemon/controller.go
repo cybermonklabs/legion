@@ -287,7 +287,7 @@ func (s *supervision) stopLaunchedController(ctx context.Context) error {
 	if state := m.Claim().State; state != supervise.StateRetired {
 		s.log.Warn("controller: stopping the controller an earlier boot under controller: daemon launched; this daemon leaves the controller to its operator",
 			"claim", token, "state", state)
-		if err := m.Handle(ctx, supervise.RequestStop{Claim: token}); err != nil {
+		if err := m.Handle(ctx, supervise.RequestStop{Claim: token, By: supervise.SuspendedByOperator}); err != nil {
 			return fmt.Errorf("stop %s, the controller an earlier boot under controller: daemon launched, since this daemon leaves the controller to its operator (controller: operator): %w", token, err)
 		}
 	}

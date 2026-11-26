@@ -206,6 +206,7 @@ packages/envoy:
       - internal/cipher/approval                # 33 s
       - internal/cipher/judge                   # 30 s
       - internal/cipher/proxy                   # 18 s
+      - internal/cipher/hold                    # 15 s (run 45862794170, job 140058256929)
       - internal/cipher/machine                 # 12 s
       - internal/cipher/oauthstore              # 12 s
       - internal/ciphertoken                    # 8 s
@@ -274,6 +275,7 @@ packages/envoy:
       - internal/dispatch/itemblocks
       - internal/dispatch/auth
       - internal/dispatch/specgraph/specgraphtest
+      - dispatchblocks
     # Dispatch's heavier packages.
     4:
       - internal/dispatch/outbox                # 320 s
