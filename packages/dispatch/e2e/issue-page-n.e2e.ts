@@ -11,6 +11,7 @@
  * files of those rows do not change: they read today's page.
  */
 
+import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
@@ -159,6 +160,7 @@ import {
   historyEntries,
   historyItem,
   historyPanel,
+  rowFacts,
   stepsSection,
 } from "./issue-page-m";
 import {
@@ -2416,8 +2418,8 @@ async function twinComment(id: string, body: string): Promise<string> {
   return twin;
 }
 
-/** The block id of the typed block `addressSeed`'s document of tasks ends with, and how many
- *  lines of the document stand before it. */
+/** The block id of the typed block each document of tasks here ends with - `addressSeed`'s, and
+ *  decision 449's row's - and how many lines of the document stand before it. */
 const TASKS_BLOCK = "t-far";
 const TASKS_BEFORE_THE_BLOCK = 60;
 
@@ -6601,4 +6603,118 @@ test("a dialog opened from a row's act gives the focus back to the row", async (
       "the dialog's close left the focus off the row that held the act"
     ).toBeFocused();
   });
+});
+
+/** Whether the head holds part M's list of what references the focused row
+ *  (dispatch://INFRA-3948), which decision 449's row opens: c-reference-block runs on whichever
+ *  of part M and this part lands second, so the row skips on a head without it. */
+const PART_M_REFERENCES = existsSync(
+  fileURLToPath(
+    new URL("../web/src/features/issue-page/node-references/NodeReferences.tsx", import.meta.url)
+  )
+);
+
+// Decision 449 of dispatch://INFRA-1196/artifact/part-decisions-md (c-reference-block): a
+// reference to a block of a document the outline does not draw opens that document on the block.
+// The issue holds `plan-one-plan.md`, a document of tasks uploaded as an ordinary document and not
+// as the issue's plan, so the outline places none of its tasks (`tree-drafts.ts`'
+// `servePlacements` places the tasks of the plan alone); its one task, far down its text, serves a
+// requirement of the spec, which the outline draws. From the requirement's row, part M's "What
+// references this row" lists the task, and the task's row opens the address of its block: the
+// document in the main column with its head, and the task's block on screen, at 1440 px and at
+// 390 px. A block of a document the outline draws is part M's own check.
+// SLOW(>=2s): a load of the issue at each width, with Details and its list opened, and the
+// document opened from the list.
+test("a reference to a block of a document the outline does not draw opens that document on the block @phone", async ({
+  browser,
+}) => {
+  test.skip(
+    !PART_M_REFERENCES,
+    "What references this row is part M's node-references/NodeReferences.tsx " +
+      "(dispatch://INFRA-3948), which this head does not hold; part M's branch runs this row"
+  );
+  const taskWords = "Draw the task that a reference to it opens on.";
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({
+        project: "CORE",
+        spec: ":::requirement{#r-served}\nA reference to a task opens on the task.\n:::\n",
+        title: "A task of a document that is no plan",
+      });
+      const served = `dispatch://${issue.key}/spec#b-r-served`;
+      const lines = [
+        "# Tasks",
+        ...Array.from(
+          { length: TASKS_BEFORE_THE_BLOCK },
+          (_, index) => `Step ${index + 1} of the tasks, in a line of its own.`
+        ),
+        `:::plan_task{#${TASKS_BLOCK} serves="${served}"}\n${taskWords}\n:::`,
+      ];
+      const tasks = await createIssueArtifact(issue.key, {
+        content: `${lines.join("\n\n")}\n`,
+        name: "plan-one-plan.md",
+      });
+      const spec = await getArtifact(issue.primary_artifact_id ?? "");
+      return {
+        address: `/issues/${issue.key}/artifacts/${tasks.artifact.slug}#b-${TASKS_BLOCK}`,
+        key: issue.key,
+        name: tasks.artifact.name,
+        statement: blockNodeId(spec.slug, "r-served"),
+        task: blockNodeId(tasks.artifact.slug, TASKS_BLOCK),
+      };
+    },
+    async (page, seeded) => {
+      const desktopProject = test.info().project.name !== "iphone";
+      const opened = page.getByTestId("issue-column").getByTestId("opened-artifact");
+      for (const size of desktopProject ? [DESKTOP, PHONE] : [PHONE]) {
+        const where = `at ${size.width} px`;
+        await page.setViewportSize({ height: size.height, width: size.width });
+        const facts = await rowFacts(page, seeded.key, seeded.statement);
+        await expect(
+          nodeRow(page, seeded.task),
+          `the outline draws a row of the task, so its document is one the outline draws ${where}`
+        ).toHaveCount(0);
+        const references = facts.locator("[data-node-references]");
+        await references
+          .getByRole("button", { exact: true, name: NODE_REFERENCES_WORDS.what_references })
+          .click();
+        const task = references.getByRole("link", {
+          exact: true,
+          name: NODE_REFERENCES_WORDS.edges.serves,
+        });
+        await expect(
+          task,
+          `what references the requirement draws no row of the task that serves it ${where}`
+        ).toHaveAttribute("href", seeded.address);
+        await task.click();
+        await expect(
+          page,
+          `the task's row does not open the address of its block in its document ${where}`
+        ).toHaveURL(seeded.address);
+        const block = openedEditor(page).locator(`[data-block-id="${TASKS_BLOCK}"]`);
+        await expect(
+          block,
+          `the document did not open on the referenced block ${where}`
+        ).toBeInViewport();
+        await expect(
+          block,
+          `the block the document opened on does not hold the task's words ${where}`
+        ).toContainText(taskWords);
+        await expect(
+          opened.getByRole("heading", { exact: true, level: 2, name: seeded.name }),
+          `the main column draws the document with no head naming it ${where}`
+        ).toBeVisible();
+        await expect(
+          documentsList(page),
+          `Documents' list is drawn in place of the document ${where}`
+        ).toHaveCount(0);
+        await expect(
+          tree(page),
+          `the outline is drawn beside the document the task's row opened ${where}`
+        ).toHaveCount(0);
+      }
+    }
+  );
 });
