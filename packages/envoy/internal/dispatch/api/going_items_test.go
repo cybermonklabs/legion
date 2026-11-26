@@ -143,7 +143,7 @@ func TestGoingItemTextAnswersEachKindsOwnText(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
-	texts, err := goingItemText(context.Background(), database.Pool, seeded.hits, contracts.GoingHitRuneMax)
+	texts, err := goingItemText(context.Background(), database.Pool, seeded.hits, contracts.GoingHitRuneMax, "")
 	if err != nil {
 		t.Fatalf("goingItemText: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestGoingItemTextCutsToRunes(t *testing.T) {
 	database := storetest.Open(t)
 	seeded := seedGoingItemText(t, database)
 	const runes = 7
-	texts, err := goingItemText(context.Background(), database.Pool, seeded.hits, runes)
+	texts, err := goingItemText(context.Background(), database.Pool, seeded.hits, runes, "")
 	if err != nil {
 		t.Fatalf("goingItemText: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestGoingItemTextCutsWhereTheRuneHelperCut(t *testing.T) {
 	hits := append(seeded.hits, going.Hit{Kind: "comment", ID: wide})
 	seeded.texts["comment:"+wide] = satellites
 	for _, runes := range []int{1, 2, 9, 10, 11, 12, 13} {
-		texts, err := goingItemText(context.Background(), database.Pool, hits, runes)
+		texts, err := goingItemText(context.Background(), database.Pool, hits, runes, "")
 		if err != nil {
 			t.Fatalf("goingItemText cut to %d runes: %v", runes, err)
 		}
@@ -222,13 +222,13 @@ func TestGoingItemTextReadsOnePageInOneStatement(t *testing.T) {
 	seeded := seedGoingItemText(t, database)
 	recorder := &storetest.StatementRecorder{}
 	pool := storetest.Traced(t, database.Pool, recorder, nil)
-	if _, err := goingItemText(context.Background(), pool, seeded.hits, 100); err != nil {
+	if _, err := goingItemText(context.Background(), pool, seeded.hits, 100, ""); err != nil {
 		t.Fatalf("goingItemText: %v", err)
 	}
 	if statements := recorder.Statements(); len(statements) != 1 {
 		t.Fatalf("one page of %d hits made %d statements (%v), want one", len(seeded.hits), len(statements), statements)
 	}
-	texts, err := goingItemText(context.Background(), pool, nil, 100)
+	texts, err := goingItemText(context.Background(), pool, nil, 100, "")
 	if err != nil || len(texts) != 0 {
 		t.Fatalf("goingItemText over no hits = %v, %v; want an empty answer and no error", texts, err)
 	}

@@ -355,7 +355,7 @@ a credential that names one project may not create another or change a setting t
 The checks before it read no project, so a credential that names one project gets one answer for a private project that it does not name and for a project that does not exist, whatever else the body holds: at that check, `404 NOT_FOUND`, and a create with no title gets it too.
 A project key that is empty or is not a project key keeps its `400`, and a credential that names no project is answered as before.
 `POST /api/v1/going/requests` takes its project from the body too, and its handler makes the same check before it records the question.
-A credential that names one project may ask of any project, and of every project at once.
+A credential that names one project may ask of its own project, a public project, or no project.
 Such a credential gets `404 PROJECT_NOT_FOUND` for a private project that it does not name and for a project that does not exist, with one body for both.
 A credential that names no project is answered as before: its question of a project that does not exist is recorded.
 A `blocked_by` target and a parent may each be an issue of any project.
@@ -4431,7 +4431,12 @@ The bar's agent reads the roster through `GET /api/v1/agents?limit=50` and is to
 It reads the other four through the routes the person reads them by: `read_progress` of an issue through `GET /api/v1/issues/{key}` and of a project through `GET /api/v1/issues?project=&limit=250`, `read_architecture` and `read_project_activity` through `GET /api/v1/projects/{key}/architecture` and `/activity`, and `read_delivery` through `GET /api/v1/delivery/measures`, `/timeline` or `/pipeline` as its `view` names, the pipeline's `at` being its `to`; a call that names no issue or project reads the run's page's, and one that still names none is refused.
 A project's `read_progress` answers a page of at most 250 of its issues and `total`, every issue of the project, so its answer stays inside the 1 MiB the server carries of a call's answer whatever the project holds: the model is told the total before the list (`[Total: 300 matching issues; the list below holds 250 of them.]`) and the step's line reads `250 of 300 issues`, while an issue's `read_progress` states no count.
 Its `github_read` reads only a pull request with its reviews, files and commits, a commit with its checks and statuses, a compare, and contents, and refuses any other path before it asks GitHub.
-A credential scoped to one project asks of its own project or a public one, and is answered `404 PROJECT_NOT_FOUND` for any other; it is offered no roster and no delivery read, which read every project, and every other read is held to the project the run was asked of.
+A credential scoped to one project may ask of its own project, a public project, or no project.
+The POST answers `404 PROJECT_NOT_FOUND` for an uncovered private project or a missing project, with one body for both.
+A run asked of a project searches that project alone and refuses tool calls that name another project or one of its issues.
+With no project asked of, the run reads the project the model names, or the page's project if the model names none.
+For a scoped credential, the run reads and searches only the projects `access.CredentialCovers` permits, and refuses a read of an uncovered private project in the same words as a missing project.
+A scoped credential is offered neither roster nor delivery reads because those reads span all projects.
 The citation rule is the server's and not the model's:
 a text frame carries plain text and time links alone, every ASCII punctuation byte of the model's words escaped, which closes markdown's own constructs, and every word a renderer would link on its own
 — a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address

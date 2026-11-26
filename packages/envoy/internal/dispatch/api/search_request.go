@@ -63,6 +63,9 @@ type searchParameters struct {
 	excluded     string
 	reading      *searchReading
 	who          model.Actor
+	// goingScope is set only for a project-scoped short answer. It searches all indexed
+	// kinds, but only in projects that the author may read.
+	goingScope string
 }
 
 // numberScope is the project a bare issue number names: the project filter when the request
@@ -223,19 +226,20 @@ func searchKeyForms(q string) (key string, number int) {
 // (searchOwnKeyLead). A key form names one issue and needs no read of its own: the issue arm
 // matches the key it is given, and matches nothing when no issue holds it. A number alone names
 // the issue of that number in each project, which only this one read can answer, and only a
-// query that is a bare number ever pays for it; scope is the project it is read in
-// (numberScope), which names that project's issue alone, and without one every matching issue,
-// in project order.
-func (s *server) searchOwnIssueKeys(ctx context.Context, q, scope string) ([]string, error) {
-	key, number := searchKeyForms(q)
+// query that is a bare number ever pays for it. The search's numberScope narrows the lookup to
+// the selected project when there is one. A scoped run only looks up keys it may read.
+func (s *server) searchOwnIssueKeys(ctx context.Context, parameters searchParameters) ([]string, error) {
+	key, number := searchKeyForms(parameters.text)
 	if key != "" {
 		return []string{key}, nil
 	}
 	if number == 0 {
 		return []string{}, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx,
-		`select key from issues where number = $1 and ($2 = '' or project_key = $2) order by project_key`, number, scope)
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select i.key from issues i where i.number = $1 and ($2 = '' or i.project_key = $2)
+		and `+goingProjectCoveredSQL("i.project_key", "$3")+` order by i.project_key`,
+		number, parameters.numberScope(), parameters.goingScope)
 	if err != nil {
 		return nil, err
 	}
@@ -297,8 +301,8 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // the $3 rarest of them answered. Each word is stemmed to its lexeme by the
 // configuration every search column is built with ('english'), so the word a person wrote and
 // the lexeme the statistics count are the same thing; the lexemes of one query are matched once
-// each (distinct on), and the df is summed over the projects in scope - one when the search names
-// a project ($2), every project when it names none.
+// each (distinct on), and the df is summed over the projects the search may read. $2 narrows
+// the count to one project when named.
 //
 // The statistics are search_term_stats, the per-project document frequencies the related-terms
 // refresh keeps up to date through search_term_queue and the snapshot beside its totals
@@ -315,7 +319,12 @@ func searchMeaningQueryArguments(parameters searchParameters, vector []float32, 
 // ones run out, which is what broadens a query on a database whose statistics have never been
 // built: every word unknown, the order is the query's own and the bound is all that is left of
 // the pick.
-const searchRarestWordsSQL = `
+var searchRarestWordsSQL = searchRarestWordsStatement("")
+
+var goingCoveredRarestWordsSQL = searchRarestWordsStatement(" and " + goingProjectCoveredSQL("s.project_key", "$4"))
+
+func searchRarestWordsStatement(coverage string) string {
+	return `
 with words as (
   select distinct on (w.lexeme) w.word, w.at, w.lexeme
     from (select t.word, t.at,
@@ -327,12 +336,13 @@ with words as (
 df as (
   select s.lexeme, sum(s.ndoc) as ndoc
     from search_term_stats s
-   where s.lexeme in (select lexeme from words) and ($2 = '' or s.project_key = $2)
+   where s.lexeme in (select lexeme from words) and ($2 = '' or s.project_key = $2)` + coverage + `
    group by s.lexeme
 )
 select w.word from words w left join df on df.lexeme = w.lexeme
  order by df.ndoc nulls last, w.at
  limit $3`
+}
 
 // searchRarestWords is the fallback's own words: the searchBroadenWords rarest words of the
 // query (searchRarestWordsSQL). It is the one extra statement the fallback costs, and it runs for
@@ -345,7 +355,14 @@ func (s *server) searchRarestWords(ctx context.Context, parameters searchParamet
 	if len(words) < 2 {
 		return nil, nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, searchRarestWordsSQL, words, parameters.project, searchBroadenWords)
+	pool := s.deps.Store.Pool
+	statement := searchRarestWordsSQL
+	arguments := []any{words, parameters.project, searchBroadenWords}
+	if parameters.goingScope != "" {
+		statement = goingCoveredRarestWordsSQL
+		arguments = append(arguments, parameters.goingScope)
+	}
+	rows, err := pool.Query(ctx, statement, arguments...)
 	if err != nil {
 		return nil, err
 	}

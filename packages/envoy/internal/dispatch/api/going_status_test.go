@@ -381,6 +381,95 @@ func TestGoingStatusReadsStayInsideTheAuthorsProject(t *testing.T) {
 	}
 }
 
+func TestGoingUnassignedProjectReadsRespectTheAuthorScope(t *testing.T) {
+	t.Parallel()
+	const query = "quernstone"
+	rig := newBlockRig(t, testServerOptions{embedder: &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}})
+	seedActivityFixture(t, rig.database)
+	rig.seed(t,
+		`insert into projects (key, name, default_assignee) values ('HIDDEN', 'Hidden', 'alice')`,
+		`update projects set visibility = 'private', owner = 'alice' where key in ('DEMO', 'HIDDEN')`,
+		`insert into issues (key, project_key, number, title, status, created_by, rank, parent_key)
+			values ('HIDDEN-1', 'HIDDEN', 1, 'Quernstone hidden', 'done', '{"kind":"system","id":"test"}', 'U', 'DEMO-1')`,
+		`update issues set parent_key = 'DEMO-1' where key = 'OTHER-1'`,
+		`update issues set title = 'Quernstone ' || key where key in ('DEMO-1', 'OTHER-1')`,
+		`insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by)
+			select key, 1, 'acme/arch', 'main', 1, '{"kind":"system","id":"test"}'
+			from projects where key in ('DEMO', 'OTHER', 'HIDDEN')`,
+	)
+	request := goingRequest{Author: model.Actor{Kind: "session", ID: "ses-scoped", Project: new("DEMO"), Proven: true}}
+	reads := rig.served.goingRunReads(request, goingRunStart{
+		reads: []string{going.ReadProgress, going.ReadArchitecture, going.ReadProjectActivity},
+	})
+	ctx := t.Context()
+	requireMissing := func(t *testing.T, err error) {
+		t.Helper()
+		var refused *going.ReadRefusal
+		if !errors.As(err, &refused) || refused.Error() != "project not found" {
+			t.Errorf("read error = %v, want the common project-not-found refusal", err)
+		}
+	}
+	for tool, read := range reads.funcs {
+		t.Run(tool, func(t *testing.T) {
+			for _, project := range []string{"DEMO", "OTHER"} {
+				got, err := read(ctx, json.RawMessage(fmt.Sprintf(`{"project":%q}`, project)))
+				if err != nil || got.Facts["project"] != project {
+					t.Errorf("read %s = %v, %v; want %s", project, got.Facts, err, project)
+				}
+			}
+			for _, project := range []string{"HIDDEN", "MISSING"} {
+				_, err := read(ctx, json.RawMessage(fmt.Sprintf(`{"project":%q}`, project)))
+				requireMissing(t, err)
+			}
+		})
+	}
+	readProgress := reads.funcs[going.ReadProgress]
+	t.Run("issue and children", func(t *testing.T) {
+		for _, key := range []string{"HIDDEN-1", "MISSING-1"} {
+			_, err := readProgress(ctx, json.RawMessage(fmt.Sprintf(`{"issue":%q}`, key)))
+			requireMissing(t, err)
+		}
+		got, err := readProgress(ctx, json.RawMessage(`{"issue":"DEMO-1"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rows := got.Tables[going.TableIssues]; len(rows) != 1 || rows[0][going.FieldKey] != "OTHER-1" {
+			t.Errorf("child rows = %v, want OTHER-1 alone", rows)
+		}
+		want := []map[string]any{{going.FieldLabel: "children", going.FieldDone: 0, going.FieldTotal: 1}}
+		if bars := got.Tables[going.TableProgress]; !reflect.DeepEqual(bars, want) {
+			t.Errorf("progress = %v, want only the public child counted: %v", bars, want)
+		}
+	})
+	t.Run("searches and body read", func(t *testing.T) {
+		hits, err := rig.served.goingSearch(request.Project, request.Author)(ctx, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, hit := range hits {
+			ids = append(ids, hit.ID)
+		}
+		slices.Sort(ids)
+		if !slices.Equal(ids, []string{"DEMO-1", "OTHER-1"}) {
+			t.Errorf("search matched %v, want the home and public issues only", ids)
+		}
+		for _, key := range []string{"DEMO-1", "OTHER-1", "HIDDEN-1", "MISSING-1"} {
+			hit, named, err := rig.served.goingNamedHit(ctx, key, request.Project, request.Author)
+			visible := key == "DEMO-1" || key == "OTHER-1"
+			if err != nil || !named || (hit != nil) != visible || (hit != nil && hit.ID != key) {
+				t.Errorf("fast tier for %s = %v, %t, %v; want a key, visible=%t", key, hit, named, err, visible)
+			}
+		}
+		rig.seed(t, `update projects set visibility = 'private', owner = 'alice' where key = 'OTHER'`)
+		bodies, err := rig.served.goingBodies(request)(ctx, hits)
+		own := going.Hit{Kind: "issue", ID: "DEMO-1"}.Key()
+		if err != nil || len(bodies) != 1 || bodies[own] == "" {
+			t.Errorf("bodies after OTHER becomes private = %v, %v; want only DEMO-1", bodies, err)
+		}
+	})
+}
+
 // The roster read names every session that holds a claim (status-11 of the eval, which no try
 // passed while the read listed the listener's sessions alone): a session the listener lists no
 // more whose claim stands is listed after the listener's, gone, with the issue it holds and since

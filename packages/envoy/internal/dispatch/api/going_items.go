@@ -10,7 +10,7 @@ import (
 
 // goingItemTextQuery reads one page of hits' texts in one statement, whatever kinds the page
 // holds: the hits arrive as two parallel text[] parameters through unnest, so the statement costs
-// three parameters and one round trip however many kinds and ids a page names, where a statement
+// four parameters and one round trip however many kinds and ids a page names, where a statement
 // per hit would cost one round trip each. A kind no arm names, or an id no row holds, answers
 // null and is dropped by the final where, so the read refuses nothing.
 //
@@ -26,6 +26,9 @@ import (
 // expression embedqueue's issueRows and migration 0140's triggers build an issue's vector from.
 // An issue ranked by meaning was ranked on its spec, so showing a model the title alone would
 // show it none of what the hit matched.
+//
+// The scope at $4 rechecks each hit's owner while reading its body: a project can become
+// private between search and this read. An unscoped run binds the empty string.
 //
 // The ids of four of the kinds are uuids and the issue's is its key, so each wanted id is cast
 // once, guarded (store.CastableUUID): an id in no uuid spelling resolves to no row rather than
@@ -43,11 +46,18 @@ select w.kind, w.id, left(txt.text, $3::int)
   from wanted w
   left join lateral (
     select case w.kind
-      when 'issue' then (select issue_embedding_text(i.title, issue_embedding_spec(i.key)) from issues i where i.key = w.id)
-      when 'document' then (select v.markdown from artifact_versions v where v.artifact_id = w.uuid order by v.number desc limit 1)
-      when 'comment' then (select c.body from comments c where c.id = w.uuid)
-      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k where k.id = w.uuid)
-      when 'message' then (select m.body from messages m where m.id = w.uuid)
+      when 'issue' then (select issue_embedding_text(i.title, issue_embedding_spec(i.key))
+        from issues i where i.key = w.id and ` + goingProjectCoveredSQL("i.project_key", "$4") + `)
+      when 'document' then (select v.markdown from artifact_versions v join artifacts a on a.id = v.artifact_id
+        where v.artifact_id = w.uuid and ` + goingProjectCoveredSQL("a.project_key", "$4") + ` order by v.number desc limit 1)
+      when 'comment' then (select c.body from comments c
+        left join issues i on i.key = c.issue_key left join artifacts a on a.id = c.artifact_id
+        where c.id = w.uuid and ` + goingProjectCoveredSQL("coalesce(i.project_key, a.project_key)", "$4") + `)
+      when 'ask' then (select k.question || ' ' || ask_search_suffix(k.options, k.answer) from asks k
+        left join issues i on i.key = k.issue_key left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+        where k.id = w.uuid and ` + goingProjectCoveredSQL("coalesce(i.project_key, a.project_key)", "$4") + `)
+      when 'message' then (select m.body from messages m left join issues i on i.key = m.issue_key
+        where m.id = w.uuid and ` + goingProjectCoveredSQL("i.project_key", "$4") + `)
     end as text
   ) txt on true
  where txt.text is not null`
@@ -60,7 +70,7 @@ select w.kind, w.id, left(txt.text, $3::int)
 // one hit more is dropped than cutting after the read dropped: a text whose first runes characters
 // are white space and whose content comes later was kept, with a body of white space, and is now
 // absent, which is a body that showed a reader nothing either way.
-func goingItemText(ctx context.Context, pool *store.Pool, hits []going.Hit, runes int) (map[string]string, error) {
+func goingItemText(ctx context.Context, pool *store.Pool, hits []going.Hit, runes int, scope string) (map[string]string, error) {
 	texts := map[string]string{}
 	if len(hits) == 0 {
 		return texts, nil
@@ -69,7 +79,7 @@ func goingItemText(ctx context.Context, pool *store.Pool, hits []going.Hit, rune
 	for position, hit := range hits {
 		kinds[position], ids[position] = hit.Kind, hit.ID
 	}
-	rows, err := pool.Query(ctx, goingItemTextQuery, kinds, ids, runes)
+	rows, err := pool.Query(ctx, goingItemTextQuery, kinds, ids, runes, scope)
 	if err != nil {
 		return nil, err
 	}

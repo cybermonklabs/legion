@@ -53,6 +53,8 @@ body: |-
   `packages/envoy/going/decision_models.json` records), whose `decision` frame gives the line. The
   short answer of a pause in typing calls the read tools, draws a typed block (`block`) from rows
   the server reads itself, and stops at `POST /api/v1/going/requests/{id}/cancel`.
+  Short answers for a project-scoped credential search and read only its own project and
+  public projects. An uncovered private project and a missing project give the same refusal.
   `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week, and
   `GET /api/v1/agents?limit=` lists the newest sessions alone. `/metrics` shows the server's and
   the agent's memory and goroutines, the cache sizes, the runs by state, and the agent's slots,

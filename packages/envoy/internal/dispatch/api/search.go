@@ -512,6 +512,19 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
 // (searchQueryArguments), and $15 the acting credential (refs.VisibilityArg).
 var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "", searchSeenParam)
 
+// The short answer has no project filter when the question names none. Filter the owners by
+// the credential's project scope before ranking or paging. The meaning statement also
+// filters within each candidate limit, so a hidden match cannot take a visible match's place.
+const goingSearchOwnerProject = `case when arms.issue_key is not null then
+	(select i.project_key from issues i where i.key = arms.issue_key) else arms.owner_project end`
+
+var (
+	goingCoveredKeywordSearch = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL,
+		"not "+goingProjectCoveredSQL(goingSearchOwnerProject, searchParam(searchSeenParam+1)), searchSeenParam)
+	goingCoveredMeaningSearch = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL,
+		"not "+goingProjectCoveredSQL(goingSearchOwnerProject, searchParam(searchMeaningSeenParam+1)), searchMeaningSeenParam, meaningCoveredProjects)
+)
+
 // searchSeenParam and searchMeaningSeenParam are where each of search's own two queries binds
 // the acting credential: after every parameter the query already had, the opener's own six
 // included, so neither query's numbering moved. The related-item check numbers its own
@@ -924,20 +937,27 @@ var (
 // other arm carries them in every shape, and above it in the arm the other two scopes take,
 // which is why a request narrowing by one of them runs the joined statement whatever project it
 // names (meaningStatementFor).
+// meaningCoveredProjects uses the joined form, and adds the short answer author's scope
+// before each meaning arm's limit.
 type meaningProjectScope int
 
 const (
 	meaningEveryProject meaningProjectScope = iota
 	meaningOneProject
 	meaningOneProjectJoined
+	meaningCoveredProjects
 )
 
 func (scope meaningProjectScope) candidateProject(column string) string {
 	switch scope {
 	case meaningOneProject:
 		return " and e.project_key = $2"
-	case meaningOneProjectJoined:
-		return " and ($2 = '' or " + column + " = $2)"
+	case meaningOneProjectJoined, meaningCoveredProjects:
+		project := " and ($2 = '' or " + column + " = $2)"
+		if scope == meaningCoveredProjects {
+			project += " and " + goingProjectCoveredSQL(column, searchParam(searchMeaningSeenParam+1))
+		}
+		return project
 	default:
 		return ""
 	}
@@ -1145,8 +1165,8 @@ totals as (
 // ever sees a row, so a comment the acting person may not see would otherwise take a place in
 // that cut and hide one they may.
 func searchMeaningCommentArm(scope meaningProjectScope, seen int) string {
-	if scope == meaningOneProjectJoined {
-		return searchMeaningCommentArmJoined(seen)
+	if scope == meaningOneProjectJoined || scope == meaningCoveredProjects {
+		return searchMeaningCommentArmJoined(scope, seen)
 	}
 	return `meaning_comment_candidates as (
   select e.id as window_id, e.covers, ` + windowItemUUID + ` as comment_id,
@@ -1220,7 +1240,7 @@ const searchMeaningCommentProject = `coalesce(i.project_key, p.key)`
 // seen is the parameter the acting credential is bound at, and the comment predicate rides
 // inside this arm's candidate limit beside the project one, for the reason every other
 // candidate CTE binds its own: the limit is spent before anything above it filters.
-func searchMeaningCommentArmJoined(seen int) string {
+func searchMeaningCommentArmJoined(scope meaningProjectScope, seen int) string {
 	return `meaning_comment_candidates as (
   select c.issue_key, c.artifact_id, c.anchor, c.id, e.id as window_id, e.covers, i.title as issue_title, i.status as issue_status, p.key as owner_project, a.slug as owner_slug, a.name as owner_name,
          coalesce(i.updated_at, c.created_at) as updated_at,
@@ -1231,7 +1251,7 @@ func searchMeaningCommentArmJoined(seen int) string {
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
    where e.kind = 'comment_block' and e.embedding is not null and e.model = $11` +
-		meaningOneProjectJoined.candidateProject(searchMeaningCommentProject) + `
+		scope.candidateProject(searchMeaningCommentProject) + `
      and ` + refs.VisibleKind("comment", "c.id::text", searchParam(seen)) +
 		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
    order by e.embedding <=> $9::vector
@@ -1390,7 +1410,7 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // the delete marks of its comments and messages (stampSearchPostMarks), one read by id of the
 // page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
-	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
+	keys, err := s.searchOwnIssueKeys(ctx, parameters)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1532,8 +1552,14 @@ func (s *server) runKeywordOnlyDegraded(ctx context.Context, parameters searchPa
 // kinds leave at least one kind in.
 func (s *server) runFusedSearchQuery(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	started := time.Now()
-	rows, err := s.deps.Store.Pool.Query(ctx, parameters.kinds.statements().keyword,
-		searchQueryArguments(parameters)...)
+	statement := goingCoveredKeywordSearch
+	arguments := searchQueryArguments(parameters)
+	if parameters.goingScope != "" {
+		arguments = append(arguments, parameters.goingScope)
+	} else {
+		statement = parameters.kinds.statements().keyword
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, statement, arguments...)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
@@ -1578,11 +1604,16 @@ func (s *server) runMeaningSearch(ctx context.Context, parameters searchParamete
 	// one, so neither pays for the progress row's savepoint. The choice is made over this
 	// search's own kinds, so a request naming a kind runs the scope it would have run anyway
 	// with that kind's rows left out, rather than one choice overriding the other.
-	filtered := parameters.filtered()
-	filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
-	statement := meaningStatementFor(parameters.kinds.statements(), parameters.project, filled, filtered)
-	rows, err := tx.Query(ctx, statement,
-		searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())...)
+	arguments := searchMeaningQueryArguments(parameters, vector, s.deps.Embedder.Identity())
+	statement := goingCoveredMeaningSearch
+	if parameters.goingScope != "" {
+		arguments = append(arguments, parameters.goingScope)
+	} else {
+		filtered := parameters.filtered()
+		filled := !filtered && parameters.project != "" && embeddingProjectKeysFilled(ctx, tx)
+		statement = meaningStatementFor(parameters.kinds.statements(), parameters.project, filled, filtered)
+	}
+	rows, err := tx.Query(ctx, statement, arguments...)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}

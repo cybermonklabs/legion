@@ -19,7 +19,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	tree, err := s.architectureTree(r.Context(), r.PathValue("key"))
+	tree, err := architectureTree(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -52,10 +52,9 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 // architectureTree is GET /api/v1/projects/{key}/architecture's answer for project, and a 404
 // SOURCE_NOT_FOUND apiError for a project with no architecture source. The route and the going
 // run's architecture read (going_reads.go) answer through it alike.
-func (s *server) architectureTree(ctx context.Context, project string) (model.ArchitectureTree, error) {
-	pool := s.deps.Store.Pool
+func architectureTree(ctx context.Context, q queryer, project string) (model.ArchitectureTree, error) {
 	var tree model.ArchitectureTree
-	rows, err := pool.Query(ctx, `
+	rows, err := q.Query(ctx, `
 		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
 		where project_key = $1 order by id
 	`, project)
@@ -69,15 +68,15 @@ func (s *server) architectureTree(ctx context.Context, project string) (model.Ar
 	if len(tree.Sources) == 0 {
 		return model.ArchitectureTree{}, errorf(http.StatusNotFound, "SOURCE_NOT_FOUND", "no architecture source configured for %s", project)
 	}
-	components, byID, err := loadTreeComponents(ctx, pool, project)
+	components, byID, err := loadTreeComponents(ctx, q, project)
 	if err != nil {
 		return model.ArchitectureTree{}, err
 	}
-	issues, err := loadTreeIssues(ctx, pool, project)
+	issues, err := loadTreeIssues(ctx, q, project)
 	if err != nil {
 		return model.ArchitectureTree{}, err
 	}
-	if err := attachTreeIssues(ctx, pool, project, issues, byID); err != nil {
+	if err := attachTreeIssues(ctx, q, project, issues, byID); err != nil {
 		return model.ArchitectureTree{}, err
 	}
 

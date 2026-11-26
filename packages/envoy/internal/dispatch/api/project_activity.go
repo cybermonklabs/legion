@@ -79,7 +79,7 @@ func (s *server) getProjectActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("weeks must be an integer from 1 to %d", projectActivityWeeksMax))
 		return
 	}
-	activity, err := s.projectActivity(r.Context(), project, weeks)
+	activity, err := s.projectActivity(r.Context(), s.deps.Store.Pool, project, weeks)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -90,12 +90,11 @@ func (s *server) getProjectActivity(w http.ResponseWriter, r *http.Request) {
 // projectActivity is the activity of project over the last weeks ISO weeks, and a 404
 // PROJECT_NOT_FOUND apiError for a project Dispatch does not hold. The route and the going run's
 // activity read (going_reads.go) answer through it alike.
-func (s *server) projectActivity(ctx context.Context, project string, weeks int) (projectActivity, error) {
-	pool := s.deps.Store.Pool
-	if _, err := s.loadProject(ctx, pool, project); err != nil {
+func (s *server) projectActivity(ctx context.Context, q queryer, project string, weeks int) (projectActivity, error) {
+	if _, err := s.loadProject(ctx, q, project); err != nil {
 		return projectActivity{}, err
 	}
-	rows, err := pool.Query(ctx, projectActivityStatement, project, weeks)
+	rows, err := q.Query(ctx, projectActivityStatement, project, weeks)
 	if err != nil {
 		return projectActivity{}, err
 	}

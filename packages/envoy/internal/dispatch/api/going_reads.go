@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
@@ -47,9 +48,11 @@ import (
 
 // goingDeploymentReads are the reads that are no one project's: the roster names every
 // project's sessions and the delivery reads every project's pull requests and issues. A
-// credential scoped to one project reads only the projects access.CredentialCovers covers, its
-// own and the public ones (createGoingRequest), so it is offered neither; every other read is
-// held to the project the run was asked of (goingReadRun.project).
+// credential scoped to one project is offered neither. When the question names no project,
+// its reads use the project the model names, but only where access.CredentialCovers permits it:
+// its own project or a public one. An uncovered private project and a missing project have the
+// same refusal. A question asked of a project limits these reads to that project alone
+// (goingReadRun.project).
 var goingDeploymentReads = map[string]bool{going.ReadRoster: true, going.ReadDelivery: true}
 
 // The bounds of what one read hands the model, so a read of a large project is a summary the
@@ -192,18 +195,38 @@ func (s *server) goingRunReads(request goingRequest, start goingRunStart) *going
 	run := &goingReadRun{s: s, asked: request.Project, chip: start.chip, author: request.Author}
 	every := map[string]going.ReadFunc{
 		going.ReadRoster:          run.readRoster,
-		going.ReadProgress:        run.readProgress,
-		going.ReadArchitecture:    run.readArchitecture,
-		going.ReadProjectActivity: run.readProjectActivity,
+		going.ReadProgress:        run.scopedRead(run.readProgress),
+		going.ReadArchitecture:    run.scopedRead(run.readArchitecture),
+		going.ReadProjectActivity: run.scopedRead(run.readProjectActivity),
 		going.ReadDelivery:        run.readDelivery,
 	}
 	run.funcs = make(map[string]going.ReadFunc, len(start.reads))
 	for _, tool := range start.reads {
+		if deref(run.author.Project) != "" && goingDeploymentReads[tool] {
+			continue
+		}
 		if read, known := every[tool]; known {
 			run.funcs[tool] = read
 		}
 	}
 	return run
+}
+
+// scopedRead checks visibility and reads the data in one snapshot. A project that becomes
+// private after that check cannot add new data to the answer.
+func (g *goingReadRun) scopedRead(read func(context.Context, queryer, json.RawMessage) (going.Read, error)) going.ReadFunc {
+	return func(ctx context.Context, arguments json.RawMessage) (going.Read, error) {
+		pool := g.s.deps.Store.Pool
+		if deref(g.author.Project) == "" {
+			return read(ctx, pool, arguments)
+		}
+		tx, err := pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+		if err != nil {
+			return going.Read{}, err
+		}
+		defer tx.Rollback(context.WithoutCancel(ctx))
+		return read(ctx, tx, arguments)
+	}
 }
 
 // rosterRead is the roster frame of the last roster read the run made, and false where it made
@@ -218,11 +241,11 @@ func (g *goingReadRun) rosterRead() (goingRosterFrame, bool) {
 }
 
 // project is the project a read reads: the one the model named, else the run's, else the page's.
-// A run asked of one project reads that project alone, whatever the model names, and search is
-// held to it the same way (goingSearch). A credential scoped to one project asks of a project
-// access.CredentialCovers covers, its own or a public one, and is answered 404 PROJECT_NOT_FOUND
-// for any other (createGoingRequest).
-func (g *goingReadRun) project(named string) (string, error) {
+// A run asked of a project reads that project alone. With no project asked of, the run reads
+// what the model names or falls back to the page. For a scoped author, the selected project
+// must pass access.CredentialCovers (its own project or a public one). The read uses the same
+// refusal for an uncovered private project and a missing one (createGoingRequest).
+func (g *goingReadRun) project(ctx context.Context, q queryer, named string) (string, error) {
 	project := cmp.Or(strings.TrimSpace(named), g.asked)
 	if project == "" && g.chip != nil {
 		project = g.chip.Project
@@ -235,7 +258,32 @@ func (g *goingReadRun) project(named string) (string, error) {
 	case g.asked != "" && project != g.asked:
 		return "", going.Refuse("this question was asked of project %s, and reads that project alone", g.asked)
 	}
+	if scope := deref(g.author.Project); scope != "" {
+		if err := goingAllowProject(ctx, q, scope, project); err != nil {
+			return "", err
+		}
+	}
 	return project, nil
+}
+
+func goingAllowProject(ctx context.Context, q queryer, scope, project string) error {
+	private, found, err := projectVisibility(ctx, q, project)
+	if err != nil {
+		return err
+	}
+	if !found || !access.CredentialCovers(access.Credential{Listed: []string{scope}}, project, private) {
+		return goingReadError(errProjectNotFound())
+	}
+	return nil
+}
+
+// goingProjectCoveredSQL is CredentialCovers with Listed set to the run author's one
+// project, for reads that filter a set of rows. A scoped run does not read rows without a
+// project. An empty or null scope leaves the statement unrestricted.
+func goingProjectCoveredSQL(project, scope string) string {
+	return `(coalesce(` + scope + `::text, '') = '' or ` + project + ` in (
+		select key from projects where key = ` + scope + ` or visibility <> 'private'
+	))`
 }
 
 // goingPageArguments is arguments, a call of the bar's agent to tool, with the issue or the project
@@ -663,7 +711,7 @@ func (s *server) unlistedAgentRows(ctx context.Context, sessionIDs []string, sta
 // readProgress is read_progress: an issue's task and child progress with its children, as GET
 // /api/v1/issues and the issue read carry them, or a project's issues by status with its open
 // issues. With neither named, the page's issue is read, else the run's or the page's project.
-func (g *goingReadRun) readProgress(ctx context.Context, arguments json.RawMessage) (going.Read, error) {
+func (g *goingReadRun) readProgress(ctx context.Context, q queryer, arguments json.RawMessage) (going.Read, error) {
 	var named struct {
 		Project string `json:"project"`
 		Issue   string `json:"issue"`
@@ -676,23 +724,33 @@ func (g *goingReadRun) readProgress(ctx context.Context, arguments json.RawMessa
 		issue = g.chip.Issue
 	}
 	if issue != "" {
-		return g.issueProgress(ctx, issue)
+		return g.issueProgress(ctx, q, issue)
 	}
-	project, err := g.project(named.Project)
+	project, err := g.project(ctx, q, named.Project)
 	if err != nil {
 		return going.Read{}, err
 	}
-	return g.projectProgress(ctx, project)
+	return g.projectProgress(ctx, q, project)
 }
 
 // issueProgress is one issue's progress: its task and child counts, its children by status, and
 // its children in the listing's order.
-func (g *goingReadRun) issueProgress(ctx context.Context, key string) (going.Read, error) {
+func (g *goingReadRun) issueProgress(ctx context.Context, q queryer, key string) (going.Read, error) {
 	if !issueKeyPattern.MatchString(key) {
 		return going.Read{}, going.Refuse("issue must be an issue key such as DEMO-12, and %q is none", key)
 	}
+	scope := deref(g.author.Project)
+	if scope != "" {
+		project, private, err := issueProject(ctx, q, key)
+		if err != nil {
+			return going.Read{}, err
+		}
+		if project == "" || !access.CredentialCovers(access.Credential{Listed: []string{scope}}, project, private) {
+			return going.Read{}, goingReadError(errProjectNotFound())
+		}
+	}
 	s := g.s
-	issue, progress, err := s.loadIssueWithProgress(ctx, s.deps.Store.Pool, key)
+	issue, progress, err := s.loadIssueWithProgress(ctx, q, key)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return going.Read{}, going.Refuse("Dispatch holds no issue %s", key)
 	}
@@ -702,13 +760,33 @@ func (g *goingReadRun) issueProgress(ctx context.Context, key string) (going.Rea
 	if g.asked != "" && issue.Project != g.asked {
 		return going.Read{}, going.Refuse("this question was asked of project %s, and %s is an issue of %s", g.asked, key, issue.Project)
 	}
-	children, _, err := s.goingIssuePage(ctx, "", key, false)
+	// An issue may have children in other projects. Scope their rows before pagination
+	// and derive the progress bar from their filtered counts, not the issue loader's totals.
+	childProject := ""
+	if scope != "" {
+		childProject = g.asked
+	}
+	children, _, err := goingIssuePage(ctx, q, childProject, key, false, scope)
 	if err != nil {
 		return going.Read{}, err
 	}
-	statuses, err := s.goingStatusCounts(ctx, "", key)
+	statuses, err := goingStatusCounts(ctx, q, childProject, key, scope)
 	if err != nil {
 		return going.Read{}, err
+	}
+	if scope != "" {
+		count := model.ProgressCount{}
+		for _, row := range statuses {
+			n := row["count"].(int)
+			count.Total += n
+			if row["status"] == "done" {
+				count.Done = n
+			}
+		}
+		progress.Children = nil
+		if count.Total > 0 {
+			progress.Children = &count
+		}
 	}
 	bars := []map[string]any{}
 	if progress.Tasks != nil {
@@ -731,16 +809,15 @@ func (g *goingReadRun) issueProgress(ctx context.Context, key string) (going.Rea
 
 // projectProgress is one project's progress: its issues done of all, its issues by status, and
 // its open issues in the listing's order.
-func (g *goingReadRun) projectProgress(ctx context.Context, project string) (going.Read, error) {
-	s := g.s
-	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
+func (g *goingReadRun) projectProgress(ctx context.Context, q queryer, project string) (going.Read, error) {
+	if _, err := g.s.loadProject(ctx, q, project); err != nil {
 		return going.Read{}, goingReadError(err)
 	}
-	statuses, err := s.goingStatusCounts(ctx, project, "")
+	statuses, err := goingStatusCounts(ctx, q, project, "", "")
 	if err != nil {
 		return going.Read{}, err
 	}
-	open, openTotal, err := s.goingIssuePage(ctx, project, "", true)
+	open, openTotal, err := goingIssuePage(ctx, q, project, "", true, "")
 	if err != nil {
 		return going.Read{}, err
 	}
@@ -770,26 +847,29 @@ func (g *goingReadRun) projectProgress(ctx context.Context, project string) (goi
 // The arguments follow listIssues (issue_queries.go): $1 project, $2 statuses, $3 parent,
 // $4 updated-since, $5 labels, $6 open, $7 priorities, $8 unset priority, $9/$10 closed window,
 // $11 advances ids, $12/$13 none/any advances, $14 moved, $15 own, $16/$17 label case-folding
-// maps, and $18/$19 page limit and offset. Only project, parent and open narrow this read.
-func (s *server) goingIssuePage(ctx context.Context, project, parent string, open bool) ([]model.IssueSummary, int, error) {
+// maps, $18/$19 page limit and offset, and $20 the scope for a scoped child listing.
+func goingIssuePage(ctx context.Context, q queryer, project, parent string, open bool, scope string) ([]model.IssueSummary, int, error) {
 	arguments := []any{project, []string{}, parent, store.MicrosecondCeiling(nil), []string{}, open, []int16{}, false,
 		store.MicrosecondCeiling(nil), store.MicrosecondCeiling(nil), []string{}, false, false, false, false, "", "", goingReadIssueMax, 0}
-	return s.scanIssuePage(ctx, listIssuesPageQuery, arguments)
+	if scope != "" {
+		return scanIssuePage(ctx, q, goingCoveredIssuePageQuery, append(arguments, scope))
+	}
+	return scanIssuePage(ctx, q, listIssuesPageQuery, arguments)
 }
 
-// goingStatusCountsQuery counts issues by status under GET /api/v1/issues' project and parent
-// filters ($1 and $2, empty for none), which is the total that listing answers for each status
-// filter.
-const goingStatusCountsQuery = `
+// goingStatusCountsQuery counts issues by status under the project and parent filters ($1 and
+// $2, empty for none) and the author's project scope ($3, empty for an unrestricted count).
+var goingStatusCountsQuery = `
 	select i.status, count(*)::int
 	from issues i
 	where ($1 = '' or i.project_key = $1) and ($2 = '' or i.parent_key = $2)
+		and ` + goingProjectCoveredSQL("i.project_key", "$3") + `
 	group by i.status`
 
 // goingStatusCounts is the issues of a project or a parent counted by status, in the lifecycle's
 // order, each status that holds none left out.
-func (s *server) goingStatusCounts(ctx context.Context, project, parent string) ([]map[string]any, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, goingStatusCountsQuery, project, parent)
+func goingStatusCounts(ctx context.Context, q queryer, project, parent, scope string) ([]map[string]any, error) {
+	rows, err := q.Query(ctx, goingStatusCountsQuery, project, parent, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -835,18 +915,18 @@ func issueHits(issues []model.IssueSummary) []going.Hit {
 
 // readArchitecture is read_architecture: GET /api/v1/projects/{key}/architecture's per-component
 // counts and the project's totals.
-func (g *goingReadRun) readArchitecture(ctx context.Context, arguments json.RawMessage) (going.Read, error) {
+func (g *goingReadRun) readArchitecture(ctx context.Context, q queryer, arguments json.RawMessage) (going.Read, error) {
 	var named struct {
 		Project string `json:"project"`
 	}
 	if err := decodeGoingArguments(arguments, &named); err != nil {
 		return going.Read{}, err
 	}
-	project, err := g.project(named.Project)
+	project, err := g.project(ctx, q, named.Project)
 	if err != nil {
 		return going.Read{}, err
 	}
-	tree, err := g.s.architectureTree(ctx, project)
+	tree, err := architectureTree(ctx, q, project)
 	if err != nil {
 		return going.Read{}, goingReadError(err)
 	}
@@ -876,7 +956,7 @@ func (g *goingReadRun) readArchitecture(ctx context.Context, arguments json.RawM
 
 // readProjectActivity is read_project_activity: GET /api/v1/projects/{key}/activity's weeks, in
 // total and by kind.
-func (g *goingReadRun) readProjectActivity(ctx context.Context, arguments json.RawMessage) (going.Read, error) {
+func (g *goingReadRun) readProjectActivity(ctx context.Context, q queryer, arguments json.RawMessage) (going.Read, error) {
 	var named struct {
 		Project string `json:"project"`
 		Weeks   *int   `json:"weeks"`
@@ -884,7 +964,7 @@ func (g *goingReadRun) readProjectActivity(ctx context.Context, arguments json.R
 	if err := decodeGoingArguments(arguments, &named); err != nil {
 		return going.Read{}, err
 	}
-	project, err := g.project(named.Project)
+	project, err := g.project(ctx, q, named.Project)
 	if err != nil {
 		return going.Read{}, err
 	}
@@ -895,7 +975,7 @@ func (g *goingReadRun) readProjectActivity(ctx context.Context, arguments json.R
 		}
 		weeks = *named.Weeks
 	}
-	activity, err := g.s.projectActivity(ctx, project, weeks)
+	activity, err := g.s.projectActivity(ctx, q, project, weeks)
 	if err != nil {
 		return going.Read{}, goingReadError(err)
 	}

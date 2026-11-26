@@ -175,7 +175,7 @@ func (s *server) goingDecide(ctx context.Context, words string, start goingRunSt
 // answer's own search does (goingSearch), so the hit is one that credential may read.
 func (s *server) goingNamedHit(ctx context.Context, words, project string, author model.Actor) (*going.Hit, bool, error) {
 	key := issueKeyPattern.MatchString(strings.ToUpper(words))
-	found, err := s.runSearch(ctx, searchParameters{text: words, project: project, limit: searchDefaultLimit, keywordsOnly: true, who: author})
+	found, err := s.runGoingSearch(ctx, words, project, author, true)
 	if err != nil {
 		return nil, key, err
 	}

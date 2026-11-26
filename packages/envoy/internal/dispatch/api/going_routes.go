@@ -183,9 +183,9 @@ func (goingBlocks) JSONSchema() (jsonschema.Schema, error) {
 // A credential that names nobody is refused here, before anything is recorded
 // (codeGoingAskerNamesNobody): the stream would serve its run to no reader at all.
 //
-// A credential that names one project asks of any project, and of every project at once. Such a
-// credential is answered 404 PROJECT_NOT_FOUND, before anything is recorded, for a project that
-// does not exist and for a private project that it does not name (errProjectNotFound).
+// A credential that names one project may leave the requested project empty or name a project
+// that access.CredentialCovers covers. A missing or uncovered private project gets the same
+// 404 PROJECT_NOT_FOUND before anything is recorded.
 //
 // A deployment with no model configured records the question exactly the same way and stores the
 // run's error frame instead of answering it (startGoingRun), so a caller learns that from the
@@ -237,14 +237,13 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// The project comes from the body, not from the address, so this row is classed
 	// scopeProjectInBody and withinProjectScope leaves the check here, as it leaves createIssue's
 	// (issue_create.go). It runs before the row is written. A credential that names one project
-	// asks of every project that access.CredentialCovers covers, and of all projects at once,
-	// which the empty project names. The one exception is a private project it does not name.
-	// Such a caller is answered 404 PROJECT_NOT_FOUND for that project, and for a project that
-	// does not exist, with one body for both, so it cannot tell the two apart. A credential that
-	// names no project is answered as before: its question of a project no row holds is recorded.
-	// The run's reads are held to the project it was asked of (goingReadRun.project), and a
-	// credential scoped to one project is offered no read of every project, the roster's or the
-	// delivery's (goingReadsFor).
+	// may ask of a project access.CredentialCovers covers, or omit the project.
+	// An uncovered private project and a missing project get the same 404 PROJECT_NOT_FOUND.
+	// A credential that names no project can still ask of a project Dispatch does not hold.
+	// A run asked of a project reads that project alone. Otherwise it reads the project the model
+	// names or falls back to the page. A scoped run reads only projects access.CredentialCovers
+	// covers, and refuses an uncovered private project in the same words as a missing one
+	// (goingReadRun.project). It is offered neither roster nor delivery (goingReadsFor).
 	covers, scoped := s.callerProject(r)
 	if scoped && project != "" {
 		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, project)
@@ -475,7 +474,7 @@ func (g *goingRunning) answer(ctx context.Context) error {
 	return g.s.deps.Answerer.Run(ctx, going.Request{
 		Words:  g.request.Words,
 		Search: g.s.goingSearch(g.request.Project, g.request.Author),
-		Bodies: g.s.goingBodies(g.request.ID),
+		Bodies: g.s.goingBodies(g.request),
 		Reads:  reads.funcs,
 		OnOutcome: func(outcome going.Outcome) error {
 			return g.finish(ctx, reads, outcome)
@@ -533,8 +532,7 @@ func (s *server) goingSearch(project string, author model.Actor) func(context.Co
 		// No display tree: the answerer reads a hit's title and its href, never its markdown, so
 		// reading each hit for display would be work no reader of this answer ever sees, which is
 		// what these parameters leaving trees unset says.
-		parameters := searchParameters{text: q, project: project, limit: searchDefaultLimit, offset: 0, who: author}
-		found, err := s.runSearch(ctx, parameters)
+		found, err := s.runGoingSearch(ctx, q, project, author, false)
 		if err != nil {
 			return nil, err
 		}
@@ -544,6 +542,20 @@ func (s *server) goingSearch(project string, author model.Actor) func(context.Co
 		}
 		return hits, nil
 	}
+}
+
+// runGoingSearch shares the project boundary between the exact-name tier and the answerer's
+// searches. An explicit project receives the same refusal as a tool read. The search SQL
+// applies the scope to each candidate, including when no project was asked of.
+func (s *server) runGoingSearch(ctx context.Context, words, project string, author model.Actor, keywordsOnly bool) (model.SearchResponse, error) {
+	scope := deref(author.Project)
+	if scope != "" && project != "" {
+		if err := goingAllowProject(ctx, s.deps.Store.Pool, scope, project); err != nil {
+			return model.SearchResponse{}, err
+		}
+	}
+	return s.runSearch(ctx, searchParameters{text: words, project: project, limit: searchDefaultLimit,
+		keywordsOnly: keywordsOnly, who: author, goingScope: scope})
 }
 
 // goingHitTitle names one hit to the model and to the reader: an issue's own title for a hit the
@@ -561,13 +573,13 @@ func goingHitTitle(result model.SearchResult) string {
 // for run requestID: the comments and messages among them are recorded as the run's before the
 // texts are handed on (recordGoingPosts), so a delete of one withdraws the run's answer
 // (goingWithdrawal).
-func (s *server) goingBodies(requestID string) func(context.Context, []going.Hit) (map[string]string, error) {
+func (s *server) goingBodies(request goingRequest) func(context.Context, []going.Hit) (map[string]string, error) {
 	return func(ctx context.Context, hits []going.Hit) (map[string]string, error) {
-		texts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax)
+		texts, err := goingItemText(ctx, s.deps.Store.Pool, hits, contracts.GoingHitRuneMax, deref(request.Author.Project))
 		if err != nil {
 			return nil, err
 		}
-		if err := s.recordGoingPosts(ctx, requestID, hits, texts); err != nil {
+		if err := s.recordGoingPosts(ctx, request.ID, hits, texts); err != nil {
 			return nil, err
 		}
 		return texts, nil

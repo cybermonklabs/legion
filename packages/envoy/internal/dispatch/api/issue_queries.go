@@ -47,6 +47,10 @@ var (
 	listPinnedIssuesPageQuery = issueSummaryQuery(true, true, true)
 )
 
+// goingCoveredIssuePageQuery filters child issues by the run author's scope before paging.
+var goingCoveredIssuePageQuery = issueSummaryQueryFiltered(false, true, true,
+	" and "+goingProjectCoveredSQL("i.project_key", "$20"))
+
 // issueSummaryQuery writes one listing statement. `matched` applies every filter to `issues i`
 // alone, so `total` is a count over `filtered`, which runs none of the six joins that resolve a
 // row's values, and the paged text orders and cuts it before anything else is resolved: the six
@@ -83,6 +87,10 @@ var (
 // read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
 // reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
 func issueSummaryQuery(pinned, paged, readAdvances bool) string {
+	return issueSummaryQueryFiltered(pinned, paged, readAdvances, "")
+}
+
+func issueSummaryQueryFiltered(pinned, paged, readAdvances bool, extraFilter string) string {
 	parameter := 18
 	pinnedJoin := ""
 	if pinned {
@@ -92,7 +100,7 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 	query := `with recursive ` + issueAdvancesFilterTerms + `, matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
-		` + issueListFilters + `
+		` + issueListFilters + extraFilter + `
 	), filtered as (
 		select i.key, i.status, i.rank, i.created_at
 		from (select array_agg(address) as addresses from matched) m
@@ -916,7 +924,11 @@ func (s *server) scanIssueSummaries(ctx context.Context, listQuery string, argum
 // parent chain of an issue off the page refuses nothing. No row at all is an empty filtered set,
 // whose count is 0.
 func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments []any) ([]model.IssueSummary, int, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, listQuery, arguments...)
+	return scanIssuePage(ctx, s.deps.Store.Pool, listQuery, arguments)
+}
+
+func scanIssuePage(ctx context.Context, q queryer, listQuery string, arguments []any) ([]model.IssueSummary, int, error) {
+	rows, err := q.Query(ctx, listQuery, arguments...)
 	if err != nil {
 		return nil, 0, err
 	}
