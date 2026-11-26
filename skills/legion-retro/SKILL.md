@@ -55,7 +55,7 @@ End each turn of that hold with a WAITING line naming the defect and the answer 
    Then run `task(agent="oracle")` with the issue, the pull request body and the diff, asking for reusable learnings, and `wait` for its answer.
    Drop a point that cites no file, symbol, quoted text or commit of this pull request.
 
-3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`, which says what a point must carry for the skill librarian to use it.
+3. **Record the learnings** as one `dispatch comment` on the issue, per `skill://legion-retro/references/learnings.md`.
    When no point qualifies, write no comment and say so in step 5's message.
 
 4. **Update the PR body** per `skill://legion-retro/references/pr-body-content.md`: the lines the repository derives from changed paths, where it derives any.

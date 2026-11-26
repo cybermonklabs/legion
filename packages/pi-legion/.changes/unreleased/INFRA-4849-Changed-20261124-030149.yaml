@@ -3,7 +3,6 @@ body: |-
   `legion-retro` no longer forbids a rebase, and `legion-worker` no longer forbids `jj rebase` when
   an agent merges the base forward, nor a rewrite of a pushed commit. `legion-worker` no longer
   gives the commands of a merge of the base: it states the jj behaviours an agent may not expect.
-  `legion-retro` again says why a learning must carry what the skill librarian needs.
   `legion-controller` says why an `admission.held` issue stands in neither list, and that the
   parked-root walk does not find a `carried-gate-opened` decision.
   `legion-architect` names the backward move that undoes a `CHILD_UNDER_ACCEPTED_PARENT` refusal
