@@ -30,11 +30,13 @@
 #     one the broker refuses for good, sending Dispatch nothing. It takes about fifteen minutes.
 #   - C2, TestTheProxyServesAToolRunWithOneTradeForEachRenewal, with LEGION_E2E_PROXY=1 and alone,
 #     in place of every test above, K3 included: `dispatch proxy` in a role's environment runs a
-#     Python standard-library client over its unix socket for 255 s of a 420 s token. The client
-#     reads back a file's bytes, posts one comment twice under one Idempotency-Key and makes at
-#     least 2,000 requests, each read answered 200, and the proxy trades at most 1 + T / (L - 300) times,
+#     Python standard-library client over its unix socket for 480 s, longer than two renewal
+#     periods, 420 s, of a 420 s token. The client reads back a file's bytes, posts one comment
+#     twice under one Idempotency-Key and makes at least 2,000 requests, each read answered 200;
+#     the role's session presents exactly 3 distinct tokens, the second and the third each traded
+#     at the half life of the one before, and the proxy trades at most 1 + T / (L - 300) times,
 #     the count its exit line names; without DISPATCH_TOKEN_BROKER it exits 2 and runs nothing.
-#     It takes about five minutes past the rig's start.
+#     It takes about nine minutes past the rig's start.
 # Each test writes its tables to TMPDIR and logs the file's path; `go test -v` prints each test's
 # own `--- PASS` or `--- FAIL` line, which is the result, since a skip prints `ok` too.
 #
