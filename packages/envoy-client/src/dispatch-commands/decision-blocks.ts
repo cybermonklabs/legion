@@ -1,3 +1,6 @@
+// The refusals a call meets while a document holds a decision block a person has yet to answer:
+// an approval request over one (`dispatch request-approval`, and the `legion` tool's register_gate
+// on an ancestor's basis), and an edit that would take one out of the document (`dispatch doc-edit`).
 import type { ArtifactBlock, AskWithTrees, EditOp, TextAsk } from "@legion/contracts";
 import { askOpenerAttributes, askOpenerLines, askOpeners } from "@legion/contracts";
 import { commandName } from "../dispatch-command";
@@ -27,22 +30,23 @@ async function blockAsks(
   );
 }
 
-/** The words a refusal over open ask blocks says around the blocks it names: `call`, the call it
- * refused (`dispatch request-approval`, `legion register_gate`); `effect`, the sentence on why an
- * open block refuses that call; `remedy`, what to do instead; `block`, what the refusal calls a
- * block, `decision block` where it names none. */
+/** The words a refusal over open decision blocks says around the blocks it names: `call`, the
+ * call it refused (`dispatch request-approval`, `legion register_gate`); `blocks`, what its count
+ * calls an open block (`ask block` in `dispatch request-approval`'s words), `decision block` where
+ * it is left out; `effect`, the sentence on why an open block stops that call; `remedy`, what to
+ * do instead. */
 export interface OpenDecisionBlockRefusal {
   readonly call: string;
+  readonly blocks?: string;
   readonly effect: string;
   readonly remedy: string;
-  readonly block?: string;
 }
 
-/** The two sentences the `legion` tool's register_gate remedy over open decision blocks gives
- * first, word for word: ask the human to answer or waive the block, and how an answered one
- * settles into a version, about two seconds later, as `refuseOpenDecisionBlocks` names an answered
- * block still open. `dispatch request-approval`'s remedy gives the first, then says where the
- * answer is held. */
+/** The two sentences register_gate's `remedy` over open decision blocks gives first, word for
+ * word: ask the human to answer or waive the block, and how an answered one settles into a
+ * version, about two seconds later, as `refuseOpenDecisionBlocks` names an answered block still
+ * open. `dispatch request-approval`'s remedy gives the first, then says where the answer is held
+ * (APPROVAL_REQUEST_OPEN_BLOCKS in documents.ts). */
 export const OPEN_BLOCK_ASK_THE_HUMAN =
   "Tell the human which block is open and ask them to answer it or to waive it. Once it is answered, it settles into a version on its own in about two seconds.";
 
@@ -60,7 +64,7 @@ export const OPEN_BLOCK_WAIVED =
  *
  * A Dispatch of this release answers each ask's state from the ask itself - a block's own ask from
  * the asks list, a copy's source from the live text's `asks` (`GET /artifacts/{id}/text`) - and
- * this test needs nothing more: wherever the live text answers `asks`, which only such a
+ * this command needs nothing more: wherever the live text answers `asks`, which only such a
  * Dispatch does, each block is judged by the server's ask, whatever state a stored version records
  * on its opening line, which this release keeps there only for the readers of the release before.
  * A Dispatch of the release before sends no `asks`, writes each answer into the block, and is read
@@ -83,8 +87,8 @@ export const OPEN_BLOCK_WAIVED =
  * server, which answers with that approval.
  *
  * The `legion` tool makes the same test before `register_gate` opens a root's design-gate step on
- * an ancestor's approval without a person's review of the root's document. `refusal` supplies the
- * caller's words around the blocks named.
+ * an ancestor's approval, which no person's review of the root's own document stands behind
+ * (dispatch://INFRA-3320, R1). `refusal` is each caller's own words around the blocks named.
  */
 export async function refuseOpenDecisionBlocks(
   client: DispatchClient,
@@ -195,7 +199,7 @@ export async function refuseOpenDecisionBlocks(
     if (line !== undefined) open.push(line);
   }
   if (open.length === 0) return;
-  const noun = refusal.block ?? "decision block";
+  const noun = refusal.blocks ?? "decision block";
   const count = open.length === 1 ? `1 open ${noun}` : `${open.length} open ${noun}s`;
   throw new Error(
     [

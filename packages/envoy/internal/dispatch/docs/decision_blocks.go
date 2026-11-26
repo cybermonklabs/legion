@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -80,14 +81,11 @@ func (r *settlementReconciliation) reconcileDecisionBlocks(ctx context.Context, 
 	for index, name := range server {
 		kinds[index] = schemanodes.StoreName(decisionType, name)
 	}
-	// The newest tuple of each kind each node holds: a relation of these kinds holds one far end
-	// at a time (decided_by is set once, a Keep names one person), and a value is its newest.
-	rows, err := tx.Query(ctx, `
-		select distinct on (t.from_id, t.kind) t.from_id, t.kind, t.to_id, t.asserted
-		from graph_tuples t
-		where t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = any($3::text[])
-		order by t.from_id, t.kind, t.seq desc
-	`, refs.BlockNodeKind, addresses, kinds)
+	// The newest tuple of each kind each node holds (graphstore.CurrentTupleRead): a relation of
+	// these kinds holds one far end at a time (decided_by is set once, a Keep names one person), and
+	// a value is its newest.
+	rows, err := tx.Query(ctx, graphstore.CurrentTupleRead(`t.from_id, t.kind`, `t.from_id, t.kind, t.to_id, t.asserted`,
+		`t.from_kind = $1 and t.from_id = any($2::text[]) and t.kind = any($3::text[])`), refs.BlockNodeKind, addresses, kinds)
 	if err != nil {
 		return fmt.Errorf("read the server attributes the store holds of the decisions of %s: %w", artifactID, err)
 	}
