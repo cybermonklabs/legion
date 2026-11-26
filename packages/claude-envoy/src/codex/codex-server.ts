@@ -2,52 +2,20 @@ import { spawn } from "node:child_process"
 import { unwatchFile, watchFile } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
-import { DELIVERY_CAPABILITIES } from "@legion/contracts"
-import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
-import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
-import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import { messageFor } from "@legion/envoy-client/errors"
-import {
-  sessionConfigFile,
-  sessionDispatchSettings,
-  sessionSettings,
-} from "@legion/envoy-client/session-settings"
-import { createEnvoyClient, newClientInstanceID } from "@legion/envoy-client/transport"
+import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { Server } from "@modelcontextprotocol/sdk/server/index.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js"
-import { connect } from "nats"
 import { z } from "zod"
-/** The npm package a Codex session runs, which its registrations name. */
-import { name as CODEX_PACKAGE_NAME } from "../../codex/package.json" with { type: "json" }
-import {
-  admittingMoves,
-  channelReopener,
-  closeUnstartedConnection,
-  dialChannelInbound,
-  sessionAdmission,
-} from "../channel-connection"
-import type { ChannelConnection } from "../channel-topics"
 import { configuredValue } from "../claude-session"
 import {
-  type ChannelSession,
-  type ChannelToolRuntime,
   channelToolDefinitions,
   executeEnvoyTool,
   MCP_SERVER_INFO,
   mcpResult,
-  postDispatchReply,
-  startChannelSession,
 } from "../envoy-channel-server"
-import { inboundOffChannelSession } from "../envoy-off"
-import { channelConnectionName, installedPluginVersion } from "../installed-build"
-import { SessionIdentity } from "../session-identity"
-import { sessionTitle } from "../session-title"
-import { type CodexAgentStream, startCodexAgentStream } from "./codex-agent-stream"
-import { askSideQuestion, type CodexCommand, codexProcessEnv, queueMessage } from "./codex-cli"
-import { createCodexDelivery } from "./codex-delivery"
-import { codexInboxDirectory, discardWaiting } from "./codex-inbox"
+import { type CodexEnvoySession, createCodexEnvoySession } from "./codex-envoy-session"
 import {
   type CodexServerEntry,
   codexServersDirectory,
@@ -61,23 +29,23 @@ import {
   codexHome,
   codexPluginDataDirectory,
   codexSessionRecordFile,
+  codexThreadRecordFile,
   processStarted,
   readCodexSessionRecord,
   recordOfProcess,
-  SHARED_APP_SERVER_NOTE,
   sessionEnded,
   sharedAppServer,
   watchRecord,
+  watchThreads,
 } from "./codex-session-record"
+import { type CodexThreads, createCodexThreads } from "./codex-threads"
 import {
-  findTranscript,
-  followTranscript,
-  latestTurnCwd,
-  type TranscriptFollower,
-  threadIdShape,
-  transcriptEvents,
-} from "./codex-transcript"
-import { createCodexUserTurnRouter } from "./codex-user-turns"
+  forwardToolCall,
+  serveToolRoute,
+  type ToolCall,
+  type ToolRouteServer,
+} from "./codex-tool-route"
+import { findTranscript, latestTurnCwd, threadIdShape } from "./codex-transcript"
 
 /**
  * The Envoy plugin's MCP server under the Codex CLI: `codex/.codex-plugin/plugin.json`
@@ -85,18 +53,21 @@ import { createCodexUserTurnRouter } from "./codex-user-turns"
  * `codex` process.
  *
  * It serves the Envoy tools and the `dispatch` tool at once, and starts the session's Envoy side
- * when the plugin's `SessionStart` hook records which session the `codex` process runs
- * (`./codex-session-record`), which Codex does at the session's first prompt. From then on it is
- * the Claude Code plugin's session code (`startChannelSession`) with Codex's parts: a line goes
- * into the session through `codex queue` or the `PostToolUse` hook (`./codex-delivery`), a
- * person's message through `./codex-user-turns`, and the live view comes from the session's
- * transcript (`./codex-agent-stream`). A `/new` moves it to the new session's id through the same
- * hand-off file a Claude Code `/clear` writes.
+ * (`./codex-envoy-session`) when the plugin's `SessionStart` hook records which session the
+ * `codex` process runs (`./codex-session-record`), which Codex does at the session's first prompt.
+ * A `/new` moves it to the new session's id through the same hand-off file a Claude Code `/clear`
+ * writes.
  *
  * Codex starts one such server per thread, so a `codex` process can have several (a `/new` starts
  * one beside the old thread's, and `/side` and `/btw` one each). Only the one that owns the
  * process's session (`./codex-owner`) runs the Envoy side; the others serve their thread's
  * `dispatch` calls and take the session over once the owner is gone.
+ *
+ * Codex's shared app server (`sharedAppServer`) runs one session per thread in one process. There
+ * the hook records each thread, and the server that owns the process runs an Envoy session for each
+ * recorded thread that has not ended (`./codex-threads`). Every Envoy tool call there acts as the
+ * thread Codex names on it: the owner runs it through that thread's session, and a server standing
+ * by sends it to the owner (`./codex-tool-route`).
  */
 
 const CODEX_INSTRUCTIONS =
@@ -105,8 +76,9 @@ const CODEX_INSTRUCTIONS =
 /** How often the session record is looked at while the server waits for it, and after. */
 const RECORD_POLL_MS = 250
 
-/** The capabilities a Codex session advertises: all three, since every one has a way in. */
-const CODEX_CAPABILITIES = DELIVERY_CAPABILITIES
+/** What an Envoy tool call under the shared app server is told when Codex names no thread on it. */
+const NO_THREAD_NOTE =
+  "Codex named no thread on this call, and this session runs in Codex's shared app server, which runs several sessions in one process, so the Envoy plugin cannot tell which of them made it, and acts as none of them"
 
 const DispatchToolArguments = z.object({
   args: z.array(z.string()),
@@ -122,8 +94,8 @@ const OWNER_RECHECK_MS = 5_000
 
 /**
  * The Codex thread whose turn made a tool call, from the request's `_meta`: Codex 0.154.0 sends
- * `threadId` on every MCP tool call, beside `x-codex-turn-metadata` naming the same thread
- * (measured). Undefined when the call names none.
+ * `threadId` on every MCP tool call, beside `x-codex-turn-metadata` naming the same thread, and so
+ * do 0.170.0 and 0.171.0 under the shared app server (measured). Undefined when the call names none.
  */
 export function callingThread(meta: unknown): string | undefined {
   if (typeof meta !== "object" || meta === null) return undefined
@@ -249,15 +221,15 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const pluginRoot = process.cwd()
   const stateDirectory = stateDirectoryFor(pluginRoot)
   const codexPid = process.ppid
-  /** Codex's shared app server runs several sessions in this one process, whose Envoy traffic this
-   *  plugin cannot tell apart, so it registers none of them (`sharedAppServer`); `dispatch` still
-   *  acts as the thread that calls it. */
+  /** Codex's shared app server runs one session per thread in this one process (`sharedAppServer`):
+   *  the server that owns it registers each recorded thread (`./codex-threads`), and every Envoy
+   *  tool call acts as the thread Codex names on it. */
   const shared = sharedAppServer(codexPid)
   const recordFile = codexSessionRecordFile(stateDirectory, codexPid)
   const serversDirectory = codexServersDirectory(stateDirectory, codexPid)
   /** This server's entry, once `waitForOwnership` published it. */
   let self: CodexServerEntry | undefined
-  let stopWatchingRecord: () => void = () => undefined
+  let stopWatching: () => void = () => undefined
   let recheck: ReturnType<typeof setInterval> | undefined
   /** Whether session `sessionId` of this process has ended (`SessionEnd`'s marker). */
   const endedNow = (sessionId: string): Promise<boolean> =>
@@ -266,8 +238,14 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const warn = (text: string): void => void process.stderr.write(`envoy-channel: ${text}\n`)
   const bundlePath = resolve(pluginRoot, process.argv[1] ?? "")
 
+  /** The record of the session a `codex` process of its own runs, once the hook wrote it. */
   let record: CodexSessionRecord | undefined
-  let runtime: ChannelToolRuntime | undefined
+  /** That session's Envoy side, once its record is bound. */
+  let processSession: CodexEnvoySession | undefined
+  /** The Envoy sessions of the shared app server's threads, once this server owns that process. */
+  let threads: CodexThreads | undefined
+  /** Where the other servers of the shared app server send their threads' Envoy tool calls. */
+  let route: ToolRouteServer | undefined
   let notReady = "this session's Envoy side starts at its first prompt"
   const stopping = new AbortController()
 
@@ -278,17 +256,39 @@ export async function runCodexEnvoyServer(): Promise<void> {
   const tools = [...channelToolDefinitions(), dispatchToolDefinition()]
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const thread = callingThread(request.params._meta)
     if (request.params.name === "dispatch") {
-      const thread = callingThread(request.params._meta)
       return {
         content: [
           { text: await runDispatchTool(request.params.arguments, thread), type: "text" as const },
         ],
       }
     }
-    if (runtime === undefined) throw new Error(`Envoy is not ready: ${notReady}`)
+    if (shared) {
+      // Never answered as another thread: a call that names none is refused.
+      if (thread === undefined) throw new Error(`Envoy is not ready: ${NO_THREAD_NOTE}`)
+      const call = { arguments: request.params.arguments, name: request.params.name, thread }
+      return mcpResult(
+        threads === undefined
+          ? await forwardToolCall(serversDirectory, call)
+          : await threadTool(call),
+      )
+    }
+    const runtime = processSession?.runtime()
+    if (runtime === undefined) {
+      throw new Error(`Envoy is not ready: ${processSession?.notReady() ?? notReady}`)
+    }
     return mcpResult(await executeEnvoyTool(runtime, request.params.name, request.params.arguments))
   })
+
+  /** Runs an Envoy tool call of the shared app server through the session of the thread it names,
+   *  which this server runs as the process's owner; a call another server sent here
+   *  (`./codex-tool-route`) comes through this too. */
+  const threadTool = async (call: ToolCall): Promise<unknown> => {
+    const runtime = threads?.runtime(call.thread) ?? "this server does not own the process"
+    if (typeof runtime === "string") throw new Error(`Envoy is not ready: ${runtime}`)
+    return executeEnvoyTool(runtime, call.name, call.arguments)
+  }
 
   /** Runs the `dispatch` command in this process, as `thread`, the Codex thread whose turn made the
    *  call, in the directory that thread's newest turn ran in, and answers what it printed and its
@@ -308,10 +308,17 @@ export async function runCodexEnvoyServer(): Promise<void> {
     const sessionId = thread ?? current?.session_id
     if (sessionId === undefined) {
       return shared
-        ? `dispatch: ${SHARED_APP_SERVER_NOTE}\n[exit 2]`
+        ? `dispatch: ${NO_THREAD_NOTE}\n[exit 2]`
         : `dispatch: this session has no id yet; Codex records it at the session's first prompt\n[exit 2]`
     }
-    const own = current?.session_id === sessionId ? current : undefined
+    // The calling thread's own record: under the shared app server each thread has one.
+    const recorded = shared
+      ? await readCodexSessionRecord(codexThreadRecordFile(stateDirectory, codexPid, sessionId))
+      : current
+    const own =
+      recorded?.session_id === sessionId && recordOfProcess(recorded, codexPid)
+        ? recorded
+        : undefined
     const home = own?.codex_home ?? codexHome(process.env)
     const transcript = own?.transcript_path ?? (await findTranscript(home, sessionId))
     const env: Record<string, string> = {}
@@ -331,37 +338,29 @@ export async function runCodexEnvoyServer(): Promise<void> {
     return `${output}${output.endsWith("\n") || output === "" ? "" : "\n"}[exit ${code}]`
   }
 
-  let session: ChannelSession | undefined
-  let connection: ChannelConnection | undefined
-  let stream: CodexAgentStream | undefined
-  /** Stops the keeper of the connection's broker token, once one is dialled. */
-  let stopNatsKeeper: () => void = () => undefined
-  let follower: TranscriptFollower | undefined
-  let delivery: ReturnType<typeof createCodexDelivery> | undefined
-
   const stopped = Promise.withResolvers<void>()
   let isStopping = false
   const stop = (): void => {
     if (isStopping) return
     isStopping = true
     stopping.abort()
-    stopWatchingRecord()
+    stopWatching()
     clearInterval(recheck)
-    follower?.stop()
-    stream?.stop()
-    stopNatsKeeper()
-    // The entry goes once the delivery's waiting lines are withdrawn, so a server that takes over
-    // never discards a line this one still answers for.
-    const withdrawn = (delivery?.stop() ?? Promise.resolve()).finally(() =>
+    // The entry goes once the deliveries' waiting lines are withdrawn, so a server that takes over
+    // never discards a line this one still answers for, and once the route file no longer names
+    // this server, so that server's own route file is never the one removed.
+    const withdrawn = Promise.all([
+      processSession?.withdraw(),
+      threads?.withdraw(),
+      route?.stop().catch(() => undefined),
+    ]).finally(() =>
       self === undefined
         ? undefined
         : unregisterServer(serversDirectory, self).catch(() => undefined),
     )
-    if (session === undefined) {
-      void withdrawn.finally(stopped.resolve)
-      return
-    }
-    void Promise.all([withdrawn, session.shutdown()]).finally(stopped.resolve)
+    void Promise.all([withdrawn, processSession?.shutdown(), threads?.shutdown()]).finally(
+      stopped.resolve,
+    )
   }
   process.stdin.once("end", stop)
   process.once("SIGTERM", stop)
@@ -369,311 +368,133 @@ export async function runCodexEnvoyServer(): Promise<void> {
   process.once("SIGHUP", stop)
   await server.connect(new StdioServerTransport())
 
-  if (shared) {
-    notReady = SHARED_APP_SERVER_NOTE
-    warn(SHARED_APP_SERVER_NOTE)
-    await stopped.promise
-    await server.close().catch(() => undefined)
-    return
-  }
-  // One server per codex process owns its Envoy session (`./codex-owner`): Codex starts one per
-  // thread, and the others stand by, serving their thread's `dispatch` calls, until every server
-  // older than them is gone.
-  notReady = STANDBY_NOTE
-  const owning = await waitForOwnership(
-    serversDirectory,
-    process.pid,
-    processStarted(process.pid) ?? null,
-    stopping.signal,
-    (entry) => {
-      self = entry
-    },
-  )
-  if (owning === undefined) {
-    await stopped.promise
-    await server.close().catch(() => undefined)
-    return
-  }
-  notReady =
-    "this session's Envoy side starts once Codex records the session at its first prompt; a fork or an ephemeral session, which keeps no transcript, is never registered"
-  // The owner looks again every few seconds and warns if it finds another owner, which the order
-  // of publication rules out while every entry is readable.
-  const owned = owning
-  recheck = setInterval(() => {
-    void stillOwner(serversDirectory, owned).then(
-      (still) => {
-        if (!still)
-          warn(`another plugin server of codex process ${codexPid} owns its Envoy session as well`)
-      },
-      () => undefined,
+  /** Runs the shared app server's threads as the process's owner: serves the other servers' Envoy
+   *  tool calls, and keeps one Envoy session for each recorded thread that has not ended, until
+   *  this server stops. */
+  const ownSharedAppServer = async (): Promise<void> => {
+    const owned = createCodexThreads({
+      session: (bound) =>
+        createCodexEnvoySession({
+          bound,
+          bundlePath,
+          codexPid,
+          configFile,
+          followsNew: false,
+          stateDirectory,
+          // The directory's name and the short id: the shared app server's `TMUX_PANE` is the
+          // terminal's that started it, and names no other thread's (measured on 0.171.0).
+          titleEnvironment: {},
+          warn: (text) => warn(`thread ${bound.session_id}: ${text}`),
+        }),
+      warn,
+    })
+    threads = owned
+    try {
+      route = await serveToolRoute(serversDirectory, threadTool)
+    } catch (error) {
+      warn(
+        `the other plugin servers of this shared app server cannot reach this one, so their threads' Envoy tools are refused: ${messageFor(error)}`,
+      )
+    }
+    if (isStopping) {
+      // A stop that came while the route started stopped neither it nor the threads.
+      await route?.stop().catch(() => undefined)
+      await owned.shutdown()
+      await stopped.promise
+      return
+    }
+    stopWatching = watchThreads(
+      stateDirectory,
+      codexPid,
+      (live) => owned.update(live),
+      RECORD_POLL_MS,
+      warn,
     )
-  }, OWNER_RECHECK_MS)
-  recheck.unref?.()
-  record = await waitForRecord(recordFile, codexPid, stopping.signal, endedNow)
-  if (record === undefined) {
     await stopped.promise
-    await server.close().catch(() => undefined)
-    return
-  }
-  const bound = record
-  /** Whether the session the record names has ended, as its marker last said. */
-  let recordEnded = false
-  // Lines an earlier owner of this session left waiting: that server is gone, so no write waits on
-  // them, and Envoy sends each one's frame again.
-  await discardWaiting(codexInboxDirectory(stateDirectory, bound.session_id))
-  /** Whether the session code, the live view and the transcript follower have started; a `/new`
-   *  before then is applied once they have. */
-  let ready = false
-  /** Moves this server's Codex parts to the session `next` names (`/new`): the delivery's turn
-   *  state and waiting lines, the live view, and the transcript followed. The Envoy session code
-   *  follows the hand-off file the hook wrote beside the record on its own. */
-  let moveTo: (next: CodexSessionRecord) => void = () => undefined
-  // Watched from now, so a `/new` while the session starts is seen, and read once at once, so an
-  // end marked between the bind's own read and this watch is seen too.
-  stopWatchingRecord = watchRecord(
-    recordFile,
-    codexPid,
-    endedNow,
-    (next, ended) => {
-      if (next.session_id === record?.session_id) {
-        // The same session ended (`SessionEnd`), or runs again (`/resume`). Before the delivery
-        // exists, its creation reads `recordEnded` instead.
-        if (ended !== recordEnded) {
-          recordEnded = ended
-          if (ended) delivery?.sessionEnded()
-          else void delivery?.sessionResumed().catch((error: unknown) => warn(messageFor(error)))
-        }
-        return
-      }
-      record = next
-      recordEnded = ended
-      if (ready) moveTo(next)
-    },
-    RECORD_POLL_MS,
-  )
-  const id = new SessionIdentity(bound.session_id, bound.cwd)
-  const { dispatch, envoy, notice } = await sessionSettings(configFile, process.env, {
-    cwd: bound.cwd,
-    session: () => id.id,
-  })
-  if (notice !== null) warn(notice)
-  const title = await sessionTitle(
-    {
-      ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
-      TMUX: process.env["TMUX"],
-      TMUX_PANE: process.env["TMUX_PANE"],
-    },
-    bound.cwd,
-  )
-  const stampTitle = (sessionId: string, value: string): void => {
-    writeSessionTitle(dispatchSessionDirectory(process.env, sessionId), value)
-  }
-  if (!envoy.enabled) {
-    notReady = `Envoy is off for this session: ${envoy.error ?? envoy.notice}`
-    if (dispatch.enabled) stampTitle(id.id, title(id.id))
-    await stopped.promise
-    await server.close().catch(() => undefined)
-    return
-  }
-
-  const command = (): CodexCommand => ({
-    codexHome: record?.codex_home ?? bound.codex_home,
-    // Codex's own environment, not this server's: Codex gave this server only `env_vars`.
-    env: codexProcessEnv(codexPid, process.env),
-    executable: record?.codex_executable ?? bound.codex_executable ?? "codex",
-  })
-  const client = createEnvoyClient({
-    baseUrl: envoy.url,
-    credential: envoy.credential,
-    fetch: globalThis.fetch,
-  })
-  const clientInstanceID = newClientInstanceID()
-  /** The session the `codex` process runs now, as its record names it: what `codex queue` and the
-   *  inbox are addressed by, which moves at `/new` before the Envoy session code adopts the new
-   *  id from the hand-off file. */
-  const runningSession = (): string => record?.session_id ?? bound.session_id
-  const codexDelivery = createCodexDelivery({
-    inboxDirectory: (sessionId) => codexInboxDirectory(stateDirectory, sessionId),
-    queue: (text) =>
-      queueMessage(command(), runningSession(), text, join(stateDirectory, "codex-long-messages")),
-    sessionId: runningSession,
-    taken: (item) => stream?.delivered(item.content, item.dispatchMessageId),
-    warn,
-  })
-  delivery = codexDelivery
-  // An end the watcher saw before the delivery existed.
-  if (recordEnded) codexDelivery.sessionEnded()
-
-  /** Reads the transcript of the session now bound into the delivery's turn state and the live
-   *  view, from its first line; a `/new` starts this again on the new session's transcript. */
-  const follow = (path: string | null): void => {
-    follower?.stop()
-    follower = undefined
-    if (path === null) return
-    follower = followTranscript(
-      path,
-      (line) => {
-        for (const event of transcriptEvents(line)) {
-          if (event.kind === "turn-started") codexDelivery.turnStarted()
-          else if (event.kind === "turn-ended") {
-            void codexDelivery.turnEnded().catch((error: unknown) => warn(messageFor(error)))
-          }
-          stream?.event(event)
-        }
-      },
-      { warn },
-    )
-  }
-
-  moveTo = (next) => {
-    void codexDelivery.rebind(recordEnded).catch((error: unknown) => warn(messageFor(error)))
-    stream?.rebind(next.session_id)
-    follow(next.transcript_path)
   }
 
   try {
-    const { inbound } = envoy
-    if ("off" in inbound) {
-      session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
-    } else {
-      // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
-      // seed, no credential, or the session's broker token, which is then kept renewed and, at a
-      // `/new`, moved to the new session's (`followSession`) before that session's subjects are
-      // taken; or the listener's relay socket, opened again for the new session at a `/new`. A
-      // connection that closes for good is replaced as the Claude Code one is (`channelReopener`):
-      // Codex starts no plugin server again for a thread whose server lost its connection.
-      const natsName = channelConnectionName(
-        `codex-envoy-channel-${id.id}`,
-        bundlePath,
-        CODEX_PACKAGE_NAME,
-      )
-      // A stop asked for while the token or the dial is awaited ends the start, and is no failure:
-      // the process ends as an asked-for stop does, as the Claude Code server's does.
-      const dialled = await dialChannelInbound(
-        inbound,
-        envoy.url,
-        () => id.id,
-        natsName,
-        warn,
-        connect,
-        stopping.signal,
-      ).catch((error: unknown) => {
-        if (isStopping) return undefined
-        throw error
-      })
-      if (dialled === undefined) {
-        await stopped.promise
-        return
-      }
-      connection = dialled.connection
-      stopNatsKeeper = dialled.stop
-      // Which id the connection is admitted as, where its broker token admits one session at a
-      // time: the dial's, then each `/new`'s once its move lands. The live view takes a new id's
-      // control subject only then (`CodexAgentStreamOptions.admitted`).
-      const admission = dialled.followSession === undefined ? undefined : sessionAdmission(id.id)
-      const admitting = admittingMoves(admission, id)
-      const followSession = admitting(dialled.followSession)
-      const reopen = channelReopener({
-        inbound,
-        listenerUrl: envoy.url,
-        session: () => id.id,
-        name: natsName,
-        signal: stopping.signal,
-        swapKeeper: (stop) => {
-          stopNatsKeeper()
-          stopNatsKeeper = stop
-        },
-        admitting,
-        useConnection: (next) => {
-          connection = next
-          stream?.useConnection(next)
-        },
-      })
-      const started = await startChannelSession({
-        capabilities: () => CODEX_CAPABILITIES,
-        client,
-        clientInstanceID,
-        configFile,
-        connection,
-        handoffPid: codexPid,
-        heartbeatMs: envoy.heartbeatMs,
-        identity: id,
-        ...(followSession === undefined ? {} : { followSession }),
-        ...(dialled.reportOutagesTo === undefined
-          ? {}
-          : { reportOutagesTo: dialled.reportOutagesTo }),
-        notifier: {
-          notification: ({ content, eventId }) =>
-            codexDelivery.deliver({ content, ...(eventId === undefined ? {} : { eventId }) }),
-        },
-        pluginVersion: installedPluginVersion(bundlePath) ?? "source",
-        pluginName: CODEX_PACKAGE_NAME,
-        router: (state) =>
-          createCodexUserTurnRouter({
-            ask: (question) => askSideQuestion(command(), id.id, question),
-            deliver: (item) => codexDelivery.deliver(item),
-            dispatch: async (ms) => {
-              const active = activeDispatchSettings(
-                (await sessionDispatchSettings(configFile, process.env, { cwd: bound.cwd }))
-                  .dispatch,
-              )
-              return active === null
-                ? undefined
-                : new DispatchClient(active.url, active.credential, fetch, {
-                    signal: AbortSignal.timeout(ms),
-                  })
-            },
-            expect: (text, messageId) => stream?.expect(text, messageId),
-            reply: (target, result) => postDispatchReply(id, configFile, target, result),
-            sessionId: () => id.id,
-            state,
-            warn,
-          }),
-        reopen,
-        // Ends a start still flushing through its connection's redials (`flushThroughRedials`):
-        // the process is stopping.
-        startSignal: stopping.signal,
-        stateDirectory,
-        title,
-        ...(dispatch.enabled ? { stampTitle } : {}),
-      }).catch((error: unknown) => {
-        // A stop asked for while the session was still starting ends the start, and is no
-        // failure, as above.
-        if (isStopping) return undefined
-        throw error
-      })
-      if (started === undefined) {
-        await stopped.promise
-        return
-      }
-      session = started
-      stream = startCodexAgentStream({
-        connection,
-        liveView: dialled.liveView,
-        sessionId: id.id,
-        warn,
-        ...(admission === undefined
-          ? {}
-          : { admitted: (next: string) => admission.admitted(next) }),
-      })
-      // A stop that landed while the session started ran before this view existed, and stopped
-      // nothing of it.
-      if (isStopping) stream.stop()
+    // One server per codex process owns its Envoy side (`./codex-owner`): Codex starts one per
+    // thread, and the others stand by, serving their thread's `dispatch` calls, until every server
+    // older than them is gone. Under the shared app server, a server standing by sends its thread's
+    // Envoy tool calls to the owner.
+    notReady = STANDBY_NOTE
+    const owning = await waitForOwnership(
+      serversDirectory,
+      process.pid,
+      processStarted(process.pid) ?? null,
+      stopping.signal,
+      (entry) => {
+        self = entry
+      },
+    )
+    if (owning === undefined) {
+      await stopped.promise
+      return
     }
-    runtime = { client, clientInstanceID, identity: id, session }
-    follow(bound.transcript_path)
+    // The owner looks again every few seconds and warns if it finds another owner, which the order
+    // of publication rules out while every entry is readable.
+    const owned = owning
+    recheck = setInterval(() => {
+      void stillOwner(serversDirectory, owned).then(
+        (still) => {
+          if (!still)
+            warn(
+              `another plugin server of codex process ${codexPid} owns its Envoy session as well`,
+            )
+        },
+        () => undefined,
+      )
+    }, OWNER_RECHECK_MS)
+    recheck.unref?.()
 
-    ready = true
-    // A `/new` the record watcher saw while the session was starting.
-    if (record !== undefined && record.session_id !== bound.session_id) moveTo(record)
-    if (isStopping) await session.shutdown()
+    if (shared) {
+      await ownSharedAppServer()
+      return
+    }
+    notReady =
+      "this session's Envoy side starts once Codex records the session at its first prompt; a fork or an ephemeral session, which keeps no transcript, is never registered"
+    record = await waitForRecord(recordFile, codexPid, stopping.signal, endedNow)
+    if (record === undefined || isStopping) {
+      await stopped.promise
+      return
+    }
+    const session = createCodexEnvoySession({
+      bound: record,
+      bundlePath,
+      codexPid,
+      configFile,
+      followsNew: true,
+      stateDirectory,
+      titleEnvironment: {
+        ENVOY_SESSION_TITLE: process.env["ENVOY_SESSION_TITLE"],
+        TMUX: process.env["TMUX"],
+        TMUX_PANE: process.env["TMUX_PANE"],
+      },
+      warn,
+    })
+    processSession = session
+    // Watched from now, so a `/new` while the session starts is seen, and read once at once, so an
+    // end marked between the bind's own read and this watch is seen too.
+    stopWatching = watchRecord(
+      recordFile,
+      codexPid,
+      endedNow,
+      (next, ended) => {
+        // The same session ended (`SessionEnd`), or runs again (`/resume`); or a `/new` moved the
+        // process to another.
+        if (next.session_id === record?.session_id) {
+          session.ended(ended)
+          return
+        }
+        record = next
+        session.moveTo(next, ended)
+      },
+      RECORD_POLL_MS,
+    )
+    await session.start()
     await stopped.promise
   } finally {
-    follower?.stop()
-    stopNatsKeeper()
-    if (session === undefined && connection !== undefined) {
-      await closeUnstartedConnection(connection)
-    }
     await server.close().catch(() => undefined)
   }
 }
