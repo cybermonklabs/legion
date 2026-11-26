@@ -5,7 +5,7 @@
 
 --- a/packages/envoy/internal/cipher/policy/load.go
 +++ b/packages/envoy/internal/cipher/policy/load.go
-@@ -594,7 +594,7 @@
+@@ -595,7 +595,7 @@
  	}
  	raw, tagged := tags[TagProxy]
  	if !tagged {
@@ -13,8 +13,8 @@
 +		// MUTANT: a secret by its own name behind no proxy is fingerprinted without its scopes.
  		return "", ""
  	}
- 	kind := file.fileRules.Kind(raw)
-@@ -609,7 +609,7 @@
+ 	kind := proxyrules.Rules{Kinds: file.Kinds()}.Kind(raw)
+@@ -610,7 +610,7 @@
  		return ReasonProxyMaxGrant, why
  	}
  	s.Proxy, s.Way = kind.Name, way
