@@ -33,8 +33,8 @@ GATE = gate("envoy_session_stall", STALL, runs=[
                               f"{at(STALL_DRY_RUN, 'Build contracts for the artifact dry run', STALL_FILE)}"),
     (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/cipher-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
     (f"{ENVOY}/internal/dispatch/api/testdata/text-refusals.json", f"read at `packages/envoy-client/src/__tests__/artifact-dry-run.live.test.ts#rows` and `packages/envoy-client/src/__tests__/artifact-dry-run.live.test.ts#textRefusalsFile`, from the new URL textRefusalsFile holds, by {at(STALL_DRY_RUN, STALL_DRY_RUN_STEP, STALL_FILE)}: its rows are the list's rows in each combination it runs"),
-) + ceiling_reads(STALL) + crash_safety_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)
-  + ceiling_reads(STALL_DRY_RUN, STALL_FILE) + crash_safety_reads(STALL_DRY_RUN, STALL_FILE)
+) + ceiling_reads(STALL) + service_settings_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)
+  + ceiling_reads(STALL_DRY_RUN, STALL_FILE) + service_settings_reads(STALL_DRY_RUN, STALL_FILE)
   + setup_go(STALL_DRY_RUN, f"{ENVOY}/go.mod", STALL_FILE) + bun_job(STALL_DRY_RUN, STALL_FILE))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_session_stall held packages/envoy/** by hand before the filters were computed: it selected 1962 file(s) no other read of this gate declares", but=('**/*_test.go',)),
