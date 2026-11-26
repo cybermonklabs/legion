@@ -55,6 +55,7 @@ func operatorRouteFixture(t *testing.T) Pod {
 // named for a Dispatch credential. It passes the Go live harnesses' operator pod, and an
 // operator's own settings overlay and a baseline variable it may override.
 func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
+	t.Parallel()
 	mountAt := func(path string) Pod {
 		return Pod{
 			Volumes:      []corev1.Volume{{Name: "creds", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "legion-creds"}}}},
@@ -291,6 +292,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 // turns Dispatch off in every agent (a numeric last label that is no IPv4 address, invalid
 // punycode, a forbidden host character, a zone, an empty hostname, a port out of range).
 func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "dispatch-public-url.json"))
 	if err != nil {
 		t.Fatalf("read the public-URL fixture: %v", err)
@@ -320,6 +322,7 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 // provider key colliding with one of Options.LaunchSecrets' pointers, before anything touches the
 // cluster.
 func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		change func(*Options)
@@ -356,6 +359,7 @@ func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
 // and the list lacks is one an operator could override unrefused; one the list keeps that the
 // image dropped is refused for nothing.
 func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "daemon", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)

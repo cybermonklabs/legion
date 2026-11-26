@@ -23,19 +23,18 @@ import (
 // in the write transaction of a result (heldRole), so that the stored role of a result is the role
 // that its session holds.
 //
-// A write must name the actor session legion-daemon:<project> (legionDaemonSessionOf), the session
-// the daemon of the issue's project writes as. Dispatch takes the session that a bearer caller names
-// as the caller names it, so any caller whose Dispatch credential proves no session of its own can
-// name that session: the deployment's shared token, and a person's own agent token whatever its
-// scopes. A project's proven-sessions setting (projects.proven_sessions) closes that case for the
-// project: while it is on, the route takes a write only on a credential that proves the session
-// legion-daemon:<project> (model.Actor.Proven), a broker token of that session, and answers every
-// other 403 ROLE_HOLDER_NOT_PROVEN. While the setting is off, the case stays open.
+// With DISPATCH_LEGION_STATUS_SCOPE on, only the daemon's own broker token can publish.
+// It must prove session legion-daemon:<project> and hold model.ScopeLegionStatus.
+// The route refuses any other credential with 403 ROLE_HOLDER_FORBIDDEN before it opens a
+// transaction. With the setting off, the actor must still name the daemon's session, but a
+// bearer that proves no session of its own can name it in the body (bearerSessionActor).
+// The project's proven_sessions setting refuses that unproven actor with
+// 403 ROLE_HOLDER_NOT_PROVEN.
 //
-// Each publication the route takes marks the issue's project (project_role_holder_marks), in the
-// transaction that writes the set, an empty set included; a refused one marks nothing. The mark
-// puts the issues of the project that Legion runs under the check of who writes their spec and
-// Verification document (spec_writer.go), which is its one reader.
+// Each accepted publication marks the issue's project in project_role_holder_marks, even if it
+// lists no holders. The document-writer guard reads that mark. Each stored pair also records
+// whether the daemon's own token published it (issue_role_holders.daemon_proven). A publication
+// sets that mark even on a pair it keeps. The status guard trusts only marked architect pairs.
 //
 // A claim ends when the daemon retires it, fails it or suspends it. The session of an ended claim
 // leaves the set only when the daemon's next publication lands, and until then its row stays. The
@@ -208,10 +207,20 @@ func writeRoleHoldersIssueNotFound(w http.ResponseWriter, key string) {
 // at most 2704 bytes, so no body reaches the index with a session it cannot hold.
 const maxRoleHolderSessionBytes = 256
 
-// putIssueRoleHolders publishes the session of each Legion role of an issue. The daemon sends the
-// issue's whole set, so the transaction deletes each stored pair that the body does not name, then
-// inserts the pairs that are not stored yet. A pair that changed is deleted before the insert, so
-// the insert meets neither key of the table, and a pair that did not change keeps its recorded_at.
+// putIssueRoleHolders publishes the session of each Legion role of an issue. It reads the
+// request's credential as optionalActor resolved it (requestWriter), and refuses what requireActor
+// refuses. The credential is the daemon's own when it proves the session legion-daemon:<project>
+// of the issue's project and holds model.ScopeLegionStatus. With Deps.LegionStatusScope on, every
+// other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it off, the actor must be that
+// session (this file's comment).
+//
+// The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
+// body does not name, then inserts the pairs that are not stored yet. A pair that changed is
+// deleted before the insert, so the insert meets neither key of the table, and a pair that did not
+// change keeps its recorded_at. The delete statement writes daemon_proven, whether the credential
+// is the daemon's own, on each stored pair the body keeps, and the insert writes it on each pair it
+// adds, with the setting on or off. The answer does not carry the mark.
+//
 // The body is checked whole before the transaction opens: each role is one of the six, once, and
 // each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A
 // body that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a
@@ -225,12 +234,23 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
-	if !ok {
+	writer, err := s.requestWriter(r, input.Actor)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	key := r.PathValue("key")
-	if daemon := legionDaemonSessionOf(key); actor.Kind != "session" || actor.ID != daemon {
+	daemon := legionDaemonSessionOf(key)
+	credential := writer.credential
+	daemonProven := credential != nil && credential.Session == daemon && credential.Holds(model.ScopeLegionStatus)
+	if s.deps.LegionStatusScope {
+		if !daemonProven {
+			writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
+				"only the Legion daemon's own broker token, which proves session %s and holds the %s scope, publishes the roles of %s.",
+				daemon, model.ScopeLegionStatus, key))
+			return
+		}
+	} else if writer.actor.Kind != "session" || writer.actor.ID != daemon {
 		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
 			"only the Legion daemon of project %s names the sessions that hold the roles of %s. That daemon writes as session %s.",
 			legionProjectOf(key), key, daemon))
@@ -301,31 +321,35 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if provenSessions && !actor.Proven {
+	if provenSessions && !writer.actor.Proven {
 		writeError(w, "ROLE_HOLDER_NOT_PROVEN", http.StatusForbidden, fmt.Sprintf(
 			"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves session %s. This request's credential does not prove that session.",
-			project, key, legionDaemonSessionOf(key)))
+			project, key, daemon))
 		return
 	}
 	// The set before this write, read under the owner lock that every writer of the set takes, so
-	// the event names the set this write really replaced.
+	// the event names the set this write really replaced. The read is a plain select before the
+	// transaction's first write, so it holds no transaction id.
 	previous, _, err := readIssueRoleHolders(r.Context(), tx, issue)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The delete marks the issue's project too (project_role_holder_marks), in a data-modifying
-	// CTE, which Postgres runs once and to its end whatever the delete does. The delete runs for
-	// every publication the route takes, so the mark lands in the transaction that writes the set,
-	// a refused publication marks nothing, and an empty set marks the project as any other set does.
+	// Mark the project even if the body lists no holders. Update the provenance of each
+	// retained pair only when it changes. Delete the omitted pairs, which are separate rows.
+	// Keep all three operations in one statement so no statement is added to the transaction ID window.
 	if _, err := tx.Exec(r.Context(), `
-		with mark as (
-			insert into project_role_holder_marks (project_key) values ($4) on conflict do nothing
+		with marked_project as (
+			insert into project_role_holder_marks (project_key) values ($5) on conflict do nothing
+		), marked_pairs as (
+			update issue_role_holders set daemon_proven = $4
+			where issue_key = $1 and daemon_proven <> $4
+			  and (role, session) in (select * from unnest($2::text[], $3::text[]))
 		)
 		delete from issue_role_holders
 		where issue_key = $1
 		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
-	`, issue, roles, sessions, project); err != nil {
+	`, issue, roles, sessions, daemonProven, project); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -333,11 +357,11 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	// only when there is a pair to write.
 	if len(holders) > 0 {
 		if _, err := tx.Exec(r.Context(), `
-			insert into issue_role_holders (issue_key, role, session)
-			select $1::text, published.role, published.session
+			insert into issue_role_holders (issue_key, role, session, daemon_proven)
+			select $1::text, published.role, published.session, $4::boolean
 			from unnest($2::text[], $3::text[]) as published(role, session)
 			on conflict (issue_key, role) do nothing
-		`, issue, roles, sessions); err != nil {
+		`, issue, roles, sessions, daemonProven); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -349,7 +373,7 @@ func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
 	}
 	var changed []model.Event
 	if !sameRoleHolders(previous.Holders, stored.Holders) {
-		event, err := s.appendEvent(r.Context(), tx, issueOwner(issue).event("issue.role_holders_changed", actor,
+		event, err := s.appendEvent(r.Context(), tx, issueOwner(issue).event("issue.role_holders_changed", writer.actor,
 			issueRoleHoldersChange{Key: issue, Holders: stored.Holders, PreviousHolders: previous.Holders}))
 		if err != nil {
 			s.writeHandlerError(w, err)

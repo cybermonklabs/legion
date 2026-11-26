@@ -18,6 +18,7 @@ import (
 // table can list a mount after the mount that hides it. The rule reads no order, so a case also
 // lists a mount before the mount it sits on.
 func TestOnlyTheMountsAPathReachesAreCarried(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		table []tableMount

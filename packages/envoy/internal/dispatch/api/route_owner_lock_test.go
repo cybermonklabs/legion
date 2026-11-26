@@ -512,8 +512,9 @@ func readyDesignGates(t *testing.T, base routeFixture) lockedItemWrite {
 // readyRoleHolders drives PUT /api/v1/issues/{key}/role-holders, which replaces the issue's
 // issue_role_holders rows under the issue's owner lock (putIssueRoleHolders,
 // store.LockOwnerAndRead). The issue holds the tester ses-a, which the request moves to ses-b, so
-// the request deletes the stored pair and inserts the new one. It appends no event, so that lock
-// is the only one it takes: a publication without it would not wait at all.
+// the request deletes the stored pair and inserts the new one, and appends issue.role_holders_changed,
+// whose append takes that same owner lock again, so that lock is the only one it takes: a
+// publication without it would not wait at all.
 func readyRoleHolders(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Role holders")
