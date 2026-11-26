@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	stepplan "github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -604,8 +605,9 @@ func newOwnerStepsUpgradeRig(t *testing.T) *inFlightRig {
 // release adds to an issue seedInFlight left in accepting or in its retro once it took the
 // project's default steps: version 0 of the source default, with no document and no giver, its one
 // task default whose block names no steps, running at step 5, the acceptance of the key owner, or
-// at its retro, each of the five steps with the type of its role, the implementer's row the row of
-// step 2, and the claims' plugin contract, the owner's plan's.
+// at its retro, each of the five steps with the type of its role and the name that release gave its
+// agent as it wrote the step (record.NameAgents, none for the step of the key owner), the
+// implementer's row the row of step 2, and the claims' plugin contract, the owner's plan's.
 func (r *inFlightRig) seedOnTheDefaultSteps(issue *inFlightIssue) {
 	r.t.Helper()
 	key := issue.key
@@ -617,10 +619,17 @@ func (r *inFlightRig) seedOnTheDefaultSteps(issue *inFlightIssue) {
 		values ($1, 1, 0, 'default', '', '', now() - interval '5 hours')`, key)
 	r.exec(`insert into plan_tasks (issue, generation, task, plan_version, block_text, steps_by_default, state, running_kind, position)
 		values ($1, 1, 'default', 0, 'The project''s default steps.', true, 'running', $2, $3)`, key, kind, position)
-	r.exec(`insert into plan_steps (issue, generation, task, position, role, type, agent_key)
-		values ($1, 1, 'default', 1, 'planner', 'planning', ''), ($1, 1, 'default', 2, 'implementer', 'implementation', ''),
-		($1, 1, 'default', 3, 'tester', 'testing', ''), ($1, 1, 'default', 4, 'reviewer', 'review', ''),
-		($1, 1, 'default', 5, 'acceptance', 'review', 'owner')`, key)
+	steps := record.NameAgents(nil, nil, nil, []record.PlanStep{
+		{Issue: key, Generation: 1, Task: "default", Position: 1, Role: "planner", Type: stepplan.TypePlanning},
+		{Issue: key, Generation: 1, Task: "default", Position: 2, Role: "implementer", Type: stepplan.TypeImplementation},
+		{Issue: key, Generation: 1, Task: "default", Position: 3, Role: "tester", Type: stepplan.TypeTesting},
+		{Issue: key, Generation: 1, Task: "default", Position: 4, Role: "reviewer", Type: stepplan.TypeReview},
+		{Issue: key, Generation: 1, Task: "default", Position: 5, Role: "acceptance", Type: stepplan.TypeReview, AgentKey: "owner"},
+	})
+	for _, step := range steps {
+		r.exec(`insert into plan_steps (issue, generation, task, position, role, type, agent_key, agent)
+			values ($1, 1, 'default', $2, $3, $4, $5, $6)`, key, step.Position, step.Role, string(step.Type), step.AgentKey, string(step.Agent))
+	}
 	r.exec(`update phases set step_task = 'default', step_place = 2 where issue = $1 and role = 'implementer'`, key)
 	r.exec(`update claims set plugin_contract = $2 where issue = $1`, key, api.OwnerPlanContract)
 }
