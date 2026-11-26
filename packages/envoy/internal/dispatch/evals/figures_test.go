@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -236,15 +237,14 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 						strings.Compare(a.deployRepo, b.deployRepo), strings.Compare(a.Part.Series, b.Part.Series))
 				})
 				key := foldKeyOf(entry)
+				allParts := make([]measures.DayPart, len(held))
+				for i, row := range held {
+					allParts[i] = row.Part
+				}
 				within := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
-					var rows []WindowRow
-					var parts []measures.DayPart
-					for _, row := range held {
-						if !row.Part.Day.Before(from) && row.Part.Day.Before(to) {
-							rows, parts = append(rows, row), append(parts, row.Part)
-						}
-					}
-					return rows, parts
+					lo := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(from) })
+					hi := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(to) })
+					return held[lo:hi], allParts[lo:hi]
 				}
 				for end := held[0].Part.Day.AddDate(0, 0, 1); !end.After(through); end = end.AddDate(0, 0, 1) {
 					for _, n := range FigureLengths {

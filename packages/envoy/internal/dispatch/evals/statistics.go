@@ -112,8 +112,18 @@ func FoldStatistics(definition Definition, series []Series, parts []measures.Day
 		}
 	default:
 		folded = make(map[string]Statistics, len(series))
+		if len(series) <= 1 {
+			for _, one := range series {
+				folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+			}
+			break
+		}
+		bySeries := make(map[string][]measures.DayPart, len(series))
+		for _, part := range parts {
+			bySeries[part.Series] = append(bySeries[part.Series], part)
+		}
 		for _, one := range series {
-			folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+			folded[one.Series] = aggStatistics(one.Agg, bySeries[one.Series], one.Series)
 		}
 	}
 	return writable(folded)

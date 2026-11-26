@@ -1907,6 +1907,9 @@ func TestADefaultsPublishIsRecomputedAtOnce(t *testing.T) {
 func TestARebuildsCommitSendsTheEvalsPageOneDeltaAtOnce(t *testing.T) {
 	t.Parallel()
 	page := newSettingsRewritePage(t, nil)
+	// Every mark the setup's feed writes left is answered first, so a recompute after writeDaysAs
+	// is the rebuild's alone (as saveSettings does before its write).
+	page.rig.quiesce(t, page.frame)
 	mark, _ := page.writeDaysAs(t, time.Second, delivery.EvalDaysWrittenByRebuild)
 	delta := page.dayRowsDelta(t, "the rebuild")
 	page.apply(t, delta, page.route(t))
