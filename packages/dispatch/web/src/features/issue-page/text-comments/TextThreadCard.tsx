@@ -33,14 +33,16 @@ import { threadCommentNode } from "./thread-node";
 
 /**
  * One thread on text as the column draws it beside its node (R4), and each node's sheet below
- * 1024 px: `main`'s `ThreadCard`, always expanded (`expanded` true and a toggle that does
+ * 1024 px: `main`'s `ThreadCard`, fixed open (`fixedOpen`, with `expanded` and a toggle that does
  * nothing), with every control it draws on `main` - the reply composer, Resolve or Reopen, Edit
- * of the reader's own comment, Accept and Reject of a suggestion, the copy reference. Its writes
- * are the margin's own (`useCommentActionQueue`, `saveCommentEdit`) on the comments read the page
- * already holds (`["comments", key]`), and they read again what the margin's writes read again:
- * no read of their own. Under each comment of the thread stand its lenses (R7), each drawn as part
- * W draws a lens's row - its verdict, its kind's words, author, time and state, its lines and its
- * chain - with its findings and risks whole under it.
+ * of the reader's own comment, Accept and Reject of a suggestion, the copy reference - but
+ * Resolve and Reopen on a thread rooted in a message or in a reply with a quote (`rootActions`),
+ * and a message thread's reply writes a message (`Thread.kind`). Its writes are the margin's own
+ * (`useCommentActionQueue`, `saveCommentEdit`) on the comments read the page already holds
+ * (`["comments", key]`), and they read again what the margin's writes read again: no read of
+ * their own. Under each comment of the thread stand its lenses (R7), each drawn as part W draws a
+ * lens's row - its verdict, its kind's words, author, time and state, its lines and its chain -
+ * with its findings and risks whole under it.
  */
 
 /** What every card of one column or sheet shares: the issue's writes on its comments, the edit in
@@ -161,7 +163,7 @@ export function useThreadCardHost(issue: IssueDetails): ThreadCardHost {
   );
 }
 
-/** A toggle that does nothing: the card is always expanded (R4). */
+/** The card's toggle, which a fixed-open card draws no control for: it stays open (R4). */
 function keepOpen(): void {}
 
 /**
@@ -187,6 +189,7 @@ export function TextThreadCard({
       {...(currentReplyId === undefined ? {} : { currentReplyId })}
       editingCommentId={host.editingCommentId}
       expanded
+      fixedOpen
       hovered={false}
       isClosed={host.isClosed}
       onAction={host.onAction}
@@ -196,6 +199,7 @@ export function TextThreadCard({
       onToggle={keepOpen}
       owner={host.owner}
       pendingAction={host.pendingActionIds.has(root)}
+      rootActions={!thread.replyRoot && thread.kind !== "message"}
       pulseOrphanBlock={false}
       // Under each comment of the thread, its lenses (R7): the card's one place under each
       // comment's own body, which the margin fills with deliveries where an owner has them.

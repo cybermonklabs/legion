@@ -43,8 +43,9 @@ export interface TextThread {
   /** Whether its words stand at its node's first line: they left the node's text (`orphaned`), or
    *  the node's words hold no such match, so the row draws its first line instead. */
   readonly firstLine: boolean;
-  /** Whether its root is a comment or a message. A message thread's card draws no Resolve or
-   *  Reopen and its reply writes a message (R4); `Thread` carries the kind itself from G5. */
+  /** Whether its root is a comment or a message: `thread.kind`, which the card reads, spelled out
+   *  for the readers that name every entry by its kind (`contents-entries.ts`), from the one rule
+   *  of `placedThread`. */
   readonly kind: "comment" | "message";
   /** The lenses on each comment of the thread, by the comment's id, each a row of W's with its
    *  findings and risks under it, in the read's order (R7). A comment with none has no entry. */
@@ -59,7 +60,9 @@ export interface TextThread {
   /** Whether the root is a reply with a quote, whose card draws no Resolve or Reopen (R4). */
   readonly replyRoot: boolean;
   /** The thread as the margin's card draws it (`ThreadCard`): its root's anchor and its own hold
-   *  the quoted words cut to one line (`quoteLine`). */
+   *  the quoted words cut to one line (`quoteLine`), and a thread rooted in a message is of the
+   *  kind `"message"`, whose card draws no Resolve or Reopen and whose reply writes a message
+   *  (R4). */
   readonly thread: Thread;
 }
 
@@ -217,6 +220,7 @@ function placedThread(
     place.kind === "item" ? Math.max(0, words.indexOf(storedWords(place.block.text))) : 0;
   const at = orphaned ? undefined : quotedAt(words, quote, occurrence, from);
   const anchor = cardAnchorOf(place);
+  const kind = root.supertag === "message" ? "message" : "comment";
   const own = new Map(
     [record.id, ...entries.map((entry) => entry.id)].flatMap(
       (item): [string, readonly TreeNode[]][] => {
@@ -230,7 +234,7 @@ function placedThread(
     made: record.created_at,
     thread: {
       firstLine: at === undefined,
-      kind: root.supertag === "message" ? "message" : "comment",
+      kind,
       lenses: own,
       occurrence,
       orphaned,
@@ -239,6 +243,7 @@ function placedThread(
       thread: {
         anchor,
         key: record.id,
+        ...(kind === "message" ? { kind } : {}),
         lastReplyAt: entries.at(-1)?.created_at,
         replies: entries,
         resolved:

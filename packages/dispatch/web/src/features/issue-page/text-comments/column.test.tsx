@@ -21,6 +21,8 @@ import {
   ON_CHECK,
   ON_DECISION,
   ON_STATEMENT,
+  OTHER,
+  PLAN_DOCUMENT,
   REPLY_ON_STATEMENT,
   readAgain,
   rowOf,
@@ -28,6 +30,7 @@ import {
   type SeededReads,
   STATEMENT,
   seededNodes,
+  type TextThreadSeed,
   widthAt,
 } from "./margin-fixtures";
 import { TEXT_COMPOSER_ATTRIBUTE, useTextComposer } from "./TextMargin";
@@ -335,41 +338,63 @@ test("column hidden by Details, an address of R8 names a thread on text: Details
   }
 });
 
-// R2: the stacking of the column waits for pull request 3125 (G5): the thread of the focused row
-// stands level with its words, the threads above it move up and those under it move down.
-test.skipIf(!GATES.COMPOSER)(
-  "column, j or k moves the focus to a row with threads: that row's first thread stands level with its words, the threads above move up and those below move down",
-  async () => {
-    const user = userEvent.setup();
-    const { client, view } = await drawn({ threads: [ON_STATEMENT, ON_CHECK] }, "conversation");
-    try {
-      const column = await columnDrawn(view, "no column is drawn");
-      const words = (id: string): Element | null =>
-        rowOf(view, id)?.querySelector("[data-node-words]") ?? null;
-      const wanted = new Map<Element | null, number>([
-        [words(STATEMENT_NODE), 100],
-        [words(blockNodeId("verification-md", "c1")), 300],
-      ]);
-      const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
-        this: Element
-      ) {
-        return new DOMRect(0, wanted.get(this) ?? 0, 400, 24);
-      });
-      stubs.push(rect);
-      await readAgain(client);
-      rowOf(view, STATEMENT_NODE)?.focus();
-      await user.keyboard("j");
-      const tops = cardsOf(column).map((card) => Number.parseFloat(card.style.top));
-      expect(tops[0], "the first thread did not move up for the focused row's").toBeLessThanOrEqual(
-        100
-      );
-      expect(tops[1], "the focused row's thread is not level with its words").toBe(300);
-    } finally {
-      view.finish();
-      client.clear();
+// R2: the column stacks its threads through `useCardStack` with the focused row's first thread as
+// the stack's focus (`CardStackFocus`): that thread stands level with its words, the threads above
+// it move up and those under it move down. Conversation draws the statement's row, then the
+// check's, then the decision's; happy-dom lays nothing out, so they stand where the case says -
+// at 100 px, 120 and 140 - and each thread's box is 150 px tall, so each box would cover the next
+// one at its words.
+test("column, j or k moves the focus to a row with threads: that row's first thread stands level with its words, the threads above move up and those below move down", async () => {
+  const user = userEvent.setup();
+  const threads = [ON_STATEMENT, ON_CHECK, ON_DECISION];
+  const rowTops = new Map([
+    [ON_STATEMENT.node, 100],
+    [ON_CHECK.node, 120],
+    [ON_DECISION.node, 140],
+  ]);
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    return new DOMRect(0, rowTops.get(this.getAttribute("data-node-id") ?? "") ?? 0, 400, 24);
+  });
+  const { client, view } = await drawn({ threads }, "conversation").finally(() => stubs.push(rect));
+  try {
+    const column = await columnDrawn(view, "no column is drawn");
+    await waitFor(() =>
+      expect(cardsOf(column), "the column draws no three threads").toHaveLength(3)
+    );
+    const box = (seed: TextThreadSeed): HTMLElement | null =>
+      column.querySelector<HTMLElement>(`[data-text-thread="${CSS.escape(seed.comment.id)}"]`);
+    for (const seed of threads) {
+      const held = box(seed);
+      if (held !== null) Object.defineProperty(held, "offsetHeight", { value: 150 });
     }
+    const tops = () => threads.map((seed) => Number.parseFloat(box(seed)?.style.top ?? ""));
+    // The focus goes to the row of the plan's block, which has no thread, and then to the
+    // statement's: whichever row the page opened on, the column reads its boxes' heights again.
+    await act(async () => rowOf(view, blockNodeId(PLAN_DOCUMENT.slug, OTHER))?.focus());
+    await act(async () => rowOf(view, ON_STATEMENT.node)?.focus());
+    await waitFor(() =>
+      expect(tops(), "with the statement's row in focus, its thread is not at its words").toEqual([
+        100, 258, 416,
+      ])
+    );
+    await user.keyboard("j");
+    expect(
+      document.activeElement?.closest("[data-node-id]")?.getAttribute("data-node-id"),
+      "j did not move the focus to the check's row"
+    ).toBe(ON_CHECK.node);
+    await waitFor(() =>
+      expect(
+        tops(),
+        "the check's thread is not at its words, with the statement's 8 px above it and the decision's 8 px under it"
+      ).toEqual([-38, 120, 278])
+    );
+  } finally {
+    view.finish();
+    client.clear();
   }
-);
+});
 
 test("column, an older comments page loads: the threads of its roots are drawn in order", async () => {
   stubs = answerSeededReads({ threads: [] });

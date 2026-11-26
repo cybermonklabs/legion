@@ -15,11 +15,12 @@ import {
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { regionOrigin } from "../../margin/card-stack";
+import { CardStackFocus, regionOrigin, useCardStack } from "../../margin/card-stack";
 import { parseIssuePath } from "../../refs/routes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { outlineItemRoute } from "../address-target";
 import { CONTENTS_PANE_QUERY } from "../contents-frame";
+import { useFocusedNode } from "../focused-node";
 import { type IssueAddress, issueAddress } from "../issue-address";
 import { LensActContext, useLensAct } from "../lenses/LensMenu";
 import { useMarginDrawer } from "../margin-slot";
@@ -194,6 +195,10 @@ export function useTextComposer(): TextComposer {
  * above the row keep theirs. Below 1024 px it draws nothing: each node's sheet takes the threads
  * there (`NodeThreads.tsx`). Its threads are the view's one answer (`useTextThreads`), which
  * sends no read.
+ *
+ * The column stacks its boxes through `useCardStack` (R2), with the box in focus as its stack's
+ * `CardStackFocus`: the thread or the composer whose box holds the focus, else the first thread of
+ * the node whose row holds it (`useFocusedNode`).
  */
 export function TextMargin({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
@@ -201,6 +206,11 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
   const wide = useMediaQuery(CONTENTS_PANE_QUERY);
   const view = useTextThreads(issue, address.preset);
   const composer = useTextComposer();
+  const [focusedBox, setFocusedBox] = useState<string>();
+  const focusedNode = useFocusedNode()?.id;
+  const stackFocus =
+    focusedBox ??
+    (focusedNode === undefined ? undefined : view.threads.get(focusedNode)?.threads[0]?.thread.key);
   // A composer open on the issue goes with its page, so it is not open again on a later visit,
   // and so does what its last send left the page to do.
   const store = composerStoreOf(useQueryClient());
@@ -219,14 +229,17 @@ export function TextMargin({ issue, route }: SlotProps): ReactNode {
   );
   if (!wide || (view.threads.size === 0 && composer.request === undefined)) return null;
   return (
-    <Column
-      address={address}
-      composer={composer}
-      issue={issue}
-      route={route}
-      search={search}
-      view={view}
-    />
+    <CardStackFocus.Provider value={stackFocus}>
+      <Column
+        address={address}
+        composer={composer}
+        issue={issue}
+        onFocusBox={setFocusedBox}
+        route={route}
+        search={search}
+        view={view}
+      />
+    </CardStackFocus.Provider>
   );
 }
 
@@ -290,14 +303,53 @@ function rowsByNode(stage: Element): Map<string, HTMLElement[]> {
   return rows;
 }
 
-/** The ids of the nodes of `threads` in the order the stage draws their rows. */
-function rowOrder(stage: Element, threads: ReadonlyMap<string, NodeThreads>): string[] {
+/** The ids of the nodes that `holds` answers for, in the order the stage draws their rows. */
+function rowOrder(stage: Element, holds: (id: string) => boolean): string[] {
   const order: string[] = [];
   for (const row of stage.querySelectorAll<HTMLElement>("[data-node-id]")) {
     const id = row.dataset.nodeId;
-    if (id !== undefined && threads.has(id) && !order.includes(id)) order.push(id);
+    if (id !== undefined && holds(id) && !order.includes(id)) order.push(id);
   }
   return order;
+}
+
+/** One box the column stacks (`useCardStack`), by its key: a thread's card, or the composer of a
+ *  new comment, with the node it stands by. */
+interface Box {
+  readonly key: string;
+  readonly nodeId: string;
+}
+
+/** The key of the composer's box in the column's stack, which no thread's key - its root's id -
+ *  is. */
+const COMPOSER_BOX = "#composer";
+
+/** A box's key in the column's stack. */
+const boxKey = (box: Box): string => box.key;
+
+/**
+ * The boxes the column stacks, in the order of their words down the view: the threads of each
+ * node in `order`, the nodes whose rows the stage draws, each node's threads in their own order
+ * and then the composer where it is open on that node's words (`composing`); and the composer
+ * last where the stage draws its node's row no more. A thread whose node has no row drawn is not
+ * drawn, and takes no place in the stack.
+ */
+function stackedOf(
+  threads: ReadonlyMap<string, NodeThreads>,
+  order: readonly string[],
+  composing: string | undefined
+): Box[] {
+  const boxes: Box[] = [];
+  for (const nodeId of order) {
+    for (const { thread } of threads.get(nodeId)?.threads ?? []) {
+      boxes.push({ key: thread.key, nodeId });
+    }
+    if (composing === nodeId) boxes.push({ key: COMPOSER_BOX, nodeId });
+  }
+  if (composing !== undefined && !order.includes(composing)) {
+    boxes.push({ key: COMPOSER_BOX, nodeId: composing });
+  }
+  return boxes;
 }
 
 /** The stage the column stands beside: the element before it in the page's row. */
@@ -357,12 +409,15 @@ function Column({
   address,
   composer,
   issue,
+  onFocusBox,
   route,
   search,
   view,
 }: SlotProps & {
   readonly address: IssueAddress;
   readonly composer: TextComposer;
+  /** Says which box holds the focus: a thread's, by its key, the composer's, or none. */
+  readonly onFocusBox: (key: string | undefined) => void;
   readonly search: string;
   readonly view: ViewThreads;
 }): ReactNode {
@@ -376,8 +431,8 @@ function Column({
   // out of the page's reach, so Tab reaches none of them (R2).
   const detailsOpen = useMarginDrawer()?.open === true;
   const aside = useRef<HTMLElement>(null);
-  const list = useRef<HTMLDivElement>(null);
-  // The nodes with threads, in the order the stage draws their rows, read after each render.
+  // The nodes with threads, and the composer's, in the order the stage draws their rows, read
+  // after each render and each change of the stage.
   const [order, setOrder] = useState<readonly string[]>([]);
   const placed = useMemo(() => placedOf(view.threads, order), [order, view.threads]);
   const request = composer.request;
@@ -396,6 +451,24 @@ function Column({
         ])
       ),
     [placed]
+  );
+
+  // The boxes stand where the stack places them (`useCardStack`, R2): in the order of their
+  // words, none over another, each level with its words or 8 px under the box above, and the box
+  // in focus level with its words (`CardStackFocus`, which `TextMargin` provides). Each box wants
+  // the top `measure` last read for it.
+  const stacked = useMemo(
+    () => stackedOf(view.threads, order, request?.nodeId),
+    [order, request?.nodeId, view.threads]
+  );
+  const [wanted, setWanted] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const wantedTop = useCallback((box: Box) => wanted.get(box.key), [wanted]);
+  const { cardRef, height, region, topOf } = useCardStack(stacked, boxKey, wantedTop);
+  const listRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      region.current = element;
+    },
+    [region]
   );
 
   // The item an address of R8 names, where it is in a thread the column draws: Details closes
@@ -443,75 +516,76 @@ function Column({
   }, []);
   useEffect(() => () => unmark.current(), []);
 
-  // Places each box at its wanted top against the column's own origin (`regionOrigin`'s rule):
-  // the top of the first rectangle of its words in its node's row, else of the row. Before pull
-  // request 3125 each stands at its wanted top (the stacking, `useCardStack`, comes at G5). A
-  // thread's box whose node has no row drawn - folded or paged away - is not drawn, while the
-  // composer's stays where that row last stood, with its draft; the column draws nothing while no
-  // box is drawn. While any box is drawn, the page's row that holds the stage carries
-  // `TEXT_MARGIN_ATTRIBUTE`. The words measured are marked (`highlights.ts`).
+  // Reads the top each box wants against the column's own origin (`regionOrigin`'s rule): the top
+  // of the first rectangle of its words in its node's row, else of the row; and the order of the
+  // rows. A thread's box whose node has no row drawn - folded or paged away - is not drawn and
+  // wants no top, while the composer's wants the top its row last had, and keeps its draft; the
+  // column draws nothing while no box is drawn. While any box is drawn, the page's row that holds
+  // the stage carries `TEXT_MARGIN_ATTRIBUTE`. The words measured are marked (`highlights.ts`).
+  // It places nothing itself: a top that moved draws the stack again.
   const measure = useCallback(() => {
     const column = aside.current;
-    const region = list.current;
+    const list = region.current;
     const stage = stageOf(aside);
-    if (column === null || region === null || stage === null) return;
-    const origin = regionOrigin(region);
+    if (column === null || list === null || stage === null) return;
+    const drawn = rowOrder(stage, (id) => view.threads.has(id) || id === request?.nodeId);
+    setOrder((current) =>
+      current.length === drawn.length && current.every((id, at) => drawn[at] === id)
+        ? current
+        : drawn
+    );
+    const origin = regionOrigin(list);
     const rows = rowsByNode(stage);
+    const tops = new Map<string, number>();
     const ranges: { key: string; range: Range }[] = [];
-    let bottom = 0;
-    let shown = 0;
-    for (const box of region.querySelectorAll<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)) {
+    let composerAway = false;
+    for (const box of list.querySelectorAll<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)) {
       const nodeId = box.getAttribute(THREAD_NODE_ATTRIBUTE) ?? "";
       const row = rowAmong(rows.get(nodeId) ?? [], box.dataset.textThreadParent);
       const composing = box.hasAttribute(TEXT_COMPOSER_ATTRIBUTE);
       box.hidden = row === null && !composing;
+      const key = composing ? COMPOSER_BOX : box.dataset.textThread;
+      if (key === undefined) continue;
       if (row === null) {
-        if (composing) {
-          shown += 1;
-          bottom = Math.max(bottom, (Number.parseFloat(box.style.top) || 0) + box.offsetHeight);
-        }
+        composerAway ||= composing;
         continue;
       }
-      shown += 1;
-      const key = box.dataset.textThread;
-      const boxWords =
-        key !== undefined
-          ? words.get(key)
-          : request === undefined
-            ? undefined
-            : { ...request, firstLine: false };
+      const boxWords = !composing
+        ? words.get(key)
+        : request === undefined
+          ? undefined
+          : { ...request, firstLine: false };
       const range = boxWords === undefined ? null : wordsRange(row, boxWords, view, nodeId);
       const rect = range?.getClientRects()[0] ?? row.getBoundingClientRect();
-      const top = Math.max(0, rect.top - origin);
-      box.style.top = `${top}px`;
-      bottom = Math.max(bottom, top + box.offsetHeight);
+      tops.set(key, Math.max(0, rect.top - origin));
       // A row in its editor draws the marks of its comments itself.
       const editing = row.querySelector('[contenteditable="true"]') !== null;
-      if (range !== null && key !== undefined && !editing) ranges.push({ key, range });
+      if (range !== null && !composing && !editing) ranges.push({ key, range });
     }
-    region.style.minHeight = `${bottom}px`;
+    setWanted((current) => {
+      const kept = composerAway ? current.get(COMPOSER_BOX) : undefined;
+      const next = kept === undefined ? tops : new Map(tops).set(COMPOSER_BOX, kept);
+      return current.size === next.size && [...next].every(([key, top]) => current.get(key) === top)
+        ? current
+        : next;
+    });
+    const shown = tops.size + (composerAway ? 1 : 0);
     column.hidden = shown === 0;
     column.parentElement?.toggleAttribute(TEXT_MARGIN_ATTRIBUTE, shown !== 0);
     marked.current = ranges;
     mark();
-  }, [mark, request, view, words]);
+  }, [mark, region, request, view, words]);
 
-  // After each render: the order of the rows the threads stand by, then the places.
+  // After each render.
   useLayoutEffect(() => {
-    const stage = stageOf(aside);
-    if (stage !== null) {
-      const next = rowOrder(stage, view.threads);
-      if (next.length !== order.length || next.some((id, at) => order[at] !== id)) setOrder(next);
-    }
     measure();
   });
 
-  // Measures again when the stage or a box changes size or the stage draws other rows, at most
-  // once in an animation frame.
+  // Measures again when the stage changes size or draws other rows, at most once in an animation
+  // frame; the stack follows each box's own size (`useCardStack`).
   useEffect(() => {
-    const column = aside.current;
     const stage = stageOf(aside);
-    if (column === null || stage === null) return;
+    if (stage === null) return;
     let frame: number | undefined;
     const soon = () => {
       if (frame !== undefined) return;
@@ -522,7 +596,6 @@ function Column({
     };
     const sized = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(soon);
     sized?.observe(stage);
-    for (const box of column.querySelectorAll(`[${THREAD_NODE_ATTRIBUTE}]`)) sized?.observe(box);
     const changed = new MutationObserver(soon);
     changed.observe(stage, { characterData: true, childList: true, subtree: true });
     return () => {
@@ -532,22 +605,14 @@ function Column({
     };
   }, [measure]);
 
-  // The stage's attribute goes with the column.
+  // The stage's attribute goes with the column, and so does the focus of its boxes.
   useEffect(() => {
     const pageRow = aside.current?.parentElement;
-    return () => pageRow?.removeAttribute(TEXT_MARGIN_ATTRIBUTE);
-  }, []);
-
-  // A card's reply composer takes the focus as it mounts (`MentionComposer`'s reply prefill), as
-  // a card the reader expands asks it to; every card here is drawn expanded, so a thread that
-  // loads would pull the reader's focus into the column. The focus a commit found is given back
-  // where only a card's own effect moved it there: after every effect under the column, which
-  // runs before the column's own. A focus the reader or the address put in the column stays, and
-  // so does one in the composer of a new comment, which the reader opened.
-  const focusBefore = useRef<Element | null>(null);
-  useLayoutEffect(() => {
-    focusBefore.current = document.activeElement;
-  });
+    return () => {
+      pageRow?.removeAttribute(TEXT_MARGIN_ATTRIBUTE);
+      onFocusBox(undefined);
+    };
+  }, [onFocusBox]);
 
   // The item the address names takes the focus once Details is closed and its card is drawn: the
   // card itself for the thread's root, else its reply's row, which the card marks as the one the
@@ -557,7 +622,7 @@ function Column({
     if (landing === undefined || landed.current === landing.following || detailsOpen) return;
     const thread = placed.find(({ thread: one }) => threadHolds(one, landing.id))?.thread.thread;
     if (thread === undefined) return;
-    const card = cardIn(list.current, thread.key);
+    const card = cardIn(region.current, thread.key);
     // The thread's root takes the focus as the card, a reply as its row, and a lens as its own
     // row, which the card draws under the comment it was invoked on.
     const lens = card?.querySelector<HTMLElement>(
@@ -570,7 +635,6 @@ function Column({
     if (target === null || target === undefined) return;
     landed.current = landing.following;
     takeFocus(target);
-    focusBefore.current = target;
   });
 
   // The root of the thread a send of this part wrote takes the focus once the re-read draws its
@@ -579,25 +643,10 @@ function Column({
   useEffect(() => {
     if (sent === undefined || !("root" in sent) || detailsOpen) return;
     const thread = placed.find(({ thread: one }) => one.thread.root.comment.id === sent.root);
-    const card = thread === undefined ? null : cardIn(list.current, thread.thread.thread.key);
+    const card = thread === undefined ? null : cardIn(region.current, thread.thread.thread.key);
     if (card === null) return;
     takeFocus(card);
-    focusBefore.current = card;
     composer.settle();
-  });
-
-  useEffect(() => {
-    const column = aside.current;
-    const before = focusBefore.current;
-    const now = document.activeElement;
-    if (column === null || now === null || now === before || !column.contains(now)) return;
-    if (before !== null && column.contains(before)) return;
-    if (now.closest(`[${TEXT_COMPOSER_ATTRIBUTE}]`) !== null) return;
-    if (before instanceof HTMLElement && before !== document.body && before.isConnected) {
-      before.focus({ preventScroll: true });
-    } else if (now instanceof HTMLElement) {
-      now.blur();
-    }
   });
 
   // Escape in a thread, outside its composer, gives the focus to the row of the thread's node
@@ -621,8 +670,11 @@ function Column({
     moveToRow(row);
   };
 
-  // The thread whose box holds the focus, for the stronger tint of its words.
-  const focusThread = (key: string | undefined) => {
+  // The box that holds the focus: the stack stands it level with its words (`TextMargin`), and a
+  // thread's words take the stronger tint.
+  const focusBox = (box: HTMLElement | null | undefined) => {
+    const key = box?.hasAttribute(TEXT_COMPOSER_ATTRIBUTE) ? COMPOSER_BOX : box?.dataset.textThread;
+    onFocusBox(key);
     if (key === focusedKey.current) return;
     focusedKey.current = key;
     mark();
@@ -630,11 +682,11 @@ function Column({
   const onFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
-    focusThread(target.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`)?.dataset.textThread);
+    focusBox(target.closest<HTMLElement>(`[${THREAD_NODE_ATTRIBUTE}]`));
   };
   const onBlur = (event: FocusEvent<HTMLDivElement>) => {
     const next = event.relatedTarget;
-    if (!(next instanceof Node) || !event.currentTarget.contains(next)) focusThread(undefined);
+    if (!(next instanceof Node) || !event.currentTarget.contains(next)) focusBox(undefined);
   };
 
   // Escape in the composer, and its own Close, close it with its draft kept and give the focus
@@ -664,8 +716,8 @@ function Column({
           onBlur={onBlur}
           onFocus={onFocus}
           onKeyDown={onKeyDown}
-          ref={list}
-          style={detailsOpen ? { visibility: "hidden" } : undefined}
+          ref={listRef}
+          style={detailsOpen ? { minHeight: height, visibility: "hidden" } : { minHeight: height }}
         >
           {/* The threads' stored text is the authors' (R4), as `IssueMarginCards` marks the
               margin's cards. */}
@@ -673,10 +725,12 @@ function Column({
             <LensActContext.Provider value={lensAct}>
               {placed.map(({ nodeId, parent, thread }) => (
                 <div
-                  className="absolute inset-x-0 focus-within:z-20"
+                  className="absolute inset-x-0"
                   data-text-thread={thread.thread.key}
                   data-text-thread-parent={parent}
                   key={thread.thread.key}
+                  ref={cardRef(thread.thread.key)}
+                  style={{ top: topOf(thread.thread.key) }}
                   {...{ [THREAD_NODE_ATTRIBUTE]: nodeId }}
                 >
                   <TextThreadCard
@@ -692,6 +746,8 @@ function Column({
             {request === undefined ? null : (
               <div
                 className="absolute inset-x-0"
+                ref={cardRef(COMPOSER_BOX)}
+                style={{ top: topOf(COMPOSER_BOX) }}
                 {...{ [THREAD_NODE_ATTRIBUTE]: request.nodeId, [TEXT_COMPOSER_ATTRIBUTE]: "" }}
               >
                 <SelectionComposer

@@ -107,6 +107,9 @@ export type ThreadComment = Omit<CommentWithTrees, "mentions" | "deliveries">;
 export interface Thread {
   anchor: Anchor | null;
   key: string;
+  /** `"message"` for a thread whose root is a message, which the margin of comments on text draws
+   *  (INFRA-5706): its reply writes a message. Every other thread is a comment's and sets none. */
+  kind?: "message";
   lastReplyAt: string | undefined;
   replies: ThreadComment[];
   resolved: boolean;

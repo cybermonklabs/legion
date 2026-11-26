@@ -1,4 +1,6 @@
+// biome-ignore assist/source/organizeImports: this file, which today's pages load, changes by added lines only (R12 of INFRA-5706), so the focus's context and its reader come in on an import of their own
 import { type RefObject, useCallback, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext } from "react";
 
 /** The room between two cards one region of the margin stacks, in pixels. */
 const CARD_GAP = 8;
@@ -22,6 +24,49 @@ function regionOrigin(region: HTMLElement): number {
 }
 
 export { regionOrigin };
+
+/**
+ * The key of the card in focus in a region's stack, or none: the column of comments on text
+ * provides it (R2 of INFRA-5706), and a region under no provider stacks as it always has.
+ */
+export const CardStackFocus = createContext<string | undefined>(undefined);
+
+/**
+ * The tops of one region's cards with `focused` the key of the card in focus (`CardStackFocus`):
+ * `keys` the cards in their order down the region, `tops` the top each card wants (none where it
+ * wants none yet), `heights` each card's height. Every card stands as `useCardStack` places it -
+ * at the larger of its wanted top and 8 px under the card before it, and under the card before it
+ * where it wants none - but the card in focus, which stands at its wanted top. Each card above it
+ * moves up as far as it must to end 8 px or more above the card under it, and each card under it
+ * stands at the larger of its wanted top and 8 px under the card above. With no card in focus,
+ * or one that wants no top, the tops are the stack's own.
+ */
+export function focusTops(
+  keys: readonly string[],
+  tops: ReadonlyMap<string, number | undefined>,
+  heights: ReadonlyMap<string, number>,
+  focused: string | undefined
+): ReadonlyMap<string, number> {
+  const at = focused === undefined ? -1 : keys.indexOf(focused);
+  const pinned = focused === undefined || at < 0 ? undefined : tops.get(focused);
+  const placed = new Map<string, number>();
+  let bottom = 0;
+  keys.forEach((key, index) => {
+    const top =
+      index === at && pinned !== undefined ? pinned : Math.max(tops.get(key) ?? bottom, bottom);
+    placed.set(key, top);
+    bottom = top + (heights.get(key) ?? 0) + CARD_GAP;
+  });
+  if (pinned === undefined) return placed;
+  // Up from the card in focus: each card ends 8 px or more above the card under it.
+  let ceiling = pinned;
+  for (const key of keys.slice(0, at).reverse()) {
+    const top = Math.min(placed.get(key) ?? 0, ceiling - CARD_GAP - (heights.get(key) ?? 0));
+    placed.set(key, top);
+    ceiling = top;
+  }
+  return placed;
+}
 
 /** One region's stack of cards (`useCardStack`). */
 export interface CardStack {
@@ -51,6 +96,8 @@ export interface CardStack {
  * the stack already holds, so it draws no card again. A pass reads nothing while the region is
  * not drawn, which it is not while it holds no card. `keyOf` and `wantedTop` must keep one
  * identity while what they answer stays the same (`useCallback`), or every render reads again.
+ * Under a `CardStackFocus` the card in focus stands at its wanted top, and the cards around it
+ * make room for it (`focusTops`).
  */
 export function useCardStack<Card>(
   cards: readonly Card[],
@@ -61,6 +108,11 @@ export function useCardStack<Card>(
   const boxes = useRef(new Map<string, HTMLDivElement>());
   const [tops, setTops] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [height, setHeight] = useState(0);
+  // The card in focus, where the region provides one (`CardStackFocus`), as each pass reads it.
+  const focused = useContext(CardStackFocus);
+  const focus = useRef(focused);
+  focus.current = focused;
+  const focusMeasured = useRef(focused);
   const measure = useCallback(() => {
     if (region.current === null) return;
     const origin = regionOrigin(region.current);
@@ -71,6 +123,20 @@ export function useCardStack<Card>(
       const top = Math.max(wantedTop(card, origin) ?? bottom, bottom);
       next.set(key, top);
       bottom = top + (boxes.current.get(key)?.offsetHeight ?? 0) + CARD_GAP;
+    }
+    // A region that provides a focus stands the card in focus level with what it marks, and the
+    // cards around it make room (`focusTops`); every other region's pass ends with the loop.
+    const inFocus = focus.current;
+    if (inFocus !== undefined && next.has(inFocus)) {
+      const keys = cards.map(keyOf);
+      const heights = new Map(keys.map((key) => [key, boxes.current.get(key)?.offsetHeight ?? 0]));
+      const wanted = new Map(cards.map((card) => [keyOf(card), wantedTop(card, origin)]));
+      const placed = focusTops(keys, wanted, heights, inFocus);
+      for (const [key, top] of placed) next.set(key, top);
+      const last = keys.at(-1);
+      if (last !== undefined) {
+        bottom = (placed.get(last) ?? 0) + (heights.get(last) ?? 0) + CARD_GAP;
+      }
     }
     setTops((current) =>
       current.size === next.size && [...next].every(([key, top]) => current.get(key) === top)
@@ -89,6 +155,12 @@ export function useCardStack<Card>(
     }
     return () => observer.disconnect();
   }, [measure]);
+  // A move of the focus moves the cards though none of them changed, so it measures again.
+  useLayoutEffect(() => {
+    if (focusMeasured.current === focused) return;
+    focusMeasured.current = focused;
+    measure();
+  }, [focused, measure]);
   const cardRef = useCallback(
     (key: string) => (element: HTMLDivElement | null) => {
       if (element === null) {

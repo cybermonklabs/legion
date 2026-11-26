@@ -48,10 +48,12 @@
  * | either · the address's search changes                               | (6)    |
  * | either · the sheet's row is another node's or under another parent  | (7)    |
  * | text thread reply · the address marks one of its replies            | (8)    |
- * | text thread reply · collapsed                                       | (9)    |
+ * | text thread reply · collapsed, or fixed open no more                | (9)    |
  * | text thread reply · its thread read again                           | (10)   |
  * | text thread reply · its card keyed again                            | (11)   |
  * | text thread reply · the cards' shared writes change                 | (12)   |
+ * | text thread reply · its card's host draws it fixed open or not      | (13)   |
+ * | text thread reply · its thread's kind changes                       | (14)   |
  *
  * (off) marks a move that takes the composer off the page: Escape closes the composer, other
  * words open another composer in its place (`key={wordsKeyOf(request)}`), another view draws no

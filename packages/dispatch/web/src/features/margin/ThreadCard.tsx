@@ -125,6 +125,13 @@ export interface ThreadCardProps {
    *  for when that reply ends. */
   hideReplyComposer?: boolean;
   expanded: boolean;
+  /** The card stands open for as long as it is drawn, as the margin of comments on text draws each
+   *  thread (INFRA-5706, R4): the host passes `expanded` with a toggle that does nothing, and the
+   *  card draws no control that would collapse it. Its reply composer is the thread's standing
+   *  box (`MentionComposer`'s `standing`): it offers no Cancel reply, and it takes no focus for
+   *  itself, neither as it mounts nor as a read draws the card again, so a card drawn beside the
+   *  page moves neither the reader's focus nor the page's scroll. */
+  fixedOpen?: boolean;
   hovered: boolean;
   isClosed: boolean;
   onAction(id: string, action: MarginItemAction): void;
@@ -143,6 +150,10 @@ export interface ThreadCardProps {
    *  reply the reader left - the Conversation's Expand thread. A card with none draws a Reply of
    *  its own beside the line. */
   reopenControl?: string;
+  /** `false` draws no Resolve and no Reopen: a thread whose root is a message, which no route of a
+   *  message resolves, or a reply with a quote, whose resolution nobody could undo, since the
+   *  server reopens a thread's root alone (INFRA-5706, R4). */
+  rootActions?: boolean;
   /** Names the reply composer's send and the thread the held-send store holds it for, so the
    *  reply composer that mounts whenever the card expands shows a reply still out, or its refusal
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
@@ -246,6 +257,12 @@ function CommentBody({
           </Link>
         </p>
       );
+  }
+  // A thread rooted in a reply that quotes words of the post it answers keeps no document version
+  // to open: once those words left that post's text (`reply_block.removed`), the notice says the
+  // text changed, with no link (INFRA-5706, R4). No root of today's margin is such a reply.
+  if (showOrphan && orphanNotice === null && anchor?.orphaned && comment.reply_block?.removed) {
+    orphanNotice = <p className={`mb-2 text-xs font-medium ${inlineWarningText}`}>Text changed.</p>;
   }
   return (
     <>
@@ -364,6 +381,7 @@ export function ThreadCard({
   composerClassName,
   hideReplyComposer = false,
   expanded,
+  fixedOpen = false,
   hovered,
   isClosed,
   onAction,
@@ -378,6 +396,7 @@ export function ThreadCard({
   pulseOrphanBlock = true,
   renderDeliveries,
   reopenControl,
+  rootActions = true,
   replyMutationKey,
   thread,
   viewerLogin,
@@ -460,6 +479,14 @@ export function ThreadCard({
         Edit
       </button>
     ) : null;
+  // A message thread's reply writes a message in that thread (`in_reply_to`), as a thread on text
+  // rooted in a message takes one (INFRA-5706, R4).
+  const messageReply =
+    thread.kind === "message"
+      ? {
+          replyTo: { actor: root.author, excerpt: "", id: root.id, parentKind: "message" as const },
+        }
+      : {};
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
      card expands. A closed issue takes a reply as it takes any comment, so the composer shows
@@ -491,6 +518,8 @@ export function ThreadCard({
           owner={composerOwner(owner)}
           replyParent={root}
           replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+          standing={fixedOpen}
+          {...messageReply}
         />
       </div>
     ) : null;
@@ -626,6 +655,7 @@ export function ThreadCard({
                   <button
                     className={`font-medium ${linkText} ${linkHoverText}`}
                     onClick={() => onAction(root.id, "reopen")}
+                    hidden={rootActions ? undefined : true}
                     type="button"
                   >
                     Reopen
@@ -634,6 +664,7 @@ export function ThreadCard({
                   <button
                     className={`font-medium ${linkText} ${linkHoverText}`}
                     onClick={() => onAction(root.id, "resolve")}
+                    hidden={rootActions ? undefined : true}
                     type="button"
                   >
                     Resolve

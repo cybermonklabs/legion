@@ -36,10 +36,12 @@ const REASONS = {
   6: "6. The address's search names the item an address of R8 lands on (`?node=`), which the column reads only to give that item the focus and mark it in its thread's card (`outlineItemRoute`, `currentReply`); it moves no composer's address and ends no mount.",
   7: "7. A sheet's `node` and `parent` are the node of the row it stands in and the node that row is drawn under, which the row site hands it once for its row: a node drawn under several parents has its threads and its composer in its stored parent's row alone, and another node or another parent is another row with a sheet of its own, so neither moves a composer within one. No row site mounts the sheet at this base (gate G6).",
   8: "8. The reply an address names is marked in its thread's card (`currentReplyId`, `aria-current`) and takes the focus; that moves no address and ends no mount.",
-  9: "9. A thread on text's card is always expanded (`expanded`, with a toggle that does nothing, R4), so its reply is drawn for as long as its card is.",
+  9: "9. A thread on text's card is fixed open (`fixedOpen`, with `expanded` and a toggle that does nothing, R4): it draws no control that collapses it, so its reply is drawn for as long as its card is.",
   10: "10. A card's thread is the thread its card is keyed by: a read again gives it a new reply, a resolution or an edit, never another root, and its reply always answers its thread's root under its thread's reply send name (`marginReplySendKey`), so it moves no address.",
   11: "11. A thread's card is drawn once per thread of the nodes the view draws, keyed by its thread's root, which is the thread's own name and never changes; a thread that leaves the list unmounts its card, which the another-view rows make, and its reply is held under its thread's reply send name.",
   12: "12. `host` holds what every card of one column or sheet shares (`useThreadCardHost`): the issue's writes on its comments, the edit in progress and the reader. Its owner is the issue, which changes only with the issue, the issue-left rows; the rest moves no address and ends no mount.",
+  13: "13. `fixedOpen` is the host's and never changes under a drawn card: the column and the sheet of comments on text draw every card fixed open, and the margin, the Conversation and the phone sheet pass none, so `standing={fixedOpen}` moves no reply composer to another box while it is mounted. A standing inline reply keeps its unsent draft under its thread's reply send name as an inline reply does (`keptNames` in `useKeptDrafts.ts`), which the text thread reply rows read.",
+  14: "14. A thread's kind is its root's (`Thread.kind`): a thread on text rooted in a message is of the kind `message`, and its reply answers that message (`in_reply_to`) under its thread's reply send name for as long as its card is drawn. A read again never gives a card another root (reason 10), and every other thread sets no kind, so the spread moves no address and ends no mount.",
 } as const;
 
 export const coverage: readonly CoverageEntry[] = [
@@ -101,6 +103,15 @@ export const coverage: readonly CoverageEntry[] = [
     { reason: REASONS[8] }
   ),
   ...answers("TextThreadCard | ThreadCard | address prop | expanded", { reason: REASONS[9] }),
+  ...answers("TextThreadCard | ThreadCard | address prop | fixedOpen", { reason: REASONS[9] }),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | standing={fixedOpen}",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    "ThreadCard | ThreadCard <MentionComposer mutationKey={replyMutationKey}> | address prop | {...messageReply}",
+    { reason: REASONS[14] }
+  ),
   ...answers("TextThreadCard | ThreadCard | address prop | owner={host.owner}", row(REPLY, ISSUE)),
   ...answers(
     "TextThreadCard | ThreadCard | address prop | replyMutationKey={marginReplySendKey(card.key)}",
