@@ -657,6 +657,25 @@ func TestSignalRequestReports(t *testing.T) {
 				refusals.Value, refusals.Absent, retriedRefusalsCause)
 		}
 	})
+	// A request that ended before the hour of minutes any read reaches again is answered kept, so
+	// a host whose reports could not reach the daemon for an hour sends it no more, and the store
+	// keeps it as no row, since no read counts it.
+	t.Run("past-the-hour", func(t *testing.T) {
+		t.Parallel()
+		r := newRequestsRig(t)
+		role := r.launch(claim.RoleImplementer, api.DaemonAPIVersion())
+		r.now = minute(90).Add(15 * time.Second)
+		status, answer := r.report(role, request("old", role.session, opus, minute(29).Add(59*time.Second), 500, ""),
+			request("fresh", role.session, opus, minute(90).Add(10*time.Second), 700, ""))
+		r.kept(status, answer, "old", "fresh")
+		if got := r.rows(); len(got) != 1 || !strings.HasPrefix(got[0], "fresh ") {
+			t.Fatalf("the store keeps %q, want the fresh request alone", got)
+		}
+		// The same batch again is the fact already applied, answered the same.
+		status, answer = r.report(role, request("old", role.session, opus, minute(29).Add(59*time.Second), 500, ""),
+			request("fresh", role.session, opus, minute(90).Add(10*time.Second), 700, ""))
+		r.kept(status, answer, "old", "fresh")
+	})
 }
 
 // retriedRefusalsCause is what the reason of the refusals not recorded names while a request of a

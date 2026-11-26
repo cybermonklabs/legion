@@ -88,7 +88,7 @@ const (
 	OutboxKindQueueTimelineRead OutboxKind = "queue_timeline_read"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on seven lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -129,6 +129,11 @@ const (
 // their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
 // has the route, delays no status write, notice or start of that issue: a record is history, and
 // the work it records never waits for it.
+// The signals lane runs the reads of GitHub's timeline of a pull request that moved in the merge
+// queue (queue_timeline_read), which keep the queue signal's events of admission by signals, on a
+// lane of their own: such a read waits for GitHub's timeline to catch up with the move, and a
+// signal's input delays no start, status write, notice or message of the issue, nor waits behind
+// them.
 type OutboxLane string
 
 const (

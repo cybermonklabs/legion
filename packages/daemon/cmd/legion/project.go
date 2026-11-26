@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
-	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // newProjectCommand is the operator's hand on the daemon's project as a whole, one command per
@@ -182,12 +181,12 @@ func printSignalsAnswer(w io.Writer, answer []byte) error {
 // switch, and each signal by its signal and part with its value, or not recorded where the daemon
 // cannot compute it, its limit, and whether it holds admission, since when where a pass dated the
 // hold, and undated where none did yet, as `legion state --json` gives them.
-func signalsLine(reading store.SignalsReading) string {
+func signalsLine(reading api.SignalsReading) string {
 	words := []string{"signals: " + switchWords(reading.On)}
 	for _, series := range reading.Series {
 		value := "not recorded"
 		if series.Value != nil {
-			value = strconv.FormatFloat(*series.Value, 'g', -1, 64)
+			value = strconv.FormatFloat(*series.Value, 'f', -1, 64)
 		}
 		hold := "does not hold"
 		switch {
@@ -222,7 +221,7 @@ func limitWords(limit *float64) string {
 	if limit == nil {
 		return "limit none"
 	}
-	return "limit " + strconv.FormatFloat(*limit, 'g', -1, 64)
+	return "limit " + strconv.FormatFloat(*limit, 'f', -1, 64)
 }
 
 // pausedSummary is `legion state`'s line for the project's open pause (api.State.Paused): the

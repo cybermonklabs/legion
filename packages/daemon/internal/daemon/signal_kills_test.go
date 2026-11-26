@@ -283,7 +283,7 @@ func TestSignalInputKillsAreKeptFromTheFirstBoot(t *testing.T) {
 		var recorded bool
 		if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 			var err error
-			at, recorded, err = rig.records.SignalInputSince(ctx, tx, killsProject, signals.Kills)
+			at, recorded, _, err = rig.records.SignalInputStatus(ctx, tx, killsProject, signals.Kills)
 			return err
 		}); err != nil {
 			t.Fatalf("read since when the kills are kept: %v", err)

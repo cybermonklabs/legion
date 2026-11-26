@@ -176,20 +176,22 @@ func SignalSettingsTx(ctx context.Context, tx pgx.Tx, project string) (SignalSet
 // ChangeSignalSettingTx writes change as project's, in the transaction of the fact it is applied as,
 // where it moves the setting, and the change's entry of the record of changes with it
 // (AppendSignalChangesTx), so the setting and its entry commit together or not at all. A change to
-// the value the setting holds already, the switch turned on while it is on or a limit cleared that
-// no person set, writes nothing, and it answers whether it wrote. A change Validate refuses is an
-// error.
+// the value the setting holds already writes nothing, and it answers whether it wrote: the switch
+// turned on while it is on, or off while it is off, as a fresh project's is, and a limit cleared
+// that no person set. A change Validate refuses is an error.
 func ChangeSignalSettingTx(ctx context.Context, tx pgx.Tx, project string, change SignalSettingChange) (bool, error) {
 	if err := change.Validate(); err != nil {
 		return false, err
 	}
-	if change.Value == nil {
-		var held bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from signal_settings where project = $1 and setting = $2 and value is not null)`,
-			project, change.Setting).Scan(&held); err != nil {
+	// A setting with no row holds its fresh value, no limit and the switch off, so a change to that
+	// value moves it only where a row holds another.
+	if change.Value == nil || change.Setting == SignalSwitchSetting && *change.Value == 0 {
+		var moves bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from signal_settings where project = $1 and setting = $2 and value is distinct from $3::double precision)`,
+			project, change.Setting, change.Value).Scan(&moves); err != nil {
 			return false, fmt.Errorf("read the setting %s of %s: %w", change.Setting, project, err)
 		}
-		if !held {
+		if !moves {
 			return false, nil
 		}
 	}

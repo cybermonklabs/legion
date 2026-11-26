@@ -383,10 +383,15 @@ func TestSignalReportPredicate(t *testing.T) {
 		if got := lt.passCount(); got != passes {
 			t.Errorf("the turn edge and the report ran %d passes, want none", got-passes)
 		}
+		var kept []string
 		inTx(t, pool, func(tx pgx.Tx) {
-			held, err := record.NewStore().ModelRequestsHeld(context.Background(), tx, acmeProject, acmeToken(t, "ACME-9", claim.RoleImplementer), 1, []string{"r1"})
-			if err != nil || !slices.Equal(held, []string{"r1"}) {
-				t.Errorf("the requests kept of the report = %v, %v; want r1", held, err)
+			rows, err := tx.Query(context.Background(), `select id from model_requests where project = $1 and claim = $2 and generation = 1`,
+				acmeProject, string(acmeToken(t, "ACME-9", claim.RoleImplementer)))
+			if err == nil {
+				kept, err = pgx.CollectRows(rows, pgx.RowTo[string])
+			}
+			if err != nil || !slices.Equal(kept, []string{"r1"}) {
+				t.Errorf("the requests kept of the report = %v, %v; want r1", kept, err)
 			}
 		})
 	})

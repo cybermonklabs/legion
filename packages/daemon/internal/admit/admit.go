@@ -318,7 +318,16 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // deadline (intake.SignalDeadline) runs its pass only where it is the committed deadline and due
 // (deadlineRuns); an early one is left unspent, so its timer applies it again.
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
-	if err := a.keepSignalFacts(ctx, tx, fact); err != nil {
+	// A person's change of a setting is kept apart from the other inputs because its route answers
+	// whether this fact's own transaction moved the setting (intake.Result.Changed).
+	var changed bool
+	var err error
+	if setting, ok := fact.(intake.SignalSettingChanged); ok {
+		changed, err = a.keepSignalSetting(ctx, tx, setting.Change)
+	} else {
+		err = a.keepSignalFacts(ctx, tx, fact)
+	}
+	if err != nil {
 		return intake.Result{}, err
 	}
 	if deadline, ok := fact.(intake.SignalDeadline); ok {
@@ -331,7 +340,7 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{Refusal: refusal}, a.wakeForFreeSlot(ctx, tx, released)
+	return intake.Result{Refusal: refusal, Changed: changed}, a.wakeForFreeSlot(ctx, tx, released)
 }
 
 // OpenFact and SettleFact are the engine's (intake.Settler): admission writes issues through it —
@@ -2431,6 +2440,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, released, err
 	}
 	if a.cap <= 0 {
+		// A cap that admits nothing starts nothing, and the pass still records what it read of
+		// each series and sets the deadline again, as every pass does (S6).
+		if err := a.afterSignalPass(ctx, tx, gate, &moves); err != nil {
+			return 0, released, err
+		}
 		a.observePass(ctx, issues, slots, facts, rows, line, dropped, &moves, nil, kind)
 		return 0, released, nil
 	}

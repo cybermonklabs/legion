@@ -109,12 +109,6 @@ func (s *server) changeSignals(w http.ResponseWriter, r *http.Request, answer An
 		return
 	}
 	change.Set = store.SignalSet{By: by, At: s.now().UTC(), Reason: req.Reason}
-	before, err := s.signalSettings(r.Context())
-	if err != nil {
-		s.logRequestFailure(r, err, "api: read the settings of admission by signals before a change")
-		s.writeFailure(w, r, http.StatusInternalServerError, "SIGNAL_SETTING_FAILED", "the daemon could not read its settings of admission by signals; nothing changed")
-		return
-	}
 	result, err := s.apply(r.Context(), "api", requestFactID("project/signals"), intake.SignalSettingChanged{Change: change})
 	if err != nil {
 		s.logRequestFailure(r, err, "api: a change of admission by signals failed", "action", req.Action, "setting", change.Setting,
@@ -132,7 +126,9 @@ func (s *server) changeSignals(w http.ResponseWriter, r *http.Request, answer An
 		s.writeFailure(w, r, http.StatusInternalServerError, "SIGNAL_SETTING_FAILED", "the change of admission by signals was applied, and the daemon could not read it back")
 		return
 	}
-	s.writeAnswer(w, r, answer, http.StatusOK, ProjectSignalsResponse{Changed: !sameSetting(before, after, change.Setting), Settings: after.View()})
+	// Whether the change moved the setting is the fact's own transaction's word, which no change
+	// another fact made before or after it can blur.
+	s.writeAnswer(w, r, answer, http.StatusOK, ProjectSignalsResponse{Changed: result.Changed, Settings: after.View()})
 }
 
 // signalSettings is the project's settings of admission by signals, read in a transaction of its own.
@@ -144,21 +140,6 @@ func (s *server) signalSettings(ctx context.Context) (store.SignalSettings, erro
 		return err
 	})
 	return settings, err
-}
-
-// sameSetting says whether setting holds the same value in before and after.
-func sameSetting(before, after store.SignalSettings, setting string) bool {
-	value := func(settings store.SignalSettings) *float64 {
-		if setting == store.SignalSwitchSetting {
-			if settings.Switch == nil {
-				return nil
-			}
-			return settings.Switch.Value
-		}
-		return settings.Limits[setting].Value
-	}
-	was, is := value(before), value(after)
-	return (was == nil) == (is == nil) && (was == nil || *was == *is)
 }
 
 // signalSettingChangeOf is the change req asks for, its Set left to the caller, or why it cannot

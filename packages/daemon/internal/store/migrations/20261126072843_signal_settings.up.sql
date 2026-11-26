@@ -53,7 +53,7 @@ create table signal_settings (
     reason     text             not null check (reason ~ '[^[:space:]]'),
     primary key (project, setting),
     constraint signal_settings_by_session check ((by_kind = 'controller') = (by_session <> '')),
-    constraint signal_settings_switch check (setting <> 'switch' or value in (0, 1))
+    constraint signal_settings_switch check (setting <> 'switch' or value is not null and value in (0, 1))
 );
 create table signal_changes (
     project    text             not null check (project <> ''),
@@ -69,7 +69,7 @@ create table signal_changes (
     reason     text,
     primary key (project, id),
     constraint signal_changes_series check ((what = 'switch') = (signal is null) and (part is not null) = (signal is not distinct from 'provider')),
-    constraint signal_changes_flag check (what not in ('holds', 'switch') or value in (0, 1)),
+    constraint signal_changes_flag check (what not in ('holds', 'switch') or value is not null and value in (0, 1)),
     constraint signal_changes_absent check ((absent is not null) = (what = 'value' and value is null) and (absent is null or absent <> '')),
     constraint signal_changes_set check ((what in ('limit', 'switch')) = (by_kind is not null) and (by_kind is null) = (reason is null)
         and (by_kind is null) = (by_session is null) and (by_kind is null or (by_kind = 'controller') = (by_session <> ''))

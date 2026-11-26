@@ -175,11 +175,7 @@ func (a *Admission) logSignalHolds(ctx context.Context, gate passGate, moves *pa
 		for _, name := range gate.snapshot.Holding() {
 			reading := gate.snapshot.Readings[name]
 			signal, part := store.SignalPart(name)
-			var named any
-			if part != "" {
-				named = part
-			}
-			a.logOnCommit(ctx, SignalHeldStartLine, "issue", passed.Issue, "signal", signal, "part", named,
+			a.logOnCommit(ctx, SignalHeldStartLine, "issue", passed.Issue, "signal", signal, "part", partOrNone(part),
 				"value", reading.Value.Value, "limit", *reading.Limit, "kind", gate.kind)
 		}
 	}

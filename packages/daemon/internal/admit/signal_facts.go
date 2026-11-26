@@ -70,9 +70,8 @@ import (
 //   - intake.TurnEdge: the start or end of a turn of a claim, which the claim itself records, so
 //     nothing is kept; where the claim's issue holds a slot, the architect's rule decides whether
 //     it runs the pass, as for a report. A claim of an issue that holds none moves no series.
-//   - intake.SignalSettingChanged: a person's change of the switch or of a limit, written with its
-//     entry of the record of changes (keepSignalSetting), and marked as a write where it moved the
-//     setting, so the fact's pass admits by it.
+//   - intake.SignalSettingChanged: a person's change of the switch or of a limit, which Apply keeps
+//     itself (keepSignalSetting) since the fact answers whether it moved the setting.
 //
 // Every other keep marks its write where its statement changed a row, so the fact runs the pass
 // by the pass rule (Apply), and a duplicate, which changes none, runs none.
@@ -110,7 +109,8 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 		}
 		return a.store.SetSignalInputReadError(ctx, tx, a.project, signals.Approvals, fact.ReadError, a.now())
 	case intake.ModelRequests:
-		if err := a.store.KeepModelRequests(ctx, tx, a.project, fact.Claim, fact.Generation, fact.Requests, fact.RetriedRefusalsReported, a.countsTokens, a.now()); err != nil {
+		report := record.ModelRequestsReport{Token: fact.Claim, Generation: fact.Generation, Requests: fact.Requests, RetriedRefusalsReported: fact.RetriedRefusalsReported}
+		if err := a.store.KeepModelRequests(ctx, tx, a.project, report, a.countsTokens, a.now()); err != nil {
 			return err
 		}
 		return a.signalFactMoved(ctx, tx)
@@ -123,8 +123,6 @@ func (a *Admission) keepSignalFacts(ctx context.Context, tx pgx.Tx, fact intake.
 			return nil
 		}
 		return a.signalFactMoved(ctx, tx)
-	case intake.SignalSettingChanged:
-		return a.keepSignalSetting(ctx, tx, fact.Change)
 	case intake.DaemonBooted:
 		for _, input := range []string{signals.Kills, signals.Queue, signals.Provider} {
 			if err := a.store.BeginSignalInput(ctx, tx, a.project, input, a.now()); err != nil {
@@ -162,7 +160,7 @@ func (a *Admission) countsTokens(model string) bool {
 // own fact clears the reason (intake.ApprovalsBootRead). A later boot reads over what the earlier
 // run kept, which the stream kept current, so it records nothing here.
 func (a *Admission) beginApprovals(ctx context.Context, tx pgx.Tx) error {
-	_, began, err := a.store.SignalInputSince(ctx, tx, a.project, signals.Approvals)
+	_, began, _, err := a.store.SignalInputStatus(ctx, tx, a.project, signals.Approvals)
 	if err != nil || began {
 		return err
 	}

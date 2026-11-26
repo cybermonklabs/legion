@@ -49,7 +49,9 @@ type signalsHarness struct {
 	now       time.Time
 }
 
-func newSignalsHarness(t *testing.T) *signalsHarness {
+// newSignalsHarness is the harness, its API applying each fact through first, where a test gives
+// any, before the daemon's own handlers.
+func newSignalsHarness(t *testing.T, first ...intake.Handler) *signalsHarness {
 	t.Helper()
 	h := &signalsHarness{harness: newHarness(t), now: signalsStartsAt}
 	records := record.NewStore()
@@ -62,11 +64,12 @@ func newSignalsHarness(t *testing.T) *signalsHarness {
 	h.admission.UseSignals(h.live.Read)
 	h.admission.UseLiveSignals(h.live, func(record.SignalDeadline) {})
 	h.handlers = admit.Handlers(records, testDispatchProject, engine, h.admission)
+	handlers := append(slices.Clone(first), h.handlers...)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, DispatchProject: testDispatchProject,
 		OperatorToken: testOperatorToken, Controller: h.store, Grants: credential.New(nil), Log: quiet,
-		Pool: h.store.Pool(), Record: records, Handlers: h.handlers, Now: clock, State: signalsSource{h}, StateTransactions: h.store.Pool(),
+		Pool: h.store.Pool(), Record: records, Handlers: handlers, Now: clock, State: signalsSource{h}, StateTransactions: h.store.Pool(),
 	}).Handler
 	return h
 }
@@ -213,6 +216,26 @@ func TestAdmissionSignalSettings(t *testing.T) {
 		off := h.changed(operatorSignalsRoute, operatorChange(SignalsOff, "", nil, "the owner turned it off"))
 		if !off.Changed || off.Settings.On {
 			t.Fatalf("off = %+v, want it off", off)
+		}
+	})
+	// The answer's changed is the fact's own transaction's word: a change another fact made of the
+	// same setting just before this one's transaction leaves this one nothing to move, though the
+	// setting stands otherwise than before the request.
+	t.Run("changed by its own fact", func(t *testing.T) {
+		ahead := applyFunc(func(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
+			if setting, ok := fact.(intake.SignalSettingChanged); ok {
+				earlier := setting.Change
+				earlier.Set.Reason = "another person's change, just before"
+				if _, err := store.ChangeSignalSettingTx(ctx, tx, testDispatchProject, earlier); err != nil {
+					return intake.Result{}, err
+				}
+			}
+			return intake.Result{}, nil
+		})
+		h := newSignalsHarness(t, ahead)
+		on := h.changed(operatorSignalsRoute, operatorChange(SignalsOn, "", nil, "the owner turned it on"))
+		if on.Changed || !on.Settings.On || on.Settings.Switch == nil || on.Settings.Switch.Reason != "another person's change, just before" {
+			t.Fatalf("on, after another change turned it on first = %+v, want it on by that change and this one answered unchanged", on)
 		}
 	})
 	t.Run("controller", func(t *testing.T) {

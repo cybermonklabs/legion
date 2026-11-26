@@ -349,7 +349,7 @@ func TestAFailedBootReadMakesTheApprovalsSignalUnrecordedWithItsReason(t *testin
 	}
 	var since time.Time
 	r.tx(func(ctx context.Context, tx pgx.Tx) (err error) {
-		since, _, err = r.records.SignalInputSince(ctx, tx, "LEGION", signals.Approvals)
+		since, _, _, err = r.records.SignalInputStatus(ctx, tx, "LEGION", signals.Approvals)
 		return err
 	})
 	if !since.Equal(at) {

@@ -11,29 +11,43 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/signals"
 )
 
-// KeepModelRequests keeps requests, one report of the host of claim's launch at generation (an
-// intake.ModelRequests), as rows of model_requests: each once by the claim, the generation and the
-// request's own id, so a request two reports carry, or one report delivered twice, is one row and
-// the first one kept stays as it was kept. Each row keeps the session, the model, when the request
-// ended, its uncached input tokens or none, who refused it or none, whether counts takes its
-// model (the project's signal_token_model_pattern as the daemon was configured when it kept it),
-// so a changed selector reads no kept request again, and retried, whether the report said its
-// host reports each HTTP 429 its transport retries (ProviderMinutes reads the refusals short of
-// those where it did not). It takes the wire's own request, as KeepMemoryKill takes the wire's
-// frame.
+// ModelRequestsReport is one report of a host's model requests as admission keeps it (an
+// intake.ModelRequests): the claim whose launch at Generation its host runs, the requests, and
+// whether the report said its host reports each HTTP 429 its transport retries.
+type ModelRequestsReport struct {
+	Token                   claim.Token
+	Generation              uint64
+	Requests                []claim.ModelRequest
+	RetriedRefusalsReported bool
+}
+
+// KeepModelRequests keeps the requests of report as rows of model_requests: each once by the
+// claim, the generation and the request's own id, so a request two reports carry, or one report
+// delivered twice, is one row and the first one kept stays as it was kept. Each row keeps the
+// session, the model, when the request ended, its uncached input tokens or none, who refused it or
+// none, whether counts takes its model (the project's signal_token_model_pattern as the daemon was
+// configured when it kept it), so a changed selector reads no kept request again, and whether the
+// report said its host reports each HTTP 429 its transport retries (ProviderMinutes reads the
+// refusals short of those where it did not). It takes the wire's own request, as KeepMemoryKill
+// takes the wire's frame.
 //
-// It then deletes every request of project that ended before the first minute a read at now or
-// later reaches (modelRequestsReach), so the rows a read meets stay bounded by an hour of
-// requests rather than the project's whole history, and every limit of the project no such minute
-// reads.
+// A request that ended before the first minute a read at now or later reaches
+// (modelRequestsReach) is kept as no row, since no read counts it: a host that could not report it
+// for an hour still has it answered kept (api's modelRequests) and sends it no more. It then
+// deletes every request of project that ended before that minute, so the rows a read meets stay
+// bounded by an hour of requests rather than the project's whole history.
 //
 // It keeps no mark of a write admission reads (RecordsWritten), whatever it keeps: a report comes
 // every few seconds from every session, and most change no hold and no value a pass would record,
-// so admission decides by the architect's rule whether the report runs the pass (admit's
+// so admission decides by the series-moved pass rule whether the report runs the pass (admit's
 // signalsMoved, NoteSignalsMoved).
-func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, requests []claim.ModelRequest, retried bool, counts func(model string) bool, now time.Time) error {
+func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project string, report ModelRequestsReport, counts func(model string) bool, now time.Time) error {
+	reach := modelRequestsReach(now)
 	batch := &pgx.Batch{}
-	for _, request := range requests {
+	for _, request := range report.Requests {
+		if request.EndedAt.Before(reach) {
+			continue
+		}
 		var refusal *string
 		if request.Refusal != "" {
 			class := string(request.Refusal)
@@ -41,37 +55,18 @@ func (s *Postgres) KeepModelRequests(ctx context.Context, tx pgx.Tx, project str
 		}
 		batch.Queue(`insert into model_requests (project, claim, generation, id, session, model, ended_at, uncached, counted, refusal, retried_refusals_reported)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict (project, claim, generation, id) do nothing`,
-			project, string(claim), int64(generation), request.ID, request.Session, request.Model, request.EndedAt,
-			request.UncachedInputTokens, counts(request.Model), refusal, retried)
+			project, string(report.Token), int64(report.Generation), request.ID, request.Session, request.Model, request.EndedAt,
+			request.UncachedInputTokens, counts(request.Model), refusal, report.RetriedRefusalsReported)
 	}
-	if err := tx.SendBatch(ctx, batch).Close(); err != nil {
-		return fmt.Errorf("keep the model requests of %s at generation %d: %w", claim, generation, err)
+	if batch.Len() > 0 {
+		if err := tx.SendBatch(ctx, batch).Close(); err != nil {
+			return fmt.Errorf("keep the model requests of %s at generation %d: %w", report.Token, report.Generation, err)
+		}
 	}
-	reach := modelRequestsReach(now)
 	if _, err := tx.Exec(ctx, "delete from model_requests where project = $1 and ended_at < $2", project, reach); err != nil {
 		return fmt.Errorf("forget the model requests of %s before %s: %w", project, reach, err)
 	}
-	if _, err := tx.Exec(ctx, `delete from signal_token_limits where project = $1
-		and since < (select max(since) from signal_token_limits where project = $1 and since <= $2)`, project, reach); err != nil {
-		return fmt.Errorf("forget the token limits of %s before %s: %w", project, reach, err)
-	}
 	return nil
-}
-
-// ModelRequestsHeld is each of ids the store holds a request of for claim's launch at generation
-// of project, in no order: what a report's answer names kept (api's modelRequests), so a host
-// sends again only what is not.
-func (s *Postgres) ModelRequestsHeld(ctx context.Context, tx pgx.Tx, project string, claim claim.Token, generation uint64, ids []string) ([]string, error) {
-	rows, err := tx.Query(ctx, `select id from model_requests where project = $1 and claim = $2 and generation = $3 and id = any($4)`,
-		project, string(claim), int64(generation), ids)
-	if err != nil {
-		return nil, fmt.Errorf("read the model requests %s holds of %s at generation %d: %w", project, claim, generation, err)
-	}
-	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the model requests %s holds of %s at generation %d: %w", project, claim, generation, err)
-	}
-	return held, nil
 }
 
 // modelRequestsReach is the start of the first minute a read of the provider's record at now or
@@ -88,6 +83,10 @@ func modelRequestsReach(now time.Time) time.Time {
 // calls it with its configuration's limit (admit's keepSignalFacts on intake.DaemonBooted), so a
 // minute is read against the limit configured when it began and a changed limit reads no earlier
 // minute again. A limit it records is a write admission reads (RecordsWritten).
+//
+// It then deletes every limit of the project older than the one in force at the first minute a
+// read at at or later reaches (modelRequestsReach), which no such minute reads. Only a boot adds a
+// limit, so a boot is when one can be left behind.
 func (s *Postgres) KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string, limit int64, at time.Time) error {
 	var kept *int64
 	if limit > 0 {
@@ -101,19 +100,29 @@ func (s *Postgres) KeepTokenLimit(ctx context.Context, tx pgx.Tx, project string
 		return fmt.Errorf("record %s's token limit from %s: %w", project, at, err)
 	}
 	noteRowsWritten(ctx, tag)
+	reach := modelRequestsReach(at)
+	if _, err := tx.Exec(ctx, `delete from signal_token_limits where project = $1
+		and since < (select max(since) from signal_token_limits where project = $1 and since <= $2)`, project, reach); err != nil {
+		return fmt.Errorf("forget the token limits of %s before %s: %w", project, reach, err)
+	}
 	return nil
 }
 
 // ProviderMinutes is the provider's record of a project over a range of whole minutes, as
-// Postgres.ProviderMinutes reads it: each minute the record holds, by its start, and the latest
-// minute of the range that holds a request of a host that does not report the 429s its transport
-// retries.
+// Postgres.ProviderMinutes reads it: whether the daemon keeps the project's model requests at all,
+// each minute the record holds, by its start, and the latest minute of the range that holds a
+// request of a host that does not report the 429s its transport retries.
 type ProviderMinutes struct {
+	kept    bool
 	minutes map[int64]signals.Minute
 	// unreported is the start of that latest minute, and unreportedFound whether there is one.
 	unreported      time.Time
 	unreportedFound bool
 }
+
+// Kept says whether the daemon began keeping the project's model requests (the provider's row of
+// signal_inputs): where it did not, the record holds no minute.
+func (m ProviderMinutes) Kept() bool { return m.kept }
 
 // Read is the minute that starts at start and whether the record holds it, the reading a
 // signals.Series is: a minute the record does not hold is not recorded, never zero.
@@ -156,10 +165,11 @@ func (m ProviderMinutes) RetriesUnreported() (time.Time, bool) {
 // any other's, and the refusals of an hour that reaches it are known to count short.
 func (s *Postgres) ProviderMinutes(ctx context.Context, tx pgx.Tx, project string, from, to time.Time, reporting int) (ProviderMinutes, error) {
 	read := ProviderMinutes{minutes: map[int64]signals.Minute{}}
-	since, kept, err := s.SignalInputSince(ctx, tx, project, signals.Provider)
+	since, kept, _, err := s.SignalInputStatus(ctx, tx, project, signals.Provider)
 	if err != nil || !kept {
 		return read, err
 	}
+	read.kept = true
 	first := from.UTC().Truncate(time.Minute)
 	if first.Before(from) {
 		first = first.Add(time.Minute)

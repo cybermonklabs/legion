@@ -2253,7 +2253,7 @@ test("every request the plugin sends parses and names its required fields", () =
       "model requests by boot token",
       LegionModelRequestsRequest,
       {
-        bootToken: "boot-token-of-this-launch",
+        bootToken: fixtureSecret("boot"),
         generation: 4,
         requests: [
           {

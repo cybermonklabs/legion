@@ -2065,7 +2065,10 @@ const (
 // fact is keyed by the boot, so a retry after a commit whose answer was lost is a duplicate, not a
 // second census. Only the daemon's stop leaves it unapplied, and the next boot applies its own.
 func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
-	retryUntilApplied(ctx, w.log, bootRetryFirst, bootRetryMax, func(ctx context.Context) error { return w.booted(ctx, bootID) })
+	retryUntilApplied(ctx, bootRetryFirst, bootRetryMax, func(ctx context.Context, _ int) error { return w.booted(ctx, bootID) },
+		func(attempt int, wait time.Duration, err error) {
+			w.log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
+		})
 	// The boot's reads of GitHub's merge queue and of Dispatch's open asks follow the boot fact,
 	// each on the same backoff: the fact records that the queue and the approvals are kept from now
 	// on, and each read says what stood in them. They run beside each other, so a source that does
@@ -2077,17 +2080,21 @@ func (w *workflowRuntime) runBooted(ctx context.Context, bootID int64) {
 	reads.Wait()
 }
 
-// retryUntilApplied runs apply until it succeeds or ctx ends, waiting first, then twice as long up
-// to most, between attempts, and logging each failure at ERROR. A failure once ctx has ended is the
-// stop, and logs nothing.
-func retryUntilApplied(ctx context.Context, log *slog.Logger, first, most time.Duration, apply func(context.Context) error) {
+// retryUntilApplied runs apply, numbering each attempt from 1, until it succeeds or ctx ends,
+// waiting first, then twice as long up to most, between attempts, and telling retrying, where
+// given, of each failure and the wait before the next attempt. A failure once ctx has ended is the
+// stop, and tells nothing. The boot's fact, the boot's reads of the signals' sources and each
+// firing of the signal deadline retry by it, each with a line of its own.
+func retryUntilApplied(ctx context.Context, first, most time.Duration, apply func(ctx context.Context, attempt int) error, retrying func(attempt int, wait time.Duration, err error)) {
 	wait := first
 	for attempt := 1; ; attempt++ {
-		err := apply(ctx)
+		err := apply(ctx, attempt)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
-		log.Error("legion daemon could not apply its boot; retrying", "attempt", attempt, "retryIn", wait, "error", err)
+		if retrying != nil {
+			retrying(attempt, wait, err)
+		}
 		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
@@ -2653,29 +2660,16 @@ func (w *workflowRuntime) runSignalDeadline(ctx context.Context) {
 // up to signalDeadlineRetryMax, until it applies or ctx ends; one admission leaves unspent, early,
 // is armed again for its moment.
 func (w *workflowRuntime) applySignalDeadline(ctx context.Context, deadline record.SignalDeadline) {
-	wait := signalDeadlineRetryFirst
-	for {
+	retryUntilApplied(ctx, signalDeadlineRetryFirst, signalDeadlineRetryMax, func(ctx context.Context, _ int) error {
 		result, err := intake.ApplyFact(ctx, w.pool, signalDeadlineSource, signalDeadlineEventID(w.dispatchProject, deadline.Fence),
 			intake.SignalDeadline{At: deadline.Due, Fence: deadline.Fence}, w.handlers...)
-		if err == nil {
-			if result.Unspent {
-				w.signalTimer.Arm(deadline)
-			}
-			return
+		if err == nil && result.Unspent {
+			w.signalTimer.Arm(deadline)
 		}
-		if ctx.Err() != nil {
-			return
-		}
+		return err
+	}, func(_ int, wait time.Duration, err error) {
 		w.log.Error("the signal deadline's pass did not apply; retrying", "at", deadline.Due, "fence", deadline.Fence, "retryIn", wait, "error", err)
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-		wait = min(2*wait, signalDeadlineRetryMax)
-	}
+	})
 }
 
 // turnEdgeEventID is the event of the start (start) or end of a turn of token at at: one edge is

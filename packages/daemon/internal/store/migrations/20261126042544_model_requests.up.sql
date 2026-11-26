@@ -32,8 +32,9 @@
 --     ProviderMinutes); the claim's contract is kept on the row, and the read compares it.
 --
 -- Every time is a host's, the machines' clock's or the daemon's clock's, never a column default.
--- This migration copies into claim_turns the turn each claim is in as it runs (state working),
--- since its start was written before the table existed and its end will be written after.
+-- This migration copies into claim_turns the turn each claim is in as it runs (state working, its
+-- last turn's start after its last turn's end, as store's keepClaimTurn opens a turn), since its
+-- start was written before the table existed and its end will be written after.
 --
 -- The migration adds three tables and changes none that an earlier release reads, so a daemon of
 -- the release before runs over the migrated database, as a rollback leaves it: it keeps nothing
@@ -88,4 +89,4 @@ create index claim_turns_open on claim_turns (claim) where ended_at is null;
 create index claim_turns_by_time on claim_turns (project, started_at);
 insert into claim_turns (project, claim, generation, plugin_contract, started_at)
 select project, token, generation, plugin_contract, last_turn_start from claims
-where state = 'working' and last_turn_start is not null;
+where state = 'working' and last_turn_start is not null and (last_turn_end is null or last_turn_start > last_turn_end);

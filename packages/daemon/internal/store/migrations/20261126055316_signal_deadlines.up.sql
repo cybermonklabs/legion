@@ -19,10 +19,15 @@
 -- paragraph (migrations.WayBack), run with every daemon that shares the database stopped and before
 -- the release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. Dropping the
 -- table and deleting this version row lets the roll-forward apply this migration anew: the first
--- pass after it computes the deadline again.
+-- pass after it computes the deadline again. The fence then starts again from 1, and each firing
+-- is applied once under an event id that names it (`signal-deadline:<project>:<fence>`, source
+-- 'signals'), so the way back also deletes the processed_events marks of the firings: kept, they
+-- would take each firing of a fence that fired before the rollback for a duplicate, which runs no
+-- pass.
 --
 -- begin;
 -- drop table if exists signal_deadlines;
+-- delete from processed_events where source = 'signals' and event_id like 'signal-deadline:%';
 -- delete from schema_version where version = 20261126055316;
 -- commit;
 create table signal_deadlines (

@@ -46,10 +46,10 @@ func TestStateSignalLine(t *testing.T) {
 	shapes := map[string]store.SignalSeriesReading{
 		signals.Idle:      {Value: new(0.25), Limit: new(0.5)},
 		signals.Queue:     {Absent: new("the daemon has not begun keeping the merge queue's events")},
-		signals.Provider:  {Value: new(0.42)},
+		signals.Provider:  {Value: new(0.00001)},
 		signals.Refusals:  {Value: new(3.0), Limit: new(2.0), Holds: true, Since: &since},
 		signals.Kills:     {Value: new(6.0), Limit: new(5.0), Holds: true},
-		signals.Approvals: {Value: new(1.0), Limit: new(5.0)},
+		signals.Approvals: {Value: new(1.0), Limit: new(1000000.0)},
 	}
 	for _, series := range signals.Names() {
 		row := shapes[series]
@@ -85,9 +85,11 @@ func TestStateSignalLine(t *testing.T) {
 	if at < 1 || lines[at-1] != "slots: 0 of 2 in use" {
 		t.Fatalf("legion state printed its signals line at %d, want it right after the slots line:\n%s", at, text)
 	}
+	// A number is printed as a decimal, never in scientific notation: the largest limit of a count
+	// and a headroom far below 1 read as a person wrote them.
 	want := "signals: admission by signals on; idle 0.25 limit 0.5 does not hold; queue not recorded limit none does not hold; " +
-		"provider/headroom 0.42 limit none does not hold; provider/refusals 3 limit 2 holds since 2026-11-26T07:00:00Z; " +
-		"kills 6 limit 5 holds, undated; approvals 1 limit 5 does not hold"
+		"provider/headroom 0.00001 limit none does not hold; provider/refusals 3 limit 2 holds since 2026-11-26T07:00:00Z; " +
+		"kills 6 limit 5 holds, undated; approvals 1 limit 1000000 does not hold"
 	if lines[at] != want {
 		t.Errorf("legion state's signals line =\n%s\nwant\n%s", lines[at], want)
 	}

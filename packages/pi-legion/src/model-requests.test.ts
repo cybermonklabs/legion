@@ -4,6 +4,7 @@ import path from "node:path";
 import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   createModelRequestsReporter,
   type HostEvents,
@@ -29,7 +30,7 @@ const implementer: ClaimCapability = {
   tree: "LEGION-208",
   issue: "LEGION-208",
   role: "implementer",
-  secret: "U2VjcmV0",
+  secret: fixtureSecret("claim"),
   claimToken: "legion-legion-legion-208-implementer",
   generation: 3,
 };
@@ -37,7 +38,7 @@ const implementer: ClaimCapability = {
 const controller: ModelRequestCredential = {
   claimToken: "legion-legion-controller",
   sessionID: CONTROLLER_SESSION,
-  secret: "Q29udHJvbGxlcg",
+  secret: fixtureSecret("control"),
   generation: 5,
 };
 
@@ -578,6 +579,7 @@ test("the turn-outcome report is unchanged beside the model requests", async () 
       }),
     claim: (sessionID) => (sessionID === ROLE_SESSION ? implementer : undefined),
     log: { debug: () => undefined, warn: () => undefined },
+    cyberPolicyRefusal: async () => false,
   });
   const text = REFUSAL_CLASSES.cases[0]?.text ?? "";
   const refusal = refused(now(), text);

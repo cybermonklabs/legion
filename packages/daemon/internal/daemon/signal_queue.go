@@ -179,7 +179,6 @@ const mergeQueueQuery = `query($owner: String!, $name: String!, $branch: String!
           endCursor
         }
         nodes {
-          enqueuedAt
           pullRequest {
             number
             headRefName
@@ -197,21 +196,17 @@ type queuedPull struct {
 }
 
 // queryMergeQueue pages GitHub's GraphQL mergeQueue(branch:) of repo, 100 entries a page, as the
-// implement App, as queryChunk reads a batch of pull requests, and answers each pull request in
-// the queue. A branch with no merge queue answers GitHub's null, which is a queue with no entry; a
-// repository GitHub answers no object for, an error of GitHub's and a page that does not come are
-// errors, never an empty queue.
+// implement App, as queryChunk reads a batch of pull requests: each page is one query through the
+// gate of the implement App's installation for repo's owner (queryGate.run: its rate-limit hold,
+// its pace and one query at a time), its token minted in the query's own turn. It answers each
+// pull request in the queue. A branch with no merge queue answers GitHub's null, which is a queue
+// with no entry; a repository GitHub answers no object for, an error of GitHub's and a page that
+// does not come are errors, never an empty queue.
 func (w *workflowRuntime) queryMergeQueue(ctx context.Context, repo ghrepo.Repository, branch string) ([]queuedPull, error) {
 	served := w.repositories.serving(repo)
 	var queued []queuedPull
 	var after any
 	for {
-		minting, cancelMint := context.WithTimeout(ctx, issueRead)
-		github, err := implementClient(minting, w.tokens, w.githubAPI, served)
-		cancelMint()
-		if err != nil {
-			return nil, fmt.Errorf("mint the implement App token for %s: %w", served.Owner(), err)
-		}
 		var page struct {
 			Repository *struct {
 				MergeQueue *struct {
@@ -230,11 +225,24 @@ func (w *workflowRuntime) queryMergeQueue(ctx context.Context, repo ghrepo.Repos
 				} `json:"mergeQueue"`
 			} `json:"repository"`
 		}
-		query := githubrest.Client{Token: github.Token, API: githubrest.GraphQLEndpoint(w.githubAPI)}
-		bounded, cancel := context.WithTimeout(ctx, issueRead)
-		err = query.GraphQL(bounded, mergeQueueQuery,
-			map[string]any{"owner": served.Owner(), "name": served.Name(), "branch": branch, "after": after}, &page)
-		cancel()
+		var minted error
+		err := w.queryGate(implementScope(served)).run(ctx, func() error {
+			minting, cancelMint := context.WithTimeout(ctx, issueRead)
+			github, err := implementClient(minting, w.tokens, w.githubAPI, served)
+			cancelMint()
+			if err != nil {
+				minted = err
+				return err
+			}
+			query := githubrest.Client{Token: github.Token, API: githubrest.GraphQLEndpoint(w.githubAPI)}
+			bounded, cancel := context.WithTimeout(ctx, issueRead)
+			defer cancel()
+			return query.GraphQL(bounded, mergeQueueQuery,
+				map[string]any{"owner": served.Owner(), "name": served.Name(), "branch": branch, "after": after}, &page)
+		})
+		if minted != nil {
+			return nil, fmt.Errorf("mint the implement App token for %s: %w", served.Owner(), minted)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read the merge queue of %s@%s: %w", served, branch, err)
 		}
@@ -315,26 +323,24 @@ func (w *workflowRuntime) retryQueueBootRead(ctx context.Context, bootID int64, 
 	retryBootRead(ctx, bootID, first, most, w.readQueueOnce)
 }
 
-// retryBootRead makes read, one boot read of a signal's source that says whether it succeeded,
-// until a read succeeds or ctx ends, waiting first, then twice as long up to most, between reads.
-// Each read is named by the boot and its attempt, so no read's facts are taken for another's as
-// already applied.
+// retryBootRead makes read, one boot read of a signal's source that says whether it succeeded and
+// logs its own failure, until a read succeeds or ctx ends, waiting first, then twice as long up to
+// most, between reads (retryUntilApplied). Each read is named by the boot and its attempt, so no
+// read's facts are taken for another's as already applied.
 func retryBootRead(ctx context.Context, bootID int64, first, most time.Duration, read func(ctx context.Context, id string) bool) {
-	delay := first
-	for attempt := 1; ctx.Err() == nil; attempt++ {
-		if read(ctx, fmt.Sprintf("%d.%d", bootID, attempt)) {
-			return
-		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-		}
-		delay = min(2*delay, most)
+	if ctx.Err() != nil {
+		return
 	}
+	retryUntilApplied(ctx, first, most, func(ctx context.Context, attempt int) error {
+		if !read(ctx, fmt.Sprintf("%d.%d", bootID, attempt)) {
+			return errBootReadFailed
+		}
+		return nil
+	}, nil)
 }
+
+// errBootReadFailed is a boot read that did not succeed, which the read has logged itself.
+var errBootReadFailed = errors.New("the boot's read did not succeed")
 
 // readQueueOnce is one read of GitHub's merge queue as it stands, which id names (the boot and its
 // read, so no read's facts are taken for another's as already applied): the live queue of each

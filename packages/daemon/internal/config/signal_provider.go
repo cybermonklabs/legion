@@ -50,23 +50,39 @@ func readSignalProvider(fields map[string]*yaml.Node, key string) (SignalProvide
 		}
 		provider.TokenLimit = int64(*read)
 	}
+	if value := fields["signal_token_model_pattern"]; value != nil {
+		read, err := readSharedPattern(value, key+".signal_token_model_pattern")
+		if err != nil {
+			return SignalProvider{}, err
+		}
+		provider.TokenModels = read
+	}
+	var err error
+	if provider.OwnRefusal, provider.ProviderRefusal, err = readRefusalPatterns(fields, key+"."); err != nil {
+		return SignalProvider{}, err
+	}
+	return provider, nil
+}
+
+// readRefusalPatterns reads the two refusal pattern keys, `signal_own_refusal_pattern` and
+// `signal_provider_refusal_pattern`, out of fields, each named in a refusal by prefix and its name:
+// a project's entry of legion.yaml (its path and a dot), or the controller's file (""). A key
+// left out is "".
+func readRefusalPatterns(fields map[string]*yaml.Node, prefix string) (own, provider string, err error) {
 	for _, pattern := range []struct {
 		name string
 		into *string
 	}{
-		{"signal_token_model_pattern", &provider.TokenModels},
-		{"signal_own_refusal_pattern", &provider.OwnRefusal},
-		{"signal_provider_refusal_pattern", &provider.ProviderRefusal},
+		{"signal_own_refusal_pattern", &own},
+		{"signal_provider_refusal_pattern", &provider},
 	} {
 		if value := fields[pattern.name]; value != nil {
-			read, err := readSharedPattern(value, key+"."+pattern.name)
-			if err != nil {
-				return SignalProvider{}, err
+			if *pattern.into, err = readSharedPattern(value, prefix+pattern.name); err != nil {
+				return "", "", err
 			}
-			*pattern.into = read
 		}
 	}
-	return provider, nil
+	return own, provider, nil
 }
 
 // readSharedPattern is a pattern key's value, refused naming the key and the reason where it is
@@ -106,21 +122,25 @@ const maxRepeat = 1000
 //     characters, `\` before one of `\ ] [ - ^`, `\d \D \w \W` and `\t \n \r`;
 //   - a group `(…)` or `(?:…)`, and the alternation `|`;
 //   - after an atom that is no assertion, one repetition `*`, `+`, `?`, `{n}`, `{n,}` or `{n,m}`
-//     with n ≤ m ≤ 1000, optionally followed by `?`.
+//     with n ≤ m ≤ 1000, optionally followed by `?`, but none of a group that holds a repetition.
 //
 // Each construct left out is one of the two engines refusing it — a lookaround, a back
-// reference, a named group, an inline flag, `\p` — or one they read differently: `\s` is ASCII's
-// spaces in Go and Unicode's in JavaScript, `[[:digit:]]` a POSIX class in Go and members in
-// JavaScript, `\A` and `\Q` Go's alone, `[]` a class's first member in Go and an empty class in
-// JavaScript, and a lone `{` or `]` a literal in one reading and a refusal in the other. An empty
-// pattern matches every text, which would class every refusal as the pattern's; a key with no
-// pattern is the key left out.
+// reference, a named group, an inline flag, `\p`, and a `-` after `\d \D \w \W` in a class
+// before anything but the class's end, which Go reads as the character and JavaScript's `u` mode
+// refuses as a range — or one they read differently: `\s` is ASCII's spaces in Go and Unicode's in
+// JavaScript, `[[:digit:]]` a POSIX class in Go and members in JavaScript, `\A` and `\Q` Go's
+// alone, `[]` a class's first member in Go and an empty class in JavaScript, and a lone `{` or `]`
+// a literal in one reading and a refusal in the other. A repetition of a group that holds one,
+// such as `(a+)+` or `(.*)*`, matches in a time linear in the text in Go and backtracks in
+// JavaScript for a time that grows exponentially with it, and the Oh My Pi host matches the text of
+// each refusal as its turn goes on. An empty pattern matches every text, which would class every
+// refusal as the pattern's; a key with no pattern is the key left out.
 func checkSharedPattern(pattern string) error {
 	if pattern == "" {
 		return errors.New("it is empty, and an empty pattern matches every text")
 	}
 	p := patternReader{src: pattern}
-	if err := p.alternation(); err != nil {
+	if _, err := p.alternation(); err != nil {
 		return err
 	}
 	if _, err := SharedPattern(pattern); err != nil {
@@ -145,39 +165,45 @@ const (
 )
 
 // alternation reads sequences separated by `|`, up to the end of the pattern or the `)` that
-// closes the group it is read inside.
-func (p *patternReader) alternation() error {
+// closes the group it is read inside, and answers whether any of them holds a repetition.
+func (p *patternReader) alternation() (bool, error) {
+	var repeats bool
 	for {
-		if err := p.sequence(); err != nil {
-			return err
+		holds, err := p.sequence()
+		if err != nil {
+			return false, err
 		}
+		repeats = repeats || holds
 		if p.pos >= len(p.src) || p.src[p.pos] != '|' {
-			return nil
+			return repeats, nil
 		}
 		p.pos++
 	}
 }
 
-// sequence reads atoms, each with its repetition, up to `|`, `)` or the end.
-func (p *patternReader) sequence() error {
+// sequence reads atoms, each with its repetition, up to `|`, `)` or the end, and answers whether
+// it holds a repetition, one inside a group of it included.
+func (p *patternReader) sequence() (bool, error) {
+	var repeats bool
 	for p.pos < len(p.src) {
 		at := p.pos
-		repeatable := true
+		repeatable, inside := true, false
 		switch c := p.src[p.pos]; c {
 		case '|':
-			return nil
+			return repeats, nil
 		case ')':
 			if p.depth == 0 {
-				return fmt.Errorf("the ) at %d closes no group", at)
+				return false, fmt.Errorf("the ) at %d closes no group", at)
 			}
-			return nil
+			return repeats, nil
 		case '(':
-			if err := p.group(); err != nil {
-				return err
+			var err error
+			if inside, err = p.group(); err != nil {
+				return false, err
 			}
 		case '[':
 			if err := p.class(); err != nil {
-				return err
+				return false, err
 			}
 		case '^', '$':
 			p.pos++
@@ -187,50 +213,58 @@ func (p *patternReader) sequence() error {
 		case '\\':
 			assertion, err := p.escape()
 			if err != nil {
-				return err
+				return false, err
 			}
 			repeatable = !assertion
 		case '*', '+', '?':
-			return fmt.Errorf("the %c at %d repeats nothing", c, at)
+			return false, fmt.Errorf("the %c at %d repeats nothing", c, at)
 		case '{':
 			if _, ok := p.bound(); ok {
-				return fmt.Errorf("the repetition at %d repeats nothing", at)
+				return false, fmt.Errorf("the repetition at %d repeats nothing", at)
 			}
-			return fmt.Errorf("the { at %d begins no repetition; write \\{ for the character", at)
+			return false, fmt.Errorf("the { at %d begins no repetition; write \\{ for the character", at)
 		case '}':
-			return fmt.Errorf("the } at %d closes no repetition; write \\} for the character", at)
+			return false, fmt.Errorf("the } at %d closes no repetition; write \\} for the character", at)
 		case ']':
-			return fmt.Errorf("the ] at %d closes no class; write \\] for the character", at)
+			return false, fmt.Errorf("the ] at %d closes no class; write \\] for the character", at)
 		default:
 			p.pos++
 		}
-		if err := p.repetition(repeatable, at); err != nil {
-			return err
+		op := p.pos
+		repeated, err := p.repetition(repeatable, at)
+		if err != nil {
+			return false, err
 		}
+		if repeated && inside {
+			return false, fmt.Errorf("the repetition at %d repeats a group that holds a repetition, which JavaScript backtracks through "+
+				"for a time that grows exponentially with the text; repeat the group or what is inside it, not both", op)
+		}
+		repeats = repeats || repeated || inside
 	}
-	return nil
+	return repeats, nil
 }
 
-// group reads `(…)` or `(?:…)`.
-func (p *patternReader) group() error {
+// group reads `(…)` or `(?:…)`, and answers whether it holds a repetition.
+func (p *patternReader) group() (bool, error) {
 	open := p.pos
 	p.pos++
 	if strings.HasPrefix(p.src[p.pos:], "?") {
 		if !strings.HasPrefix(p.src[p.pos:], "?:") {
-			return fmt.Errorf("(? at %d opens a lookaround, a named group or a flag; only (?: is in the subset", open)
+			return false, fmt.Errorf("(? at %d opens a lookaround, a named group or a flag; only (?: is in the subset", open)
 		}
 		p.pos += 2
 	}
 	p.depth++
-	if err := p.alternation(); err != nil {
-		return err
+	repeats, err := p.alternation()
+	if err != nil {
+		return false, err
 	}
 	p.depth--
 	if p.pos >= len(p.src) {
-		return fmt.Errorf("a group opened at %d is never closed", open)
+		return false, fmt.Errorf("a group opened at %d is never closed", open)
 	}
 	p.pos++
-	return nil
+	return repeats, nil
 }
 
 // escape reads `\` and the character after it outside a class, and reports whether it is an
@@ -276,7 +310,11 @@ func (p *patternReader) class() error {
 		if err != nil {
 			return err
 		}
-		if !single || p.pos+1 >= len(p.src) || p.src[p.pos] != '-' || p.src[p.pos+1] == ']' {
+		dash := p.pos+1 < len(p.src) && p.src[p.pos] == '-' && p.src[p.pos+1] != ']'
+		if !single && dash {
+			return fmt.Errorf(`the - at %d follows a class escape, which begins no range: Go reads it as the character and JavaScript refuses it; write \- for the character`, p.pos)
+		}
+		if !dash {
 			continue
 		}
 		p.pos++
@@ -326,10 +364,10 @@ func (p *patternReader) member() (rune, bool, error) {
 }
 
 // repetition reads the repetition after the atom that began at atom, if any, which only a
-// repeatable atom may carry, and its `?`.
-func (p *patternReader) repetition(repeatable bool, atom int) error {
+// repeatable atom may carry, and its `?`, and answers whether it read one.
+func (p *patternReader) repetition(repeatable bool, atom int) (bool, error) {
 	if p.pos >= len(p.src) {
-		return nil
+		return false, nil
 	}
 	at := p.pos
 	switch p.src[at] {
@@ -338,24 +376,24 @@ func (p *patternReader) repetition(repeatable bool, atom int) error {
 	case '{':
 		counts, ok := p.bound()
 		if !ok {
-			return fmt.Errorf("the { at %d begins no repetition; write \\{ for the character", at)
+			return false, fmt.Errorf("the { at %d begins no repetition; write \\{ for the character", at)
 		}
 		if counts[0] > maxRepeat || counts[1] > maxRepeat || counts[1] >= 0 && counts[1] < counts[0] {
-			return fmt.Errorf("the repetition at %d is outside 0 to %d, the bound Go's regexp takes", at, maxRepeat)
+			return false, fmt.Errorf("the repetition at %d is outside 0 to %d, the bound Go's regexp takes", at, maxRepeat)
 		}
 	default:
-		return nil
+		return false, nil
 	}
 	if !repeatable {
-		return fmt.Errorf("the %c at %d repeats an assertion, which matches no character", p.src[at], at)
+		return false, fmt.Errorf("the %c at %d repeats an assertion, which matches no character", p.src[at], at)
 	}
 	if p.pos < len(p.src) && p.src[p.pos] == '?' {
 		p.pos++
 	}
 	if p.pos < len(p.src) && strings.IndexByte("*+?{", p.src[p.pos]) >= 0 {
-		return fmt.Errorf("the %c at %d repeats nothing", p.src[p.pos], p.pos)
+		return false, fmt.Errorf("the %c at %d repeats nothing", p.src[p.pos], p.pos)
 	}
-	return nil
+	return true, nil
 }
 
 // bound reads `{n}`, `{n,}` or `{n,m}` at pos and answers n and m (-1 for none, unbounded), moving

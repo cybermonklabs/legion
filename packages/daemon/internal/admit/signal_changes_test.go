@@ -295,6 +295,17 @@ func TestSignalChanges(t *testing.T) {
 			}
 		}
 	})
+	// no-cap: a project whose cap admits nothing starts nothing, and its passes still write what
+	// they read of each series.
+	t.Run("no-cap", func(t *testing.T) {
+		pool := migratedPool(t)
+		lt := newLiveTest(t, 0, nil, SignalSwitch{Limits: map[string]float64{signals.Kills: 1}})
+		lt.boot(t, pool, fixedNow.Add(-7*time.Hour), "acme-owner@example.invalid")
+		lt.kill(t, pool, 1, fixedNow.Add(-10*time.Minute))
+		if words := entryWords(recordOf(t, pool)); !slices.Contains(words, valueWord(signals.Kills, 1)) {
+			t.Errorf("the record of a project of no cap holds %q, want the kills' value 1 its pass read", words)
+		}
+	})
 	// settings: a person's change of the switch and of a limit writes its entry, with who made it,
 	// when and why, set, cleared and repeated; a change to the value a setting holds writes none; a
 	// refused change and a rolled-back one write nothing and leave no gap; the ids rise by one.
@@ -310,6 +321,8 @@ func TestSignalChanges(t *testing.T) {
 			change store.SignalSettingChange
 			want   []string
 		}{
+			// A fresh project is off, so turning it off moves nothing and writes no entry.
+			{"off on a fresh project", settingChange(store.SignalSwitchSetting, limit(0), operator, at.Add(-time.Second), "the owner turned it off"), nil},
 			{"on", settingChange(store.SignalSwitchSetting, limit(1), operator, at, "the owner turned it on"), []string{"switch/ switch 1"}},
 			{"set", settingChange(signals.Kills, limit(5), controller, at.Add(time.Second), "the owner set it"), []string{"kills/ limit 5"}},
 			{"set the headroom", settingChange(signals.Provider, limit(0.8), operator, at.Add(2*time.Second), "the owner set it"), []string{"provider/headroom limit 0.8"}},

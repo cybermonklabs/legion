@@ -16,14 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -402,8 +399,11 @@ func (s *server) reportBySecret(w http.ResponseWriter, r *http.Request, caller c
 // a claim (claim.ModelRequestsRequest): the role's own session, each subagent's it starts, or the
 // controller's. The daemon keeps each request once, by the claim, the launch generation and the
 // request's own id, in the minute it ended, for the provider's headroom and refusals, and answers
-// the ids of the batch it now holds, new or held already, so the host sends the rest again under
-// the same ids.
+// every id of the batch kept once its fact applied: each is held, new or held already, or ended
+// before the hour of minutes any read reaches again, which the store keeps as nothing
+// (record.Store.KeepModelRequests), so the host sends none of them again. A host whose reports could
+// not reach the daemon for an hour so forgets the requests no read counts any more, rather than
+// sending them again for ever.
 //
 // The body is decoded strictly, so a member the request does not name — a prompt, an answer, an
 // error's text, the cache reads, a project — is refused with the whole body: the project is the
@@ -452,29 +452,9 @@ func (s *server) modelRequests(w http.ResponseWriter, r *http.Request) {
 		s.writeRefusal(w, r, result.Refusal)
 		return
 	}
-	// The fact's strings are kept as the store keeps text (storetext.Text, which intake.ApplyFact
-	// applies to every fact), so the ids are read back in that form and answered in the host's.
-	stored := make([]string, len(ids))
-	for i, id := range ids {
-		stored[i] = storetext.Text(id)
-	}
-	var held []string
-	if err := store.TransactWith(r.Context(), s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		held, err = s.records.ModelRequestsHeld(ctx, tx, s.dispatchProject, token, generation, stored)
-		return err
-	}); err != nil {
-		s.logFailure("api: read the model requests a report kept", "claim", token, "generation", generation, "error", err)
-		s.refuse(w, r, http.StatusInternalServerError, "report of model requests failed: the daemon could not read what it kept")
-		return
-	}
-	kept := make([]string, 0, len(ids))
-	for i, id := range ids {
-		if slices.Contains(held, stored[i]) {
-			kept = append(kept, id)
-		}
-	}
-	s.writeAnswer(w, r, AnswerModelRequests, http.StatusOK, claim.ModelRequestsResponse{Kept: kept})
+	// A duplicate batch is one an earlier fact kept the same way, and a request it kept the store
+	// deletes only once it ended before the hour a read reaches, so every id is answered kept.
+	s.writeAnswer(w, r, AnswerModelRequests, http.StatusOK, claim.ModelRequestsResponse{Kept: ids})
 }
 
 // modelRequestsCaller is the claim and launch generation a report of model requests is kept
@@ -505,8 +485,9 @@ func (s *server) modelRequestsCaller(w http.ResponseWriter, r *http.Request, req
 // modelRequestsByController authenticates the operator's controller (`legion controller start`),
 // which the daemon supervises no claim of, by the one check of a controller session against its
 // record (controllerSessionRegistered) that its grants are minted by, and holds it to the record's
-// contract (refuseIfStaleController); its generation is the record's, which its registration
-// answered it.
+// contract by the one staleness check of that record (staleOperatorController), answered as this
+// route answers every refusal (claim.StaleControllerContract); its generation is the record's,
+// which its registration answered it.
 func (s *server) modelRequestsByController(w http.ResponseWriter, r *http.Request, caller claim.AgentCaller, generation uint64) (claim.Token, uint64, bool) {
 	if !s.requireFields(w, r, field{"sessionId", caller.SessionID}, field{"secret", caller.Secret}) {
 		return "", 0, false
@@ -521,7 +502,7 @@ func (s *server) modelRequestsByController(w http.ResponseWriter, r *http.Reques
 		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return "", 0, false
 	}
-	if stored.PluginContract != DaemonAPIVersion() {
+	if staleOperatorController(stored) {
 		s.logStaleRefusal(r, "session", stored.Session, stored.PluginContract)
 		refusal := claim.StaleControllerContract(stored.PluginContract, DaemonAPIVersion())
 		s.writeAnswer(w, r, AnswerRefusal, refusal.Status, refusal)

@@ -2,7 +2,6 @@ package record
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -74,18 +73,4 @@ func (s *Postgres) BeginSignalInput(ctx context.Context, tx pgx.Tx, project, inp
 	}
 	noteRowsWritten(ctx, tag)
 	return nil
-}
-
-// SignalInputSince is the moment the daemon began keeping input for project, in UTC, and whether
-// one is recorded (BeginSignalInput).
-func (s *Postgres) SignalInputSince(ctx context.Context, tx pgx.Tx, project, input string) (time.Time, bool, error) {
-	var since time.Time
-	err := tx.QueryRow(ctx, "select kept_since from signal_inputs where project = $1 and input = $2", project, input).Scan(&since)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read since when %s keeps %s: %w", project, input, err)
-	}
-	return since.UTC(), true, nil
 }

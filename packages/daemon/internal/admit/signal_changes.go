@@ -147,11 +147,7 @@ func (a *Admission) writeSignalChanges(ctx context.Context, tx pgx.Tx, reading L
 			continue
 		}
 		signal, part := store.SignalPart(series.Name)
-		var named any
-		if part != "" {
-			named = part
-		}
-		a.logOnCommit(ctx, SignalHoldLine, "signal", signal, "part", named, "holds", series.Holds, "value", valueOrAbsent(series), "limit", numberOrNone(series.Limit))
+		a.logOnCommit(ctx, SignalHoldLine, "signal", signal, "part", partOrNone(part), "holds", series.Holds, "value", valueOrAbsent(series), "limit", numberOrNone(series.Limit))
 	}
 	return nil
 }
@@ -164,6 +160,15 @@ func numberOrNone(value *float64) any {
 	return *value
 }
 
+// partOrNone is a series' part as a line names it (store.SignalPart): the part, or nothing for a
+// series of none.
+func partOrNone(part string) any {
+	if part == "" {
+		return nil
+	}
+	return part
+}
+
 // valueOrAbsent is series' value as a line names it: the number, or why the daemon cannot compute it.
 func valueOrAbsent(series SeriesReading) any {
 	if series.Value.Recorded {
@@ -173,27 +178,24 @@ func valueOrAbsent(series SeriesReading) any {
 }
 
 // keepSignalSetting writes a person's change of a setting of admission by signals and its entry
-// (store.ChangeSignalSettingTx) in the fact's transaction. Where it moved the setting it keeps the
-// mark that runs the fact's pass (record.NoteSignalsMoved), which reads the change, and writes one
-// line once the fact commits; a change to the value the setting holds already writes nothing and
-// runs no pass.
-func (a *Admission) keepSignalSetting(ctx context.Context, tx pgx.Tx, change store.SignalSettingChange) error {
+// (store.ChangeSignalSettingTx) in the fact's transaction, and answers whether it moved the
+// setting. Where it did it keeps the mark that runs the fact's pass (record.NoteSignalsMoved),
+// which reads the change, and writes one line once the fact commits; a change to the value the
+// setting holds already writes nothing and runs no pass.
+func (a *Admission) keepSignalSetting(ctx context.Context, tx pgx.Tx, change store.SignalSettingChange) (bool, error) {
 	changed, err := store.ChangeSignalSettingTx(ctx, tx, a.project, change)
 	if err != nil || !changed {
-		return err
+		return false, err
 	}
 	record.NoteSignalsMoved(ctx)
 	var signal, part any
 	if change.Setting != store.SignalSwitchSetting {
 		named, of := store.SignalPart(change.Setting)
-		signal, part = named, of
-		if of == "" {
-			part = nil
-		}
+		signal, part = named, partOrNone(of)
 	}
 	a.logOnCommit(ctx, SignalSettingLine, "setting", change.Setting, "signal", signal, "part", part, "value", numberOrNone(change.Value),
 		"by", string(change.Set.By.Kind), "session", change.Set.By.Session, "reason", change.Set.Reason, "at", change.Set.At)
-	return nil
+	return true, nil
 }
 
 // State is admission by signals as the state shows it at at (store.SignalsReading), read through

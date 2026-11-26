@@ -274,7 +274,7 @@ func (l *LiveSignals) queue(ctx context.Context, tx pgx.Tx, at time.Time, limit 
 // kills is the kills of the project's issue pods in the hour before at (signals.KillsAt).
 func (l *LiveSignals) kills(ctx context.Context, tx pgx.Tx, at time.Time, limit *float64) (SeriesReading, error) {
 	a := l.admission
-	since, kept, err := a.store.SignalInputSince(ctx, tx, a.project, signals.Kills)
+	since, kept, _, err := a.store.SignalInputStatus(ctx, tx, a.project, signals.Kills)
 	if err != nil {
 		return SeriesReading{}, err
 	}
@@ -298,16 +298,13 @@ func (l *LiveSignals) kills(ctx context.Context, tx pgx.Tx, at time.Time, limit 
 // way (record.Store.ProviderMinutes), as Reading says, and those minutes.
 func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, headroomLimit, refusalsLimit *float64) (SeriesReading, SeriesReading, record.ProviderMinutes, error) {
 	a := l.admission
-	_, kept, err := a.store.SignalInputSince(ctx, tx, a.project, signals.Provider)
-	if err != nil {
-		return SeriesReading{}, SeriesReading{}, record.ProviderMinutes{}, err
-	}
 	current := at.Truncate(time.Minute)
 	first := current.Add(-signals.RefusalSpan)
 	minutes, err := a.store.ProviderMinutes(ctx, tx, a.project, first, current.Add(time.Minute), l.reporting)
 	if err != nil {
 		return SeriesReading{}, SeriesReading{}, record.ProviderMinutes{}, err
 	}
+	kept := minutes.Kept()
 	// The record as a prediction reads it, the minutes standing as they do at at: the minute under
 	// way with its tokens so far and none of its refusals, and each minute after it as no request
 	// came, held with no token and no refusal where the minute under way is held.
@@ -341,12 +338,16 @@ func (l *LiveSignals) provider(ctx context.Context, tx pgx.Tx, at time.Time, hea
 	refusals := SeriesReading{Name: signals.Refusals}
 	var unreported unreportedRetries
 	unreported.minute, unreported.found = minutes.RetriesUnreported()
-	refusals.Value, refusals.Absent = hourOfRefusals(minutes.Read, unreported, at)
+	covered := coveredRefusals(predicted, unreported, at)
+	refusals.Value = signals.RefusalsAt(covered, at).Value()
+	if !refusals.Value.Recorded {
+		refusals.Absent = refusalsGap(predicted, unreported, at)
+	}
 	if !kept {
 		refusals.Absent = "the daemon has not begun keeping the project's model requests"
 	}
 	if refusalsLimit != nil {
-		refusals.Next, refusals.Due = refusalsNext(predicted, unreported, at, *refusalsLimit)
+		refusals.Next, refusals.Due = signals.RefusalsNext(covered, at, *refusalsLimit, refusalsEdges(predicted, unreported, at))
 	}
 	return headroom, refusals, minutes, nil
 }
@@ -374,46 +375,64 @@ func (u unreportedRetries) whole() time.Time {
 	return u.minute.Add(time.Minute + signals.RefusalSpan)
 }
 
-// hourOfRefusals is the refusals at at (signals.RefusalsAt) where read holds every minute of the
-// hour before at and no request of a host that cannot report the 429s its transport retries
-// leaves them short (unreportedRetries.shortAt), and otherwise unrecorded, with why.
-func hourOfRefusals(read signals.Series, unreported unreportedRetries, at time.Time) (signals.Value, string) {
+// refusalsGap is why the daemon's record does not cover the refusals at at, "" where it does: it
+// covers them where it holds every minute of the hour before at, read as read reads them, and no
+// request of a host that cannot report the 429s its transport retries leaves them short
+// (unreportedRetries.shortAt). The replay's record covers its refusals wherever it holds the
+// minute before; the daemon's is incomplete in a minute a host reported no request of, and short
+// where a host reports no retried 429, so an hour with either reads as not recorded, never as a
+// count known to be low.
+func refusalsGap(read signals.Series, unreported unreportedRetries, at time.Time) string {
 	current := at.Truncate(time.Minute)
 	for minute := current.Add(-signals.RefusalSpan); minute.Before(current); minute = minute.Add(time.Minute) {
 		if _, held := read(minute); !held {
-			return signals.Value{}, fmt.Sprintf("the minute at %s of the hour before was not wholly reported: a host of the project reports no model requests, "+
+			return fmt.Sprintf("the minute at %s of the hour before was not wholly reported: a host of the project reports no model requests, "+
 				"or the daemon began keeping them after it began", minute.Format(time.RFC3339))
 		}
 	}
 	if unreported.shortAt(at) {
-		return signals.Value{}, fmt.Sprintf("a session of a host that cannot report the 429s its transport retried had a request in the hour, the last in the minute at %s, "+
+		return fmt.Sprintf("a session of a host that cannot report the 429s its transport retried had a request in the hour, the last in the minute at %s, "+
 			"so the refusals count whole from %s", unreported.minute.Format(time.RFC3339), unreported.whole().Format(time.RFC3339))
 	}
-	return signals.RefusalsAt(read, at).Value(), ""
+	return ""
 }
 
-// refusalsNext is the refusals' next crossing of limit after at, the record standing as predicted
-// reads it: the moment an old refusal leaves the hour, the moment a minute the record does not
-// hold leaves it, after which the hour is whole again, and the moment the latest minute of a
-// request of a host that cannot report the 429s its transport retries leaves it
-// (unreportedRetries.whole), the last two edges of the refusals' coverage, each judged by
-// hourOfRefusals. Refusals come only at events, so the count rises at no moment of its own.
-func refusalsNext(predicted signals.Series, unreported unreportedRetries, at time.Time, limit float64) (time.Time, bool) {
+// coveredRefusals is predicted, the provider's record as it stands at at, as the one definition
+// of the refusals reads it (signals.RefusalsAt, signals.RefusalsNext), with the daemon's coverage
+// in it: that definition holds the refusals of a moment where the series holds the minute before
+// it, so the minute before at, and each minute after, is held where the record covers the hour
+// that minute closes (refusalsGap), and each earlier minute where the record holds it, which is
+// where its refusals count. A refusal of the minute before at whose hour the record does not
+// cover so counts in no later moment's reading of this prediction; the pass that reads that
+// moment counts it.
+func coveredRefusals(predicted signals.Series, unreported unreportedRetries, at time.Time) signals.Series {
+	before := signals.MinuteBefore(at)
+	return func(start time.Time) (signals.Minute, bool) {
+		minute, held := predicted(start)
+		if start.Before(before) || !held {
+			return minute, held
+		}
+		return minute, refusalsGap(predicted, unreported, start.Add(time.Minute)) == ""
+	}
+}
+
+// refusalsEdges is each moment after at at which the daemon's coverage of the refusals changes
+// with no event (coveredRefusals), the record standing as predicted reads it: the moment a minute
+// of the hour before at, or the minute under way, that the record does not hold leaves the hour,
+// after which the hour is whole again, and the moment the latest minute of a request of a host
+// that cannot report the 429s its transport retries leaves it (unreportedRetries.whole).
+func refusalsEdges(predicted signals.Series, unreported unreportedRetries, at time.Time) []time.Time {
 	current := at.Truncate(time.Minute)
-	var moments []time.Time
+	var edges []time.Time
 	for minute := current.Add(-signals.RefusalSpan); !minute.After(current); minute = minute.Add(time.Minute) {
-		line, held := predicted(minute)
-		if !held || line.Own+line.Provider > 0 {
-			moments = append(moments, minute.Add(time.Minute+signals.RefusalSpan))
+		if _, held := predicted(minute); !held {
+			edges = append(edges, minute.Add(time.Minute+signals.RefusalSpan))
 		}
 	}
 	if unreported.found {
-		moments = append(moments, unreported.whole())
+		edges = append(edges, unreported.whole())
 	}
-	return signals.FirstChange(at, moments, func(t time.Time) bool {
-		value, _ := hourOfRefusals(predicted, unreported, t)
-		return value.Binds(limit)
-	})
+	return edges
 }
 
 // idleHolders is how many of the project's issues hold a slot, and the moment each holder whose

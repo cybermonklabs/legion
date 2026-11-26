@@ -16,9 +16,11 @@ const modelRequestsRelease = "the release that keeps each model request its proj
 
 // 20261126042544 adds model_requests, signal_token_limits and claim_turns, which the provider's
 // two signals read, and copies into claim_turns the turn each claim is in as it runs: a claim in
-// working has its turn's start and no end, and a claim out of a turn has none, since the turns
-// that ended before the table carry no row a read of the provider's record could tell from a
-// turn that never ran. Each table refuses an empty key, a count below 0 and a refusal of no class.
+// working whose last turn began after its last turn ended has its turn's start and no end, and a
+// claim out of a turn, one working after its turn ended included, has none, as the claim's own
+// write would keep it (keepClaimTurn), since the turns that ended before the table carry no row a
+// read of the provider's record could tell from a turn that never ran. Each table refuses an empty
+// key, a count below 0 and a refusal of no class.
 // Its way back drops the three tables and the provider's row of signal_inputs, leaves every other
 // input's row and deletes this version row, so a roll-forward runs the file again.
 func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgain(t *testing.T) {
@@ -33,14 +35,16 @@ func TestTheModelRequestsArriveWith20261126042544AndTheirWayBackLetsThemComeAgai
 	if got := rowsAsText(t, store, tables); !reflect.DeepEqual(got, []string{"0"}) {
 		t.Fatalf("the provider's tables before the migration = %v, want none", got)
 	}
-	for _, claim := range []struct{ token, state, start string }{
-		{"legion-legion-legion-601-implementer", "working", "'2026-11-26T09:58:00Z'"},
-		{"legion-legion-legion-601-tester", "idle", "'2026-11-26T09:40:00Z'"},
-		{"legion-legion-legion-601-reviewer", "working", "null"},
+	for _, claim := range []struct{ token, state, start, end string }{
+		{"legion-legion-legion-601-implementer", "working", "'2026-11-26T09:58:00Z'", "'2026-11-26T09:50:00Z'"},
+		{"legion-legion-legion-601-tester", "idle", "'2026-11-26T09:40:00Z'", "null"},
+		{"legion-legion-legion-601-reviewer", "working", "null", "null"},
+		// Working after its turn ended, as a claim compacting is: it is in no turn.
+		{"legion-legion-legion-601-architect", "working", "'2026-11-26T09:30:00Z'", "'2026-11-26T09:45:00Z'"},
 	} {
 		if err := exec(`insert into claims (token, project, tree, issue, role, generation, session, session_file, state, failure,
-			launch_failures, prompt_failures, prompt_retires, uncertain_streak, plugin_contract, last_turn_start)
-			values ($1, 'legion', 'LEGION-601', 'LEGION-601', 'implementer', 3, 'ses', '/s.jsonl', $2, '', 0, 0, 0, 0, 275, `+claim.start+`)`,
+			launch_failures, prompt_failures, prompt_retires, uncertain_streak, plugin_contract, last_turn_start, last_turn_end)
+			values ($1, 'legion', 'LEGION-601', 'LEGION-601', 'implementer', 3, 'ses', '/s.jsonl', $2, '', 0, 0, 0, 0, 275, `+claim.start+`, `+claim.end+`)`,
 			claim.token, claim.state); err != nil {
 			t.Fatalf("record %s: %v", claim.token, err)
 		}

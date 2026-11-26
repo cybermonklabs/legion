@@ -32,8 +32,9 @@ package api
 // Each host of a session of the project reports its model requests, for the provider's headroom
 // and refusals, on a route of its own, `POST /legion/v1/claims/model-requests`
 // (claim.ModelRequestsRequest), answered `{"kept": [<id>, ...]}` (claim.ModelRequestsResponse,
-// AnswerModelRequests): every id of the batch the daemon now holds, new or held already, which the
-// host forgets, sending the rest again under the same ids. The body is the caller of a turn outcome
+// AnswerModelRequests): every id of the batch the daemon now holds, new or held already, or keeps
+// as nothing because the request ended before the hour any read reaches, which the host forgets,
+// sending the rest again under the same ids. The body is the caller of a turn outcome
 // — `claimToken`, `sessionId` and `secret`, or `bootToken` — with `generation` and `requests`, 1 to
 // 200 of `{id, session, model, endedAt, uncachedInputTokens?, refusal?}`, refusal one of `own`,
 // `provider` and `unknown`, and `retriedRefusalsReported?`, whether the host reports each HTTP 429

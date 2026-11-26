@@ -2049,10 +2049,17 @@ type Handler interface {
 // cause can clear while the fact's id stays the same, and writes nothing where it sets it. A
 // PlanGiven applies whatever its mark (factApplies), so its Unspent changes only what a release
 // before reads, which decides by the mark alone.
+//
+// Changed is a handler's word that the fact moved what it asks to move, as the fact's own
+// transaction found it: a person's change of a setting of admission by signals
+// (SignalSettingChanged) that moved the setting, where a change to the value it holds already
+// moves nothing. Its route answers it, so a change made by another fact before this one's
+// transaction is never read as this one's.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	Changed   bool
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
@@ -2484,6 +2491,7 @@ func ApplyFactWith(ctx context.Context, pool store.TxPool, records *record.Postg
 				result.Refusal = candidate.Refusal
 			}
 			result.Unspent = result.Unspent || candidate.Unspent
+			result.Changed = result.Changed || candidate.Changed
 		}
 		if err := settle(ctx, tx); err != nil {
 			return err

@@ -200,18 +200,8 @@ func LoadController(path, daemonURL string) (ControllerConfig, error) {
 	if cfg.StateDir, err = optionalPath("state_dir"); err != nil {
 		return ControllerConfig{}, err
 	}
-	for _, pattern := range []struct {
-		key  string
-		into *string
-	}{
-		{"signal_own_refusal_pattern", &cfg.OwnRefusalPattern},
-		{"signal_provider_refusal_pattern", &cfg.ProviderRefusalPattern},
-	} {
-		if node, set := values[pattern.key]; set {
-			if *pattern.into, err = readSharedPattern(node, pattern.key); err != nil {
-				return ControllerConfig{}, err
-			}
-		}
+	if cfg.OwnRefusalPattern, cfg.ProviderRefusalPattern, err = readRefusalPatterns(values, ""); err != nil {
+		return ControllerConfig{}, err
 	}
 	if daemonURL != "" {
 		if cfg.DaemonURL, err = daemonBase(daemonURL, "--daemon-url"); err != nil {

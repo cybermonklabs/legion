@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"reflect"
 	"strconv"
 	"strings"
@@ -76,6 +77,10 @@ func TestSignalProviderConfig(t *testing.T) {
 				subset("a{1001}", "the repetition at 1 is outside 0 to 1000, the bound Go's regexp takes")},
 			{"an empty class", `signal_own_refusal_pattern: 'a[]b'`,
 				subset("a[]b", "the class at 1 opens with ], which Go reads as a member and JavaScript as the class's end")},
+			{"a repetition of a group that holds one", `signal_own_refusal_pattern: '(a+)+'`,
+				subset("(a+)+", nestedRepetition(4))},
+			{"a repetition of a group whose group holds one", `signal_own_refusal_pattern: '((.*))*'`,
+				subset("((.*))*", nestedRepetition(6))},
 			{"the provider's key, refused by the same rule", `signal_provider_refusal_pattern: '(?i)overloaded'`,
 				"projects.DEMO.signal_provider_refusal_pattern " + quoted("(?i)overloaded") +
 					" is outside the subset of patterns Go and JavaScript both read alike: (? at 0 opens a lookaround, a named group or a flag; only (?: is in the subset"},
@@ -107,6 +112,8 @@ func TestSignalProviderConfig(t *testing.T) {
 			{"a brace alone", `limit{`, `the { at 5 begins no repetition; write \{ for the character`},
 			{"a bracket alone", `limit]`, `the ] at 5 closes no class; write \] for the character`},
 			{"a class of every character", `[^]`, "the class at 0 opens with ], which Go reads as a member and JavaScript as the class's end"},
+			{"a dash after a digit class", `[\d-z]`, `the - at 3 follows a class escape, which begins no range: Go reads it as the character and JavaScript refuses it; write \- for the character`},
+			{"a dash after a word class", `[\w-+]`, `the - at 3 follows a class escape, which begins no range: Go reads it as the character and JavaScript refuses it; write \- for the character`},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				body := signalProviderFile(`signal_own_refusal_pattern: ` + yamlSingleQuoted(tc.pattern))
@@ -120,6 +127,20 @@ func TestSignalProviderConfig(t *testing.T) {
 					t.Fatalf("a refused file loads %+v, want nothing", cfg)
 				}
 			})
+		}
+	})
+	// Each pattern below is in the subset: a dash that ends a class, a repetition of a group that
+	// holds none, and repetitions side by side.
+	t.Run("taken", func(t *testing.T) {
+		for _, pattern := range []string{`[\w-]+ limit`, `[\d\-z]`, `(ab)+`, `(a+)b+`, `(?:rate|token)* limit`} {
+			body := signalProviderFile(`signal_own_refusal_pattern: ` + yamlSingleQuoted(pattern))
+			cfg, err := Load(writeConfigFile(t, body), noEnv)
+			if err != nil {
+				t.Fatalf("Load of %q: %v", pattern, err)
+			}
+			if got := cfg.Projects["DEMO"].Provider.OwnRefusal; got != pattern {
+				t.Errorf("the own refusal pattern = %q, want %q", got, pattern)
+			}
 		}
 	})
 	// A file whose every other provider key is valid is refused whole for the one that is not, so
@@ -165,6 +186,12 @@ func TestSignalProviderConfig(t *testing.T) {
 
 // quoted is pattern as a refusal names it, Go-quoted.
 func quoted(pattern string) string { return strconv.Quote(pattern) }
+
+// nestedRepetition is the reason a repetition at at of a group that holds one is refused.
+func nestedRepetition(at int) string {
+	return fmt.Sprintf("the repetition at %d repeats a group that holds a repetition, which JavaScript backtracks through "+
+		"for a time that grows exponentially with the text; repeat the group or what is inside it, not both", at)
+}
 
 // yamlSingleQuoted is s as a single-quoted YAML scalar: each quote doubled.
 func yamlSingleQuoted(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
