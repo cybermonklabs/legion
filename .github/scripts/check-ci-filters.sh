@@ -263,14 +263,15 @@
 #      have, a job the file the entry names does not have (the job that runs the untagged tests
 #      may be in any of those files, since it keeps its caller in ci.yaml), a step that job does
 #      not have, or a step whose run: holds no -run is a failure of its own.
-#  16. a `go test -race` build of .github/workflows/ci-caches.yaml's job ci_job_reads.py's
-#      DAEMON_RACE_FILL_JOB names whose packages are not ci_job_reads.py's
-#      DAEMON_RACE_PACKAGES, in that order. That build fills the cache ci.yaml's race step
-#      restores, so a package it names that the lane does not is a race binary no job of
-#      ci.yaml restores, and one the lane names that it does not is a binary that step links
+#  16. a `go test -race` build of a .github/workflows/ci-caches.yaml job ci_job_reads.py's
+#      RACE_FILLS names whose packages are not that entry's lane, in its order: the daemon's
+#      DAEMON_RACE_FILL_JOB against DAEMON_RACE_PACKAGES, and the envoy race lane's
+#      ENVOY_RACE_FILL_JOB against every job's packages of ENVOY_RACE_LANE. Each build fills the
+#      cache its lane's race steps restore, so a package it names that the lane does not is a race
+#      binary no job restores, and one the lane names that it does not is a binary those steps link
 #      from nothing on every run - in either direction nothing fails, which is how
-#      ./internal/record/ stayed in the fill after the lane dropped it. It fails naming the
-#      package, the job and both lists; that job with no race build at all fails too, and so
+#      ./internal/record/ stayed in the daemon's fill after the lane dropped it. It fails naming
+#      the package, the job and both lists; a fill job with no race build at all fails too, and so
 #      does a ci-caches.yaml with no such job, since the lane would then be filled by nobody. A
 #      race build of another job fills another family and is not this rule's. And a fill job
 #      ci_job_reads.py's RACE_FILL_SCRIPTS names whose steps in the script's directory do not run

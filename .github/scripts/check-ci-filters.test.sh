@@ -28,8 +28,8 @@
 # or that key followed by the commit, its own restores being lookups but those of a family it
 # saves under the commit, which download the newest entry, every restore of any workflow must
 # name a family some workflow saves,
-# ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
-# DAEMON_RACE_PACKAGES names,
+# each race build of a ci-caches.yaml job ci_job_reads.py's RACE_FILLS names must compile
+# exactly the packages of that entry's lane (DAEMON_RACE_PACKAGES, ENVOY_RACE_LANE),
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
 # passes -run must have a filter covering every file the tag step reads, every dorny/paths-filter
@@ -238,6 +238,9 @@ WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
 DAEMON_RACE_FILL_JOB = "fill"
 RACE_FILL_SCRIPTS = []
+RACE_FILLS = [(DAEMON_RACE_FILL_JOB, "DAEMON_RACE_FILL_JOB", [f"./{p}/" for p in DAEMON_RACE_PACKAGES],
+               "DAEMON_RACE_PACKAGES", ".github/workflows/ci.yaml's race step", ".github/workflows/ci.yaml",
+               ".github/workflows/ci.yaml's two race steps follow it already")]
 TAG_RUNS = []
 READ_SETS = {}
 GATES, EXCLUDED = load_gate_files(globals())
@@ -4724,6 +4727,35 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the job, the table and what the race step then builds" \
   "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job daemon, which .github/scripts/ci_job_reads.py's DAEMON_RACE_FILL_JOB names")"
+
+# A second fill, of another lane, is held to its own list: here a lane named as a tree
+# (./lib/...), as the envoy race lane names some of its packages. The control is the tree as
+# written, where the fill names ./lib/... and passes.
+second_fill() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  second-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test -count=1 -race -run '^$' ./lib/...
+        working-directory: mod
+YAML
+  cat >> "$1/.github/scripts/ci_job_reads.py" <<'PY'
+RACE_FILLS.append(("second-fill", "SECOND_FILL_JOB", ["./lib/..."], "SECOND_LANE", "the second lane's step",
+                   "the second lane", "the second lane's steps follow it already"))
+PY
+}
+echo "case: a second lane's fill, held to its own list"
+root=$(fixture race-fill-second)
+cache_workflow "$root"
+second_fill "$root"
+run_check "$root"
+check "exits 0 as written" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci-caches.yaml" "-run '^\$' ./lib/..." "-run '^\$' ./lib/... ./other/"
+run_check "$root"
+check "fails once the fill names a package its lane does not" "$(is "$status" 1)"
+check "names that lane's list and the jobs that restore its cache" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job second-fill's race build names ./other/, which .github/scripts/ci_job_reads.py's SECOND_LANE does not (./lib/..., ./other/ against ./lib/...)")"
+check "and not the daemon's" "$(is "$(contains "$out" "job second-fill's race build names ./other/, which .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES")" false)"
 
 # script_fill <root>: a second fill job, script-fill, that compiles a race step's script, mod's
 # scripts/race.sh, in its compile mode, and RACE_FILL_SCRIPTS naming it; script-fill also builds

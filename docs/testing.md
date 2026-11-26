@@ -689,6 +689,38 @@ runtime's clock (`g.r.clock = fc`) and moves it one recheck at a time (`step`), 
 others. A new test with neither the call nor the comment runs alone for no reason, as 25 tests did
 by 2026-11-25.
 
+## A test in Dispatch's smaller packages runs beside the others
+
+Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
+statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
+
+- `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
+  `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
+  `internal/dispatch/horizontest`, `internal/dispatch/processes`, `internal/dispatch/redeliver`,
+  `internal/dispatch/routes`, `internal/dispatch/sessionanswers`, `internal/dispatch/startup`;
+- `internal/cmdtest`, `internal/contracts`, `internal/integration`, `internal/pglisten`,
+  `internal/testport`, `internal/textcheck`;
+- `natsversion`, `natsversion/cmd/natsfloor`.
+
+The ten of them whose tests open a database (architecture, duty, events, files, processes,
+redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
+`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
+`storetest.DefaultParallel` says why it is 4. Each test has a database of its own
+(`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+
+A test stays serial when it, or a helper it calls, changes something the whole test process
+shares: the environment (`t.Setenv`, and the S3 helpers `filestest.ServeS3` and `tests3.Start`
+through it), the default logger or the log package's output (`logtest.SetDefault`), or a package
+variable (`fixJitter`'s `duty.JitterN`, `redeliver.FixJitter`, processes' `HeartbeatInterval`,
+`PruneInterval` and `LiveWindow` through `setInterval` and `quickRegistry`, architecture's
+`syncTimeout`, contracts' `githubEventKinds`). It also stays serial when it holds a wall-clock
+bound, a quiet window or a step a sleep orders, which the parallel tests' load could make it miss
+on a correct product or pass with the defect present; the comment names the span. A wait for an
+event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
+and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
+marker in these packages: a new test with neither the call nor the comment runs alone for no
+reason.
+
 ## Go's package deadline
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),

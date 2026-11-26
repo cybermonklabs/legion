@@ -32,7 +32,7 @@ name: CI job private-names-port
 # No Bun, no Oh My Pi, no uv, no tmux, no database and no container image: the harness starts a
 # `go build` and the binary it built, and makes every fixture with git, which the runner image
 # carries. It restores no Actions cache either, as the test job that carried this step restored
-# none: of ci.yaml's eight Go cache families the go-daemon entry is filled with what compiling
+# none: of ci.yaml's nine Go cache families the go-daemon entry is filled with what compiling
 # packages/daemon's test binaries leaves (.github/workflows/ci-caches.yaml), which is not this
 # build, and a restore of it would download a gigabyte to save part of one command's compile.
 #
