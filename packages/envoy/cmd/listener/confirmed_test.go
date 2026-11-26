@@ -178,7 +178,7 @@ func expectFrames(t *testing.T, frames <-chan contracts.Envelope, want int, quie
 		select {
 		case frame := <-frames:
 			got = append(got, frame)
-		case <-time.After(5 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatalf("the stand-in received %d frames, want %d", len(got), want)
 		}
 	}
@@ -452,7 +452,7 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 
 	forwardCopy := listenerTestEnvelope(topic, "publish.stored-copy")
 	publishTo(t, harness.client, contracts.LegacyAgentSubject("ses_self_subscribed"), forwardCopy)
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {

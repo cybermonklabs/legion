@@ -103,7 +103,7 @@ func TestTheCountAndTheFilterJudgeAStoredTopicByOneRule(t *testing.T) {
 					if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: row.topics}); err != nil {
 						t.Fatalf("write %s's known-session record naming %v: %v", sessionID, row.topics, err)
 					}
-					waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+					waitFor(t, "the known-session store to hold "+sessionID+"'s record", func() bool {
 						record, ok := rig.known.Get(sessionID)
 						return ok && !slices.ContainsFunc(row.topics, func(topic string) bool { return !slices.Contains(record.Topics, topic) })
 					})
@@ -183,7 +183,7 @@ func TestAPublishOnATopicNoStreamSubjectCapturesLeavesBothCountsOut(t *testing.T
 	if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: []string{topic}}); err != nil {
 		t.Fatalf("write %s's known-session record naming %s: %v", sessionID, topic, err)
 	}
-	waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+	waitFor(t, "the known-session store to hold "+sessionID+"'s record", func() bool {
 		record, ok := rig.known.Get(sessionID)
 		return ok && slices.Contains(record.Topics, topic)
 	})
@@ -271,7 +271,7 @@ func TestAPublishCountsItsRecipientsByTheTransportItsSendTakes(t *testing.T) {
 	if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: []string{topic}}); err != nil {
 		t.Fatalf("write %s's known-session record naming %s: %v", sessionID, topic, err)
 	}
-	waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+	waitFor(t, "the known-session store to hold "+sessionID+"'s record", func() bool {
 		record, ok := rig.known.Get(sessionID)
 		return ok && slices.Contains(record.Topics, topic)
 	})
@@ -369,7 +369,7 @@ func TestThePublishRouteCountsAndSendsOnItsOneDecisionOfTheTransport(t *testing.
 	if err := rig.known.RecordWithin(t.Context(), session.KnownSession{SessionID: sessionID, Topics: []string{topic}}); err != nil {
 		t.Fatalf("write %s's known-session record naming %s: %v", sessionID, topic, err)
 	}
-	waitFor(t, 10*time.Second, "the known-session store to hold "+sessionID+"'s record", func() bool {
+	waitFor(t, "the known-session store to hold "+sessionID+"'s record", func() bool {
 		record, ok := rig.known.Get(sessionID)
 		return ok && slices.Contains(record.Topics, topic)
 	})

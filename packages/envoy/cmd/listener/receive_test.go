@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // receiveTestSubject is a subject the stream stores, so a publish on it reaches the durable.
@@ -181,7 +182,7 @@ func startReceiverRig(t *testing.T, uri, machineID, instance string, handle dura
 // awaitState waits until the rig's receive loop stands at state and returns when it did.
 func (rig *receiverRig) awaitState(t *testing.T, state receiveState, within time.Duration) time.Time {
 	t.Helper()
-	waitFor(t, within, "the receive loop to be "+state.String(), func() bool { return rig.receiver.report().State == state })
+	testwait.WithinPolling(t, within, 50*time.Millisecond, "the receive loop to be "+state.String(), func() bool { return rig.receiver.report().State == state })
 	return time.Now()
 }
 
@@ -297,7 +298,7 @@ func TestADurableMessageReceivedWithoutTheLeaseIsDroppedAndRedeliveredToTheHolde
 
 	published := time.Now()
 	publishDurable(t, stray.client, "dropped")
-	waitFor(t, 5*time.Second, "the durable to deliver the message to the stray pod", func() bool {
+	waitFor(t, "the durable to deliver the message to the stray pod", func() bool {
 		info, err := stray.client.JS().ConsumerInfo(bus.Stream, stray.consumer)
 		return err == nil && info.NumAckPending == 1 && info.NumPending == 0
 	})

@@ -292,8 +292,8 @@ func (rig *crashRig) storeToSession(sessionID string, n int) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(30 * time.Second):
-		rig.t.Fatalf("the stream did not acknowledge %d messages to %s within 30s", n, sessionID)
+	case <-time.After(listenerWaitBound(rig.t)):
+		rig.t.Fatalf("the stream did not acknowledge %d messages to %s in time", n, sessionID)
 	}
 }
 
@@ -332,10 +332,11 @@ func (rig *crashRig) seqOn(subject, eventID string) uint64 {
 	return 0
 }
 
-// awaitStored waits up to 10 s for an envelope of eventID on subject and returns it.
+// awaitStored waits for an envelope of eventID on subject and returns it, with the test binary's
+// deadline as its only bound.
 func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 	rig.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(rig.t))
 	for {
 		held := rig.stored(subject)
 		if i := slices.IndexFunc(held, func(stored storedEnvelope) bool { return stored.item.EventID == eventID }); i >= 0 {
@@ -346,7 +347,7 @@ func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 			for i, stored := range held {
 				events[i] = stored.item.EventID
 			}
-			rig.t.Fatalf("%s: the stream holds %v on %s after 10s; want event %s", what, events, subject, eventID)
+			rig.t.Fatalf("%s: the stream holds %v on %s in the time it was given; want event %s", what, events, subject, eventID)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -402,7 +403,7 @@ func (rig *crashRig) onlyRecord(role, previous string) crashRecord {
 // not ended yet.
 func (rig *crashRig) idle(cfg listenerDeliveryHandlerConfig, role string) {
 	rig.t.Helper()
-	waitFor(rig.t, 30*time.Second, "no handover of role "+role+" holding the listener's guard", func() bool {
+	waitFor(rig.t, "no handover of role "+role+" holding the listener's guard", func() bool {
 		release, free := cfg.roleKeepDrains.tryHold(role)
 		if free {
 			release()

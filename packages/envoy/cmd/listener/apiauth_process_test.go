@@ -258,7 +258,7 @@ func TestAListenerWhoseGoogleIssuerFailsAtStartServesOnceItAnswers(t *testing.T)
 	// Once the stand-in answers, the next read discovers Google's issuer: a token that finds no
 	// read failed in the last few seconds starts one, and the background reads go on meanwhile.
 	failed := google.answer()
-	waitFor(t, 45*time.Second, "a listed account's Google identity token to be admitted once Google's issuer answers", func() bool {
+	waitFor(t, "a listed account's Google identity token to be admitted once Google's issuer answers", func() bool {
 		return call(googleToken).StatusCode == http.StatusOK
 	})
 	wantGoogleHealth(true)
@@ -268,7 +268,7 @@ func TestAListenerWhoseGoogleIssuerFailsAtStartServesOnceItAnswers(t *testing.T)
 	discovered := func() int {
 		return countLines(listener.Output.String(), "oidc: discovered the issuer", "issuer="+oidc.GoogleIssuer)
 	}
-	waitFor(t, 45*time.Second, "the listener to log that it discovered Google's issuer", func() bool { return discovered() > 0 })
+	waitFor(t, "the listener to log that it discovered Google's issuer", func() bool { return discovered() > 0 })
 	output := listener.Output.String()
 	if succeeded := discovered(); succeeded != 1 {
 		t.Fatalf("the listener logged %d successful discoveries of %s, want 1:\n%s", succeeded, oidc.GoogleIssuer, output)

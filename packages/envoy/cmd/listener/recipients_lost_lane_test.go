@@ -57,7 +57,7 @@ func storeRawRow(t *testing.T, registry *store.Registry, client *bus.Client, ses
 	if _, err := interests.Put(sessionID, value); err != nil {
 		t.Fatalf("store %s's row naming %v: %v", sessionID, topics, err)
 	}
-	waitFor(t, 10*time.Second, "the registry's copy to hold "+sessionID+"'s row as stored", func() bool {
+	waitFor(t, "the registry's copy to hold "+sessionID+"'s row as stored", func() bool {
 		cached, ok := registry.Cached(sessionID)
 		return ok && !slices.ContainsFunc(topics, func(topic string) bool { return !slices.Contains(cached.Topics, topic) })
 	})
@@ -137,7 +137,7 @@ func receivedNotice(t *testing.T, rig *relayRig, standIn *sessionStandIn, sessio
 	t.Helper()
 	own, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	received := false
-	deadline := time.After(10 * time.Second)
+	deadline := time.After(listenerWaitBound(t))
 	for {
 		select {
 		case frame := <-standIn.frames:
@@ -204,7 +204,7 @@ func TestAPublishOnALaneNoConsumerFiltersOnCountsNoRecipient(t *testing.T) {
 		// record keeps the lane exactly as a former holder's record does whenever the route's
 		// own rewrite of it did not run (TestAStoppedFormerHolderIsNoRecipientOfItsLostLane).
 		claimRoles(t, rig.harness.registry, "ses_lost_lane_new_holder", lostLaneRole)
-		waitFor(t, 10*time.Second, "the role claim view to show the role taken over", func() bool {
+		waitFor(t, "the role claim view to show the role taken over", func() bool {
 			held, err := rig.harness.registry.RolesHeldBy(sessionID)
 			return err == nil && !slices.Contains(held, lostLaneRole)
 		})

@@ -213,7 +213,7 @@ func TestAReplacedConnectionBehindAFailingHookReadsDownAndReleasesTheLease(t *te
 	closed := rig.client.ConnectedConn()
 	cut := time.Now()
 	closed.Close()
-	waitFor(t, 20*time.Second, "the client to install a connection in place of the closed one", func() bool {
+	waitFor(t, "the client to install a connection in place of the closed one", func() bool {
 		installed := rig.client.ConnectedConn()
 		return installed != nil && installed != closed
 	})

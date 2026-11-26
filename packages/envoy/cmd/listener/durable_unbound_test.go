@@ -162,7 +162,7 @@ func TestTheSelfHealthMonitorResubscribesARecreatedDurable(t *testing.T) {
 	terminated, stop := startUnboundDurableMonitor(t, rig, logging.New("test"))
 
 	// The probe's confirming read alone costs 250ms, so the repair takes several intervals.
-	if message := awaitReceived(t, received, 10*time.Second, "the message published after the recreation"); message.data != "after the recreation" {
+	if message := awaitReceived(t, received, listenerWaitBound(t), "the message published after the recreation"); message.data != "after the recreation" {
 		t.Fatalf("delivered %q", message.data)
 	}
 	if terminated.Load() {

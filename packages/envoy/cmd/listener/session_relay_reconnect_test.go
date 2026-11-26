@@ -85,10 +85,10 @@ func TestASessionRelayRestartWaitsForTheMainConnectionRatherThanFailingOnIt(t *t
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	first, _ := rig.storeEvent(t, agent)
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), first)
-	waitFor(t, 10*time.Second, "the relay's restart to have let go of its turn", func() bool { return len(rig.relays.restarts) == 0 })
+	waitFor(t, "the relay's restart to have let go of its turn", func() bool { return len(rig.relays.restarts) == 0 })
 
 	hub.Cut()
-	waitFor(t, 10*time.Second, "the main connection to be down", func() bool { return !client.Connected() })
+	waitFor(t, "the main connection to be down", func() bool { return !client.Connected() })
 	logged := len(rig.harness.logs.String())
 	since := func() string { return rig.harness.logs.String()[logged:] }
 	if err := rig.deps.consumers.consumers.ForceReconnect(); err != nil {
@@ -97,7 +97,7 @@ func TestASessionRelayRestartWaitsForTheMainConnectionRatherThanFailingOnIt(t *t
 	// The reconnect ends the pull and the relay restarts: the restart holds its turn
 	// (relayRestartLimit) until it returns, so a turn held is a restart under way, and one that
 	// failed on the main connection has written its line.
-	waitFor(t, 10*time.Second, "the relay to restart after the session-consumer reconnect", func() bool {
+	waitFor(t, "the relay to restart after the session-consumer reconnect", func() bool {
 		return len(rig.relays.restarts) == 1 || strings.Contains(since(), interestsUnread)
 	})
 	infoCtx, cancelInfo := context.WithTimeout(context.Background(), 5*time.Second)

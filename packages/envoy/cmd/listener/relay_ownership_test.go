@@ -71,7 +71,7 @@ func TestALeaseLostBetweenAnUnboundProbeAndTheResubscribeLeavesThePodNotRelaying
 	// The term ends before the resubscribe runs, as it does when the lease is released because
 	// the receive connection is down.
 	rig.lease.GiveUp(rig.lease.Status().Term)
-	waitFor(t, 10*time.Second, "pod-a to give the lease up", func() bool { return !rig.lease.Holding() })
+	waitFor(t, "pod-a to give the lease up", func() bool { return !rig.lease.Holding() })
 	rig.awaitState(t, receiveStandby, 10*time.Second)
 	if relays.owned.Load() {
 		t.Fatal("the pod goes on relaying after its term ended")
@@ -419,7 +419,7 @@ func TestARelayUnsubscribesItsPullWhenItsTermEndsSoTheNextHolderTakesEachMessage
 	termCtx, endTerm := context.WithCancel(context.Background())
 	defer endTerm()
 	old.relays.setOwned(&relayTerm{ctx: termCtx, untilLoss: func() time.Duration { return held.UntilLoss(term) }})
-	waitFor(t, 10*time.Second, "the old pod's pull request to wait at the session's consumer", func() bool {
+	waitFor(t, "the old pod's pull request to wait at the session's consumer", func() bool {
 		waiting, _ := consumerCounts(t, old, sessionID)
 		return waiting == 1
 	})
@@ -439,7 +439,7 @@ func TestARelayUnsubscribesItsPullWhenItsTermEndsSoTheNextHolderTakesEachMessage
 	}
 
 	next.relays.setOwned(endlessTerm())
-	waitFor(t, 10*time.Second, "the next holder's pull request to wait at the session's consumer", func() bool {
+	waitFor(t, "the next holder's pull request to wait at the session's consumer", func() bool {
 		waiting, _ := consumerCounts(t, next, sessionID)
 		return waiting == 1
 	})
@@ -476,7 +476,7 @@ func TestARelayLeavesAMessageArrivingAfterItsTermEndedForTheNextHolder(t *testin
 	clock := newFakeLeaseClock()
 	held, _, term := heldLongLease(t, clock)
 	old.relays.setOwned(&relayTerm{ctx: context.Background(), untilLoss: func() time.Duration { return held.UntilLoss(term) }})
-	waitFor(t, 10*time.Second, "the old pod's pull request to wait at the session's consumer", func() bool {
+	waitFor(t, "the old pod's pull request to wait at the session's consumer", func() bool {
 		waiting, _ := consumerCounts(t, old, sessionID)
 		return waiting == 1
 	})

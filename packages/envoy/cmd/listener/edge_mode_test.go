@@ -42,8 +42,10 @@ import (
 // The admission: an edge listener admits a broker token alone, and only one whose projects are
 // all among the ones it serves, of project scope named or person; every other caller is refused
 // before any handler runs, and a refusal names what the token carries and never a project the
-// edge serves that the token does not list, which may be another customer's private project. The
-// exported admission (EdgeAdmits) is the very rule apiAuth asks.
+// edge serves that the token does not list, which may be another customer's private project. A
+// job's named token is admitted for its one project as a person's is, and a job's public token is
+// refused naming its scope, whatever it lists: no edge's list bounds the public projects it
+// reaches. The exported admission (EdgeAdmits) is the very rule apiAuth asks.
 func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	t.Parallel()
 	projects := edgeTestProjects(t)
@@ -68,6 +70,8 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 		header string
 		admit  bool
 		status int
+		// names is what the refusal's text says of the token, where the row holds it.
+		names string
 	}{
 		{name: "a named token of the project it serves", answer: new(answer("ses_named", ciphertoken.ProjectScopeNamed, "PRIV")), admit: true},
 		{name: "a person token listing only that project", answer: new(answer("ses_person", ciphertoken.ProjectScopePerson, "PRIV")), admit: true},
@@ -75,6 +79,9 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 		{name: "a named token of another project", answer: new(answer("ses_other", ciphertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
 		{name: "a person token listing no project", answer: new(answer("ses_none", ciphertoken.ProjectScopePerson)), status: http.StatusForbidden},
 		{name: "a service's token, which lists none", answer: &service, status: http.StatusForbidden},
+		{name: "a job's named token of the project it serves", answer: new(jobAnswer("ses_job_named", ciphertoken.ProjectScopeNamed, caller.JKT(), "PRIV")), admit: true},
+		{name: "a job's named token of another project", answer: new(jobAnswer("ses_job_other", ciphertoken.ProjectScopeNamed, caller.JKT(), "ACME")), status: http.StatusForbidden},
+		{name: "a job's public token listing only the project it serves", answer: new(jobAnswer("ses_job_public", ciphertoken.ProjectScopePublic, caller.JKT(), "PRIV")), status: http.StatusForbidden, names: `project scope is "public"`},
 		{name: "a read-only token", answer: new(readOnlyAnswer("ses_reader", "example-reader", caller.JKT())), status: http.StatusUnauthorized},
 		{name: "no credential at all", status: http.StatusUnauthorized},
 		{name: "a shared bearer", header: "Bearer some-shared-token", status: http.StatusUnauthorized},
@@ -104,6 +111,12 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 			}
 			if recorder.Code != tc.status || reached != 0 {
 				t.Fatalf("GET /v1/sessions under %s: status %d, reached the handler %d times (%s), want %d before any handler", tc.name, recorder.Code, reached, recorder.Body.String(), tc.status)
+			}
+			if tc.names != "" {
+				var refusal listenerwire.EdgeRefusal
+				if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil || !strings.Contains(refusal.Error, tc.names) {
+					t.Fatalf("the refusal of %s reads %s (%v), want it to name %s", tc.name, recorder.Body.String(), err, tc.names)
+				}
 			}
 			if tc.answer != nil {
 				requireNoServedProjectNamed(t, recorder.Body.String(), projects, tc.answer.Projects, "the refusal of "+tc.name)

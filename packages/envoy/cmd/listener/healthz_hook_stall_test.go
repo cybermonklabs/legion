@@ -50,11 +50,11 @@ func failReconnectHooks(t *testing.T, rig *receiverRig) {
 	if err := rig.client.Conn.ForceReconnect(); err != nil {
 		t.Fatalf("reconnect in place: %v", err)
 	}
-	waitFor(t, 30*time.Second, "the failed run of the reconnect hooks to be recorded", func() bool {
+	waitFor(t, "the failed run of the reconnect hooks to be recorded", func() bool {
 		_, hookErr := rig.client.HookStall()
 		return hookErr != nil
 	})
-	waitFor(t, 30*time.Second, "the pod to receive its durable again", func() bool {
+	waitFor(t, "the pod to receive its durable again", func() bool {
 		report := rig.receiver.report()
 		return report.State == receiveActive && report.SubscriptionValid
 	})

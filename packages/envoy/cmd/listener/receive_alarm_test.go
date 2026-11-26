@@ -60,7 +60,7 @@ func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
 	handle, received := recordingHandler()
 	rig := startReceiverRig(t, uri, machineID, "pod-new", handle, timing, testLeaseTiming())
 	rig.awaitState(t, receiveAwaitingBinding, 10*time.Second)
-	waitFor(t, 10*time.Second, "the alarm and its repeat", func() bool { return durableAlarms(rig.logs) >= 2 })
+	waitFor(t, "the alarm and its repeat", func() bool { return durableAlarms(rig.logs) >= 2 })
 	if !rig.lease.Holding() {
 		t.Fatal("the waiting pod let its lease lapse")
 	}
@@ -77,7 +77,7 @@ func TestAPreLeaseBindingIsWaitedOutAndAlarmedOn(t *testing.T) {
 	publishDurable(t, rig.client, "while the old build holds it")
 	noneReceived(t, received, time.Second, "the pod waiting out the old build's binding")
 	// The old build acks what it took, so none of it comes back to the new pod once it lets go.
-	waitFor(t, 5*time.Second, "the old build to ack the message published while it held the durable", func() bool {
+	waitFor(t, "the old build to ack the message published while it held the durable", func() bool {
 		info, err := old.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil && info.Delivered.Consumer >= 1 && info.NumAckPending == 0
 	})
@@ -127,7 +127,7 @@ func TestAHeldDurableIsTakenWithinOnePollOfItsRelease(t *testing.T) {
 	rig := startReceiverRig(t, uri, machineID, "pod-new", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
 	rig.awaitState(t, receiveAwaitingBinding, 10*time.Second)
 	waiting := reads.Load()
-	waitFor(t, 10*time.Second, "six reads of the held durable by the waiting pod", func() bool { return reads.Load() >= waiting+6 })
+	waitFor(t, "six reads of the held durable by the waiting pod", func() bool { return reads.Load() >= waiting+6 })
 	if state := rig.receiver.report().State; state != receiveAwaitingBinding {
 		t.Fatalf("the receive loop is %s after %d reads of the durable the old build holds, want it waiting", state, reads.Load()-waiting)
 	}
@@ -212,13 +212,13 @@ func refusedDurableHolder(t *testing.T, machineID, step string, deny ...string) 
 	uri := testnats.StartNkeyDenied(t, public, deny...)
 	rig := newReceiverRigAs(t, uri, uri, seed, machineID, "pod-a", func(_ context.Context, msg *natsgo.Msg) { _ = msg.Ack() }, testReceiveTiming(), testLeaseTiming())
 	rig.lease.Start(context.Background())
-	waitFor(t, 10*time.Second, "pod-a to take the lease", rig.lease.Holding)
+	waitFor(t, "pod-a to take the lease", rig.lease.Holding)
 	started := time.Now()
 	rig.receiver.Start()
 	refusals := func() []map[string]any {
 		return linesIn(rig.logs.String(), durableGrantRefusedLine, map[string]any{"level": "ERROR"})
 	}
-	waitFor(t, 10*time.Second, "pod-a to name the grant's refusal at ERROR", func() bool { return len(refusals()) > 0 })
+	waitFor(t, "pod-a to name the grant's refusal at ERROR", func() bool { return len(refusals()) > 0 })
 	if took := time.Since(started); took > 3*time.Second {
 		t.Fatalf("pod-a named the refusal %s after its receive loop started, want within 3s, as the server's refusal arrives", took.Round(time.Millisecond))
 	}
@@ -227,7 +227,7 @@ func refusedDurableHolder(t *testing.T, machineID, step string, deny ...string) 
 	if !slices.Contains(deny, subject) || !strings.Contains(text, step) || !strings.Contains(text, `Permissions Violation for Publish to "`+subject+`"`) {
 		t.Fatalf("pod-a's refusal line = %v, want one of %q as its subject and an error naming %q and the server's violation of it", first, deny, step)
 	}
-	waitFor(t, 5*time.Second, "pod-a to try again and name the refusal again", func() bool { return len(refusals()) >= 2 })
+	waitFor(t, "pod-a to try again and name the refusal again", func() bool { return len(refusals()) >= 2 })
 	if report := rig.receiver.report(); report.State != receivePreparing || !report.Refused || !rig.lease.Holding() {
 		t.Fatalf("pod-a after a second refused try: %+v, holding %v; want it preparing the durable, the refusal reported and the lease kept", report, rig.lease.Holding())
 	}
@@ -276,7 +276,7 @@ func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T
 	stuck.awaitState(t, receivePreparing, 10*time.Second)
 	handle, received := recordingHandler()
 	standby := startReceiverRig(t, granted, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "pod-b to read pod-stuck's lease", func() bool {
+	waitFor(t, "pod-b to read pod-stuck's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-stuck"
 	})
 	publishDurable(t, standby.client, "while the holder is stuck")
@@ -286,7 +286,7 @@ func TestAHolderThatCannotPrepareItsDurableAlarmsAndGivesTheLeaseUp(t *testing.T
 	var body map[string]any
 	// A holder that does not receive yet is already degraded; this waits for the failed read it
 	// reports with that.
-	waitFor(t, 15*time.Second, "pod-stuck's /healthz to report its failing durable", func() bool {
+	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "pod-stuck's /healthz to report its failing durable", func() bool {
 		code, body = get()
 		return body["receive_failing_ms"] != nil
 	})
@@ -369,11 +369,11 @@ func TestAPodThatGaveTheLeaseUpWhileWaitingOutABindingSettlesAHardTakeoverAfterI
 	t.Cleanup(func() { close(release) })
 	y.lease.Start(context.Background())
 	y.receiver.Start()
-	waitFor(t, 5*time.Second, "pod-y to read pod-x's lease", func() bool { return y.lease.Status().ActiveInstance == "pod-x" })
+	waitFor(t, "pod-y to read pod-x's lease", func() bool { return y.lease.Status().ActiveInstance == "pod-x" })
 
 	thaw := xLink.freeze()
 	t.Cleanup(thaw)
-	waitFor(t, 30*time.Second, "pod-x to give the lease up and pod-y to take it", y.lease.Holding)
+	waitFor(t, "pod-x to give the lease up and pod-y to take it", y.lease.Holding)
 	if !strings.Contains(x.logs.String(), "giving the listener lease up") {
 		t.Fatalf("pod-y holds the lease but pod-x never gave it up:\n%s", x.logs.String())
 	}
@@ -381,7 +381,7 @@ func TestAPodThatGaveTheLeaseUpWhileWaitingOutABindingSettlesAHardTakeoverAfterI
 	old.Close()
 	y.awaitState(t, receiveActive, 10*time.Second)
 	thaw()
-	waitFor(t, 30*time.Second, "pod-x's bus connection to answer again", func() bool {
+	waitFor(t, "pod-x's bus connection to answer again", func() bool {
 		_, err := x.client.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil
 	})
@@ -397,13 +397,13 @@ func TestAPodThatGaveTheLeaseUpWhileWaitingOutABindingSettlesAHardTakeoverAfterI
 	}
 	yLink.sever() // pod-y dies hard: both its connections go, and it releases nothing
 	yLeaseLink.sever()
-	waitFor(t, 5*time.Second, "the server to drop pod-y's binding, the older message still outstanding with it", func() bool {
+	waitFor(t, "the server to drop pod-y's binding, the older message still outstanding with it", func() bool {
 		info, err := admin.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil && !info.PushBound && info.NumAckPending == 1
 	})
 	publishDurable(t, admin, "newer")
 
-	waitFor(t, 10*time.Second, "pod-x to take pod-y's expired lease", x.lease.Holding)
+	waitFor(t, "pod-x to take pod-y's expired lease", x.lease.Holding)
 	if status := x.lease.Status(); status.How != leaseTakenExpired || !status.Settle {
 		t.Fatalf("pod-x's lease = %+v, want taken over pod-y's expired record, settling", status)
 	}
@@ -463,14 +463,14 @@ func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(
 	t.Cleanup(func() { close(release) })
 	y.lease.Start(context.Background())
 	y.receiver.Start()
-	waitFor(t, 5*time.Second, "pod-y to read pod-x's lease", func() bool { return y.lease.Status().ActiveInstance == "pod-x" })
+	waitFor(t, "pod-y to read pod-x's lease", func() bool { return y.lease.Status().ActiveInstance == "pod-x" })
 
 	thaw := xLeaseLink.freeze()
 	t.Cleanup(thaw)
-	waitFor(t, 30*time.Second, "pod-y to take pod-x's expired record", y.lease.Holding)
+	waitFor(t, "pod-y to take pod-x's expired record", y.lease.Holding)
 	// The lapse is logged by the renewal that first starts past the validity, which the frozen
 	// relay holds up, so it can follow pod-y's take-over.
-	waitFor(t, 30*time.Second, "pod-x's lease to lapse, ending its term", func() bool {
+	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "pod-x's lease to lapse, ending its term", func() bool {
 		return strings.Contains(x.logs.String(), "listener lease lapsed")
 	})
 	if strings.Contains(x.logs.String(), "giving the listener lease up") {
@@ -479,7 +479,7 @@ func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(
 	y.awaitState(t, receiveActive, 10*time.Second)
 	old.Close()
 	thaw()
-	waitFor(t, 30*time.Second, "pod-x to step down to a standby", func() bool {
+	waitFor(t, "pod-x to step down to a standby", func() bool {
 		return !x.lease.Holding() && x.lease.Status().ActiveInstance == "pod-y"
 	})
 
@@ -491,13 +491,13 @@ func TestAPodThatLostTheLeaseWhileWaitingOutABindingSettlesAHardTakeoverAfterIt(
 	}
 	yLink.sever() // pod-y dies hard: both its connections go, and it releases nothing
 	yLeaseLink.sever()
-	waitFor(t, 5*time.Second, "the server to drop pod-y's binding, the older message still outstanding with it", func() bool {
+	waitFor(t, "the server to drop pod-y's binding, the older message still outstanding with it", func() bool {
 		info, err := admin.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil && !info.PushBound && info.NumAckPending == 1
 	})
 	publishDurable(t, admin, "newer")
 
-	waitFor(t, 10*time.Second, "pod-x to take pod-y's expired lease", x.lease.Holding)
+	waitFor(t, "pod-x to take pod-y's expired lease", x.lease.Holding)
 	if status := x.lease.Status(); status.How != leaseTakenExpired || !status.Settle || status.Resumed {
 		t.Fatalf("pod-x's lease = %+v, want taken over pod-y's expired record, settling, no resume of its own", status)
 	}
@@ -545,14 +545,14 @@ func TestATermThatNeverSubscribedOwesTheNextHolderAnAckWait(t *testing.T) {
 			putLeaseRecord(t, granted, row.machineID, `{"holder":"pod-gone","boot":"0123456789abcdef","released":true,"unsettled":true}`)
 			stuck.lease.Start(context.Background())
 			stuck.receiver.Start()
-			waitFor(t, 10*time.Second, "pod-a to take the hand-back", func() bool {
+			waitFor(t, "pod-a to take the hand-back", func() bool {
 				status := stuck.lease.Status()
 				return status.Holding && status.Settle && status.HandBack
 			})
 			stuck.awaitState(t, receivePreparing, 10*time.Second)
 
 			if row.giveUp {
-				waitFor(t, 30*time.Second, "pod-a to give the lease up", func() bool {
+				waitFor(t, "pod-a to give the lease up", func() bool {
 					return strings.Contains(stuck.logs.String(), "giving the listener lease up")
 				})
 			} else {
@@ -568,7 +568,7 @@ func TestATermThatNeverSubscribedOwesTheNextHolderAnAckWait(t *testing.T) {
 			handle, received := recordingHandler()
 			next := newReceiverRig(t, granted, row.machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
 			next.lease.Start(context.Background())
-			waitFor(t, 15*time.Second, "pod-b to take the released record", next.lease.Holding)
+			waitFor(t, "pod-b to take the released record", next.lease.Holding)
 			if status := next.lease.Status(); !status.Settle || status.HandBack {
 				t.Fatalf("pod-b's lease = %+v, want settling and no hand-back candidate: pod-a's term never subscribed", status)
 			}

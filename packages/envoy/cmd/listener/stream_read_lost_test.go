@@ -65,7 +65,7 @@ func TestARegistrationBehindAnotherSessionsLostStreamReadIsAnswered(t *testing.T
 		defer close(restarted)
 		_, _ = delivery.consumers.RestartAtFloor(ctx, restarting, agent)
 	}()
-	waitFor(t, 5*time.Second, "the restart's stream read to be dropped", func() bool { return relay.droppedRequests() == 1 })
+	waitFor(t, "the restart's stream read to be dropped", func() bool { return relay.droppedRequests() == 1 })
 
 	body, err := json.Marshal(listenerwire.SubscribeRequest{SessionID: registering, Topics: []string{contracts.LegacyAgentSubject(registering)}, SelfSubscribed: true,
 		Delivery: &listenerwire.SubscribeDelivery{Consumer: true, Epoch: "e"}})

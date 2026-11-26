@@ -254,7 +254,7 @@ func TestHubListenerIsReadyOnlyOnceItsV1Serves(t *testing.T) {
 		}
 
 		release()
-		waitFor(t, 5*time.Second, "GET /v1/interests/ to answer 200 once the interest copy's first read completed", func() bool {
+		waitFor(t, "GET /v1/interests/ to answer 200 once the interest copy's first read completed", func() bool {
 			return rig.get("/v1/interests/").StatusCode == http.StatusOK
 		})
 		rig.assertSample(t, gauge, 1)
@@ -347,7 +347,7 @@ func TestAReadyListenerStaysReadyWhileItsInterestCopyReadsAgainAfterAReconnect(t
 	rig.assertNoSample(t, gauge)
 
 	release()
-	waitFor(t, 30*time.Second, "GET /v1/interests/ to answer 200 once the reconnect's read of the interest bucket completed", func() bool {
+	waitFor(t, "GET /v1/interests/ to answer 200 once the reconnect's read of the interest bucket completed", func() bool {
 		return rig.get("/v1/interests/").StatusCode == http.StatusOK
 	})
 	if got := rig.interestIDs(t); !slices.Equal(got, ids) {

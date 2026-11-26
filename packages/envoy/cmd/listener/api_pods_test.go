@@ -237,7 +237,7 @@ func TestAHeartbeatAndARoleSetKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 			t.Fatalf("store a newer build's %s value: %v", seed.kv.Bucket(), err)
 		}
 	}
-	waitFor(t, 5*time.Second, "the session cache to hold the newer build's registration", func() bool {
+	waitFor(t, "the session cache to hold the newer build's registration", func() bool {
 		_, err := sessions.Get(sessionID)
 		return err == nil
 	})

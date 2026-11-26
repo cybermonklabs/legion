@@ -100,7 +100,7 @@ func TestEveryBackloggedMessagePushedAtAVanishingSubscriberComesBackExactlyOnce(
 	// The next subscriber comes only once the server has read the cut, so every message it gets is
 	// one the server pushes with the deliver subject bound again, never one of the push it was
 	// making as the subscriber went.
-	waitFor(t, 30*time.Second, "the durable to lose its only subscriber", func() bool {
+	waitFor(t, "the durable to lose its only subscriber", func() bool {
 		info, err := client.JS().ConsumerInfo(bus.Stream, consumer)
 		return err == nil && !info.PushBound
 	})

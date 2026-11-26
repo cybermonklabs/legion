@@ -212,10 +212,10 @@ func (r *roleLaneHealthRig) revoke(t *testing.T) {
 // least two periods, and /healthz answers 503 for it.
 func (r *roleLaneHealthRig) requireFailing(t *testing.T) {
 	t.Helper()
-	waitFor(t, 30*time.Second, "the self-health probe to fail on the role lane twice", func() bool { return r.failures() >= 2 })
+	waitFor(t, "the self-health probe to fail on the role lane twice", func() bool { return r.failures() >= 2 })
 	var code int
 	var body map[string]any
-	waitFor(t, 30*time.Second, "/healthz to answer 503 for the role lane", func() bool {
+	waitFor(t, "/healthz to answer 503 for the role lane", func() bool {
 		code, body = r.get()
 		return code == http.StatusServiceUnavailable && body["error"] == roleLaneInactiveText
 	})
@@ -225,9 +225,9 @@ func (r *roleLaneHealthRig) requireFailing(t *testing.T) {
 // fails when any of them failed on the role lane or /healthz does not answer 200 healthy.
 func (r *roleLaneHealthRig) requireStopped(t *testing.T) {
 	t.Helper()
-	waitFor(t, 30*time.Second, "the monitor to log self-health recovered", r.recovered)
+	waitFor(t, "the monitor to log self-health recovered", r.recovered)
 	failed, probed := r.failures(), r.probes.Load()
-	waitFor(t, 30*time.Second, "five more probes", func() bool { return r.probes.Load() >= probed+5 })
+	waitFor(t, "five more probes", func() bool { return r.probes.Load() >= probed+5 })
 	if after := r.failures(); after != failed {
 		t.Fatalf("the probe failed on the role lane %d more times after it recovered; the monitor logged:\n%s", after-failed, r.logs.String())
 	}
@@ -257,7 +257,7 @@ func (r *roleLaneHealthRig) requireDelivers(t *testing.T) {
 		if got != topic {
 			t.Fatalf("the role lane received %s, want %s", got, topic)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the role lane received nothing on %s", topic)
 	}
 }
@@ -300,7 +300,7 @@ func TestTheSelfHealthProbeFailsWhileTheRoleLaneIsRefusedAndStopsOnceItIsBack(t 
 		rig.revoked = testnats.SubscribeGrantConfig(rig.public, "_INBOX.>", contracts.RoleTopicPrefix+"> "+machineQueue)
 		from := rig.traceFrom()
 		rig.revoke(t)
-		waitFor(t, 30*time.Second, "the self-health probe to fail on the role lane", func() bool { return rig.failures() >= 1 })
+		waitFor(t, "the self-health probe to fail on the role lane", func() bool { return rig.failures() >= 1 })
 
 		rig.requireStopped(t)
 		rig.requireDelivers(t)
@@ -356,7 +356,7 @@ func TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod(t *testing.T)
 	from := rig.traceFrom()
 	rig.revoke(t)
 	rig.requireFailing(t)
-	waitFor(t, 30*time.Second, "the self-health probe to fail on the role lane four times", func() bool { return rig.failures() >= 4 })
+	waitFor(t, "the self-health probe to fail on the role lane four times", func() bool { return rig.failures() >= 4 })
 	rig.stop()
 	// The flush returns once the server has handled every protocol line the lane sent before it,
 	// so the trace holds every SUB the probes sent.
@@ -387,7 +387,7 @@ func TestTheSelfHealthProbeSendsARefusedRoleLaneAgainOncePerPeriod(t *testing.T)
 func TestTheSelfHealthProbeLogsNothingForAHealthyRoleLane(t *testing.T) {
 	rig := newRoleLaneHealthRig(t, "role-lane-health-control")
 	from := rig.traceFrom()
-	waitFor(t, 30*time.Second, "ten probes", func() bool { return rig.probes.Load() >= 10 })
+	waitFor(t, "ten probes", func() bool { return rig.probes.Load() >= 10 })
 	rig.stop()
 	if err := rig.lane.Conn.Flush(); err != nil {
 		t.Fatalf("flush the role lane: %v", err)

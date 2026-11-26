@@ -642,13 +642,13 @@ func awaitDeleteWaitingOrDone(t *testing.T, locks *sessionLocks, sessionID strin
 // delete made through it leaves once its own watch has delivered that delete.
 func awaitCacheHasNoRecord(t *testing.T, sessions *session.SessionRegistry, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		if _, err := sessions.Get(sessionID); errors.Is(err, nats.ErrKeyNotFound) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after 10s the cache still holds a record of %s; want the delete made through it delivered", sessionID)
+			t.Fatalf("in the time it was given the cache still holds a record of %s; want the delete made through it delivered", sessionID)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -661,7 +661,7 @@ func awaitCacheHasNoRecord(t *testing.T, sessions *session.SessionRegistry, sess
 // hold nothing behind anything.
 func awaitCachedTopics(t *testing.T, registry *store.Registry, sessionID string, topics ...string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the interest cache to hold "+sessionID+"'s row with "+strings.Join(topics, ", "), func() bool {
+	waitFor(t, "the interest cache to hold "+sessionID+"'s row with "+strings.Join(topics, ", "), func() bool {
 		interest, ok := registry.Cached(sessionID)
 		if !ok {
 			return false

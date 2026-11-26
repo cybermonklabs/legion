@@ -502,7 +502,7 @@ func TestListenerReconnectWhileWaitingOutABindingShutsDownAfterForwardingRoles(t
 	relay.arm("$JS.API.CONSUMER.INFO.", 2)
 	select {
 	case <-relay.swallowed:
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatal("the listener's durable read never reached the controlled relay")
 	}
 	// One read is interrupted. Left armed, the relay would swallow the reconnected link too, as soon
@@ -513,7 +513,7 @@ func TestListenerReconnectWhileWaitingOutABindingShutsDownAfterForwardingRoles(t
 	// The lease's own connection goes through the relay too and logs its reconnect under
 	// "envoy-listener-lease"; the role lane holds a connection of its own (bus.ConnectRoleLane),
 	// which reconnects and sends its subscription again beside the main client's.
-	waitFor(t, 10*time.Second, "the listener's main client and its role lane to reconnect", func() bool {
+	waitFor(t, "the listener's main client and its role lane to reconnect", func() bool {
 		output := listener.Output.String()
 		return strings.Contains(output, `envoy nats reconnected name="envoy-listener `) &&
 			strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
@@ -557,7 +557,7 @@ func TestListenerReconnectWhileWaitingOutABindingShutsDownAfterForwardingRoles(t
 			if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
 				t.Fatalf("role message %d forwarded with dedupe key %q, want %s prefix", received, frame.DedupeKey, roleForwardDedupePrefix)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatalf("the listener forwarded %d of %d routed role messages during the reconnect:\n%s", received, messages, listener.Output.String())
 		}
 	}

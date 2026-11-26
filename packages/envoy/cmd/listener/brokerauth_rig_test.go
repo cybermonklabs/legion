@@ -802,7 +802,7 @@ func TestABrokerTokenPresentedBeforeTheSpentProofBucketOpensIsAnsweredStartingAn
 		t.Fatalf("the listener asked the broker %d times about a token presented while %s, want never: it took the token without the spent-proof check:\n%s",
 			asked, while, rig.listener.Output.String())
 	}
-	waitFor(t, 5*time.Second, "the listener to log the closed /v1 gate's refusal of the request", func() bool {
+	waitFor(t, "the listener to log the closed /v1 gate's refusal of the request", func() bool {
 		return len(linesIn(rig.listener.Output.String(), "request refused while starting", map[string]any{"gate": "v1", "path": path})) == 1
 	})
 	if judged := linesIn(rig.listener.Output.String(), "listener: broker token rejected", map[string]any{"path": path}); len(judged) != 0 {

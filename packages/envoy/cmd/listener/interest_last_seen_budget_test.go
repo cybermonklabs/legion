@@ -68,7 +68,7 @@ func TestTheInterestsListAnswersWithinItsBudgetWhileTheLastSeenBucketHangs(t *te
 		[]string{contracts.LegacyAgentSubject(lapsed), "notifications.test.>"}); err != nil {
 		t.Fatalf("write %s's interest record: %v", lapsed, err)
 	}
-	waitFor(t, 5*time.Second, "the interest cache to hold the lapsed row", func() bool {
+	waitFor(t, "the interest cache to hold the lapsed row", func() bool {
 		rows, err := registry.List()
 		return err == nil && slices.ContainsFunc(rows, func(item store.Interest) bool { return item.SessionID == lapsed })
 	})

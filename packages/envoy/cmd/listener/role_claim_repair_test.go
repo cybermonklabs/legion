@@ -197,7 +197,7 @@ func TestHealthzReportsTheRoleClaimRescanAndIsDegradedPastItsBound(t *testing.T)
 	// and the repair's field names no read. Its interest copy's first read gates /healthz, which
 	// answers "starting" until it completes (interestCopyRead), so the row asks once it has.
 	restarted := unreadRegistry(t, rig.client, rig.clock)
-	waitFor(t, 5*time.Second, "the restarted listener's interest copy to complete its first read", func() bool {
+	waitFor(t, "the restarted listener's interest copy to complete its first read", func() bool {
 		return restarted.Servable() == nil
 	})
 	unread := reportsOver(&listenerDeps{client: rig.client, registry: restarted, sessions: rig.deps.sessions,

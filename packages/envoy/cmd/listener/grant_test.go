@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -70,7 +71,7 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 	if held.Holder != instance || held.Released {
 		t.Fatalf("%s = %+v, want held by %s", leaseKey, held, instance)
 	}
-	waitFor(t, 5*time.Second, "the holder to renew the lease", func() bool {
+	waitFor(t, "the holder to renew the lease", func() bool {
 		record, entry := readLeaseKey()
 		return record.Holder == instance && entry.Revision() > taken.Revision()
 	})
@@ -98,7 +99,7 @@ func TestAListenerUnderItsMachinesGrantHoldsTheLeaseAndRecordsLastSeen(t *testin
 	}
 	publish(t, publisher, newEnvelope("dispatch", contracts.RoleTopicPrefix+role, "a role message for its holder"))
 	ledger := "delivery." + bus.ListenerDurable(machineID) + "."
-	waitFor(t, 15*time.Second, "the role forward to record its delivery in the ledger", func() bool {
+	waitFor(t, "the role forward to record its delivery in the ledger", func() bool {
 		keys, err := state.Legacy().Keys()
 		return err == nil && hasKeyWithPrefix(keys, ledger)
 	})
@@ -463,7 +464,7 @@ func TestEveryCallTheListenerMakesOnItsStateBucketPassesUnderItsMachinesGrant(t 
 	if err := json.Unmarshal(recorded.Value(), &record); err != nil || record.At == 0 {
 		t.Fatalf("%s's last-seen record %s (%v), want a time", sessionID, recorded.Value(), err)
 	}
-	waitFor(t, ttl+10*time.Second, sessionID+"'s registration to lapse", func() bool {
+	testwait.WithinPolling(t, ttl+10*time.Second, 50*time.Millisecond, sessionID+"'s registration to lapse", func() bool {
 		_, err := sessions.Get(sessionID)
 		return errors.Is(err, natsgo.ErrKeyNotFound)
 	})
@@ -520,7 +521,7 @@ func TestAListenerWhoseGrantRefusesItsDurablesCreateStaysLiveAndUnready(t *testi
 				strings.Contains(fmt.Sprint(record["error"]), `Permissions Violation for Publish to "`+fmt.Sprint(record["subject"])+`"`)
 		})
 	}
-	waitFor(t, 30*time.Second, "the listener to name its refused durable create at ERROR", func() bool { return refusals() > 0 })
+	waitFor(t, "the listener to name its refused durable create at ERROR", func() bool { return refusals() > 0 })
 	for deadline := time.Now().Add(liveHealthWindow); time.Now().Before(deadline); time.Sleep(time.Second) {
 		select {
 		case <-listener.Exited:

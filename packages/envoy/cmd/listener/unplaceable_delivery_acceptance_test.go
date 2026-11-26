@@ -304,7 +304,7 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 		run := startUnplaceableDeliveryRun(t, "ses_unplaceable_retried", oneDeferralWindow, 0)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the first delivery to be deferred", func() bool {
+		waitFor(t, "the first delivery to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		deferrals := deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")
@@ -338,7 +338,7 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 			t.Fatalf("a deferred delivery published a delivery exception already: %s", string(message.Data))
 		}
 
-		waitFor(t, 20*time.Second, "the redelivered message to be given up", func() bool {
+		waitFor(t, "the redelivered message to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -375,7 +375,7 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 		run := startUnplaceableDeliveryRun(t, "ses_unplaceable_at_once", 0, 0)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the first delivery to be given up", func() bool {
+		waitFor(t, "the first delivery to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -407,7 +407,7 @@ func TestUnplaceableAgentDeliveryRetriesThenGivesUp(t *testing.T) {
 		run := startUnplaceableDeliveryRun(t, "ses_unplaceable_aged", oneDeferralWindow, oneDeferralWindow+time.Second)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the aged message's first delivery to be deferred", func() bool {
+		waitFor(t, "the aged message's first delivery to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		logs := harness.logs.String()
@@ -484,7 +484,7 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 		noWayToReceive: {reason: "no_session_record", status: "unplaceable_no_record"},
 	}
 
-	waitFor(t, 20*time.Second, "every unplaceable cause to be deferred", func() bool {
+	waitFor(t, "every unplaceable cause to be deferred", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) >= len(want)
 	})
 	deferrals := deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")
@@ -509,7 +509,7 @@ func TestEveryUndeliverableShapeIsGivenUpUnderTheOneRecordedCause(t *testing.T) 
 		t.Fatalf("the deferral lines name %v, want one for each retried cause - a cause given up on its first delivery is a cause this listener never waited for:\n%s", deferred, harness.logs.String())
 	}
 
-	waitFor(t, 25*time.Second, "every deferred cause to be given up", func() bool {
+	waitFor(t, "every deferred cause to be given up", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) >= len(want)
 	})
 	logs := harness.logs.String()
@@ -619,7 +619,7 @@ func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestName
 		run, wakes := start(t, target, nil)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the first delivery to be deferred or failed", func() bool {
+		waitFor(t, "the first delivery to be deferred or failed", func() bool {
 			logs := harness.logs.String()
 			return len(recordsFor(deliveryRecords(t, logs, "listener agent delivery deferred"), target))+
 				len(recordsFor(deliveryRecords(t, logs, "listener agent delivery failed"), target)) > 0
@@ -633,7 +633,7 @@ func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestName
 			t.Fatalf("the deferral names reason %q at attempt %d, want no_session_record at the first delivery:\n%s", deferrals[0].Reason, deferrals[0].Attempt, harness.logs.String())
 		}
 
-		waitFor(t, 20*time.Second, "the redelivered message to be given up", func() bool {
+		waitFor(t, "the redelivered message to be given up", func() bool {
 			return len(recordsFor(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up"), target)) > 0
 		})
 		logs := harness.logs.String()
@@ -673,7 +673,7 @@ func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestName
 		run, wakes := start(t, target, &session.SessionEntry{MachineID: "test-machine"})
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery to be disposed of", func() bool {
+		waitFor(t, "the delivery to be disposed of", func() bool {
 			logs := harness.logs.String()
 			return len(deliveryRecords(t, logs, "listener agent delivery failed"))+
 				len(deliveryRecords(t, logs, "listener agent delivery deferred"))+
@@ -690,7 +690,7 @@ func TestACopyForASessionWithNoRecordIsGivenUpWithTheWakeEvenWhenItsInterestName
 		assertDeliveryException(t, run.exceptions, run.item, "delivery_failed")
 		// The failed line is written before the handler's NAK is counted, so the count is waited
 		// for rather than read once.
-		waitFor(t, 5*time.Second, "the failed delivery's NAK to be counted", func() bool {
+		waitFor(t, "the failed delivery's NAK to be counted", func() bool {
 			return counterValue(t, metricsBody(t, harness), nakedCounter) >= 1
 		})
 		body := metricsBody(t, harness)
@@ -735,7 +735,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 		cfg.deferredUnplaceable = held
 		run := startUnplaceableDelivery(t, harness, cfg, "ses_cap_reached", 0)
 
-		waitFor(t, 15*time.Second, "the delivery that found the cap reached to be given up", func() bool {
+		waitFor(t, "the delivery that found the cap reached to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -768,7 +768,7 @@ func TestUnplaceableDeferralsStopAtTheirCap(t *testing.T) {
 		cfg.deferredUnplaceable = held
 		startUnplaceableDelivery(t, harness, cfg, "ses_cap_last_slot", 0)
 
-		waitFor(t, 15*time.Second, "the delivery in the last slot to be deferred", func() bool {
+		waitFor(t, "the delivery in the last slot to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		if got := held.size(); got != unplaceableDeferralCap {
@@ -814,7 +814,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 	cfg.deferredUnplaceable = held
 	startUnplaceableDelivery(t, harness, cfg, "ses_slot_released", 0)
 
-	waitFor(t, 30*time.Second, "the redelivery of the deferred message to be deferred again", func() bool {
+	waitFor(t, "the redelivery of the deferred message to be deferred again", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) >= 2
 	})
 	logs := harness.logs.String()
@@ -834,7 +834,7 @@ func TestARedeliveryGivesItsDeferralSlotBack(t *testing.T) {
 		t.Fatalf("%d give-up lines while the window still has a deferral left, want none:\n%s", got, logs)
 	}
 
-	waitFor(t, 30*time.Second, "the message to be given up once its deferrals are spent", func() bool {
+	waitFor(t, "the message to be given up once its deferrals are spent", func() bool {
 		return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 	})
 	if got := held.size(); got != unplaceableDeferralCap-1 {
@@ -889,7 +889,7 @@ func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
 	t.Run("at the cap, the redelivery is given up and every slot stays held", func(t *testing.T) {
 		harness, held := start(t, "ses_untaken_release_at_cap", unplaceableDeferralCap)
 
-		waitFor(t, 15*time.Second, "the redelivery that found the cap reached to be given up", func() bool {
+		waitFor(t, "the redelivery that found the cap reached to be given up", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery given up")) > 0
 		})
 		logs := harness.logs.String()
@@ -908,7 +908,7 @@ func TestARedeliveryThisListenerNeverDeferredGivesNoSlotBack(t *testing.T) {
 	t.Run("one slot under the cap, the same redelivery is deferred", func(t *testing.T) {
 		harness, held := start(t, "ses_untaken_release_last_slot", unplaceableDeferralCap-1)
 
-		waitFor(t, 15*time.Second, "the redelivery to be deferred in the last slot", func() bool {
+		waitFor(t, "the redelivery to be deferred in the last slot", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		logs := harness.logs.String()
@@ -967,7 +967,7 @@ func TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt(t *testing.T) {
 		run := start(t, "ses_window_past_max_deliver", unplaceableMaxDeliveries)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery at the cap to be disposed of", func() bool {
+		waitFor(t, "the delivery at the cap to be disposed of", func() bool {
 			logs := harness.logs.String()
 			return len(deliveryRecords(t, logs, "listener agent delivery given up"))+
 				len(deliveryRecords(t, logs, "listener agent delivery deferred")) > 0
@@ -992,7 +992,7 @@ func TestAWindowPastTheDurablesMaxDeliverStillGivesUpBeforeIt(t *testing.T) {
 		run := start(t, "ses_window_under_max_deliver", unplaceableMaxDeliveries-1)
 		harness := run.harness
 
-		waitFor(t, 15*time.Second, "the delivery under the cap to be deferred", func() bool {
+		waitFor(t, "the delivery under the cap to be deferred", func() bool {
 			return len(deliveryRecords(t, harness.logs.String(), "listener agent delivery deferred")) > 0
 		})
 		logs := harness.logs.String()
@@ -1050,12 +1050,12 @@ func TestAGiveUpWhoseNoticeCanNeverBePublishedIsStillTerminal(t *testing.T) {
 	cfg.unplaceableRetryWindow = oneDeferralWindow
 	run := startEnvelopeDeliveryThrough(t, harness, jetStreamDeliveryHandler(cfg), target, item, 0)
 
-	waitFor(t, 20*time.Second, "the message to be given up and its notice to fail", func() bool {
+	waitFor(t, "the message to be given up and its notice to fail", func() bool {
 		logs := harness.logs.String()
 		return len(deliveryRecords(t, logs, "listener agent delivery given up")) > 0 &&
 			len(deliveryRecords(t, logs, exceptionPublishFailedLine)) > 0
 	})
-	waitFor(t, 10*time.Second, "the durable to hold nothing pending for the message", func() bool {
+	waitFor(t, "the durable to hold nothing pending for the message", func() bool {
 		info, err := harness.client.JS().ConsumerInfo(bus.Stream, run.consumer)
 		return err == nil && info.NumAckPending == 0
 	})

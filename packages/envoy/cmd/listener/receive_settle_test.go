@@ -168,7 +168,7 @@ func TestASettleHoldWaitsForAMessageOutstandingWithADeadHolderAndDeliversInStrea
 
 	handle, received := recordingHandler()
 	rig := startReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 10*time.Second, "pod-b to take the expired lease", rig.lease.Holding)
+	waitFor(t, "pod-b to take the expired lease", rig.lease.Holding)
 	if status := rig.lease.Status(); status.How != leaseTakenExpired || !status.Settle {
 		t.Fatalf("pod-b's lease = %+v, want taken over an expired record, settling", status)
 	}
@@ -429,7 +429,7 @@ func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T
 	if err := dead.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the dead holder: %v", err)
 	}
-	waitFor(t, 5*time.Second, "the dead holder's binding to go", func() bool {
+	waitFor(t, "the dead holder's binding to go", func() bool {
 		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
 		return err == nil && !info.PushBound
 	})
@@ -442,11 +442,11 @@ func TestAGracefulStopDuringAnAckWaitHoldOwesTheNextHolderAnAckWait(t *testing.T
 		t.Fatalf("pod-b's lease = %+v, want taken over an expired record, settling", status)
 	}
 	publishDurable(t, client, "newer")
-	waitFor(t, 5*time.Second, "pod-b to hold the newer message", func() bool {
+	waitFor(t, "pod-b to hold the newer message", func() bool {
 		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
 		return err == nil && info.NumAckPending == 2 && info.NumPending == 0
 	})
-	waitFor(t, 5*time.Second, "pod-b to take in the newer message the server sent it", func() bool { return stopping.unsettledCount() >= 1 })
+	waitFor(t, "pod-b to take in the newer message the server sent it", func() bool { return stopping.unsettledCount() >= 1 })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stopping.receiver.Stop(ctx)
@@ -492,7 +492,7 @@ func TestAStoppingPodHandsARepeatBackAgain(t *testing.T) {
 	handle, received := recordingHandler()
 	next := newReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
 	next.lease.Start(context.Background())
-	waitFor(t, 5*time.Second, "pod-b to read pod-a's lease", func() bool {
+	waitFor(t, "pod-b to read pod-a's lease", func() bool {
 		return next.lease.Status().ActiveInstance == "pod-a"
 	})
 	publishDurable(t, active.client, "first")
@@ -554,7 +554,7 @@ func TestAReleasedRecordUnsettledOrWithAStaleBindingSettlesBesideTheBinding(t *t
 			putLeaseRecord(t, uri, row.machineID, row.record)
 			rig.lease.Start(context.Background())
 			rig.receiver.Start()
-			waitFor(t, 10*time.Second, "pod-b to take the released lease", rig.lease.Holding)
+			waitFor(t, "pod-b to take the released lease", rig.lease.Holding)
 			if status := rig.lease.Status(); status.How != leaseTakenReleased || status.Settle != row.settle {
 				t.Fatalf("pod-b's lease = %+v, want taken from a released record, settle %v", status, row.settle)
 			}
@@ -606,13 +606,13 @@ func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
 	stopping.awaitState(t, receiveActive, 10*time.Second)
 	publishDurable(t, client, "newer one")
 	publishDurable(t, client, "newer two")
-	waitFor(t, 5*time.Second, "pod-b to hold both newer messages", func() bool {
+	waitFor(t, "pod-b to hold both newer messages", func() bool {
 		return strings.Contains(stopping.logs.String(), "receiving beside it") && func() bool {
 			info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
 			return err == nil && info.NumAckPending == 3 && info.NumPending == 0
 		}()
 	})
-	waitFor(t, 5*time.Second, "pod-b to take in both newer messages the server sent it", func() bool { return stopping.unsettledCount() >= 2 })
+	waitFor(t, "pod-b to take in both newer messages the server sent it", func() bool { return stopping.unsettledCount() >= 2 })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	stopping.receiver.Stop(ctx)
@@ -628,7 +628,7 @@ func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
 
 	handle, received := recordingHandler()
 	next := startReceiverRig(t, uri, machineID, "pod-c", handle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "pod-c to take the released lease", next.lease.Holding)
+	waitFor(t, "pod-c to take the released lease", next.lease.Holding)
 	if status := next.lease.Status(); status.How != leaseTakenReleased || !status.Settle {
 		t.Fatalf("pod-c's lease = %+v, want taken from a released record, settling", status)
 	}

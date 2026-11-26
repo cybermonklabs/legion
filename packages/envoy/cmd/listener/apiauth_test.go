@@ -676,7 +676,7 @@ func TestAPIAuthServesWhileDiscoveryFailsAndAdmitsTheTokenOnceItSucceeds(t *test
 	}
 
 	issuer.FailDiscovery(0)
-	waitFor(t, 15*time.Second, "the projected token to be admitted once the issuer answers", func() bool {
+	waitFor(t, "the projected token to be admitted once the issuer answers", func() bool {
 		return serve("/v1/sessions", serviceToken).Code == http.StatusNoContent
 	})
 	if !auth.verifier.Discovered() {
@@ -730,7 +730,7 @@ func TestAPIAuthAndHealthzServeWhileGoogleDiscoveryFails(t *testing.T) {
 	wantIssuers(true, false)
 
 	issuer.FailDiscovery(0)
-	waitFor(t, 15*time.Second, "the Google identity token to be admitted once Google's issuer answers", func() bool {
+	waitFor(t, "the Google identity token to be admitted once Google's issuer answers", func() bool {
 		return serve(googleToken).Code == http.StatusNoContent
 	})
 	wantIssuers(true, true)
@@ -781,7 +781,7 @@ func TestAListenerWhoseOIDCIssuerFailsAtStartServesOnceItAnswers(t *testing.T) {
 
 	issuer.FailDiscovery(0)
 	answering := time.Now()
-	waitFor(t, 45*time.Second, "a projected token to be admitted once the issuer answers", func() bool {
+	waitFor(t, "a projected token to be admitted once the issuer answers", func() bool {
 		return callProjected().StatusCode == http.StatusOK
 	})
 	t.Logf("a projected token was admitted %s after the issuer began to answer discovery", time.Since(answering).Round(time.Millisecond))

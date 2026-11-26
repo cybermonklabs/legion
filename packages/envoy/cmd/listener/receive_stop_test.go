@@ -38,7 +38,7 @@ func TestAGracefulStopHandsWhatItHeldBackAndReleasesTheLeaseToTheStandby(t *test
 	active.awaitState(t, receiveActive, 10*time.Second)
 	handle, received := recordingHandler()
 	standby := startReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "the standby to read pod-a's lease", func() bool {
+	waitFor(t, "the standby to read pod-a's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-a"
 	})
 
@@ -51,7 +51,7 @@ func TestAGracefulStopHandsWhatItHeldBackAndReleasesTheLeaseToTheStandby(t *test
 	case <-time.After(5 * time.Second):
 		t.Fatal("the active pod never took the first message")
 	}
-	waitFor(t, 5*time.Second, "the active pod to hold all three messages", func() bool {
+	waitFor(t, "the active pod to hold all three messages", func() bool {
 		info, err := active.client.JS().ConsumerInfo(bus.Stream, active.consumer)
 		return err == nil && info.NumAckPending == 3
 	})
@@ -102,7 +102,7 @@ func handBackEnd(t *testing.T, rig *receiverRig) map[string]any {
 func (rig *receiverRig) logRecord(t *testing.T, msg string, within time.Duration) map[string]any {
 	t.Helper()
 	var found map[string]any
-	waitFor(t, within, "the log record "+msg, func() bool {
+	testwait.WithinPolling(t, within, 50*time.Millisecond, "the log record "+msg, func() bool {
 		for line := range strings.SplitSeq(rig.logs.String(), "\n") {
 			var record map[string]any
 			if json.Unmarshal([]byte(line), &record) == nil && record["msg"] == msg {
@@ -138,7 +138,7 @@ func TestAGracefulStopOverASlowLinkHandsBackWhatWasOnTheWire(t *testing.T) {
 	active.awaitState(t, receiveActive, 10*time.Second)
 	handle, received := recordingHandler()
 	standby := startReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "the standby to read pod-a's lease", func() bool {
+	waitFor(t, "the standby to read pod-a's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-a"
 	})
 
@@ -147,7 +147,7 @@ func TestAGracefulStopOverASlowLinkHandsBackWhatWasOnTheWire(t *testing.T) {
 	for _, data := range published {
 		publishDurable(t, standby.client, data)
 	}
-	waitFor(t, 5*time.Second, "the server to have pushed all five to pod-a", func() bool {
+	waitFor(t, "the server to have pushed all five to pod-a", func() bool {
 		info, err := standby.client.JS().ConsumerInfo(bus.Stream, standby.consumer)
 		return err == nil && info.NumAckPending == len(published) && info.NumPending == 0
 	})
@@ -190,7 +190,7 @@ func TestAGracefulStopKeepsItsSubscriptionUntilTheStandbyReceives(t *testing.T) 
 	active.awaitState(t, receiveActive, 10*time.Second)
 	handle, _ := recordingHandler()
 	standby := startReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "the standby to read pod-a's lease", func() bool {
+	waitFor(t, "the standby to read pod-a's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-a"
 	})
 	observer := testnats.Connect(t, uri)
@@ -259,7 +259,7 @@ func TestAGracefulStopMarksTheHandBackForTheRecordItReleased(t *testing.T) {
 	active.awaitState(t, receiveActive, 10*time.Second)
 	standbyHandle, _ := recordingHandler()
 	standby := startReceiverRig(t, uri, machineID, "pod-b", standbyHandle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "the standby to read pod-a's lease", func() bool {
+	waitFor(t, "the standby to read pod-a's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-a"
 	})
 
@@ -313,7 +313,7 @@ func TestAStopWhoseHandlerIgnoresItsCancelMarksNoHandBack(t *testing.T) {
 	active.awaitState(t, receiveActive, 10*time.Second)
 	standbyHandle, _ := recordingHandler()
 	standby := startReceiverRig(t, uri, machineID, "pod-b", standbyHandle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "the standby to read pod-a's lease", func() bool {
+	waitFor(t, "the standby to read pod-a's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-a"
 	})
 
@@ -400,14 +400,14 @@ func TestAStopMarksNoHandBackWhenItsLingerOrItsTermFellShort(t *testing.T) {
 				// never subscribes.
 				mute := newReceiverRig(t, uri, row.machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
 				mute.lease.Start(context.Background())
-				waitFor(t, 5*time.Second, "pod-b to read pod-a's lease", func() bool {
+				waitFor(t, "pod-b to read pod-a's lease", func() bool {
 					return mute.lease.Status().ActiveInstance == "pod-a"
 				})
 			}
 			if row.successor {
 				standbyHandle, _ := recordingHandler()
 				standby := startReceiverRig(t, uri, row.machineID, "pod-b", standbyHandle, testReceiveTiming(), testLeaseTiming())
-				waitFor(t, 5*time.Second, "pod-b to read pod-a's lease", func() bool {
+				waitFor(t, "pod-b to read pod-a's lease", func() bool {
 					return standby.lease.Status().ActiveInstance == "pod-a"
 				})
 			}
@@ -460,7 +460,7 @@ func TestAGracefulStopWithNoOtherPodEndsItsLingerUntaken(t *testing.T) {
 	if active.lease.Holding() {
 		t.Fatal("the stopped pod still holds the lease")
 	}
-	waitFor(t, 2*time.Second, "the durable to have no subscriber left", func() bool {
+	waitFor(t, "the durable to have no subscriber left", func() bool {
 		info, err := active.client.JS().ConsumerInfo(bus.Stream, active.consumer)
 		return err == nil && !info.PushBound
 	})
@@ -479,7 +479,7 @@ func TestAGracefulStopLingersToItsCapForATakerThatNeverReceives(t *testing.T) {
 	// pod-b runs a lease and no receive loop: it takes the released record and never subscribes.
 	mute := newReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
 	mute.lease.Start(context.Background())
-	waitFor(t, 5*time.Second, "pod-b to read pod-a's lease", func() bool {
+	waitFor(t, "pod-b to read pod-a's lease", func() bool {
 		return mute.lease.Status().ActiveInstance == "pod-a"
 	})
 
@@ -551,7 +551,7 @@ func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *test
 	for _, data := range published {
 		publishDurable(t, active.client, data)
 	}
-	waitFor(t, 5*time.Second, "pod-a to hold both messages", func() bool {
+	waitFor(t, "pod-a to hold both messages", func() bool {
 		info, err := active.client.JS().ConsumerInfo(bus.Stream, active.consumer)
 		return err == nil && info.NumAckPending == len(published)
 	})
@@ -573,7 +573,7 @@ func TestASuccessorThatSubscribesAfterTheLingerLetGoSettlesForTheAckWait(t *test
 	// linger's end, as the two pods logged them, and fails as UNARRANGED on a take that missed it.
 	time.Sleep(time.Until(released.Add(850 * time.Millisecond)))
 	standby.lease.Start(context.Background())
-	waitFor(t, 2*time.Second, "pod-b to take the released lease", standby.lease.Holding)
+	testwait.WithinPolling(t, 2*time.Second, 50*time.Millisecond, "pod-b to take the released lease", standby.lease.Holding)
 	if took := standby.lease.Status(); !took.HandBack {
 		t.Fatalf("pod-b took the record as %+v: the row needs a hand-back candidate, which only a mark could confirm", took)
 	}
@@ -666,8 +666,8 @@ func TestASuccessorWhoseSubscribeTheServerNeverGotSettlesForTheAckWait(t *testin
 	// The connection itself is what the wait reads: a request issued on the dropped link would
 	// hold its own JetStream deadline, long past the term's settle hold.
 	conn := standby.client.Conn
-	waitFor(t, 10*time.Second, "pod-b to notice the dropped link", func() bool { return !conn.IsConnected() })
-	waitFor(t, 15*time.Second, "pod-b to reconnect", conn.IsConnected)
+	waitFor(t, "pod-b to notice the dropped link", func() bool { return !conn.IsConnected() })
+	waitFor(t, "pod-b to reconnect", conn.IsConnected)
 	if err := standby.receiver.resubscribe(context.Background()); err != nil {
 		t.Fatalf("resubscribe pod-b: %v", err)
 	}

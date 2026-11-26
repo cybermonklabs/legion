@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -40,7 +41,7 @@ func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 		rig := newReceiverRigVia(t, denied, granted, "box-stuck-alone", "pod-a", handle, timing, testLeaseTiming())
 		rig.lease.Start(context.Background())
 		rig.receiver.Start()
-		waitFor(t, 20*time.Second, "pod-a to give its lease up and take it again", func() bool {
+		waitFor(t, "pod-a to give its lease up and take it again", func() bool {
 			status := rig.lease.Status()
 			return status.Term >= 2 && status.Holding
 		})
@@ -82,7 +83,7 @@ func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 		var body map[string]any
 		// A listener without a lease that does not receive yet is degraded from the start; this
 		// waits for the answer past the alarm bound, which is the unready one.
-		waitFor(t, 15*time.Second, "/healthz to report the failing durable", func() bool {
+		waitFor(t, "/healthz to report the failing durable", func() bool {
 			code, body = get()
 			return code != http.StatusOK
 		})
@@ -91,7 +92,7 @@ func TestAPodThatCannotPrepareItsDurableAloneTriesAgain(t *testing.T) {
 			t.Fatalf("/healthz once the durable read has failed past the bound = %d %v, want 503 unhealthy, receive %q and an error naming the failed read",
 				code, body, receivePreparing.String())
 		}
-		waitFor(t, time.Second, "the alarm", func() bool { return durableAlarms(logs) > 0 })
+		testwait.WithinPolling(t, time.Second, 50*time.Millisecond, "the alarm", func() bool { return durableAlarms(logs) > 0 })
 		if alarms := durableAlarmRecords(logs); len(alarms) != 1 || !strings.Contains(fmt.Sprint(alarms[0]["reason"]), "read the durable consumer") {
 			t.Fatalf("alarms: %v, want one at ERROR whose reason names the failed read", alarms)
 		}
@@ -160,7 +161,7 @@ func TestAStandbyOutlivesThreeSelfHealthIntervals(t *testing.T) {
 	handle, _ := recordingHandler()
 	startReceiverRig(t, uri, machineID, "pod-a", handle, testReceiveTiming(), testLeaseTiming()).awaitState(t, receiveActive, 10*time.Second)
 	standby := startReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
-	waitFor(t, 5*time.Second, "the standby to read pod-a's lease", func() bool {
+	waitFor(t, "the standby to read pod-a's lease", func() bool {
 		return standby.lease.Status().ActiveInstance == "pod-a"
 	})
 
@@ -228,7 +229,7 @@ func TestTheHolderReceivesOnAConnectionTheBusReplaced(t *testing.T) {
 	rig.awaitState(t, receiveActive, 10*time.Second)
 	closed := rig.client.Conn
 	closed.Close()
-	waitFor(t, 30*time.Second, "the subscription to move onto the replacement connection", func() bool {
+	waitFor(t, "the subscription to move onto the replacement connection", func() bool {
 		report := rig.receiver.report()
 		return rig.receiver.clientConn.Load() != closed && report.State == receiveActive && report.SubscriptionValid
 	})
@@ -336,7 +337,7 @@ func TestALapsedHolderDoesNotAnswerHealthy(t *testing.T) {
 
 	thaw := leaseLink.freeze()
 	t.Cleanup(thaw)
-	waitFor(t, 30*time.Second, "pod-a's lease to lapse, ending its term", func() bool {
+	testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "pod-a's lease to lapse, ending its term", func() bool {
 		return strings.Contains(active.logs.String(), "listener lease lapsed")
 	})
 	active.awaitState(t, receiveStandby, 10*time.Second)

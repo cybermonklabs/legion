@@ -192,7 +192,7 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 		t.Fatal(err)
 	}
 	_ = probe.Flush()
-	waitFor(t, 10*time.Second, "the server to log its refusal of "+provoked+", so its log is read", func() bool {
+	waitFor(t, "the server to log its refusal of "+provoked+", so its log is read", func() bool {
 		return slices.Contains(listenerStateRequests(granted.Log()), "Publish "+provoked)
 	})
 	for _, request := range listenerStateRequests(granted.Log()) {
