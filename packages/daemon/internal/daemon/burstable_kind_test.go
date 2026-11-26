@@ -33,7 +33,7 @@ import (
 // runtime's options fails this package's tests, not the live proof the next time a kind cluster
 // runs it.
 
-// burstableLiveRepository is a public repository, so the pod's workspace-fetch and its repository
+// burstableLiveRepository is a public repository, so the pod's workspace-init and repository
 // cache clone it without GitHub asking for the placeholder provisioning token; its default branch
 // is master.
 var burstableLiveRepository = ghrepo.MustParse("octocat/Hello-World")
