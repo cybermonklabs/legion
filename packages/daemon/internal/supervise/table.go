@@ -1743,14 +1743,15 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // keeps for an outstanding prompt keeps the handshake's as well: that prompt's turn is the task's.
 //
 // A send the compaction held whose prompt frame was written and whose answer did not come within
-// its wait is no loss (heldSend, keepHeldPrompt, runtime.ErrPromptUnanswered): the pinned Oh My Pi
-// parks a prompt that reaches it while a handoff runs, and admits and acknowledges it only once the
-// handoff ends, so the send's wait ran out with the prompt still on its way to its turn. Nothing is
-// taken back, recorded or charged, and the prompt stays the task's. Every other end of a held send
-// takes the path below as any send's does, a wait that ran out before the prompt was written among
-// them — an adoption of the working copy, an identity mint, a protocol negotiation (startSend) —
-// since no prompt went out: the task is not sent, waits for the next send, and no turn is taken
-// for its own on the strength of a prompt that does not exist.
+// its wait is not taken for a loss (heldSend, keepHeldPrompt, runtime.ErrPromptUnanswered): the
+// write proves the frame went out, not that Oh My Pi received it, and where it did, the pinned Oh
+// My Pi parks a prompt that reaches it while a handoff runs and admits and acknowledges it only
+// once the handoff ends, so the send's wait can run out with the prompt still to start its turn.
+// Nothing is taken back, recorded or charged, and the prompt is kept as the task's held prompt.
+// Every other end of a held send takes the path below as any send's does, a wait that ran out
+// before the prompt was written among them — an adoption of the working copy, an identity mint, a
+// protocol negotiation (startSend) — since no prompt went out: the task is not sent, waits for the
+// next send, and no turn is taken for its own on the strength of a prompt that does not exist.
 func refused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(PromptRefused)
 	held := m.heldSend == r.DeliveryID && errors.Is(r.Err, runtime.ErrPromptUnanswered)

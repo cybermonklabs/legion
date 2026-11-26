@@ -1552,16 +1552,19 @@ type Machine struct {
 	// hold across the one refusal and the end after it, in one daemon run, and a restart in that
 	// window costs the claim the one launch failure that end is then charged.
 	refusedEarlierRelease uint64
-	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
-	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
-	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
-	// (rpc-prompt-results.ts), and refuses a prompt that arrives while another is admitted ("Agent
-	// is already processing") rather than queue it; the Claude Code bridge takes one prompt at a
-	// time too (internal/claudebridge's Busy and promptRun). So the session's next turn after an
+	// outstanding is every prompt of the pending task whose result Oh My Pi has not yet reported
+	// (shimwire.PromptResult), by delivery id: one it acknowledged, or one held, whose frame the
+	// daemon wrote and whose reply did not come, which proves the frame was written and not that Oh
+	// My Pi received it (awaitedPrompt). The pinned Oh My Pi answers each prompt with exactly one
+	// prompt_result, owned by the first run after the prompt's admission (rpc-prompt-results.ts),
+	// and refuses a prompt that arrives while another is admitted ("Agent is already processing")
+	// rather than queue it; the Claude Code bridge takes one prompt at a time too
+	// (internal/claudebridge's Busy and promptRun). So the session's next turn after an
 	// acknowledgement is that prompt's, however long its pre-turn work runs past the wait for it
-	// (noTurn): a turn that starts while an id is held here is the task's (turnStarted), and a
+	// (noTurn): a turn that starts while an id is recorded here is taken for the task's
+	// (turnStarted), tentatively where only held entries are recorded (awaitedPrompt), and a
 	// result naming one is the task's whichever id the task has moved on to since (fence,
-	// promptResulted). While one is held, a turn that ends is not known to be the task's — with
+	// promptResulted). While one is recorded, a turn that ends is not known to be the task's — with
 	// background work on, a role's own background result wakes it and starts turns the daemon
 	// never prompted — so the delivery's life ends at its result rather than at any agent_end
 	// (turnEnded, resultPending).
@@ -1930,10 +1933,10 @@ type sending struct {
 	generation uint64
 }
 
-// awaitedPrompt is one prompt of the pending task that reached Oh My Pi and that Oh My Pi has not
-// yet reported the end of (Machine.outstanding): its delivery id, the news of the approved design
-// it carried as the entry's first writer recorded it (awaitResult, keepHeldPrompt), and which of the
-// two states it is in.
+// awaitedPrompt is one prompt of the pending task whose frame the daemon wrote and whose result Oh
+// My Pi has not yet reported (Machine.outstanding): its delivery id, the news of the approved
+// design it carried as the entry's first writer recorded it (awaitResult, keepHeldPrompt), and
+// which of the two states it is in.
 //
 // An acknowledged entry (held false) is a prompt Oh My Pi admitted. It runs one admitted prompt at
 // a time, so the session's next turn is that prompt's: a turn that starts is the task's
@@ -1941,15 +1944,17 @@ type sending struct {
 // confirmed (sendUnproven).
 //
 // A held entry (held true) is a prompt whose frame the daemon wrote while a compaction held the
-// send, and whose answer did not come within the send's wait (keepHeldPrompt,
-// runtime.ErrPromptUnanswered). The pinned Oh My Pi parks a prompt that reaches it while a handoff
-// runs, and admits and acknowledges it only once the handoff ends, so the prompt is on its way to
-// its turn but not admitted. A turn that starts is taken for the task's as for an acknowledged
-// entry, but a confirmation that rests on held entries alone is unproven: nothing yet says the turn
-// was not another input's, so a let-go takes it back (sendUnproven), and a wait for its turn that
-// runs out charges it nothing (noTurn). No path acknowledges a held entry: the acknowledgement Oh
-// My Pi writes after the handoff reaches no request (stream's Conn.answer), and noTurn removes the
-// entry before it sends the prompt again.
+// send, and whose reply did not come within the send's deadline (keepHeldPrompt,
+// runtime.ErrPromptUnanswered). It proves the frame was written, not that Oh My Pi received it.
+// Where Oh My Pi did receive it, the pinned build parks a prompt that reaches it while a handoff
+// runs, and admits and acknowledges it only once the handoff ends. A turn that starts confirms the
+// task as it would for an acknowledged entry, but only tentatively, since it is no proof that Oh
+// My Pi admitted the prompt: a confirmation that rests on held entries alone is unproven, because
+// nothing yet says the turn was not another input's, so a let-go takes it back (sendUnproven), and
+// a wait for its turn that runs out charges it nothing and sends the prompt again under its id
+// (noTurn). No path acknowledges a held entry: the acknowledgement Oh My Pi writes after the
+// handoff reaches no request (stream's Conn.answer), and noTurn removes the entry before it sends
+// the prompt again.
 type awaitedPrompt struct {
 	id   string
 	news []byte

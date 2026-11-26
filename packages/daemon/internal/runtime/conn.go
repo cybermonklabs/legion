@@ -49,17 +49,22 @@ var ErrAdoptRefused = errors.New("runtime: the shim refused to adopt the working
 // transport loss, it sends that operator to the wrong side of the daemon.
 var ErrIdentityUnavailable = errors.New("runtime: the role's GitHub App identity could not be minted")
 
-// ErrNoAnswer is a request whose answer did not arrive within the RPC timeout
-// (worker_rpc_timeout_seconds), the bound the shipped client puts on every request on the worker
-// stream (worker-rpc.ts:407-421): the transport's silence, which is no answer of either kind.
+// ErrNoAnswer is a request whose reply did not arrive within that request's reply deadline, the
+// wait the stream gives it once its frame is written. For most requests the deadline is the RPC
+// timeout (worker_rpc_timeout_seconds), the bound the shipped client puts on a request
+// (worker-rpc.ts:407-421). Three carry a longer one of their own: a compaction waits for the bound
+// its caller passes (CompactTimeout), and an adoption of the working copy and a read of the
+// workspace's work wait for the shim's own timeout plus the RPC timeout, the round trip. It is the
+// transport's silence, which is no answer of either kind.
 var ErrNoAnswer = errors.New("no answer on the worker stream within the RPC timeout")
 
-// ErrPromptUnanswered is a prompt whose frame reached the worker stream and whose answer did not
-// come within its wait. It is the one no-answer of a send that says the prompt went out: an
-// adoption, an identity mint or a protocol negotiation that times out comes before the prompt is
-// written, and carries ErrNoAnswer or the context's error alone. Oh My Pi can hold a prompt it was
-// handed and answer it only later — it parks a prompt that reaches it while a handoff runs until
-// the handoff ends — so the prompt this names may still run.
+// ErrPromptUnanswered is a prompt whose frame the daemon wrote to the worker stream and whose
+// reply did not come within its deadline. It says the frame was written, not that the agent
+// received it. It is the one no-answer of a send that says a prompt frame went out: an adoption,
+// an identity mint or a protocol negotiation that times out comes before the prompt is written,
+// and carries ErrNoAnswer or the context's error alone. Oh My Pi can hold a prompt it was handed
+// and answer it only later — it parks a prompt that reaches it while a handoff runs until the
+// handoff ends — so the prompt this names may still run.
 var ErrPromptUnanswered = errors.New("the prompt was written and no answer came within its wait")
 
 // RefusalReason is the words the agent refused with — Oh My Pi's `error` beside its
@@ -106,10 +111,15 @@ const CompactTimeout = 10 * time.Minute
 // on these methods rather than on the stream's own struct.
 type Conn interface {
 	// Prompt hands the agent a task and returns when Oh My Pi has acknowledged the frame — or
-	// refused it, or the transport failed. A refusal wraps ErrPromptRefused; every other error
-	// is transport. The turn it may start is observed on the stream. The delivery id is the
-	// daemon's: an agent that receives the same id twice answers it without starting a second
-	// turn.
+	// refused it, or the transport failed. Its errors are of three kinds, which the supervisor
+	// tells apart (supervise's refused). A refusal wraps ErrPromptRefused. A reply deadline that
+	// passes after the prompt frame was written wraps ErrPromptUnanswered beside its own cause
+	// (ErrNoAnswer or the context's deadline): the frame was written, not known to be received,
+	// and the agent may still run it. Every other error is transport and wraps neither, a deadline
+	// that passes before the prompt frame is written among them, such as a protocol
+	// negotiation's: an implementation wraps ErrPromptUnanswered only once the frame is written.
+	// The turn it may start is observed on the stream. The delivery id is the daemon's: an agent
+	// that receives the same id twice answers it without starting a second turn.
 	Prompt(ctx context.Context, deliveryID, message string) error
 	// GetState asks the agent what it is doing. The one field the daemon reads back is whether
 	// a turn is in flight, which is how a restart tells a delivery already in progress from one

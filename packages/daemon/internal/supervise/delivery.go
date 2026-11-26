@@ -1720,10 +1720,17 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 // (inFlight). beginTurn confirms the task by it, and so does sendPending where a restart's question
 // finds the agent in a turn, so a new reason a turn is the task's is written here once. In order:
 //
-//   - While a prompt of the task Oh My Pi acknowledged waits on its result (Machine.outstanding),
-//     the turn is the first of them's: the pinned Oh My Pi runs one admitted prompt at a time, and
-//     a later send it answered busy carried nothing that turn reads. So a resend that rendered an
-//     opening the first prompt did not carry adds none to what the turn's confirmation credits.
+//   - While a prompt of the task waits on its result (Machine.outstanding), acknowledged or held
+//     (awaitedPrompt), the turn is taken for the first of them's, and its confirmation credits
+//     that prompt's news. An acknowledged prompt is one Oh My Pi admitted, and the pinned Oh My Pi
+//     runs one admitted prompt at a time, so the turn is that prompt's. A held prompt is one whose
+//     frame the daemon wrote while a compaction held the send and whose reply did not come:
+//     written, not known to be received, and parked by Oh My Pi until the handoff ends if it was.
+//     The turn confirms it only tentatively, since a turn is no proof that Oh My Pi admitted it: a
+//     confirmation that rests on held prompts alone is unproven, and a let-go takes it back
+//     (sendUnproven). A later send Oh My Pi answered busy carried nothing that turn reads, so a
+//     resend that rendered an opening the first prompt did not carry adds none to what the turn's
+//     confirmation credits.
 //   - Otherwise, while a send of the pending task is in flight, the turn is that send's (the
 //     INFRA-264 race, where the prompt's own turn starts before its acknowledgement), and its
 //     confirmation credits what that send carries, the pending delivery's own news (startSend says
@@ -2109,15 +2116,17 @@ func (m *Machine) awaitResult(id string, news []byte) {
 	m.outstanding = append(m.outstanding, awaitedPrompt{id: id, news: news})
 }
 
-// keepHeldPrompt keeps the prompt of a send the compaction held, whose wait ran out with no
-// answer, as a prompt of the pending task still on its way to its turn (heldSend, awaitedPrompt's
-// held): the pinned Oh My Pi parks a prompt that reaches it while a handoff runs, and admits and
-// acknowledges it only once the handoff ends, so the turn that prompt starts is the task's
-// whichever comes first, that turn's start or the compaction's end (turnAnswers, compactEnded).
-// The acknowledgement Oh My Pi then writes reaches no daemon request (stream's Conn.answer), so
-// the prompt is outstanding with no acknowledgement and its task is not marked read. The wait for
-// its turn is armed from the moment the turn can start: here once the compaction is over, and at
-// its end while it runs (compactEnded). A task its turn already confirmed waits for no turn.
+// keepHeldPrompt keeps the prompt of a send the compaction held, whose frame the daemon wrote and
+// whose wait ran out with no answer, as a held prompt of the pending task (heldSend,
+// awaitedPrompt's held). The write proves the frame went out, not that Oh My Pi received it. Where
+// it did, the pinned Oh My Pi parks a prompt that reaches it while a handoff runs, and admits and
+// acknowledges it only once the handoff ends, so the turn that prompt starts is taken for the
+// task's, tentatively, whichever comes first, that turn's start or the compaction's end
+// (turnAnswers, sendUnproven, compactEnded). The acknowledgement Oh My Pi then writes reaches no
+// daemon request (stream's Conn.answer), so the prompt is outstanding with no acknowledgement and
+// its task is not marked read. The wait for its turn is armed from the moment the turn can start:
+// here once the compaction is over, and at its end while it runs (compactEnded). A task its turn
+// already confirmed waits for no turn.
 func (m *Machine) keepHeldPrompt(r PromptRefused) {
 	p := m.claim.Pending
 	if !m.outstandingPrompt(p.ID) {

@@ -269,7 +269,7 @@ func (c *Conn) Compact(ctx context.Context, customInstructions string, bound tim
 // resets nothing (internal/supervise's compactEnded): a null or unread answer read as a success
 // would report a session shortened that may not be, and reset the claim's run of provider errors.
 func (c *Conn) handoffResult(data json.RawMessage) error {
-	var result map[string]json.RawMessage
+	var result *struct{}
 	if len(bytes.TrimSpace(data)) > 0 {
 		if err := json.Unmarshal(data, &result); err != nil {
 			c.log.Warn("worker-stream: the handoff's result is not an object; the session is not reported shortened",
