@@ -335,6 +335,24 @@ func appendIssueTreeNode(b []byte, node *model.IssueTreeNode) ([]byte, error) {
 	} else if b, err = appendTreeTime(b, *node.MadeAt); err != nil {
 		return b, err
 	}
+	for _, at := range [...]struct {
+		name string
+		at   *time.Time
+	}{{`,"edited_at":`, node.EditedAt}, {`,"deleted_at":`, node.DeletedAt}} {
+		if at.at == nil {
+			continue
+		}
+		b = append(b, at.name...)
+		if b, err = appendTreeTime(b, *at.at); err != nil {
+			return b, err
+		}
+	}
+	if node.DeletedBy != nil {
+		b = append(b, `,"deleted_by":`...)
+		if b, err = appendTreeActor(b, node.DeletedBy); err != nil {
+			return b, err
+		}
+	}
 	b = append(b, `,"attributes":`...)
 	b = appendTreeAttributes(b, node.Attributes)
 	b = append(b, `,"text":`...)

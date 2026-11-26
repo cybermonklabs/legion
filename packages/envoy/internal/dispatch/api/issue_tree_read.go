@@ -294,7 +294,7 @@ type issueTreeBuilder struct {
 	effective map[refs.Target]refs.Target
 	order     []refs.Target
 	descend   []string
-	// descended is descend as a set, which descends builds at its first call.
+	// descended is descend as a set (readDescendants), nil where descend is empty.
 	descended map[string]bool
 	ancestors []string
 
@@ -416,7 +416,7 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 		return err
 	}
 	b.enterWalk()
-	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+	if err := b.readDescendants(); err != nil {
 		return err
 	}
 	if err := b.readOthers(); err != nil {
@@ -428,9 +428,7 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 	if err := b.readFacts(b.candidates()); err != nil {
 		return err
 	}
-	if err := b.placeOthers(); err != nil {
-		return err
-	}
+	b.placeOthers()
 	b.keep()
 	if err := b.readContext(); err != nil {
 		return err
@@ -639,15 +637,25 @@ func (b *issueTreeBuilder) add(target refs.Target, parent refs.Target, issue str
 	return entry
 }
 
-// descends reports whether issue is one of the issues under the issue read that the reader may
-// see (descend).
-func (b *issueTreeBuilder) descends(issue string) bool {
-	if b.descended == nil {
+// readDescendants reads the issues under the issue read that the reader may see, in order
+// (descend), and as a set (descended).
+func (b *issueTreeBuilder) readDescendants() error {
+	var err error
+	if b.descend, err = refs.IssueDescendants(b.ctx, b.q, b.who, b.key); err != nil {
+		return err
+	}
+	if len(b.descend) > 0 {
 		b.descended = make(map[string]bool, len(b.descend))
 		for _, key := range b.descend {
 			b.descended[key] = true
 		}
 	}
+	return nil
+}
+
+// descends reports whether issue is one of the issues under the issue read that the reader may
+// see (descend).
+func (b *issueTreeBuilder) descends(issue string) bool {
 	return b.descended[issue]
 }
 
@@ -1121,7 +1129,7 @@ func lastPartOf(relations []refs.TreeRelation) refs.Target {
 // document the skeleton does not open (hiddenBlock), a check reached through serves the
 // requirement it serves (served), and every such node its type, its rank and when it was made,
 // where nothing read so far gave them.
-func (b *issueTreeBuilder) placeOthers() error {
+func (b *issueTreeBuilder) placeOthers() {
 	for _, target := range b.extras {
 		entry := b.entries[target]
 		held := b.facts[target]
@@ -1154,7 +1162,6 @@ func (b *issueTreeBuilder) placeOthers() error {
 			}
 		}
 	}
-	return nil
 }
 
 // visible reports whether the reader may see the node: the registry's loader of its kind answered
@@ -1952,10 +1959,16 @@ func (b *issueTreeBuilder) leadClass(target refs.Target) int {
 	switch {
 	case isItemBlockKind(target.Kind):
 		return leadItemBlock
-	case b.tree.Memo >= 0 && b.entries[target].walk == b.tree.Memo:
+	case b.isMemo(target):
 		return leadMemo
 	}
 	return leadNone
+}
+
+// isMemo reports whether target is the issue's memo: the walk's memo, its first child where that
+// child is a callout (docs' IssueTree.Memo).
+func (b *issueTreeBuilder) isMemo(target refs.Target) bool {
+	return b.tree.Memo >= 0 && b.entries[target].walk == b.tree.Memo
 }
 
 // compareSiblings orders two children of one parent as the walk does (docs' treeWalk.ordered): a
@@ -2133,10 +2146,9 @@ func (b *issueTreeBuilder) contextOrder() []refs.Target {
 			}
 		}
 	}
-	ordered := make(map[refs.Target]bool, len(b.order))
-	for _, target := range b.order {
-		ordered[target] = true
-	}
+	// ordered is b.order as a set, built the first time a context node of the answer is tested
+	// against it, so a read whose context holds none builds none.
+	var ordered map[refs.Target]bool
 	var context []refs.Target
 	for _, target := range b.context {
 		if len(b.kinds) > 0 && !b.kindContext[target] {
@@ -2145,7 +2157,16 @@ func (b *issueTreeBuilder) contextOrder() []refs.Target {
 		if deciders != nil && (target.Kind == graphstore.KindPerson || target.Kind == graphstore.KindSession) && !deciders[target] {
 			continue
 		}
-		if b.kept[target] && b.entries[target].role == treeRoleContext && !ordered[target] {
+		if !b.kept[target] || b.entries[target].role != treeRoleContext {
+			continue
+		}
+		if ordered == nil {
+			ordered = make(map[refs.Target]bool, len(b.order))
+			for _, held := range b.order {
+				ordered[held] = true
+			}
+		}
+		if !ordered[target] {
 			context = append(context, target)
 		}
 	}
@@ -2468,6 +2489,7 @@ func (b *issueTreeBuilder) node(target refs.Target) model.IssueTreeNode {
 			node.Author = loaded.Node.MadeBy
 		}
 		node.MadeAt = loaded.Node.MadeAt
+		node.EditedAt, node.DeletedAt, node.DeletedBy = loaded.Node.EditedAt, loaded.Node.DeletedAt, loaded.Node.DeletedBy
 		node.State, node.Visibility = cmp.Or(loaded.Node.State, node.State), cmp.Or(loaded.Node.Visibility, node.Visibility)
 	} else {
 		node.State = cmp.Or(held.Values[graphstore.AttributeState], node.State)

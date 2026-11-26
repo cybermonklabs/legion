@@ -420,9 +420,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// An issue is born converted - its spec a fragment of the issue's room from its first write,
 	// and a query node - only while every live process serves the issue room (R5 of the issue-tree
 	// spec): a process of the release before would admit the spec's socket to the spec's own room.
-	// It is read here, in the read phase, and so is everything the
-	// room's documents are planned from (planConvertedIssueRoom), before the spec's seed, which
-	// then writes the spec's fragment of the room.
+	// It is read here, in the read phase, and so is everything the room's documents are planned
+	// from (planConvertedIssueRoom), before the spec's seed, which then writes the spec's fragment
+	// of the room.
 	bornConverted, err := fleetServesIssueRoom(r.Context(), tx)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -706,9 +706,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// whose Yjs document is the issue's room, the spec's document_rooms row naming it, and its
 	// decisions query node (createConvertedIssueRoom), queued at the head of the write phase,
 	// after the spec's row above, which they name, and before every statement the read phase
-	// queued, so every queued statement that resolves the spec's room reads the room (T12b of this
-	// branch's plan). They steer nothing this route answers, so they run in the write phase's batch
-	// and not inline inside the transaction's id window.
+	// queued, so every queued statement that resolves the spec's room reads the room. They steer
+	// nothing this route answers, so they run in the write phase's batch and not inline inside the
+	// transaction's id window.
 	var roomNodes graphstore.Uncaused
 	if bornConverted {
 		if roomNodes, err = s.createConvertedIssueRoom(ledger, key, input.Project, artifactID, room, actor, createdAt); err != nil {
@@ -1006,11 +1006,11 @@ func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
 const issueDecisionsName = "decisions"
 
 // convertedIssueRoom is what an issue born converted holds beside its spec's row, as the create's
-// read phase planned it (planConvertedIssueRoom):
-// its tree artifact, whose Yjs document is the issue's room, and its decisions query node, each by
-// the id and the slug its row will take, and what the read phase's document work held for the
-// issue's event - the two documents' first versions' nodes and the decisions query's index. The
-// zero value is an issue that is not born converted.
+// read phase planned it (planConvertedIssueRoom): its tree artifact, whose Yjs document is the
+// issue's room, and its decisions query node, each by the id and the slug its row will take, and
+// what the read phase's document work held for the issue's event - the two documents' first
+// versions' nodes and the decisions query's index. The zero value is an issue that is not born
+// converted.
 type convertedIssueRoom struct {
 	tree, treeSlug           string
 	decisions, decisionsSlug string
@@ -1150,9 +1150,9 @@ func (s *server) createConvertedIssueRoom(ledger *docs.Ledger, key, project, spe
 // insert is queued on ledger, an upload's (queueNewArtifact): it records on the ledger that the
 // document is edited in room (docs.Ledger.RegisterPendingRoom), so the document work that follows
 // writes the document's fragment of the room, and queues the document_rooms row right after that
-// insert, whose key it
-// names, and before any write of the document. The announcement is a notification, which
-// Postgres delivers at the commit, so it is sent at once and assigns the transaction no id.
+// insert, whose key it names, and before any write of the document. The announcement is a
+// notification, which Postgres delivers at the commit, so it is sent at once and assigns the
+// transaction no id.
 func queueIssueRoomJoin(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, room, document string) error {
 	ledger.RegisterPendingRoom(document, room)
 	if err := queueExec(ledger, `insert into document_rooms (artifact_id, room) values ($1, $2)`, document, room); err != nil {
@@ -1165,12 +1165,12 @@ func queueIssueRoomJoin(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, roo
 // made a fragment of the issue's room: only one of the issue's three role documents - its spec,
 // which createConvertedIssueRoom joins as the issue is created, and its Verification document and
 // plan (roleSlugs), which an upload creates - from its first write (R5 of the issue-tree spec).
-// Every other document keeps a room of its own, as every document of an
-// unconverted issue does. The room's state is one update ygo decodes, whose bound the documents in
-// it share (docs' refuseUndecodableSeed refuses a seed past it), so a document no role names would
-// spend that bound for the three, and the heaviest documents the element limit admits filled it in
-// about a dozen uploads. A role document's fixed short name always gives an address the store can
-// hold (graphstore.AddressFits), so the address bound this test once read is never what keeps a
+// Every other document keeps a room of its own, as every document of an unconverted issue does.
+// The room's state is one update ygo decodes, whose bound the documents in it share (docs'
+// refuseUndecodableSeed refuses a seed past it), so a document no role names would spend that
+// bound for the three, and the heaviest documents the element limit admits filled it in about a
+// dozen uploads. A role document's fixed short name always gives an address the store can hold
+// (graphstore.AddressFits), so the address bound this test once read is never what keeps a
 // document out: a block of the room names the node of the document whose fragment holds it, and a
 // role document's node always fits.
 func documentJoinsIssueRoom(slug string) bool {

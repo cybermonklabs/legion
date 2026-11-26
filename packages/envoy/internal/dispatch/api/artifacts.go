@@ -662,8 +662,7 @@ func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
 // created see it as every later reader will. query is the query value of a role document of a
 // converted issue, which joins the issue's room and writes no role: its node is a query node of
-// that name, which the read projects as its role, and "" for
-// every other document.
+// that name, which the read projects as its role, and "" for every other document.
 //
 // The create's one time is read here, in the read phase, under the owner lock the caller holds: its
 // row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
@@ -1027,9 +1026,8 @@ func (s *server) storeArtifact(
 		}
 		// A role document of a converted issue - its Verification document or its plan - joins the
 		// issue's room (queueIssueRoomJoin below) and writes no role: the part it plays is the query
-		// value of its node, a query node of that name, which the
-		// read projects as its role. Every other document keeps a room of its own
-		// (documentJoinsIssueRoom).
+		// value of its node, a query node of that name, which the read projects as its role. Every
+		// other document keeps a room of its own (documentJoinsIssueRoom).
 		joining := kind == "doc" && issueRoom != "" && documentJoinsIssueRoom(slug)
 		query := ""
 		if joining && role != nil {

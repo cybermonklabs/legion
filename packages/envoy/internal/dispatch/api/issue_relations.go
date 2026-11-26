@@ -529,10 +529,7 @@ func conversationItemIssue(ctx context.Context, q queryer, kind, id string) (str
 	if err != nil {
 		return "", fmt.Errorf("read the issue the %s is on: %w", kind, err)
 	}
-	if issue == nil {
-		return "", nil
-	}
-	return *issue, nil
+	return deref(issue), nil
 }
 
 // issueDuplicateOfColumn is the key the duplicate_of tuple of the issue aliased `i` names now, null

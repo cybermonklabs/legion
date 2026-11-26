@@ -192,6 +192,16 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// collaboratorEventsStatement reads the issue $1's events of the types $2, one row per actor and
+// type with its latest created_at, passing over the versions of the issue's decisions query
+// (decisionsQueryVersionSQL).
+var collaboratorEventsStatement = `
+		select coalesce(e.actor->>'kind', ''), coalesce(e.actor->>'id', ''), e.type, max(e.created_at)
+		from events e
+		where e.issue_key = $1 and e.type = any($2) and not ` + decisionsQueryVersionSQL("e") + `
+		group by 1, 2, 3
+	`
+
 // tallyCollaboratorEvents reads the issue's claim, writing and answer events, one row per actor
 // and type, into people (by canonical login) and sessions (by id). A session acting for a
 // person's token is an agent; the daemon's lifecycle writer and system writers are nobody. A
@@ -201,12 +211,7 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 func (s *server) tallyCollaboratorEvents(
 	ctx context.Context, key string, people, sessions map[string]*collaboratorTally,
 ) error {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select coalesce(e.actor->>'kind', ''), coalesce(e.actor->>'id', ''), e.type, max(e.created_at)
-		from events e
-		where e.issue_key = $1 and e.type = any($2) and not `+decisionsQueryVersionSQL("e")+`
-		group by 1, 2, 3
-	`, key, collaboratorEventTypes)
+	rows, err := s.deps.Store.Pool.Query(ctx, collaboratorEventsStatement, key, collaboratorEventTypes)
 	if err != nil {
 		return fmt.Errorf("query issue collaborators: %w", err)
 	}

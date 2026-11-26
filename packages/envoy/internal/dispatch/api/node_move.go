@@ -336,19 +336,22 @@ func (s *server) moveNode(ctx context.Context, move nodeMoveRequest) (nodeMoved,
 			"a move states the placement it read: send If-Match with the placement_seq of %s as a quoted entity tag, as the tree read answers it",
 			moved.named)
 	}
-	current, seq, err := currentPlacement(ctx, tx, moved)
-	if err != nil {
-		return nodeMoved{}, nil, nil, err
-	}
 	// A body that names a parent moves the node under the node read above (the shape refuses an
-	// empty one); a body that names none keeps the node's parent.
-	parent := current
-	switch {
-	case named != nil:
+	// empty one); a body that names none keeps the node's parent, read here for it alone, since
+	// readMove reads the node's placement again under the owner locks.
+	var parent moveNode
+	if named != nil {
 		parent = *named
-	case seq == nil:
-		return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeMoveInput,
-			"the %s %s stands under no node, so a move that keeps its parent has none to keep: name parent", moved.word(), moved.named)
+	} else {
+		current, seq, err := currentPlacement(ctx, tx, moved)
+		if err != nil {
+			return nodeMoved{}, nil, nil, err
+		}
+		if seq == nil {
+			return nodeMoved{}, nil, nil, errorf(http.StatusBadRequest, codeMoveInput,
+				"the %s %s stands under no node, so a move that keeps its parent has none to keep: name parent", moved.word(), moved.named)
+		}
+		parent = current
 	}
 	read, err := lockNodeRouteOwners(ctx, tx, move.key, func(q queryer) (moveRead, []string, error) {
 		read, err := readMove(ctx, q, moved, parent)

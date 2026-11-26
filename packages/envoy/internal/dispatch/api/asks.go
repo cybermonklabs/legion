@@ -657,7 +657,8 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// words owes that query a version (R14, R15), drained once Commit has run the write phase
 	// (docs.Ledger.MarkAskQueries); an edit of its urgency or of multiple alone changes no words and
 	// no fact of its node, and an approval request, which no query takes, was refused above.
-	if askWordsChanged(previous, ask) {
+	wordsChanged := askWordsChanged(previous, ask)
+	if wordsChanged {
 		ledger.MarkAskQueries(ask)
 	}
 	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
@@ -674,7 +675,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
 	// (writeIssue).
 	var askNode graphstore.Uncaused
-	if askWordsChanged(previous, ask) {
+	if wordsChanged {
 		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
 			project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
 			if err != nil {

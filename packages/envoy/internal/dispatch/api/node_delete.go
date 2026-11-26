@@ -296,7 +296,7 @@ func findDeleteRoot(ctx context.Context, q queryer, request nodeDeleteRequest) (
 	if err := readBlockType(ctx, q, &root); err != nil {
 		return moveNode{}, err
 	}
-	if !request.person && root.kind == refs.BlockNodeKind && root.typ == "ask" {
+	if !request.person && root.kind == refs.BlockNodeKind && root.typ == graphstore.SupertagAsk {
 		decision, decided, err := docs.PersonDecisionOfBlock(ctx, q, root.stored, root.id, root.typ)
 		if err != nil {
 			return moveNode{}, err
@@ -307,7 +307,7 @@ func findDeleteRoot(ctx context.Context, q queryer, request nodeDeleteRequest) (
 				decision.What, root.named, decision.Words)
 		}
 	}
-	if slices.Contains(keptKinds, root.stored) || root.typ == "ask" {
+	if slices.Contains(keptKinds, root.stored) || root.typ == graphstore.SupertagAsk {
 		return moveNode{}, errorf(http.StatusBadRequest, codeNodeNotDeletable,
 			"the %s %s is not deleted through this route: %s, so it has a route of its own",
 			root.word(), root.named, undeletableReason(root))
@@ -322,7 +322,7 @@ func findDeleteRoot(ctx context.Context, q queryer, request nodeDeleteRequest) (
 // for its refusal.
 func undeletableReason(root moveNode) string {
 	switch {
-	case root.typ == "ask" || root.kind == graphstore.KindAsk || root.kind == refs.ItemAsk.BlockKind():
+	case root.typ == graphstore.SupertagAsk || root.kind == graphstore.KindAsk || root.kind == refs.ItemAsk.BlockKind():
 		return "an ask keeps its block, its state and its answer, and closes through the ask's own routes"
 	case root.kind == graphstore.KindIssue:
 		return "an issue node is another issue, which closes through its own routes"
@@ -516,23 +516,18 @@ func (plan *deletePlan) refuse(ctx context.Context, q queryer, request nodeDelet
 	}
 	// The first lens, finding, risk or constraint the delete takes that the caller may see names the
 	// refusal; where it may see none, the refusal names none.
-	standing, seen := false, -1
-	for index, node := range plan.takes {
+	standing := false
+	for _, node := range plan.takes {
 		if !standingKind(node.kind) {
 			continue
 		}
-		standing = true
 		if plan.visible[node.key()] {
-			seen = index
-			break
+			return goneNotPermitted(stateTarget{kind: kindWord(node.kind), address: plan.named[node.key()]})
 		}
+		standing = true
 	}
 	if !standing {
 		return nil
-	}
-	if seen >= 0 {
-		node := plan.takes[seen]
-		return goneNotPermitted(stateTarget{kind: kindWord(node.kind), address: plan.named[node.key()]})
 	}
 	return errorf(http.StatusForbidden, codeStateNotPermitted,
 		"this credential may not delete %s: what stands under it holds a node a person alone takes gone, a lens, a finding, a risk or a constraint, so nothing was deleted",

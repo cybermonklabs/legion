@@ -286,12 +286,12 @@ func (b *issueTreeBuilder) mergeCommentPage(page refs.CommentPage, pastEnd bool,
 // walk took none of the addresses.
 func (b *issueTreeBuilder) resolveTextThreads() error {
 	var unheld []string
-	asked := map[string]bool{}
+	queued := map[string]bool{}
 	for _, thread := range b.textThreads {
 		if _, held := b.entries[thread.on]; held {
 			thread.node = thread.on
-		} else if thread.on.Kind == refs.BlockNodeKind && !asked[thread.on.ID] {
-			asked[thread.on.ID] = true
+		} else if thread.on.Kind == refs.BlockNodeKind && !queued[thread.on.ID] {
+			queued[thread.on.ID] = true
 			unheld = append(unheld, thread.on.ID)
 		}
 	}

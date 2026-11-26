@@ -159,8 +159,8 @@ type treeRequirements struct {
 }
 
 // readTreeRequirements is the treeRequirements of tree for who. A question's state is its ask
-// node's alone, never its `:::ask` block's (R2 and R3 of INFRA-1150; api's askHoldsState refuses
-// a write on the block). The ask nodes come from the walk's own read of the conversation
+// node's alone, never its `:::ask` block's (R2 and R3 of INFRA-1150; askHoldsState refuses a
+// write on the block). The ask nodes come from the walk's own read of the conversation
 // (IssueTree.Conversation), which holds every ask of the issue as its loader answers it and leaves
 // none out for any reader, since no ask is reserved for its author: they cost no read. An
 // `:::ask` block above a requirement is read to its ask (questionAsks), in one statement sent only
@@ -196,6 +196,8 @@ func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree 
 		}
 	}
 	read.nodes = nodes
+	// Each `:::ask` block leaves askBlocks once its id is queued, so questions names it once, and
+	// a climb stops once no block is left to find.
 	var questions []string
 	for _, requirement := range requirements {
 		if _, seen := nodes[requirement]; !seen {
@@ -203,9 +205,10 @@ func readTreeRequirements(ctx context.Context, q queryer, who model.Actor, tree 
 		}
 		read.visible = append(read.visible, requirement)
 		read.ids = append(read.ids, requirement.ID)
-		for at, steps := read.parents[requirement], 0; at != (refs.Target{}) && steps <= len(read.parents); steps++ {
-			if askBlocks[at] && !slices.Contains(questions, at.ID) {
+		for at, steps := read.parents[requirement], 0; len(askBlocks) > 0 && at != (refs.Target{}) && steps <= len(read.parents); steps++ {
+			if askBlocks[at] {
 				questions = append(questions, at.ID)
+				delete(askBlocks, at)
 			}
 			at = read.parents[at]
 		}

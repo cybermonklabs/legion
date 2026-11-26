@@ -93,7 +93,11 @@ func (b *issueTreeBuilder) nodeKind(target refs.Target) string {
 // selects reports whether the read with kind takes target as a node of a kind it names: the memo
 // alone for callout, the issue's first child where that child is a callout, which the spec query
 // takes first (R14), so no other callout; for comment, each comment of a thread on no text, a post
-// on the issue or a reply under one (textComments holds every comment of a thread on text); for
+// on the issue or a reply under one (textComments holds every comment of a thread on text), and
+// each comment of a thread on text the skeleton holds while it holds no node the thread stands with
+// (textHost) - a person's comment on a block of a document the skeleton does not open, which the
+// read with no view answers under the issue, naming that block - since no node of the answer can
+// bring it in, and the read takes, out of the skeleton, each node of a kind it names (R30); for
 // issue, a child issue and never the issue read; and each node of any other kind it names.
 func (b *issueTreeBuilder) selects(target refs.Target) bool {
 	kind := b.nodeKind(target)
@@ -102,10 +106,10 @@ func (b *issueTreeBuilder) selects(target refs.Target) bool {
 	}
 	switch kind {
 	case treeKindMemo:
-		return b.tree.Memo >= 0 && b.entries[target].walk == b.tree.Memo
+		return b.isMemo(target)
 	case graphstore.KindComment:
-		_, onText := b.textComments[target]
-		return !onText
+		text, onText := b.textComments[target]
+		return !onText || b.textHost(b.textThreads[text.head]) == (refs.Target{})
 	case graphstore.KindIssue:
 		return target != b.root()
 	}

@@ -444,7 +444,7 @@ var searchFusedSQL = fmt.Sprintf(`fused as (
 // into its issue's room answers once, from the window of its current owner.
 var (
 	windowOwnerUUID    = store.CanonicalUUID(`split_part(e.id, '#', 1)`)
-	windowItemUUID     = store.CanonicalUUID(`split_part(split_part(e.id, '#', 1), '/', 2)`)
+	windowItemUUID     = store.CanonicalUUID(graphstore.ItemOfBlockNodeSQL(`e.id`))
 	windowDocumentUUID = refs.WindowDocumentSQL(windowOwnerUUID, `e.covers[1]`)
 )
 
