@@ -668,7 +668,11 @@ export function IssueMarginPanel({
   // there.
   const filedWorded =
     filedTarget !== undefined && filedTarget.gone !== true && postDeletion(filedTarget) === null;
-  const filedText = useFiledText(filedRoute, filedItem, readingDevelopment && filedWorded);
+  const { queryKey: filedTextKey, read: filedTextAnswer } = useFiledText(
+    filedRoute,
+    filedItem,
+    readingDevelopment && filedWorded
+  );
   // The read's failure is said in each relation row it feeds: the duplicate's in the words of the
   // titles' reads above, since it is an issue, and the item's in words of its own, since a
   // question, a comment or a message has no title. Each line goes as theirs does
@@ -679,10 +683,11 @@ export function IssueMarginPanel({
   // A failed read of the item's own record is a failed read of its row too, said in the same
   // words, with a Retry that reads the record again and hands the focus on as the names read's
   // Retry does. It is the row's read only while the names read answers the item with words, so a
-  // failure of it says nothing under a deleted line. Its key changes with the item alone, and it
-  // draws no placeholder, so it stops standing failed only by holding its own answer, as
-  // `useTitlesRetry` asks of the read it sends.
-  const filedTextFailed = filedWorded && standsFailed(filedText.read);
+  // failure of it says nothing under a deleted line. Its line can also go while the read its Retry
+  // sent is still out - the names read answers the item deleted or gone, or a names read of a
+  // changed relation fails and says the row's failure in its own line - and that going answers no
+  // press, so the Retry hands the focus on only once the item's read holds its answer.
+  const filedTextFailed = filedWorded && standsFailed(filedTextAnswer);
   const duplicateValue = useRef<HTMLDivElement>(null);
   const filedValue = useRef<HTMLDivElement>(null);
   const duplicateRetry = useTitlesRetry(relationNames, relationRead.queryKey, () =>
@@ -697,7 +702,9 @@ export function IssueMarginPanel({
       developmentHeading.current
     );
   const filedRetry = useTitlesRetry(relationNames, relationRead.queryKey, filedFirst);
-  const filedTextRetry = useTitlesRetry(filedText.read, filedText.queryKey, filedFirst);
+  const filedTextRetry = useTitlesRetry(filedTextAnswer, filedTextKey, () =>
+    filedTextAnswer.data === undefined ? null : filedFirst()
+  );
   const priority = usePriorityHandOffs(issue, developmentHeading);
   // The Repository row's control draws its own refused write, and hands it to the row to say
   // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
@@ -1020,7 +1027,7 @@ export function IssueMarginPanel({
               item={filedItem}
               route={filedRoute}
               target={filedTarget}
-              text={filedText.read.data}
+              text={filedTextAnswer.data}
             />
             {/* Each read's line is an element of its own, so the line of the one that answers
                 goes with its Retry, and the line of the other is drawn afresh. */}
@@ -1035,12 +1042,12 @@ export function IssueMarginPanel({
               />
             ) : filedTextFailed ? (
               <DetailsErrorLine
-                error={filedText.read.error}
-                failure={filedText.read.errorUpdateCount}
+                error={filedTextAnswer.error}
+                failure={filedTextAnswer.errorUpdateCount}
                 key="text"
                 message={STATE_LINES.filed_from_unreadable}
                 {...filedTextRetry}
-                retrying={filedText.read.isFetching}
+                retrying={filedTextAnswer.isFetching}
               />
             ) : null}
           </Row>

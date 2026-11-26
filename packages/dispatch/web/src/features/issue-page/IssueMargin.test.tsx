@@ -8390,10 +8390,11 @@ function stubRelations(
   };
 }
 
-/** Waits until the filed message's own read has answered and the views that observe it have
- *  been handed that answer, for a case whose row draws the same words before that answer as after
- *  it: TanStack hands an answer on by a timer of 0 ms, set as the answer lands in the cache, so a
- *  timer of 0 ms set once the cache holds it runs after the views have it. */
+/** Waits until the filed message's own read has answered and React has committed what the views
+ *  that observe it draw of that answer, for a case whose row draws the same words before that
+ *  answer as after it: the suite hands an answer to its observers as it lands in the cache
+ *  (`notifyManager`'s scheduler, `__tests__/setup.ts`), and the render those observers ask for
+ *  is committed by the `act` scope that follows. */
 async function filedMessageAnswered(queryClient: QueryClient): Promise<void> {
   await waitFor(() =>
     expect(
@@ -8401,25 +8402,22 @@ async function filedMessageAnswered(queryClient: QueryClient): Promise<void> {
       "the filed message's own read did not answer"
     ).toBe("success")
   );
-  const handedOn = Promise.withResolvers<void>();
-  await act(async () => {
-    setTimeout(handedOn.resolve, 0);
-    await handedOn.promise;
-  });
+  await act(async () => {});
 }
 
 // The names of the issue's two relations are read as Blocked by's titles are: only while Details
 // and its Development are open, so a load that leaves either shut costs no request for them, and
 // opening Development makes one names read of both (ST-3 R-a). The filed item's own text is read
-// only then too, once that read has named it.
-test("Details reads the names of the issue's relations only once Development is open, in one read of both, and then the filed item's own text", async () => {
+// only then too, once that read has named it, and a closed Development reads it no more: an event
+// that reads the message again leaves it alone.
+test("Details reads the names of the issue's relations only once Development is open, in one read of both, and then the filed item's own text, which a closed Development reads no more", async () => {
   const user = userEvent.setup();
   const { items, restore, titles } = stubRelations(relatedIssue, async (refs) =>
     namedTargets(refs, RELATED_NAMES)
   );
   const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
   window.localStorage.setItem(kept, "development");
-  const { redraw, unmount } = renderDetails(undefined, SHUT_DRAWER);
+  const { queryClient, redraw, unmount } = renderDetails(undefined, SHUT_DRAWER);
 
   try {
     const development = await screen.findByRole("button", {
@@ -8460,6 +8458,21 @@ test("Details reads the names of the issue's relations only once Development is 
         "opening Development did not read the filed message's own text once, by its issue and id"
       ).toEqual([["CORE-2", FILED_ID]])
     );
+
+    // Both reads have answered; Development closes, and the message's read is asked for again,
+    // as an event that names the message asks for it.
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE)
+    );
+    await user.click(development);
+    await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: messageQuery("CORE-2", FILED_ID).queryKey })
+    );
+    expect(
+      items.message,
+      "a closed Development read the filed message's own text again"
+    ).toHaveBeenCalledTimes(1);
   } finally {
     unmount();
     restore();
@@ -8540,11 +8553,11 @@ test("while the filed item's own text is out, Filed from draws the kind's word a
   }
 });
 
-// Once the read answers, Duplicate of takes the form of Details' other relation rows - the key in
-// bold as the way to the issue, then its title (`IssueLine`) - and Filed from names the message by
-// the page's word for its kind and its first line, the way to it; each row once, after Parent,
-// Blocked by and Blocks (ST-3 R-c).
-test("once the names are read, Duplicate of draws the key in bold as a link with its title, and Filed from the kind's word and the first line as a link", async () => {
+// Once the names and the filed item's own text are read, Duplicate of takes the form of Details'
+// other relation rows - the key in bold as the way to the issue, then its title (`IssueLine`) -
+// and Filed from names the message by the page's word for its kind and its first line, the way to
+// it; each row once, after Parent, Blocked by and Blocks (ST-3 R-c).
+test("once the names and the filed item's own text are read, Duplicate of draws the key in bold as a link with its title, and Filed from the kind's word and the first line as a link", async () => {
   const { restore } = stubRelations({ ...relatedIssue, parent: "CORE-9" }, async (refs) =>
     namedTargets(refs, RELATED_NAMES)
   );
@@ -8719,7 +8732,8 @@ test("a refresh of the relations' names that fails over the answer they hold kee
 });
 
 /** Each relation row whose Retry the case below presses, by its label, the words its failure
- *  line says, and the name of the first link that row draws once the read answers. */
+ *  line says, and the name of the first link that row draws once the names read answers, and,
+ *  for Filed from, the filed item's own read the names' answer makes. */
 const RETRIED_RELATIONS: readonly (readonly [string, string, string])[] = [
   [PROPERTY_LABELS.duplicate_of, TITLES_READ_FAILED, DUPLICATE],
   [PROPERTY_LABELS.filed_from, STATE_LINES.filed_from_unreadable, FILED_LINE],
