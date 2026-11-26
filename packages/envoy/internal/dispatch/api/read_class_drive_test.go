@@ -100,6 +100,9 @@ var readRowDrives = map[string]rowDrive{
 	"GET /api/v1/projects/{key}/architecture-source":  {target: "/api/v1/projects/$project/architecture-source", statement: statementOf(`\bfrom\s+architecture_sources\b`)},
 	"GET /api/v1/projects/{key}/architecture": {target: "/api/v1/projects/$project/architecture",
 		statement: statementOf(`\bfrom\s+components\s+c\s+join\s+architecture_sources\b`)},
+	// A project's spec check results at one commit, which only a CI run's results token writes.
+	"GET /api/v1/projects/{key}/results": {target: "/api/v1/projects/$project/results?commit=0123456789abcdef0123456789abcdef01234567",
+		statement: statementOf(`\bfrom\s+spec_check_results\s+where\s+project_key\b`)},
 	"GET /api/v1/projects/{key}/plans": {target: "/api/v1/projects/$project/plans",
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
