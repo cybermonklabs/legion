@@ -38,12 +38,13 @@ import {
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
-import type { IssueAskRow, IssueDetails, Message, MyReplyThreadRow } from "../../api/types";
+import type { IssueAskRow, IssueDetails, Message } from "../../api/types";
 import { answeredAsk, thread as askRead } from "../inbox/ask-card-fixture";
 import { NoTooltips } from "../issue-page/NoTooltips";
 import { AppProviders } from "../issue-page/slots/stage-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { NOTHING_PUBLISHED } from "../refs/reference-names";
+import { replyRow } from "../threads/replies-fixture";
 import asksOpenBody from "./fixtures/asks-open.json";
 import issueBody from "./fixtures/issue.json";
 import { replySendKey, threadQuery } from "./ThreadItem";
@@ -61,23 +62,12 @@ const AT = "2026-11-25T10:00:00Z";
 const REPLY_AT = "2026-11-25T11:00:00Z";
 
 function threadItem(kind: ThreadKind, id = `${kind}-root`): Thread {
-  const row: MyReplyThreadRow = {
+  const row = replyRow(id, {
     kind,
     read_through: AT,
     ref: `dispatch://${ISSUE.key}/${kind}/${id}`,
-    reply: {
-      author: AUTHOR,
-      created_at: REPLY_AT,
-      first_line: "An unread reply",
-      id: `${id}-reply`,
-      kind: "reply",
-    },
-    subject: "Thread root",
-    thread_id: id,
-    unread: true,
-    unread_count: 1,
-    version: 1,
-  };
+    reply: { ...replyRow(id).reply, author: AUTHOR, created_at: REPLY_AT },
+  });
   return { at: REPLY_AT, id, kind: "thread", row };
 }
 

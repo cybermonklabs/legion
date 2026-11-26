@@ -45,6 +45,7 @@ const PHASE_MARKS: Readonly<
 > = {
   admitted: { marked: "admitted" },
   awaiting_person: { marked: "admitted", words: PHASE_WORDS.awaiting_person },
+  awaiting_children: { marked: "admitted", words: PHASE_WORDS.awaiting_children },
   planning: { marked: "planning" },
   implementing: { marked: "implementing" },
   testing: { marked: "testing" },

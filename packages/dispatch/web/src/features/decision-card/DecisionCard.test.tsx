@@ -3,8 +3,9 @@ import { within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { precedes } from "../../__tests__/document-order";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import type { Decision } from "../../api/types";
+import { decision } from "../issue-page/decisions-filter/decisions-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { fromDecision } from "./adapters";
@@ -40,26 +41,6 @@ const PATHS: CardPaths = {
 const renderText: DecisionTextRenderer = (text) => (
   <p data-testid="decision-words">{text.markdown}</p>
 );
-
-function model(fields: Partial<Decision> = {}): Decision {
-  return {
-    asks: [],
-    block_id: "store",
-    changed_at: "2026-11-01T00:00:00Z",
-    changed_version: 3,
-    heading: "Store notices in a table",
-    kept: null,
-    kind: "agent",
-    links: [],
-    ref: "dispatch://CORE-1/artifact/decisions-md#b-store",
-    replaced: false,
-    text: "## Store notices in a table\n\nA table keeps them queryable.",
-    text_sha256: "sum-store",
-    unsure: false,
-    waiting_review: true,
-    ...fields,
-  };
-}
 
 function drawCard(
   decision: CardDecision,
@@ -125,11 +106,6 @@ const CHANGE: CardChangeAct = {
   quote: "A table keeps them queryable.",
 };
 
-/** Whether `first` stands before `second` in the document. */
-function before(first: Element, second: Element): boolean {
-  return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-}
-
 test("the first line is the bullet, the heading, and the kind and the time at its right end", () => {
   const { card, view } = drawCard(WHOLE);
   try {
@@ -144,7 +120,7 @@ test("the first line is the bullet, the heading, and the kind and the time at it
       [heading, kind],
       [kind, time],
     ] as const) {
-      expect(first !== null && second !== null && before(first, second)).toBe(true);
+      expect(first !== null && second !== null && precedes(first, second)).toBe(true);
     }
   } finally {
     view.unmount();
@@ -165,8 +141,8 @@ test("the level of uncertainty and its reason stand under the text", () => {
   try {
     const level = within(card).getByText(DECISION_LINE_WORDS.unsure);
     const reason = within(card).getByText("The index may be slow.");
-    expect(before(within(card).getByTestId("decision-words"), level)).toBe(true);
-    expect(before(level, reason)).toBe(true);
+    expect(precedes(within(card).getByTestId("decision-words"), level)).toBe(true);
+    expect(precedes(level, reason)).toBe(true);
   } finally {
     view.unmount();
   }
@@ -278,7 +254,7 @@ test("Keep and Change stand on a waiting decision alone, after every other part"
     for (const [index, part] of parts.entries()) {
       const next = parts[index + 1];
       if (next === undefined) continue;
-      expect(part !== null && next !== null && before(part, next), `part ${index}`).toBe(true);
+      expect(part !== null && next !== null && precedes(part, next), `part ${index}`).toBe(true);
     }
   } finally {
     waiting.view.unmount();
@@ -389,7 +365,8 @@ const TREE_PERSON: CardDecision = {
 /** The bare `decisions` member, an agent's decision its maker was unsure of, kept by a person. */
 function bareMember(): CardDecision {
   return fromDecision(
-    model({
+    decision("store", {
+      changed_at: "2026-11-01T00:00:00Z",
       kept: {
         artifact_id: "doc",
         block_id: "store",

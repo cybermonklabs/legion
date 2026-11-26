@@ -1,4 +1,5 @@
-import type { AskTextRenderer } from "../ask-body/ask-text";
+import type { AskTextRenderer, TextMarks } from "../ask-body/ask-text";
+import { authorText, pageChrome } from "../issue-page/page-structure";
 import { RowText } from "../issue-page/RowText";
 
 /** The renderer Dashboard hands the ask body (dispatch://INFRA-5702/spec#b-r-ask-reads): every
@@ -8,3 +9,8 @@ import { RowText } from "../issue-page/RowText";
 export const rowText: AskTextRenderer = (text) => (
   <RowText markdown={text.markdown} source={text.source} tabStops tree={text.tree} />
 );
+
+/** The two marks Dashboard hands the ask body and the decision card (`AskBodyProps.marks`,
+ *  `DecisionCardProps.marks`): the issue page's own (`page-structure.ts`), so each divides its
+ *  own words from its values as Dashboard's own parts do. */
+export const textMarks: TextMarks = { authorText, pageChrome };

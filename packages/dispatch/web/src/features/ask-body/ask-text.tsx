@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { DisplayTree } from "../../api/types";
+import type { PageWords } from "../../components/tooltips";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import type { TextSource } from "../refs/text-references";
 
@@ -62,3 +63,15 @@ export const markdownText: AskTextRenderer = (text) => {
       return <MarkdownBody {...text} surface="resolved-ask" />;
   }
 };
+
+/** The two marks a host that divides its own words from what a person or an agent wrote hands
+ *  the ask body (`AskBodyProps.marks`): the mark of the body's own words and the mark of a
+ *  value, as `components/tooltips.tsx` names them. Dashboard hands the new issue page's; every
+ *  other host hands none, and the body then draws no mark of its own. */
+export type TextMarks = Pick<PageWords, "authorText" | "pageChrome">;
+
+/** `value` inside the mark of a value, where the host hands the marks, and as it is where it
+ *  hands none, so a host that hands none draws the same elements it always drew. */
+export function authored(marks: TextMarks | undefined, value: ReactNode): ReactNode {
+  return marks === undefined ? value : <span {...marks.authorText}>{value}</span>;
+}

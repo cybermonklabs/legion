@@ -4,6 +4,7 @@ import { waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { precedes } from "../../__tests__/document-order";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { type PageWords, PageWordsProvider } from "../../components/tooltips";
@@ -109,11 +110,6 @@ function bodyOf(container: HTMLElement): HTMLElement {
   const body = bodies[0];
   if (body === undefined) throw new Error("no ask body was drawn");
   return body;
-}
-
-/** Whether `first` comes before `second` in the document. */
-function precedes(first: Element, second: Element): boolean {
-  return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 }
 
 /** Each table of the issue page's list, its words being their keys: a surface with no tooltips,

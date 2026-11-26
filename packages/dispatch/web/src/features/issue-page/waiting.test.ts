@@ -20,10 +20,13 @@ import { nodesInOrder } from "./tree-keys";
 /**
  * What waits on the reader, read two ways from the same reads: the header's count, which is the
  * number of Dashboard's items (`features/dashboard/useWaitingItems.ts`'s `waitingItems`,
- * dispatch://INFRA-5702/spec#b-r-header-count), and the tree's own `waiting` on each node. The
- * two must agree, or the count puts the focus on a node that does not wait, or counts one it can
- * never reach. Dashboard's other kinds - a stale approval and a thread - are no node the tree
- * marks, and `features/dashboard/waiting-items.test.ts` reads them.
+ * dispatch://INFRA-5702/spec#b-r-header-count), and the tree's own `waiting` on each node. Where
+ * the tree reads no more than the count, the two must agree: else the count puts the focus on a
+ * node that does not wait, or counts one it can never reach. The count reads no block of the
+ * decisions document, so where the tree reads its blocks, it can place a Change by the block its
+ * anchor names where the count places it by its quote: one case below pins that difference.
+ * Dashboard's other kinds - a stale approval and a thread - are no node the tree marks, and
+ * `features/dashboard/waiting-items.test.ts` reads them.
  */
 
 const KEY = "CORE-1";

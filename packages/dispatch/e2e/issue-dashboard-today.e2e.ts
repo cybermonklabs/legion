@@ -16,8 +16,9 @@
 // - Phase: a `list` of eight `listitem`s, the steps Admitted, Planning, Implementing, Testing,
 //   Reviewing, Accepting, Retro and Merging, each its name and, on Planning, Implementing,
 //   Testing and Reviewing, its count of rounds as a number where it has one. The marked step
-//   carries `aria-current="step"`. The phase's words ("Waiting on a person", "Integrating",
-//   "Held", "In another phase") stand in the region. The region holds no `button` and no `link`.
+//   carries `aria-current="step"`. The phase's words ("Waiting on a person", "Waiting on
+//   children", "Integrating", "Held", "In another phase") stand in the region. The region holds
+//   no `button` and no `link`.
 // - Waiting on you: the count, `data-testid="dashboard-waiting-count"`, whose text is the
 //   number of items. Each item is one element with `data-testid="dashboard-item-<kind>-<id>"`,
 //   in the order drawn: kind `question` or `approval` with the ask's id, `stale` with the
@@ -59,6 +60,7 @@ import {
   getIssue,
   getIssueCoverage,
   getIssueDecisions,
+  getIssueLegion,
   getIssueResults,
   getMessage,
   listComments,
@@ -69,11 +71,7 @@ import {
   type DashboardSeed,
   EVERY_CLAIM_STATE,
   type LegionStateSeed,
-  type MainHolds,
-  mainHolds,
   READER,
-  ROUNDS,
-  readLegionIssue,
   SEEDED_LEGION,
   seedDashboard,
   seedPhaseIssue,
@@ -83,6 +81,26 @@ import {
   type WaitingItem,
   writeRounds,
 } from "./dashboard-seed";
+import {
+  beyondShell,
+  countOf,
+  drawEveryItem,
+  drawnItems,
+  itemOf,
+  itemsOf,
+  literal,
+  mainOfThisRun,
+  namedByR8,
+  nextFive,
+  ROLE_WORDS,
+  STEP_ROWS,
+  STEPS,
+  shellPollsOf,
+  shellRoutesOf,
+  TILES,
+  testIdOf,
+  waitingOf,
+} from "./dashboard-support";
 import { focusThePage } from "./issue-page-g";
 import { openPreset } from "./issue-page-i";
 import { withIssuePage } from "./issue-page-option";
@@ -105,59 +123,17 @@ const TODAYS_TABS: readonly (string | RegExp)[] = [
   "Collaborators",
 ];
 
-/** The eight steps of the track, in order (R3). */
-const STEPS = [
-  "Admitted",
-  "Planning",
-  "Implementing",
-  "Testing",
-  "Reviewing",
-  "Accepting",
-  "Retro",
-  "Merging",
+/** The words a phase draws beside the track (R3). */
+const PHASE_LINES = [
+  "Waiting on a person",
+  "Waiting on children",
+  "Integrating",
+  "Held",
+  "In another phase",
 ] as const;
 
-/** The words a phase draws beside the track (R3). */
-const PHASE_LINES = ["Waiting on a person", "Integrating", "Held", "In another phase"] as const;
-
-/** The role words of each claim state (R7): any other state reads "in another state", and a
- *  `retired` claim is not listed. */
-const ROLE_WORDS: Readonly<Record<string, string>> = {
-  failed: "failed",
-  idle: "idle",
-  launch_uncertain: "starting",
-  launching: "starting",
-  queued: "starting",
-  ready: "idle",
-  registered: "idle",
-  shim_connected: "starting",
-  suspended: "paused",
-  working: "in a turn",
-};
-
-const TILES = {
-  children: "Children done",
-  met: "Statements met",
-  passed: "Checks passed",
-  questions: "Questions waiting on others",
-} as const;
-
 /** Which main this run's server is, read once per worker (R27). */
-let holds: MainHolds | undefined;
-
-test.beforeAll(async () => {
-  holds = await mainHolds();
-});
-
-function thisMain(): MainHolds {
-  if (holds === undefined) throw new Error("the file's beforeAll read no main");
-  return holds;
-}
-
-/** `text` as a pattern that matches it literally. */
-function literal(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
+const thisMain = mainOfThisRun();
 
 /** Opens `key`'s Dashboard at its own address and answers its panel, failing the row where the
  *  page draws none. */
@@ -172,44 +148,6 @@ async function openDashboard(page: Page, key: string): Promise<Locator> {
   );
   await expect(page.locator("[data-issue-page]")).toHaveCount(0);
   return panel;
-}
-
-function waitingOf(panel: Locator): Locator {
-  return panel.getByRole("region", { exact: true, name: "Waiting on you" });
-}
-
-function itemsOf(waiting: Locator): Locator {
-  return waiting.locator('[data-testid^="dashboard-item-"]');
-}
-
-function testIdOf(item: WaitingItem): string {
-  return `dashboard-item-${item.kind}-${item.id}`;
-}
-
-function itemOf(waiting: Locator, item: WaitingItem): Locator {
-  return waiting.getByTestId(testIdOf(item));
-}
-
-/** The test id of each item drawn, in the order drawn. */
-function drawnItems(waiting: Locator): Promise<string[]> {
-  return itemsOf(waiting).evaluateAll((items) =>
-    items.map((item) => item.getAttribute("data-testid") ?? "")
-  );
-}
-
-function countOf(waiting: Locator): Locator {
-  return waiting.getByTestId("dashboard-waiting-count");
-}
-
-function nextFive(waiting: Locator): Locator {
-  return waiting.getByRole("button", { name: /^Show the next five/ });
-}
-
-/** Draws every item of the list: one press of the control for each five past the first. */
-async function drawEveryItem(waiting: Locator, seed: DashboardSeed): Promise<void> {
-  await expect(countOf(waiting)).toHaveText(String(seed.items.length));
-  for (let drawn = 5; drawn < seed.items.length; drawn += 5) await nextFive(waiting).click();
-  await expect(itemsOf(waiting)).toHaveCount(seed.items.length);
 }
 
 test("Dashboard is today's first tab, opens at /dashboard and loads its chunk only when opened", async ({
@@ -314,19 +252,9 @@ test.describe("the phase track reads each phase the issue's Legion state gives",
     await writeRounds(key);
     const track = await trackOf(await openDashboard(page, key));
     await expectPhase(track, "Planning", null);
-    // Planning, Implementing and Testing carry their rounds; Reviewing, with none, and the four
-    // steps that take no handoff carry no count.
-    expect(ROUNDS).toEqual({ implement: 3, plan: 2, review: 0, test: 1 });
-    await expect(track.getByRole("listitem")).toHaveText([
-      /^Admitted$/,
-      /^Planning\s*2$/,
-      /^Implementing\s*3$/,
-      /^Testing\s*1$/,
-      /^Reviewing$/,
-      /^Accepting$/,
-      /^Retro$/,
-      /^Merging$/,
-    ]);
+    // Each step that takes a handoff carries the seed's rounds of it; a step with none, and the
+    // four steps that take no handoff, carry no count.
+    await expect(track.getByRole("listitem")).toHaveText(STEP_ROWS);
   });
 
   for (const row of [
@@ -335,6 +263,12 @@ test.describe("the phase track reads each phase the issue's Legion state gives",
       phase: "awaiting_person",
       title: "awaiting_person",
       words: "Waiting on a person",
+    },
+    {
+      marked: "Admitted",
+      phase: "awaiting_children",
+      title: "awaiting_children",
+      words: "Waiting on children",
     },
     { marked: null, phase: "held", title: "held", words: "Held" },
     { marked: "Merging", phase: "integrating", title: "integrating", words: "Integrating" },
@@ -384,7 +318,7 @@ test("an issue Legion does not run draws no track, no agents and the nothing-wai
   page,
 }) => {
   const key = await seedQuietIssue();
-  expect((await readLegionIssue(key)).configured, "the quiet issue's project names a daemon").toBe(
+  expect((await getIssueLegion(key)).configured, "the quiet issue's project names a daemon").toBe(
     false
   );
   const panel = await openDashboard(page, key);
@@ -598,10 +532,14 @@ test("each item is acted on in place and leaves the list and the count", async (
  *  their `serves`) passed at it; the children done of the issue read; and the open questions
  *  whose turn is not the reader's. */
 async function countedTiles(key: string): Promise<Record<keyof typeof TILES, TileCount>> {
-  const statements = ((await getIssueCoverage(key)).requirements ?? []).map(
-    (requirement) => requirement.block_id
-  );
-  const checks = (await getIssueResults(key)).checks ?? [];
+  const [coverage, results, issue, asks] = await Promise.all([
+    getIssueCoverage(key),
+    getIssueResults(key),
+    getIssue(key),
+    listIssueAsks(key),
+  ]);
+  const statements = (coverage.requirements ?? []).map((requirement) => requirement.block_id);
+  const checks = results.checks ?? [];
   const serves = (check: object): readonly unknown[] =>
     "serves" in check && Array.isArray(check.serves) ? check.serves : [];
   const commit = namedCommit(checks);
@@ -612,9 +550,8 @@ async function countedTiles(key: string): Promise<Record<keyof typeof TILES, Til
       (commit === undefined || standing.stands?.commit_sha === commit)
     );
   });
-  const issue = await getIssue(key);
   const children = issue.children ?? [];
-  const open = (await listIssueAsks(key)).filter((ask) => ask.state === "open");
+  const open = asks.filter((ask) => ask.state === "open");
   return {
     children: {
       ids: children.filter((child) => child.status === "done").map((child) => child.key),
@@ -739,7 +676,7 @@ test("the agents at work are the roles that hold a claim, in the role words", as
     roles: EVERY_CLAIM_STATE,
   });
   // The roles in the order the issue's Legion state gives them, a retired claim among them.
-  const roles = (await readLegionIssue(key)).state?.roles ?? [];
+  const roles = (await getIssueLegion(key)).state?.roles ?? [];
   expect(roles.map((role) => role.state).sort()).toEqual(
     EVERY_CLAIM_STATE.map((role) => role.state).sort()
   );
@@ -759,44 +696,6 @@ test("the agents at work are the roles that hold a claim, in the role words", as
   );
 });
 
-/** Whether a read of Dashboard's first load is one R8 names on this main, for `seed`: the issue,
- *  its open asks, its handoffs, its Legion state, the reader's unread replies of the issue with
- *  no `limit`, the own route of each thread drawn, the decisions and the Changes' comments of
- *  the decisions document, the results and the coverage, the batched reference targets, and a
- *  picture's version with the summary. Where dispatch://INFRA-1253 is on main, its tree read. */
-function namedByR8(seed: DashboardSeed, method: string, sent: URL): boolean {
-  if (method !== "GET") return false;
-  const issue = `/api/v1/issues/${seed.key}`;
-  const query = [...sent.searchParams]
-    .map(([name, value]) => `${name}=${value}`)
-    .sort()
-    .join("&");
-  const threads = seed.items.filter((item) => item.kind === "thread").map((item) => item.id);
-  switch (sent.pathname) {
-    case issue:
-    case `${issue}/handoffs`:
-    case `${issue}/legion`:
-    case `${issue}/decisions`:
-    case `${issue}/results`:
-    case `${issue}/coverage`:
-    case `${issue}/summary`:
-      return query === "";
-    case `${issue}/asks`:
-      return query === "state=open";
-    case "/api/v1/me/replies":
-      return query === `issue=${seed.key}&state=unread`;
-    case `${issue}/comments`:
-      return query === `artifact=${seed.decisionsDocumentId}`;
-    case "/api/v1/reference-targets":
-      return true;
-    case `${issue}/tree`:
-      return seed.holds.treeRead;
-  }
-  const own = /^\/api\/v1\/(?:comments|issues\/[^/]+\/messages)\/([^/]+)$/.exec(sent.pathname);
-  if (own !== null) return threads.includes(own[1] ?? "");
-  return new RegExp(`^${literal(issue)}/artifacts/[^/]+/versions/\\d+$`).test(sent.pathname);
-}
-
 // SLOW(>=2s): the whole Dashboard seed, two loads of today's page and a press of the tab, each
 // read until nothing has been in flight for 1.5 s.
 test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
@@ -812,15 +711,8 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
 
   const tab = page.getByRole("tab", { exact: true, name: "Dashboard" });
   await expect(tab, "today's page draws no Dashboard tab").toBeVisible();
-  // The shell's own polls - the reads of no issue that today's page with no Dashboard made as it
-  // loaded, the agents registry and the credential requests among them - repeat on their own
-  // clock, on either page, at any time after: a window the control page polled in is no window
-  // this page polls in. A read of the issue is held to the windows below.
-  const shellPolls = new Set(
-    shell.requests
-      .filter((sent) => !sent.route.includes("/issues/"))
-      .map((sent) => `${sent.method} ${sent.route}`)
-  );
+  // The shell's own polls repeat on their own clock, on either page (`shellPollsOf`).
+  const shellPolls = shellPollsOf(shell);
   reads.reset();
   shell.reset();
   await tab.click();
@@ -828,12 +720,8 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
   await expect(waiting, "Dashboard draws no list of what waits").toBeVisible();
   await expect(itemsOf(waiting)).toHaveCount(5);
   await expectLoadSettled(reads);
-  const shellRoutes = new Set(shell.requests.map((sent) => `${sent.method} ${sent.route}`));
-  const dashboards = reads.requests.filter(
-    (sent) =>
-      !shellRoutes.has(`${sent.method} ${sent.route}`) &&
-      !shellPolls.has(`${sent.method} ${sent.route}`)
-  );
+  const shellRoutes = shellRoutesOf(shell);
+  const dashboards = beyondShell(reads.requests, shellRoutes, shellPolls);
   expect(
     dashboards
       .filter((sent) => !namedByR8(seed, sent.method, new URL(sent.path, "http://dashboard")))
@@ -856,12 +744,7 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
     .focus();
   await expectLoadSettled(reads);
   expect(
-    reads.requests
-      .filter(
-        (sent) =>
-          !shellRoutes.has(`${sent.method} ${sent.route}`) &&
-          !shellPolls.has(`${sent.method} ${sent.route}`)
-      )
+    beyondShell(reads.requests, shellRoutes, shellPolls)
       .filter(
         (sent) =>
           !(sent.method === "GET" && sent.path === "/api/v1/agents") &&
@@ -876,20 +759,19 @@ test("Dashboard sends only the reads R8 names", async ({ context, page }) => {
 /** Every string the reads of `seed`'s issue hold, its whitespace folded: the records whose text
  *  Dashboard may draw. */
 async function recordTexts(seed: DashboardSeed): Promise<readonly string[]> {
-  const reads: unknown[] = [
-    await getIssue(seed.key),
-    await listIssueAsks(seed.key),
-    await getIssueDecisions(seed.key),
-    await getIssueResults(seed.key),
-    await getIssueCoverage(seed.key),
-    await listMyReplies({ issue: seed.key, state: "unread" }),
-    await getComment(seed.threads.comment),
-    await getMessage(seed.key, seed.threads.message),
-    await readLegionIssue(seed.key),
-    ...(await Promise.all(
-      seed.items.filter((item) => item.kind === "question").map((item) => getAsk(item.id))
-    )),
-  ];
+  const asks = seed.items.filter((item) => item.kind === "question").map((item) => getAsk(item.id));
+  const reads: unknown[] = await Promise.all([
+    getIssue(seed.key),
+    listIssueAsks(seed.key),
+    getIssueDecisions(seed.key),
+    getIssueResults(seed.key),
+    getIssueCoverage(seed.key),
+    listMyReplies({ issue: seed.key, state: "unread" }),
+    getComment(seed.threads.comment),
+    getMessage(seed.key, seed.threads.message),
+    getIssueLegion(seed.key),
+    ...asks,
+  ]);
   const strings: string[] = [];
   const walk = (value: unknown): void => {
     if (typeof value === "string") strings.push(value.replace(/\s+/g, " ").trim());

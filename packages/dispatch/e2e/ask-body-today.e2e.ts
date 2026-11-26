@@ -5,11 +5,22 @@
 // DOM contract (INFRA-5702): data-ask-body and data-decision-card mark the shared roots.
 // AskCard still carries data-ask-card and the ask-<id> test id. The answer field is marked
 // data-ask-answer. Only real options carry data-ask-option. The body's question, type, author
-// and time share the first line, except that the document frame draws the question and type.
+// and time share the first line, except that the document frame draws the question and type;
+// in a body narrower than 32rem the type, author and time stand under the question.
 // The decision card sits in its existing section or margin placement; its time is a <time>.
 
 import { readFile, writeFile } from "node:fs/promises";
-import { getAsk, getInbox, getIssueDecisions, listComments, listMyAnswers } from "./api";
+import { DECISION_KIND_WORDS } from "../web/src/features/decision-card/decision-card-words";
+import {
+  createAsk,
+  createIssue,
+  createProject,
+  getAsk,
+  getInbox,
+  getIssueDecisions,
+  listComments,
+  listMyAnswers,
+} from "./api";
 import {
   ASK_TODAY,
   type AskTodayDecision,
@@ -19,11 +30,13 @@ import {
   READER,
   seedAskToday,
 } from "./dashboard-seed";
+import { literal } from "./dashboard-support";
 import { documentEditor } from "./editor";
 import { drawer, peekTrigger } from "./inbox-drawer";
 import { inboxList, inboxPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
 import { inboxAt } from "./inbox-pane-scroll";
 import { replyRowId } from "./inbox-threads";
+import { viewportAt } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic";
@@ -90,11 +103,11 @@ async function openChangeAnswer(page: Page, id: string): Promise<Locator> {
 }
 
 async function wide(page: Page): Promise<void> {
-  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.setViewportSize(viewportAt(1440));
 }
 
 async function narrow(page: Page): Promise<void> {
-  await page.setViewportSize({ height: 900, width: 1279 });
+  await page.setViewportSize(viewportAt(1279));
 }
 
 interface Surface {
@@ -103,6 +116,9 @@ interface Surface {
   readonly block?: boolean;
   readonly changing?: boolean;
   readonly multiple?: boolean;
+  /** The body is narrower than 32rem here, so its kind, asker and time stand under the question
+   *  rather than beside it (`firstLineEnd` in `AskBody.tsx`). */
+  readonly stacked?: boolean;
   readonly question: string;
   open(page: Page, seed: AskTodaySeed): Promise<Locator>;
 }
@@ -132,6 +148,7 @@ const SURFACES: readonly Surface[] = [
     id: (seed) => seed.asks.byOption.id,
     name: "Inbox drawer",
     question: ASK_TODAY.optionQuestion,
+    stacked: true,
     async open(page, seed) {
       await wide(page);
       await page.goto("/agents");
@@ -197,6 +214,7 @@ const SURFACES: readonly Surface[] = [
     id: (seed) => seed.records.anchored,
     name: "comments margin",
     question: "How should the reader order these items?",
+    stacked: true,
     async open(page, seed) {
       await wide(page);
       await page.goto(spec(seed));
@@ -217,28 +235,67 @@ async function firstWords(words: Locator) {
   });
 }
 
-async function expectRow(body: Locator, question: string, authorName: string): Promise<void> {
+/** An open ask's first line: the kind, the asker and the time, in that order, after the words. A
+ *  wide body draws them beside the words' first line; a narrow one (`Surface.stacked`) under the
+ *  words, from the words' left edge, with the asker and the time on one line. */
+async function expectRow(
+  body: Locator,
+  question: string,
+  authorName: string,
+  stacked = false
+): Promise<void> {
   const words = body.getByText(question, { exact: true }).first();
   const kind = body.getByText(KIND).first();
   const author = body.getByText(authorName, { exact: true }).first();
   const time = body.locator("time").first();
   for (const part of [words, kind, author, time]) await expect(part).toBeVisible();
-  const first = await firstWords(words);
-  let right = first.right;
+  const boxes: { height: number; width: number; x: number; y: number }[] = [];
   for (const part of [kind, author, time]) {
     // The part is visible above, so its layout box is settled and this one read is its place.
     const box = await part.boundingBox();
     if (box === null) throw new Error("The first line has a part with no layout box");
-    expect(box.y, "first-line metadata sits under the words").toBeLessThan(first.bottom);
-    expect(box.y + box.height, "first-line metadata sits above the words").toBeGreaterThan(
-      first.top
-    );
-    expect(
-      box.x,
-      "first-line metadata sits left of the words or out of order"
-    ).toBeGreaterThanOrEqual(right - 1);
-    right = box.x + box.width;
+    boxes.push(box);
   }
+  if (!stacked) {
+    const first = await firstWords(words);
+    let right = first.right;
+    for (const box of boxes) {
+      expect(box.y, "first-line metadata sits under the words").toBeLessThan(first.bottom);
+      expect(box.y + box.height, "first-line metadata sits above the words").toBeGreaterThan(
+        first.top
+      );
+      expect(
+        box.x,
+        "first-line metadata sits left of the words or out of order"
+      ).toBeGreaterThanOrEqual(right - 1);
+      right = box.x + box.width;
+    }
+    return;
+  }
+  // The visibility assertion above settled the question before this geometry check.
+  const wordsBox = await words.boundingBox();
+  if (wordsBox === null) throw new Error("The question's words have no layout box");
+  const [kindBox, authorBox, timeBox] = boxes;
+  expect(
+    Math.abs(kindBox.x - wordsBox.x),
+    "narrow-body metadata does not start at the words' left edge"
+  ).toBeLessThanOrEqual(1);
+  for (const [index, box] of boxes.entries()) {
+    expect(box.y, "narrow-body metadata sits beside the words").toBeGreaterThanOrEqual(
+      wordsBox.y + wordsBox.height - 1
+    );
+    const previous = boxes[index - 1];
+    if (previous === undefined) continue;
+    const sameLine = box.y < previous.y + previous.height && previous.y < box.y + box.height;
+    const inOrder = sameLine
+      ? box.x >= previous.x + previous.width - 1
+      : box.y >= previous.y + previous.height - 1;
+    expect(inOrder, "narrow-body metadata runs out of order").toBe(true);
+  }
+  expect(
+    timeBox.y < authorBox.y + authorBox.height && authorBox.y < timeBox.y + timeBox.height,
+    "the time opens a line of its own"
+  ).toBe(true);
 }
 
 async function expectOrdered(parts: readonly Locator[]): Promise<void> {
@@ -280,7 +337,7 @@ test("each surface draws the ask with the one ask body", async ({ page }) => {
           block(documentEditor(page)).getByRole("img", { name: ASK_TODAY.picture })
         ).toBeVisible();
       } else {
-        await expectRow(body, surface.question, data.plannerName);
+        await expectRow(body, surface.question, data.plannerName, surface.stacked);
       }
 
       const role = surface.multiple ? "checkbox" : "radio";
@@ -328,6 +385,58 @@ test("the answer box stands in place on every surface", async ({ page }) => {
     await expect(card.locator(ANSWER), surface.name).toBeVisible();
     await expect(button(card, DISCLOSURE), surface.name).toHaveCount(0);
   }
+});
+
+/** The words of `words` that the page breaks over two lines: each word's own text rectangles,
+ *  read where it stands, sit on more than one line. A word that fits its line is one rectangle. */
+async function brokenWords(words: Locator): Promise<string[]> {
+  return words.evaluate((element) => {
+    const broken: string[] = [];
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      for (const match of (node.textContent ?? "").matchAll(/\S+/g)) {
+        const range = document.createRange();
+        range.setStart(node, match.index);
+        range.setEnd(node, match.index + match[0].length);
+        const lines = new Set([...range.getClientRects()].map((rect) => Math.round(rect.top)));
+        if (lines.size > 1) broken.push(match[0]);
+      }
+    }
+    return broken;
+  });
+}
+
+// The comments margin is a column about 384 px wide at a desktop width, where the first line's
+// end (the kind, an agent's name control and the time) stands beside the words. The words must
+// keep room to wrap at their spaces there, as they do on a phone, and never break inside a word.
+test("in today's comments margin an agent's ask keeps each word of its question whole", async ({
+  page,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  const question = "Should the runbook keep its troubleshooting section?";
+  await createProject({ key: "WHOLE", name: "Whole words" });
+  const issue = await createIssue({
+    project: "WHOLE",
+    spec: "Restart, reseed, reopen the signed-in URL.",
+    title: "Whole words",
+  });
+  const asked = await createAsk(
+    issue.key,
+    { anchor: { artifact: "spec", quote: "reseed" }, question },
+    {
+      actor: { id: "whole-words-tester", kind: "session", origin: { session_title: "Tester" } },
+      as: "agent",
+    }
+  );
+  await wide(page);
+  await page.goto(`/issues/${issue.key}/spec`);
+  const body = ask(margin(page), asked.id).locator(BODY);
+  const words = body.getByText(question, { exact: true }).first();
+  await expect(words).toBeVisible();
+  expect(
+    await brokenWords(words),
+    "the margin breaks a word of the question over two lines"
+  ).toEqual([]);
 });
 
 // SLOW(>=2s): seed an approval and a pictured ask block, then open them in the reading pane.
@@ -520,7 +629,7 @@ async function expectDecision(
   await expect(
     card.getByText(person ? "A person's decision" : "Agent's decision", { exact: true })
   ).toBeVisible();
-  const text = card.getByText(new RegExp(escapeRegex(entry.text))).last();
+  const text = card.getByText(new RegExp(literal(entry.text))).last();
   await expect(text).toBeVisible();
   await expectUnclippedInCard(text);
   await expect(card.locator("time").first()).toHaveAttribute("datetime", /.+/);
@@ -538,7 +647,7 @@ async function expectDecision(
     await expect(
       card
         .locator("[data-decision-statements]")
-        .getByRole("link", { name: new RegExp(`^${escapeRegex(line)}`) })
+        .getByRole("link", { name: new RegExp(`^${literal(line)}`) })
     ).toHaveAttribute("href", /#b-/);
   }
   await expect(card.getByText(/^Changed since/)).toHaveCount(unsure ? 1 : 0);
@@ -656,15 +765,29 @@ test("Keep and Change in the margin write as DecisionActions writes", async ({ p
     });
 });
 
-function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /** Keep path and query, including the id or scope of an ask, artifact or list read. */
 function getPaths(traffic: ApiRequests): string[] {
   return [
     ...new Set(traffic.requests.filter(({ method }) => method === "GET").map(({ path }) => path)),
   ].sort();
+}
+
+/** The `ref`s of each GET /api/v1/reference-targets since the last `reset`, one list per request
+ *  and sorted, since a batch names a set. `traffic.requests` keeps every request the page sent,
+ *  so the same read sent twice is two lists here, where `getPaths` keeps one path. */
+function referenceTargetReads(traffic: ApiRequests): string[][] {
+  return traffic.requests.flatMap(({ method, path }) => {
+    const sent = new URL(path, "http://ask-body.test");
+    return method === "GET" && sent.pathname === "/api/v1/reference-targets"
+      ? [sent.searchParams.getAll("ref").sort()]
+      : [];
+  });
+}
+
+/** The statements the seeded decisions shaped, r1 to r4 of the spec (`seededDecisions` in
+ *  `dashboard-seed.ts`), each once by the address its ties name, sorted. */
+function shapedStatements(data: AskTodaySeed): string[] {
+  return ["r1", "r2", "r3", "r4"].map((id) => `dispatch://${data.key}/spec#b-${id}`);
 }
 
 // SLOW(>=2s): cold loads of nine surfaces, plus the tab and margin's staged Change reads.
@@ -679,7 +802,7 @@ test("each surface sends main's reads and no other", async ({ context }) => {
       const card = await surface.open(page, data);
       await expect(card.locator(BODY), surface.name).toBeVisible();
       await expectLoadSettled(traffic);
-      expectReads(getPaths(traffic), data, surface.name);
+      expectReads(traffic, data, surface.name);
     } finally {
       await page.close();
     }
@@ -695,7 +818,7 @@ test("each surface sends main's reads and no other", async ({ context }) => {
       await expect(card).toBeVisible();
       await expectLoadSettled(traffic);
       const reads = getPaths(traffic);
-      expectReads(reads, data, where);
+      expectReads(traffic, data, where);
       const text = `/api/v1/artifacts/${data.decisionsDocumentId}/text`;
       expect(reads).not.toContain(text);
       await button(card, "Change").click();
@@ -713,10 +836,48 @@ test("each surface sends main's reads and no other", async ({ context }) => {
   }
 });
 
+// SLOW(>=2s): seed the real records, then load today's Decisions tab and its Spec tab, whose
+// margin draws the cards beside the document.
+test("today's Decisions tab and Spec margin read every statement's first line in one batch", async ({
+  context,
+}) => {
+  test.skip(inventoryMode, "The inventory run reads the legacy layout as well");
+  const data = await seed();
+  for (const where of ["decisions", "spec"] as const) {
+    const page = await context.newPage();
+    try {
+      await wide(page);
+      const traffic = watchApiRequests(page);
+      await page.goto(`/issues/${data.key}/${where}`);
+      // A card draws a statement by its first line once the batch has answered for it, and
+      // draws nothing for it before, so each line drawn here is the batch's.
+      for (const entry of data.decisionCases) {
+        if (where === "spec" && entry.case === "replaced") continue;
+        const statements = decisionRoots(page, entry, where === "spec")
+          .first()
+          .locator("[data-decision-statements]");
+        for (const line of entry.ties) {
+          await expect(
+            statements.getByRole("link", { name: new RegExp(`^${literal(line)}`) })
+          ).toBeVisible();
+        }
+      }
+      await expectLoadSettled(traffic);
+      expect(
+        referenceTargetReads(traffic),
+        `today's ${where} tab read its statements' lines other than in one batch of them all`
+      ).toEqual([shapedStatements(data)]);
+    } finally {
+      await page.close();
+    }
+  }
+});
+
 /** Main's shell reads and the issue, Inbox, Conversation, answer and document reads its surfaces
- *  already use. In particular a document read here must be for the document actually drawn,
- *  never decisions.md on a surface that shows only a decision card. */
-function expectReads(paths: readonly string[], data: AskTodaySeed, surface: string): void {
+ *  already use, and the one read R21 adds. In particular a document read here must be for the
+ *  document actually drawn, never decisions.md on a surface that shows only a decision card. */
+function expectReads(traffic: ApiRequests, data: AskTodaySeed, surface: string): void {
+  const paths = getPaths(traffic);
   const issue = `/api/v1/issues/${data.key}`;
   const api = "/api/v1";
   const specArtifact = `${api}/artifacts/${data.specArtifactId}`;
@@ -772,7 +933,7 @@ function expectReads(paths: readonly string[], data: AskTodaySeed, surface: stri
   const decisionsTab = surface === "decisions";
   const allowed = (path: string) => {
     const sent = new URL(path, "http://ask-body.test");
-    if (shell.has(sent.pathname) || sent.pathname === `${api}/reference-targets`) return true;
+    if (shell.has(sent.pathname)) return true;
     if (sent.pathname === `${api}/me/replies`) {
       return (
         sent.searchParams.get("kind") === "reply,agent" ||
@@ -793,6 +954,12 @@ function expectReads(paths: readonly string[], data: AskTodaySeed, surface: stri
     if (specSurface && document.has(path)) return true;
     if (specSurface || decisionsTab) {
       if (path === `${issue}/decisions`) return true;
+      // R21's one new read, which the count below holds to one batch of every statement.
+      if (sent.pathname === `${api}/reference-targets`) return true;
+      // A decision's text reads each reference it cites by its own link (`RefLink`), as main's
+      // does, and the seed's texts cite the very statements their decisions shaped, so such a
+      // read is the request a statement line would send if it read its own words. The card
+      // reads none (`withStatementTexts`), but a request cannot say which of the two sent it.
       const target = sent.searchParams.get("to");
       if (
         sent.pathname === `${api}/references` &&
@@ -816,6 +983,19 @@ function expectReads(paths: readonly string[], data: AskTodaySeed, surface: stri
     paths.filter((path) => !allowed(path)),
     `${surface} sent reads absent on main`
   ).toEqual([]);
+  // R21: a list of decision cards reads the first lines of the statements its decisions shaped
+  // in one batch, so a surface that draws one sends that read at most once on its load, naming
+  // them all and never one alone, and a surface that draws no decision card sends none. Every
+  // request counts, the same one sent twice as two.
+  const batches = referenceTargetReads(traffic);
+  expect(
+    batches.length,
+    `${surface} read statements' first lines more often than one batch for its list of cards`
+  ).toBeLessThanOrEqual(specSurface || decisionsTab ? 1 : 0);
+  const statements = shapedStatements(data);
+  for (const batch of batches) {
+    expect(batch, `${surface} read some statements' lines apart from the rest`).toEqual(statements);
+  }
   if (surface === "ThreadBody") expect(paths).toContain(askRead(data.records.thread));
   if (answers) expect(paths).toContain(askRead(data.records.changed));
   if (decisionsTab || specSurface) expect(paths).toContain(`${issue}/decisions`);
@@ -934,7 +1114,6 @@ async function collectInventory(page: Page, data: AskTodaySeed): Promise<Invento
   };
   const measure = async (surface: string) => {
     await page.waitForFunction(() => document.readyState === "complete");
-    await page.waitForFunction(() => performance.getEntriesByType("navigation").length === 1);
     reads[surface] = getPaths(traffic).map((path) => normalize(path, data));
     traffic.reset();
   };
@@ -1055,6 +1234,16 @@ function compareInventory(before: Inventory, after: Inventory): void {
       continue;
     }
     const isDecisionTab = part.startsWith("Decisions/");
+    // Main's margin preview held a decision's heading and its text as one string; today's card
+    // draws its kind words between the two. That one marker, at that one boundary, is allowed.
+    const heading = part.startsWith("margin/decision/")
+      ? old.controls.find(({ role }) => role === "heading")?.name
+      : undefined;
+    const kind = Object.values(DECISION_KIND_WORDS).find((word) => old.words.includes(word));
+    const withKind = (words: string) =>
+      heading !== undefined && kind !== undefined && words.startsWith(`${heading} `)
+        ? `${heading} ${kind}${words.slice(heading.length)}`
+        : words;
     const sharedAskBody =
       now.sharedAskBody ||
       (part === "Conversation/byOption/decline" &&
@@ -1086,7 +1275,11 @@ function compareInventory(before: Inventory, after: Inventory): void {
               .replace(/^Text changed\.$/, "Text changed")
               .replace(/^(Approved at version .*)\.$/, "$1")
         : words;
-      if (revised !== words ? !now.words.includes(revised) : !text.includes(words)) {
+      if (
+        revised !== words
+          ? !now.words.includes(revised)
+          : !text.includes(words) && !text.includes(withKind(words))
+      ) {
         losses.push(`${part}: ${JSON.stringify(revised)}`);
       }
     }

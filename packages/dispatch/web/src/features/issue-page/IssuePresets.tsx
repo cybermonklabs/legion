@@ -47,7 +47,7 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * turns it off, and pressing Conversation turns every view off. Each control's state is an
  * address of its own (`issue-address.ts`'s `presetPath`), so pressing one is navigation and a
  * view survives a reload and a link. The toolbar is one tab stop, the control that is pressed;
- * the arrow keys, Home and End move between the five, and Enter and Space press.
+ * the arrow keys, Home and End move between the seven, and Enter and Space press.
  *
  * A toggle is the prototype's `.tab`: its name, which is the button, named by that word alone -
  * the word a voice user says. Where a signal is drawn, it is beside the button in the same box,
@@ -55,16 +55,17 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * description (`aria-describedby`), not a word drawn inside the button and missing from its
  * name (WCAG 2.5.3).
  *
- * The row has two shapes and no third. From 1280 px it is the row of five, which is where R2
- * says the views are one row; below it - R2's 1024 px and every width between, where the five
- * and the small controls measured up to 47 px wider than the row at 1025 px with a view on - it
- * is one control naming the one on, with its signal if drawn, which opens a menu of the five, each a
- * `menuitemradio` that says whether it is the one on; below 1024 px the Outline control stands
- * beside it (R2, R14). One query and its negation decide the two (`ONE_CONTROL_QUERY`), so no
- * width answers both shapes or neither, and the row is one line at every width. The one control
- * is a WAI-ARIA menu button: Enter, Space, Down and Up open its menu with the focus on the view
- * that is on; Up and Down move in it, wrapping, and Home and End go to its ends; Escape closes it
- * and gives the focus back to the control, and Tab closes it.
+ * The row has two shapes and no third. From 1280 px it is the row of seven (`PRESET_ORDER`),
+ * which is where R2 says the views are one row; below it - R2's 1024 px and every width between,
+ * where the row of five, before Dashboard and Documents, and the small controls measured up to
+ * 47 px wider than the row at 1025 px with a view on - it is one control naming the one on, with
+ * its signal if drawn, which opens a menu of the seven, each a `menuitemradio` that says whether
+ * it is the one on; below 1024 px the Outline control stands beside it (R2, R14). One query and
+ * its negation decide the two (`ONE_CONTROL_QUERY`), so no width answers both shapes or neither,
+ * and the row is one line at every width. The one control is a WAI-ARIA menu button: Enter,
+ * Space, Down and Up open its menu with the focus on the view that is on; Up and Down move in it,
+ * wrapping, and Home and End go to its ends; Escape closes it and gives the focus back to the
+ * control, and Tab closes it.
  */
 export function IssuePresets({
   active,
@@ -105,7 +106,7 @@ export function IssuePresets({
   // Part N's Documents hands its list the address it is pressed at (`press`).
   const { search } = useLocation();
   const openKeys = useShortcutHelpOpener();
-  // The row of five is drawn exactly where the one control is not.
+  // The row of seven is drawn exactly where the one control is not.
   const row = !useMediaQuery(ONE_CONTROL_QUERY);
   // Where the header scrolls away, the row holds the one control and Outline alone.
   const phone = useMediaQuery(HEADER_SCROLLS_QUERY);
@@ -257,7 +258,7 @@ export function IssuePresets({
     event.preventDefault();
     toggles.current[next]?.focus();
   };
-  // Inside the open menu, Up and Down move between the five, wrapping, and Home and End go to
+  // Inside the open menu, Up and Down move between the seven, wrapping, and Home and End go to
   // the ends. Tab closes it: the focus goes back to the control first, so Tab moves on from the
   // control, and the items take no tab stop of their own.
   const walkMenu = (event: KeyboardEvent<HTMLElement>) => {

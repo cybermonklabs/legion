@@ -118,15 +118,18 @@ function rawColorOffenders(source: string): Offender[] {
     cuts.push({ at: joined.length, length: join[0].length });
     from = join.index + join[0].length;
   }
-  joined += source.slice(from);
-  for (const match of joined.matchAll(RAW_COLOR_PATTERN)) {
-    const end = match.index + match[0].length;
-    if (cuts.some(({ at }) => match.index < at && at < end)) {
-      const cut = cuts.filter(({ at }) => at <= match.index);
-      found.push({
-        offset: match.index + cut.reduce((sum, { length }) => sum + length, 0),
-        text: match[0],
-      });
+  // With no string split, the joined source is the source, and every class in it is found above.
+  if (cuts.length > 0) {
+    joined += source.slice(from);
+    for (const match of joined.matchAll(RAW_COLOR_PATTERN)) {
+      const end = match.index + match[0].length;
+      if (cuts.some(({ at }) => match.index < at && at < end)) {
+        const cut = cuts.filter(({ at }) => at <= match.index);
+        found.push({
+          offset: match.index + cut.reduce((sum, { length }) => sum + length, 0),
+          text: match[0],
+        });
+      }
     }
   }
   return found

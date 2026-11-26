@@ -16,6 +16,7 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { useSetFocusedNode } from "../issue-page/focused-node";
 import { DETAILS_ATTRIBUTE } from "../issue-page/margin-slot";
+import { authorText, pageChrome } from "../issue-page/page-structure";
 import {
   DASHBOARD_WORDS,
   EMPTY_STATE_LINES,
@@ -26,6 +27,7 @@ import { RowText } from "../issue-page/RowText";
 import { buildDispatchReference } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { DashboardAskBody } from "./DashboardAskBody";
+import { textMarks } from "./row-text";
 import { ThreadItem } from "./ThreadItem";
 import type { DashboardNames } from "./useDashboardNames";
 import type { WaitingItem } from "./useWaitingItems";
@@ -96,10 +98,15 @@ function StaleItem({
 }): ReactNode {
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <span className={`text-sm font-medium ${pageInkText}`}>
+      <span className={`text-sm font-medium ${pageInkText}`} {...pageChrome}>
         {document.id === issue.primary_artifact_id ? PRESET_NAMES.spec : PRESET_NAMES.verification}
       </span>
-      <ApprovalChip artifact={document} variant="header" />
+      {/* The one approval control draws its own words, not the page's: a hosted control, marked
+          as the margin's own cards are (`IssueMargin.tsx`), and `contents` keeps the chip this
+          line's item. */}
+      <div className="contents" {...authorText}>
+        <ApprovalChip artifact={document} variant="header" />
+      </div>
     </div>
   );
 }
@@ -135,6 +142,7 @@ function DecisionItem({
       node: <RowText markdown={decision.heading} source={source} tabStops tree={headingTree} />,
       words: name,
     },
+    marks: textMarks,
     paths: cardPaths(issue.key, primarySpec(issue)),
     renderText: (text) => (
       <RowText markdown={text.markdown} source={source} tabStops tree={text.tree} />
@@ -239,16 +247,19 @@ export function WaitingList({
           <p
             className={`text-3xl leading-none font-semibold tabular-nums ${pageInkText}`}
             data-testid="dashboard-waiting-count"
+            {...authorText}
           >
             {items.length}
           </p>
         )}
-        <h2 className={`text-base font-semibold ${pageInkText}`}>
+        <h2 className={`text-base font-semibold ${pageInkText}`} {...pageChrome}>
           {DASHBOARD_WORDS.parts.waiting}
         </h2>
       </div>
       {items === undefined || issue === undefined ? null : items.length === 0 ? (
-        <p className={`text-sm ${pageMutedText}`}>{EMPTY_STATE_LINES.dashboard}</p>
+        <p className={`text-sm ${pageMutedText}`} {...pageChrome}>
+          {EMPTY_STATE_LINES.dashboard}
+        </p>
       ) : (
         <ol className="space-y-3">
           {shown.map((item) => (
@@ -275,9 +286,14 @@ export function WaitingList({
           className={`rounded-lg border px-3 py-1 text-sm font-medium ${pageLineBorder} ${pageMutedText}`}
           onClick={onMore}
           type="button"
+          {...pageChrome}
         >
           {DASHBOARD_WORDS.next_five}
-          <span className={pageQuietText}>{` · ${left} ${DASHBOARD_WORDS.left}`}</span>
+          <span className={pageQuietText}>
+            {" · "}
+            <span {...authorText}>{left}</span>
+            {` ${DASHBOARD_WORDS.left}`}
+          </span>
         </button>
       ) : null}
     </section>

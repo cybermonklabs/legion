@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import { displayTree } from "../../__tests__/display-trees";
-import type { Decision } from "../../api/types";
+import { decision } from "../issue-page/decisions-filter/decisions-fixtures";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { changeAnchor } from "./change-anchor";
 
@@ -13,39 +13,13 @@ import { changeAnchor } from "./change-anchor";
  * caller's, and its own tests read it.
  */
 
-const KEY = "CORE-1";
-
-const decision: Decision = {
-  asks: [],
-  block_id: "d1",
-  changed_at: null,
-  changed_version: 1,
-  heading: "One tree, five presets",
-  kept: null,
-  kind: "agent",
-  links: [],
-  ref: `dispatch://${KEY}/artifact/decisions-md#b-d1`,
-  replaced: false,
-  text: "One tree, five presets\n\nThe presets are queries over the one tree.",
-  text_sha256: "sum",
-  unsure: false,
-  waiting_review: true,
-};
-
 /** Two decisions whose first blocks both hold "Draw it once.", the second's whole: a Change of
  *  the second quotes words that stand more than once in the decisions document. */
-const ABOVE: Decision = {
-  ...decision,
-  block_id: "d0",
+const ABOVE = decision("d0", {
   heading: "Keep the model pure",
-  ref: `dispatch://${KEY}/artifact/decisions-md#b-d0`,
   text: "## Keep the model pure\n\nKeep the model pure. Draw it once.",
-};
-const OWN: Decision = {
-  ...decision,
-  heading: "Draw it once",
-  text: "## Draw it once\n\nDraw it once.",
-};
+});
+const OWN = decision("d1", { heading: "Draw it once", text: "## Draw it once\n\nDraw it once." });
 
 /** The decisions document that holds `ABOVE` and `OWN`, below its title and `intro`. */
 function twoDecisionsText(intro: string): string {

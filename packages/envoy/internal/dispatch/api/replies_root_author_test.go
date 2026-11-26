@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -53,9 +52,9 @@ func TestMyRepliesCarriesTheRootAuthor(t *testing.T) {
 	checking := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Still checking.", "in_reply_to": message.ID}, "alice")
 	sessionMessage(t, handler, issue.Key, map[string]any{"body": "Green.", "in_reply_to": checking.ID, "actor": replier})
 
-	daemon := model.Actor{Kind: "session", ID: legionDaemonSessionPrefix + "ACME"}
+	daemon := daemonSessionOf("ACME")
 	lifecycle := sessionMessage(t, handler, issue.Key, map[string]any{
-		"body": "Legion moved the issue to implement.", "actor": map[string]any{"kind": daemon.Kind, "id": daemon.ID},
+		"body": "Legion moved the issue to implement.", "actor": daemon,
 	})
 	why := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "Why now?", "in_reply_to": lifecycle.ID}, "alice")
 	sessionMessage(t, handler, issue.Key, map[string]any{"body": "The plan was approved.", "in_reply_to": why.ID, "actor": replier})
@@ -64,10 +63,10 @@ func TestMyRepliesCarriesTheRootAuthor(t *testing.T) {
 	if page.Total != 4 || len(page.Rows) != 4 {
 		t.Fatalf("page = %#v, want the ask, the comment thread and the two message threads", page)
 	}
-	bob := model.Actor{Kind: "user", ID: "bob"}
+	bob := map[string]any{"kind": "user", "id": "bob"}
 	for _, want := range []struct {
 		name, thread, kind string
-		author             model.Actor
+		author             map[string]any
 	}{
 		{"the ask's asker", ask.ID, "ask", bob},
 		{"the root comment's author", root.ID, "comment", bob},
@@ -81,20 +80,19 @@ func TestMyRepliesCarriesTheRootAuthor(t *testing.T) {
 		if row.Reply.Author.Kind != replier["kind"] || row.Reply.Author.ID != replier["id"] {
 			t.Errorf("%s: the newest reply's author = %#v, want the replying session", want.name, row.Reply.Author)
 		}
-		if row.RootAuthor == nil || row.RootAuthor.Kind != want.author.Kind || row.RootAuthor.ID != want.author.ID {
-			t.Errorf("%s: root_author = %#v, want %s %s", want.name, row.RootAuthor, want.author.Kind, want.author.ID)
+		if row.RootAuthor == nil || row.RootAuthor.Kind != want.author["kind"] || row.RootAuthor.ID != want.author["id"] {
+			t.Errorf("%s: root_author = %#v, want %s %s", want.name, row.RootAuthor, want.author["kind"], want.author["id"])
 		}
 	}
 
 	btw, _ := agentThread(t, handler, "btw", "Deploy is tonight.", "Noted.")
-	agents := dispatchRequest(t, handler, http.MethodGet, "/api/v1/me/replies?kind=agent", nil, "alice")
-	if agents.Code != http.StatusOK {
-		t.Fatalf("list alice's agent rows: status=%d body=%s", agents.Code, agents.Body.String())
-	}
-	if row := replyRow(t, decodeBody[model.MyRepliesResponse](t, agents), btw.ID); row.Kind != "agent" || row.RootAuthor != nil {
+	agents := getMyReplies(t, handler, "alice", "?kind=agent")
+	if row := replyRow(t, agents, btw.ID); row.Kind != "agent" || row.RootAuthor != nil {
 		t.Fatalf("agent row = %#v, want an agent row with no root_author", row)
 	}
-	if strings.Contains(agents.Body.String(), `"root_author"`) {
-		t.Fatalf("the agent rows carry root_author: %s", agents.Body.String())
+	for _, row := range agents.Rows {
+		if row.RootAuthor != nil {
+			t.Fatalf("agent row %s carries root_author %#v, want none", row.ThreadID, row.RootAuthor)
+		}
 	}
 }

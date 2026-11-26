@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { withoutComments } from "../../theme/css-source";
+import {
+  type CssBlock,
+  ruleDeclarations,
+  topLevelBlocks,
+  withoutComments,
+} from "../../theme/css-source";
 
 /** One rule of `styles.css`: its selector list, kept whole, since a comma inside `:is(…)`
  *  separates no selectors, and its declarations, each written `property: value`. */
@@ -21,19 +26,19 @@ export function wordsScrollRules(): StyleRule[] {
   const css = withoutComments(
     readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8")
   );
-  const rules = [...css.matchAll(/([^{};]+)\{([^{}]*)\}/g)].flatMap(
-    ([, selectors = "", body = ""]) => {
-      const declared = new Set(
-        body
-          .split(";")
-          .map((one) => one.replace(/\s+/g, " ").trim())
-          .filter(Boolean)
-      );
-      return selectors.includes("[data-node-words]") && declared.has("overflow-x: auto")
-        ? [{ declared, selectors: selectors.trim() }]
-        : [];
-    }
-  );
+  // Each rule at any depth: an at-rule's block (`@media`, `@supports`) holds rules of its own.
+  const rulesOf = (sheet: string): CssBlock[] =>
+    topLevelBlocks(sheet).flatMap((block) =>
+      block.prelude.startsWith("@") ? rulesOf(block.body) : [block]
+    );
+  const rules = rulesOf(css).flatMap(({ body, prelude }) => {
+    const declared = new Set(
+      ruleDeclarations(body).map(({ property, value }) => `${property}: ${value}`)
+    );
+    return prelude.includes("[data-node-words]") && declared.has("overflow-x: auto")
+      ? [{ declared, selectors: prelude }]
+      : [];
+  });
   if (rules.length === 0)
     throw new Error("no rule of styles.css scrolls a block in a node's words");
   return rules;

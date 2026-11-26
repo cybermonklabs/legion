@@ -12,6 +12,7 @@ import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
 import { AskAgent } from "./ask-agent";
 import { ASK_APPROVAL_WORDS } from "./ask-body-words";
+import { authored, type TextMarks } from "./ask-text";
 
 /**
  * What changed between the version a human approved and the version the request names, with every
@@ -19,15 +20,18 @@ import { ASK_APPROVAL_WORDS } from "./ask-body-words";
  * the answers to decision blocks between the two are what the human himself decided. Mounted
  * only once the reader asks for it, so nothing is fetched or rendered before. Both reads share
  * the document page's `["artifact", id, "version", n]` keys, and the loading and error copy is
- * its comparison's (`features/artifacts/ArtifactDetails.tsx`).
+ * its comparison's (`features/artifacts/ArtifactDetails.tsx`). The two versions' own words are
+ * the document's, which a host that hands `marks` gets inside the mark of a value.
  */
 function ApprovedChangeView({
   approvedVersion,
   artifactId,
+  marks,
   version,
 }: {
   approvedVersion: number;
   artifactId: string;
+  marks: TextMarks | undefined;
   version: number;
 }): ReactNode {
   const before = useQuery({
@@ -54,7 +58,14 @@ function ApprovedChangeView({
   }
   if (cut !== undefined) {
     // The exact characters a change swaps: the reading list's `change-view-diff`.
-    return <ChangeView after={cut.after} before={cut.before} />;
+    const view = <ChangeView after={cut.after} before={cut.before} />;
+    return marks === undefined ? (
+      view
+    ) : (
+      <div className="contents" {...marks.authorText}>
+        {view}
+      </div>
+    );
   }
   return <p className={`text-sm ${textMutedOnSurface}`}>{ASK_APPROVAL_WORDS.diff_loading}</p>;
 }
@@ -66,14 +77,17 @@ function ApprovedChangeView({
  * `approved`. Inside `NoTooltips` its date carries no `title`, as no time there does.
  * `agentNames` is how the ask body names the approver (`ask-agent.tsx`); the reading pane's
  * head, which draws it beside its own approval chip, names it as every surface of today's pages
- * does.
+ * does. A host that hands `marks` (`AskBodyProps.marks`) gets the version, the date and the
+ * approver inside the mark of a value.
  */
 export function EarlierApproval({
   agentNames = "live",
   approval,
+  marks,
 }: {
   agentNames?: AgentNames;
   approval: AskApproval;
+  marks?: TextMarks;
 }): ReactNode {
   const [diffOpen, setDiffOpen] = useState(false);
   const tooltips = useTooltips();
@@ -85,13 +99,17 @@ export function EarlierApproval({
     <div className={`mt-1 text-xs ${textMutedOnSurface}`}>
       <p>
         {`${ASK_APPROVAL_WORDS.approved.at_version} `}
-        {approved.version}
+        {authored(marks, approved.version)}
         {` ${ASK_APPROVAL_WORDS.approved.on}`}{" "}
-        <time dateTime={approved.at} title={tooltips ? approved.at : undefined}>
+        <time
+          dateTime={approved.at}
+          title={tooltips ? approved.at : undefined}
+          {...marks?.authorText}
+        >
           {approved.at.slice(0, 10)}
         </time>{" "}
         {`${ASK_APPROVAL_WORDS.approved.by} `}
-        <AskAgent actor={approved.by} agentNames={agentNames} inline />
+        <AskAgent actor={approved.by} agentNames={agentNames} inline marks={marks} />
       </p>
       <DisclosureToggle
         expanded={diffOpen}
@@ -103,6 +121,7 @@ export function EarlierApproval({
         <ApprovedChangeView
           approvedVersion={approved.version}
           artifactId={approval.artifact_id}
+          marks={marks}
           version={approval.version}
         />
       ) : null}

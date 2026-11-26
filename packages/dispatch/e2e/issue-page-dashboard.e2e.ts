@@ -30,27 +30,75 @@
 //   are the names part M's `FocusedNodeFacts.tsx` and `node-references/NodeReferences.tsx` give
 //   them (dispatch://INFRA-3948), so the Details row runs only where the head holds part M's file
 //   (c-dashboard-new (4)); `features/dashboard/`'s unit tests read that the item sets the focus.
+// - Dashboard at rest draws neither part L's writing box `[data-testid="issue-composer"]`
+//   (`IssueComposer.tsx`, which the foot keeps mounted and `hidden` while it is not drawn) nor the
+//   issue's read mark `[data-outline-end]` (`IssueReadMark.tsx`), and Conversation at rest draws
+//   both: `slots/foot.tsx` draws them at rest in Conversation alone. These are the names part L
+//   gives them (dispatch://INFRA-3949), so the row that reads them runs only where the head holds
+//   part L's `IssueComposer.tsx` (c-dashboard-new (2)).
+// - Dashboard's own region on the new page is `[data-dashboard]` (`slots/view-dashboard.tsx`), and
+//   every text it draws carries one of the page's two marks (`page-structure.ts`): the page's
+//   (`data-page-chrome`) on Dashboard's own words and on the ask body's and the decision card's,
+//   and an author's (`data-author-text`) on every value, every author's words, and what a shared
+//   control draws in words of its own (a writing box, the approval control).
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import {
+  ASK_APPROVAL_WORDS,
+  ASK_FORM_WORDS,
+  ASK_HAND_ON_WORDS,
+  ASK_LINE_WORDS,
+} from "../web/src/features/ask-body/ask-body-words";
+import {
+  DECISION_ACT_WORDS,
+  DECISION_LINE_WORDS,
+  DECISION_STATE_WORDS,
+} from "../web/src/features/decision-card/decision-card-words";
 import { URGENCY_LABELS } from "../web/src/features/inbox/ask-urgency";
+import { presetPath } from "../web/src/features/issue-page/issue-address";
+import {
+  AUTHOR_TEXT_ATTRIBUTE,
+  PAGE_CHROME_ATTRIBUTE,
+} from "../web/src/features/issue-page/page-structure";
 import {
   CONTROL_LABELS,
+  DASHBOARD_WORDS,
   NODE_TYPE_NAMES,
+  PHASE_WORDS,
   PRESET_NAMES,
+  type Preset,
 } from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { getComment, getIssue } from "./api";
 import {
   type DashboardSeed,
-  type MainHolds,
-  mainHolds,
-  ROUNDS,
+  type ItemKind,
+  READER,
   SEEDED_LEGION,
   seedDashboard,
   type WaitingItem,
 } from "./dashboard-seed";
+import {
+  beyondShell,
+  countOf,
+  drawEveryItem,
+  drawnItems,
+  itemOf,
+  itemsOf,
+  literal,
+  mainOfThisRun,
+  namedByR8,
+  nextFive,
+  ROLE_WORDS,
+  STEP_ROWS,
+  shellPollsOf,
+  shellRoutesOf,
+  TILES,
+  testIdOf,
+  waitingOf,
+} from "./dashboard-support";
 import {
   contentsPane,
   gotoIssue,
@@ -59,7 +107,9 @@ import {
   openMenu,
   phase,
   presetChooser,
+  presetMenuItem,
   presetRow,
+  presetToggle,
   presetToggles,
   viewportAt,
 } from "./issue-page";
@@ -76,8 +126,12 @@ const PART_M_DETAILS = existsSync(
   fileURLToPath(new URL("../web/src/features/issue-page/FocusedNodeFacts.tsx", import.meta.url))
 );
 
-/** The view row's word for Dashboard, which `PRESET_NAMES` holds once Dashboard is a preset. */
-const DASHBOARD = "Dashboard";
+/** Whether the head holds part L's writing box (dispatch://INFRA-3949, #4246), which the foot's
+ *  row reads with the issue's read mark; c-dashboard-new (2) gates that row on the file, not on
+ *  part L's merge. */
+const PART_L_FOOT = existsSync(
+  fileURLToPath(new URL("../web/src/features/issue-page/IssueComposer.tsx", import.meta.url))
+);
 
 /** The widths the rows read, and the width from which the view row is a toolbar of toggles
  *  rather than one control with a menu (`IssuePresets.tsx`). */
@@ -88,116 +142,12 @@ const TOOLBAR_FROM = 1280;
 /** The most requests under `/api/` a cold load of Dashboard sends (c-dashboard-new (6)). */
 const COLD_LOAD_AT_MOST = 40;
 
-/** The eight steps of the track, in order (R3). */
-const STEPS = [
-  "Admitted",
-  "Planning",
-  "Implementing",
-  "Testing",
-  "Reviewing",
-  "Accepting",
-  "Retro",
-  "Merging",
-] as const;
-
-/** The rounds each counted step carries: the seed's handoffs of its phase (R3). */
-const STEP_ROUNDS: Readonly<Partial<Record<(typeof STEPS)[number], number>>> = {
-  Implementing: ROUNDS.implement,
-  Planning: ROUNDS.plan,
-  Reviewing: ROUNDS.review,
-  Testing: ROUNDS.test,
-};
-
-/** The role words of each claim state (R7): any other state reads "in another state", and a
- *  `retired` claim is not listed. */
-const ROLE_WORDS: Readonly<Record<string, string>> = {
-  failed: "failed",
-  idle: "idle",
-  launch_uncertain: "starting",
-  launching: "starting",
-  queued: "starting",
-  ready: "idle",
-  registered: "idle",
-  shim_connected: "starting",
-  suspended: "paused",
-  working: "in a turn",
-};
-
-const TILES = {
-  children: "Children done",
-  met: "Statements met",
-  passed: "Checks passed",
-  questions: "Questions waiting on others",
-} as const;
-
 /** Which main this run's server is, read once per worker (R27). */
-let holds: MainHolds | undefined;
-
-test.beforeAll(async () => {
-  holds = await mainHolds();
-});
-
-function thisMain(): MainHolds {
-  if (holds === undefined) throw new Error("the file's beforeAll read no main");
-  return holds;
-}
+const thisMain = mainOfThisRun();
 
 /** The Dashboard seed on the main this run's server is. */
 function seeded(): Promise<DashboardSeed> {
   return seedDashboard(thisMain());
-}
-
-/** `text` as a pattern that matches it literally. */
-function literal(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/** The own address of `view` on `key`: `/issues/<KEY>/<view>`. */
-function viewPath(key: string, view: string): string {
-  return `/issues/${key}/${view}`;
-}
-
-/** The page's address is `view`'s own, with nothing after it. */
-function atView(key: string, view: string): RegExp {
-  return new RegExp(`/issues/${literal(key)}/${view}$`);
-}
-
-function waitingOf(page: Page): Locator {
-  return issuePage(page).getByRole("region", { exact: true, name: "Waiting on you" });
-}
-
-function itemsOf(waiting: Locator): Locator {
-  return waiting.locator('[data-testid^="dashboard-item-"]');
-}
-
-function testIdOf(item: WaitingItem): string {
-  return `dashboard-item-${item.kind}-${item.id}`;
-}
-
-function itemOf(waiting: Locator, item: WaitingItem): Locator {
-  return waiting.getByTestId(testIdOf(item));
-}
-
-/** The test id of each item drawn, in the order drawn. */
-function drawnItems(waiting: Locator): Promise<string[]> {
-  return itemsOf(waiting).evaluateAll((items) =>
-    items.map((item) => item.getAttribute("data-testid") ?? "")
-  );
-}
-
-function countOf(waiting: Locator): Locator {
-  return waiting.getByTestId("dashboard-waiting-count");
-}
-
-function nextFive(waiting: Locator): Locator {
-  return waiting.getByRole("button", { name: /^Show the next five/ });
-}
-
-/** Draws every item of the list: one press of the control for each five past the first. */
-async function drawEveryItem(waiting: Locator, seed: DashboardSeed): Promise<void> {
-  await expect(countOf(waiting)).toHaveText(String(seed.items.length));
-  for (let drawn = 5; drawn < seed.items.length; drawn += 5) await nextFive(waiting).click();
-  await expect(itemsOf(waiting)).toHaveCount(seed.items.length);
 }
 
 /** The name of the view the row has on: its pressed toggle's from 1280 px up, and the one
@@ -210,8 +160,10 @@ function viewOn(page: Page): Locator {
 
 /** Fails unless the page has Dashboard on and draws it, and draws no outline beside it. */
 async function expectDashboard(page: Page, where: string): Promise<void> {
-  await expect(viewOn(page), `${where} does not have Dashboard on`).toHaveText(DASHBOARD);
-  await expect(waitingOf(page), `${where} draws no Dashboard`).toBeVisible();
+  await expect(viewOn(page), `${where} does not have Dashboard on`).toHaveText(
+    PRESET_NAMES.dashboard
+  );
+  await expect(waitingOf(issuePage(page)), `${where} draws no Dashboard`).toBeVisible();
   await expect(tree(page), `${where} draws the outline with Dashboard`).toHaveCount(0);
 }
 
@@ -221,7 +173,7 @@ async function expectConversation(page: Page, where: string): Promise<void> {
     PRESET_NAMES.conversation
   );
   await expect(tree(page), `${where} draws no outline`).toHaveCount(1);
-  await expect(waitingOf(page), `${where} draws Dashboard`).toHaveCount(0);
+  await expect(waitingOf(issuePage(page)), `${where} draws Dashboard`).toHaveCount(0);
 }
 
 /** Fails unless Dashboard is the first control of the view row, in the row's shape at `width`:
@@ -231,7 +183,7 @@ async function expectDashboardFirst(page: Page, width: number): Promise<void> {
     await expect(
       presetToggles(page).first().locator("[data-preset-name]"),
       `the view row's first control is not Dashboard at ${width} px`
-    ).toHaveText(DASHBOARD);
+    ).toHaveText(PRESET_NAMES.dashboard);
     return;
   }
   await expect(presetChooser(page), `the view row draws no one control at ${width} px`).toHaveCount(
@@ -241,16 +193,17 @@ async function expectDashboardFirst(page: Page, width: number): Promise<void> {
   await expect(
     openMenu(page).getByRole("menuitemradio").first(),
     `the view row's first item is not Dashboard at ${width} px`
-  ).toHaveAccessibleName(new RegExp(`^${DASHBOARD}( |$)`));
+  ).toHaveAccessibleName(new RegExp(`^${PRESET_NAMES.dashboard}( |$)`));
   await page.keyboard.press("Escape");
   await expect(openMenu(page)).toHaveCount(0);
 }
 
-/** Presses the control of the view named `name`, in the row's shape at `width`: its toggle from
- *  1280 px up, and its item of the one control's menu below. */
-async function pressView(page: Page, name: string, width: number): Promise<void> {
+/** Presses the control of `preset`, in the row's shape at `width`: its toggle from 1280 px up,
+ *  and its item of the one control's menu below. */
+async function pressView(page: Page, preset: Preset, width: number): Promise<void> {
+  const name = PRESET_NAMES[preset];
   if (width >= TOOLBAR_FROM) {
-    const toggle = presetRow(page).getByRole("button", { exact: true, name });
+    const toggle = presetToggle(page, preset);
     await expect(toggle, `the view row draws no ${name} control at ${width} px`).toHaveCount(1);
     await toggle.click();
     return;
@@ -259,7 +212,7 @@ async function pressView(page: Page, name: string, width: number): Promise<void>
     1
   );
   await presetChooser(page).click();
-  const item = openMenu(page).getByRole("menuitemradio", { name: new RegExp(`^${name}( |$)`) });
+  const item = presetMenuItem(page, preset);
   await expect(item, `the view row's menu holds no ${name} at ${width} px`).toHaveCount(1);
   await item.click();
 }
@@ -324,7 +277,7 @@ test("Dashboard is the first tab and each of its numbers is the seed's", async (
 
     // What waits: the count, the newest five, a control that says how many are left, then each
     // item once, newest first.
-    const waiting = waitingOf(page);
+    const waiting = waitingOf(issuePage(page));
     await expect(countOf(waiting)).toHaveText(String(seed.items.length));
     await expect
       .poll(() => drawnItems(waiting), { message: "the first five are not the newest five" })
@@ -369,12 +322,7 @@ test("Dashboard is the first tab and each of its numbers is the seed's", async (
     // The track marks Planning, and the counted steps carry the seed's rounds.
     const track = issuePage(page).getByRole("region", { exact: true, name: "Phase" });
     await expect(track, "Dashboard draws no phase track").toBeVisible();
-    await expect(track.getByRole("listitem")).toHaveText(
-      STEPS.map((step) => {
-        const rounds = STEP_ROUNDS[step] ?? 0;
-        return new RegExp(rounds === 0 ? `^${step}$` : `^${step}\\s*${rounds}$`);
-      })
-    );
+    await expect(track.getByRole("listitem")).toHaveText(STEP_ROWS);
     await expect(track.locator('[aria-current="step"]')).toHaveText(/^Planning\b/);
     await expect(track.getByRole("button")).toHaveCount(0);
 
@@ -455,23 +403,23 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
       await gotoIssue(page, `/issues/${key}`);
       await expectDashboard(page, `the bare address ${at}`);
       await expectDashboardFirst(page, width);
-      await gotoIssue(page, viewPath(key, "dashboard"));
+      await gotoIssue(page, presetPath(key, "dashboard"));
       await expectDashboard(page, `/dashboard ${at}`);
 
       // `/conversation` draws Conversation, and the Dashboard control draws Dashboard.
-      await gotoIssue(page, viewPath(key, "conversation"));
+      await gotoIssue(page, presetPath(key, "conversation"));
       await expectConversation(page, `/conversation ${at}`);
-      await pressView(page, DASHBOARD, width);
-      await expect(page).toHaveURL(atView(key, "dashboard"));
+      await pressView(page, "dashboard", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "dashboard")}$`));
       await expectDashboard(page, `the Dashboard control ${at}`);
 
       // From 1280 px up, pressing Dashboard while it is on draws Conversation, as pressing each
       // view that is on turns it off. The one control's menu keeps the view that is on when its
       // item is chosen (`IssuePresets.tsx`, read by `e2e/issue-page-d.e2e.ts`), so below 1280 px
       // the Conversation item is the press that leaves Dashboard.
-      if (width >= TOOLBAR_FROM) await pressView(page, DASHBOARD, width);
-      else await pressView(page, PRESET_NAMES.conversation, width);
-      await expect(page).toHaveURL(atView(key, "conversation"));
+      if (width >= TOOLBAR_FROM) await pressView(page, "dashboard", width);
+      else await pressView(page, "conversation", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "conversation")}$`));
       await expectConversation(page, `the press that leaves Dashboard ${at}`);
 
       // `t w` draws Dashboard, and `t c` Conversation. A choice from the one control's menu (below
@@ -479,19 +427,21 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
       // takes only a focus nobody holds, is waited for only where the press left it loose.
       if (width >= TOOLBAR_FROM) await expectOpeningLanded(page);
       await chord(page, "w");
-      await expect(page, `t w did not open Dashboard ${at}`).toHaveURL(atView(key, "dashboard"));
+      await expect(page, `t w did not open Dashboard ${at}`).toHaveURL(
+        new RegExp(`${presetPath(key, "dashboard")}$`)
+      );
       await expectDashboard(page, `t w ${at}`);
       await chord(page, "c");
       await expect(page, `t c did not open Conversation ${at}`).toHaveURL(
-        atView(key, "conversation")
+        new RegExp(`${presetPath(key, "conversation")}$`)
       );
       await expectConversation(page, `t c ${at}`);
 
       // The Conversation control draws Conversation from Dashboard.
-      await pressView(page, DASHBOARD, width);
+      await pressView(page, "dashboard", width);
       await expectDashboard(page, `the Dashboard control ${at}`);
-      await pressView(page, PRESET_NAMES.conversation, width);
-      await expect(page).toHaveURL(atView(key, "conversation"));
+      await pressView(page, "conversation", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "conversation")}$`));
       await expectConversation(page, `the Conversation control ${at}`);
 
       // Where an address names a node, what it opens is the same at every width: the first width
@@ -547,17 +497,17 @@ test("the bare address opens Dashboard, and a bare address naming a node opens C
         slugs.get(seed.decisionsDocumentId) ?? "",
         seed.decisions.first.id
       );
-      await gotoIssue(page, viewPath(key, "decisions"));
+      await gotoIssue(page, presetPath(key, "decisions"));
       const link = decisionsBody(page)
         .locator(`[data-node-row][data-node-id="${decision}"] a[data-entry-link]`)
         .first();
       await expect(
         link,
         "the decision's link in the conversation is not /conversation's"
-      ).toHaveAttribute("href", `${viewPath(key, "conversation")}#b-${seed.decisions.first.id}`);
+      ).toHaveAttribute("href", `${presetPath(key, "conversation")}#b-${seed.decisions.first.id}`);
       await link.click();
       await expect(page).toHaveURL(
-        new RegExp(`/issues/${literal(key)}/conversation#b-${literal(seed.decisions.first.id)}$`)
+        new RegExp(`${presetPath(key, "conversation")}#b-${literal(seed.decisions.first.id)}$`)
       );
       await expectConversation(page, "the Decisions view's link in the conversation");
       await expect
@@ -577,11 +527,11 @@ test("the header counts Dashboard's items on every view and drops one per act", 
   test.setTimeout(180_000);
   await phase(browser, seeded, async (page, seed) => {
     const key = seed.key;
-    const waiting = waitingOf(page);
+    const waiting = waitingOf(issuePage(page));
     const counted = (items: number) => `Waiting on you (${items})`;
 
     // On Dashboard the header reads Dashboard's own count.
-    await gotoIssue(page, viewPath(key, "dashboard"));
+    await gotoIssue(page, presetPath(key, "dashboard"));
     await expectDashboard(page, "/dashboard");
     await expect(countOf(waiting)).toHaveText(String(seed.items.length));
     await expectHeaderDrawn(page);
@@ -591,8 +541,8 @@ test("the header counts Dashboard's items on every view and drops one per act", 
     ).toHaveText(counted(seed.items.length));
 
     // Every other view of the row, and a document, reads the same number.
-    for (const view of ["conversation", "spec", "verification", "plan", "decisions"]) {
-      await gotoIssue(page, viewPath(key, view));
+    for (const view of ["conversation", "spec", "verification", "plan", "decisions"] as const) {
+      await gotoIssue(page, presetPath(key, view));
       await expectHeaderDrawn(page);
       await expect(
         waitingCount(page),
@@ -608,7 +558,7 @@ test("the header counts Dashboard's items on every view and drops one per act", 
     ).toHaveText(counted(seed.items.length));
 
     // Each act in place takes its item out of the list, and one from the header's count.
-    await gotoIssue(page, viewPath(key, "dashboard"));
+    await gotoIssue(page, presetPath(key, "dashboard"));
     await expectDashboard(page, "/dashboard");
     let left = seed.items.length;
     const gone = async (item: WaitingItem) => {
@@ -691,9 +641,9 @@ test("a thread item's link opens the thread", async ({ browser }) => {
         id: seed.threads.comment,
       },
     ]) {
-      await gotoIssue(page, viewPath(seed.key, "dashboard"));
+      await gotoIssue(page, presetPath(seed.key, "dashboard"));
       await expectDashboard(page, "/dashboard");
-      const link = itemOf(waitingOf(page), { id: thread.id, kind: "thread" }).locator(
+      const link = itemOf(waitingOf(issuePage(page)), { id: thread.id, kind: "thread" }).locator(
         `a[href$="${thread.address}"]`
       );
       await expect(link, `the thread item draws no link to ${thread.address}`).not.toHaveCount(0);
@@ -734,9 +684,9 @@ test("Details on a focused ask reads that ask and its references", async ({ brow
         );
       }).length;
 
-    await gotoIssue(page, viewPath(seed.key, "dashboard"));
+    await gotoIssue(page, presetPath(seed.key, "dashboard"));
     await expectDashboard(page, "/dashboard");
-    const waiting = waitingOf(page);
+    const waiting = waitingOf(issuePage(page));
     await drawEveryItem(waiting, seed);
 
     // The focus goes inside the question's item, to its answer box.
@@ -786,45 +736,51 @@ test("Details on a focused ask reads that ask and its references", async ({ brow
   });
 });
 
-/** Whether a read of Dashboard's first load is one R8 names on this main, for `seed`: the issue,
- *  its open asks, its handoffs, its Legion state, the reader's unread replies of the issue with
- *  no `limit`, the own route of each thread drawn, the decisions and the Changes' comments of
- *  the decisions document, the results and the coverage, the batched reference targets, and a
- *  picture's version with the summary. Where dispatch://INFRA-1253 is on main, its tree read. It
- *  is the rule `e2e/issue-dashboard-today.e2e.ts` reads today's page by, since R8 names one set of
- *  reads for both pages. */
-function namedByR8(seed: DashboardSeed, method: string, sent: URL): boolean {
-  if (method !== "GET") return false;
-  const issue = `/api/v1/issues/${seed.key}`;
-  const query = [...sent.searchParams]
-    .map(([name, value]) => `${name}=${value}`)
-    .sort()
-    .join("&");
-  const threads = seed.items.filter((item) => item.kind === "thread").map((item) => item.id);
-  switch (sent.pathname) {
-    case issue:
-    case `${issue}/handoffs`:
-    case `${issue}/legion`:
-    case `${issue}/decisions`:
-    case `${issue}/results`:
-    case `${issue}/coverage`:
-    case `${issue}/summary`:
-      return query === "";
-    case `${issue}/asks`:
-      return query === "state=open";
-    case "/api/v1/me/replies":
-      return query === `issue=${seed.key}&state=unread`;
-    case `${issue}/comments`:
-      return query === `artifact=${seed.decisionsDocumentId}`;
-    case "/api/v1/reference-targets":
-      return true;
-    case `${issue}/tree`:
-      return seed.holds.treeRead;
-  }
-  const own = /^\/api\/v1\/(?:comments|issues\/[^/]+\/messages)\/([^/]+)$/.exec(sent.pathname);
-  if (own !== null) return threads.includes(own[1] ?? "");
-  return new RegExp(`^${literal(issue)}/artifacts/[^/]+/versions/\\d+$`).test(sent.pathname);
-}
+// R2: part L's foot draws its writing box and the issue's read mark at rest in Conversation
+// alone, and `isFilter` reads Dashboard as no view, so the foot's test is the address naming
+// Conversation with no document open. The view row is one control with a menu below 1280 px, so
+// the row reads the toolbar at 1440 px and the menu at 390 px, which the `iphone` project reads
+// with its own viewport.
+// SLOW(>=2s): the whole Dashboard seed, then at each width one load of the bare address and one
+// press of Conversation, each read until the page draws the view the press or the load names.
+test("Dashboard at rest draws neither the writing box nor the read mark, and Conversation draws both @phone", async ({
+  browser,
+}) => {
+  test.skip(
+    !PART_L_FOOT,
+    "The foot draws a writing box and a read mark only with part L's IssueComposer.tsx " +
+      "(dispatch://INFRA-3949, #4246), which this head does not hold; the row runs once this " +
+      "branch holds part L"
+  );
+  test.setTimeout(120_000);
+  await phase(browser, seeded, async (page, seed) => {
+    const key = seed.key;
+    // Part L's writing box, which the foot keeps mounted and `hidden` while it does not draw it,
+    // and the issue's read mark at the end of the outline.
+    const box = page.getByTestId("issue-composer");
+    const mark = page.locator("[data-outline-end]");
+    const widths =
+      test.info().project.name === "iphone" ? [PHONE_WIDTH] : [DESKTOP_WIDTH, PHONE_WIDTH];
+    for (const width of widths) {
+      await page.setViewportSize(viewportAt(width));
+      const at = `at ${width} px`;
+
+      // The bare address draws Dashboard. The foot is drawn in the commit that draws the issue,
+      // before Dashboard's own reads answer, so once Dashboard is drawn the foot's absence holds.
+      await gotoIssue(page, `/issues/${key}`);
+      await expectDashboard(page, `the bare address ${at}`);
+      await expect(box, `Dashboard at rest draws the writing box ${at}`).toBeHidden();
+      await expect(mark, `Dashboard at rest draws the read mark ${at}`).toHaveCount(0);
+
+      // The Conversation control draws Conversation at rest, with the box and the mark.
+      await pressView(page, "conversation", width);
+      await expect(page).toHaveURL(new RegExp(`${presetPath(key, "conversation")}$`));
+      await expectConversation(page, `the Conversation control ${at}`);
+      await expect(box, `Conversation at rest draws no writing box ${at}`).toBeVisible();
+      await expect(mark, `Conversation at rest draws no read mark ${at}`).toHaveCount(1);
+    }
+  });
+});
 
 // SLOW(>=2s): the whole Dashboard seed, two loads of Spec and one cold load of Dashboard, each read
 // until nothing has been in flight for 1.5 s, and a press of Dashboard read the same way.
@@ -834,32 +790,25 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
   test.setTimeout(120_000);
   await phase(browser, seeded, async (page, seed) => {
     const reads = watchApiRequests(page);
-    await gotoIssue(page, viewPath(seed.key, "spec"));
+    await gotoIssue(page, presetPath(seed.key, "spec"));
     await expectLoadSettled(reads);
     // The same view in another tab, with no Dashboard, over the same time: what it sends is the
     // shell's own.
     const control = await page.context().newPage();
     await control.setViewportSize(viewportAt(DESKTOP_WIDTH));
     const shell = watchApiRequests(control);
-    await gotoIssue(control, viewPath(seed.key, "spec"));
+    await gotoIssue(control, presetPath(seed.key, "spec"));
     await expectLoadSettled(shell);
-    // The shell's own polls - the reads of no issue that the control tab made as it loaded, the
-    // agents registry among them - repeat on their own clock in either tab: a window the control
-    // tab polled in is no window this tab polls in. A read of the issue is held to the windows
-    // below.
-    const shellPolls = new Set(
-      shell.requests
-        .filter((sent) => !sent.route.includes("/issues/"))
-        .map((sent) => `${sent.method} ${sent.route}`)
-    );
+    // The shell's own polls repeat on their own clock in either tab (`shellPollsOf`).
+    const shellPolls = shellPollsOf(shell);
 
-    const dashboard = presetRow(page).getByRole("button", { exact: true, name: DASHBOARD });
+    const dashboard = presetToggle(page, "dashboard");
     await expect(dashboard, "Spec's view row draws no Dashboard control").toHaveCount(1);
     reads.reset();
     shell.reset();
     await dashboard.click();
     await expectDashboard(page, "the Dashboard control on Spec");
-    await expect(itemsOf(waitingOf(page))).toHaveCount(5);
+    await expect(itemsOf(waitingOf(issuePage(page)))).toHaveCount(5);
     await expectLoadSettled(reads);
     expect(
       reads.requests
@@ -874,14 +823,8 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
         .map((sent) => `${sent.pathname}${sent.search}`),
       "the press on Dashboard read the issue's whole comments or messages list"
     ).toEqual([]);
-    const shellRoutes = new Set(shell.requests.map((sent) => `${sent.method} ${sent.route}`));
     expect(
-      reads.requests
-        .filter(
-          (sent) =>
-            !shellRoutes.has(`${sent.method} ${sent.route}`) &&
-            !shellPolls.has(`${sent.method} ${sent.route}`)
-        )
+      beyondShell(reads.requests, shellRoutesOf(shell), shellPolls)
         .filter((sent) => !namedByR8(seed, sent.method, new URL(sent.path, "http://dashboard")))
         .map((sent) => `${sent.method} ${sent.path}`),
       "the press on Dashboard sent reads R8 does not name"
@@ -892,14 +835,209 @@ test("pressing Dashboard from Spec sends only R8's reads, and a cold load stays 
     const cold = await page.context().newPage();
     await cold.setViewportSize(viewportAt(DESKTOP_WIDTH));
     const coldReads = watchApiRequests(cold);
-    await gotoIssue(cold, viewPath(seed.key, "dashboard"));
+    await gotoIssue(cold, presetPath(seed.key, "dashboard"));
     await expectDashboard(cold, "a cold load of /dashboard");
-    await expect(itemsOf(waitingOf(cold))).toHaveCount(5);
+    await expect(itemsOf(waitingOf(issuePage(cold)))).toHaveCount(5);
     await expectLoadSettled(coldReads);
     expect(
       coldReads.total(),
       `a cold load of /dashboard sent more than ${COLD_LOAD_AT_MOST} requests under /api/: ${JSON.stringify(coldReads.byRoute())}`
     ).toBeLessThanOrEqual(COLD_LOAD_AT_MOST);
     await cold.close();
+  });
+});
+
+/** How the page divides one text Dashboard draws (`page-structure.ts`): by the mark of the
+ *  nearest element inside Dashboard that carries one - the page's own words (`chrome`), an
+ *  author's words or a value (`author`), or both on one element (`both`) - or by none. */
+type TextMark = "author" | "both" | "chrome" | "none";
+
+/** One text node Dashboard draws, its whitespace run together, and its mark. */
+interface MarkedText {
+  readonly mark: TextMark;
+  readonly text: string;
+}
+
+/** The marks in the order `marksOf` lists them. */
+const TEXT_MARKS: readonly TextMark[] = ["author", "both", "chrome", "none"];
+
+/** The element each kind of item is drawn whole by once its reads have answered: a thread's
+ *  first write, the ask body, the decision card, and the one approval control. */
+const ITEM_PARTS: Readonly<Record<ItemKind, string>> = {
+  approval: "[data-ask-body]",
+  decision: "[data-decision-card]",
+  question: "[data-ask-body]",
+  stale: "[data-approval-artifact]",
+  thread: "[data-thread-entry]",
+};
+
+/** Each text node Dashboard draws that has a box, with its mark. The search for a mark climbs no
+ *  higher than Dashboard's own region (`[data-dashboard]`), so a mark on the region itself or on
+ *  the page around it marks none of Dashboard's text. */
+function dashboardTexts(page: Page): Promise<MarkedText[]> {
+  const region = issuePage(page).locator("[data-dashboard]");
+  return region.evaluate(
+    (root, attributes) => {
+      const markOf = (element: Element): TextMark => {
+        for (let at: Element | null = element; at !== null && at !== root; at = at.parentElement) {
+          const chrome = at.hasAttribute(attributes.chrome);
+          const author = at.hasAttribute(attributes.author);
+          if (chrome && author) return "both";
+          if (chrome) return "chrome";
+          if (author) return "author";
+        }
+        return "none";
+      };
+      const found: MarkedText[] = [];
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+        const parent = node.parentElement;
+        if (text === "" || parent === null || parent.getClientRects().length === 0) continue;
+        found.push({ mark: markOf(parent), text });
+      }
+      return found;
+    },
+    { author: AUTHOR_TEXT_ATTRIBUTE, chrome: PAGE_CHROME_ATTRIBUTE }
+  );
+}
+
+/** The marks each of `texts` is drawn in, over every text node that reads it whole. */
+function marksOf(
+  drawn: readonly MarkedText[],
+  texts: readonly string[]
+): Record<string, TextMark[]> {
+  return Object.fromEntries(
+    texts.map((text): [string, TextMark[]] => [
+      text,
+      TEXT_MARKS.filter((mark) => drawn.some((one) => one.text === text && one.mark === mark)),
+    ])
+  );
+}
+
+/** A text as a failure names it: its mark, then its words. */
+function described(one: MarkedText): string {
+  return `${one.mark}: ${one.text}`;
+}
+
+/** Fails unless `items` are the items drawn, in order, each drawn whole (`ITEM_PARTS`). */
+async function expectItemsDrawn(
+  waiting: Locator,
+  items: readonly WaitingItem[],
+  where: string
+): Promise<void> {
+  await expect
+    .poll(() => drawnItems(waiting), { message: `${where} are not the items drawn, in order` })
+    .toEqual(items.map(testIdOf));
+  for (const item of items) {
+    await expect(
+      itemOf(waiting, item).locator(ITEM_PARTS[item.kind]).first(),
+      `${where} draws ${testIdOf(item)} with nothing in it`
+    ).toBeVisible();
+  }
+}
+
+/** Fails unless Dashboard draws each of `texts.chrome` in the page's mark alone and each of
+ *  `texts.author` in an author's alone, read until each is drawn; then unless every text it draws
+ *  carries one mark, every number an author's, and every name the seed wrote
+ *  (`DashboardSeed.names`) an author's. */
+async function expectMarked(
+  page: Page,
+  seed: DashboardSeed,
+  where: string,
+  texts: { readonly author: readonly string[]; readonly chrome: readonly string[] }
+): Promise<void> {
+  const wanted = [...texts.chrome, ...texts.author];
+  const marked = Object.fromEntries([
+    ...texts.chrome.map((text): [string, TextMark[]] => [text, ["chrome"]]),
+    ...texts.author.map((text): [string, TextMark[]] => [text, ["author"]]),
+  ]);
+  await expect
+    .poll(async () => marksOf(await dashboardTexts(page), wanted), {
+      message: `${where} draws a label outside the page's mark, or a value outside an author's`,
+    })
+    .toEqual(marked);
+  const drawn = await dashboardTexts(page);
+  expect(
+    drawn.filter((one) => one.mark === "none" || one.mark === "both").map(described),
+    `${where} draws text that is neither the page's own words nor an author's`
+  ).toEqual([]);
+  expect(
+    drawn.filter((one) => /^\d+$/.test(one.text) && one.mark !== "author").map(described),
+    `${where} draws a number outside an author's mark`
+  ).toEqual([]);
+  const names = new Set(seed.names);
+  expect(
+    drawn.filter((one) => names.has(one.text) && one.mark !== "author").map(described),
+    `${where} draws a name the seed wrote outside an author's mark`
+  ).toEqual([]);
+}
+
+// R21's two marks on Dashboard (`page-structure.ts`), read on the seeded issue as the new page
+// draws it with every part's reads answered - the phase track, the first five items and then all
+// nine, with the approval request, the questions, the decisions, the stale approval and the two
+// threads, the tiles and the agents - at the desktop width and the phone's. Every text carries
+// exactly one mark, found no higher than Dashboard's own region; Dashboard's labels and the words
+// of the ask body and the decision card carry the page's, and the count, each number, each name
+// and an author's words carry an author's. Drawn with no mark, as Dashboard was before it marked
+// its text, the labels and the values read `none` and the row fails at its first read.
+// SLOW(>=2s): the whole Dashboard seed, then at each width one load of the bare address and one
+// press of the control under the first five, each read until the texts it names are drawn.
+test("every text Dashboard draws carries one mark, the page's on its labels and an author's on its values", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seeded, async (page, seed) => {
+    const waiting = waitingOf(issuePage(page));
+    const roles = SEEDED_LEGION.roles.filter((role) => role.state !== "retired");
+    // Dashboard's own words, and the words of the ask body, the decision card and a thread item
+    // that the first five items draw between them.
+    const labels = [
+      DASHBOARD_WORDS.parts.phase,
+      DASHBOARD_WORDS.parts.waiting,
+      DASHBOARD_WORDS.parts.progress,
+      DASHBOARD_WORDS.parts.agents,
+      ...Object.values(DASHBOARD_WORDS.tiles),
+      PHASE_WORDS.steps.planning,
+      ...roles.map((role) => ROLE_WORDS[role.state] ?? ""),
+      DASHBOARD_WORDS.thread_link,
+      PRESET_NAMES.verification,
+      ASK_APPROVAL_WORDS.requested,
+      ASK_LINE_WORDS.kind,
+      ASK_HAND_ON_WORDS.asked_of,
+      ASK_FORM_WORDS.answer,
+      DECISION_STATE_WORDS.waiting_review,
+      DECISION_ACT_WORDS.keep,
+    ];
+    // The values: the count, the reader every open ask is asked of, and each agent's role. The
+    // decision card's author line is a name where the read names one, and the card's own word
+    // where it names none.
+    const values = [String(seed.items.length), READER, ...roles.map((role) => role.role)];
+    const author = seed.decisions.author;
+    const authorWord = author === DECISION_LINE_WORDS.author_unknown;
+    const authorLine = { author: authorWord ? [] : [author], chrome: authorWord ? [author] : [] };
+    for (const width of [DESKTOP_WIDTH, PHONE_WIDTH]) {
+      const at = `at ${width} px`;
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${seed.key}`);
+      await expectDashboard(page, `the bare address ${at}`);
+      // Dashboard with its reads answered, not a part still waiting: the count, the first five
+      // each drawn whole, and the control under them with the number left.
+      await expect(countOf(waiting)).toHaveText(String(seed.items.length));
+      await expectItemsDrawn(waiting, seed.items.slice(0, 5), `the first five ${at}`);
+      await expect(nextFive(waiting)).toBeVisible();
+      await expectMarked(page, seed, `the first five ${at}`, {
+        author: [...values, String(seed.items.length - 5), ...authorLine.author],
+        chrome: [...labels, DASHBOARD_WORDS.next_five, ...authorLine.chrome],
+      });
+
+      // Every item: the questions below the first five add the urgency word and an option.
+      await nextFive(waiting).click();
+      await expectItemsDrawn(waiting, seed.items, `every item ${at}`);
+      await expectMarked(page, seed, `every item ${at}`, {
+        author: [...values, seed.asks.byOption.option, ...authorLine.author],
+        chrome: [...labels, ASK_LINE_WORDS.urgency.high, ...authorLine.chrome],
+      });
+    }
   });
 });

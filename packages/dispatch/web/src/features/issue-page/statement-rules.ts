@@ -30,7 +30,7 @@ export function blockNodeId(slug: string, blockId: string): string {
  * write it - the spec, a document, a block of either, an ask, a comment, a message, the issue
  * itself - and undefined for a reference to another issue or to anything else. It reads only the
  * issue's key and its spec's slug (`primarySpec`), so a caller that needs a node id and no chip
- * calls it without building a whole `treeContext` (`tree-drafts.ts`), and `treeContext`
+ * calls it without building a whole `treeContext` (`target-naming.ts`), and `treeContext`
  * addresses nodes by it too, so the two never differ.
  */
 export function nodeIdOf(

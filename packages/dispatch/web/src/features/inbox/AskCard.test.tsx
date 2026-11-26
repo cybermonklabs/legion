@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { precedes } from "../../__tests__/document-order";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { expectSameElements } from "../../__tests__/same-elements";
@@ -1000,11 +1001,6 @@ function threadReplyBodies(thread: HTMLElement): (string | null | undefined)[] {
     thread.querySelectorAll("li"),
     (item) => item.querySelector(".dispatch-markdown")?.textContent
   );
-}
-
-/** Whether `first` comes before `second` in the document. */
-function precedes(first: Element, second: Element): boolean {
-  return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 }
 
 const THREAD_ORDER_KEY = userPreferenceStorageKey("alice", "inbox.thread-order");

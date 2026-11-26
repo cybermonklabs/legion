@@ -18,9 +18,9 @@ import { useViewRowTools } from "../view-row-tools";
 
 /**
  * The view row (R2, R11): Dashboard and Conversation with no count, the four filter controls
- * with signals from the issue's tree, and Keys (`IssuePresets.tsx`). Below 1024 px, with no view
- * on, the Outline control stands beside the one control (`contents-frame.tsx`). The row binds
- * the views' chords (`useIssueKeymap.ts`).
+ * with signals from the issue's tree, Documents with no count, and Keys (`IssuePresets.tsx`).
+ * Below 1024 px, with no view on, the Outline control stands beside the one control
+ * (`contents-frame.tsx`). The row binds the views' chords (`useIssueKeymap.ts`).
  *
  * Signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves nodes
  * missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no

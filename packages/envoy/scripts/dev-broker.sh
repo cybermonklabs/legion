@@ -9,9 +9,10 @@
 # tagged owner=APPROVER_LOGIN tier=agent, so APPROVER_LOGIN's sessions get it without asking,
 # DEMO_API_KEY, tagged tier=human, which APPROVER_LOGIN approves, DEMO_SERVICE_TOKEN, tagged
 # owner=SERVICE tier=agent, which every pod session of that registered service gets without
-# asking and no person's session sees, and the three github-app secrets below) and a profiles
-# file naming the profiles those github-app secrets are served as, then starts cmd/cipherd against
-# both. Prints the exports a second shell needs to drive the clients against it.
+# asking and no person's session sees, and the four github-app secrets below) and a profiles
+# file declaring the one kind of the broker's proxy and naming the profiles those github-app
+# secrets are served as, then starts cmd/cipherd against both. Prints the exports a second shell
+# needs to drive the clients against it.
 #
 # The GitHub a github-app secret is minted against is a stand-in this script starts:
 # cmd/dev-proxy-stands, of whose ten stands this stack uses the two GitHub ones: github, plain
@@ -26,8 +27,8 @@
 # with an installation id of its own, and each installation holds the stand's own map of
 # permissions, or what DEV_BROKER_GITHUB_PERMISSIONS names for its owner (below).
 #
-# Three github-app secrets are written for it, each holding that stand's App id and private key
-# as its stored value. Two are owned by the registered service, as DEMO_SERVICE_TOKEN is, so a
+# Four github-app secrets are written for it, each holding that stand's App id and private key
+# as its stored value. Three are owned by the registered service, as DEMO_SERVICE_TOKEN is, so a
 # pod session of that service gets them without asking. DEMO_GITHUB_APP's github-owners tag names
 # the one account acme-org. DEMO_GITHUB_APP_CASE_PAIR's names ada, on which the App has two
 # installations whose logins differ only in case (ada and Ada): GitHubApp.Mint keys the released
@@ -37,28 +38,39 @@
 # allows no two accounts whose logins differ only in case: this pair exists to drive that case
 # and stands for nothing real.
 #
-# The third, DEMO_GITHUB_APP_HUMAN, is APPROVER_LOGIN's own at human tier, and its github-owners
+# DEMO_GITHUB_APP_HUMAN is APPROVER_LOGIN's own at human tier, and its github-owners
 # tag names acme-org as well. It is the one github-app secret of this stack a request for reaches
 # a person: policy.Set.Evaluate answers a service's own secret Automatic for that service's own
 # session and Deny for every other, never Approval, so a secret a service owns is approved by
 # nobody. A request put to a person, and the check mint before the person is asked, are driven
 # against this one.
 #
+# The fourth, DEMO_GITHUB_APP_PROXIED, is a copy of DEMO_GITHUB_APP: the same App, owner, tier
+# and github-owners tag, and the tag proxy=github as well. A stored secret is behind the broker's
+# proxy when its proxy tag names a kind of the profiles file, and then each profile it is the
+# source of is behind that kind too. DEMO_GITHUB_APP's own profile gives its JSON of
+# installations to the command, so DEMO_GITHUB_APP carries no proxy tag, and the two proxied
+# profiles below take the tagged copy as their source. A profile's proxy key can also name a kind
+# as a string, for a source with no tag, but that form is a transitional one the broker is to
+# drop, so this stack does not use it.
+#
 # Every GitHub App token the broker mints is a profile's (policy.ReasonGitHubAppNoProfile refuses
 # a github-app secret no profile names), so the stack's profiles file (profiles.json in WORK_DIR,
-# BROKER_PROFILES_FILE) names five. DEMO_GITHUB_APP is the source of three of them: DEMO_GITHUB_APP,
-# a profile of its own name whose release is the JSON of installations (value: installations);
-# and DEMO_GITHUB_READ and DEMO_GITHUB_ADMIN_READ, each the one account's bare token (value:
-# token) behind the broker's proxy, bound to api.github.test for GET and HEAD alone, the first
-# with GitHub's eight reads and the second with those and administration, members and
-# organization_administration at read. DEMO_GITHUB_APP_CASE_PAIR and DEMO_GITHUB_APP_HUMAN are
-# each a profile of its own name. The broker asks GitHub for each profile's permissions cut to
-# what the installation holds, and names what the cut left out in the release and in its log. The
-# stored secrets of no type are named by no profile and are served by their own names, as
-# before.
+# BROKER_PROFILES_FILE) names five, and it declares one kind, github: the one host
+# api.github.test, GET and HEAD alone, the token in Authorization, and the way mint, which is how
+# a github-app secret's credential goes into a call (policy.WayOf). DEMO_GITHUB_APP is a profile
+# of its own name whose release is the JSON of installations (value: installations).
+# DEMO_GITHUB_APP_PROXIED is the source of two: DEMO_GITHUB_READ and DEMO_GITHUB_ADMIN_READ, each
+# the one account's bare token (value: token) behind the github kind, the first with GitHub's
+# eight reads and the second with those and administration, members and
+# organization_administration at read. Each takes the kind's own allow, and has no allow of its
+# own. DEMO_GITHUB_APP_CASE_PAIR and DEMO_GITHUB_APP_HUMAN are each a profile of its own name.
+# The broker asks GitHub for each profile's permissions cut to what the installation holds, and
+# names what the cut left out in the release and in its log. The stored secrets of no type are
+# named by no profile and carry no proxy tag, and are served by their own names, as before.
 #
-# A profile with a proxy block needs the broker's proxy, so the broker binds a proxy port too
-# (BROKER_AIRLOCK_LISTEN_ADDR of 127.0.0.1:0) and signs each bound host's certificate with the
+# A profiles file that declares a kind needs the broker's proxy, so the broker binds a proxy port
+# too (BROKER_AIRLOCK_LISTEN_ADDR of 127.0.0.1:0) and signs each bound host's certificate with the
 # stands' certificate authority. A release names the proxy's URL (BROKER_AIRLOCK_PROXY_URL), which
 # the broker must hold at boot while its port is known only once it has bound, so this script
 # binds one TCP front first (dev-airlock-stands front), names the broker's proxy by the front's
@@ -265,16 +277,21 @@ GITHUB_CASE_OWNER="ada"
 GITHUB_CASE_INSTALLATION=8
 GITHUB_CASE_OTHER_OWNER="Ada"
 GITHUB_CASE_OTHER_INSTALLATION=9
-# The name the two proxied profiles bind, which the github-tls stand's certificate carries: a
-# .test name no resolver answers, so the proxy reaches it only where the broker is told where it
-# is (DEV_BROKER_PROXIED_GITHUB_IP, the header).
+# The one host of the github kind, which the two proxied profiles are served behind and the
+# github-tls stand's certificate carries: a .test name no resolver answers, so the proxy reaches it
+# only where the broker is told where it is (DEV_BROKER_PROXIED_GITHUB_IP, the header).
 GITHUB_PROXIED_HOST="api.github.test"
-# The three github-app secrets, named for the account each one's github-owners tag names. The
-# human one is the approver's own, and the only one whose release a person decides. Each is a
-# profile of its own name, and the first is the source of the two proxied profiles as well.
+# The kind's name, which is the value of the proxy tag on the secret those two profiles are
+# served from.
+GITHUB_KIND="github"
+# The three github-app secrets that are each a profile of its own name, named for the account each
+# one's github-owners tag names. The human one is the approver's own, and the only one whose
+# release a person decides. The fourth is the first one's copy behind the github kind, and the
+# source of the two proxied profiles (the header).
 GITHUB_SECRET="DEMO_GITHUB_APP"
 GITHUB_CASE_SECRET="DEMO_GITHUB_APP_CASE_PAIR"
 GITHUB_HUMAN_SECRET="DEMO_GITHUB_APP_HUMAN"
+GITHUB_PROXIED_SECRET="DEMO_GITHUB_APP_PROXIED"
 GITHUB_READ_PROFILE="DEMO_GITHUB_READ"
 GITHUB_ADMIN_READ_PROFILE="DEMO_GITHUB_ADMIN_READ"
 # The local issuer and what it mints for (above): the audience every enrolment and listed caller's
@@ -460,13 +477,13 @@ await() {
   exit 1
 }
 
-# --- The stand-in GitHub the three github-app secrets are minted against. dev-airlock-stands
+# --- The stand-in GitHub the four github-app secrets are minted against. dev-airlock-stands
 # serves ten stands and this stack uses the two GitHub ones; the others cost a loopback port each
 # and nothing points at them. It writes this run's App key and the certificate authority the
 # broker's proxy signs with, and prints one JSON report naming those files, the App id and every
 # address, which is where the secrets below, the broker and the banner get theirs. Its output is
 # teed as the issuer's and the broker's are, so a human sees its lines live. The github-tls stand
-# carries the proxied profiles' host in its certificate, and with DEV_BROKER_PROXIED_GITHUB_IP it
+# carries the github kind's host in its certificate, and with DEV_BROKER_PROXIED_GITHUB_IP it
 # binds that address's port 443, where the proxy dials it (the header); what each installation
 # holds is DEV_BROKER_GITHUB_PERMISSIONS', one --installation-permissions per owner it names. ---
 STANDS_ARGS=(--dir "$STANDS_DIR"
@@ -507,8 +524,9 @@ CA_KEY_FILE="$(stand .ca_key_file)"
 # --- Fake Secrets Manager: one agent-tier secret its owner's sessions get without asking, two
 # human-tier secrets its owner approves, one of them a github-app secret, one agent-tier secret
 # the registered service owns, which every pod session of that service gets without asking and
-# no person's session sees, and the two other github-app secrets, which that same service owns
-# for the same reason. The service-owned ones
+# no person's session sees, and the three other github-app secrets, which that same service owns
+# for the same reason, one of them DEMO_GITHUB_APP's copy tagged proxy=github, which puts it
+# behind the kind of that name (the header). The service-owned ones
 # are what BROKER_SERVICES makes servable: a secret owned by a service the deployment never
 # registered is refused owner-tag-malformed by the policy and reaches nobody. Written with jq, so
 # the App's PEM is escaped once and correctly. Under DEV_BROKER_GCP_* the file is empty: the demo
@@ -520,7 +538,7 @@ else
     --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
     --arg approver "$APPROVER_LOGIN" --arg service "$SERVICE" \
     --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
-    --arg owner "$GITHUB_OWNER" --arg casepair "$GITHUB_CASE_OWNER" \
+    --arg owner "$GITHUB_OWNER" --arg casepair "$GITHUB_CASE_OWNER" --arg kind "$GITHUB_KIND" \
     '{secrets: [
        {name: ($prefix + "demo-read-token"), kms_key_id: $kms,
         tags: {owner: $approver, tier: "agent"}, value: "demo-read-token-value"},
@@ -530,6 +548,9 @@ else
         tags: {owner: $service, tier: "agent"}, value: "demo-service-token-value"},
        {name: ($prefix + "demo-github-app"), kms_key_id: $kms,
         tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
+        value: ({app_id: $appid, private_key: $appkey} | tojson)},
+       {name: ($prefix + "demo-github-app-proxied"), kms_key_id: $kms,
+        tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner, proxy: $kind},
         value: ({app_id: $appid, private_key: $appkey} | tojson)},
        {name: ($prefix + "demo-github-app-case-pair"), kms_key_id: $kms,
         tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $casepair},
@@ -542,34 +563,40 @@ fi
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 
-# --- The profiles file (the header): each github-app secret a profile of its own name, and the
-# two proxied profiles of DEMO_GITHUB_APP, bound to the github-tls stand's name for GET and HEAD
-# alone, so a request of any other method carries no token. The permissions are each profile's
-# ask, which the broker cuts to what the installation holds at every mint: DEMO_GITHUB_APP's
-# write set leaves out what the stand's own map does not hold (issues, workflows, statuses at
-# write), so even a stack driven with no DEV_BROKER_GITHUB_PERMISSIONS names a cut in its release.
-# Under DEV_BROKER_GCP_* the file names no profile, as the fake store holds no secret: the demo
-# github-app secrets are not there for a profile to name. ---
+# --- The profiles file (the header): the github kind, the github-tls stand's name for GET and
+# HEAD alone, so a request of any other method carries no token; each github-app secret but the
+# tagged copy a profile of its own name; and the two proxied profiles, whose source is that copy,
+# so they are behind the kind its proxy tag names. The rows each would allow are the kind's own,
+# so neither carries an allow of its own, and their source carries no proxy-narrowed tag. The
+# permissions are each profile's ask, which the broker cuts to what the installation holds at
+# every mint: DEMO_GITHUB_APP's write set leaves out what the stand's own map does not hold (issues,
+# workflows, statuses at write), so even a stack driven with no DEV_BROKER_GITHUB_PERMISSIONS
+# names a cut in its release. Under DEV_BROKER_GCP_* the file declares no kind and names no
+# profile, as the fake store holds no secret: the demo github-app secrets are not there for a
+# profile to name. ---
 if [ -n "$SECRETS_STORE" ]; then
   printf '{"profiles": []}\n' >"$PROFILES_FILE"
 else
   jq -n \
     --arg app "$GITHUB_SECRET" --arg casepair "$GITHUB_CASE_SECRET" --arg human "$GITHUB_HUMAN_SECRET" \
+    --arg proxied "$GITHUB_PROXIED_SECRET" --arg kind "$GITHUB_KIND" \
     --arg read "$GITHUB_READ_PROFILE" --arg adminread "$GITHUB_ADMIN_READ_PROFILE" \
     --arg owner "$GITHUB_OWNER" --arg caseowner "$GITHUB_CASE_OWNER" --arg host "$GITHUB_PROXIED_HOST" \
     '{"actions": "read", "attestations": "read", "checks": "read", "contents": "read",
       "issues": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"} as $reads
-     | {"hosts": [$host], "allow": [{"method": "GET", "pathPrefix": "/"}, {"method": "HEAD", "pathPrefix": "/"}]} as $proxy
-     | {profiles: [
+     | {kinds: [
+         {name: $kind, hosts: [$host], ways: ["mint"],
+          allow: [{"method": "GET", "pathPrefix": "/"}, {"method": "HEAD", "pathPrefix": "/"}]}
+       ],
+       profiles: [
          {name: $app, github: {accounts: [$owner], permissions: {
            "contents": "write", "issues": "read", "metadata": "read", "pull_requests": "write",
            "statuses": "write", "workflows": "write"}}},
-         {name: $read, source: $app,
-          github: {accounts: [$owner], permissions: $reads, value: "token"}, proxy: $proxy},
-         {name: $adminread, source: $app,
+         {name: $read, source: $proxied,
+          github: {accounts: [$owner], permissions: $reads, value: "token"}},
+         {name: $adminread, source: $proxied,
           github: {accounts: [$owner], value: "token", permissions: ($reads + {
-            "administration": "read", "members": "read", "organization_administration": "read"})},
-          proxy: $proxy},
+            "administration": "read", "members": "read", "organization_administration": "read"})}},
          {name: $casepair, github: {accounts: [$caseowner], permissions: {"contents": "read", "metadata": "read"}}},
          {name: $human, github: {accounts: [$owner], permissions: {"contents": "read", "metadata": "read"}}}
        ]}' >"$PROFILES_FILE"
@@ -671,7 +698,7 @@ echo "dev-broker: starting broker..." >&2
 : >"$BROKER_LOG"
 # BROKER_MACHINE_LOGIN_URL is a placeholder: no Dispatch runs here, and devrelay stands in for it
 # (it approves a login by its code without a page). BROKER_DRAIN_SECONDS=0 turns the drain off
-# (see the header). The BROKER_AIRLOCK_* block is the proxy the profiles file's proxy blocks need
+# (see the header). The BROKER_AIRLOCK_* block is the proxy the profiles file's kind needs
 # (the header): its port, the front's URL, the stands' authority, which it signs with and trusts
 # upstream, and the github-tls stand's address; KUBERNETES_SERVICE_HOST is empty so a run in a pod
 # starts it as the local process it is.
@@ -763,11 +790,12 @@ fi
 METRICS_URL="http://${LOGGED_ADDR}/metrics"
 # The proxy's port, which the broker binds with the API's and logs between the two lines above,
 # so by now its line is there; the front is pointed at it, and rereads its backends file when it
-# changes. The broker binds it only when a profile of its profiles file has a proxy block, which
-# none under DEV_BROKER_GCP_* has (the profiles file's header), so the line is waited for only
-# then; a broker that logged none for such a file never bound the proxy its profiles need.
-PROXY_BANNER="none  (no profile of the profiles file has a proxy block, so the broker binds no proxy port)"
-if jq -e 'any(.profiles[]; .proxy != null)' "$PROFILES_FILE" >/dev/null; then
+# changes. The broker binds it only when its profiles file declares a kind or holds a dpop block
+# (config.AirlockSubjects), and the file under DEV_BROKER_GCP_* does neither (the profiles file's
+# header), so the line is waited for only then; a broker that logged none for such a file never
+# bound the proxy its kinds need.
+PROXY_BANNER="none  (the profiles file declares no kind and holds no dpop block, so the broker binds no proxy port)"
+if jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$PROFILES_FILE" >/dev/null; then
   if ! await_logged_addr 'airlock proxy listening'; then
     echo "dev-broker: broker never logged its proxy's address within 15s" >&2
     exit 1
@@ -880,17 +908,18 @@ dev-broker: ready.
   proxied github:      $GITHUB_PROXIED_URL  (the github-tls stand, the same GitHub over TLS, which a command reaches through the proxy: $PROXIED_GITHUB_WHERE; its calls at $GITHUB_TLS_RECORDS_URL)
   github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once", "repository": "<name>"}: what each token request is answered from then on; the repository is refuse-repository's own, and fail-once answers the next one 503, which the broker retries, and the rest as ordinary)
   github holds:        $GITHUB_HOLDS  (what the App's installations hold, DEV_BROKER_GITHUB_PERMISSIONS; every commit status is for $GITHUB_COMMIT_SHA)
-  profiles file:       $PROFILES_FILE  (BROKER_PROFILES_FILE: the profile each github-app secret is served as, and the two proxied ones)
+  profiles file:       $PROFILES_FILE  (BROKER_PROFILES_FILE: the kind $GITHUB_KIND, the profile each github-app secret is served as, and the two proxied ones)
   proxy:               $PROXY_BANNER
   stand-in files:      $STANDS_DIR  (this run's GitHub App key and the stands' certificate authority; the whole report in $STANDS_JSON, its log in $STANDS_LOG)
 
   One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and two human-tier secrets
   (DEMO_API_KEY, and the github-app secret $GITHUB_HUMAN_SECRET, whose github-owners tag names
   $GITHUB_OWNER), all three owned by $APPROVER_LOGIN, whose sessions ask for them and who
-  approves each release of the two human-tier ones, and three agent-tier secrets owned by the
+  approves each release of the two human-tier ones, and four agent-tier secrets owned by the
   registered service $SERVICE, which a pod session enrolled under that service gets without
-  asking and a person's session never sees: DEMO_SERVICE_TOKEN, a stored value, and the two
-  github-app secrets $GITHUB_SECRET, whose github-owners tag names $GITHUB_OWNER, and
+  asking and a person's session never sees: DEMO_SERVICE_TOKEN, a stored value, and the three
+  github-app secrets $GITHUB_SECRET, whose github-owners tag names $GITHUB_OWNER, its copy
+  $GITHUB_PROXIED_SECRET, which also carries the tag proxy=$GITHUB_KIND, and
   $GITHUB_CASE_SECRET, whose
   tag names $GITHUB_CASE_OWNER, on which the App is installed twice under logins that differ
   only in case ($GITHUB_CASE_OWNER and $GITHUB_CASE_OTHER_OWNER), so a release of it holds two
@@ -899,9 +928,10 @@ dev-broker: ready.
   and put to nobody. A grant lasts for the --ttl its request names, else 15 minutes for
   the human-tier ones and 12 hours for the agent-tier ones.
 
-  Each github-app secret is served as the profile of its own name in the profiles file, whose
-  release is the JSON of its installations, and $GITHUB_SECRET is the source of two more:
-  $GITHUB_READ_PROFILE and $GITHUB_ADMIN_READ_PROFILE, each $GITHUB_OWNER's bare token behind the proxy, for GET
+  Each github-app secret but $GITHUB_PROXIED_SECRET is served as the profile of its own name in
+  the profiles file, whose release is the JSON of its installations, and $GITHUB_PROXIED_SECRET is
+  the source of two more: $GITHUB_READ_PROFILE and $GITHUB_ADMIN_READ_PROFILE, each $GITHUB_OWNER's
+  bare token behind the proxy under the kind $GITHUB_KIND, for GET
   and HEAD at $GITHUB_PROXIED_URL alone. The broker asks GitHub for each profile's permissions cut
   to what the installation holds, names what the cut left out in the release (github_left_out)
   and in its log, and refuses a release whose cut leaves nothing but metadata of a profile that

@@ -136,20 +136,17 @@ function* scan(source: string, language: Language): Generator<ScanEvent> {
 }
 
 /**
- * `source` with its comments taken out: each block comment becomes the line breaks it held, or one
- * space where it held none, so no two tokens run together and every line keeps its number; each
- * `//` comment of a `"ts"` source goes up to its line break. What a string, an unquoted `url(…)`
- * (`"css"`) or a template literal (`"ts"`) holds is never a comment.
+ * The style sheet `source` with its comments taken out: each comment becomes the line breaks it
+ * held, or one space where it held none, so no two tokens run together and every line keeps its
+ * number. What a string or an unquoted `url(…)` holds is never a comment.
  */
-export function withoutComments(source: string, language: Language = "css"): string {
+export function withoutComments(source: string): string {
   let kept = "";
   let from = 0;
-  for (const event of scan(source, language)) {
+  for (const event of scan(source, "css")) {
     if (event.kind === "comment") {
-      const comment = source.slice(event.start, event.end);
-      const lineBreaks = comment.replace(/[^\n]/g, "");
-      const replacement = comment.startsWith("//") ? "" : lineBreaks || " ";
-      kept += source.slice(from, event.start) + replacement;
+      const lineBreaks = source.slice(event.start, event.end).replace(/[^\n]/g, "");
+      kept += source.slice(from, event.start) + (lineBreaks || " ");
       from = event.end;
     }
   }

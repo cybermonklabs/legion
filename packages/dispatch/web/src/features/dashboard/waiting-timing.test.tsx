@@ -182,6 +182,8 @@ function Harness({ store }: { store: Store }): ReactNode {
 
 function draw(store: Store) {
   serve(store);
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  spies.push(reload);
   mismatches.length = 0;
   const client = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
@@ -195,8 +197,7 @@ function draw(store: Store) {
       </AppProviders>
     </MemoryRouter>
   );
-  const origin = performance.timeOrigin;
-  return { client, origin, view };
+  return { client, reload, view };
 }
 
 function drawnIds(): string[] {
@@ -218,14 +219,14 @@ async function refresh(client: QueryClient, queryKey: readonly unknown[]): Promi
 
 test("K1: a question leaves the list and the count once its answer lands and the ask event refreshes", async () => {
   const store = questions(2);
-  const { client, origin, view } = draw(store);
+  const { client, reload, view } = draw(store);
   try {
     await expectCount(2);
     store.asks = store.asks.filter((ask) => ask.id !== "q-1");
     await refresh(client, ["asks", KEY]);
     await expectCount(1);
     expect(drawnIds()).toEqual(["dashboard-item-question-q-0"]);
-    expect(performance.timeOrigin).toBe(origin);
+    expect(reload).not.toHaveBeenCalled();
     expect(mismatches).toEqual([]);
   } finally {
     view.unmount();
@@ -442,6 +443,8 @@ test("P2: with eleven items and the next five shown, one leaving draws ten and n
 
 test("L1: a live delta that moves the phase to testing marks Testing with no reload", async () => {
   const client = new QueryClient();
+  const reload = spyOn(window.location, "reload").mockImplementation(() => undefined);
+  spies.push(reload);
   const state = (phase: string): LegionIssueResponse =>
     ({ configured: true, state: { phase, roles: [] } }) as unknown as LegionIssueResponse;
   // The socket writes each delta of the live view into the query's cache (`applyDelta`); the
@@ -459,12 +462,11 @@ test("L1: a live delta that moves the phase to testing marks Testing with no rel
     </AppProviders>
   );
   try {
-    const origin = performance.timeOrigin;
     expect(document.querySelector('[aria-current="step"]')?.textContent).toBe("Planning");
     act(() => {
       client.setQueryData(legionIssueQuery(KEY).queryKey, state("testing"));
     });
-    expect(performance.timeOrigin).toBe(origin);
+    expect(reload).not.toHaveBeenCalled();
     expect(document.querySelector('[aria-current="step"]')?.textContent).toBe("Testing");
   } finally {
     view.unmount();

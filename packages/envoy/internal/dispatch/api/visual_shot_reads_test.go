@@ -32,6 +32,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -182,6 +184,12 @@ type shotCorpus struct {
 	// document is refused them (ARTIFACT_LINKED), as the visual review's project-document page
 	// reads them.
 	runbook, runbookSlug string
+	// statements are the addresses of the spec's blocks, which stand for the statements a list
+	// of decision cards reads the first lines of in one batch of GET /api/v1/reference-targets
+	// on the Spec tab's margin and the Decisions tab (packages/dispatch/web/src/features/
+	// decision-card/useStatementExcerpts.ts): each by the address a decision's tie names it by
+	// (refs.BlockRef), sorted, as that batch names its set (referenceTargetsQuery).
+	statements []string
 }
 
 // shotReadPaths is the path this test sends each route of the list at, in its corpus, with the
@@ -229,6 +237,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/projects/{key}/artifacts":            "/api/v1/projects/" + c.project + "/artifacts",
 		"/api/v1/projects/{key}/artifacts/{slug}":     "/api/v1/projects/" + c.project + "/artifacts/" + c.runbookSlug,
 		"/api/v1/projects/{key}/legion/daemon":        "/api/v1/projects/" + c.project + "/legion/daemon",
+		"/api/v1/reference-targets":                   referenceTargetsOf(c.statements...),
 		"/api/v1/references":                          "/api/v1/references?to=dispatch://" + c.issue,
 		"/api/v1/settings/architecture-sources":       "/api/v1/settings/architecture-sources",
 		"/api/v1/settings/delivery":                   "/api/v1/settings/delivery",
@@ -333,6 +342,27 @@ func buildShotCorpus(t *testing.T, handler http.Handler) shotCorpus {
 	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+full.key, nil, "alice")).PrimaryArtifactID
 	if corpus.spec == "" {
 		t.Fatalf("%s holds no spec", full.key)
+	}
+	for _, block := range decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+corpus.spec+"/blocks", nil, "alice")) {
+		corpus.statements = append(corpus.statements, refs.BlockRef("dispatch://"+corpus.issue+"/spec", block.ID))
+	}
+	slices.Sort(corpus.statements)
+	if len(corpus.statements) < 2 {
+		t.Fatalf("%s's spec holds %d blocks, want two at least: a list of decision cards reads several statements in its one batch", corpus.issue, len(corpus.statements))
+	}
+	// Each address names a block that stands, so the batch the reads send is one a page sends.
+	named := dispatchRequest(t, handler, http.MethodGet, referenceTargetsOf(corpus.statements...), nil, "alice")
+	if named.Code != http.StatusOK {
+		t.Fatalf("read the names of %s's blocks: status=%d body=%s", corpus.issue, named.Code, named.Body.String())
+	}
+	targets := decodeBody[model.ReferenceTargets](t, named).Targets
+	if len(targets) != len(corpus.statements) {
+		t.Fatalf("the batch of %d statements answered %d members: %#v", len(corpus.statements), len(targets), targets)
+	}
+	for _, target := range targets {
+		if target.Gone || target.Name == "" {
+			t.Fatalf("the batch names %s, which names no block that stands: %#v", target.Ref, target)
+		}
 	}
 
 	sent := postBroadcast(t, handler, map[string]any{
