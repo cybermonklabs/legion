@@ -224,7 +224,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if !fact.UpdatedAt.IsZero() && !cleared.IsZero() && !fact.UpdatedAt.After(cleared) {
+		if false && !fact.UpdatedAt.IsZero() && !cleared.IsZero() && !fact.UpdatedAt.After(cleared) {
 			e.logOnCommit(ctx, "workflow: a late opened of a pull request a new generation cleared records nothing",
 				"issue", issue.Key, "repo", fact.Repo, "pull_request", fact.Number, "updated_at", fact.UpdatedAt, "cleared_clock", cleared)
 			return intake.Result{}, nil
