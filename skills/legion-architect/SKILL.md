@@ -107,7 +107,7 @@ nothing after it is yours (`skill://legion-architect/references/acceptance.md`, 
 
 ## Escalation judgment
 
-- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root, a need for admission slots, and a design or scope conflict between trees.
+- Send the controller (its topic is on your addressing line) a child that serves no criterion of the root and a need for admission slots.
 
 - Carry a clear defect the controller gives you in this tree:
   in an open pull request, or in a child; reply under its evidence comment with the issue that carries it.

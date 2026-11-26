@@ -105,7 +105,7 @@ only when your answer asks Legion to work it. An architect also files the childr
 issue.
 
 The only statuses the controller sets are `todo`, `backlog` and `icebox` (`triage` is set by
-whoever files an issue). It reads pull requests as the review App, and writes no code.
+whoever files an issue). It reads pull requests as the review App.
 
 ## Trees and the architect
 

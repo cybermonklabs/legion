@@ -21,7 +21,7 @@ legion({ op: "set_status", issue: "<report KEY>", status: "icebox" })
 ## When
 
 After the turn's own work, read the report issue.
-When it reads `Status: done`, set it back to `icebox` with the `set_status` above, and say so in the day's report.
+When it reads `Status: done`, reopen it with `set_status` to `icebox` and say so in the day's report.
 Post when its `Events:` show no `message.created` from today.
 
 ## What
