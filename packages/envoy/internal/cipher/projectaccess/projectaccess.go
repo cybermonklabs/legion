@@ -28,17 +28,20 @@
 // one write whichever read fetched it: its member kind in person_member_kind, and, where it names
 // held, whether Dispatch holds the person in person_standing, each under the later-as_of rule. So
 // while Dispatch cannot be asked (Unanswered) MemberKind answers from the member kind Dispatch last
-// gave: a person last kept as a full member is served as one, and every other person, one kept
-// restricted, one of whom no kind is kept, and one whose kept kind cannot be read, is refused as
-// before; and the hold gate answers from the hold Dispatch last gave (KeptHold). A demotion that
-// Dispatch answers, during an outage or before it, is written and refuses from then on; one it
-// never answered takes effect when it answers again. An answer Dispatch gives always wins. It keeps
-// each answer of the project route the same way (project_standing, later by the time it was
-// asked), and a read under OrKept, the request machine's person rule's, answers from it while
-// Dispatch cannot be asked: a project last answered private and visible to the person shows it to
-// them, and so does one last answered public until an answer that it is private is kept for
+// gave, for at most KeptAnswerTTL (one hour) after Dispatch gave it: a person last kept as a full
+// member within the hour is served as one, and every other person, one kept restricted, one of
+// whom no kind is kept, one whose kept kind cannot be read, and one whose kept kind is older than
+// the hour (counted stale), is refused as before; and the hold gate answers from the hold Dispatch
+// last gave (KeptHold). A demotion that Dispatch answers, during an outage or before it, is written
+// and refuses from then on; one it never answered takes effect when it answers again, or once the
+// hour has passed. An answer Dispatch gives always wins. It keeps each answer of the project route
+// the same way (project_standing, later by the time it was asked), and a read under OrKept, the
+// request machine's person rule's, answers from it while Dispatch cannot be asked, each for at most
+// KeptAnswerTTL after it was asked: a project last answered private and visible to the person shows
+// it to them, and so does one last answered public until an answer that it is private is kept for
 // anyone; a key last answered no project is no project again until an answer that it exists is
-// kept for anyone; and every other read is refused as before.
+// kept for anyone; and every other read, a kept answer older than the hour among them, is refused
+// as before.
 package projectaccess
 
 import (
@@ -167,7 +170,7 @@ var outageCodes = []string{"DATABASE_UNAVAILABLE", "OIDC_ISSUER_UNAVAILABLE"}
 // behavior as an outage, for as long as it lasts: a caller can use an answer it kept. That can
 // serve a kept full member or a kept visible project, up to KeptAnswerTTL; the hold gate decides
 // from person_standing, which serves a person of whom no answer is kept unless
-// BROKER_HOLD_REQUIRES_DEADLINE is set (hold.Gate.CheckUntil); and an approver's revoke goes
+// BROKER_HOLD_REQUIRES_DEADLINE is set (hold.Gate.Decide); and an approver's revoke goes
 // ahead, since a revoke only takes access away (requests.Machine.RevokeByApprover).
 const internalCode = "INTERNAL"
 

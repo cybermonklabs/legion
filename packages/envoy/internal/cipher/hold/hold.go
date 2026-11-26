@@ -145,7 +145,7 @@ func New(cfg Config) *Gate {
 	return g
 }
 
-// checkUntil is the check Decide reads (kindOf): errHeld for a held person and errUncheckable when
+// checkUntil is the check Decide reads (decode): errHeld for a held person and errUncheckable when
 // it cannot decide, each wrapped with the person, and nil for everyone else, with beside a person
 // it serves the deadline of the not-held answer it served them on (not_held_until), which
 // introspection carries: the zero time for an answer naming none, as every answer outside IAP, and

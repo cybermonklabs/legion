@@ -18,8 +18,8 @@ import (
 // matching no sentinel decides nothing. No refusal repeats the error behind it, which for a store
 // carries the database's user, name and address.
 //
-// The faults: kindOf testing ErrHeld before ErrUncheckable (the unkept hold reads Held and a 403),
-// or ErrUncheckable before ErrDeadlinePassed (the passed deadline reads Uncheckable); each fails a
+// The faults: decode testing errHeld before errUncheckable (the unkept hold reads Held and a 403),
+// or errUncheckable before errDeadlinePassed (the passed deadline reads Uncheckable); each fails a
 // row by name.
 func TestVerdictReadsEachCheckInTheOneOrder(t *testing.T) {
 	const ada = "ada@example.com"
@@ -63,6 +63,29 @@ func TestVerdictReadsEachCheckInTheOneOrder(t *testing.T) {
 		}
 		if strings.Contains(words, "user=") || strings.Contains(words, "10.0.0.7") {
 			t.Errorf("the refusal of %s says %q, which repeats the error behind it", c.name, words)
+		}
+	}
+}
+
+// TestAVerdictBuiltOutsideDecideSaysItsKindsReason: a Verdict that a caller builds itself, as a
+// test of a point that serves a credential does, carries no reason decode chose, and each Kind that
+// decides nothing still ends its words with that Kind's own reason, never with an empty one after
+// the colon. The fault: Words reading only the reason decode chose fails every row by name.
+func TestAVerdictBuiltOutsideDecideSaysItsKindsReason(t *testing.T) {
+	const ada = "ada@example.com"
+	for kind, reason := range map[Kind]string{
+		HeldUnkept:     "the broker could not keep Dispatch's answer that holds them",
+		DeadlinePassed: "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them",
+		Uncheckable:    "the broker could not ask Dispatch, nor read the last answer Dispatch gave",
+		BrokerRefused:  "Dispatch refused the broker's own account",
+	} {
+		v := Verdict{Kind: kind, Person: ada, Err: errors.New("a refusal")}
+		want := "whether Dispatch holds " + ada + " cannot be read: " + reason
+		if got := v.Words(); got != want {
+			t.Errorf("Words() of a Verdict{Kind: %d} built outside Decide = %q, want %q", kind, got, want)
+		}
+		if _, _, words := v.Refusal(); words != want {
+			t.Errorf("Refusal()'s words of a Verdict{Kind: %d} built outside Decide = %q, want %q", kind, words, want)
 		}
 	}
 }

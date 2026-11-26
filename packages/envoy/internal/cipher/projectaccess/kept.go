@@ -30,8 +30,9 @@ const (
 )
 
 // keptLogEvery is how often a read answered from what was kept while Dispatch could not be asked
-// is counted, per person or per person and project, and a served one logged (KeptFullMessage,
-// KeptProjectMessage).
+// is counted, per person or per person and project, and logged where it was served
+// (KeptFullMessage, KeptProjectMessage) or refused as older than KeptAnswerTTL (KeptStaleMessage,
+// KeptStaleProjectMessage).
 const keptLogEvery = time.Minute
 
 // KeptFullMessage is logged at WARN, at most once a minute per person, when MemberKind answers a
@@ -42,11 +43,15 @@ const KeptFullMessage = "broker: Dispatch could not be asked what kind of member
 
 // KeptStaleMessage is logged at WARN, at most once a minute per person, when a member-kind read is
 // refused because the kept answer is older than KeptAnswerTTL, followed by person=<the canonical
-// login>, as_of=<the time the kept answer rests on> and error=<why Dispatch could not be asked>.
+// login>, as_of=<the time the kept answer rests on>, age=<how long before now that was, to the
+// second> and error=<why Dispatch could not be asked>.
 const KeptStaleMessage = "broker: the member kind Dispatch last answered is older than the broker's serving bound; refusing while Dispatch cannot be asked"
 
 // KeptStaleProjectMessage is logged at WARN, at most once a minute per person and project, when a
-// project read under OrKept is refused because the kept answer is older than KeptAnswerTTL.
+// project read under OrKept is refused because the kept answer is older than KeptAnswerTTL,
+// followed by person=<the canonical login, empty for a read naming no person>, project=<the key>,
+// asked_at=<when the kept answer was asked>, age=<how long before now that was, to the second> and
+// error=<why Dispatch could not be asked>.
 const KeptStaleProjectMessage = "broker: the project answer Dispatch last gave is older than the broker's serving bound; refusing while Dispatch cannot be asked"
 
 // keepFailedMessage is logged at WARN when an answer of the person route could not be kept: while
@@ -412,9 +417,10 @@ const KeptProjectMessage = "broker: Dispatch could not be asked whether a person
 // before it, and refused where this one hides the project (keeping.unkeptProjects).
 const keepProjectFailedMessage = "broker: Dispatch's answer of whether a person may see a project could not be kept; while Dispatch cannot be asked it is answered from the answer kept before it, and refused where this one hides the project"
 
-// The labels of broker_project_visibility_unchecked_total beside keptNone and keptUnreadable: what
-// was kept for a person and project whose read Dispatch did not answer. keptPublic, keptVisible
-// and keptMissing are served; keptNotVisible, keptNone and keptUnreadable are refused.
+// The labels of broker_project_visibility_unchecked_total beside keptNone, keptUnreadable and
+// keptStale: what was kept for a person and project whose read Dispatch did not answer.
+// keptPublic, keptVisible and keptMissing are served while they are within KeptAnswerTTL;
+// keptNotVisible, keptNone, keptUnreadable and keptStale are refused.
 const (
 	// keptPublic is a public project the person may see.
 	keptPublic = VisibilityPublic
@@ -432,20 +438,21 @@ const (
 type orKeptKey struct{}
 
 // OrKept is ctx for project reads (Access) that, where Dispatch does not answer (Unanswered), a
-// client that keeps its answers (Keep) answers from the answer it kept for that person and project:
-// a project Dispatch last answered public and visible to them, until an answer that it is private
-// is kept for anyone, asked at or after it, or private and visible to them, is answered visible,
-// carrying its project, person and visibility alone and a zero AskedAt, since nothing Dispatch
-// answered since bounds its age; a key Dispatch last answered it holds no project for is that
-// answer again, a *ProjectNotFoundError with a zero AskedAt, until an answer that the project
-// exists is kept for anyone, asked at or after it; and every other read fails as with no keeper: a
-// project kept hidden from the person, one of which nothing is kept for them since it was made or
-// made private, and one whose kept answer cannot be read. A read Dispatch answers is that answer,
-// kept as every answer is. The request machine's person rule reads under it
+// client that keeps its answers (Keep) answers from the answer it kept for that person and project,
+// each for at most KeptAnswerTTL (one hour) after it was asked: a project Dispatch last answered
+// public and visible to them, until an answer that it is private is kept for anyone, asked at or
+// after it, or private and visible to them, is answered visible, carrying its project, person and
+// visibility alone and a zero AskedAt, since nothing Dispatch answered since bounds its age; a key
+// Dispatch last answered it holds no project for is that answer again, a *ProjectNotFoundError
+// with a zero AskedAt, until an answer that the project exists is kept for anyone, asked at or
+// after it; and every other read fails as with no keeper: a project kept hidden from the person,
+// one of which nothing is kept for them since it was made or made private, one whose kept answer
+// cannot be read, and a kept answer older than the hour (keptStale). A read Dispatch answers is
+// that answer, kept as every answer is. The request machine's person rule reads under it
 // (requests.Machine.maySee), so while Dispatch does not answer a row is shown and decided by who
-// last could; nothing else does, so the token exchange, an enrollment and a release still fail
-// while Dispatch does not answer whether a person may see a project. It is a context marker, as
-// Fresh is, so an Access that hands the context on keeps the rule.
+// last could, for up to the hour; nothing else does, so the token exchange, an enrollment and a
+// release still fail while Dispatch does not answer whether a person may see a project. It is a
+// context marker, as Fresh is, so an Access that hands the context on keeps the rule.
 func OrKept(ctx context.Context) context.Context {
 	return context.WithValue(ctx, orKeptKey{}, true)
 }

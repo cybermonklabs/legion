@@ -28,7 +28,8 @@ const (
 	// serves the person to.
 	DeadlinePassed
 	// Uncheckable is every other check that decides nothing: an answer the broker can neither ask
-	// for nor read.
+	// for nor read, and, under RequireDeadline, a not-held answer that names no deadline, which the
+	// broker read and does not serve.
 	Uncheckable
 	// BrokerRefused is a Dispatch refusal of the broker's own account, a misconfiguration that the
 	// token endpoint answers with refusedByDispatch rather than an ordinary HOLD_UNCHECKABLE error.
@@ -62,7 +63,8 @@ type Verdict struct {
 	// error's database user, name and address. Words say what a refused caller may read.
 	Err error
 	// words is the fixed reason a refused caller reads, decided by decode; empty for Served and for
-	// a Held person, whose words are HeldWords. It never carries Err's text.
+	// a Held person, whose words are HeldWords. It never carries Err's text. A Verdict built
+	// outside Decide has none, and Words reads its Kind's own reason instead (kindWords).
 	words string
 	// requireDeadline is the gate's Config.RequireDeadline, which HeldWords reads.
 	requireDeadline bool
@@ -87,24 +89,25 @@ func decode(err error) (Kind, string) {
 	case err == nil:
 		return Served, ""
 	case held && errors.Is(err, errUncheckable):
-		return HeldUnkept, "the broker could not keep Dispatch's answer that holds them"
+		return HeldUnkept, kindWords(HeldUnkept)
 	case held:
 		return Held, ""
 	case errors.Is(err, errDeadlinePassed):
-		return DeadlinePassed, "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
+		return DeadlinePassed, kindWords(DeadlinePassed)
 	case errors.Is(err, dispatchread.ErrBrokerRefused):
-		return BrokerRefused, "Dispatch refused the broker's own account"
+		return BrokerRefused, kindWords(BrokerRefused)
 	case errors.Is(err, errNoDeadline):
 		return Uncheckable, "Dispatch's answer that they are not held names no deadline, which this broker requires"
 	case errors.Is(err, errNoAnswer):
 		return Uncheckable, "the broker could not ask Dispatch, and keeps no answer Dispatch gave for them"
 	}
-	return Uncheckable, "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
+	return Uncheckable, kindWords(Uncheckable)
 }
 
 // Words is what a refused caller reads: for Held the gate's words for a held person (HeldWords),
 // and for every kind that decides nothing, HeldUnkept among them, that whether Dispatch holds the
-// person cannot be read and why (the reason decode chose). Served says nothing.
+// person cannot be read and why: the reason decode chose, or, for a Verdict built outside Decide,
+// which carries none, its Kind's own reason (kindWords). Served says nothing.
 func (v Verdict) Words() string {
 	switch v.Kind {
 	case Served:
@@ -112,7 +115,26 @@ func (v Verdict) Words() string {
 	case Held:
 		return v.HeldWords()
 	}
-	return "whether Dispatch holds " + v.Person + " cannot be read: " + v.words
+	words := v.words
+	if words == "" {
+		words = kindWords(v.Kind)
+	}
+	return "whether Dispatch holds " + v.Person + " cannot be read: " + words
+}
+
+// kindWords is the reason of a Kind that decides nothing when no decode chose a finer one: the
+// words decode gives that Kind's own error, and, for Uncheckable, the words of a check whose
+// answer could not be asked for nor read.
+func kindWords(k Kind) string {
+	switch k {
+	case HeldUnkept:
+		return "the broker could not keep Dispatch's answer that holds them"
+	case DeadlinePassed:
+		return "Dispatch's answer that they are not held has passed its deadline, or Dispatch has never confirmed them"
+	case BrokerRefused:
+		return "Dispatch refused the broker's own account"
+	}
+	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
 }
 
 // HeldWords is what a point that refuses the person as held says: who is held and what ends the
