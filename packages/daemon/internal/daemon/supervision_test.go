@@ -1053,7 +1053,7 @@ func TestPrepareWritesTheDispatchTokenFileAndBootPruneKeepsIt(t *testing.T) {
 	if got, err := os.ReadFile(want); err != nil || string(got) != "dispatch-test-token" {
 		t.Fatalf("Dispatch token file = %q (%v), want the trimmed configured token", got, err)
 	}
-	pruneAllBut(filepath.Join(cfg.StateDir, "secrets"), nil, quietLogger())
+	pruneAllBut(cfg.StateDir, nil, quietLogger())
 	if _, err := os.Stat(want); err != nil {
 		t.Fatalf("boot's prune removed the daemon's Dispatch token file: %v", err)
 	}

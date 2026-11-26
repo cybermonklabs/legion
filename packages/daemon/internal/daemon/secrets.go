@@ -15,19 +15,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// pruning is store with a claim's secret files — and its gh directory (runtime.GHConfigDir) —
-// removed whenever the claim is written with no process — suspended, failed, retired, or between
-// one launch and the next. The runtime writes a pane's files and never removes them; the daemon,
-// which knows when a claim's process ends, does. A launch writes its files after the claim is
-// persisted without a locator, so a relaunch's own files are never the ones removed.
-func pruning(store supervise.Store, dir string, log *slog.Logger) supervise.Store {
-	return pruningStore{Store: store, dir: dir, log: log}
+// pruning is store with a claim's secret files — its gh directory (runtime.GHConfigDir) with them —
+// and its texts directory (textsCopies: folder copies and tmux extension roots) removed whenever
+// the claim is written with no process — suspended, failed, retired, or between one launch and the
+// next. The runtime writes a pane's files and roots and leaves the last launch's behind; the
+// daemon, which knows when a claim's process ends, removes them. A launch builds its spec and
+// writes its files after the claim is persisted without a locator, and no write of the claim runs
+// between that build and the persist of its locator, so a launch's own files are never removed.
+func pruning(store supervise.Store, stateDir string, log *slog.Logger) supervise.Store {
+	return pruningStore{Store: store, stateDir: stateDir, log: log}
 }
 
 type pruningStore struct {
 	supervise.Store
-	dir string
-	log *slog.Logger
+	stateDir string
+	log      *slog.Logger
 }
 
 // Every method that writes a claim is wrapped, so a claim written without a locator loses its
@@ -76,20 +78,30 @@ func (s pruningStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds
 
 func (s pruningStore) written(c supervise.Claim) {
 	if c.Locator == nil {
-		removeSecretFiles(s.dir, s.log, func(name string) bool { return ownedBy(name, c.Token) })
+		removeSecretFiles(runtime.SecretsDir(s.stateDir), s.log, func(name string) bool { return ownedBy(name, c.Token) })
+		removeTextsDirs(textsDir(s.stateDir), s.log, func(name string) bool { return name == string(c.Token) })
 	}
 }
 
-// pruneAllBut is boot's half: every file in the secrets directory that no claim with a process
-// names goes, a claim's gh directory with it — what a daemon killed between clearing a locator and
-// removing its files left. The daemon's own Dispatch token file outlives every claim.
-func pruneAllBut(dir string, claims []supervise.Claim, log *slog.Logger) {
-	removeSecretFiles(dir, log, func(name string) bool {
+// pruneAllBut is boot's half: every file in the secrets directory and every entry in the texts
+// directory that no claim with a process names goes, a claim's gh directory and texts roots with
+// them — what a daemon killed between clearing a locator and removing its files left. The daemon's
+// own Dispatch token file outlives every claim.
+func pruneAllBut(stateDir string, claims []supervise.Claim, log *slog.Logger) {
+	removeSecretFiles(runtime.SecretsDir(stateDir), log, func(name string) bool {
 		if name == runtime.DispatchTokenFileName {
 			return false
 		}
 		for _, c := range claims {
 			if c.Locator != nil && ownedBy(name, c.Token) {
+				return false
+			}
+		}
+		return true
+	})
+	removeTextsDirs(textsDir(stateDir), log, func(name string) bool {
+		for _, c := range claims {
+			if c.Locator != nil && name == string(c.Token) {
 				return false
 			}
 		}
@@ -147,6 +159,38 @@ func removeSecretFiles(dir string, log *slog.Logger, remove func(name string) bo
 		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			log.Error("secrets: remove a pane secret file", "file", entry.Name(), "error", err)
+		}
+	}
+}
+
+// removeTextsDirs removes every entry of dir (`<state>/texts`) that remove selects: each claim's
+// directory `<state>/texts/<claim>`, holding its folder copies and under tmux its built extension
+// roots. A directory not made yet holds nothing; an entry that will not go is logged and left for
+// the next prune, never a failed write or a failed boot.
+//
+// Under the tmux runtime a claim's extension root sits under `<state>/texts/<claim>` and is one its
+// pane's own user can write, so removal uses rolefile.RemoveTree (follows no link and waits on no
+// fifo), resolving dir once (filepath.EvalSymlinks) first since the state directory or texts
+// directory may be reached through a link.
+func removeTextsDirs(dir string, log *slog.Logger, remove func(name string) bool) {
+	resolved, err := filepath.EvalSymlinks(dir)
+	var entries []os.DirEntry
+	if err == nil {
+		entries, err = os.ReadDir(resolved)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		log.Error("texts: list the claim texts directories", "dir", dir, "error", err)
+		return
+	}
+	for _, entry := range entries {
+		if !remove(entry.Name()) {
+			continue
+		}
+		if err := rolefile.RemoveTree(filepath.Join(resolved, entry.Name())); err != nil {
+			log.Error("texts: remove a claim's texts directory", "dir", entry.Name(), "error", err)
 		}
 	}
 }

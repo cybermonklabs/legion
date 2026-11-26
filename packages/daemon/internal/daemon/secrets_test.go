@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -60,7 +61,7 @@ func TestTheClaimPruneTakesTheGhDirectoryOfAClaimWrittenWithNoProcess(t *testing
 	writeFile(t, filepath.Join(config.ProviderEnvDir(stateDir), "ANTHROPIC_API_KEY"))
 	writeFile(t, runtime.SecretFilePath(stateDir, runtime.DispatchTokenFileName))
 
-	store := pruningStore{dir: runtime.SecretsDir(stateDir), log: quietLogger()}
+	store := pruningStore{stateDir: stateDir, log: quietLogger()}
 	store.written(supervise.Claim{Token: ended})
 
 	want := []string{runtime.DispatchTokenFileName, string(live), string(live) + "-gh", string(live) + "-grant", "provider-env"}
@@ -116,7 +117,7 @@ func TestAReleaseOfAClaimWithNoProcessPrunesItsSecretFiles(t *testing.T) {
 	held := secretEntries(t, stateDir)
 	ctx := context.Background()
 
-	refused := pruningStore{Store: releaseStore{err: errors.New("the database refused the claim write")}, dir: runtime.SecretsDir(stateDir), log: quietLogger()}
+	refused := pruningStore{Store: releaseStore{err: errors.New("the database refused the claim write")}, stateDir: stateDir, log: quietLogger()}
 	if _, err := refused.ReleaseHolds(ctx, supervise.Claim{Token: ended}, nil); err == nil {
 		t.Fatal("the refused release answered no error")
 	}
@@ -124,7 +125,7 @@ func TestAReleaseOfAClaimWithNoProcessPrunesItsSecretFiles(t *testing.T) {
 		t.Fatalf("a release the store refused left the secrets directory holding %v, want %v: the claim was not written", got, held)
 	}
 
-	taken := pruningStore{Store: releaseStore{}, dir: runtime.SecretsDir(stateDir), log: quietLogger()}
+	taken := pruningStore{Store: releaseStore{}, stateDir: stateDir, log: quietLogger()}
 	if _, err := taken.ReleaseHolds(ctx, supervise.Claim{Token: ended}, nil); err != nil {
 		t.Fatalf("the release = %v", err)
 	}
@@ -149,7 +150,7 @@ func TestBootsPruneTakesTheGhDirectoriesOfClaimsWithNoProcess(t *testing.T) {
 	writeFile(t, filepath.Join(config.ProviderEnvDir(stateDir), "ANTHROPIC_API_KEY"))
 	writeFile(t, runtime.SecretFilePath(stateDir, runtime.DispatchTokenFileName))
 
-	pruneAllBut(runtime.SecretsDir(stateDir), []supervise.Claim{
+	pruneAllBut(stateDir, []supervise.Claim{
 		{Token: suspended},
 		{Token: live, Locator: &runtime.Locator{
 			Runtime: runtime.RuntimeTmux, Claim: live, Incarnation: "4242:1", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
@@ -236,7 +237,7 @@ func TestThePruneTakesAGhDirectoryWithoutFollowingALinkInIt(t *testing.T) {
 			t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
 			var logged bytes.Buffer
-			store := pruningStore{dir: runtime.SecretsDir(stateDir), log: bufferedLogger(&logged)}
+			store := pruningStore{stateDir: stateDir, log: bufferedLogger(&logged)}
 			store.written(supervise.Claim{Token: ended})
 
 			if body, err := os.ReadFile(precious); err != nil || string(body) != "kept\n" {
@@ -255,5 +256,332 @@ func TestThePruneTakesAGhDirectoryWithoutFollowingALinkInIt(t *testing.T) {
 				t.Errorf("the prune logged %q, want the gh directory's removal refused (permission denied)", logged.String())
 			}
 		})
+	}
+}
+
+// claimTexts writes what launches of token leave under `<state>/texts/<token>` (textsCopies): the
+// folder copy and the built root of the launch at generation 3, with a link in the root, and one in
+// a directory under it, that name outside, and the root of the launch at generation 2.
+func claimTexts(t *testing.T, stateDir string, token claim.Token, outside string) {
+	t.Helper()
+	copies := textsCopies(stateDir, token)
+	writeTree(t, copies, map[string]string{
+		filepath.Join("3", "folder", "roles", "tester.md"):                 "A tester.\n",
+		filepath.Join("3", "root", "agents", "goal-red-team.md"):           "An agent.\n",
+		filepath.Join("3", "root", "texts-settings.yml"):                   "skills: {}\n",
+		filepath.Join("2", "root", "skills", "dispatch-first", "SKILL.md"): "A skill.\n",
+	})
+	for _, link := range []string{filepath.Join("3", "root", "outside"), filepath.Join("2", "root", "skills", "outside")} {
+		if err := os.Symlink(outside, filepath.Join(copies, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// treeListing is every path under root, relative to it and root itself as ".", in walk order. A
+// link is listed and never followed.
+func treeListing(t *testing.T, root string) []string {
+	t.Helper()
+	var paths []string
+	err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		paths = append(paths, rel)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return paths
+}
+
+// claimWriteStore is a store that takes each write of a claim, or refuses it with err.
+type claimWriteStore struct {
+	supervise.Store
+	err error
+}
+
+func (s claimWriteStore) PutClaim(context.Context, supervise.Claim) error { return s.err }
+
+func (s claimWriteStore) AdmitClaim(_ context.Context, c supervise.Claim) (supervise.Claim, error) {
+	if s.err != nil {
+		return supervise.Claim{}, s.err
+	}
+	return c, nil
+}
+
+func (s claimWriteStore) PutClaimAndDelivery(context.Context, supervise.Claim, supervise.Delivery) error {
+	return s.err
+}
+
+func (s claimWriteStore) RetireDelivery(context.Context, supervise.Claim, string) error { return s.err }
+
+func (s claimWriteStore) ReleaseHolds(context.Context, supervise.Claim, []supervise.Hold) ([]supervise.Hold, error) {
+	return nil, s.err
+}
+
+// claimWrites are the five store calls that write a claim, each made with c.
+var claimWrites = []struct {
+	name  string
+	write func(store supervise.Store, c supervise.Claim) error
+}{
+	{"PutClaim", func(s supervise.Store, c supervise.Claim) error { return s.PutClaim(context.Background(), c) }},
+	{"AdmitClaim", func(s supervise.Store, c supervise.Claim) error {
+		_, err := s.AdmitClaim(context.Background(), c)
+		return err
+	}},
+	{"PutClaimAndDelivery", func(s supervise.Store, c supervise.Claim) error {
+		return s.PutClaimAndDelivery(context.Background(), c, supervise.Delivery{})
+	}},
+	{"RetireDelivery", func(s supervise.Store, c supervise.Claim) error {
+		return s.RetireDelivery(context.Background(), c, "delivery")
+	}},
+	{"ReleaseHolds", func(s supervise.Store, c supervise.Claim) error {
+		_, err := s.ReleaseHolds(context.Background(), c, nil)
+		return err
+	}},
+}
+
+// A claim written with no process, through each of the five writes that carry a claim, loses
+// `<state>/texts/<claim>`: the daemon's copies of the folder of texts, and under tmux every root
+// built for it, with the links a pane planted in them unlinked and the directory they name left as
+// it was. Another claim's directory stays, and a write the store refused takes nothing, since the
+// claim was not written.
+func TestAClaimWrittenWithNoProcessLosesItsTextsDirectory(t *testing.T) {
+	t.Parallel()
+	project, _ := claim.ProjectToken("omp")
+	ended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
+	live, _ := claim.NewToken(project, "LEGION-2", claim.RoleImplementer)
+	for _, tc := range claimWrites {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			outside := t.TempDir()
+			writeFile(t, filepath.Join(outside, "precious"))
+			claimTexts(t, stateDir, ended, outside)
+			claimTexts(t, stateDir, live, outside)
+			endedTree, liveTree, outsideTree := treeListing(t, textsCopies(stateDir, ended)), treeListing(t, textsCopies(stateDir, live)), treeListing(t, outside)
+
+			refused := pruning(claimWriteStore{err: errors.New("the database refused the claim write")}, stateDir, quietLogger())
+			if err := tc.write(refused, supervise.Claim{Token: ended}); err == nil {
+				t.Fatal("the refused write answered no error")
+			}
+			if got := treeListing(t, textsCopies(stateDir, ended)); !slices.Equal(got, endedTree) {
+				t.Fatalf("a write the store refused left %s holding %v, want %v: the claim was not written", textsCopies(stateDir, ended), got, endedTree)
+			}
+
+			if err := tc.write(pruning(claimWriteStore{}, stateDir, quietLogger()), supervise.Claim{Token: ended}); err != nil {
+				t.Fatalf("the write = %v", err)
+			}
+			if _, err := os.Lstat(textsCopies(stateDir, ended)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the claim's texts directory is still there after its write with no process (%v)", err)
+			}
+			if got := secretFiles(t, textsDir(stateDir)); !slices.Equal(got, []string{string(live)}) {
+				t.Errorf("after the claim's write the texts directory holds %v, want only %s's", got, live)
+			}
+			if got := treeListing(t, textsCopies(stateDir, live)); !slices.Equal(got, liveTree) {
+				t.Errorf("the other claim's texts directory holds %v, want %v", got, liveTree)
+			}
+			if got := treeListing(t, outside); !slices.Equal(got, outsideTree) {
+				t.Errorf("the directory the planted links name holds %v, want %v", got, outsideTree)
+			}
+		})
+	}
+}
+
+// A claim written with a process, through each of the five writes, keeps everything it has under
+// `<state>/texts`: its roots may be loaded by that process.
+func TestAClaimWrittenWithAProcessKeepsItsTextsDirectory(t *testing.T) {
+	t.Parallel()
+	project, _ := claim.ProjectToken("omp")
+	running, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
+	for _, tc := range claimWrites {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			outside := t.TempDir()
+			claimTexts(t, stateDir, running, outside)
+			claimSecrets(t, stateDir, running)
+			held, secrets := treeListing(t, textsDir(stateDir)), secretEntries(t, stateDir)
+
+			c := supervise.Claim{Token: running, Locator: &runtime.Locator{
+				Runtime: runtime.RuntimeTmux, Claim: running, Incarnation: "4242:1", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
+			}}
+			if err := tc.write(pruning(claimWriteStore{}, stateDir, quietLogger()), c); err != nil {
+				t.Fatalf("the write = %v", err)
+			}
+			if got := treeListing(t, textsDir(stateDir)); !slices.Equal(got, held) {
+				t.Errorf("after the write of a claim with a process the texts directory holds %v, want %v", got, held)
+			}
+			if got := secretEntries(t, stateDir); !slices.Equal(got, secrets) {
+				t.Errorf("after the write of a claim with a process the secrets directory holds %v, want %v", got, secrets)
+			}
+		})
+	}
+}
+
+// Boot's prune takes every entry of `<state>/texts` that no claim with a process names: the
+// directory of a claim with no process, one of no claim at all, and a stray file. It keeps the
+// directory of a claim with a process, whole, and a directory that is not there is nothing to
+// prune.
+func TestBootsPruneTakesTheTextsOfClaimsWithNoProcess(t *testing.T) {
+	t.Parallel()
+	project, _ := claim.ProjectToken("omp")
+	live, _ := claim.NewToken(project, "LEGION-1", claim.RoleImplementer)
+	suspended, _ := claim.NewToken(project, "LEGION-2", claim.RoleArchitect)
+	unrecorded, _ := claim.NewToken(project, "LEGION-3", claim.RoleTester)
+
+	t.Run("a texts directory holding each", func(t *testing.T) {
+		stateDir := t.TempDir()
+		outside := t.TempDir()
+		writeFile(t, filepath.Join(outside, "precious"))
+		for _, token := range []claim.Token{live, suspended, unrecorded} {
+			claimTexts(t, stateDir, token, outside)
+		}
+		writeFile(t, filepath.Join(textsDir(stateDir), "stray"))
+		liveTree, outsideTree := treeListing(t, textsCopies(stateDir, live)), treeListing(t, outside)
+
+		pruneAllBut(stateDir, []supervise.Claim{
+			{Token: suspended},
+			{Token: live, Locator: &runtime.Locator{
+				Runtime: runtime.RuntimeTmux, Claim: live, Incarnation: "4242:1", Tmux: &runtime.TmuxLocator{Window: "@1", Pane: "%1"},
+			}},
+		}, quietLogger())
+
+		if got := secretFiles(t, textsDir(stateDir)); !slices.Equal(got, []string{string(live)}) {
+			t.Errorf("after boot's prune the texts directory holds %v, want only %s's", got, live)
+		}
+		if got := treeListing(t, textsCopies(stateDir, live)); !slices.Equal(got, liveTree) {
+			t.Errorf("the claim with a process holds %v under texts, want %v", got, liveTree)
+		}
+		if got := treeListing(t, outside); !slices.Equal(got, outsideTree) {
+			t.Errorf("the directory the planted links name holds %v, want %v", got, outsideTree)
+		}
+	})
+
+	t.Run("no texts directory", func(t *testing.T) {
+		stateDir := t.TempDir()
+		var logged bytes.Buffer
+
+		pruneAllBut(stateDir, []supervise.Claim{{Token: suspended}}, bufferedLogger(&logged))
+
+		if _, err := os.Lstat(textsDir(stateDir)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("boot's prune made the texts directory (%v)", err)
+		}
+		if logged.Len() != 0 {
+			t.Errorf("boot's prune of a state with no texts directory logged %q, want nothing", logged.String())
+		}
+	})
+}
+
+// Under the tmux runtime a built root is one its pane's own user can write, so the prune removes a
+// claim's texts directory without following a link the pane planted in it, wherever the texts
+// directory is reached through a link: under a state directory that is a link, or as a link
+// itself. Both the claim's write and boot's prune take it. A link in the root and one under a
+// directory of it are unlinked, and the file in the directory they name stays.
+func TestTheTextsPruneRemovesARootWithoutFollowingALinkInIt(t *testing.T) {
+	t.Parallel()
+	project, _ := claim.ProjectToken("omp")
+	ended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
+	for _, tc := range []struct {
+		name string
+		// stateDir is a state directory whose texts directory is reached through a link.
+		stateDir func(t *testing.T) string
+	}{
+		{"under a state directory that is a link", func(t *testing.T) string {
+			stateDir := filepath.Join(t.TempDir(), "state")
+			if err := os.Symlink(t.TempDir(), stateDir); err != nil {
+				t.Fatal(err)
+			}
+			return stateDir
+		}},
+		{"a texts directory that is itself a link", func(t *testing.T) string {
+			stateDir := t.TempDir()
+			if err := os.Symlink(t.TempDir(), textsDir(stateDir)); err != nil {
+				t.Fatal(err)
+			}
+			return stateDir
+		}},
+	} {
+		for _, prune := range []struct {
+			name string
+			run  func(stateDir string)
+		}{
+			{"the claim's write", func(stateDir string) {
+				pruningStore{stateDir: stateDir, log: quietLogger()}.written(supervise.Claim{Token: ended})
+			}},
+			{"boot", func(stateDir string) { pruneAllBut(stateDir, nil, quietLogger()) }},
+		} {
+			t.Run(tc.name+", by "+prune.name, func(t *testing.T) {
+				outside := t.TempDir()
+				writeFile(t, filepath.Join(outside, "precious"))
+				stateDir := tc.stateDir(t)
+				claimTexts(t, stateDir, ended, outside)
+				outsideTree := treeListing(t, outside)
+
+				prune.run(stateDir)
+
+				if _, err := os.Lstat(textsCopies(stateDir, ended)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("the claim's texts directory is still there (%v)", err)
+				}
+				if got := treeListing(t, outside); !slices.Equal(got, outsideTree) {
+					t.Errorf("the directory the planted links name holds %v, want %v", got, outsideTree)
+				}
+			})
+		}
+	}
+}
+
+// A link under a directory the pane made 0555, which the daemon, holding no capability, cannot
+// unlink it from, is left as it is: the prune logs the removal's refusal, leaves the claim's texts
+// directory holding that directory alone while all the rest goes, and the write that triggered it
+// still succeeds. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor
+// release follows a link through (rolefile.OpenDirectory), so in such a pod it deletes the file the
+// link names; Linux refuses that open, so only such a gVisor shows that control fail.
+func TestTheTextsPruneLeavesWhatItCannotUnlinkAndLogsIt(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
+	}
+	project, _ := claim.ProjectToken("omp")
+	ended, _ := claim.NewToken(project, "LEGION-1", claim.RoleTester)
+	stateDir := t.TempDir()
+	outside := t.TempDir()
+	precious := filepath.Join(outside, "precious")
+	if err := os.WriteFile(precious, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	claimTexts(t, stateDir, ended, outside)
+	root := filepath.Join(textsCopies(stateDir, ended), "3", "root")
+	locked := filepath.Join(root, "locked")
+	if err := os.Mkdir(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(locked, "link")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// The temporary directory's own cleanup could not remove the locked directory at 0555.
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	var logged bytes.Buffer
+	if err := pruning(claimWriteStore{}, stateDir, bufferedLogger(&logged)).PutClaim(context.Background(), supervise.Claim{Token: ended}); err != nil {
+		t.Fatalf("the write = %v, want it taken whatever the prune could not remove", err)
+	}
+
+	if body, err := os.ReadFile(precious); err != nil || string(body) != "kept\n" {
+		t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", precious, body, err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the planted link %s is %v (%v), want it left as it was", link, info, err)
+	}
+	if got, want := secretFiles(t, root), []string{"locked"}; !slices.Equal(got, want) {
+		t.Errorf("after the claim's write its root holds %v, want %v: all the prune can remove goes", got, want)
+	}
+	if !strings.Contains(logged.String(), string(ended)) || !strings.Contains(logged.String(), "permission denied") {
+		t.Errorf("the prune logged %q, want the removal of %s's texts directory refused (permission denied)", logged.String(), ended)
 	}
 }

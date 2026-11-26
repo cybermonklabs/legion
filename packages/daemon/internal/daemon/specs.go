@@ -151,19 +151,27 @@ type specs struct {
 	texts *textsReports
 }
 
+// textsDir is `<state>/texts`, under which each claim's directory (textsCopies) lives.
+func textsDir(stateDir string) string {
+	return filepath.Join(stateDir, "texts")
+}
+
 // textsCopies is `<state>/texts/<claim>`, where a launch of claim's arm keeps its copy of the
 // arm's folder of texts, `<generation>/folder` (armTexts), beside which the tmux runtime builds the
 // launch's extension root, `<generation>/root`. Each launch of such an arm removes the copies an
-// earlier one left and none of the roots, which a process of the claim that still runs may load:
+// earlier one left and none of the roots, which a process of the claim that still runs may load;
 // the tmux runtime removes an earlier generation's root once it knows none runs
-// (tmux's checkedTexts.build).
+// (tmux's checkedTexts.build), and the daemon removes the whole `<state>/texts/<claim>` directory
+// once the claim has no process (pruning, pruneAllBut).
 func textsCopies(stateDir string, token claim.Token) string {
-	return filepath.Join(stateDir, "texts", string(token))
+	return filepath.Join(textsDir(stateDir), string(token))
 }
 
 // removeTextsCopies removes from copies (textsCopies) each generation's copy of the folder,
 // `<generation>/folder`, and then each directory that leaves empty, a generation's and copies
-// itself, so a claim no root was built for keeps nothing. A root stays where it is.
+// itself, so a claim no root was built for keeps nothing. A root stays where it is during the
+// launch's spec build; the whole `<state>/texts/<claim>` directory goes once the claim has no
+// process (pruning, pruneAllBut).
 func removeTextsCopies(copies string) error {
 	generations, err := os.ReadDir(copies)
 	if errors.Is(err, fs.ErrNotExist) {

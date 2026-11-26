@@ -173,8 +173,9 @@ func checkTexts(spec runtime.SpawnSpec, env map[string]string, workDir string, l
 // build of the launch's generation left, and the settings layer in it. It runs once no process of
 // the claim runs, so it first removes every other generation's directory the daemon's copies left
 // beside the launch's own, `<state>/texts/<claim>/<generation>`, with the root an earlier launch
-// loaded: the daemon removes only its copies, since it cannot tell whether a process of the claim
-// still loads a root (specs.armTexts).
+// loaded: at spec build the daemon removes only earlier copies, since a process of the claim may
+// still load a root (specs.armTexts), and the daemon removes the whole `<state>/texts/<claim>`
+// directory once the claim has no process.
 func (c *checkedTexts) build() (TextsLaunch, error) {
 	generation := filepath.Dir(c.root)
 	launches := filepath.Dir(generation)
