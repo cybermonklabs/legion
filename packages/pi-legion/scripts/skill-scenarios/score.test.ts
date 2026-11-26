@@ -3218,7 +3218,7 @@ const oneRoleFiles = (calls: string, role: string, extra: Record<string, string>
     ...extra,
   };
 };
-const requestedChangesNaming = (missing: string) =>
+const requestedChangesNamingTheRoleWithNoPass = (missing: string) =>
   `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`;
 run("reviewer-own-head-no-implementer-head-91", oneRoleFiles(approvedAt(head), "tester"), [
   ...header,
@@ -3226,7 +3226,7 @@ run("reviewer-own-head-no-implementer-head-91", oneRoleFiles(approvedAt(head), "
 ]);
 run(
   "reviewer-own-head-no-implementer-head-92",
-  oneRoleFiles(requestedChangesNaming("implementer"), "tester"),
+  oneRoleFiles(requestedChangesNamingTheRoleWithNoPass("implementer"), "tester"),
   [...header, said(10, "k1 reads yes from the tester alone.")]
 );
 // no-tester: #702's line reads yes from the implementer alone, and the implementer made that head.
@@ -3240,7 +3240,12 @@ const sentToTestingAt = (second: number) =>
 for (const [n, calls, daemon, text] of [
   // An approval on the implementer's pass alone: what the label any-recorder asks.
   [91, approvedAt(head), "", "k1 reads yes at #702's head, from the implementer."],
-  [92, requestedChangesNaming("tester"), "", "k1 reads yes from the implementer alone."],
+  [
+    92,
+    requestedChangesNamingTheRoleWithNoPass("tester"),
+    "",
+    "k1 reads yes from the implementer alone.",
+  ],
   [93, `${ownResultAt(15, "pass", head)}${approvedAt(head)}`, "", "I ran k1 at #702's head."],
   [94, `${approvedAt(head)}${ownResultAt(25, "pass", head)}`, "", "Approved, then ran k1."],
   [95, `${ownResultAt(15, "pass", "9".repeat(40))}${approvedAt(head)}`, "", "I ran k1."],
