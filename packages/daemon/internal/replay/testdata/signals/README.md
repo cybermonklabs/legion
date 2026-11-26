@@ -84,7 +84,8 @@ provider-record.py --from <time> --to <time> --prefix <local copy of the provide
 ```
 
 The lines kept are three minutes of 2026-11-16 from 14:30 with refusals by the project's own limit, four of 2026-11-17 from 17:46 whose third minute's uncached tokens are below zero (the provider's series counted the cached tokens a minute after their input), and three of 2026-11-23 from 16:28 with refusals of both kinds.
-The lines hold no name, the script writes none, so neutralizing changed nothing.
+The lines hold no name, and the script writes none.
+One value was changed by hand: `limit_source` reads `deployment-log` where the script wrote the name of the deployment's own log, since the repository names no part of a deployment.
 
 ## Not captured here
 

@@ -111,7 +111,7 @@ func TestTheK1WindowsOfTheSignalsRead(t *testing.T) {
 func signalWindow(t *testing.T) Window {
 	t.Helper()
 	at := func(hour, minute int) time.Time { return time.Date(2001, time.March, 5, hour, minute, 0, 0, time.UTC) }
-	limit, source, scope := int64(6000000), "gateway-log", "Claude"
+	limit, source, scope := int64(6000000), "deployment-log", "Claude"
 	settings := json.RawMessage(`{"id":7,"issue_key":null,"artifact_id":null,"project":"ACME","seq":2,` +
 		`"type":"settings.project_default_assignee.updated","actor":{"kind":"user","id":"person-1@example.invalid"},"notify":false,` +
 		`"created_at":"2001-03-05T09:30:00Z","payload":{"project":"ACME","assignee":"person-2@example.invalid"}}`)

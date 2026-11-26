@@ -429,7 +429,7 @@ var collectIssues = []string{"ACME-27", "ACME-29", "ACME-32", "ACME-55", "ACME-5
 // hour objects alone.
 const (
 	collectManifest     = "0000000000000000000000000000000000000000000000000000000000000000  2026-11-20/00.jsonl\n"
-	collectProviderHead = `{"minute": "2026-11-15T23:59:00Z", "uncached": 1, "limit": 6000000, "limit_source": "gateway-log", "limit_scope": "Claude", "own": 0, "provider": 0}` + "\n" +
+	collectProviderHead = `{"minute": "2026-11-15T23:59:00Z", "uncached": 1, "limit": 6000000, "limit_source": "deployment-log", "limit_scope": "Claude", "own": 0, "provider": 0}` + "\n" +
 		`{"minute": "2026-11-16T14:29:00Z", "uncached": 10, "limit": null, "limit_source": null, "limit_scope": null, "own": 0, "provider": 0}` + "\n"
 	collectGuardEnded   = `launcher: memory guard: ended pid=41 role=tester size=1048576 reading=7000000000 counter=7100000000 shmem=0 limit=8589934592 executable="go"`
 	collectGuardStarted = "launcher: memory guard: started act_percent=85 floor_percent=10 wait=5s interval=100ms limit=8589934592 reading=23052288"

@@ -33,11 +33,10 @@ func mergeStateReads(logged *bytes.Buffer) []map[string]any {
 // The daemon logs each read of a pull request's merge state the record takes, a clean read
 // included, with the pull request, the head GitHub answered for, the base and the base commit
 // GitHub's answer names, so a window collected later gives git the exact head and base of each
-// read (dispatch://INFRA-3199/spec R9). Taken in turn on one pull request, a clean read and a read
-// that finds a conflict each write exactly one line. So does each read the engine drops - one of a
-// head the record has left and one older than the read the record holds - since GitHub was read
-// all the same; and a read that names no base branch and no base commit logs the record's base and
-// no commit.
+// read. Taken in turn on one pull request, a clean read and a read that finds a conflict each
+// write exactly one line. So does each read the engine drops - one of a head the record has left
+// and one older than the read the record holds - since GitHub was read all the same; and a read
+// that names no base branch and no base commit logs the record's base and no commit.
 func TestEachReadOfAMergeStateIsLoggedWithItsHeadAndBase(t *testing.T) {
 	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", record.PullRequest{})

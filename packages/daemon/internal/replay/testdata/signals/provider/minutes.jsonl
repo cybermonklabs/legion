@@ -1,10 +1,10 @@
-{"minute": "2026-11-16T14:30:00Z", "uncached": 2825036, "limit": 5500000, "limit_source": "gateway-log", "limit_scope": "claude-opus-5-5", "own": 23, "provider": 0}
-{"minute": "2026-11-16T14:31:00Z", "uncached": 2408497, "limit": 5500000, "limit_source": "gateway-log", "limit_scope": "claude-opus-5-5", "own": 0, "provider": 0}
-{"minute": "2026-11-16T14:32:00Z", "uncached": 4331774, "limit": 5500000, "limit_source": "gateway-log", "limit_scope": "claude-opus-5-5", "own": 16, "provider": 0}
+{"minute": "2026-11-16T14:30:00Z", "uncached": 2825036, "limit": 5500000, "limit_source": "deployment-log", "limit_scope": "claude-opus-5-5", "own": 23, "provider": 0}
+{"minute": "2026-11-16T14:31:00Z", "uncached": 2408497, "limit": 5500000, "limit_source": "deployment-log", "limit_scope": "claude-opus-5-5", "own": 0, "provider": 0}
+{"minute": "2026-11-16T14:32:00Z", "uncached": 4331774, "limit": 5500000, "limit_source": "deployment-log", "limit_scope": "claude-opus-5-5", "own": 16, "provider": 0}
 {"minute": "2026-11-17T17:46:00Z", "uncached": 2716348, "limit": 0, "limit_source": "dispatch", "limit_scope": null, "own": 0, "provider": 0}
 {"minute": "2026-11-17T17:47:00Z", "uncached": 9908111, "limit": 0, "limit_source": "dispatch", "limit_scope": null, "own": 0, "provider": 0}
 {"minute": "2026-11-17T17:48:00Z", "uncached": -3935516, "limit": 0, "limit_source": "dispatch", "limit_scope": null, "own": 0, "provider": 0}
 {"minute": "2026-11-17T17:49:00Z", "uncached": 2497361, "limit": 0, "limit_source": "dispatch", "limit_scope": null, "own": 0, "provider": 0}
-{"minute": "2026-11-23T16:28:00Z", "uncached": 5089823, "limit": 6000000, "limit_source": "gateway-log", "limit_scope": "Claude", "own": 0, "provider": 70}
-{"minute": "2026-11-23T16:29:00Z", "uncached": 7979594, "limit": 6000000, "limit_source": "gateway-log", "limit_scope": "Claude", "own": 14, "provider": 55}
-{"minute": "2026-11-23T16:30:00Z", "uncached": 5224805, "limit": 6000000, "limit_source": "gateway-log", "limit_scope": "Claude", "own": 127, "provider": 53}
+{"minute": "2026-11-23T16:28:00Z", "uncached": 5089823, "limit": 6000000, "limit_source": "deployment-log", "limit_scope": "Claude", "own": 0, "provider": 70}
+{"minute": "2026-11-23T16:29:00Z", "uncached": 7979594, "limit": 6000000, "limit_source": "deployment-log", "limit_scope": "Claude", "own": 14, "provider": 55}
+{"minute": "2026-11-23T16:30:00Z", "uncached": 5224805, "limit": 6000000, "limit_source": "deployment-log", "limit_scope": "Claude", "own": 127, "provider": 53}
