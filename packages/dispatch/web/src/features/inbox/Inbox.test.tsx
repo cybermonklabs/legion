@@ -1559,18 +1559,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     replies: [],
   }));
   const scrolls = spyOn(Element.prototype, "scrollIntoView");
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <main>
-            <Inbox pane={false} />
-          </main>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { queryClient, unmount } = renderInbox("/", { pane: false });
 
   try {
     const card = await screen.findByTestId("ask-ask-b");
@@ -1601,7 +1590,7 @@ test("in the list, an ask answered elsewhere under the reader's focus keeps it o
     await waitFor(() => expect(rowIds()).toEqual(["ask-a", "ask-c"]));
     expect(scrolls).not.toHaveBeenCalled();
   } finally {
-    view.unmount();
+    unmount();
     scrolls.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
@@ -4824,20 +4813,7 @@ test("Escape onto a row whose own snooze is saving leaves the focus on the body 
     return { snoozed_until: until };
   });
   const getAsk = mockAskReads(rows);
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter initialEntries={["/?group=waiting-on"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <main>
-            <Inbox pane={false} />
-          </main>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const { unmount } = renderInbox("/?group=waiting-on", { pane: false });
   try {
     await screen.findByText("Which owner?");
     const trigger = within(rowOf("ask-b")).getByLabelText("Snooze CORE-2: Which format?");
@@ -4866,7 +4842,7 @@ test("Escape onto a row whose own snooze is saving leaves the focus on the body 
     await user.keyboard("j");
     expect(rowOf("ask-a")).toHaveFocus();
   } finally {
-    view.unmount();
+    unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();
     snoozeAsk.mockRestore();
@@ -5270,9 +5246,9 @@ test("the bar's Snooze, held while its write is out, keeps the focus and sends n
 // - `renderInbox`'s `pane: false` mounts the list as the Peek drawer does (its own filter,
 //   `onFilterChange` and the dialog's key scope): every row that writes a filter or presses a key
 //   goes this way.
-// - Ten rows render `<Inbox pane={false} />` in a router of their own. They only read a starting
-//   filter from the address: they write no filter and press no key, so the drawer's props would
-//   change nothing they check.
+// - Thirteen rows render `<Inbox pane={false} />` in a router of their own. They only read a
+//   starting filter from the address: they write no filter and press no key, so the drawer's
+//   props would change nothing they check.
 //
 // The tests below widen the window to the column; the reading view below its width is
 // `Inbox.reading-view.test.tsx`'s.
