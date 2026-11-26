@@ -2,9 +2,11 @@ package ghtool
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -29,14 +31,68 @@ import (
 // its leak guard's reads among them, what is left of the binary's deadline
 // (testwait.BinaryDeadline) less 30 s when the wait starts, so a stand-in a loaded machine makes
 // slow is not stopped at a product bound. Under -timeout 0 the product's bounds hold.
+//
+// Only TestMain makes the stand-in of a copy a test starts: in a build of these tests without it,
+// such a copy runs the tests, each of which starts copies that run them again. standInGH refuses
+// to link a copy in such a process (standInCopyRefusal), and TestACopyStartedAsGhRunsAsTheStandIn
+// fails in such a build by name.
 func TestMain(m *testing.M) {
-	if filepath.Base(os.Args[0]) == "gh" {
+	if startedAsTheStandIn() {
 		os.Exit(standIn())
 	}
 	if deadline, ok := testwait.BinaryDeadline(); ok {
 		programbound.SetDeadline(deadline)
 	}
 	os.Exit(testpg.Main("legion_ghtool_test", m.Run))
+}
+
+// startedAsTheStandIn says whether this process was started as the stand-in gh: this test binary
+// run under the name `gh`, as standInGH links it.
+func startedAsTheStandIn() bool {
+	return filepath.Base(os.Args[0]) == "gh"
+}
+
+// standInCopyRefusal is why this process may start no copy of this test binary, nil when it may.
+// A process run under the name `gh` was started as the stand-in, and TestMain runs such a process
+// as the stand-in, so one that runs the tests runs in a build without TestMain, and a copy started
+// there would run the tests again.
+func standInCopyRefusal() error {
+	if startedAsTheStandIn() {
+		return fmt.Errorf("this process was started under the name gh (%s), so a test started it as the stand-in gh, but it runs the tests: this build of the tests has no TestMain that runs the stand-in, and a copy started here would run the tests again", os.Args[0])
+	}
+	return nil
+}
+
+// standInCopyRefusal, which standInGH asks before it links any copy, refuses a process run under
+// the name `gh` and no other. While TestMain is in the build no copy reaches it, so this test is
+// what holds the refusal. It sets os.Args, so it runs alone (no t.Parallel) and puts them back
+// when it ends.
+func TestAProcessStartedAsTheStandInStartsNoCopy(t *testing.T) {
+	args := os.Args
+	t.Cleanup(func() { os.Args = args })
+	if err := standInCopyRefusal(); err != nil {
+		t.Fatalf("as %s: %v, want no refusal", args[0], err)
+	}
+	os.Args = append([]string{filepath.Join(t.TempDir(), "gh")}, args[1:]...)
+	if err := standInCopyRefusal(); err == nil || !strings.Contains(err.Error(), os.Args[0]) {
+		t.Fatalf("as %s: %v, want a refusal that names it", os.Args[0], err)
+	}
+}
+
+// A copy linked as `gh` runs as the stand-in: it answers -h, which is no --help read, with the
+// stdout its behaviour names. The stand-in does not read -h. In a build without TestMain, the
+// testing package reads -h before any test runs, prints its own flag usage and exits, so this test
+// fails there by name and its copy starts no copy of its own.
+func TestACopyStartedAsGhRunsAsTheStandIn(t *testing.T) {
+	t.Parallel()
+	const answer = "the stand-in gh's answer\n"
+	cmd := exec.Command(filepath.Join(standInGH(t, behaviour{Stdout: answer}), "gh"), "-h")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil || string(out) != answer {
+		t.Fatalf("a copy started as gh with -h: %v, printed %q, want exit 0 and %q alone\n%s", err, out, answer, stderr.String())
+	}
 }
 
 // behaviour is how the stand-in answers a run: its stdout (or the response for its exact arguments,

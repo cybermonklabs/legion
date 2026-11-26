@@ -1263,6 +1263,7 @@ const (
 // follows is what the same file without `answers` prints. The check asks for no gh and no leak
 // check, as it does of a file without the block.
 func TestConfigCheckWarnsThatAnAnswersBlockItCannotRunLeavesTheLoopOff(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState).
 	legionState(t)
 	const secretsGap = "capability secrets is open: runtime.kubernetes.agent_secrets is not configured; to record a decision, add to legion.yaml: capabilities.decided.secrets: \"<reason>\"\n"
 	const pluginsGap = "plugins: none — set runtime.kubernetes.plugins or run a release build; a daemon that knows none relaunches no process on another plugin contract\n"
@@ -1307,6 +1308,7 @@ func TestConfigCheckWarnsThatAnAnswersBlockItCannotRunLeavesTheLoopOff(t *testin
 // another legion holds, which is read after the warnings are logged, so the line is in its log.
 // The App keys are written out, so the full load runs no command.
 func TestStartLogsTheAnswersOffWarningOnceAsItBoots(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (legionState); it runs `legion start` in this process, which replaces the process's default logger.
 	for _, tc := range []struct{ name, block, warning string }{
 		{"no conversation store", answersWithNoStore, answersOffUnderPostgres},
 		{"no provider", answersWithNoProvider, answersOffWithNoProvider + answersOffNoStoreEither},
@@ -3282,6 +3284,7 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 // asker are quoted: an asking session's title is its agent's choice, and a newline in it is an
 // escape rather than a forged line of the listing, as a control character in a session is.
 func TestPlainStateListsTheQuestionsForTheController(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory.
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[]`
 	for _, tc := range []struct {

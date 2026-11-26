@@ -202,9 +202,13 @@ func headAt(head string) map[string]string {
 
 var bounds = config.AnswerBounds{GHCall: 20 * time.Second, GHOutputChars: 60000, GHCalls: 100}
 
-// standInGH links this test binary as `gh` into a directory of its own, behaving as b says.
+// standInGH links this test binary as `gh` into a directory of its own, behaving as b says. It
+// fails t where standInCopyRefusal refuses.
 func standInGH(t *testing.T, b behaviour) string {
 	t.Helper()
+	if err := standInCopyRefusal(); err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	self, err := filepath.Abs(os.Args[0])
 	if err != nil {
