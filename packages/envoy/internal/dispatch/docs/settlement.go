@@ -976,14 +976,13 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			return settleDone, st.abandon(err)
 		}
 	}
-	// An ask this settlement opened has its row and node only in this write phase, so a version
-	// written before them stated none of its block's shaped ties; a settlement that writes a
-	// version states them in that version's index, and one that writes none writes them here,
-	// after the rows, before the ask.opened that names the targets they moved is appended.
-	if !versioning {
-		if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
-			return settleDone, st.abandon(err)
-		}
+	// An ask this settlement opened has its row and node only in this write phase, so the index of
+	// the version this settlement writes, which reads the asks table, states none of its block's
+	// shaped ties, and nor did the index of a version written before. They are written here, after
+	// the rows and after that version's index, whether or not this settlement writes a version,
+	// before the ask.opened that names the targets they moved is appended.
+	if err := st.reconciliation.writeOpenedAskTies(ctx, tx, room, settledVersion, st.versioned, offsets); err != nil {
+		return settleDone, st.abandon(err)
 	}
 	// The nodes and the follows of the asks this settlement opened, what the index of each ask it
 	// opened, restored or reworded stated, their blocks' ties, and what each answer state it wrote

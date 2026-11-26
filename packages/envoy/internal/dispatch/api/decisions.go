@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/decisionread"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -36,9 +37,10 @@ import (
 // in model.Decision's shape, in the order of entries, and document is the address of the issue's
 // decisions document while it stands (decisions_documents()), null once it is retired or where
 // the issue holds none. A link of an entry's shaped and of a decision's links is one value
-// (model.DecisionLink): its stale is the release before's rule, the decision's own words changed
-// after the tie and the spec node has not changed since they did, which the page of the release
-// before reads too, and its changed_since_tie is R5's, the spec node's text changed after the tie.
+// (model.DecisionLink): its stale is the release before's rule, which compares text sums - the
+// decision's own words differ from those at the version the tie was written in and from those at
+// the version that stood when the spec node last changed, as the page of the release before reads
+// it too - and its changed_since_tie is R5's, the spec node's text changed after the tie.
 // entries and open_questions stay. document and decisions go once no page of the release before
 // reads them (compat-objects).
 type issueDecisions struct {
@@ -139,14 +141,16 @@ func artifactMissing(err error) bool {
 
 // specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
 // shape every ask read has (askReadColumns, with the newest reply beside the row). An ask is open
-// as its node holds it (askNodeAnswer.applyTo), which every read of an answer reads (R3), so the
+// as its node holds it (asks.NodeAnswer.ApplyTo), which every read of an answer reads (R3), so the
 // statement reads each of the spec's asks and the scan keeps the open ones. An ask's block is in
 // the spec where the spec's block index holds an ask block under its block id (document_blocks): a
 // row that names the spec and a block it no longer holds - one a reopen restored with no block to
-// write, which a later settlement retracts - is no question of it. reader is the answer's
-// own, and each row registers its texts with it once the slice has stopped growing: a
-// shaping registers a pointer into the row, and an append that moved the backing array would
-// leave the reader filling trees into memory the answer no longer holds.
+// write, which a later settlement retracts - is no question of it. An ask whose node holds a value
+// that does not parse is left out and logged, as decisionEntries leaves out its entry, and the
+// read goes on (R4). reader is the answer's own, and each row registers its texts with it once
+// the slice has stopped growing: a shaping registers a pointer into the row, and an append that
+// moved the backing array would leave the reader filling trees into memory the answer no longer
+// holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
@@ -164,6 +168,11 @@ func (s *server) specOpenQuestions(
 	questions := []issueAskRow{}
 	for rows.Next() {
 		ask, reply, err := scanAskRead(rows)
+		if errors.Is(err, asks.ErrNodeAnswerUnreadable) {
+			slog.Warn("dispatch: a decision whose stored value does not parse is left out of the read",
+				"issue", key, "err", err)
+			continue
+		}
 		if err != nil {
 			rows.Close()
 			return nil, err
@@ -177,14 +186,14 @@ func (s *server) specOpenQuestions(
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	asks := make([]*model.Ask, len(questions))
+	listed := make([]*model.Ask, len(questions))
 	for index := range questions {
-		asks[index] = &questions[index].Ask
+		listed[index] = &questions[index].Ask
 	}
-	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, asks); err != nil {
+	if err := s.attachOpenedEventIDs(ctx, s.deps.Store.Pool, listed); err != nil {
 		return nil, err
 	}
-	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, asks); err != nil {
+	if err := attachAskBacklinkCounts(ctx, s.deps.Store.Pool, who, listed); err != nil {
 		return nil, err
 	}
 	for index := range questions {
@@ -216,9 +225,10 @@ func (s *server) specOpenQuestions(
 // decision reads them: an ask's text is its question, and a decision's text its own words.
 // shaped is one link for each spec node the node's current `shaped` tuples reach, each with the
 // tuple's own event, the event that wrote the version the node's text last changed in
-// (text_changed_event), stale, true when the decision's own words changed after the tuple and the
-// node's text has not changed since they did, and changed_since_tie, true when the node's text
-// changed after the tuple (model.DecisionLink). readings are the live `reading` nodes whose
+// (text_changed_event), stale, true when the decision's own words differ from those at the version
+// the tuple was written in and from those at the version that stood when the node's text last
+// changed, and changed_since_tie, true when the node's text changed after the tuple
+// (model.DecisionLink). readings are the live `reading` nodes whose
 // part_of reaches this node, each with the far end of its authored_by tuple, null where it holds
 // none.
 type decisionEntry struct {
@@ -636,17 +646,17 @@ func (entry decisionEntry) at() time.Time {
 
 // readFacts sets the values and relations of entry's node the entries read holds (entryFactKinds),
 // from the JSON list the statement aggregated, or answers which of them does not parse: the
-// answer state, as every ask read reads it (askNodeAnswer), and the decision's own. A declined ask
+// answer state, as every ask read reads it (asks.NodeAnswer), and the decision's own. A declined ask
 // carries its note and no answer, and an ask carries no Keep.
 func (entry *decisionEntry) readFacts(encoded []byte) error {
-	var facts []nodeFact
+	var facts []asks.NodeFact
 	if err := json.Unmarshal(encoded, &facts); err != nil {
 		return fmt.Errorf("the node's values: %w", err)
 	}
-	var answer askNodeAnswer
+	var answer asks.NodeAnswer
 	for _, fact := range facts {
 		value := fact.ToID
-		if held, err := answer.read(fact.Kind, value); held {
+		if held, err := answer.Read(fact.Kind, value); held {
 			if err != nil {
 				return err
 			}

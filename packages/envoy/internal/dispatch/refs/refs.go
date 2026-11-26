@@ -106,7 +106,7 @@ type Replacement struct {
 	insertedAt       *time.Time
 	changed          []Target
 	held             []Target
-	// forms says the replacement's settle deletes the source's row of the forms queue as well as
+	// forms says the replacement's settle deletes the source's rows of the forms queues as well as
 	// the whole grammar's (SettlingForms).
 	forms bool
 	// cited is the tuples the rows the insert writes and the dropped ones stand for, held for the
@@ -295,15 +295,16 @@ func (r Replacement) Cited() graphstore.Uncaused {
 	return graphstore.Uncaused{Tuples: r.cited}
 }
 
-// SettlingForms is the replacement settling the source's row of the forms queue too
-// (RefsFormsOwed), in the statement that settles the whole grammar's (queueSettleSourceOwed), so
-// the settle costs the write no statement of its own. A writer asks for it only where the
-// replacement is the last of the writes that index the source's whole text - the blocks it holds,
-// an ask's parts - queued after every delete that index makes, each of which owes that queue the
-// source (migrations 20261117025906-20261117025910): a comment's or a message's references after
-// its blocks, a document's after its block index, the question of an ask after its parts. A
-// write that leaves the blocks for later, or queues them after the replacement, settles them
-// there instead (ItemIndexing.SettlingForms) or leaves the source owed.
+// SettlingForms is the replacement settling the source's rows of the forms queues too
+// (RefsFormsOwed, RefsDecisionsFormsOwed), in the statements that settle the whole grammar's
+// (queueSettleSourceOwed), so the settle costs the write no more than a statement after the
+// first. A writer asks for it only where the replacement is the last of the writes that index the
+// source's whole text - the blocks it holds, an ask's parts - queued after every delete that
+// index makes, each of which owes the first queue the source (migrations
+// 20261117025906-20261117025910): a comment's or a message's references after its blocks, a
+// document's after its block index, the question of an ask after its parts. A write that leaves
+// the blocks for later, or queues them after the replacement, settles them there instead
+// (ItemIndexing.SettlingForms) or leaves the source owed.
 func (r Replacement) SettlingForms() Replacement {
 	r.forms = true
 	return r
@@ -336,19 +337,27 @@ func (r Replacement) Queue(b *store.WriteBatch) {
 // queueSettleSourceOwed queues the delete of the row one source owes the whole grammar's
 // re-index queue (RefsGrammarOwed), which a write settles once it has read the source's own text
 // with the whole grammar, and, with forms, of the row it owes the forms queue (RefsFormsOwed) too,
-// in the same statement: a write passes forms only once it has indexed the source's whole text,
-// its blocks too, after every delete that index made, which is the statement order of its write
-// phase. It runs in the write's own transaction, which holds that source's owner: every write of
-// the text was committed before this transaction read it, so whatever enqueued_at a row holds,
-// the text this write indexed is the text the row is owed for. It is the queues' four source
-// kinds that are settled this way - artifact, ask, comment and message, which are the from_kind
-// of every refs row too, so one statement serves them all. The fifth kind of the whole grammar's
-// queue, `scope`, names a document whose sources are owed a re-index, not a source whose refs
-// this writes, and only the scope drain settles it. A from_id that is no uuid (a test's synthetic
-// source) owes nothing, since the queues key their id as one, and queues nothing.
+// in the same statement, and of the rows it owes the decisions forms queues (RefsDecisionsFormsOwed
+// and its bootstrap half RefsDecisionsFormsSeedOwed) in a statement after that one: a write passes
+// forms only once it has indexed the source's whole text, its blocks too, after every delete that
+// index made, which is the statement order of its write phase. The delete from RefsFormsOwed
+// relays each row it removes into RefsDecisionsFormsOwed (migration 20261126040100), whoever sends
+// it, at the end of its statement, so the row it relays is cleared by a statement that comes after
+// it, never by one beside it in a common table expression, which would run before the relay and
+// leave the row for good. It runs in the write's own transaction, which holds that source's owner:
+// every write of the text was committed before this transaction read it, so whatever enqueued_at
+// a row holds, the text this write indexed is the text the row is owed for. It is the queues' four
+// source kinds that are settled this way -
+// artifact, ask, comment and message, which are the from_kind of every refs row too, so one
+// statement serves them all. The fifth kind of the whole grammar's queue, `scope`, names a
+// document whose sources are owed a re-index, not a source whose refs this writes, and only the
+// scope drain settles it. A from_id that is no uuid (a test's synthetic source) owes nothing,
+// since the queues key their id as one, and queues nothing.
 //
 // A build older than a queue's table settles nothing of it, so a text it indexes stays owed in
-// that table until a build that reads its grammar indexes it (RefsFormsOwed).
+// that table until a build that reads its grammar indexes it (RefsFormsOwed); a build that settles
+// RefsFormsOwed and knows nothing of RefsDecisionsFormsOwed leaves what the relay wrote there
+// owed, which is what the queue is for.
 func queueSettleSourceOwed(b *store.WriteBatch, fromKind, fromID string, forms bool) {
 	id, ok := canonicalUUID(fromID)
 	if !ok {
@@ -361,6 +370,10 @@ func queueSettleSourceOwed(b *store.WriteBatch, fromKind, fromID string, forms b
 			delete from refs_forms_owed where kind = $1 and id = $2::uuid`
 	}
 	b.Queue(fmt.Sprintf("settle the index owed by %s %s", fromKind, fromID), statement, fromKind, id)
+	if forms {
+		b.Queue(fmt.Sprintf("settle the decisions index owed by %s %s", fromKind, fromID),
+			settleDecisionsFormsStatement, fromKind, id)
+	}
 }
 
 func scanTargets(rows pgx.Rows, err error) ([]Target, error) {

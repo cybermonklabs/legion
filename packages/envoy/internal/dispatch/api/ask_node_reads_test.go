@@ -48,7 +48,7 @@ func describedAnswer(answer *model.AskAnswer) string {
 // (specOpenQuestions) and a search hit's ask (attachAskStates). So does every read that picks asks
 // by their answer state: the issue's asks by state (listIssueAsksQueryOpen and
 // listIssueAsksQueryAnswered), the open asks of the issue's detail (the first of them), the Inbox
-// (listInbox, askNodeStateOf) and the Ask rows of the one read, for the person the ask waits on
+// (listInbox, asks.NodeStateOf) and the Ask rows of the one read, for the person the ask waits on
 // (GET /api/v1/me/inbox, meInboxPageRows). The node and the row differ only while a process of the
 // release before has written the row and the decisions step's catch-up has not yet stated that
 // write on the node: here the catch-up stated alice's answer on both (asks.Settle with
@@ -348,8 +348,8 @@ func TestEveryAnswerAPersonsPagesShowReadsTheAsksNode(t *testing.T) {
 }
 
 // The answered questions of other projects a question's related-item check offers are picked by,
-// and carry, the answer their node holds (R3; relatedOtherProjects through askNodeStateOf,
-// askNodeAnswerTextOf and askNodeAnswerOf): an answered question of XNODE whose row the release
+// and carry, the answer their node holds (R3; relatedOtherProjects through asks.NodeStateOf,
+// asks.NodeAnswerTextOf and asks.NodeAnswerColumn): an answered question of XNODE whose row the release
 // before's reopen wrote open again, alone, is still offered, with the answer alice gave.
 func TestTheAnsweredQuestionsOfOtherProjectsAreReadOffTheirNodes(t *testing.T) {
 	t.Parallel()

@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    `dispatch doc-read` prints a `Resolved "<block id>"` line beside the token for each resolved or declined ask block, so an agent does not take a declined question for an open one, and quotes the block id of each `Answered` and `Resolved` line as JSON, so a block id that holds a line feed cannot forge a trailer line.
+    The refusal of a document edit that would remove an open ask block says an answered ask block stays in its document, that only a resolved one may be removed, and that an agent's removal or retype of an answered one is `409 ANSWERED_ASK_KEPT`, in place of saying an ask block leaves the document once its ask is answered. The CLI reads the attributes of an opening line that a Dispatch of the release before writes through `askOpenerAttributes` in `@legion/contracts`.
+time: 2026-11-26T02:34:47.000000000Z
+custom:
+    Issue: pr4173

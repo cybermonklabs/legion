@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -110,4 +111,132 @@ func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 	}
 	t.Logf("the ask block's node %s is %s with %d state tuple(s), and the census reads zero differences over %d row(s), %d of them block rows against %d block node(s)",
 		address, node.State, len(history), census.Rows(), blocks.Rows, blocks.Nodes)
+}
+
+// A settlement that opens the ask of a new ask block holding a shaped pointer, and writes a
+// version in the same transaction, states the block's shaped tie. The version's block index reads
+// the asks table, which holds no row the settlement has only queued, so it states none of the
+// block's ties; the settlement writes them after it (writeOpenedAskTies): the block_refs row,
+// naming the ask's node, and the ask's shaped tuple, caused by the ask.opened that records the ask.
+func TestASettlementThatOpensAnAskAndWritesAVersionStatesItsShapedTie(t *testing.T) {
+	t.Parallel()
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	const slug = "opened-ties"
+	document := writeDocumentThroughTheRequestPath(t, service, database, slug, "# Ties\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+	settleCurrentGeneration(t, service, document)
+	rig := &docsWriterRig{database: database, service: service}
+	before := rig.versionCount(t, document)
+	service.addConnection(document, 1, model.Actor{Kind: "user", ID: "alice"})
+	shaped := refs.BlockRef(refs.ArtifactRef(&coreIssue, "CORE", nil, slug, "doc", false), "r1")
+	editLiveTree(t, service, document, appendBlocks(t, ":::ask{#q-tie urgency=\"med\" multiple=\"false\" shaped=\""+shaped+"\"}\n"+
+		"Which store holds the corpus?\n:::\n"))
+	settleCurrentGeneration(t, service, document)
+	if after := rig.versionCount(t, document); after != before+1 {
+		t.Fatalf("the settlement left %d versions of the document, want %d: it is the settlement that writes a version", after, before+1)
+	}
+
+	ask := blockAskOn(t, service, document, "q-tie")
+	target := graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug) + "#r1"
+	var nodeKind, nodeAddress *string
+	if err := database.Pool.QueryRow(ctx, `
+		select node_kind, node_address from block_refs
+		where artifact_id = $1 and block_id = 'q-tie' and kind = $2 and to_kind = $3 and to_id = $4
+	`, document, refs.TupleShaped, refs.BlockNodeKind, target).Scan(&nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the shaped row of q-tie to %s: %v", target, err)
+	}
+	if nodeKind == nil || nodeAddress == nil || *nodeKind != graphstore.KindAsk || *nodeAddress != ask.ID {
+		t.Errorf("the shaped row of q-tie names the node (%v, %v), want the ask's node (%s, %s)", nodeKind, nodeAddress, graphstore.KindAsk, ask.ID)
+	}
+	ties, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindAsk, ask.ID, []string{refs.TupleShaped})
+	if err != nil {
+		t.Fatalf("read the shaped ties of ask %s: %v", ask.ID, err)
+	}
+	if len(ties) != 1 || ties[0].ToKind != refs.BlockNodeKind || ties[0].ToID != target {
+		t.Errorf("ask %s states the shaped ties %+v, want one to %s", ask.ID, ties, target)
+	}
+	if err := rig.tiesCaused(ctx, document, "q-tie"); err != nil {
+		t.Error(err)
+	}
+}
+
+// requireNoCensusDifference fails t on every difference the census reads in each of kinds, which
+// must each have checked a row, and logs the census.
+func requireNoCensusDifference(t *testing.T, census *graphcensus.StoreReport, kinds ...string) {
+	t.Helper()
+	var printed strings.Builder
+	census.Write(&printed)
+	t.Logf("the census:\n%s", printed.String())
+	for _, name := range kinds {
+		held := false
+		for _, kind := range census.Kinds {
+			if kind.Kind != name {
+				continue
+			}
+			held = true
+			for _, difference := range append(append([]graphcensus.Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+				t.Errorf("the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
+			}
+			if kind.Rows == 0 {
+				t.Errorf("the census checked no row of kind %s, want the fixture's", kind.Kind)
+			}
+		}
+		if !held {
+			t.Errorf("the census reports no kind %s", name)
+		}
+	}
+}
+
+// An ask block's shaped tie hangs on its ask's node (refs.TypedFacts.pairs), and its writer judges
+// the store's bound on the ask's id, not on the block's own address (refs' planBlockRefs), so it
+// states the tie wherever the ask is marked. The census holds the tie's block_refs row against that
+// tuple on the same node (graphcensus' tieInBound) even where the block's own address is past the
+// bound: a document whose ref_key is 1,020 bytes long - a name of up to 2,692 bytes is accepted -
+// holds every block past the bound, and its asks within it.
+//
+// Such a document gains an ask block shaped by a requirement of a document within the bound, and
+// its settlement opens the block's ask. The ask's shaped row names the ask's node, which states the
+// tie, and the census reads no difference of the shaped kind, whose row and tuple it holds to each
+// other, nor of graph_edges' answer of it.
+func TestTheCensusHoldsTheShapedTieOfAnAskWhoseBlockIsPastTheBound(t *testing.T) {
+	t.Parallel()
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	const target = "shaped-target"
+	targetDocument := writeDocumentThroughTheRequestPath(t, service, database, target, "# Ties\n\n:::requirement{#r1}\nThe store holds the corpus.\n:::\n")
+	settleCurrentGeneration(t, service, targetDocument)
+	slug := strings.Repeat("l", graphstore.MaxAddressBytes-4-len("CORE-1/"))
+	if refKey := graphstore.ArtifactRefKey("CORE-1", "CORE", "", slug); len(refKey) != graphstore.MaxAddressBytes-4 || graphstore.AddressFits(refKey+"#q-far") {
+		t.Fatalf("the document's ref_key is %d bytes and its block q-far fits %t, want %d bytes and a block past the bound",
+			len(refKey), graphstore.AddressFits(refKey+"#q-far"), graphstore.MaxAddressBytes-4)
+	}
+	document := writeDocumentThroughTheRequestPath(t, service, database, slug, "# Far\n\nThe corpus is far away.\n")
+	settleCurrentGeneration(t, service, document)
+	service.addConnection(document, 1, model.Actor{Kind: "user", ID: "alice"})
+	shaped := refs.BlockRef(refs.ArtifactRef(&coreIssue, "CORE", nil, target, "doc", false), "r1")
+	editLiveTree(t, service, document, appendBlocks(t, ":::ask{#q-far urgency=\"med\" multiple=\"false\" shaped=\""+shaped+"\"}\n"+
+		"Which store holds the corpus?\n:::\n"))
+	settleCurrentGeneration(t, service, document)
+
+	ask := blockAskOn(t, service, document, "q-far")
+	if !askMarked(t, database, ask.ID) {
+		t.Fatalf("ask %s names no node, want it marked: its documents are within the bound", ask.ID)
+	}
+	far := graphstore.ArtifactRefKey("CORE-1", "CORE", "", target) + "#r1"
+	var nodeKind, nodeAddress *string
+	if err := database.Pool.QueryRow(ctx, `
+		select node_kind, node_address from block_refs
+		where artifact_id = $1 and block_id = 'q-far' and kind = $2 and to_kind = $3 and to_id = $4
+	`, document, refs.TupleShaped, refs.BlockNodeKind, far).Scan(&nodeKind, &nodeAddress); err != nil {
+		t.Fatalf("read the shaped row of q-far to %s: %v", far, err)
+	}
+	if nodeKind == nil || nodeAddress == nil || *nodeKind != graphstore.KindAsk || *nodeAddress != ask.ID {
+		t.Fatalf("the shaped row of q-far names the node (%v, %v), want the ask's node (%s, %s)", nodeKind, nodeAddress, graphstore.KindAsk, ask.ID)
+	}
+	ties, err := graphstore.CurrentOut(ctx, database.Pool, graphstore.KindAsk, ask.ID, []string{refs.TupleShaped})
+	if err != nil || len(ties) != 1 || ties[0].ToID != far {
+		t.Fatalf("ask %s states the shaped ties %+v (%v), want one to %s", ask.ID, ties, err, far)
+	}
+
+	requireNoCensusDifference(t, takeStoreCensus(t, database), refs.TupleShaped, refs.TupleShaped+"_edge")
 }

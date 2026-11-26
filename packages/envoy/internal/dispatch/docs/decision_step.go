@@ -40,8 +40,10 @@ import (
 //     asks into the spec, the conversion of every section of the decisions document, and the
 //     document's retirement once it holds none (restoreIssueDecisions). It does nothing while
 //     processes.Live lists a process of a commit other than this one's (anotherBuildLive), since
-//     any other build can write a row without its node, and it needs the document service
-//     (UseDocuments), which writes the documents.
+//     any other build can write a row without its node, and a pass that finds one live in an
+//     issue's transaction stops there, with that issue rolled back, and starts again once the
+//     fleet is one build. It needs the document service (UseDocuments), which writes the
+//     documents.
 //
 // It runs at boot, before the server serves, where only phase 1 runs and a failure stops the boot
 // (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
@@ -63,12 +65,17 @@ import (
 // absent until the process's first tick has run.
 //
 // A tick with no work reads no table whole (probe): it reads the live processes, the newest event
-// and whether any document's block index is owed, each one probe of an index. graphcensus.AsksOwed
-// reads its kinds' tables to the end when nothing is owed, so it runs at boot, on a tick that owes
-// a catch-up, and after a tick that saw another build live, until it finds nothing: this build's
-// own create sites write their nodes and markers, so only another build writes a row it finds. The
-// count of what the restore and the conversion owe reads whole tables too, so where it read zero it
-// is read again only when something can have made it non-zero (recountOwed).
+// and whether any document's block index is owed, each one probe of an index, and where events were
+// appended since its last read, a mark of the event log and whether one of them is of a write that
+// can move the count of what the restore and the conversion owe (recountOwed), which reads those
+// events alone, through their primary key. graphcensus.AsksOwed reads its kinds' tables to the end
+// when nothing is owed, so it runs at boot, on a tick that owes a catch-up, and after a tick that
+// saw another build live, until it finds nothing: this build's own create sites write their nodes
+// and markers, so only another build writes a row it finds. The count reads whole tables too, so
+// where it read zero it is read again only when something can have made it non-zero: another build
+// live, a phase of the step run, a block index owed, or an event of a write that can
+// (decisionStepOwedMovers). The events of every other write, which a fleet appends all the time,
+// leave the count standing.
 //
 // The runner takes a session advisory lock of its own (decisionStepLock) for phases 1 and 2, so
 // two processes do not run them both at once. A booting process waits for it only while phase 1
@@ -116,8 +123,9 @@ type DecisionStep struct {
 	// recount is whether the next tick counts what the restore and the conversion owe whatever
 	// the event log says (recountOwed): true until the first count, after a tick that saw another
 	// build live, and after a tick that ran a phase, which states facts under events already
-	// appended. countedThrough is the writer floor of the event log read before the last count,
-	// and countedIndexOwed whether a document's block index was owed when it ran.
+	// appended. countedThrough is the writer floor of the event log read before the last count, or
+	// before a later read that found no event since able to move it (decisionStepOwedMoved), and
+	// countedIndexOwed whether a document's block index was owed when the count ran.
 	recount          bool
 	countedThrough   int64
 	countedIndexOwed bool
@@ -462,7 +470,7 @@ type decisionStepWork struct {
 func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	var work decisionStepWork
 	var err error
-	if work.other, err = s.anotherBuildLive(ctx); err != nil {
+	if work.other, err = s.anotherBuildLive(ctx, s.database.Pool); err != nil {
 		return decisionStepWork{}, err
 	}
 	if work.other {
@@ -481,18 +489,42 @@ func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	return work, nil
 }
 
+// decisionStepOwedMovers is the type list of the events whose writes can make a count of nothing
+// owed (countDecisionStepOwed) read something owed, written out as caughtUpTypes is: a document
+// stored (artifact.created), which the release before stores under a decisions document's slug; a
+// version of a document (artifact.version), which can leave an answered ask's block out of its
+// spec; an answer (ask.answered), which can answer an ask whose block its spec no longer holds; and
+// a project stored or changed (project.created, project.updated), whose list of gated steps can
+// hold `decisions`. No other write moves the count up from zero: a rename keeps the document's
+// slug, a resolution, a reopening, a removal and a retirement only take from it, and the step's own
+// phases count again (recount).
+// kept for one release: decisions-step
+const decisionStepOwedMovers = `('artifact.created', 'artifact.version', 'ask.answered', 'project.created', 'project.updated')`
+
+// decisionStepOwedMoved is whether the event log holds an event of decisionStepOwedMovers above $1,
+// read through the events' primary key from $1 on, so it reads the events appended since and stops
+// at the first that can move the count.
+// kept for one release: decisions-step
+const decisionStepOwedMoved = `
+	select (select e.id from events e
+	        where e.id > $1 and e.type in ` + decisionStepOwedMovers + `
+	        order by e.id limit 1) is not null`
+
 // recountOwed counts what the restore and the conversion owe (countDecisionStepOwed), which reads
 // whole tables, where the last count read something owed, and where it read nothing only when
 // something can have made it non-zero since: another build live (recount), a phase of this step
-// run (recount), or a write of this build or another, each of which appends an event - a document
-// stored or renamed with the role or slug of a decisions document, a spec's version that drops an
-// answered ask's block, a project's list of gated steps - so the event log holds an event above the
-// writer floor read before the last count (countedThrough). A document's block index the count
-// waits for (a spec whose index is owed is left out) moves with no event, so the count is read
-// again while any is owed, and once more after. Otherwise it reads the newest event and whether a
-// block index is owed, each one probe of an index, and leaves the last count standing. The floor is
-// read before the count, so an event the count did not see is above it; an event log reset (newest
-// below the floor) is a change too.
+// run (recount), or a write of this build or another that appends an event of
+// decisionStepOwedMovers above countedThrough, the writer floor read before the last count or the
+// last read of the events. A document's block index the count waits for (a spec whose index is
+// owed is left out) moves with no event, so the count is read again while any is owed, and once
+// more after. Otherwise it reads the newest event and whether a block index is owed, each one probe
+// of an index, and where no event was appended since countedThrough, it leaves the last count
+// standing. Where one was, it marks the event log (writerFloor) and reads whether an event above
+// countedThrough is of decisionStepOwedMovers (decisionStepOwedMoved), which reads only the events
+// appended since; where none is, every event at or below the floor was final before that read and
+// none of them can move the count, so countedThrough moves up to the floor and the last count
+// stands. The floor is read before the count and before that read, so an event either did not see
+// is above it; an event log reset (newest below countedThrough) is a change too.
 // kept for one release: decisions-step
 func (s *DecisionStep) recountOwed(ctx context.Context, other bool) error {
 	var newest int64
@@ -503,13 +535,24 @@ func (s *DecisionStep) recountOwed(ctx context.Context, other bool) error {
 	`).Scan(&newest, &indexOwed); err != nil {
 		return fmt.Errorf("read whether the decisions step's count can have moved: %w", err)
 	}
-	if last := s.owed.Load(); last != nil && last.Total == 0 && !s.recount &&
-		!indexOwed && !s.countedIndexOwed && newest == s.countedThrough {
+	last := s.owed.Load()
+	standing := last != nil && last.Total == 0 && !s.recount && !indexOwed && !s.countedIndexOwed
+	if standing && newest == s.countedThrough {
 		return nil
 	}
 	floor, _, err := s.writerFloor(ctx)
 	if err != nil {
 		return fmt.Errorf("read which events the decisions step's count reads final: %w", err)
+	}
+	if standing && newest > s.countedThrough {
+		var moved bool
+		if err := s.database.Pool.QueryRow(ctx, decisionStepOwedMoved, s.countedThrough).Scan(&moved); err != nil {
+			return fmt.Errorf("read whether an event since the decisions step's count can have moved it: %w", err)
+		}
+		if !moved {
+			s.countedThrough = max(s.countedThrough, floor)
+			return nil
+		}
 	}
 	owed, err := countDecisionStepOwed(ctx, s.database.Pool)
 	if err != nil {
@@ -540,11 +583,12 @@ func (s *DecisionStep) backfill(ctx context.Context) error {
 	return nil
 }
 
-// anotherBuildLive reports whether processes.Live lists a process serving a commit other than
-// this process's own. An empty commit is one build with every other empty commit.
+// anotherBuildLive reports whether processes.Live, read through q, lists a process serving a
+// commit other than this process's own. An empty commit is one build with every other empty
+// commit.
 // kept for one release: decisions-step
-func (s *DecisionStep) anotherBuildLive(ctx context.Context) (bool, error) {
-	live, err := processes.Live(ctx, s.database.Pool)
+func (s *DecisionStep) anotherBuildLive(ctx context.Context, q processes.Querier) (bool, error) {
+	live, err := processes.Live(ctx, q)
 	if err != nil {
 		return false, err
 	}
@@ -653,12 +697,19 @@ func scanCaughtUpEvent(row pgx.CollectableRow) (caughtUpEvent, error) {
 const decisionStepMarksKept = 8
 
 // catchUp is phase 2, and reports whether an ask failed. Its window opens at the newest
-// server_build_announcements row naming a commit other than this process's own: the fleet last
-// stood whole on another build then, and every process of this build started after it. Where none
-// names another commit, as on a database this build created, it opens at the first event. A pass
-// reads the window's events no tuple states once (caughtUpRead), from the step's high-water mark
-// on, and catches each ask up in a transaction of its own (catchUpAsk); a failure on one is logged
-// and leaves the others to go on.
+// server_build_announcements row naming a commit other than this process's own that comes before
+// this commit's first announcement: the fleet last stood whole on another build then, before it
+// first stood whole on this one, and every row this build marked was marked after it. A rollback
+// announces the release before again under a new seq, and the roll forward after it announces this
+// build again (startup's announcer), so the newest row naming another commit can come after the
+// release before's writes on rows this build marked - an answer, a resolution or a reopening
+// appended between this build's last tick and that rollback's announcement - and a window opened
+// there would never state them. Where this commit was never announced, as through its first roll,
+// the window opens at the newest row naming another commit, and where none names another commit
+// before it, as on a database this build created, at the first event. A pass reads the window's
+// events no tuple states once (caughtUpRead), from the step's high-water mark on, and catches each
+// ask up in a transaction of its own (catchUpAsk); a failure on one is logged and leaves the others
+// to go on.
 //
 // An event that needs nothing - one older than the node's newest tuple of its attribute, a follow
 // the backfill already stated at the sentinel, an event of an ask the backfill has not marked yet -
@@ -676,8 +727,11 @@ func (s *DecisionStep) catchUp(ctx context.Context) (bool, error) {
 	if err := s.database.Pool.QueryRow(ctx, `
 		select coalesce((
 			select e.id from events e
-			where e.created_at < (select a.announced_at from server_build_announcements a
-			                      where a.commit <> $1 order by a.seq desc limit 1)
+			where e.created_at < (
+				select a.announced_at from server_build_announcements a
+				where a.commit <> $1
+				  and a.seq < coalesce((select min(b.seq) from server_build_announcements b where b.commit = $1), a.seq + 1)
+				order by a.seq desc limit 1)
 			order by e.id desc limit 1), 0)
 	`, s.commit).Scan(&start); err != nil {
 		return false, fmt.Errorf("read where the catch-up's window opens: %w", err)

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -186,8 +187,8 @@ const myRepliesDismissedCut = `
 		limit $4`
 
 // myRepliesPageRest is what every state selects over the rows the cut kept. The unread count
-// reads an ask's answer as a write in its thread as the ask's node holds it (askNodeAnswererOf,
-// askNodeAnsweredAtOf), as every read of an answer reads it (R3).
+// reads an ask's answer as a write in its thread as the ask's node holds it (asks.NodeAnswererOf,
+// asks.NodeAnsweredAtOf), as every read of an answer reads it (R3).
 var myRepliesPageRest = `
 	message_replies as (
 		select p.thread_id as root_id, m.id, m.created_at, m.author
@@ -255,10 +256,10 @@ var myRepliesPageRest = `
 			select c.created_at, c.author from comments c
 			where p.kind = 'ask' and c.ask_id = p.thread_id
 			union all
-			select ` + askNodeAnsweredAtOf("ac") + `,
-			       jsonb_build_object('kind', 'user', 'id', ` + askNodeAnswererOf("ac") + `)
+			select ` + asks.NodeAnsweredAtOf("ac") + `,
+			       jsonb_build_object('kind', 'user', 'id', ` + asks.NodeAnswererOf("ac") + `)
 			from asks ac
-			where p.kind = 'ask' and ac.id = p.thread_id and ` + askNodeAnswererOf("ac") + ` is not null
+			where p.kind = 'ask' and ac.id = p.thread_id and ` + asks.NodeAnswererOf("ac") + ` is not null
 			union all
 			select c.created_at, c.author from comments c
 			where p.kind = 'comment' and (c.id = p.thread_id or c.reply_to = p.thread_id)
@@ -790,10 +791,10 @@ func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, bool, 
 }
 
 // myReplyAnswersStatement reads the asks in $1 as answerReply sets a Reply row's reply from one:
-// each ask's row state and answer and its node's answer (askNodeAnswerColumn), which
-// scanMyReplyAnswer lays over the row (askAnswerRead). It is a var, not a const, because
-// askNodeAnswerColumn builds its read of the node from graphstore.CurrentTupleRead.
-var myReplyAnswersStatement = `select a.id::text, a.state, a.answer, ` + askNodeAnswerColumn + ` from asks a where a.id = any($1::uuid[])`
+// each ask's row state and answer and its node's answer (asks.NodeAnswerColumn), which
+// scanMyReplyAnswer lays over the row (asks.ReadAnswer). It is a var, not a const, because
+// asks.NodeAnswerColumn builds its read of the node from graphstore.CurrentTupleRead.
+var myReplyAnswersStatement = `select a.id::text, a.state, a.answer, ` + asks.NodeAnswerColumn("a") + ` from asks a where a.id = any($1::uuid[])`
 
 // answerReplyRows sets the reply of each row of read that answered names, a row whose newest write
 // by somebody else is its ask's answer, from that answer as the ask's node holds it
@@ -803,7 +804,7 @@ var myReplyAnswersStatement = `select a.id::text, a.state, a.answer, ` + askNode
 // references). A row whose ask holds no answer as its node holds it keeps the reply the page's
 // statement read for it, a reply with no author and no line. It is a statement of its own, over
 // the asks of those rows alone, rather than a lateral of the page's: the node's facts are read
-// through one text (askNodeFacts), whose relations and values no one index orders, and the page's
+// through one text (asks.NodeFacts), whose relations and values no one index orders, and the page's
 // plan is held to sorting nothing (TestMyRepliesQueriesReadTheirStatesIndex). It runs in the
 // page's transaction, so it reads the snapshot the page read. GET /api/v1/me/inbox reads the same
 // statement inside its own one statement, over its page's Reply rows (meInboxPageReads).
@@ -836,14 +837,14 @@ func answerReplyRows(ctx context.Context, tx pgx.Tx, read []model.MyReplyRow, an
 }
 
 // scanMyReplyAnswer decodes one myReplyAnswersStatement row: the ask's state and answer as every
-// ask read shows them (askAnswerRead).
+// ask read shows them (asks.ReadAnswer).
 func scanMyReplyAnswer(row pgx.Row) (model.Ask, error) {
 	var id, state string
 	var answer, nodeAnswer []byte
 	if err := row.Scan(&id, &state, &answer, &nodeAnswer); err != nil {
 		return model.Ask{}, fmt.Errorf("scan the answer of my reply: %w", err)
 	}
-	return askAnswerRead(id, state, answer, nodeAnswer)
+	return asks.ReadAnswer(id, state, answer, nodeAnswer)
 }
 
 // answerReply sets reply, the newest write by somebody else on a Reply row whose newest such write

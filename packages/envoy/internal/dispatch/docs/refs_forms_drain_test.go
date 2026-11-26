@@ -39,7 +39,7 @@ func formsOwedRows(t *testing.T, database *store.Store) map[string]time.Time {
 // has found no document live ahead before runs its first.
 func reconcileRefsForms(t *testing.T, service *Service) RefsFormsTick {
 	t.Helper()
-	tick, err := service.ReconcileRefsForms(context.Background(), refs.Owed{}, newFormsLiveAhead())
+	tick, err := service.ReconcileRefsForms(context.Background(), refs.RefsFormsOwed, refs.Owed{}, newFormsLiveAhead())
 	if err != nil {
 		t.Fatalf("forms drain pass: %v", err)
 	}
@@ -237,7 +237,7 @@ func raceAnotherBlockIndex(t *testing.T, database *store.Store, service *Service
 	passed := make(chan RefsFormsTick, 1)
 	failed := make(chan error, 1)
 	go func() {
-		tick, err := service.ReconcileRefsForms(ctx, refs.Owed{}, newFormsLiveAhead())
+		tick, err := service.ReconcileRefsForms(ctx, refs.RefsFormsOwed, refs.Owed{}, newFormsLiveAhead())
 		if err != nil {
 			failed <- err
 			return
@@ -404,7 +404,7 @@ func TestTheFormsDrainPassesOverMoreStuckDocumentsThanOnePassTakes(t *testing.T)
 	liveAhead := newFormsLiveAhead()
 	pass := func(after refs.Owed) RefsFormsTick {
 		t.Helper()
-		tick, err := service.ReconcileRefsForms(ctx, after, liveAhead)
+		tick, err := service.ReconcileRefsForms(ctx, refs.RefsFormsOwed, after, liveAhead)
 		if err != nil {
 			t.Fatalf("forms drain pass: %v", err)
 		}
@@ -445,7 +445,7 @@ func TestTheFormsDrainDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) 
 	liveAhead := newFormsLiveAhead()
 	pass := func() RefsFormsTick {
 		t.Helper()
-		tick, err := service.ReconcileRefsForms(ctx, refs.Owed{}, liveAhead)
+		tick, err := service.ReconcileRefsForms(ctx, refs.RefsFormsOwed, refs.Owed{}, liveAhead)
 		if err != nil {
 			t.Fatalf("forms drain pass: %v", err)
 		}

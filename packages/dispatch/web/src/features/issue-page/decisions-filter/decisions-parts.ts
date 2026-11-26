@@ -6,7 +6,7 @@ import type {
   DecisionEntry as ReadEntry,
 } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
-import { isDecisionEntry } from "../../issue/decision-entries";
+import { isDecisionEntry, personDecisionAsk } from "../../issue/decision-entries";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
@@ -264,9 +264,15 @@ export function decisionsParts({
 }): DecisionsParts {
   const placed = placements(root);
   const kept = view === undefined ? undefined : idsOf(view);
-  const rows = new Map(
-    (decisions?.entries ?? []).filter(isDecisionEntry).map((row) => [row.ref, row])
-  );
+  const decided = (decisions?.entries ?? []).filter(isDecisionEntry);
+  const rows = new Map(decided.map((row) => [row.ref, row]));
+  // Each person's decision by the ask it is (`personDecisionAsk`): the ask's own entry, or a
+  // section of the release before that cites it, whose address is no ask's.
+  const personal = new Map<string, ReadEntry[]>();
+  for (const row of decided) {
+    const ask = personDecisionAsk(row);
+    if (ask !== undefined) personal.set(ask, [...(personal.get(ask) ?? []), row]);
+  }
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   const isStatement = (reference: string): boolean =>
     placed.get(nodeIdOf(reference) ?? "")?.node.type === "requirement";
@@ -289,11 +295,10 @@ export function decisionsParts({
     };
     if (node.type === "ask") {
       const askId = askIdOf(node) ?? "";
-      // A person's decision is the answered ask itself, which the decisions read names by the
-      // ask's own address (its entry's `kind`), the address the ask's node carries: its `shaped`
-      // ties are the statements the person's decision shaped.
-      const own = rows.get(node.reference ?? "");
-      const shapes = own?.kind === "person" ? shapesOf(own, nodeIdOf, placed) : [];
+      // A person's decision is the answered ask itself (`personDecisionAsk`): its `shaped` ties
+      // are the statements the person's decision shaped, each once.
+      const shaped = (personal.get(askId) ?? []).flatMap((row) => row.shaped ?? []);
+      const shapes = shapesOf({ shaped }, nodeIdOf, placed);
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-drafts.ts`'s `addAsks`).
       if (node.question) {

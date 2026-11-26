@@ -24,6 +24,7 @@ import type {
   IssueDecisions,
 } from "../../api/types";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
+import { buildDispatchReference } from "../refs/routes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DecisionsPanel } from "./DecisionsPanel";
 import type { DecisionsRead } from "./decision-entries";
@@ -96,6 +97,8 @@ function entry(
   };
 }
 
+/** A link of a decision's to the spec block `blockId`, as the read answers it: the graph node of
+ *  the block, with the block's own address. */
 function shapedLink(blockId: string, stale: boolean): DecisionLink {
   return {
     changed_since_tie: false,
@@ -107,6 +110,7 @@ function shapedLink(blockId: string, stale: boolean): DecisionLink {
       block_id: blockId,
       id: `CORE-1/spec#${blockId}`,
       kind: "block",
+      ref: buildDispatchReference({ block: { id: blockId }, key: "CORE-1", kind: "spec" }),
       text: blockId === "p1" ? "Notices are stored." : "Old rows expire.",
     }),
   };
@@ -208,7 +212,8 @@ test("the panel sorts the view into its four lists, in order", async () => {
       )
     );
     // The name links the node that holds the decision, and each link of what it shaped opens the
-    // spec at that block, its id written as `encodeBlockId` writes it.
+    // node its own address names, the spec at that block, its id written as `encodeBlockId`
+    // writes it.
     const shaped = within(waiting)
       .getAllByRole("link")
       .map((link) => link.getAttribute("href"));
@@ -661,32 +666,29 @@ test("an open question and the Change's name read their text's plain-text projec
   }
 });
 
-/** A link of a decision to spec block `blockId`, whose node carries `text` where it is given. */
-function shapedTo(blockId: string, text?: string): DecisionLink {
-  return {
-    changed_since_tie: false,
-    created_at: "2026-11-01T00:00:00Z",
-    created_version: 1,
-    from_block: "only",
-    stale: false,
-    to: graphNode({
-      block_id: blockId,
-      id: `CORE-1/spec#${blockId}`,
-      kind: "block",
-      ...(text === undefined ? {} : { text }),
-    }),
-  };
-}
-
-// A link under "Shaped in the spec" holds no link, so it names the spec block by the plain-text
-// projection of the block's words, which the decisions read sends as the block's stored excerpt
-// (`to.text`) with no reading of them - the reading list's `decision-shaped-link`. The words
-// drop the formatting and read a `dispatch://` address as its target's name; drawn as the
-// characters they are, the link would hold `**` and the address. A block the read sends no
-// words for is named by its id, in the panel's own words.
-test("a shaped block's link reads its block's words as their plain-text projection", async () => {
+// A link under "Shaped:" names the block by its id, in the panel's own words: the decisions read
+// sends no text of the block a link points to (`refs.BlockLinks` resolves each end as a graph
+// node, whose text only a reference read fills), so there is no stored text to draw, and the
+// panel reads none. Handed a node that did carry text, the link still reads `Block p1`: a
+// projection of that text would read `Warm CORE-2 Cut the release before the cut.`.
+test("a shaped block's link names the block by its id and draws no text of the block", async () => {
   const view = waitingView({
-    shaped: [shapedTo("p1", "**Warm** dispatch://CORE-2 before the cut."), shapedTo("p2")],
+    shaped: [
+      {
+        changed_since_tie: false,
+        created_at: "2026-11-01T00:00:00Z",
+        created_version: 1,
+        from_block: "only",
+        stale: false,
+        to: graphNode({
+          block_id: "p1",
+          id: "CORE-1/spec#p1",
+          kind: "block",
+          ref: "dispatch://CORE-1/spec#b-p1",
+          text: "**Warm** dispatch://CORE-2 before the cut.",
+        }),
+      },
+    ],
     text: "## Keep the notices queryable\n\nIt is cheap.",
   });
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
@@ -700,19 +702,60 @@ test("a shaped block's link reads its block's words as their plain-text projecti
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
-    const words = await within(waiting).findByRole("link", {
-      name: "Warm CORE-2 Cut the release before the cut.",
-    });
-    expect(words).toHaveAttribute("href", "/issues/CORE-1/spec#b-p1");
-    expect(words.textContent).toBe("Warm CORE-2 Cut the release before the cut.");
-    expect(within(waiting).getByRole("link", { name: "Block p2" })).toHaveAttribute(
+    expect(await within(waiting).findByRole("link", { name: "Block p1" })).toHaveAttribute(
       "href",
-      "/issues/CORE-1/spec#b-p2"
+      "/issues/CORE-1/spec#b-p1"
     );
-    expect(within(waiting).queryByText(/\*\*|dispatch:\/\//)).toBeNull();
+    expect(within(waiting).queryByText(/before the cut/)).toBeNull();
   } finally {
     read.mockRestore();
     summary.mockRestore();
+  }
+});
+
+// A decision shapes a node of any document of the issue (`decisionread`), a plan's task as well
+// as a spec's block: each link opens the node its own address names, never the spec at the
+// other document's block id. A target whose address opens no page draws no link.
+test("a shaped node outside the spec links its own document at its block", async () => {
+  const target = (ref: string | undefined, blockId: string, kind = "block"): DecisionLink => ({
+    changed_since_tie: false,
+    created_at: "2026-11-01T00:00:00Z",
+    created_version: 1,
+    from_block: "only",
+    stale: false,
+    to: graphNode({
+      block_id: blockId,
+      id: `CORE-1/${blockId}`,
+      kind,
+      ...(ref === undefined ? {} : { ref }),
+    }),
+  });
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
+    waitingView({
+      shaped: [
+        target("dispatch://CORE-1/artifact/plan-md#b-t1", "t1"),
+        target("dispatch://CORE-1/spec#b-p1", "p1"),
+        target(undefined, "unaddressed"),
+        target("dispatch://person/bob", "bob", "person"),
+      ],
+      text: "## Order the tasks by their needs\n\nThe plan reads them so.",
+    })
+  );
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    expect(await within(waiting).findByRole("link", { name: "Block t1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/artifacts/plan-md#b-t1"
+    );
+    expect(within(waiting).getByRole("link", { name: "Block p1" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1/spec#b-p1"
+    );
+    expect(within(waiting).queryByText("Block unaddressed")).toBeNull();
+    expect(within(waiting).queryByText("Block bob")).toBeNull();
+  } finally {
+    read.mockRestore();
   }
 });
 

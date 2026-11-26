@@ -769,29 +769,34 @@ func heldTuples(kinds string, holders ...string) string {
 		  and held.asserted`
 }
 
-// askBlockID is the block id the marked asks row of the ask node at address (an SQL expression)
-// names (asks.block_id), null where no marked row names that node or its row names no block. It
-// is the block placedLinks and readingParents read a part_of to that ask's node as.
-func askBlockID(address string) string {
-	return `(select k.block_id from asks k
+// askBlockID is the block id a part_of from the block node node to the ask node at address (each
+// an SQL expression) is read as, null where no marked asks row names that ask's node or its row
+// names no block. In the document the ask's row names (asks.block_artifact_id), it is the ask's
+// own block, the id that row names (asks.block_id). In any other document of its owner it is the
+// block node's own parent (document_blocks.parent_block_id), a copy of the ask: a reading in a
+// copy hangs on the source's node (refs.TypedSources.Shown), and the copy keeps the block id it
+// was copied under while the source can take a fresh one (docs' restore, R6's collision rule).
+func askBlockID(node, address string) string {
+	return `(select case when own.ref_key = split_part(` + node + `, '#', 1) then k.block_id
+		             else (select d.parent_block_id from document_blocks d where d.node_id = ` + node + `) end
+		from asks k join artifacts own on own.id = k.block_artifact_id
 		where k.node_kind = '` + graphstore.KindAsk + `' and k.node_address = ` + address + ` and k.block_id is not null)`
 }
 
 // placedLinks is currentLinks of a block node n under kinds, but a part_of whose far end is an
-// ask's node is written as the block of n's own document that holds that ask: the block of the
-// id the ask's marked row names (askBlockID), which is the ask's own block in the document
-// that row names and a copy's block in any other document of its owner, since a copy keeps its
-// source's block id (docs' copiedAskSources). A reading in an answered ask hangs on the ask's
-// node, while its row's parent_block_id keeps the id of the ask block holding it, which is that
-// tuple's projection (refs' reconcileBlockParents), so both read as one link to that block. An
-// ask no marked row names, or whose row names no block, keeps its own address, which no row
-// states. A ref_key holds no '#', so n's document is the part of its id before the first one.
+// ask's node is written as the block of n's own document that holds that ask (askBlockID): the
+// ask's own block in the document its row names, and a copy's block, the one n stands in, in any
+// other document of its owner. A reading in an answered ask hangs on the ask's node, while its
+// row's parent_block_id keeps the id of the ask block holding it, which is that tuple's projection
+// (refs' reconcileBlockParents), so both read as one link to that block. An ask no marked row
+// names, or whose row names no block, keeps its own address, which no row states. A ref_key holds
+// no '#', so n's document is the part of its id before the first one.
 func placedLinks(kinds string) string {
 	return `(select coalesce(string_agg(placed.link, ',' order by placed.link), '')
 	 from (
 		select case when held.kind = '` + graphstore.TuplePartOf + `' and held.to_kind = '` + graphstore.KindAsk + `'
 		            then coalesce(held.kind || '>` + refs.BlockNodeKind + `:' || split_part(n.id, '#', 1) || '#' || ` +
-		askBlockID(`held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
+		askBlockID(`n.id`, `held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
 		            else held.kind || '>' || held.to_kind || ':' || held.to_id end as link
 		from (
 			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
@@ -803,7 +808,7 @@ func placedLinks(kinds string) string {
 
 // readingParents is reading_parent's store side (heldTuples' shape): the part_of every live
 // reading's node states now, a part_of to an ask's node read as placedLinks reads it, as the
-// block of the reading's own document that holds the ask.
+// block of the reading's own document that holds the ask or the copy of it the reading stands in.
 var readingParents = `
 		select n.kind, n.id, held.kind,
 		       case when placed.block_id is null then held.to_kind else '` + refs.BlockNodeKind + `' end,
@@ -815,7 +820,7 @@ var readingParents = `
 		  and t.to_kind <> '`+graphstore.KindValue+`' and t.kind = '`+graphstore.TuplePartOf+`'`) + `
 		) held
 		cross join lateral (
-			select case when held.to_kind = '` + graphstore.KindAsk + `' then ` + askBlockID(`held.to_id`) + ` end as block_id
+			select case when held.to_kind = '` + graphstore.KindAsk + `' then ` + askBlockID(`n.id`, `held.to_id`) + ` end as block_id
 		) placed
 		where n.kind = '` + refs.BlockNodeKind + `' and n.supertag = '` + refs.ReadingSupertag + `'
 		  and n.state = '` + graphstore.StateLive + `' and held.asserted`
@@ -842,8 +847,10 @@ var typedNodeOwed = `exists (
 // holds gone, in a document that still owes its block index (owesBlockIndex). Above the deferral
 // bound no block index runs in the write, and the typed-node pass states each decision and
 // reading the version no longer holds gone in that write's own transaction
-// (refs.PlanDecisionNodes), while the document_blocks row of its block and the block_refs rows it
-// holds stay until the block-index reconciliation deletes them. Such a row is owed its deletion,
+// (refs.PlanDecisionNodes), and deletes the block_refs rows of its ties - its shaped, from_ask and
+// decided_by - there too, since its reconcile reaches every block that held one (refs'
+// pairScope.holding); the document_blocks row of its block and the block_refs rows of its
+// mentions stay until the block-index reconciliation deletes them. Such a row is owed its deletion,
 // and no difference until then; once the document owes nothing, the same row names a gone node
 // and is one. A gone node of any other supertag under its row is a difference still, since no
 // writer leaves one so. A ref_key holds no '#', so a block node's document is the part of its id
@@ -853,8 +860,13 @@ var typedRowOwed = `node.kind = '` + refs.BlockNodeKind + `' and node.state = '`
 		  and exists (select 1 from artifacts a where a.ref_key = split_part(node.id, '#', 1) and ` + owesBlockIndex("a.id") + `)`
 
 // tieInBound is true of a block_refs row r both of whose ends are inside the store's bound, the one
-// row of a tie its writer marks and states a tuple of (refs' queueBlockRefs).
-var tieInBound = `octet_length(r.from_node) <= ` + addressBound + ` and octet_length(r.to_id) <= ` + addressBound
+// row of a tie its writer marks and states a tuple of (refs' queueBlockRefs). Its near end is the
+// node the row names: the ask's, by its id, for an ask block's shaped (refs.TypedFacts.pairs),
+// whose writer judges the bound on that id and not on the block's own address (refs'
+// planBlockRefs), and the block's own address for every other row, a row that names no node among
+// them.
+var tieInBound = `octet_length(case when r.node_kind = '` + graphstore.KindAsk + `' then r.node_address else r.from_node end) <= ` +
+	addressBound + ` and octet_length(r.to_id) <= ` + addressBound
 
 // tiePastBound counts the block_refs rows of the tie kind that are not inside the store's bound
 // (tieInBound): the writer leaves each unmarked and states no tuple of it on purpose, and

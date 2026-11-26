@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import type { ArtifactBlock, Decision, DecisionLink, DisplayTree } from "../../../api/types";
+import { withEntries } from "../../issue/decision-entries";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { type ChangeComment, decisionChanges, inReviewList } from "../decision-review";
 import type { DocumentBlocks, TreeNode } from "../issue-tree";
@@ -289,6 +290,48 @@ test("a person's decision is the answered ask's entry with its ties, and a readi
     // No decision node stands for the person's decision: the ask is the only entry of it.
     expect([...idsOf(parts).agents, ...idsOf(parts).review, ...idsOf(parts).others]).toEqual([]);
   }
+});
+
+// The release before answers a person's decision as a section that cites the answered ask,
+// addressed by the section's heading block, which names no ask (`withEntries`). The filter reads
+// it as this build's: the answered ask's entry is the person's decision and carries the
+// statements the section's links name, and nothing else stands for it - the tree draws no node
+// of the section's own, and no other part holds an entry of it.
+test("a person's section of the release before is the entry of the ask it cites, with its ties", () => {
+  const children = [
+    statement("s1"),
+    statement("s2"),
+    answeredAsk("a1", { at: "2026-11-12T09:00:00Z", text: "Keep the rail." }),
+  ];
+  const section = personDecision("a1", {
+    block_id: "h-rail",
+    links: [shaped(specRef("s1")), shaped(specRef("s2"))],
+    ref: `dispatch://${KEY}/artifact/decisions-md#b-h-rail`,
+    text: "## Keep the rail\n\nOne rail for every width.",
+  });
+  const decisions = withEntries(
+    {
+      decisions: [section],
+      document: `dispatch://${KEY}/artifact/decisions-md`,
+      open_questions: [],
+    },
+    KEY
+  );
+  const parts = decisionsParts({
+    asks: [],
+    decisions,
+    issueKey: KEY,
+    nodeIdOf,
+    reader: READER,
+    root: issueTree(children),
+  });
+
+  expect(idsOf(parts).yours).toEqual(["a1"]);
+  expect(parts.yours[0]?.shapes.map((shape) => shape.id)).toEqual([
+    statement("s1").id,
+    statement("s2").id,
+  ]);
+  expect([...idsOf(parts).agents, ...idsOf(parts).review, ...idsOf(parts).others]).toEqual([]);
 });
 
 // R2: the third part is the reader's own decisions. What another person answered, declined or

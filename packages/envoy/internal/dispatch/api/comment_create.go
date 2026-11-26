@@ -230,13 +230,13 @@ type commentThreadTarget struct {
 	AskID       *string
 	ReplyRoot   *model.Comment
 	AskQuestion string
-	// AskState is the state of the thread's ask as its node holds it (askNodeStateOf), the state
+	// AskState is the state of the thread's ask as its node holds it (asks.NodeStateOf), the state
 	// the comment's event shows (commentEventThread), as every read of an answer reads the node
 	// (R3).
 	AskState string
 	// AskOpen says the ask's row holds it open, which decides whether a reply records a turn
 	// (openAsk). A reply's turn is a write the ask's turn moves by, so it is decided on the row,
-	// as every read that decides a transition reads it (askNodeStateOf); the two differ only
+	// as every read that decides a transition reads it (asks.NodeStateOf); the two differ only
 	// inside a roll's window, where the row is the newer of the two.
 	AskOpen bool
 	// AskMoved says the ask is an approval request a version moved past the one its agent last
@@ -541,7 +541,7 @@ func (s *server) describeAsk(
 ) (commentThreadTarget, error) {
 	target := commentThreadTarget{AskID: askID}
 	err := tx.QueryRow(ctx, `
-		select a.question, `+askNodeStateOf("a")+`, a.state = '`+asks.StateOpen+`', `+approvalMoved+`,
+		select a.question, `+asks.NodeStateOf("a")+`, a.state = '`+asks.StateOpen+`', `+approvalMoved+`,
 		       case when a.author->>'kind' = 'session' then a.author->>'id' end
 		from asks a
 		where a.id = $1

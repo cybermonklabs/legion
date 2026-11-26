@@ -121,24 +121,21 @@ test("margin-decision-passage: a margin decision card's passage draws every form
     readingAgent
   );
   const shaped = await blockId(spec, SHAPED);
-  // A decision stands beside each spec block its `shaped` attribute names. Its passage is the
-  // reading text and a link to that block, which draws as its block's name and leaves no address
-  // as text. A decision is a `decision` block of a document of the issue, so a `#id` in its
+  // A decision stands beside a spec block its `shaped` attribute ties it to, and its passage is
+  // the reading text and a link to that block; the link draws as its block's name, which leaves
+  // no address as text. The decision is written in a document of the issue, so a `#id` in its
   // passage is read against that document (the card hands the renderer the document as the
-  // passage's source): this one stands in a document of its own, which declares the question
-  // block itself, ahead of the decision, and the world is scoped to it. That block is no copy of
-  // the spec's, so it is an ask of its own, and a `#id` read against the spec would name another.
-  const shapes = `dispatch://${world.host.key}/spec#b-${shaped}`;
+  // passage's source): the document declares the question block itself ahead of the decision,
+  // and the world is scoped to it.
   const { artifact } = await createIssueArtifact(
     world.host.key,
     {
-      content: `${readingQuestionBlock("high")}\n\n:::decision{#d1 shaped="${shapes}"}\n### ${DECISION}\n\n${readingText(world)} Shapes ${shapes}.\n:::\n`,
-      name: "notes.md",
+      content: `${readingQuestionBlock()}\n\n:::decision{#d-read shaped="dispatch://${world.host.key}/spec#b-${shaped}"}\n### ${DECISION}\n\n${readingText(world)} Shapes dispatch://${world.host.key}/spec#b-${shaped}.\n:::\n`,
+      name: "choices.md",
     },
     readingAgent
   );
   const scoped = await scopedTo(world, artifact.id);
-  expect(scoped.question, "the document's question is an ask of its own").not.toBe(world.question);
 
   await openSpec(page, world.host.key, SHAPED);
   // The card is an article a click selects, never a link or a button, and its passage is drawn

@@ -5,7 +5,6 @@ import (
 	"reflect"
 	"slices"
 	"sync/atomic"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -35,12 +34,12 @@ import (
 // that still reads an ask's state and answer from the attributes of its block: one whose
 // registered schema version is below the version at which answers left the markdown
 // (answersLeftTheMarkdown). That version is fixed, the one this release introduced: the release
-// before this one reads schema version 4 and this release 5, so a process of it makes two builds,
+// before this one reads schema version 5 and this release 6, so a process of it makes two builds,
 // and so does a process of a build older still, which registers no schema number at all and
 // whose row holds the column's default, 0 (processes.Process.PredatesFleetColumns). A process at
 // that version or past it reads every answer from the server, as this build does, so to this
 // guard the fleet is one build however many commits and schema versions it serves: a later
-// release at version 6, which still holds this guard, reads a process of this release as one of
+// release at version 7, which still holds this guard, reads a process of this release as one of
 // its own fleet rather than as a reader of block attributes, and writes them back into nobody's
 // documents.
 //
@@ -191,10 +190,19 @@ func withoutUnkeptAskAttributes(node *pmdoc.Node) bool {
 // kept for one release: stored-ask-state
 func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 	held := nodes[ask.ID]
-	ask.State, ask.Answer = held.state, nil
-	if held.state == asks.StateAnswered {
-		at, _ := time.Parse(time.RFC3339Nano, held.answeredAt)
-		ask.Answer = &model.AskAnswer{User: held.answeredBy, At: at, Selected: held.selected, Text: held.answer}
+	ask.State, ask.Answer = "", nil
+	if held.State != nil {
+		ask.State = *held.State
+	}
+	if ask.State == asks.StateAnswered {
+		answer := &model.AskAnswer{Selected: held.Selected, Text: held.Answer}
+		if held.AnsweredBy != nil {
+			answer.User = *held.AnsweredBy
+		}
+		if held.AnsweredAt != nil {
+			answer.At = *held.AnsweredAt
+		}
+		ask.Answer = answer
 	}
 	return ask
 }
@@ -217,20 +225,20 @@ func onItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 // kept for one release: stored-ask-state
 // kept for one release: catch-up
 func keptFromItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
-	if held, stated := nodes[ask.ID]; !stated || held.state != ask.State && !held.planned {
+	if held, stated := nodes[ask.ID]; !stated || *held.State != ask.State && !held.planned {
 		return ask
 	}
 	return onItsNode(ask, nodes)
 }
 
 // rollWindowAskAttributes is the write that keeps the attributes of an ask block in step with
-// ask, its row, while another build serves (twoBuilds), as the release before keeps them: the
-// state always; who answered, when, the options chosen (never a nil list, which renders as null
-// from one tree and as [] from the room) and the words, for an answered ask; and for a copy, the
-// ask and copied, the address of the document it is on. Each other attribute of the seven a
-// version can store (storedAskAttributes) is taken off. The write reports whether it changed the
-// block, and is made again on the live document (repairLive). On a fleet of one build it is nil:
-// each write then keeps only what a version keeps (keptAskState).
+// ask, its row, while another build serves, as the release before keeps them: the state always;
+// who answered, when, the options chosen (never a nil list, which renders as null from one tree
+// and as [] from the room) and the words, for an answered ask; and for a copy, the ask and copied,
+// the address of the document it is on. Each other attribute of the seven a version can store
+// (storedAskAttributes) is taken off. The write reports whether it changed the block, and is made
+// again on the live document (repairLive). A writer that reads the fleet takes it or the form a
+// version keeps through askStateWrite.
 //
 // The options chosen and the words are caller text, and a copy of them in a block grows its
 // document as an edit does, so each write that makes that copy weighs it against what one upload
@@ -239,11 +247,24 @@ func keptFromItsNode(ask model.Ask, nodes map[string]askNodeAnswer) model.Ask {
 // them (rollWindowAskAttributesWithheld), and the ask keeps the answer whole.
 //
 // kept for one release: roll-window-attributes
-func rollWindowAskAttributes(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	if !twoBuilds {
-		return nil
-	}
+func rollWindowAskAttributes(ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	return rollWindowAskWrite(ask, copied, true)
+}
+
+// askStateWrite is the write of an ask block's stored attributes as the fleet stands
+// (anotherBuildServes): while another build serves (twoBuilds), the attributes the roll window
+// keeps in step with ask (rollWindowAskAttributes); once the fleet is one build, the ones a
+// version keeps (keptAskState). ask is the block's own ask, or the ask of another document it is
+// a copy of, whose document's address is copied. Settlement (askReadableWrite) and the answer,
+// resolve and decline routes (KeepAskBlockInStep) write a block through it.
+//
+// kept for one release: roll-window-attributes
+// kept for one release: stored-ask-state
+func askStateWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
+	if twoBuilds {
+		return rollWindowAskAttributes(ask, copied)
+	}
+	return keptAskState(ask, copied)
 }
 
 // rollWindowAskAttributesWithheld is rollWindowAskAttributes's write for a block whose answer the
@@ -511,21 +532,13 @@ func askBlockAsks(ctx context.Context, tx pgx.Tx, document string, tree *pmdoc.N
 
 // askReadableWrite is settlement's write to an ask block it reads (readAskBlockStrictly), whose
 // ask, or the ask it is a copy of on the document whose address is copied, is ask: the block
-// parses, so it carries no `invalid` and no old reason shows on it (G1); and its other server
-// attributes are kept in step with ask while another build serves (rollWindowAskAttributes), and
-// once the fleet is one build only those a version keeps (keptAskState).
+// parses (askReadableWith), and its other server attributes are kept in step with ask while
+// another build serves (rollWindowAskAttributes), and once the fleet is one build only those a
+// version keeps (keptAskState), as askStateWrite writes them.
 func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.Node) bool {
 	// kept for one release: roll-window-attributes
 	// kept for one release: stored-ask-state
-	keep := rollWindowAskAttributes(twoBuilds, ask, copied)
-	if keep == nil {
-		// kept for one release: stored-ask-state
-		keep = keptAskState(ask, copied)
-	}
-	return func(node *pmdoc.Node) bool {
-		changed := clearAskInvalidAttribute(node)
-		return keep(node) || changed
-	}
+	return askReadableWith(askStateWrite(twoBuilds, ask, copied))
 }
 
 // askReadableWriteWithheld is askReadableWrite while another build serves, for a block whose
@@ -533,7 +546,13 @@ func askReadableWrite(twoBuilds bool, ask model.Ask, copied string) func(*pmdoc.
 //
 // kept for one release: roll-window-attributes
 func askReadableWriteWithheld(ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	keep := rollWindowAskAttributesWithheld(ask, copied)
+	return askReadableWith(rollWindowAskAttributesWithheld(ask, copied))
+}
+
+// askReadableWith is a write to an ask block settlement reads (readAskBlockStrictly): the block
+// parses, so it carries no `invalid` and no old reason shows on it (G1), and keep writes its other
+// server attributes. It reports whether either changed the block.
+func askReadableWith(keep func(*pmdoc.Node) bool) func(*pmdoc.Node) bool {
 	return func(node *pmdoc.Node) bool {
 		changed := clearAskInvalidAttribute(node)
 		return keep(node) || changed
