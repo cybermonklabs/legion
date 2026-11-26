@@ -742,7 +742,7 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 // written after it: the version her answer reaches carries no approval, and the write that names
 // it is refused nothing.
 func TestAnApprovalOfAFileVersionCarriesNothing(t *testing.T) {
-	database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+	database, service, artifactID := seededRegionDocument(t)
 	ctx := context.Background()
 	// The document takes the shape the upload's conversion leaves: its text is version 2, and
 	// version 1 is the file it was.

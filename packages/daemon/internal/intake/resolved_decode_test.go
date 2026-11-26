@@ -209,7 +209,7 @@ func servedBy(t *testing.T, body []byte) *dispatch.HTTPClient {
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
-	return dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil))
+	return dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil), "")
 }
 
 // listedFact is the fact the boot's reconcile makes of body, a listing Dispatch serves: the real

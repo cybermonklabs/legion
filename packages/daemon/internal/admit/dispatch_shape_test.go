@@ -114,7 +114,7 @@ func servingDispatch(t *testing.T, body []byte) *dispatch.HTTPClient {
 		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
-	return dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil))
+	return dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil), "")
 }
 
 // shapeAdmission is admission of shapeProject at cap, under the design gate quiet's admission runs.
