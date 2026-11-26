@@ -541,7 +541,7 @@ function squatTrial(port: number): SquatTrial {
     [
       "bash",
       "-c",
-      `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); echo "deadline $deadline" >&2; while [ "$SECONDS" -lt "$deadline" ]; do at=$SECONDS; answer=$(curl -q -s --max-time 1 "http://127.0.0.1:$2/_ready"); code=$?; echo "read $at $code" >&2; [ "$answer" = ready ] && exit 0; sleep 0.05; done; exit 1`,
+      `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); echo "deadline $deadline" >&2; while at=$SECONDS; [ "$at" -lt "$deadline" ]; do answer=$(curl -q -s --max-time 1 "http://127.0.0.1:$2/_ready"); code=$?; echo "read $at $code" >&2; [ "$answer" = ready ] && exit 0; sleep 0.05; done; exit 1`,
       process.execPath,
       squatter,
       String(port),
