@@ -2924,7 +2924,9 @@ rows as one more step would have added about 106 s and taken it past the line. A
 the leg's own setup to the runner time. The job's time runs from its first leg's start to its
 last leg's end, so the leg adds to it only the head start a runner gives it over the stall
 suites: none in CI run 45794154038 (563 s), and 79 s in run 45812065142, where the stall suites
-took 540 s and the job 619 s. The leg repeats what the rows need of the job's setup: the
+took 540 s and the job 619 s. So the stall suites alone take 540 s to 594 s, and the job moves to
+the merge queue under the lane rule if the 90th percentile of its pull-request runs, head start
+included, crosses 10 minutes. The leg repeats what the rows need of the job's setup: the
 checkout, Bun and the install, Go and the go-envoy cache, the Postgres service with the read-back
 of its settings and the check of its connection ceiling, and the contracts build. It reports
 ci-ok under the job's id, as the
