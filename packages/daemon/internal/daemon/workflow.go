@@ -1870,7 +1870,7 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 // sweep keys an idle owner's fact on (supervision.openRuns).
 func (w *workflowRuntime) openRuns(ctx context.Context, issues []string) (map[string]record.IssueStepRun, error) {
 	open := make(map[string]record.IssueStepRun, len(issues))
-	err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		runs, err := w.records.StepRuns(ctx, tx, issues)
 		if err != nil {
 			return err

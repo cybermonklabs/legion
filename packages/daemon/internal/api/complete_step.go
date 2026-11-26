@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // CompleteStepRequest is the owner's report of a step that is its own: a step whose key is owner,
@@ -64,37 +65,40 @@ type ownerPlace struct {
 // readOwnerPlace reads where the owner's report of the place named finds key (ownerPlace), nil for
 // an issue the daemon does not record.
 func (s *server) readOwnerPlace(ctx context.Context, key string, named record.TaskPlace) (*ownerPlace, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead})
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	issue, err := s.records.Issue(ctx, tx, key)
-	if err != nil || issue == nil {
-		return nil, err
-	}
-	at := &ownerPlace{issue: *issue}
-	stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
-	if err != nil {
-		return nil, err
-	}
-	if stored != nil {
-		if at.task, err = stored.Task(); err != nil {
-			return nil, err
+	var at *ownerPlace
+	err := store.TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly, IsoLevel: pgx.RepeatableRead}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := s.records.Issue(ctx, tx, key)
+		if err != nil || issue == nil {
+			return err
 		}
-		at.stored, at.steps = true, stored.Steps[at.task.Task]
-	}
-	worker, _ := record.PlaceWorker(at.task.Task, named, at.steps)
-	at.role = worker.Role
-	rows, err := s.records.Phases(ctx, tx, key)
+		place := &ownerPlace{issue: *issue}
+		stored, err := s.records.Plan(ctx, tx, key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		if stored != nil {
+			if place.task, err = stored.Task(); err != nil {
+				return err
+			}
+			place.stored, place.steps = true, stored.Steps[place.task.Task]
+		}
+		worker, _ := record.PlaceWorker(place.task.Task, named, place.steps)
+		place.role = worker.Role
+		rows, err := s.records.Phases(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		place.row = record.PhaseRowOf(rows, place.role)
+		if place.pr, err = s.records.PullRequest(ctx, tx, key); err != nil {
+			return err
+		}
+		at = place
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	at.row = record.PhaseRowOf(rows, at.role)
-	if at.pr, err = s.records.PullRequest(ctx, tx, key); err != nil {
-		return nil, err
-	}
-	return at, tx.Commit(ctx)
+	return at, nil
 }
 
 // completeStep is the owner's report of a step of its own, `POST /legion/v1/steps/complete`: a step
