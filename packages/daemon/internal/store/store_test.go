@@ -90,6 +90,9 @@ func emptyStore(t *testing.T) *Store {
 			t.Errorf("drop %s: %v", name, err)
 		}
 	})
+	if _, err := admin.Exec(ctx, testdb.WithoutJIT(name)); err != nil {
+		t.Fatalf("turn JIT off on %s: %v", name, err)
+	}
 
 	testURL := *base
 	testURL.Path = "/" + name

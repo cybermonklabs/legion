@@ -128,6 +128,11 @@ func create(dsn, prefix string) (string, func(context.Context) error, error) {
 		_ = conn.Close(ctx)
 		return "", nil, fmt.Errorf("create %s: %w", name, err)
 	}
+	if _, err := conn.Exec(ctx, WithoutJIT(name)); err != nil {
+		_ = Drop(ctx, conn, name)
+		_ = conn.Close(ctx)
+		return "", nil, fmt.Errorf("turn JIT off on %s: %w", name, err)
+	}
 	drop := func(ctx context.Context) error {
 		defer func() { _ = conn.Close(context.Background()) }()
 		if err := Drop(ctx, conn, name); err != nil {
@@ -136,6 +141,22 @@ func create(dsn, prefix string) (string, func(context.Context) error, error) {
 		return nil
 	}
 	return database, drop, nil
+}
+
+// WithoutJIT is the statement that turns JIT off for every session that connects to the database
+// name from then on. The daemon's database is the one its operator names: a Kubernetes
+// deployment's session store is Cloud SQL (docs/kubernetes.md, session_store: cloudsql-iam), which
+// lists LLVM JIT compilation among the features it does not support
+// (https://cloud.google.com/sql/docs/postgres/features, "Unsupported features"), and a box's is
+// whatever postgres_dsn names, whose jit a test cannot know. CI's Postgres image runs with jit =
+// on, under which a statement whose estimate passes jit_above_cost compiles before it runs, so a
+// test's time would hold compilation that a Cloud SQL store never pays. The setting is the
+// database's, so it reaches every pool and process a test opens there, and it goes with the
+// database: no setting of the server changes. A clone does not copy its template's settings, so
+// every database here takes it when it is made (create, testpg's template and Clone; docs/testing.md,
+// "A database a Go test creates").
+func WithoutJIT(name string) string {
+	return "alter database " + name + " set jit = off"
 }
 
 // insufficientPrivilege is PostgreSQL's 42501, which a forced drop answers when a session of the

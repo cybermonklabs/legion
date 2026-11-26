@@ -356,15 +356,15 @@ A result at the head is a pass that stands.
 // Verification document of two checks, three recorded results and one retraction, each record
 // route reading through to that fake for the pull request's head, before one load of the tab.
 // The floor the row above measures is most of it.
-test("a check is read over every result of it, never over its newest result alone", async ({
+test("a conflict at a required head stays visible until retraction leaves its pass", async ({
   browser,
 }) => {
   const issue = await seedIssue("Every result", secondHead);
   await createIssueArtifact(issue.key, {
     content: `How ${issue.key} is proved.
 
-:::check{#c-both serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Record the fail alone and no pass stands."}
-A pass at the head stands under a later fail at the same head.
+:::check{#c-both serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Retract the fail and the remaining pass stands."}
+A pass and a fail at one required head read not known until one is retracted.
 :::
 
 :::check{#c-retracted serves="dispatch://${issue.key}/spec#b-r2" surface="cli" run="bun test web/src" negative_control="Leave the pass alone and it stands."}
@@ -373,8 +373,8 @@ A retracted pass stands for nothing.
 `,
     name: "verification.md",
   });
-  // The tester's pass, then the reviewer's fail at the same commit. The fail is the newest
-  // result of the check, and the tester's pass stands at the head all the same.
+  // Both observations stay visible, but their conflicting verdicts leave the required head
+  // unknown. Retracting the fail below restores the original positive pass control.
   await recordCheckResult(issue.key, {
     check: "c-both",
     commit: secondHead,
@@ -382,7 +382,7 @@ A retracted pass stands for nothing.
     role: "tester",
     verdict: "pass",
   });
-  await recordCheckResult(issue.key, {
+  const conflictingFail = await recordCheckResult(issue.key, {
     check: "c-both",
     commit: secondHead,
     failed: 1,
@@ -407,10 +407,8 @@ A retracted pass stands for nothing.
     await page.goto(`/issues/${issue.key}/verification`);
     const checks = page.getByTestId("verification-check");
 
-    // Both results are drawn, newest first, each with the reading its role recorded. The
-    // check's own answer is read over both of them: the tester's pass stands at the head, and
-    // the reviewer's later fail takes nothing away from it.
-    const both = checks.filter({ hasText: "A pass at the head stands under a later fail" });
+    // The newer fail does not hide the earlier pass, and neither verdict erases the other.
+    const both = checks.filter({ hasText: "A pass and a fail at one required head" });
     await expect(both.getByTestId("verification-result")).toHaveCount(2);
     await expect(both.getByTestId("verification-result-verdict")).toHaveText(["Fail", "Pass"]);
     await expect(both.getByTestId("verification-result-role")).toHaveText(["reviewer", "tester"]);
@@ -418,9 +416,21 @@ A retracted pass stands for nothing.
       "40 passed, 1 failed",
       "41 passed, 0 failed",
     ]);
+    await expect(both).toHaveAttribute("data-pass-stands", "unknown");
+    await expect(both.getByTestId("verification-check-pass-stands")).toHaveText(
+      "Dispatch cannot say whether a pass stands"
+    );
+    await expect(both.getByTestId("verification-check-roles")).toHaveCount(0);
+
+    await retractCheckResult(conflictingFail.result.id, {
+      reason: "Control: remove the conflicting fail.",
+    });
+    await page.reload();
+    await expect(both.getByTestId("verification-result")).toHaveCount(2);
     await expect(both).toHaveAttribute("data-pass-stands", "yes");
     await expect(both.getByTestId("verification-check-pass-stands")).toHaveText("A pass stands");
     await expect(both.getByTestId("verification-check-roles")).toHaveText("from tester");
+    await expect(both.getByTestId("verification-result-retracted")).toHaveText("Retracted");
 
     // The one pass of the other check is retracted, so no pass of it stands. The result is
     // neither changed nor hidden: it shows as retracted, with the reason it is wrong.

@@ -844,6 +844,7 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "comment.reopened": true,
   "comment.resolved": true,
   "decision.kept": true,
+  "deploy.recorded": true,
   "handoff.recorded": true,
   "issue.claimed": true,
   "issue.closed": true,
