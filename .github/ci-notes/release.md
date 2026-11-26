@@ -124,6 +124,9 @@ job runs it on the pull request, on every change to a Go file, a module file or 
 - It fails naming each package directory or module file the list does not read, each listed path
   git reads no file for, and each listed path inside the build's modules under which the build
   compiles nothing. It does not refuse a listed path wider than the build, such as packages/.
+  What each half is for: a package the list misses means a change to it alone releases no legion
+  carrying that change, and a package the list names that nothing links releases a legion for
+  nothing.
 - The entry pins release-build-legion.sh whole, as an Exact entry pins a step, and its go
   commands say what that text compiles: ./cmd/legion for each legion target, with CGO_ENABLED=0.
   Any change to the script fails the check, naming the first line that differs, until the entry's
@@ -136,8 +139,9 @@ job runs it on the pull request, on every change to a Go file, a module file or 
   writes $GITHUB_ENV or $GITHUB_PATH, or runs `go env -w`, fails too, and so does a shell or a
   container. A step that writes go's env file by its path is not read.
 
-The envoy part of the list for the host's target, by hand, from packages/daemon:
-  go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
+The envoy part of the list by hand, from packages/daemon, once for each target
+.github/go-release-targets.json lists:
+  CGO_ENABLED=0 GOOS=<os> GOARCH=<arch> go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
 
 ## Why GOPROXY falls through to direct
