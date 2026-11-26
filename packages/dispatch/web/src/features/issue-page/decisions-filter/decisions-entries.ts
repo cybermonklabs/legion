@@ -332,6 +332,11 @@ export function useDecisionsEntries({
   return { failures, parts, readsHeld, retry, retrying, unreadable, writeUps };
 }
 
+/** The tree `useDecisionsTree` last gave for each tree the decisions view read built
+ *  (`viewTree`): that tree carrying the issue's node's views. Held by the built tree, so it goes
+ *  with it. */
+const decisionsTrees = new WeakMap<TreeNode, TreeNode>();
+
 /**
  * The whole tree the Decisions view reads, for the issue whose tree, the page's, is `root`: once
  * the page holds the decisions view read's answer on the issue's node (`TreeNode.views`) and
@@ -349,10 +354,11 @@ export function useDecisionsEntries({
  * draws no decision until it can draw each in its part. The tree is built from the reads the
  * page's tree is built from, under the keys it reads them by and each watched and never sent:
  * the asks read, which says which questions wait on `viewer`, the comments and the messages,
- * which mark a post its author edited or deleted, the coverage and the results, and the Plan
- * view read. It is built without the names read, whose set of addresses is the page's tree's
- * own: no row the view draws names a chip. Every caller of the same reads holds the nodes of one
- * tree, built once.
+ * which mark a post its author edited or deleted, the coverage and the results, and of the Plan
+ * view read's answer the issue's node holds (`TreeNode.views`) whether it holds a plan task. It
+ * is built without the names read, whose set of addresses is the page's tree's own: no row the
+ * view draws names a chip. Every caller of the same reads and the same views holds one tree,
+ * built once (`decisionsTrees`), so a tree drawn over it is known for it (`useDecisionsEntries`).
  *
  * The view's slot draws the view over this tree (`slots/view-decisions.tsx`): the node its
  * address names, the nodes its words filter keeps, its rows and its keys are read over the nodes
@@ -373,45 +379,44 @@ export function useDecisionsTree(
   const messages = useQuery(treeRead(issueMessagesQuery(key))).data;
   const results = useQuery(treeRead(issueResultsQuery(key))).data;
   // Of the Plan view's answer the tree reads only whether it holds a plan task, as the page's
-  // tree reads it (`useIssueTree.ts`).
-  const plan = useQuery(treeRead(viewQuery(key, "plan"))).data;
+  // tree reads it (`useIssueTree.ts`), from the answer the page holds on the issue's node.
+  const plan = views?.plan;
   const planTaskHeld = useMemo(() => holdsPlanTask(plan), [plan]);
-  return useMemo(
-    () =>
-      views === undefined || answer === undefined || tree === undefined
-        ? root
-        : {
-            ...viewTree(
-              {
-                asks,
-                comments,
-                coverage,
-                holdsPlanTask: planTaskHeld,
-                issue,
-                messages,
-                results,
-                tree,
-                viewer,
-              },
-              answer
-            ),
-            views,
-          },
-    [
-      answer,
-      asks,
-      comments,
-      coverage,
-      issue,
-      messages,
-      planTaskHeld,
-      results,
-      root,
-      tree,
-      viewer,
-      views,
-    ]
-  );
+  return useMemo(() => {
+    if (views === undefined || answer === undefined || tree === undefined) return root;
+    const built = viewTree(
+      {
+        asks,
+        comments,
+        coverage,
+        holdsPlanTask: planTaskHeld,
+        issue,
+        messages,
+        results,
+        tree,
+        viewer,
+      },
+      answer
+    );
+    const held = decisionsTrees.get(built);
+    if (held?.views === views) return held;
+    const whole = { ...built, views };
+    decisionsTrees.set(built, whole);
+    return whole;
+  }, [
+    answer,
+    asks,
+    comments,
+    coverage,
+    issue,
+    messages,
+    planTaskHeld,
+    results,
+    root,
+    tree,
+    viewer,
+    views,
+  ]);
 }
 
 /**

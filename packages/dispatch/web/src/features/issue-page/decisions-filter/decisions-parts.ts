@@ -374,9 +374,7 @@ export function decisionsParts({
       // `shaped` ties are the statements the person's decision shaped.
       const own = rows.get(node.reference ?? "");
       const shapes =
-        own?.kind === "person"
-          ? shapesOf(own, nodeIdOf, placed, isStatement, coverageStatement)
-          : [];
+        own?.kind === "person" ? shapesOf(own, nodeIdOf, placed, coverageStatement) : [];
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
@@ -421,7 +419,7 @@ export function decisionsParts({
     }
     // Each statement a tie names, whether the tree holds its node or only the coverage read holds
     // its row, so a statement rests on the decision exactly where it shapes one.
-    const shapes = shapesOf(row, nodeIdOf, placed, isStatement, coverageStatement);
+    const shapes = shapesOf(row, nodeIdOf, placed, coverageStatement);
     const person = decidedByPerson(row);
     const asked = person || row.replaced ? undefined : changes?.get(row.ref);
     const standing = reviewState(person ? { replaced: row.replaced } : row, asked !== undefined);
@@ -550,31 +548,34 @@ function pathOf(node: Pick<TreeNode, "reference">): { readonly path?: string } {
   return path === undefined ? {} : { path };
 }
 
-/** The statements of this issue `row`'s ties name (`isStatement`), each once, in the ties' own
- *  order, each drawn by one rule: from the tree's node of it where `placed` holds one, and else
- *  from the coverage read's row of it (`coverageStatement`), read as a requirement of that node
- *  id at the row's own address, and named by the reading of the row's words
- *  (`ShapedStatement.reading`). */
+/** The statements of this issue `row`'s ties name, each once, in the ties' own order, by the rule
+ *  the review list reads one by (`decisionsParts`' `isStatement`): a tie names a statement where
+ *  the node `placed` holds at its far end is a requirement, or else the coverage read holds a row
+ *  of it (`coverageStatement`), each looked up once. Each is drawn by one rule: from the tree's
+ *  node of it where `placed` holds one, and else from the coverage read's row of it, read as a
+ *  requirement of that node id at the row's own address, and named by the reading of the row's
+ *  words (`ShapedStatement.reading`). */
 function shapesOf(
   row: Pick<Decision, "links">,
   nodeIdOf: (reference: string) => string | undefined,
   placed: ReadonlyMap<string, Placement>,
-  isStatement: (reference: string) => boolean,
   coverageStatement: ((reference: string) => CoverageStatement | undefined) | undefined
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
   for (const link of row.links ?? []) {
     const ref = link.to.ref;
-    if (ref === undefined || !isStatement(ref)) continue;
+    if (ref === undefined) continue;
     const id = nodeIdOf(ref);
     if (id === undefined) continue;
+    const node = placed.get(id)?.node;
+    const requirement = node?.type === "requirement";
+    const covered = requirement ? undefined : coverageStatement?.(ref);
+    if (!requirement && covered === undefined) continue;
     const held = shapes.get(id);
     if (held !== undefined) {
       shapes.set(id, { ...held, stale: held.stale || link.stale });
       continue;
     }
-    const node = placed.get(id)?.node;
-    const covered = node === undefined ? coverageStatement?.(ref) : undefined;
     const words: StatementWords | undefined =
       node ??
       (covered === undefined
@@ -591,7 +592,7 @@ function shapesOf(
       id,
       node: words,
       ...pathOf(words),
-      ...(covered === undefined ? {} : { reading: nodeReading(words) }),
+      ...(node === undefined ? { reading: nodeReading(words) } : {}),
       stale: link.stale,
     });
   }

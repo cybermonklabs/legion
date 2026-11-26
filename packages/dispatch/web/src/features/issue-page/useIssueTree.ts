@@ -270,9 +270,9 @@ const viewsWithContext = new WeakMap<
 export function viewTree(reads: IssueTreeReads, view: TreeAnswer): TreeNode {
   const outline = reads.tree;
   const held = viewsWithContext.get(view);
-  const answer =
-    held !== undefined && held.outline === outline ? held.answer : viewWithContext(view, outline);
-  if (held?.answer !== answer) viewsWithContext.set(view, { answer, outline });
+  const fresh = held === undefined || held.outline !== outline;
+  const answer = fresh ? viewWithContext(view, outline) : held.answer;
+  if (fresh) viewsWithContext.set(view, { answer, outline });
   return builtTree({ ...reads, tree: answer });
 }
 
