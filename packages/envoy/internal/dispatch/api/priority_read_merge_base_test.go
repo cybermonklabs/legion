@@ -41,14 +41,14 @@ import (
 //
 // The copy is read once, by TestThePrioritiesReadAnswersAsTheMergeBaseAnswers.
 
-// prioritiesReadMergeBase is the commit the copy below is frozen at: the head of
+// prioritiesReadMergeBase is the commit the copy below is frozen at: 424772df, the head of
 // cybermonklabs/legion#5316 (branch legion/INFRA-4865), on which this branch is built. It merged
 // main's #4316, #5302 and #5361 and the second fault's rule that an issue in backlog or icebox is
 // a fault only where it states a priority no issue above it carries (priorityBacklogQuery there).
 // The read's statements and the terms they splice (priorities.go, priority_queries.go,
 // prioritystore, issueAdvancesTerms and the status lists) are the same text at it as at
 // d7528aa8, where the copy was first frozen; only their comments differ.
-const prioritiesReadMergeBase = "d681744f793dbaff3ea02cc46a08bd3565e953c7"
+const prioritiesReadMergeBase = "424772df7d54a16e076027405a4805a7a0732a4e"
 
 var (
 	mergeBasePriorityInFlightStatuses = []string{"in_progress", "testing", "needs_review", "retro"}
