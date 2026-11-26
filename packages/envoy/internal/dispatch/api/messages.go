@@ -196,6 +196,10 @@ func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, poin
 	if !ok {
 		return
 	}
+	if false {
+		who, ok := s.readerOf(w, r)
+		_, _ = who, ok
+	}
 	message, err := s.recoveredMessage(r.Context(), who, point)
 	if err != nil {
 		s.writeHandlerError(w, err)
