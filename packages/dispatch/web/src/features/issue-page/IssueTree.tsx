@@ -166,8 +166,8 @@ export function IssueTree({
   isClosed: boolean;
   /** What the row the address lands on says once it has the focus, as a key's report is said at
    *  the row it was pressed on, until the reader's next key or move: that the thread of the turn
-   *  the address names is the agents' alone, where the outline draws no row for that turn and
-   *  `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
+   *  the address names is in the history in Details, where the outline draws no row for that
+   *  turn and `reveal` is the chain to its nearest drawn ancestor (`slots/body.tsx`). */
   landingReport?: string;
   /** The outline read's next page (`tree-read/tree-read.ts`' `useNextTreePage`): while its answer
    *  names one, a control after the outline's last row says how many nodes the read holds after
@@ -759,11 +759,11 @@ export function IssueTree({
   // tree drawn again at the same following lands nowhere again. A tree drawn before the landing's
   // frame comes - a read answering - leaves that landing waiting (`landingAsked`): asked again, it
   // was put off by a frame at each render. The issue itself is no row: an address lands on it for
-  // a turn of a thread only agents wrote in whose nearest drawn ancestor is the issue
-  // (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where the tree says
-  // what has no row of its own. What the landing says (`landingReport`) is said at the row once it
-  // holds the focus: the focus moving there lets go of what was said before. The page's own
-  // opening on its first row or its question (below) keeps its own rule.
+  // a turn of a thread the history holds (`agents-only.ts`) whose nearest drawn ancestor is the
+  // issue (`slots/body.tsx`), and the row it lands on is then the tree's tab stop, where the tree
+  // says what has no row of its own. What the landing says (`landingReport`) is said at the row
+  // once it holds the focus: the focus moving there lets go of what was said before. The page's
+  // own opening on its first row or its question (below) keeps its own rule.
   const taken = useRef<{ readonly acts: AbortController; readonly key: string } | undefined>(
     undefined
   );

@@ -1179,9 +1179,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   set_parent: "Set parent issue",
   /** Ends that comparison and draws the pinned version itself (R16). */
   show_version: "Show version",
-  /** Opens the rest of a list of unbounded length in Details, which shows its first ten
-   *  entries and then this, with the whole count (R13): "Show all 14". */
-  show_all: "Show all",
   /** Opens a handoff's fields and every proof entry under its line in the history, and closes
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",
