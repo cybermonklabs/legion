@@ -1295,6 +1295,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
 		{Kind: WorkspaceTakenNotice, Role: claim.RoleArchitect,
 			Reason: "The daemon replaced the pod of LEGION-209 (pod pod-uid). The read of the workspace before the replacement found one commit that no branch or tag on origin holds."},
+		{Kind: HookPromptUndeliveredNotice, Role: claim.RoleArchitect,
+			Reason: "Legion hook back-to-implementing's prompt to the implementer of LEGION-208 was not delivered, because the implementer's claim is failed."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",
