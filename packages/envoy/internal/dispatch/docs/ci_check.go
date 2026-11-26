@@ -27,13 +27,24 @@ const CheckWhenBeforeMerge = "before_merge"
 // CheckAttributes is what a check block says of how it is proved: the attributes the four rules
 // read and the results write path judges, read as the rules read them: `ci_check`, run and
 // negative control with the spaces around them trimmed, as the editor cannot show them, and a
-// blank `when` as the default, before_merge. A check block as the results read serves it
-// (CheckBlockOf) keeps its `ci_check`, run and negative control as written.
+// blank `when` as the default, before_merge. Subject and Program are the check's marks, what it
+// reads and the deployed program it reads, trimmed as `ci_check` is; no rule reads them, and the
+// results write path keeps them beside each result. A check block as the results read serves it
+// (CheckBlockOf) keeps its `ci_check`, run, negative control and marks as written.
 type CheckAttributes struct {
 	When            string
 	Run             string
 	NegativeControl string
 	CICheck         string
+	Subject         string
+	Program         string
+}
+
+// ruled is check with only the attributes the four rules read, so a change of a mark alone, which
+// no rule reads, leaves a block one that a write does not introduce (refuseCICheckBlocks).
+func (check CheckAttributes) ruled() CheckAttributes {
+	check.Subject, check.Program = "", ""
+	return check
 }
 
 // CheckAttributesOf is the CheckAttributes the check block node holds.
@@ -42,8 +53,8 @@ func CheckAttributesOf(node *pmdoc.Node) CheckAttributes {
 }
 
 // CheckAttributesOfBlock is the CheckAttributes of check, read as the rules read them: its
-// `ci_check`, run and negative control trimmed, and a blank `when` given the default. It is the
-// one place the rules' reading is made, so they hold for any check block, whoever built it.
+// `ci_check`, run, negative control and marks trimmed, and a blank `when` given the default. It is
+// the one place the rules' reading is made, so they hold for any check block, whoever built it.
 func CheckAttributesOfBlock(check model.CheckBlock) CheckAttributes {
 	when := check.When
 	if when == "" {
@@ -54,6 +65,8 @@ func CheckAttributesOfBlock(check model.CheckBlock) CheckAttributes {
 		Run:             strings.TrimSpace(check.Run),
 		NegativeControl: strings.TrimSpace(check.NegativeControl),
 		CICheck:         strings.TrimSpace(check.CICheck),
+		Subject:         strings.TrimSpace(check.Subject),
+		Program:         strings.TrimSpace(check.Program),
 	}
 }
 
@@ -145,11 +158,11 @@ func checkBlockNodes(tree *pmdoc.Node) []*pmdoc.Node {
 }
 
 // CheckBlockOf is the check block node holds, with the attributes a check block carries, each as
-// written: its id, `ci_check`, run, `when`, negative control, surface and `serves`, the references
-// it names in its order (the parse splits the attribute's text at each space,
-// pmdoc.ParseBlockPointerValue). Every reader of a check block's attributes comes here: the four
-// rules through CheckAttributesOf, settlement and the results routes, which serve the block. The
-// rules read it through CheckAttributesOfBlock.
+// written: its id, `ci_check`, run, `when`, negative control, surface, subject and program, the
+// last two "" where the block names none, and `serves`, the references it names in its order (the
+// parse splits the attribute's text at each space, pmdoc.ParseBlockPointerValue). Every reader of a
+// check block's attributes comes here: the four rules through CheckAttributesOf, settlement and the
+// results routes, which serve the block. The rules read it through CheckAttributesOfBlock.
 func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	var check model.CheckBlock
 	check.BlockID, _ = node.Attrs[pmdoc.BlockIDAttr].(string)
@@ -159,6 +172,8 @@ func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	check.NegativeControl, _ = node.Attrs["negative_control"].(string)
 	check.Surface, _ = node.Attrs["surface"].(string)
 	check.Serves, _ = node.Attrs["serves"].([]string)
+	check.Subject, _ = node.Attrs["subject"].(string)
+	check.Program, _ = node.Attrs["program"].(string)
 	// The results read served a blank `when` as before_merge before ci_check existed, so the
 	// served block keeps that default. It is the served shape, not the rules' reading.
 	if check.When == "" {
@@ -197,7 +212,7 @@ func introducedCIChecks(tree, prior *pmdoc.Node) []introducedCICheck {
 				held[earlier.BlockID] = CheckAttributesOfBlock(earlier)
 			}
 		}
-		if before, ok := held[block.BlockID]; ok && before == check {
+		if before, ok := held[block.BlockID]; ok && before.ruled() == check.ruled() {
 			continue
 		}
 		introduced = append(introduced, introducedCICheck{blockID: block.BlockID, check: check})

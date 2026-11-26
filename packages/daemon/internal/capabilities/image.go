@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
@@ -31,6 +32,14 @@ type Image struct {
 	// OmpLaunchPrefix before it (omplaunch.WithPrefix), as a pane launches Oh My Pi. The shell
 	// parses it as a pod's shim parses its launch, so a prefix runs as it would there.
 	Launch string
+	// Shown is Launch as a refusal names it, when the daemon's launch prefix is in Launch: its
+	// program and how many arguments follow (omplaunch.WithPrefixShown), never an argument, which
+	// can carry a credential. Empty, the refusals name Launch, which then holds no prefix.
+	Shown string
+	// Prefix is the daemon's launch prefix in Launch, whose words, and each NAME=value word's
+	// value, every check's output is quoted without (omplaunch.PrefixMasked): a prefix that
+	// refuses or fails can echo a credential it carries. Nil when Launch holds no prefix.
+	Prefix []string
 	// Env is the environment the checks run under (PATH, PUPPETEER_EXECUTABLE_PATH, HOME,
 	// OMP_PROFILE, PI_CONFIG_FILES, …): the one the pod's Oh My Pi starts with, after the pod
 	// baseline and the operator's pod env shaped it. A binary is looked up on Env's PATH, never
@@ -146,7 +155,7 @@ func ReadModelFallback(ctx context.Context, img Image) (string, error) {
 		Value *bool `json:"value"`
 	}
 	if err := json.NewDecoder(strings.NewReader(r.stdout)).Decode(&answer); err != nil || answer.Value == nil {
-		return "", fmt.Errorf("%s %s printed no JSON object with a boolean value: %s", img.Launch, args, r.output())
+		return "", fmt.Errorf("%s %s printed no JSON object with a boolean value: %s", img.shown(), args, r.output())
 	}
 	if *answer.Value {
 		return bootprobe.ModelFallbackOn, nil
@@ -167,7 +176,7 @@ func ReadOmpVersion(ctx context.Context, img Image) (string, error) {
 	}
 	first, _, _ := strings.Cut(strings.TrimSpace(r.stdout), "\n")
 	if first = strings.TrimSpace(first); first == "" {
-		return "", fmt.Errorf("%s %s printed no version: %s", img.Launch, args, r.output())
+		return "", fmt.Errorf("%s %s printed no version: %s", img.shown(), args, r.output())
 	}
 	return first, nil
 }
@@ -192,7 +201,7 @@ func ReadSessionIDFlag(ctx context.Context, img Image) (string, error) {
 		return "", err
 	}
 	if strings.TrimSpace(r.stdout) == "" {
-		return "", fmt.Errorf("%s %s printed no help: %s", img.Launch, args, r.output())
+		return "", fmt.Errorf("%s %s printed no help: %s", img.shown(), args, r.output())
 	}
 	if sessionIDFlag.MatchString(r.stdout) {
 		return bootprobe.SessionIDFlagTaken, nil
@@ -577,10 +586,19 @@ func (img Image) launch(ctx context.Context, args string) ran {
 	return img.run(ctx, "sh", "-c", "exec "+img.Launch+" "+args)
 }
 
+// shown is the launch as a refusal names it (Image.Shown).
+func (img Image) shown() string {
+	if img.Shown != "" {
+		return img.Shown
+	}
+	return img.Launch
+}
+
 // answer is the launch's run of args when it exited 0, and otherwise an error naming the command
-// — `<Launch> <args>` — and the run's own error, or its exit and its output.
+// — the launch as a refusal names it (shown) and args — and the run's own error, or its exit and
+// its output.
 func (img Image) answer(ctx context.Context, args string) (ran, error) {
-	command := img.Launch + " " + args
+	command := img.shown() + " " + args
 	r := img.launch(ctx, args)
 	if r.err != nil {
 		return r, fmt.Errorf("%s: %w", command, r.err)
@@ -622,7 +640,8 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
 	timedOut := errors.Is(cause, errCommandTimeout)
-	r := ran{stdout: stdout.String(), stderr: stderr.String(), cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
+	r := ran{stdout: omplaunch.PrefixMasked(stdout.String(), img.Prefix), stderr: omplaunch.PrefixMasked(stderr.String(), img.Prefix),
+		cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
 	switch {
 	case killed() && timedOut:
 		r.err = fmt.Errorf("timed out after %s", budget)
