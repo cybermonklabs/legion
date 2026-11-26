@@ -2064,7 +2064,9 @@ async function readAsReader(
     };
     if (noteOwed(viewed)) {
       const held = await heldAnswer(views[view], `${who}'s ${name} view read`);
-      const counted = (held.nodes ?? []).filter((node) => blockIdOfNode(node) !== restating);
+      const counted = (held.nodes ?? []).filter(
+        (node) => node.supertag !== "decision" || blockIdOfNode(node) !== restating
+      );
       await expect
         .poll(() => filterCount(page, view), {
           message: `${who}'s ${name} control does not count what ${who}'s own view read holds`,

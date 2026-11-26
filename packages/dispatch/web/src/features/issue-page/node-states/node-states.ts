@@ -146,6 +146,12 @@ export function stampStates(
   return stamp(root, false);
 }
 
+/** What `closedReadIds` answers while no node of the read is overtaken: no ask and no node. */
+const NOTHING_CLOSED: {
+  readonly askIds: ReadonlySet<string>;
+  readonly readIds: ReadonlySet<string>;
+} = { askIds: new Set(), readIds: new Set() };
+
 /**
  * The read's own id (`node.id`) of each node of `tree` at or under an overtaken one, as the page
  * closes them: each node overtaken by a state of its own (`ownStatesOf`, which gives the block a
@@ -158,7 +164,7 @@ export function stampStates(
  * an ask's node before its block, nor a parent before its children, so every node that closes a
  * branch is found before any branch is closed, and each node is closed once, even where the
  * read's parents lead round. With them, the id of the ask each closed `ask` node is, its
- * conversation node or its block (`askIdsOf`), by the same pairing. None of either while no node
+ * conversation node or its block (`askIdOfNode`), by the same pairing. None of either while no node
  * of the read is overtaken, or the read has not answered. The header's count reads both
  * (`waiting.ts`' `waitingOnReader`), so it closes the nodes and the asks the page closes.
  */
@@ -168,7 +174,7 @@ export function closedReadIds(
 ): { readonly askIds: ReadonlySet<string>; readonly readIds: ReadonlySet<string> } {
   const nodes = tree?.nodes ?? [];
   const overtaken = nodes.filter((node) => isOvertaken(ownStatesOf(node)));
-  if (overtaken.length === 0) return { askIds: new Set(), readIds: new Set() };
+  if (overtaken.length === 0) return NOTHING_CLOSED;
   const askOf = askOfNode(reads);
   // The id of the ask each overtaken ask node is, which every ask node it pairs with is too.
   const overtakenAsks = askIdsOf(overtaken, askOf);
@@ -188,16 +194,14 @@ export function closedReadIds(
     }),
   ];
   const closed = new Set<string>();
+  const askIds = new Set<string>();
   for (let node = closing.pop(); node !== undefined; node = closing.pop()) {
     if (closed.has(node.id)) continue;
     closed.add(node.id);
+    const ask = askIdOfNode(node, askOf);
+    if (ask !== undefined) askIds.add(ask);
     closing.push(...(children.get(node.id) ?? []));
   }
-  // The ask of each closed ask node, its conversation node or its block.
-  const askIds = askIdsOf(
-    nodes.filter((node) => closed.has(node.id)),
-    askOf
-  );
   return { askIds, readIds: closed };
 }
 
