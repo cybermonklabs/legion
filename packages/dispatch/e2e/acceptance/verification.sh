@@ -816,7 +816,10 @@ else
   h1="$(sha256sum "$work/approved-spec.md" | cut -d' ' -f1)"
   d1="$(<"$work/digest-spec.md")"
   cp "$work/approved-spec.md" "$work/revised-spec.md"
-  printf '\nA new line the person has not approved.\n' >>"$work/revised-spec.md"
+  # The new line is a requirement's: an approval covers the record of the Spec query - the spec's
+  # memo, criteria and requirements - and not its paragraphs (R14), so a paragraph added after the
+  # last requirement would carry the approval to version 2 rather than leave it stale.
+  printf '\n:::requirement{#b2}\nA new line the person has not approved.\n:::\n' >>"$work/revised-spec.md"
   # This upload replaces the spec whole, so it names the token of the version it replaces, through the multipart
   # form `--path` sends.
   token_of review "$both" spec.md

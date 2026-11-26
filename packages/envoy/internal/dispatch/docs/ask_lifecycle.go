@@ -511,7 +511,11 @@ const dropSettledClosedEditSources = `
 // followLatestVersion is FollowClosedIssueVersions for one document, artifactID, moving its
 // request in mover's name. Whether the document's stored updates are ahead of its latest version
 // is read on the room it is edited in, whose head a version records (doc_update_version), as
-// SnapshotVersion reads it.
+// SnapshotVersion reads it. It carries an approval of a version before the latest one
+// (carryToLatest), by the cases every carry weighs and, last, by the latest version's stored
+// record digest (storedRecord): a version a closed issue's settlement wrote carried nothing, and a
+// version whose record is the approved one, as a paragraph moved before a requirement leaves it,
+// is carried here, its request answered in the approver's name (writeCarriedReview).
 func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string, mover model.Actor) error {
 	latest, err := latestVersion(ctx, tx, artifactID)
 	if err != nil {
@@ -534,20 +538,7 @@ func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID
 	if err := MoveApprovalAsk(ctx, tx, s.events, artifactID, latest.Version, latest.markdown, mover, true, s.serverURL); err != nil {
 		return err
 	}
-	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
-		return err
-	}
-	newest, err := NewestReview(ctx, tx, artifactID)
-	if err != nil || newest == nil || newest.State != "approved" || newest.Version >= latest.Number {
-		return err
-	}
-	// The answer carry reads the version's blocks from its tree, as the version's own write reads
-	// the live tree it rendered: the stored text's read-back is that tree.
-	tree, err := pmdoc.ParseRendering(latest.markdown)
-	if err != nil {
-		return skipUnreadableVersion(artifactID, latest.Number, err)
-	}
-	return s.carryStandingApproval(ctx, tx, artifactID, latest.Number, renderedTree{tree: tree, markdown: latest.markdown}, *newest, decisionStepCases{}, eventSink(ctx))
+	return carryToLatest(ctx, tx, s.events, artifactID, latest.Number, latest.markdown, s.serverURL)
 }
 
 // issueAskStateWrites is what WriteIssueAskStates writes into one document of an issue, read off
@@ -721,7 +712,7 @@ func closedIssueAskState(row model.Ask) (model.Ask, bool) {
 //
 // kept for one release: roll-window-attributes
 func answeredCopyWrite(ask model.Ask, copied string) func(*pmdoc.Node) bool {
-	whole := askReadableWrite(true, ask, copied)
+	whole := askReadableWith(rollWindowAskAttributes(ask, copied))
 	withheld := askReadableWriteWithheld(ask, copied)
 	return func(node *pmdoc.Node) bool {
 		if !whole(attributesOf(node)) {

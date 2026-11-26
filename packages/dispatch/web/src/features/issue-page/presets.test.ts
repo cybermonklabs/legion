@@ -825,7 +825,14 @@ test("a view's row drawn from its own tree names each other parent it serves by 
 // tasks first, then each other issue's in the order its document writes them, the written order
 // the plan's walk starts from. No other view takes another issue's node as a row.
 test("a plan task's size and issue come from the plan view's answer", () => {
-  const plan = (size: string | null) => ({ cycle: false, needs: [], position: 0, size });
+  const plan = (size: string | null) => ({
+    cycle: false,
+    docs: null,
+    needs: [],
+    position: 0,
+    size,
+    skills: null,
+  });
   const answer = treeAnswer(
     [
       viewNode("t1", "plan_task", "query", { in: "plan", plan: plan("90") }),

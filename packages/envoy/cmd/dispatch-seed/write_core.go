@@ -172,7 +172,8 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 			}
 		}
 		// The nodes go in before the rows, which name them, and their head rows after the rows,
-		// since an issue's node is held under the issue whose row it names: one head write.
+		// since an issue's node is held under the issue whose row it names: one head write, on a
+		// database that holds the head projection (seedRun.noHeadRows).
 		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 			graphstore.QueueWrite(b, nodes, tuples)
 			return nil
@@ -181,6 +182,9 @@ func (r *seedRun) writeIssues(ctx context.Context) error {
 		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"issues"}, columns, pgx.CopyFromRows(rows)); err != nil {
 			return err
+		}
+		if r.noHeadRows {
+			return nil
 		}
 		return graphstore.WriteHeads(ctx, tx, graphstore.HeadsOf(nodes, tuples))
 	})
@@ -200,6 +204,27 @@ func (r *seedRun) carriesNodeMarker(ctx context.Context, table string) (bool, er
 		return false, fmt.Errorf("read whether %s carries the node columns: %w", table, err)
 	}
 	return carries, nil
+}
+
+// readNoHeadRows reads whether the database holds none of the head projection this build writes
+// (graphstore.QueueHeads), whose head write reads comments.answers (20261105014808) and writes
+// issue_head_nodes with its item_answers (20261123180100, 20261125120200) and node_search
+// (20261125160000). The measurement protocol seeds a database migrated from the release before
+// this one with --no-migrate, which holds no head projection, and a server of that release writes
+// no head row; so the seed writes none there either, and the backfill this release runs over the
+// data set fills each issue's (graphcensus' backfillIssueHeadNodes). The seed marks no issue's head
+// rows whole (issue_head_marks) on any schema, so no mark stands for rows it leaves unwritten, and
+// the head read walks the tuples of each issue until that fill.
+func (r *seedRun) readNoHeadRows(ctx context.Context) (bool, error) {
+	var held int
+	if err := r.database.Pool.QueryRow(ctx, `select count(*) from information_schema.columns
+		where table_schema = current_schema()
+		  and (table_name = 'comments' and column_name = 'answers'
+		    or table_name = 'issue_head_nodes' and column_name = 'item_answers'
+		    or table_name = 'node_search' and column_name = 'node_address')`).Scan(&held); err != nil {
+		return false, fmt.Errorf("read whether the database holds the head projection: %w", err)
+	}
+	return held < 3, nil
 }
 
 // writeIssueLinks writes the blocked_by links. The heavily linked issue takes HubLinks of them,

@@ -213,20 +213,25 @@ func moveTextPlan(key string) string {
 //     text_parent moves.
 //   - order: the first paragraph of the order pair after the second: the text holds the second
 //     first, its text_rank stands below the moved one's, and the answer names the second as after.
-//   - callout: a paragraph under the callout tx: the text holds it inside tx as its last block, the
-//     tree read answers it under tx, and its text_parent is tx.
+//   - callout: a paragraph under the callout tx: the text holds it inside tx as its last block, its
+//     stored part_of names tx, and its text_parent is tx.
 //   - list paragraph: a paragraph under the list item that holds one paragraph: the text holds it in
-//     the item after its first paragraph, the tree read answers it under the item, and its
-//     text_parent is the item.
+//     the item after its first paragraph, its stored part_of names the item, and its text_parent is
+//     the item.
+//
+// A moved paragraph is prose of a role document, which no read of the issue's tree returns (R2, R8,
+// R16: issueTreeBuilder.excluded): the tree alone holds its place, so each case reads that place
+// off the newest part_of the store holds, and reads no node of the paragraph in the tree read
+// (storedUnder).
 //
 // The decision case, the table case and the emptied case write no version:
 //
 //   - decision: alice keeps td, and the agent moves a paragraph under it: the move is taken, the
-//     text holds the paragraph outside td's content, which holds what it held, the tree read
-//     answers it under td, and td reads its text_sha256 still, kept by alice, waiting on no review.
+//     text holds the paragraph outside td's content, which holds what it held, its stored part_of
+//     names td, and td reads its text_sha256 still, kept by alice, waiting on no review.
 //   - table: a paragraph under each of a requirement, a criterion, an ask block, a reading, a check,
 //     a plan task and a callout inside a decision, each by its own document: each move is taken, the
-//     document's head render is the one read before, the tree read answers the paragraph under the
+//     document's head render is the one read before, the paragraph's stored part_of names the
 //     block, the block's token is the one read before, and for the callout the decision's
 //     text_sha256 is too.
 //   - emptied: the only paragraph of the callout ty, the only paragraph of the callout ty2 inside a
@@ -310,10 +315,23 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			t.Errorf("%s: the head render of %s %s", what, key, problem)
 		}
 	}
-	underIn := func(t *testing.T, view, address, parent string) {
+	underIn := func(t *testing.T, address, parent string) {
 		t.Helper()
-		if node, listed := treeNodes(t, rig.handler, key, view)[address]; !listed || node.Parent == nil || node.Parent.ID != parent {
-			t.Errorf("%s stands under %+v in the tree read %s, want %s", address, node.Parent, view, parent)
+		if node, listed := treeNodes(t, rig.handler, key, "")[address]; !listed || node.Parent == nil || node.Parent.ID != parent {
+			t.Errorf("%s stands under %+v in the tree read, want %s", address, node.Parent, parent)
+		}
+	}
+	// storedUnder fails unless the block at address, a prose paragraph of a role document, stands
+	// under the block parent through the newest part_of the store holds, and the tree read answers no
+	// node of it, what naming the case: no read of the issue's tree returns such a paragraph (R2, R8,
+	// R16), so the tree alone holds its place.
+	storedUnder := func(t *testing.T, what, address, parent string) {
+		t.Helper()
+		if held := rig.partOf(t, address); held != refs.BlockNodeKind+"/"+parent {
+			t.Errorf("%s%s holds a stored part_of naming %s, want %s", what, address, held, parent)
+		}
+		if node, listed := treeNodes(t, rig.handler, key, "")[address]; listed {
+			t.Errorf("%sthe tree read answers %s, want no node: it answers it under %+v, and it is prose of a role document", what, address, node.Parent)
 		}
 	}
 	textParentIs := func(t *testing.T, address, parent string) {
@@ -372,7 +390,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			}
 			return ""
 		})
-		underIn(t, "", tr2, lens.ID)
+		underIn(t, tr2, lens.ID)
 	})
 
 	t.Run("list", func(t *testing.T) {
@@ -425,7 +443,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			}
 			return ""
 		})
-		underIn(t, "?view=spec", paragraph, tx)
+		storedUnder(t, "", paragraph, tx)
 		textParentIs(t, paragraph, refs.BlockNodeKind+"/"+tx)
 	})
 
@@ -459,7 +477,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 				t.Errorf("the %s of %s holds the decision %s as %q, want %q, the blocks it held before", name, key, td, held, content)
 			}
 		}
-		underIn(t, "?view=spec", paragraph, td)
+		storedUnder(t, "", paragraph, td)
 		after := decisionOf(t, rig.handler, key, td)
 		if after.TextSHA256 != decision.TextSHA256 || after.Kept == nil || after.Kept.KeptBy != "alice" || after.WaitingReview {
 			t.Errorf("the decision %s reads text_sha256 %s after the move, want %s, kept %+v, waiting_review %t", td, after.TextSHA256, decision.TextSHA256, after.Kept, after.WaitingReview)
@@ -475,22 +493,22 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			}
 			return ""
 		})
-		underIn(t, "?view=spec", paragraph, item)
+		storedUnder(t, "", paragraph, item)
 		textParentIs(t, paragraph, refs.BlockNodeKind+"/"+item)
 	})
 
 	t.Run("table", func(t *testing.T) {
 		documents := map[string]decisionDocument{specID: spec, verificationID: verification, planID: plan}
 		for _, row := range []struct {
-			typ, document, block, words, view string
+			typ, document, block, words string
 		}{
-			{"requirement", specID, "trq", "A paragraph that moves under the requirement of the table", "?view=spec"},
-			{"criterion", specID, "tkq", "A paragraph that moves under the criterion of the table", "?view=spec"},
-			{"ask", specID, "taq", "A paragraph that moves under the ask of the table", "?view=spec"},
-			{"reading", specID, "tgr", "A paragraph that moves under the reading of the table", "?view=spec"},
-			{"check", verificationID, "tc2", "A paragraph of the Verification document that moves under its check", "?view=verification"},
-			{"plan_task", planID, "tt1", "A paragraph of the plan that moves under its plan task", "?view=plan"},
-			{"callout", specID, "tc", "A paragraph that moves under the callout inside the decision", "?view=spec"},
+			{"requirement", specID, "trq", "A paragraph that moves under the requirement of the table"},
+			{"criterion", specID, "tkq", "A paragraph that moves under the criterion of the table"},
+			{"ask", specID, "taq", "A paragraph that moves under the ask of the table"},
+			{"reading", specID, "tgr", "A paragraph that moves under the reading of the table"},
+			{"check", verificationID, "tc2", "A paragraph of the Verification document that moves under its check"},
+			{"plan_task", planID, "tt1", "A paragraph of the plan that moves under its plan task"},
+			{"callout", specID, "tc", "A paragraph that moves under the callout inside the decision"},
 		} {
 			block := documents[row.document].address(row.block)
 			paragraph, _ := textBlockOf(t, rig.database, row.document, "paragraph", row.words)
@@ -510,9 +528,7 @@ func TestTheMoveWritesItsTextWhereMarkdownCanShowIt(t *testing.T) {
 			if now := headText(t, rig.handler, row.document); now != head {
 				t.Errorf("row %s: the move of %s changed the head render of %s to %q, want %q", row.typ, paragraph, row.document, now, head)
 			}
-			if node, listed := treeNodes(t, rig.handler, key, row.view)[paragraph]; !listed || node.Parent == nil || node.Parent.ID != block {
-				t.Errorf("row %s: %s stands under %+v in the tree read, want %s", row.typ, paragraph, node.Parent, block)
-			}
+			storedUnder(t, "row "+row.typ+": ", paragraph, block)
 			if now := blockToken(t, rig.handler, row.document, row.block); now != token {
 				t.Errorf("row %s: %s reads token %s, want %s", row.typ, block, now, token)
 			}

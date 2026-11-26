@@ -11,8 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
@@ -33,7 +36,11 @@ const (
 )
 
 // planRoleType is the role block of a task's owner, a type a later schema declares and the plan
-// query already takes (graphstore.QueryTakes).
+// query already takes (graphstore.QueryTakes). No migration of the store holds its type yet, and
+// the store's writers take a node only of a type the store holds (graphstore.ErrSupertagNotHeld):
+// in a deployment the type migration that declares it writes its supertag node, which the
+// installed schema is read from (pmdoc/schemanodes), so the test seeds that node beside the schema
+// it swaps in.
 const planRoleType = "plan_role"
 
 // planAttributesSchema is the block schema in force with what later pieces declare on the plan:
@@ -346,6 +353,11 @@ func TestEveryDeclaredPlanAttributeSurvivesTheConversionAndThePlanView(t *testin
 		t.Fatalf("plan_task declares the values %v, want steps and size among them", names)
 	}
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		return graphseedtest.SeedSupertags(ctx, tx, planRoleType)
+	}); err != nil {
+		t.Fatalf("seed the type %s the swapped-in schema declares: %v", planRoleType, err)
+	}
 	service := deps.Docs.(*docs.Service)
 	const spec = ":::requirement{#" + planRequirement + "}\nEvery task says how it is carried out.\n:::\n"
 

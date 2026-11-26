@@ -207,6 +207,14 @@ const issue: IssueDetails = {
   open_asks: [],
   parent: null,
   plan_artifact_id: plan.id,
+  queries: [
+    {
+      query: "plan",
+      artifact_id: plan.id,
+      takes: ["plan_task", "plan_role"],
+      subtree: `issue:${KEY}`,
+    },
+  ],
   primary_artifact_id: "",
   priority: null,
   progress: { children: null, tasks: null },
@@ -1112,6 +1120,15 @@ test("the tree is read in one request, and no document's blocks are read", async
     plan_artifact_id: plan.id,
     primary_artifact_id: "artifact-spec",
     verification_artifact_id: "artifact-verification",
+    queries: [
+      {
+        query: "verification",
+        artifact_id: "artifact-verification",
+        takes: ["check", "result"],
+        subtree: `issue:${KEY}`,
+      },
+      ...(issue.queries ?? []),
+    ],
   };
   let named = 0;
   const stubs = stubTreeReads(async (refs) => {
@@ -1143,7 +1160,7 @@ test("the tree is read in one request, and no document's blocks are read", async
 // task is a row of the tree, which the tree read answers with no blocks read.
 test("A plan with no role that the issue names by its id is named the plan, its task read from the tree", async () => {
   const roleless = issueDocument(plan.id, PLAN);
-  const named: IssueDetails = { ...issue, artifacts: [roleless], plan_artifact_id: roleless.id };
+  const named: IssueDetails = { ...issue, artifacts: [roleless] };
   const cites = `dispatch://${KEY}/artifact/${PLAN}`;
   const stubs = stubTreeReads(async (refs) => namedTargets(refs), {
     comments: [{ ...comment, body: `The tasks are in ${cites}.` }],

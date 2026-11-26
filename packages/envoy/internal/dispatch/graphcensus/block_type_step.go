@@ -12,11 +12,12 @@ import (
 )
 
 // viewEndStepLock is the transaction advisory lock the boot's steps over graph_edges' reads take
-// before they test their condition (the graph-store spec's `r-view-end`): the step that moves
-// a block's type onto its node (RunTypedBlockSupertagsStep), and the step that deletes the arms
-// the graph-store spec moved beside it, so two processes booting together never restate one
-// function or the view at once. It is a single 64-bit key ("DVIEWEND"), apart from every other
-// single-key advisory lock of the server for the reason processes' registryLock gives.
+// before they test their condition (the graph-store spec's `r-view-end`): the step that deletes
+// the four arms that spec moved (RunViewArmsStep), which states the view, and the step that moves
+// a block's type onto its node (RunTypedBlockSupertagsStep), which states two functions the view
+// calls, so two processes booting together never restate the view or one function at once. It is a
+// single 64-bit key ("DVIEWEND"), apart from every other single-key advisory lock of the server
+// for the reason processes' registryLock gives.
 const viewEndStepLock int64 = 0x4456494557454E44
 
 // The two functions the step restates (RunTypedBlockSupertagsStep), each with the signature its

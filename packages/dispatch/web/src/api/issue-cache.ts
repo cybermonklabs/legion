@@ -10,19 +10,26 @@ export function primarySpec(
   return issue?.artifacts?.find((artifact) => artifact.id === issue.primary_artifact_id);
 }
 
-/** The issue's document in `role` - `verification.md` or `plan.md`, which the issue names in
- *  `verification_artifact_id` and `plan_artifact_id` - or undefined while the details are
- *  unread, when the issue holds none (`""`), and on a Dispatch older than that role (absent). The
- *  id the issue names is the one answer, so a document whose name was changed by hand cannot put
- *  a second document on the tab. A decisions document is no part this build reads: decisions are
- *  nodes of the spec. */
+type RoleDocuments = Pick<
+  IssueDetails,
+  "artifacts" | "plan_artifact_id" | "queries" | "verification_artifact_id"
+>;
+
+/**
+ * The document the issue names for its plan or its verification query (`queries`), or undefined
+ * while the details are unread and where the issue names none. The id the issue names is the one
+ * answer, never a guess from an artifact's name or role, so a document whose name was changed by
+ * hand cannot put a second document on the tab. Where the issue read carries `queries` they
+ * decide alone.
+ */
 export function roleDocument(
-  issue:
-    | Pick<IssueDetails, "artifacts" | "plan_artifact_id" | "verification_artifact_id">
-    | undefined,
+  issue: RoleDocuments | undefined,
   role: Extract<DocumentRole, "plan" | "verification">
 ): ArtifactWithTrees | undefined {
-  const id = role === "plan" ? issue?.plan_artifact_id : issue?.verification_artifact_id;
+  const id =
+    issue?.queries === undefined
+      ? keptRoleDocumentId(issue, role)
+      : issue.queries.find((query) => query.query === role)?.artifact_id;
   return id === undefined || id === ""
     ? undefined
     : issue?.artifacts?.find((artifact) => artifact.id === id);
@@ -49,6 +56,20 @@ export function artifactAtAddress<T extends Pick<Artifact, "kind" | "name" | "sl
     listed.find((candidate) => candidate.slug === address) ??
     listed.find((candidate) => candidate.kind === "doc" && candidate.name === address)
   );
+}
+
+/**
+ * The id a server of the release before names for `role`. It answers an issue read with no
+ * `queries`, and names the document in `plan_artifact_id` or `verification_artifact_id`, `""`
+ * where the issue holds none, as the page read it before `queries`.
+ *
+ * kept for one release: role-artifact-ids
+ */
+function keptRoleDocumentId(
+  issue: RoleDocuments | undefined,
+  role: Extract<DocumentRole, "plan" | "verification">
+): string | undefined {
+  return role === "plan" ? issue?.plan_artifact_id : issue?.verification_artifact_id;
 }
 
 /**

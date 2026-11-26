@@ -20,12 +20,14 @@ import (
 // seedPointerAttribute writes the supertag node of typeName, the attribute node of its attrName
 // pointer with targets (nil for no limit), and the attribute_of tuple that ties them, as migration
 // 20261109051232 seeds the shipped schema's nodes. A test that swaps in a type the shipped schema
-// does not hold - claim - writes these so the store holds what the swapped-in schema declares:
-// graph_edges' tuple arm reads a pointer's allowed targets from that attribute node
-// (block_pointer_targets), and a stamped pointer row is answered by that arm, so without the node
-// the arm finds no limit at all. It is docs' helper of the same name: graphstore's
-// TestEveryStoreWriteCallSiteIsListed refuses a raw write of the store outside a test file, so
-// the two packages cannot share it through pmdoctest.
+// does not hold - claim - writes these so the store holds what the swapped-in schema declares, as
+// the type migration that declares a type writes its nodes in a deployment, whose installed schema
+// is read from them (pmdoc/schemanodes): the store's writers take a claim's node only once its
+// supertag node stands (graphstore.ErrSupertagNotHeld), graph_edges' tuple arm reads a pointer's
+// allowed targets from that attribute node (block_pointer_targets), and a stamped pointer row is
+// answered by that arm, so without the node the arm finds no limit at all. It is docs' helper of
+// the same name: graphstore's TestEveryStoreWriteCallSiteIsListed refuses a raw write of the store
+// outside a test file, so the two packages cannot share it through pmdoctest.
 func seedPointerAttribute(t *testing.T, database *store.Store, typeName, attrName string, targets []string) {
 	t.Helper()
 	ctx := context.Background()
@@ -89,6 +91,8 @@ func requireEdgeSources(t *testing.T, stage string, edges []model.GraphEdge, wan
 func TestASavedBlockPointerIsALinkNamedByItsAttribute(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	issue, _ := pointerSpec(t, handler)
 	specRef := "dispatch://" + issue.Key + "/spec"
 	r1 := specRef + "#b-r1"
@@ -150,6 +154,9 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 		{Name: "supports", BlockAttributeSchema: pmdoc.BlockAttributeSchema{Kind: pmdoc.BlockAttributeBlockList}},
 	}))
 	handler, database := blockIndexHandler(t)
+	// This schema's claim: a serves pointer at requirements alone, a supports pointer at any block.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
+	seedPointerAttribute(t, database, "claim", "supports", nil)
 	issue, _ := pointerSpec(t, handler)
 	r1 := "dispatch://" + issue.Key + "/spec#b-r1"
 	// The spec is a fragment of its issue's room; checks.md plays no role, so it is a room of its
@@ -203,6 +210,8 @@ func TestAPointerAndAProseCitationOfOneTargetAreTwoEdges(t *testing.T) {
 func TestABlockPointerAttributeLinksEachDistinctTargetOnce(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	// BlockPointerSchema(nil)'s claim: a serves pointer at requirements alone.
+	seedPointerAttribute(t, database, "claim", "serves", []string{"requirement"})
 	createReferenceAPIProject(t, handler, "ACME")
 	issue := createSpecIssue(t, handler, "ACME", ":::requirement{#r1}\nA requirement.\n:::\n\n:::requirement{#r2}\nAnother requirement.\n:::\n")
 	specRef := "dispatch://" + issue.Key + "/spec"

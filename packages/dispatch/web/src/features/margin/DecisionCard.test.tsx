@@ -241,6 +241,32 @@ test("a #id in the heading names the question of the decision's document in the 
   }
 });
 
+// A person's decision is the answered ask, whose question is the ask's own record: the server
+// reads a `#id` in it against the document the ask's block is on (`refs.ScopeOf`). The Decisions
+// view names no document for an ask's node, so the card names the ask as the source, and its name
+// reads the `#q2` as the question it names. Handed the document the view names, none, it would
+// keep `#q2`.
+test("a #id in a person's decision names the question of the ask's own record", async () => {
+  const ask = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const answers = answerQuestionOf("ask", ask);
+  const view = renderCard({
+    document: null,
+    kind: "person",
+    node: { id: ask, kind: "ask" },
+    question: "Settle #q2 first?",
+    ref: `dispatch://CORE-1/ask/${ask}`,
+    text: "Settle #q2 first?",
+  });
+  try {
+    expect(
+      await screen.findByRole("article", { name: `Decision: Settle ${NAMED_QUESTION} first?` })
+    ).toBeDefined();
+  } finally {
+    view.unmount();
+    answers.restore();
+  }
+});
+
 // Until the reader's engine has answered - the first paint, and for good where its chunk never
 // loads - the card is named after its heading as written, never `Decision: ` with no words and an
 // empty link (the reading list's `decision-heading-words`). A paint with no effects run is that

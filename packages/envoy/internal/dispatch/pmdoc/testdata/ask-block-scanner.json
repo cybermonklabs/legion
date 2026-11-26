@@ -1,0 +1,343 @@
+[
+  {
+    "name": "a line opens the block past its indentation and its containers' markers",
+    "why": "A typed block opens within three columns of the containers a line continues: a quote's `>`, a list item's marker (`-`, `*`, `+`, or digits and `.` or `)`) and a footnote label.",
+    "pmdoc": false,
+    "lines": [
+      ":::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "   :::ask{#b state=\"answered\" answer=\"Ship it.\"}",
+      "> :::ask{#c state=\"answered\" answer=\"Ship it.\"}",
+      ">>:::ask{#d state=\"answered\" answer=\"Ship it.\"}",
+      "- :::ask{#e state=\"answered\" answer=\"Ship it.\"}",
+      "*\t:::ask{#f state=\"answered\" answer=\"Ship it.\"}",
+      "+ :::ask{#g state=\"answered\" answer=\"Ship it.\"}",
+      "1. :::ask{#h state=\"answered\" answer=\"Ship it.\"}",
+      "12) :::ask{#i state=\"answered\" answer=\"Ship it.\"}",
+      "[^note]: :::ask{#j state=\"answered\" answer=\"Ship it.\"}",
+      "> - [^x]:  :::ask{#k state=\"answered\" answer=\"Ship it.\"}",
+      "::::ask{#l state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]
+  },
+  {
+    "name": "a line opens no ask block past what is not a container marker",
+    "why": "A list marker with no space or tab after it, a blank footnote label, text before the directive, two colons and another block type open no ask block.",
+    "pmdoc": false,
+    "lines": [
+      "-:::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "1.:::ask{#b state=\"answered\" answer=\"Ship it.\"}",
+      "[^ ]: :::ask{#c state=\"answered\" answer=\"Ship it.\"}",
+      "Quoted: :::ask{#d state=\"answered\" answer=\"Ship it.\"}",
+      "::ask{#e state=\"answered\" answer=\"Ship it.\"}",
+      ":::callout{#f}"
+    ],
+    "ids": []
+  },
+  {
+    "name": "no line of fenced code opens a block",
+    "why": "A fence of backticks or tildes, three or more, is closed only by a fence of the same character at least as long with nothing after it but blanks.",
+    "pmdoc": false,
+    "lines": [
+      "```",
+      ":::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "```",
+      "~~~",
+      ":::ask{#b state=\"answered\" answer=\"Ship it.\"}",
+      "~~~  ",
+      "````markdown",
+      ":::ask{#c state=\"answered\" answer=\"Ship it.\"}",
+      "```",
+      ":::ask{#d state=\"answered\" answer=\"Ship it.\"}",
+      "`````",
+      "~~~",
+      ":::ask{#e state=\"answered\" answer=\"Ship it.\"}",
+      "```",
+      ":::ask{#f state=\"answered\" answer=\"Ship it.\"}",
+      "~~~~",
+      "```",
+      ":::ask{#g state=\"answered\" answer=\"Ship it.\"}",
+      "``` text",
+      ":::ask{#h state=\"answered\" answer=\"Ship it.\"}",
+      "```",
+      ":::ask{#i state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["i"]
+  },
+  {
+    "name": "a line that only starts like a fence opens none",
+    "why": "A backtick fence's info string holds no backtick, so a line that starts with a code span opens no fence; nor do two backticks.",
+    "pmdoc": false,
+    "lines": [
+      "``` a ` b",
+      ":::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "``",
+      ":::ask{#b state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["a", "b"]
+  },
+  {
+    "name": "a fence opened past a container's marker is code like any other",
+    "why": "A fence opened in a quote, a footnote definition or a list item ends with that container, and what it holds is code.",
+    "pmdoc": false,
+    "lines": [
+      "> ```",
+      "> :::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "> ```",
+      "[^x]: ```",
+      "    :::ask{#b state=\"answered\" answer=\"Ship it.\"}",
+      "    ```",
+      "- ~~~",
+      "  :::ask{#c state=\"answered\" answer=\"Ship it.\"}",
+      "  ~~~",
+      ":::ask{#d state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["d"]
+  },
+  {
+    "name": "no line of the front matter a document opens with opens a block",
+    "why": "pmdoc keeps front matter as one node, word for word: a `---` and any spaces or tabs opens it and the first later line that is the same closes it.",
+    "pmdoc": false,
+    "lines": [
+      "---  ",
+      ":::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "title: Plan",
+      "---\t",
+      ":::ask{#b state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["b"]
+  },
+  {
+    "name": "front matter opens only on the first line",
+    "why": "A rule after text is no front matter.",
+    "pmdoc": false,
+    "lines": [
+      "Intro",
+      "---",
+      ":::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "---"
+    ],
+    "ids": ["a"]
+  },
+  {
+    "name": "an opening `---` nothing closes is no front matter",
+    "why": "An opening `---` that nothing closes is no front matter, and after it no typed block opens at the document's level (pmdoc's frontmatterAttempt, which wraps the typed block's parser in pmdoc/parse.go). The opener is paragraph text.",
+    "pmdoc": true,
+    "lines": [
+      "---",
+      ":::ask{#a state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": []
+  },
+  {
+    "name": "after an opening `---` nothing closes, neither a callout nor an ask block in it opens",
+    "why": "After an opening `---` that nothing closes, a callout does not open at the document's level either, so the ask block's opener inside it is paragraph text (pmdoc's frontmatterAttempt).",
+    "pmdoc": false,
+    "lines": [
+      "---",
+      ":::callout{#c}",
+      ":::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      ":::",
+      ":::"
+    ],
+    "ids": []
+  },
+  {
+    "name": "a footnote label holds an escaped bracket, and a block opens on its line",
+    "why": "A backslash before ASCII punctuation escapes it, so `\\]` and `\\[` are part of the label. An unescaped `[` makes the line no footnote label.",
+    "pmdoc": true,
+    "lines": [
+      "[^a\\]b]: :::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "",
+      "[^c\\[d]: :::ask{#b state=\"answered\" answer=\"Ship it.\"}",
+      "",
+      "[^e[f]: :::ask{#c state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["a", "b"]
+  },
+  {
+    "name": "a fence opened on the line of a footnote label that holds an escaped bracket is code",
+    "why": "The fence a label's line opens holds the lines of the definition that follow it, four columns in.",
+    "pmdoc": false,
+    "lines": [
+      "[^a\\]b]: ```",
+      "    :::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "    ```",
+      "",
+      ":::ask{#b state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["b"]
+  },
+  {
+    "name": "a line of an inline code span four columns past its containers opens no block",
+    "why": "An inline code span keeps the spaces at the start of its later lines, so such a line can start with an opener. Four columns or more past its containers' lines, the line goes on with the paragraph and opens no block. The columns of a footnote definition or a list item that the line goes on with are its containers' columns.",
+    "pmdoc": false,
+    "lines": [
+      "Text `code",
+      "    :::ask{#a state=\"answered\" answer=\"Ship it.\"}` more.",
+      "",
+      "[^n]: Note `code",
+      "        :::ask{#b state=\"answered\" answer=\"Ship it.\"}` more.",
+      "",
+      "    :::ask{#c state=\"answered\" answer=\"Ship it.\"}",
+      "",
+      "10. Item",
+      "",
+      "    :::ask{#d state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["c", "d"]
+  },
+  {
+    "name": "a line four columns past its containers' markers opens no block",
+    "why": "An opener four columns or more past the marker before it is indented code.",
+    "pmdoc": true,
+    "lines": [
+      "    > :::ask{#a state=\"answered\" answer=\"Ship it.\"}",
+      "",
+      ">     :::ask{#b state=\"answered\" answer=\"Ship it.\"}",
+      "",
+      "-     :::ask{#c state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": []
+  },
+  {
+    "name": "a list stays open at a line that reaches its empty last item's content column",
+    "why": "An empty item takes its content from the next line where that line reaches the item's content column and no blank line stands between them. So the list stays open, though goldmark closes it at a marker of another bullet character (pmdoc's emptyItemGuard.Continue).",
+    "pmdoc": true,
+    "lines": [
+      "-",
+      "   *",
+      "\t:::ask{#a state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["a"]
+  },
+  {
+    "name": "after indented code, an item numbered 10 opens a list in the quote a line of `>` opened",
+    "why": "After indented code, a line of only `>` counts as blank only where the list opens in no container that its own line opens (pmdoc's interruptsOpenBlock). Here the `>` line opened the quote a line before the item, so the code holds nothing open on the item's line, and the item numbered 10 opens a list in the quote.",
+    "pmdoc": true,
+    "lines": [
+      "    code",
+      ">",
+      "> 10. :::ask{#a state=\"answered\" answer=\"Ship it.\"}"
+    ],
+    "ids": ["a"]
+  },
+  {
+    "name": "a block opened on the line of a footnote label that holds an escaped bracket",
+    "why": "A backslash in a footnote's label escapes the `]` after it, as the renderer writes a label that holds one (pmdoc's escapeFootnoteLabel), so a block written on that label's line opens there.",
+    "pmdoc": true,
+    "lines": [
+      "See.[^a\\]b]",
+      "",
+      "[^a\\]b]: :::ask{#noted}",
+      "    Which?",
+      "    :::",
+      ""
+    ],
+    "ids": ["noted"]
+  },
+  {
+    "name": "a fence opened on the line of a footnote label that holds an escaped bracket, then a block after it",
+    "why": "A fence written on that label's line opens there, so the opener inside it is code.",
+    "pmdoc": true,
+    "lines": [
+      "See.[^a\\]b]",
+      "",
+      "[^a\\]b]: ```",
+      "    :::ask{#fenced}",
+      "    ```",
+      "",
+      ":::ask{#after}",
+      "Which?",
+      ":::",
+      ""
+    ],
+    "ids": ["after"]
+  },
+  {
+    "name": "a later block of a footnote four columns in, after a fence the label's line opened",
+    "why": "The definition's later blocks stand four columns in, as the renderer writes them.",
+    "pmdoc": true,
+    "lines": [
+      "See.[^a\\]b]",
+      "",
+      "[^a\\]b]: ```",
+      "    code",
+      "    ```",
+      "",
+      "    :::ask{#later}",
+      "    Which?",
+      "    :::",
+      ""
+    ],
+    "ids": ["later"]
+  },
+  {
+    "name": "a later block of a footnote four columns in",
+    "why": "A footnote definition's later blocks stand four columns in, as the renderer writes them.",
+    "pmdoc": true,
+    "lines": [
+      "See.[^n]",
+      "",
+      "[^n]: Note.",
+      "",
+      "    :::ask{#plain}",
+      "    Which?",
+      "    :::",
+      ""
+    ],
+    "ids": ["plain"]
+  },
+  {
+    "name": "a block opened on the line of a footnote label that holds only a form feed",
+    "why": "A label of a form feed is a label: goldmark's white space is the space, the tab and the line endings alone.",
+    "pmdoc": true,
+    "lines": [
+      "See.[^\f]",
+      "",
+      "[^\f]: :::ask{#x}",
+      "    Which?",
+      "    :::",
+      ""
+    ],
+    "ids": ["x"]
+  },
+  {
+    "name": "a line of indented code",
+    "why": "A line four columns or more past its containers opens no block: it is indented code.",
+    "pmdoc": true,
+    "lines": [
+      "Intro.",
+      "",
+      "    :::ask{#indented}",
+      "    Which?",
+      "    :::",
+      ""
+    ],
+    "ids": []
+  },
+  {
+    "name": "a line four columns past a quote's marker or a list item's",
+    "why": "The columns after a quote's `>` and a list item's marker are its containers' columns, so a line four past them is indented code.",
+    "pmdoc": true,
+    "lines": [
+      ">     :::ask{#quoted}",
+      "",
+      "-     :::ask{#listed}",
+      ""
+    ],
+    "ids": []
+  },
+  {
+    "name": "a line after a front-matter opener that no line closes",
+    "why": "After a front-matter opener that no line closes, no typed block opens at the document's level (pmdoc's frontmatterAttempt).",
+    "pmdoc": true,
+    "lines": [
+      "---",
+      ":::ask{#unclosed}",
+      "Which?",
+      ":::",
+      ""
+    ],
+    "ids": []
+  }
+]

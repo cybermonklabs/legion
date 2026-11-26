@@ -2,6 +2,7 @@ import { type InfiniteData, useQuery, useQueryClient } from "@tanstack/react-que
 import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
+import { issueAskThreadsQuery } from "../../api/queries";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
@@ -25,7 +26,7 @@ import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
-import { issueAskThreadsQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its

@@ -139,14 +139,13 @@ export function useVerificationReads(
   // from its block's `serves` pointer, which only that read carries (`tree-nodes.ts`). Drawn
   // before it answers, every check would stand at the table's foot as one that serves no
   // statement, every statement would read Unknown, and the line that counts a statement's checks
-  // elsewhere would call the issue's own checks "elsewhere". The results read answers the checks
-  // of one document, the issue's Verification document (`api/results.go`'s
-  // `verificationDocument`), and names it in a field of its own (`verification_artifact_id`),
-  // which no line here reads. It must agree with the document whose blocks
-  // `useIssueTree` reads, which that hook finds from the issue read (`roleDocument`); no other
-  // document's blocks place a check. The slot hands those blocks in (`blocks`, the view read's),
-  // with whether that read runs, so it sends no request of its own and sees whatever
-  // `useIssueTree`'s observer fetches; its `refetch` still fetches, which is what Retry asks.
+  // elsewhere would call the issue's own checks "elsewhere". The results read names the document
+  // holding each check, which no line here reads. It must agree with the document whose blocks
+  // `useIssueTree` reads, which that hook finds from the issue's verification query
+  // (`roleDocument`); no other document's blocks place a check. The slot hands those blocks in
+  // (`blocks`, the view read's), with whether that read runs, so it sends no request of its own
+  // and sees whatever `useIssueTree`'s observer fetches; its `refetch` still fetches, which is
+  // what Retry asks.
   // That read holds the statements too, so the view waits on it whether or not the results
   // read holds a check, and a read of it refused before it first answered is a line of its own,
   // with that read's own error and Retry.

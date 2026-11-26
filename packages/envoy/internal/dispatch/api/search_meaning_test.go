@@ -192,6 +192,21 @@ func windowTexts(t *testing.T, database *store.Store, kind, ownerKey string) map
 	return texts
 }
 
+// documentWindowOwner is the owner key the windows of document artifactID stand under, read as
+// their one writer reads it (refs.DocumentWindowOwner, R17 of the issue-tree spec): the issue's
+// tree artifact for a document converted into its issue's room, which keys the windows of every
+// document of the room, and the document's own id for one that is its own room. A test reading or
+// embedding a document's windows (windowTexts, embedWindowsAs) names this owner rather than the
+// artifact id, under which a converted document's windows are no longer written.
+func documentWindowOwner(t *testing.T, database *store.Store, artifactID string) string {
+	t.Helper()
+	owner, err := refs.DocumentWindowOwner(context.Background(), database.Pool, artifactID)
+	if err != nil {
+		t.Fatalf("read the owner key of the windows of %s: %v", artifactID, err)
+	}
+	return owner
+}
+
 // windowOwedItems writes the windows of every comment, message and ask the block-index tick's
 // window arm is owed, as that arm writes them (docs.windowItem, refs.WriteItemWindows), each
 // in a transaction of its own. A write of an item records its blocks alone and leaves the
@@ -947,9 +962,10 @@ func TestMeaningSearchFindsACommentByItsBestBlock(t *testing.T) {
 
 // TestMeaningSearchFindsADocumentOfAnIssueRoomByItsBestBlock: the spec of an issue born converted
 // is a document of its issue's room, whose index keeps the texts of the spec's blocks under the
-// room's tree artifact. Its three paragraphs are embedded as one window, and a hit on that window
-// names the paragraph whose own text ranks highest for the query, its text read where the index
-// keeps it (refs.DocumentRoomTextsSQL), not the window's first paragraph.
+// room's tree artifact, and the spec's windows under that artifact too (documentWindowOwner). Its
+// three paragraphs are embedded as one window, and a hit on that window names the paragraph whose
+// own text ranks highest for the query, its text read where the index keeps it
+// (refs.DocumentRoomTextsSQL), not the window's first paragraph.
 func TestMeaningSearchFindsADocumentOfAnIssueRoomByItsBestBlock(t *testing.T) {
 	const query = "theodolite recalibration"
 	const best = "The theodolite needs recalibration before the survey."
@@ -965,10 +981,13 @@ func TestMeaningSearchFindsADocumentOfAnIssueRoomByItsBestBlock(t *testing.T) {
 		t.Fatalf("the spec of %s lists no block holding %q", issue.Key, best)
 	}
 	windowOwedOwners(t, deps)
-	if windows := windowTexts(t, database, "document_block", issue.PrimaryArtifactID); len(windows) != 1 {
+	// The spec is the one document of the room holding a block - the tree's own fragment is
+	// empty, and the decisions query holds no fragment - so every window under the tree is its.
+	owner := documentWindowOwner(t, database, issue.PrimaryArtifactID)
+	if windows := windowTexts(t, database, "document_block", owner); len(windows) != 1 {
 		t.Fatalf("the spec's windows = %v, want one window over its three paragraphs", windows)
 	}
-	embedWindowsAs(t, database, embedder, "document_block", issue.PrimaryArtifactID, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, "document_block", owner, angledVector(0.9, 2))
 	processAllPending(t, database, embedder)
 
 	response := searchResponse(t, handler, "q="+url.QueryEscape(query))

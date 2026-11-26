@@ -76,13 +76,19 @@ var queryTakes = map[string][]string{
 	graphstore.QueryDecisions:    graphstore.QueryTakes(graphstore.QueryDecisions),
 }
 
+// questionAsk is the kind of an ask a session or a person asked (asks.kind). The other kind is
+// `approval`, a request of a document's approval, which is an ask of the issue's conversation
+// and no question the issue asked.
+const questionAsk = "question"
+
 // decisionsTakes is the decisions query's rule: of the types graphstore.QueryTakes lists for it,
-// each ask by the ask's own node, never the block that shows it in a document; each decision; and
-// each reading of a decision, whose parent in the walk is a decision or a person's answered ask,
-// the decision that ask is. A reading in an ask a person answered stands under the ask's own node
-// (refs.DecisionFacts places its part_of there), and the decisions read lists it under that ask's
-// entry; a reading in an ask nobody has answered is no reading yet and stands under the ask's
-// block, which this rule never takes it under.
+// each ask of kind question (question) by the ask's own node, never the block that shows it in a
+// document, and never a request of a document's approval; each decision; and each reading of a
+// decision, whose parent in the walk is a decision or a person's answered ask, the decision that
+// ask is, which is an ask this rule takes. A reading in an ask a person answered stands under the
+// ask's own node (refs.DecisionFacts places its part_of there), and the decisions read lists it
+// under that ask's entry; a reading in an ask nobody has answered is no reading yet and stands
+// under the ask's block, which this rule never takes it under.
 func decisionsTakes(tree IssueTree, index int) bool {
 	node := tree.Nodes[index]
 	if !slices.Contains(queryTakes[graphstore.QueryDecisions], node.Type) {
@@ -90,16 +96,24 @@ func decisionsTakes(tree IssueTree, index int) bool {
 	}
 	switch node.Type {
 	case graphstore.SupertagAsk:
-		return node.Kind == graphstore.KindAsk
+		return tree.question(node)
 	case refs.ReadingSupertag:
 		at, held := tree.index[node.Parent]
 		if !held {
 			return false
 		}
 		parent := tree.Nodes[at]
-		return parent.Type == refs.DecisionSupertag || parent.Kind == graphstore.KindAsk
+		return parent.Type == refs.DecisionSupertag || tree.question(parent)
 	}
 	return true
+}
+
+// question is whether node is the node of an ask of kind question (questionAsk): an ask of the
+// issue's conversation, whose kind the walk's read of the conversation answered with the ask
+// (refs.ExcerptedNode's AskKind). It reads nothing, and is false for an ask the conversation does
+// not hold.
+func (tree IssueTree) question(node TreeNode) bool {
+	return node.Kind == graphstore.KindAsk && tree.Conversation[node.target()].AskKind == questionAsk
 }
 
 // TreeNode is one node of an issue's tree as a walk takes it: its kind and its id, as the store

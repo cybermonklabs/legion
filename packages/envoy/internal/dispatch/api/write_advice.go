@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -138,7 +139,7 @@ type adviceAsks struct {
 // ordinary issue gains no query at all. status is the issue's status as the write committed it,
 // the same value writeAdvice reports. route names the caller for the two queries whose failure
 // is logged rather than returned (declinedAsksAdvice, legionManagedStatusAdvice). appending is
-// the event the write appends after the advice is read (writeAdvice), and asks what the write
+// the event the write appends after the advice is read (writeAdvice), and moved what the write
 // moves about the issue's open asks (adviceAsks). row is the issue row as the write leaves it
 // when the write reads its advice before it writes that row (writeAdviceBefore), nil to read
 // the stored one.
@@ -148,7 +149,7 @@ func (s *server) computeWriteAdvice(
 	route string,
 	issueKey string,
 	actor model.Actor,
-	asks adviceAsks,
+	moved adviceAsks,
 	status string,
 	appending string,
 	opensAQuestion bool,
@@ -179,17 +180,17 @@ func (s *server) computeWriteAdvice(
 	if err := s.runAdviceQueryHook(ctx, tx, "your_open_asks"); err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
-	// An ask is open as its node holds it (askNodeStateOf), as every read of an answer reads it
+	// An ask is open as its node holds it (asks.NodeStateOf), as every read of an answer reads it
 	// (R3): the read takes one issue's asks, so it picks by the node alone.
 	rows, err := tx.Query(ctx, `
 		select id::text, question from asks a
 		where issue_key = $1
 		  and author->>'kind' = 'session' and author->>'id' = $2
-		  and ((`+askNodeStateOf("a")+` = 'open' and id::text <> all(coalesce($3::text[], '{}')))
+		  and ((`+asks.NodeStateOf("a")+` = 'open' and id::text <> all(coalesce($3::text[], '{}')))
 		    or id::text = any(coalesce($5::text[], '{}')))
 		order by created_at, id
 		limit $4
-	`, issueKey, actor.ID, asks.excluded, adviceOpenAskLimit, asks.opened)
+	`, issueKey, actor.ID, moved.excluded, adviceOpenAskLimit, moved.opened)
 	if err != nil {
 		return nil, &adviceQueryError{query: "your_open_asks", err: err}
 	}
@@ -325,7 +326,7 @@ func declinedAskHead(text string) string {
 }
 
 // declinedResolution is the SQL predicate, on resolution, an ask's resolution as its node holds it
-// (askNodeResolutionOf), that holds for an ask a person declined to answer
+// (asks.NodeResolutionOf), that holds for an ask a person declined to answer
 // (model.AskResolutionDeclined), as withdrawnAsk is the one for an ask a close withdrew. The
 // resolution is read off the node, as every read of an answer reads it (R3); it is none on an ask
 // the node holds other than resolved.
@@ -350,7 +351,7 @@ func (s *server) readDeclinedAsks(ctx context.Context, tx pgx.Tx, issueKey strin
 	rows, err := tx.Query(ctx, `
 		select a.id::text, a.question, coalesce(r.resolution->>'reason', '')
 		from asks a
-		cross join lateral (select `+askNodeResolutionOf("a")+` as resolution) r
+		cross join lateral (select `+asks.NodeResolutionOf("a")+` as resolution) r
 		where a.issue_key = $1 and r.`+declinedResolution+`
 		order by a.created_at, a.id
 	`, issueKey)
