@@ -78,6 +78,12 @@ type Trace struct {
 	// about and the reason: a line that disagrees with what the trace already holds, a move whose
 	// trigger has no source, a turn end with no start. The trace still places what it can of it.
 	Unplaced []UnplacedFact
+	// shownPriorities, where set, is the priority Dispatch resolves for each issue, which the
+	// replay's copy of Dispatch shows in place of the issue's own under a rule with the new P0 start
+	// (record.SlotRule.P0AboveCap, shadow.priorities): the start state records each issue at the
+	// one standing just before its moment (seeder.startRecord). Nil for a record's own trace and
+	// under every other rule, whose start state records each issue's own priority.
+	shownPriorities *resolvedPriorities
 }
 
 type claimCause struct {

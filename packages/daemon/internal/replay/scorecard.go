@@ -45,8 +45,10 @@ type Scorecard struct {
 	// one order for every rule: PriorityTaken by rank alone (record.RankLess over the tree root's
 	// rank, then the issue's own), the order of the lines the recorded windows ran, which R5 and
 	// the forecast read; PriorityTakenBanded in today's line's order (record.Waiting under the
-	// daemon's own rule, SlotRule.PriorityFirst), the band of the priority that places each issue
-	// first (record.PriorityOf) and then the same, which the comparison judges the rules on.
+	// daemon's own rule, SlotRule.PriorityFirst), the band of the priority Dispatch resolves for
+	// each issue first (record.PriorityOf over the resolved priorities, spec R10) and then the same,
+	// which the comparison judges the rules on. A window that lacks the history of an ancestor a
+	// resolved priority rests on gives no PriorityTakenBanded, which stands at 0 (Measure).
 	PriorityTaken       float64 `json:"priorityTaken"`
 	PriorityTakenBanded float64 `json:"priorityTakenBanded"`
 	// Loops is the rounds and hours of the send-back loops, by the word of their cause.
@@ -69,8 +71,10 @@ type Scorecard struct {
 	// DoneAt is when each issue that reached done in the window did, by issue key.
 	DoneAt map[string]time.Time `json:"doneAt"`
 	// UrgentWaits is the wait of urgent work, P0's and P1's apart, each where an issue counts in it
-	// (UrgentWait, urgentWaits): it runs on past To to the end of the run, the window's run-out, and
-	// the first day apart holds none. A record read before it held them has it nil.
+	// by the priority Dispatch resolves for it (UrgentWait, urgentWaits): it runs on past To to the
+	// end of the run, the window's run-out, and the first day apart holds none. A record read before
+	// it held them has it nil; a window that lacks the history of an ancestor a resolved priority
+	// rests on gives it empty (Measure).
 	UrgentWaits map[string]UrgentWait `json:"urgentWaits"`
 	// DoneByAnyone is how many issues of the window's project Dispatch shows reaching done in
 	// [From, To), by any actor: Legion's own done (Done) and a close made outside Legion alike.
@@ -155,23 +159,35 @@ type UrgentMean struct {
 
 // Score is the scorecard of w read from its record alone, with no replay (spec R4: "The tool also
 // reads each measure from the record of a window"): the line timeline of its trace (lineTimeline),
-// the ranks its own Dispatch events show and, at each moment, the rule its daemon ran then, read by
-// Measure as a replay's two timelines are. Unplaced is how many issues a fact the trace could not
-// place leaves in doubt at the window's start (unplacedAtStart); a record runs under no rule,
-// branch, seed or scenario and rests on none of a replay's assumptions, so it names none.
+// the ranks its own Dispatch events show, the priorities Dispatch resolves from them and, at each
+// moment, the rule its daemon ran then, read by Measure as a replay's two timelines are. Unplaced
+// is how many issues a fact the trace could not place leaves in doubt at the window's start
+// (unplacedAtStart); a record runs under no rule, branch, seed or scenario and rests on none of a
+// replay's assumptions, so it names none.
 func Score(w Window) (Scorecard, error) {
-	t, err := BuildTrace(w)
-	if err != nil {
-		return Scorecard{}, err
-	}
-	return scoreTrace(t), nil
+	card, _, err := ScoreRecord(w)
+	return card, err
 }
 
-// scoreTrace is the scorecard of the record t is the trace of (Score), for a reader that builds the
-// trace once for more than the scorecard, with what its trace alone gives (traceMeasures) and what
-// the forecast reads of its line timeline (forecastReadings).
-func scoreTrace(t Trace) Scorecard {
-	timeline := lineTimeline(t, ranksOf(t), t.ruleAt)
+// ScoreRecord is Score, with each ancestor whose history w lacks on which the priority Dispatch
+// resolves for an issue of it rests (resolvedPriorities.missingAncestors), empty for none: where
+// it names any, the scorecard holds no wait of urgent work and no priority taken in today's line's
+// order, and a reader prints neither and names the missing input in their place.
+func ScoreRecord(w Window) (Scorecard, []string, error) {
+	t, err := BuildTrace(w)
+	if err != nil {
+		return Scorecard{}, nil, err
+	}
+	priorities := resolvePriorities(t)
+	return scoreTrace(t, priorities), priorities.missingAncestors(), nil
+}
+
+// scoreTrace is the scorecard of the record t is the trace of (Score), whose priorities Dispatch
+// resolves are priorities (resolvePriorities), for a reader that builds the trace once for more
+// than the scorecard, with what its trace alone gives (traceMeasures) and what the forecast reads
+// of its line timeline (forecastReadings).
+func scoreTrace(t Trace, priorities resolvedPriorities) Scorecard {
+	timeline := lineTimeline(t, ranksOf(t, priorities), priorities, t.ruleAt)
 	card := Measure(timeline)
 	card.Source, card.Unplaced, card.Assumptions = "record", unplacedAtStart(t), []int{}
 	traceMeasures(&card, t)

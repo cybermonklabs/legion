@@ -103,7 +103,7 @@ func writeLimitRun(t *testing.T, in LimitsInput, e LimitEntry, a limitAnswer) {
 	}
 	ran := runRecord{Rule: e.Rule, RuleCommit: replayedRule(t, e.Rule).Commit, Branch: branch, Seed: e.Seed, Slowdown: e.Slowdown, Cap: e.Cap,
 		TokenLimit: e.TokenLimit, IdleAfter: e.IdleAfter, Limits: e.Limits, Scenario: branch.NeverStarted, Assumptions: []int{1},
-		SignalSummaries: summaries, SuppliedRefused: map[string]int{}, StartedAt: compareFrom, Gaps: Gaps(card, card)}
+		SignalSummaries: summaries, SuppliedRefused: map[string]int{}, MissingAncestors: []string{}, StartedAt: compareFrom, Gaps: Gaps(card, card)}
 	dir := filepath.Join(in.RunsDir, e.Out)
 	for name, value := range map[string]any{runFile: ran, scorecardFile: card, lineScorecardFile: card} {
 		if err := writeJSON(filepath.Join(dir, name), value); err != nil {

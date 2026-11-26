@@ -15,7 +15,9 @@ package record
 // of either answer is left; MainRule's field turns on there. Until then the field
 // (SlotRule.P0AboveCap) is off in the daemon's own rule (MainRule), in the rules the recorded
 // windows ran and in before-p0, so the daemon admits as it did, and on in the candidates
-// p0-at-once and p0-idle, which a replay runs.
+// p0-at-once, p0-idle, signals and signals-backoff, which a replay runs. The same field says a rule
+// reads the priority Dispatch resolves for each issue, for its P0 start, its line's order and its
+// holder counts (decidingPriority): spec R10 makes the two one requirement.
 
 // SlotHolders is a project's holders of an admission slot as the cap and a P0 bound count them
 // under one rule (SlotRule.HoldersOf): P0, the holders that started outside the cap under it
@@ -39,13 +41,19 @@ func (r SlotRule) StartsOutsideCap(issue Issue) bool {
 }
 
 // decidingPriority is the priority that decides whether issue is P0 for R10, the one place the
-// seam reads a priority (StartsOutsideCap, and through it HoldersOf and AddHolder): the issue's
-// own Dispatch priority (Issue.Priority), never the one PriorityOf gives it for its place in the
-// line, so a P0 tree root makes none of its children P0. Spec R10 decides P0 by the priority
-// Dispatch resolves for the issue (its own where set, else the top issue of its Dispatch parent
-// chain), and with a Dispatch release that supplies none only an issue whose own priority is P0
-// qualifies, which is this answer. The resolved priority replaces it here, once the record and a
-// replay carry one.
+// seam reads a priority (StartsOutsideCap, and through it HoldersOf and AddHolder): the priority
+// the record carries (Issue.Priority), never the one PriorityOf gives it for its place in the line.
+// Spec R10 decides P0 by the priority Dispatch resolves for the issue: its own where set, else that
+// of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32
+// levels, else none; with a Dispatch release that supplies none, only an issue whose own priority
+// is P0 qualifies. The daemon's record keeps the own priority alone, which is that last answer, so
+// on this branch's daemon the own priority stands in. A replay under a rule whose P0AboveCap is on
+// gives the record the resolved priority in its place: its copy of Dispatch serves the resolved
+// priority as each issue's priority (the replay's shadow.priorities), so this answer is the
+// resolved one there, and so is PriorityOf's for the line, since an issue that resolves to none has
+// a tree root that resolves to none. Once the daemon's record keeps the resolved priority Dispatch
+// serves, this function reads that field, and the replay's copy of Dispatch serves it there in
+// place of the own priority: a change of this function and of that one place of the replay.
 func decidingPriority(issue Issue) Priority {
 	return issue.Priority
 }

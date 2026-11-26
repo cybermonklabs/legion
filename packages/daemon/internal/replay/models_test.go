@@ -98,14 +98,14 @@ func checkDays(t *testing.T, model LoadModel, want []wantDay) {
 func checkDaysInFlight(t *testing.T, w Window, models LoadModels) {
 	t.Helper()
 	trace := placedTrace(t, w)
-	timeline := lineTimeline(trace, ranksOf(trace), trace.ruleAt)
+	timeline := recordLineTimeline(trace)
 	measured := newMeasuring(timeline)
 	for _, model := range models.Models {
 		for _, day := range model.Days {
 			assertNear(t, model.Name+" "+day.Day+" in flight", day.InFlight, measured.span(day.From, day.To).InFlight.Average)
 		}
 	}
-	assertNear(t, "issue-hours in flight over the span", inFlightSteps(timeline).hours(w.From, w.To), scoreTrace(trace).InFlight.Hours)
+	assertNear(t, "issue-hours in flight over the span", inFlightSteps(timeline).hours(w.From, w.To), scoreTrace(trace, resolvePriorities(trace)).InFlight.Hours)
 }
 
 // printedModels is models as Write prints them.

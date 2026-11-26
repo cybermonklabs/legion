@@ -19,7 +19,7 @@ func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, 
 	rec := windowRecord{Name: name, Project: "ACME", From: from, To: to,
 		Scorecard: lineReadings(Scorecard{From: from, To: to, FirstSlot: map[string]time.Time{"ACME-1": recordedAt}, DoneAt: map[string]time.Time{},
 			UrgentWaits: map[string]UrgentWait{}}),
-		WaitsGaveBack: []waitGaveBack{}}
+		WaitsGaveBack: []waitGaveBack{}, MissingAncestors: []string{}}
 	if named {
 		rec.Rule = rule
 	}
@@ -42,7 +42,7 @@ func issueTimesRuns(t *testing.T, dir, name, rule string, named bool, from, to, 
 			line.FirstSlot["ACME-1"] = replayedAt
 		}
 		must(writeJSON(filepath.Join(run, runFile), runRecord{Rule: rule, Branch: at.Branch, Seed: 1, Slowdown: 1,
-			SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{}}))
+			SignalSummaries: map[string]SignalSummary{}, SuppliedRefused: map[string]int{}, MissingAncestors: []string{}}))
 		must(writeJSON(filepath.Join(run, scorecardFile), Scorecard{From: from, To: to, UrgentWaits: map[string]UrgentWait{}}))
 		must(writeJSON(filepath.Join(run, lineScorecardFile), line))
 	}
@@ -178,6 +178,57 @@ func TestRunsWrittenBeforeTheUrgentWaitsAreRefused(t *testing.T) {
 				named = path
 			}
 			for _, want := range []string{named, "urgentWaits", "priorityTakenBanded", "again"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal %q does not say %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A run whose run.json was written before it named the ancestors whose history its window lacks
+// (missingAncestors), and a window's record.json written before it named them, are refused by every
+// report read from runs, with an error that names the file and says it must be run again: such a
+// run read each issue's own priority in its measures, not the one Dispatch resolves, and nothing
+// in it says whether a measure rested on an ancestor its window lacks (spec R10). The test writes
+// the runs of issueTimesRuns and then takes missingAncestors out of one run's run.json, and, apart,
+// out of the window's record.json.
+func TestRunsWrittenBeforeTheMissingAncestorsAreRefused(t *testing.T) {
+	t.Parallel()
+	const window, rule = "old-runs", "legion-v20.42.5"
+	from := time.Date(2001, time.March, 5, 0, 0, 0, 0, time.UTC)
+	for _, old := range []struct {
+		name string
+		file func(dir string) string
+	}{
+		{"a run's run.json", func(dir string) string { return filepath.Join(runDir(dir, window, rule, MainBranchAt, 1), runFile) }},
+		{"the window's record.json", func(dir string) string { return filepath.Join(dir, window, recordFile) }},
+	} {
+		t.Run(old.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			issueTimesRuns(t, dir, window, rule, true, from, from.Add(24*time.Hour), from.Add(time.Hour), from.Add(time.Hour))
+			if _, err := ReadRuns(dir); err != nil {
+				t.Fatalf("the runs as written are refused: %v", err)
+			}
+			path := old.file(dir)
+			var fields map[string]any
+			if err := readJSON(path, &fields); err != nil {
+				t.Fatal(err)
+			}
+			delete(fields, "missingAncestors")
+			if err := writeJSON(path, fields); err != nil {
+				t.Fatal(err)
+			}
+			_, err := ReadRuns(dir)
+			if err == nil {
+				t.Fatalf("runs with %s written before it named the missing ancestors are read", old.name)
+			}
+			named := filepath.Dir(path)
+			if old.name == "the window's record.json" {
+				named = path
+			}
+			for _, want := range []string{named, "missingAncestors", "again"} {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("the refusal %q does not say %q", err, want)
 				}

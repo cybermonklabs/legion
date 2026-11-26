@@ -91,17 +91,19 @@ type SlotRule struct {
 	// (PhaseRow.HandoffCommit) while the issue waits in merging for the merge itself. It is read
 	// only under a rule that keeps a slot in merging (KeepsSlotIn).
 	ReleaseAtReady bool
-	// P0AboveCap says whether an issue whose own Dispatch priority is P0 (Issue.Priority) starts
-	// outside the cap, R10 of the tool's spec: the cap counts only the holders that did not start
-	// outside it, so the pass that would start such an issue but for the cap starts it, whatever
-	// the number of slots in use, while fewer such issues than the P0 bound in force hold a slot,
-	// or always where none is in force; and every other hold on a start holds it as before. The
-	// issue's own priority alone counts: a root's priority places its tree's members in a line that
-	// orders by priority (PriorityOf) and starts none of them outside the cap. Below P0 the cap
-	// holds as the daemon's own rule holds it. Every reader reads it through StartsOutsideCap and
-	// HoldersOf (p0_start.go), whose doc says what replaces them when cybermonklabs/legion#5488
-	// merges; until then it is off in MainRule and the recorded rules, and on in p0-at-once and
-	// p0-idle alone.
+	// P0AboveCap says whether an issue that is P0 starts outside the cap, R10 of the tool's spec:
+	// the cap counts only the holders that did not start outside it, so the pass that would start
+	// such an issue but for the cap starts it, whatever the number of slots in use, while fewer such
+	// issues than the P0 bound in force hold a slot, or always where none is in force; and every
+	// other hold on a start holds it as before. Under it the priority Dispatch resolves decides: the
+	// issue's own, else that of the nearest issue above it on its Dispatch parent chain that has one,
+	// in any project, for the P0 start, the line's priority order and the holder counts; where
+	// Dispatch supplies none, as to this branch's daemon, whose record keeps the own priority alone,
+	// the issue's own priority stands in (decidingPriority), and a replay under the field supplies
+	// the resolved one. Below P0 the cap holds as the daemon's own rule holds it. Every reader reads
+	// it through StartsOutsideCap and HoldersOf (p0_start.go), whose doc says what replaces them
+	// when cybermonklabs/legion#5488 merges; until then it is off in MainRule and the recorded
+	// rules, and on in p0-at-once, p0-idle, signals and signals-backoff.
 	P0AboveCap bool
 	// IdleReturn is how long a slot holder that waits on its children or on a person may go with
 	// no turn of any of its roles before it gives its slot back (LineFacts.IdleReturns, admit's

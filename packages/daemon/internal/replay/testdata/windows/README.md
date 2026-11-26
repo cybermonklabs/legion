@@ -34,6 +34,7 @@ This file gives the conventions every window is written and worked by, once: the
 | `no-crossing-due` | no deadline is due at first, and a new kill moves the pending deadline before it fires | `signals` |
 | `p0-inherited-across-projects` | at a full cap, a child that inherits P0 from another project's ancestor starts, an explicit P1 child waits, and an ancestor's raise moves a waiting issue to P0 at that moment | `main`, `p0-at-once` |
 | `p0-inherited-ancestor-missing` | the same window without the required ancestor's record: the rule with the new P0 start is refused, naming it | `main`; `p0-at-once` refused |
+| `p0-inherited-from-the-nearest-ancestor` | a child with no priority of its own takes its parent's P0, not the P2 of the top issue of its chain, and starts at a full cap | `main`, `p0-at-once` |
 | `p0-recorded-descendant-update` | Dispatch's recorded update of a child whose own priority stays null and whose resolved priority becomes P0 starts it at a full cap | `main`, `p0-at-once` |
 | `one-free-slot-opposite-order` | one free slot and two issues below P0 in opposite order under the recorded rule and by resolved priority | `main`, `p0-at-once` |
 | `git-store-verdicts` | on the branch that asks git, a read that the store answers with a conflict where the record shows none, and a read that it answers clean where the record shows a conflict | `legion-v20.42.5`, `main` |
@@ -48,10 +49,9 @@ This file gives the conventions every window is written and worked by, once: the
 The three windows of R10, the start of a P0 issue outside the cap, run it under `p0-at-once`, and under `main` once cybermonklabs/legion#5488 merges and `main` starts a P0 issue outside the cap.
 Until then each run under `main` waits on the skip list (`pending_test.go`, ruling D16), and its expected values are those of the run under `p0-at-once`.
 
-The four windows of spec v36's R10 rest on the priority Dispatch resolves for an issue: its own, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels.
+The five windows of R10 that rest on the priority Dispatch resolves for an issue, spec v36's four and the nearest-ancestor row of spec v49 (`p0-inherited-from-the-nearest-ancestor`), read it as Dispatch resolves it: an issue's own, else that of the nearest issue above it on its Dispatch parent chain that has one, in any project, up to 32 levels.
 `main`, the recorded rule on this branch, starts an issue outside the cap on its own P0 alone and orders its line by the issue's own priority, else its tree root's; `p0-at-once` reads the resolved priority for the P0 start and the line's order; and the measures read it under every rule, so `urgentWaits` and `priorityTakenBanded` count an issue at its resolved priority under `main` too.
-Their record names an issue's parent in another project, ACMEAUX, as its events do; `p0-recorded-descendant-update` is Dispatch's record from a release that serves `resolved_priority`, and the three others are from before it, so the replay reconstructs the resolved priority from the window's parent chains.
-Each waits on the skip list (`pending_test.go`) until the replay reads the resolved priority (plan task t39).
+Their record names an issue's parent in another project, ACMEAUX, as its events do; `p0-recorded-descendant-update` is Dispatch's record from a release that serves `resolved_priority`, and the four others are from before it, so the replay reconstructs the resolved priority from the window's parent chains.
 
 The seven windows from `git-store-verdicts` on are worked by the spec's R2 as "The branch that asks git, and the generator's profile" below gives it.
 `drawn-skipped-loop` and `drawn-boot-earlier-phase` hold no git input and exercise the generator's legacy merge count.
@@ -320,9 +320,10 @@ The windows `git-store-verdicts`, `git-unanswered-reads`, `merge-event-time`, `d
 - In `medianSlotWaitMinutes`, a queued root waits for a slot from its filing (or the end of its links), a child from the moment its first phase can start, and a returned issue from its owed start or the end of its wait.
   An issue that takes its slot in the pass where it begins to wait waited 0; an even count takes the mean of the two middle values.
 
-- `priorityTakenBanded` is `priorityTaken` in today's line's order, the band of the issue's own Dispatch priority, else its tree root's, first (P0 first, none after P3).
+- `priorityTakenBanded` is `priorityTaken` in today's line's order, the band of the priority Dispatch resolves for each issue first (its own, else that of the nearest issue above it that has one; P0 first, none after P3), under every rule.
   In a window where no issue has a priority every issue stands in one band, so the two are equal; `expect.json` gives `priorityTakenBanded` wherever it is not 0.
-  The four windows of spec v36's R10 band each issue by its resolved priority, and count it in `urgentWaits` by it, under every rule.
+  `urgentWaits` counts each issue by the same resolved priority, under every rule.
+  A window that lacks the history of an ancestor such a priority rests on gives `priorityTakenBanded` 0 and no `urgentWaits` (`p0-inherited-ancestor-missing`).
 
 - `urgentWaits` holds `P0` and `P1` where an issue counts in them, and is left out of `expect.json` where none does.
   Its waits run past `to` to the end of the run-out, and are cut there (`cut`) for an issue with no first slot or no `done` by then; an issue that stood `todo` from before `from` counts from `from`.

@@ -29,13 +29,14 @@ const LoopsRedefined = "loops[" + string(GroupRedefined) + "]"
 
 // quantity is one number a forecast compares: its name, its kind, the gap of the measure it is read
 // from — R5's, or, where measured, the replay's own error on the measure across the change
-// (ForecastCheck.Measured) — the send-back causes it counts (for a loop's), and how it is read from a
-// scorecard.
+// (ForecastCheck.Measured) — the send-back causes it counts (for a loop's), whether it rests on the
+// priority Dispatch resolves (the wait of urgent work's), and how it is read from a scorecard.
 type quantity struct {
 	name     string
 	kind     string
 	gap      Gap
 	measured bool
+	resolved bool
 	causes   []Cause
 	of       func(Scorecard) float64
 }
@@ -133,17 +134,21 @@ func forecastQuantities(cards ...Scorecard) []quantity {
 			rate("waits["+word+"].count", gapThirty, nil, func(card Scorecard) float64 { return float64(card.Waits[word].Count) }),
 			rate("waits["+word+"].hours", gapThirty, nil, func(card Scorecard) float64 { return card.Waits[word].Hours }))
 	}
+	resolved := func(q quantity) quantity {
+		q.resolved = true
+		return measured(q)
+	}
 	for _, priority := range urgentPriorities {
 		key := priority.String()
 		wait := "urgentWaits[" + key + "]"
 		quantities = append(quantities,
-			measured(rate(wait+".issues", Gap{}, nil, func(card Scorecard) float64 { return float64(card.UrgentWaits[key].Issues) })),
-			measured(average(wait+".firstSlot.meanMinutes", Gap{}, func(card Scorecard) float64 { return card.UrgentMeans[key].FirstSlotMinutes })),
-			measured(quantity{name: wait + ".firstSlot.cut share", kind: QuantityShare, of: func(card Scorecard) float64 {
+			resolved(rate(wait+".issues", Gap{}, nil, func(card Scorecard) float64 { return float64(card.UrgentWaits[key].Issues) })),
+			resolved(average(wait+".firstSlot.meanMinutes", Gap{}, func(card Scorecard) float64 { return card.UrgentMeans[key].FirstSlotMinutes })),
+			resolved(quantity{name: wait + ".firstSlot.cut share", kind: QuantityShare, of: func(card Scorecard) float64 {
 				return share(card.UrgentWaits[key].FirstSlot.Cut, card.UrgentWaits[key].Issues)
 			}}),
-			measured(average(wait+".done.meanMinutes", Gap{}, func(card Scorecard) float64 { return card.UrgentMeans[key].DoneMinutes })),
-			measured(quantity{name: wait + ".done.cut share", kind: QuantityShare, of: func(card Scorecard) float64 {
+			resolved(average(wait+".done.meanMinutes", Gap{}, func(card Scorecard) float64 { return card.UrgentMeans[key].DoneMinutes })),
+			resolved(quantity{name: wait + ".done.cut share", kind: QuantityShare, of: func(card Scorecard) float64 {
 				return share(card.UrgentWaits[key].Done.Cut, card.UrgentWaits[key].Issues)
 			}}))
 	}
@@ -206,6 +211,11 @@ type ForecastResult struct {
 	// after ran, whose workflow changes between them the forecast carries too (plan D1).
 	FromCommit string `json:"fromCommit"`
 	ToCommit   string `json:"toCommit"`
+	// MissingAncestors is, for each of the two windows that lacks the history of an ancestor on
+	// which the priority Dispatch resolves for an issue of it rests, by the window's name, each such
+	// ancestor (windowRecord.MissingAncestors): the forecast then compares no number of the wait of
+	// urgent work, which rests on that priority, and names the missing input in its place.
+	MissingAncestors map[string][]string `json:"missingAncestors,omitempty"`
 	// Reused is each part a forecast run found every run of in its directory of runs already, made
 	// by the same legion binary, and so ran none of again (RunForecast); none for a forecast read
 	// from runs alone.
@@ -231,35 +241,42 @@ func (f ForecastResult) Pass() bool {
 // window before under the rule after the change (Forecasts); the replays of the window before under
 // its own rule (Own) and of the window after under its own (AfterOwn), which say which numbers the
 // change moves and the replay's own error on a measure; and the forecast's control, the replays of
-// the window after under the rule before the change (Controls).
+// the window after under the rule before the change (Controls). BeforeMissing and AfterMissing are
+// the ancestors whose history the window before and the window after lack, on which a priority
+// Dispatch resolves rests (windowRecord.MissingAncestors): with any, no number of the wait of
+// urgent work is compared, and the window gives no own error of a measure that rests on it.
 type ForecastCards struct {
 	Before, After                      Scorecard
 	Forecasts, Own, AfterOwn, Controls []Scorecard
+	BeforeMissing, AfterMissing        []string
 }
 
 // ownError is the replay's own error across the recorded change of the rule on the number that of
 // reads from a scorecard (plan t34 (d)), which a measured number of the forecast takes as its gap and
 // the comparison of rules holds each difference between two rules to (spec R7): the larger of the
 // two windows' errors, each the mean over the seeds of the window's replays under its own rule (Own,
-// AfterOwn) against its record's value (Before, After). A window whose record, or each of whose
-// replays, gives no value of the number (of answers false: a wait of urgent work with no issue of
-// its priority) gives no error; measured is false where cards hold no replay of one of the windows
-// under its own rule, or where neither window gives an error.
-func (cards ForecastCards) ownError(of func(Scorecard) (float64, bool)) (largest float64, measured bool) {
+// AfterOwn) against its record's value (Before, After). of reads a scorecard of a window that lacks
+// an ancestor's history (BeforeMissing, AfterMissing) told so (unresolved). A window whose record,
+// or each of whose replays, gives no value of the number (of answers false: a wait of urgent work
+// with no issue of its priority, or one that rests on a priority the window cannot give) gives no
+// error; measured is false where cards hold no replay of one of the windows under its own rule, or
+// where neither window gives an error.
+func (cards ForecastCards) ownError(of func(card Scorecard, unresolved bool) (float64, bool)) (largest float64, measured bool) {
 	if len(cards.Own) == 0 || len(cards.AfterOwn) == 0 {
 		return 0, false
 	}
 	for _, w := range []struct {
-		record  Scorecard
-		replays []Scorecard
-	}{{cards.Before, cards.Own}, {cards.After, cards.AfterOwn}} {
-		recorded, ok := of(w.record)
+		record     Scorecard
+		replays    []Scorecard
+		unresolved bool
+	}{{cards.Before, cards.Own, len(cards.BeforeMissing) > 0}, {cards.After, cards.AfterOwn, len(cards.AfterMissing) > 0}} {
+		recorded, ok := of(w.record, w.unresolved)
 		if !ok {
 			continue
 		}
 		values := make([]float64, 0, len(w.replays))
 		for _, card := range w.replays {
-			if value, ok := of(card); ok {
+			if value, ok := of(card, w.unresolved); ok {
 				values = append(values, value)
 			}
 		}
@@ -279,9 +296,11 @@ func (cards ForecastCards) ownError(of func(Scorecard) (float64, bool)) (largest
 // inside the total of all send-back loops and of the redefined causes together, and each cause
 // both releases define the same way apart (plan D3). Each number also reads the window before under
 // its own rule, whether the change moves it (by more than twice its gap), and the forecast's control
-// (spec R5).
+// (spec R5). No number of the wait of urgent work is compared where either window lacks an
+// ancestor's history on which the priority it rests on rests (BeforeMissing, AfterMissing).
 func ForecastChecks(cards ForecastCards) []ForecastCheck {
 	quantities := forecastQuantities(slices.Concat([]Scorecard{cards.Before, cards.After}, cards.Forecasts, cards.Own, cards.AfterOwn, cards.Controls)...)
+	unresolved := len(cards.BeforeMissing) > 0 || len(cards.AfterMissing) > 0
 	over := func(q quantity, replays []Scorecard) (mean, low, high float64) {
 		values := make([]float64, len(replays))
 		for i, card := range replays {
@@ -291,11 +310,14 @@ func ForecastChecks(cards ForecastCards) []ForecastCheck {
 	}
 	checks := make([]ForecastCheck, 0, len(quantities))
 	for _, q := range quantities {
+		if q.resolved && unresolved {
+			continue
+		}
 		check := ForecastCheck{Quantity: q.name, Kind: q.kind, Causes: q.causes, After: q.of(cards.After), Measured: q.measured, Scored: true}
 		check.Forecast, check.Low, check.High = over(q, cards.Forecasts)
 		gap := q.gap
 		if q.measured {
-			check.Error, check.Scored = cards.ownError(func(card Scorecard) (float64, bool) { return q.of(card), true })
+			check.Error, check.Scored = cards.ownError(func(card Scorecard, _ bool) (float64, bool) { return q.of(card), true })
 			gap = Gap{Amount: check.Error}
 		}
 		check.Gap = gap.Twice()
@@ -343,6 +365,10 @@ func (f ForecastResult) Write(w io.Writer, depth int) error {
 		f.Before, f.BeforeRule)
 	for _, part := range f.Reused {
 		p.line("The runs held %s under `%s` already, made by the legion binary of `%s`, so the forecast ran none of them again.", part.Window, part.Rule, part.Build)
+	}
+	for _, window := range slices.Sorted(maps.Keys(f.MissingAncestors)) {
+		p.line("%s lacks the history of the Dispatch ancestors %s, on which the priority Dispatch resolves for an issue of it rests, so the forecast compares no number of the wait of urgent work (spec R10).",
+			window, strings.Join(f.MissingAncestors[window], ", "))
 	}
 	p.line("")
 	p.line("| quantity | kind | causes | forecast (lowest, highest seed) | after the change | difference | allowed | test | before, under its own rule | moved by the change | control (lowest, highest seed) | the two rules |")

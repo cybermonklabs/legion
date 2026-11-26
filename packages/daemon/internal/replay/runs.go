@@ -93,7 +93,11 @@ func partsRule(parts []Part) string {
 // span of one cap its daemon served (capSpans), which the cap backtest reads, and each experiment
 // its window.json lists (Window.Experiments), which collect writes none of, with its mode: a run
 // draws an experiment of the random mode in an order a rule moves (UnkeyedDraws), so the comparison
-// pairs no run of a window that lists one (windowRecord.unpaired).
+// pairs no run of a window that lists one (windowRecord.unpaired); and each ancestor whose
+// history the window lacks on which the priority Dispatch resolves for an issue of it rests
+// (MissingAncestors, [] for none): its record's scorecard and each run's hold no wait of urgent
+// work and no priority taken in today's line's order, which no report prints or judges a rule on,
+// and no run of a rule with the new P0 start is made or read of it (spec R10).
 type windowRecord struct {
 	Name          string             `json:"name"`
 	Order         int                `json:"order"`
@@ -110,6 +114,9 @@ type windowRecord struct {
 	WaitsGaveBack []waitGaveBack     `json:"waitsGaveBack"`
 	CapSpans      []CapSpan          `json:"capSpans"`
 	Experiments   []windowExperiment `json:"experiments"`
+	// MissingAncestors is nil in a record.json written before it named them, which read each
+	// issue's own priority (windowRecordFor, ReadRuns).
+	MissingAncestors []string `json:"missingAncestors"`
 }
 
 // windowExperiment is one experiment a window's window.json lists, as its record names it: its
@@ -164,8 +171,9 @@ func newWindowRecord(w Window, name string, order int) (windowRecord, error) {
 // record is the record of w, whose inputs in are, named name at order (newWindowRecord).
 func (in *windowInputs) record(w Window, name string, order int) windowRecord {
 	return windowRecord{Name: name, Order: order, Project: w.Project, From: w.From, To: w.To, After: w.After, Rule: partsRule(w.Parts), Parts: w.Parts,
-		Scorecard: scoreTrace(in.trace), Stretches: in.conflicts.Stretches, Conflicted: in.conflicts.Conflicts, Conflicts: in.conflicts,
-		WaitsGaveBack: waitsGaveBack(in.trace), CapSpans: capSpans(w, in.trace.Boots), Experiments: windowExperiments(w.Experiments)}
+		Scorecard: scoreTrace(in.trace, in.priorities), Stretches: in.conflicts.Stretches, Conflicted: in.conflicts.Conflicts, Conflicts: in.conflicts,
+		WaitsGaveBack: waitsGaveBack(in.trace), CapSpans: capSpans(w, in.trace.Boots), Experiments: windowExperiments(w.Experiments),
+		MissingAncestors: in.priorities.missingAncestors()}
 }
 
 // partRun is one branch of a part's plan with the seeds it runs.
@@ -295,7 +303,10 @@ type planned struct {
 // already), and runs every run of its parts not already in, ended and of counting the runs of the
 // process; each part's part.json is written once all of its runs are in. What every run of the
 // window reads alike (windowInputs) is read once, the first time the record or a run needs it, and
-// shared by them all.
+// shared by them all. A part of a rule with the new P0 start on a window that lacks the history of
+// an ancestor a priority rests on (windowRecord.MissingAncestors) is refused before any run of the
+// window, naming the window, the rule and each such ancestor (resolvedPriorities.refuseMissing),
+// so validate, forecast, compare and the limit test make no comparison that rests on it.
 func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *int) error {
 	began := time.Now()
 	w, err := ReadWindow(ws.dir)
@@ -306,6 +317,18 @@ func runWindow(ctx context.Context, ws windowSpec, opts runOptions, ended, of *i
 	rec, err := windowRecordFor(w, ws, opts.root, inputs)
 	if err != nil {
 		return err
+	}
+	for _, part := range ws.parts {
+		if !part.rule.OrMain().P0AboveCap || len(rec.MissingAncestors) == 0 {
+			continue
+		}
+		in, err := inputs()
+		if err != nil {
+			return err
+		}
+		if err := in.priorities.refuseMissing(part.rule); err != nil {
+			return fmt.Errorf("replay: the window %s: %w", ws.name, err)
+		}
 	}
 	plans := make([]partRecord, len(ws.parts))
 	var runs []planned
@@ -396,8 +419,10 @@ func (held partRecord) with(plan partRecord) partRecord {
 // or Scorecard.Filed nil, traceMeasures), the wait of urgent work and priority taken in today's
 // line's order (Scorecard.UrgentWaits nil, which Measure gives with them), what the forecast reads
 // of its line timeline (Scorecard.DailyMaxima nil, forecastReadings), the spans of one cap its
-// daemon served (CapSpans nil) or the experiments its window.json lists (Experiments nil, or other
-// than the window's); either way it is written back with ws's place, where that changes the file.
+// daemon served (CapSpans nil), the experiments its window.json lists (Experiments nil, or other
+// than the window's) or the ancestors the window lacks on which a resolved priority rests
+// (MissingAncestors nil, a record that read each issue's own priority); either way it is written
+// back with ws's place, where that changes the file.
 func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windowInputs, error)) (windowRecord, error) {
 	path := filepath.Join(root, ws.name, recordFile)
 	var rec windowRecord
@@ -405,7 +430,7 @@ func windowRecordFor(w Window, ws windowSpec, root string, inputs func() (*windo
 	if err != nil || json.Unmarshal(held, &rec) != nil || rec.Name != ws.name || rec.Project != w.Project || !rec.From.Equal(w.From) ||
 		!rec.To.Equal(w.To) || rec.After != w.After || rec.WaitsGaveBack == nil || rec.Conflicts.Phases == nil || rec.Scorecard.GateClosedHours == nil ||
 		rec.Scorecard.UrgentWaits == nil || !holdsLineReadings(rec.Scorecard) || rec.CapSpans == nil || rec.Experiments == nil ||
-		!slices.Equal(rec.Experiments, windowExperiments(w.Experiments)) {
+		!slices.Equal(rec.Experiments, windowExperiments(w.Experiments)) || rec.MissingAncestors == nil {
 		in, err := inputs()
 		if err != nil {
 			return windowRecord{}, err
@@ -612,6 +637,10 @@ func ReadRuns(dirs ...string) (Runs, error) {
 			if !holdsLineReadings(rec.Scorecard) {
 				return Runs{}, fmt.Errorf("replay: %s was written before a scorecard held %s; run its window again, which writes it anew", path, lineReadingsNames)
 			}
+			if rec.MissingAncestors == nil {
+				return Runs{}, fmt.Errorf("replay: %s was written before a record named the ancestors whose history its window lacks (missingAncestors), "+
+					"when its measures read each issue's own priority and not the one Dispatch resolves; run its window again, which writes it anew", path)
+			}
 			if _, seen := runs.windows[rec.Name]; !seen {
 				runs.windows[rec.Name] = rec
 			}
@@ -631,6 +660,11 @@ func ReadRuns(dirs ...string) (Runs, error) {
 					return Runs{}, fmt.Errorf("replay: the part of %s under %s is in both %s and %s", key.window, key.rule, other, dir)
 				}
 				found[key] = dir
+				if ruled, kept := record.SlotRuleNamed(key.rule); kept && ruled.P0AboveCap && len(rec.MissingAncestors) > 0 {
+					return Runs{}, fmt.Errorf("replay: the runs hold a part of %s under %s, a rule with the new P0 start, and the window lacks the history of the Dispatch ancestors %s, "+
+						"on which the priority that rule starts, orders and counts by rests; no report reads such a part (spec R10)", key.window, key.rule,
+						strings.Join(rec.MissingAncestors, ", "))
+				}
 			}
 		}
 	}
@@ -703,8 +737,11 @@ func readPart(dir string, key partKey, keepIssues bool) (*partRead, error) {
 // key (keyedDraws). A run whose scorecards were written before they held the wait of urgent work and
 // priority taken in today's line's order (Scorecard.UrgentWaits nil, which Measure gives with
 // them), or whose line scorecard was written before it held what a line timeline alone gives
-// beside the measures of R4 (holdsLineReadings), is refused, naming it: read, it would give every
-// report 0 in each of those measures.
+// beside the measures of R4 (holdsLineReadings), or whose run.json was written before it named the
+// ancestors its window lacks (runRecord.MissingAncestors nil), its measures reading each issue's own
+// priority, is refused, naming it: read, it would give every report 0, or another priority's
+// reading, in each of those measures. A run whose window lacks an ancestor's history gives costs
+// with no priority taken in today's line's order and no wait of urgent work (Costs.Unresolved).
 func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRead, error) {
 	var read runRead
 	var ran runRecord
@@ -714,6 +751,10 @@ func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRea
 	if ran.SignalSummaries == nil || ran.SuppliedRefused == nil {
 		return runRead{}, fmt.Errorf("replay: the run in %s was written before its run.json held the summaries of the signals it limited and the refused minutes under the token limit (signalSummaries, suppliedRefused); "+
 			"it must be run again: delete its directory and run its part again", dir)
+	}
+	if ran.MissingAncestors == nil {
+		return runRead{}, fmt.Errorf("replay: the run in %s was written before its run.json named the ancestors whose history its window lacks (missingAncestors), "+
+			"when its measures read each issue's own priority and not the one Dispatch resolves; it must be run again: delete its directory and run its part again", dir)
 	}
 	if err := readJSON(filepath.Join(dir, scorecardFile), &read.snapshot); err != nil {
 		return runRead{}, err
@@ -730,6 +771,7 @@ func readRun(dir string, keepIssues bool, places map[uint64]stretchDraw) (runRea
 			dir, lineReadingsNames)
 	}
 	read.costs = costsOf(read.snapshot)
+	read.costs.Unresolved = len(ran.MissingAncestors) > 0
 	dropIssueTimes(&read.snapshot)
 	if !keepIssues {
 		dropIssueTimes(&read.line)
@@ -825,6 +867,9 @@ func (r Runs) Validation(window, rule string) (Validation, error) {
 		return Validation{}, err
 	}
 	v := Validation{Window: window, Rule: rule, Record: rec.Scorecard}
+	if len(rec.MissingAncestors) > 0 {
+		v.MissingAncestors = rec.MissingAncestors
+	}
 	timed := false
 	validate := func(runs []partRun) ([]BranchValidation, error) {
 		var branches []BranchValidation
@@ -838,6 +883,7 @@ func (r Runs) Validation(window, rule string) (Validation, error) {
 				timed = timed || len(card.FirstSlot) > 0 || len(card.DoneAt) > 0
 			}
 			v := ValidateBranch(rec.Scorecard, at, cards)
+			v.Measures = slices.DeleteFunc(v.Measures, func(m MeasureCheck) bool { return !rec.gives(m.Measure) })
 			for _, seed := range part.runs[at.Label()] {
 				if at.Branch.asksGit() || at.Branch.Conflicts == conflictsDrawn {
 					v.ConflictRuns = append(v.ConflictRuns, ConflictRunValidation{Seed: seed.seed, Reads: seed.gitReads, Hours: seed.gitHours,
@@ -891,7 +937,7 @@ func (r Runs) Forecast(before, after, rule string) (ForecastResult, error) {
 		}
 		return lineCards(runs), nil
 	}
-	cards := ForecastCards{Before: from.Scorecard, After: to.Scorecard}
+	cards := ForecastCards{Before: from.Scorecard, After: to.Scorecard, BeforeMissing: from.MissingAncestors, AfterMissing: to.MissingAncestors}
 	for _, read := range []struct {
 		into                *[]Scorecard
 		window, rule, which string
@@ -907,6 +953,14 @@ func (r Runs) Forecast(before, after, rule string) (ForecastResult, error) {
 	}
 	f := ForecastResult{Before: before, After: after, Rule: rule, BeforeRule: from.Rule, Branch: MainBranchAt, FromCommit: lastCommit(from.Parts),
 		ToCommit: firstCommit(to.Parts)}
+	for _, w := range []windowRecord{from, to} {
+		if len(w.MissingAncestors) > 0 {
+			if f.MissingAncestors == nil {
+				f.MissingAncestors = map[string][]string{}
+			}
+			f.MissingAncestors[w.Name] = w.MissingAncestors
+		}
+	}
 	for _, card := range cards.Forecasts {
 		f.Seeds = append(f.Seeds, card.Seed)
 	}

@@ -883,6 +883,10 @@ func (d *driver) run() error {
 				event.env.key, stamp(event.at), err)
 		}
 	}
+	// Under a rule with the new P0 start the copy shows each issue at the priority Dispatch
+	// resolves, from where it stands at the start, and Dispatch's update of each change of it.
+	d.shadow.showPrioritiesBefore(w.From)
+	d.queuePriorityChanges()
 	if d.cfg.atStart != nil {
 		d.cfg.atStart(d.shadow)
 	}
@@ -1078,13 +1082,56 @@ func (d *driver) down(at time.Time) bool {
 	return false
 }
 
+// queuePriorityChanges queues, where the replay's copy of Dispatch shows the priority Dispatch
+// resolves (shadow.priorities, under a rule with the new P0 start), each change of it of an issue
+// of the project from the window's start to the end of its inputs, at its moment and after every
+// recorded event of that moment: the copy shows the issue at it, and the daemon applies the
+// update the change makes (shadow.priorityWrite), as Dispatch appends one on each issue whose
+// resolved priority a write to another issue moves, so the daemon's pass of that moment reads it
+// (spec R10). A change an event of the issue makes is shown by that event, and its update writes
+// nothing.
+func (d *driver) queuePriorityChanges() {
+	p := d.shadow.priorities
+	if p == nil {
+		return
+	}
+	end := d.window.End()
+	for _, key := range slices.Sorted(maps.Keys(p.courses)) {
+		if iss, ok := d.trace.Issues[key]; !ok || iss.Project != d.window.Project {
+			continue
+		}
+		for _, change := range p.courses[key] {
+			if change.At.Before(d.window.From) || !change.At.Before(end) {
+				continue
+			}
+			var written []byte
+			d.push(&item{at: change.At, class: classAct, rec: change.At, order: lineOrder,
+				dispatch: func() error {
+					raw, wrote, err := d.shadow.priorityWrite(key, d.clock.Instant())
+					if wrote {
+						written = raw
+					}
+					return err
+				},
+				run: func() error {
+					if written == nil {
+						return nil
+					}
+					return d.applyEcho(key, written)
+				}})
+		}
+	}
+}
+
 // seed writes the start state at the window's start (SeedAndReport), on the trace whose ranks the
-// branch shows, reads its report into the run — the issues it named, and into the divergence the
-// turns it wrote no claim of under each assumption, the slots the trace inferred and the difference
-// of the trace's slots from the record's count, the assumptions of the turns and of the slots being
-// named among those the run rests on where it counted any — and the moment each children wait the
-// start state marked told began (childWait), as the line of its telling would have set it; hands the
-// records it wrote to the snapshot timeline, and reads back the claims it wrote for the stub. Under
+// branch shows and whose priorities the replay's copy of Dispatch shows (Trace.shownPriorities,
+// under a rule with the new P0 start), reads its report into the run — the issues it named, and
+// into the divergence the turns it wrote no claim of under each assumption, the slots the trace
+// inferred and the difference of the trace's slots from the record's count, the assumptions of the
+// turns and of the slots being named among those the run rests on where it counted any — and the
+// moment each children wait the start state marked told began (childWait), as the line of its
+// telling would have set it; hands the records it wrote to the snapshot timeline, and reads back
+// the claims it wrote for the stub. Under
 // a rule that places the line by first slots it keeps the first slot of each issue in the run it
 // stands in (firstSlotBefore, keepFirstSlot), the start state holding no slot's moment once the
 // slot went back; and under a rule that places it by arrival it keeps each issue's arrival, the
@@ -1092,7 +1139,9 @@ func (d *driver) down(at time.Time) bool {
 // state carries.
 func (d *driver) seed() error {
 	return store.Transact(d.ctx, d.pool, func(ctx context.Context, tx pgx.Tx) error {
-		report, err := SeedAndReport(ctx, tx, d.records, d.st, d.engine, withRanks(d.trace, d.shadow.ranks), d.window.From)
+		seeded := withRanks(d.trace, d.shadow.ranks)
+		seeded.shownPriorities = d.shadow.priorities
+		report, err := SeedAndReport(ctx, tx, d.records, d.st, d.engine, seeded, d.window.From)
 		if err != nil {
 			return err
 		}

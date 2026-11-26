@@ -1302,6 +1302,13 @@ type DispatchIssueState struct {
 	// record.DispatchPriority): P0 to P3, and record.NoPriority for none, for an event that
 	// carries none and for a level Dispatch never writes.
 	Priority record.Priority
+	// Resolved is the priority Dispatch resolved for the issue as the event shows it
+	// (resolved_priority, spec R10): the issue's own, else that of the nearest issue above it on its
+	// Dispatch parent chain that has one, a null as none. ShowsResolved says the event carries it: an
+	// event of a Dispatch release before resolved_priority carries none, and the replay then
+	// reconstructs it from the window's parent chains (resolvePriorities).
+	Resolved      record.Priority
+	ShowsResolved bool
 }
 
 // DispatchVerdict is a verdict on a version of an issue's document: its artifact, the document's
@@ -1338,12 +1345,12 @@ type DispatchHandoff struct {
 // or created_at, or whose payload lacks a field its type's part reads: an issue event's status, a
 // verdict's artifact_id and version, an ask's id, a handoff's handoff_id, phase and version, a
 // pull request attribution's repo and number. An
-// issue event's changed, blocked_by, parent, rank, labels and priority are read where it carries
-// them, as intake reads them, since an event retained from an older Dispatch lacks some; a field
-// present with another JSON type is refused all the same. A priority outside Dispatch's levels 0
-// to 3 is none, as the daemon's decoder reads it (record.DispatchPriority). A session actor's
-// title (origin.session_title) is read where the actor carries one (ActorClaim), and refused where
-// it is of another JSON type.
+// issue event's changed, blocked_by, parent, rank, labels, priority and resolved_priority are read
+// where it carries them, as intake reads them, since an event retained from an older Dispatch lacks
+// some; a field present with another JSON type is refused all the same. A priority outside
+// Dispatch's levels 0 to 3 is none, as the daemon's decoder reads it (record.DispatchPriority). A
+// session actor's title (origin.session_title) is read where the actor carries one (ActorClaim),
+// and refused where it is of another JSON type.
 // The claim an issue event, an issue.claimed or an issue.released event shows is read as the
 // daemon's decoder reads it (Claim), and never refused. An event without its project is of the
 // project its key begins with.
@@ -1395,6 +1402,7 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 			Rank      *string         `json:"rank"`
 			Labels    []string        `json:"labels"`
 			Priority  *int            `json:"priority"`
+			Resolved  json.RawMessage `json:"resolved_priority"`
 			Claim     json.RawMessage `json:"claim"`
 		}
 		if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
@@ -1405,6 +1413,13 @@ func ParseDispatchEvent(event []byte) (DispatchEvent, error) {
 		}
 		state := &DispatchIssueState{Changed: payload.Changed, Status: *payload.Status, BlockedBy: payload.BlockedBy, Labels: payload.Labels}
 		state.Priority, _ = record.DispatchPriority(payload.Priority)
+		if len(payload.Resolved) > 0 {
+			resolved, _, err := record.DecodePriority(payload.Resolved)
+			if err != nil {
+				return refuse(fmt.Errorf("its resolved_priority: %w", err))
+			}
+			state.Resolved, state.ShowsResolved = resolved, true
+		}
 		if payload.Parent != nil {
 			state.Parent = *payload.Parent
 		}

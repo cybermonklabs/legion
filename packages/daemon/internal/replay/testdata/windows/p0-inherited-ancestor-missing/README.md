@@ -26,7 +26,6 @@ The run gives neither: `expect.json` leaves `urgentWaits` out and gives `priorit
 ## What the window shows
 
 A replay that guesses the missing ancestor's priority, or reads ACME-2 as having none, and so compares a rule with the new P0 start on this window, fails it.
-`pending_test.go` skips the window by name until the replay reads the resolved priority and refuses a window that lacks a required ancestor (plan task t39).
 
 ## The signals, worked by hand
 

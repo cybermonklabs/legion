@@ -670,7 +670,7 @@ func assertWaitsForNoSlot(t *testing.T, window Window, result RunResult, key str
 	for _, timeline := range []struct {
 		name string
 		tl   Timeline
-	}{{"snapshot", result.snapshot}, {"line", lineTimeline(trace, ranksOf(trace), trace.ruleAt)}} {
+	}{{"snapshot", result.snapshot}, {"line", recordLineTimeline(trace)}} {
 		c := timeline.tl.Issues[key]
 		if c == nil {
 			continue
