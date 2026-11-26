@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# The eval registry's measurement Job (dispatch://INFRA-2916, T15), whole: a Postgres 18 of its own
-# with pg_stat_statements preloaded and the statement log in jsonlog, the server, the generator and
-# the instrument built from the checkout, the database migrated by the server, the evalbench
-# fixture loaded, and run.sh's measurement. job.yaml runs it on the build farm; it runs the same in
-# a pod at a small EVALBENCH_SCALE.
+# The eval registry's measurement Job (dispatch://INFRA-2916, T15, and dispatch://INFRA-978's k14,
+# T19.9), whole: a Postgres 18 of its own with pg_stat_statements preloaded and the statement log in
+# jsonlog, the server, the generator and the instrument built from the checkout, the database
+# migrated by the server, the evalbench fixture loaded, and run.sh's measurement. job.yaml runs it
+# on the build farm; it runs the same in a pod at a small EVALBENCH_SCALE.
 #
 # Postgres and the server each run under a supervisor (supervise.sh): in a container of their own
 # where the pod runs them so (job.yaml, which names their directory in EVALBENCH_CONTROL and holds
@@ -31,6 +31,9 @@
 #                  base's Delivery page once more (run.sh's base-failure-day). Its paint is
 #                  measured once unless EVALBENCH_PAINT_RUNS names more, which sets the head's
 #                  timeline reads beside the base's the same number of times
+#   job.sh k14     k14 (run.sh's k14): this head over the fixture with the two k14 projects added
+#                  (the generator's -k14), k14's three writes and their moves back with pages open,
+#                  and each k14 project's first paint after a restart; no failure day is added
 #
 # The failure day is INFRA's worst day of deploy failures (evalbench/failureday.go says where it
 # was read): 36 failed deploy runs on main with 45 failed jobs across them, on the UTC day
@@ -70,8 +73,8 @@
 set -euo pipefail
 
 mode=${1:-}
-case "$mode" in head | base) ;; *)
-  echo "usage: job.sh head|base" >&2
+case "$mode" in head | base | k14) ;; *)
+  echo "usage: job.sh head|base|k14" >&2
   exit 2
   ;;
 esac
@@ -235,6 +238,9 @@ if [ "$mode" = base ]; then
   stamp=$base
   load_flags=(-base)
 fi
+if [ "$mode" = k14 ]; then
+  load_flags=(-k14)
+fi
 (cd "$server_source/packages/envoy" && go build -ldflags "-X main.buildCommit=$stamp" -o "$work/bin/envoy-dispatch" ./cmd/dispatch)
 mark "built the generator, the instrument and envoy-dispatch at $stamp"
 
@@ -268,6 +274,8 @@ status=0
 "$here/run.sh" measure "$database_url" "$work/bin/envoy-dispatch" "$mode" || status=$?
 sizes measured
 failure_day=${EVALBENCH_FAILURE_DAY:-7}
+# k14 measures its writes and first paints over the load alone: no failure day is added.
+[ "$mode" != k14 ] || failure_day=0
 if [ "$failure_day" != 0 ]; then
   # The failure day on top of the history just measured, at its scale and from its seed, and the
   # Delivery page's first paint over it: the same windows, one database, before and after the day.

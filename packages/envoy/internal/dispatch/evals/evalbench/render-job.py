@@ -6,22 +6,24 @@
 Each ${NAME} of job.yaml is the variable NAME. job.yaml's header names them and says what each
 means. A variable it marks optional drops the line that names it when it is unset or empty; every
 other variable is required, and the render refuses when one is missing. The render also computes
-what follows from the sizes: the driver container's CPU (the pod's CPU less the server's and
-Postgres's), and the CPU-hours and memory GiB-hours of the Job's cost annotations (one attempt is
-at most two hours, the pod's deadline). It names no compute class, runtime class or machine size:
-the deployment that renders the Job chooses them.
+what follows from the mode and the sizes: the driver container's CPU (the pod's CPU less the
+server's and Postgres's), one attempt's deadline (two hours, four in mode k14) and the Job's (three
+attempts'), and the CPU-hours and memory GiB-hours of the Job's cost annotations at one attempt's
+length. It names no compute class, runtime class, machine size, issue or session: the deployment
+and the run that render the Job choose them.
 """
 import os
 import re
 import sys
 
 REQUIRED = (
-    "COMMIT", "BASE", "MODE", "SCALE", "TEN_TIMES", "OMP_SESSION", "OMP_SESSION_TITLE", "LABEL_DOMAIN",
-    "COMPUTE_CLASS", "SERVER_CPU", "SERVER_MEMORY", "PG_CPU", "PG_MEMORY", "POD_CPU", "DRIVER_MEMORY",
+    "COMMIT", "BASE", "MODE", "SCALE", "TEN_TIMES", "JOB_NAME", "OWNER", "BRANCH", "OMP_SESSION", "OMP_SESSION_TITLE",
+    "LABEL_DOMAIN", "COMPUTE_CLASS", "SERVER_CPU", "SERVER_MEMORY", "PG_CPU", "PG_MEMORY", "POD_CPU", "DRIVER_MEMORY",
     "SCRATCH", "COST_USD",
 )
-OPTIONAL = ("RUNTIME_CLASS", "GATING_CLASS", "PAINT_RUNS")
-ATTEMPT_HOURS = 2
+OPTIONAL = ("RUNTIME_CLASS", "GATING_CLASS", "PAINT_RUNS", "CATCHUP")
+ATTEMPT_HOURS = {"head": 2, "base": 2, "k14": 4}
+ATTEMPTS = 3
 
 
 def count(name, value, unit="CPUs"):
@@ -41,10 +43,12 @@ def main():
     missing = [name for name in REQUIRED if not values[name]]
     if missing:
         sys.exit("render-job.py: set " + ", ".join(missing))
-    if values["MODE"] not in ("head", "base"):
-        sys.exit(f"render-job.py: MODE is head or base, not {values['MODE']!r}")
+    if values["MODE"] not in ATTEMPT_HOURS:
+        sys.exit(f"render-job.py: MODE is head, base or k14, not {values['MODE']!r}")
     if values["TEN_TIMES"] not in ("0", "1"):
         sys.exit(f"render-job.py: TEN_TIMES is 0 or 1, not {values['TEN_TIMES']!r}")
+    if not re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,40}[a-z0-9])?", values["JOB_NAME"]):
+        sys.exit(f"render-job.py: JOB_NAME is a Job name prefix of lower-case letters, digits and dashes, not {values['JOB_NAME']!r}")
     server, pg, pod = count("SERVER_CPU", values["SERVER_CPU"]), count("PG_CPU", values["PG_CPU"]), count("POD_CPU", values["POD_CPU"])
     if pod <= server + pg:
         sys.exit(f"render-job.py: POD_CPU {pod} leaves the driver no CPU beside the server's {server} and Postgres's {pg}")
@@ -52,9 +56,14 @@ def main():
     gib("SCRATCH", values["SCRATCH"])
     if values["PAINT_RUNS"]:
         count("PAINT_RUNS", values["PAINT_RUNS"], "runs")
+    if values["CATCHUP"] and not re.fullmatch(r"[1-9][0-9]*[hm]", values["CATCHUP"]):
+        sys.exit(f"render-job.py: CATCHUP is a whole number of hours or minutes, such as 150m, not {values['CATCHUP']!r}")
+    hours = ATTEMPT_HOURS[values["MODE"]]
     values["DRIVER_CPU"] = str(pod - server - pg)
-    values["CPU_HOURS"] = str(pod * ATTEMPT_HOURS)
-    values["MEMORY_GIB_HOURS"] = str(memory * ATTEMPT_HOURS)
+    values["ATTEMPT_SECONDS"] = str(hours * 3600)
+    values["JOB_DEADLINE_SECONDS"] = str(ATTEMPTS * hours * 3600)
+    values["CPU_HOURS"] = str(pod * hours)
+    values["MEMORY_GIB_HOURS"] = str(memory * hours)
     names = "|".join(sorted(values, key=len, reverse=True))
     placeholder = re.compile(r"\$\{(" + names + r")\}")
     out = []

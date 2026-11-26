@@ -7,6 +7,17 @@
 //	measure paint -mode head -database <url> -url <server> -token <token> \
 //	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file> [-run <n> -runs-file <file>]
 //	measure runs  -runs <n> -runs-file <file>
+//	measure k14   -mode k14 -database <url> -url <server> -token <token> -server-log <file> -pg-log <file> \
+//	  -pg-log-from <offset> -github-log <file> -expect-file <file>
+//	measure k14-paints -mode k14 -runs-file <file>
+//	measure github -listen 127.0.0.1:<port> -key-out <file> -client-id <id> -owners <owner> -log <file>
+//
+// Mode k14 is k14's (dispatch://INFRA-978, T19.9) over the k14 load (evalbench's Spec.K14): wait
+// waits for the production signals' loop too; k14 makes and times k14's three writes with pages
+// open (k14.go); paint -project <key> measures a k14 project's first paint (k14_paint.go), whose
+// database budgets fail at ten times the stated rate too, which R14 binds there; k14-paints judges
+// the paints' runs; github is the loopback stand-in for GitHub the server's App calls in that mode
+// (github.go).
 //
 // -mode is head, base, failure-day or base-failure-day: failure-day is this head over the fixture
 // with a failure day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's
@@ -85,6 +96,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 )
@@ -144,41 +156,57 @@ func (r *report) block(heading, text string) {
 
 // options is one invocation's flags.
 type options struct {
-	mode      string
-	database  string
-	url       string
-	token     string
-	serverLog string
-	pgLog     string
-	project   string
-	quiet     time.Duration
-	catalog   time.Duration
-	timeout   time.Duration
-	info      bool
-	run       int
-	runs      int
-	runsFile  string
-	now       time.Time
-	node      string
+	mode       string
+	database   string
+	url        string
+	token      string
+	serverLog  string
+	pgLog      string
+	pgLogFrom  int64
+	githubLog  string
+	expectFile string
+	project    string
+	quiet      time.Duration
+	catalog    time.Duration
+	timeout    time.Duration
+	info       bool
+	run        int
+	runs       int
+	runsFile   string
+	now        time.Time
+	node       string
+	scale      string
 }
 
-const usage = "usage: measure wait|paint|runs -mode head|failure-day|base|base-failure-day -database <url> -url <server> [flags]"
+const usage = "usage: measure wait|paint|runs|k14|k14-paints|github -mode head|failure-day|base|base-failure-day|k14 -database <url> -url <server> [flags]"
+
+// commands is every subcommand measure runs.
+var commands = []string{"wait", "paint", "runs", "k14", "k14-paints", "github"}
 
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] != "wait" && os.Args[1] != "paint" && os.Args[1] != "runs") {
+	if len(os.Args) < 2 || !slices.Contains(commands, os.Args[1]) {
 		fmt.Fprintln(os.Stderr, usage)
 		os.Exit(2)
 	}
 	command := os.Args[1]
 	flags := flag.NewFlagSet(command, flag.ExitOnError)
 	var o options
-	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; base, the first paint of the base, main at the commit this head merges; or base-failure-day, the base's over the history with a failure day added")
+	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; base, the first paint of the base, main at the commit this head merges; base-failure-day, the base's over the history with a failure day added; or k14, k14's writes and first paints over the k14 load")
 	flags.StringVar(&o.database, "database", "", "the Postgres URL the server reads, as a superuser (required): the instrument resets pg_stat_statements and sets the statement log")
 	flags.StringVar(&o.url, "url", "", "the server's base URL")
 	flags.StringVar(&o.token, "token", "", "the server's agent token (DISPATCH_AGENT_TOKEN)")
 	flags.StringVar(&o.serverLog, "server-log", "", "the file the server's stderr is written to, which holds its access log")
 	flags.StringVar(&o.pgLog, "pg-log", "", "Postgres's jsonlog file, which holds each statement with its parameters")
 	flags.StringVar(&o.project, "project", "INFRA", "the project the first paint reads")
+	flags.Int64Var(&o.pgLogFrom, "pg-log-from", 0, "k14: the statement log's size when the server started, where its daily failure write is read from")
+	flags.StringVar(&o.githubLog, "github-log", "", "k14: the log of the GitHub stand-in (measure github), whose requests k14 counts")
+	flags.StringVar(&o.expectFile, "expect-file", "", "k14: the file the warm reads of the first paints are written to; paint -mode k14: the file they are read from")
+	flags.StringVar(&o.scale, "scale", "", "the share of INFRA's stated rate the fixture is loaded at (job.sh's EVALBENCH_SCALE), which k14's lines name")
+	listen := flags.String("listen", "", "github: the loopback address the stand-in serves")
+	keyOut := flags.String("key-out", "", "github: the file the stand-in writes the App's throwaway private key to")
+	clientID := flags.String("client-id", "", "github: the App's client id, the issuer of its JWT")
+	owners := flags.String("owners", "", "github: the owners the App is installed on, comma-separated")
+	githubLog := flags.String("log", "", "github: the file each request is logged to")
 	flags.DurationVar(&o.quiet, "quiet", 30*time.Second, "how long after the restart the first window starts, so the boot's own passes have ended")
 	flags.DurationVar(&o.catalog, "catalog", 65*time.Second, "how long the background catalogue is taken over: more than a minute, so every loop a quiet server runs on a minute's pace or on the Legion sampler's minute wake runs in it")
 	flags.DurationVar(&o.timeout, "timeout", time.Hour, "how long wait polls before it fails")
@@ -201,11 +229,22 @@ func main() {
 		}
 		o.now = at.UTC().Truncate(24 * time.Hour)
 	}
-	if o.mode != "head" && o.mode != "failure-day" && !atBase(o.mode) {
-		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day, base or base-failure-day, not %q\n", o.mode)
+	if o.mode != "head" && o.mode != "failure-day" && o.mode != "k14" && !atBase(o.mode) {
+		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day, base, base-failure-day or k14, not %q\n", o.mode)
 		os.Exit(2)
 	}
-	if command != "runs" && (o.database == "" || o.url == "") {
+	if command == "github" {
+		if err := serveGitHub(*listen, *keyOut, *clientID, *owners, *githubLog); err != nil {
+			fmt.Fprintf(os.Stderr, "measure github: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if (command == "k14" || command == "k14-paints") && o.mode != "k14" {
+		fmt.Fprintf(os.Stderr, "measure: %s is mode k14's, not %q's\n", command, o.mode)
+		os.Exit(2)
+	}
+	if command != "runs" && command != "k14-paints" && (o.database == "" || o.url == "") {
 		fmt.Fprintln(os.Stderr, usage+": name the database with -database and the server with -url")
 		os.Exit(2)
 	}
@@ -240,6 +279,18 @@ func main() {
 		if runs, err = readRuns(o.runsFile); err == nil {
 			judgeRuns(r, runs, o.runs)
 		}
+	case "k14":
+		if o.token == "" || o.serverLog == "" || o.pgLog == "" {
+			fmt.Fprintln(os.Stderr, "measure: k14 needs -token, -server-log and -pg-log")
+			os.Exit(2)
+		}
+		err = k14(ctx, r, o)
+	case "k14-paints":
+		if o.runsFile == "" {
+			fmt.Fprintln(os.Stderr, "measure: k14-paints needs -runs-file")
+			os.Exit(2)
+		}
+		err = k14Paints(r, o)
 	}
 	if err != nil {
 		r.fail("%s: %v", command, err)

@@ -13,13 +13,16 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// INFRA's issue history. Each issue is a life from its opening to its close (or to the history's
+// A project's issue history at INFRA's size: INFRA's, and under the k14 load (Spec.K14) that of
+// each project k14.go adds, drawn by the same rules from random streams of its own
+// (projectFixture.rand). Each issue is a life from its opening to its close (or to the history's
 // end for an open one), split into the six Legion roles' stretches in their order: architect,
 // planner, implementer, tester, reviewer, merger. An open issue's status says how many of them it
 // reached. Every event of the issue is by the session of the role whose stretch holds it, titled
@@ -88,10 +91,48 @@ func (p plannedIssue) title() string {
 	return fmt.Sprintf("Infrastructure work item %d: %s", p.number, text(p.key, 40))
 }
 
-// infraHistory is INFRA's issues, in opening order (so in number order), which the delivery
-// history names and the readings' row keys draw from.
-type infraHistory struct {
-	issues []plannedIssue
+// projectHistory is one project's issues, in opening order (so in number order), which its
+// delivery history names and (INFRA's) the readings' row keys draw from, and the project they are
+// of.
+type projectHistory struct {
+	fixture projectFixture
+	issues  []plannedIssue
+}
+
+// projectFixture is one project the load writes at INFRA's size: its key and name, its three
+// repositories, its default repository first, which issues and pull requests name as INFRA's do
+// (three in five pull requests, a third of the issues), its deploy repositories, the repositories
+// whose workflow runs the history holds at INFRA's run rate (dailyRuns) from a first run id of
+// their own, and the name its random streams carry beside each part's (stream: none for INFRA,
+// whose streams keep the names they had before the k14 projects, so INFRA's history is the same
+// whether or not they are loaded). sources, where it is set, is the settings the project's delivery
+// history is read by; nil is INFRA's one source (Settings).
+type projectFixture struct {
+	key, name string
+	repos     [3]string
+	deploys   []deployRepo
+	stream    string
+	sources   func(spec Spec) delivery.ProjectSettingsInput
+}
+
+// deployRepo is a repository whose deploy and pull-request runs a project's history holds, and the
+// id of its first run: the ranges of the repositories of one load never meet (k14.go).
+type deployRepo struct {
+	repo       string
+	firstRunID int64
+}
+
+// infraFixture is INFRA: its three repositories, the first its deploy repository.
+var infraFixture = projectFixture{key: Project, name: "Infrastructure", repos: [3]string(Repos),
+	deploys: []deployRepo{{repo: Repos[0], firstRunID: firstRunID}}}
+
+// rand is the random source of one part of the project's load: INFRA's part's own stream
+// (newRand), and another project's the stream of the part and its stream name together.
+func (p projectFixture) rand(seed uint64, part string) *rand.Rand {
+	if p.stream == "" {
+		return newRand(seed, part)
+	}
+	return newRand(seed, part+" "+p.stream)
 }
 
 // newRand is the random source of one part of the load: one PCG stream per part, so a change to
@@ -134,10 +175,10 @@ func text(key string, length int) string {
 	return body.String()
 }
 
-// planInfra draws INFRA's issues: when each opens and closes, its status, priority, owner, tree,
-// repository and how many events it carries.
-func planInfra(spec Spec) infraHistory {
-	rng := newRand(spec.Seed, "infra issues")
+// planIssues draws the project's issues: when each opens and closes, its status, priority, owner,
+// tree, repository and how many events it carries.
+func planIssues(spec Spec, fixture projectFixture) projectHistory {
+	rng := fixture.rand(spec.Seed, "infra issues")
 	count := spec.scaled(issues, 12)
 	start := spec.Now.Add(-issueDays * 24 * time.Hour)
 	span := spec.Now.Sub(start)
@@ -149,7 +190,7 @@ func planInfra(spec Spec) infraHistory {
 	slices.SortFunc(opened, func(a, b time.Time) int { return a.Compare(b) })
 	life := make([]time.Duration, count)
 	for i := range planned {
-		planned[i] = plannedIssue{number: i + 1, key: fmt.Sprintf("%s-%d", Project, i+1), parent: -1, opened: opened[i]}
+		planned[i] = plannedIssue{number: i + 1, key: fmt.Sprintf("%s-%d", fixture.key, i+1), parent: -1, opened: opened[i]}
 		life[i] = min(max(lasting(rng, 40*time.Hour, 1.0), time.Hour), 60*24*time.Hour)
 	}
 
@@ -194,11 +235,11 @@ func planInfra(spec Spec) infraHistory {
 		}
 		switch u := rng.Float64(); {
 		case u < 0.35:
-			issue.repo = Repos[0]
+			issue.repo = fixture.repos[0]
 		case u < 0.55:
-			issue.repo = Repos[1]
+			issue.repo = fixture.repos[1]
 		case u < 0.70:
-			issue.repo = Repos[2]
+			issue.repo = fixture.repos[2]
 		}
 		// About a third of the issues are children of a recent root, one level down.
 		if len(roots) > 0 && rng.Float64() < 0.35 {
@@ -277,7 +318,7 @@ func planInfra(spec Spec) infraHistory {
 			assigned--
 		}
 	}
-	return infraHistory{issues: planned}
+	return projectHistory{fixture: fixture, issues: planned}
 }
 
 // plannedEvent is one event of the history, compact, so the whole log can be put in time order
@@ -305,8 +346,8 @@ var kindNames = []string{"issue.created", "comment.created", "issue.updated", "i
 
 // planEvents draws every event of every issue and puts the log in time order, as the event log of
 // a live project holds it.
-func planEvents(spec Spec, history infraHistory) []plannedEvent {
-	rng := newRand(spec.Seed, "infra events")
+func planEvents(spec Spec, history projectHistory) []plannedEvent {
+	rng := history.fixture.rand(spec.Seed, "infra events")
 	total := 0
 	for _, issue := range history.issues {
 		total += issue.events
@@ -354,11 +395,11 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 	return planned
 }
 
-// writeInfra writes INFRA's project, whose default repository is the first of Repos, its issues,
-// events, handoffs and observations, and its legion_settings row, and answers the history. The
-// project names alice as its default assignee, the column every project fills (store migration
-// 20261111210103), as the smaller projects' Legion history does; no eval and no count the load
-// prints reads it.
+// writeProject writes fixture's project, whose default repository is the first of its
+// repositories, its issues, events, handoffs and observations, and its legion_settings row, and
+// answers the history. The project names alice as its default assignee, the column every project
+// fills (store migration 20261111210103), as the smaller projects' Legion history does; no eval and
+// no count the load prints reads it.
 //
 // The default is written where both heads read it, the project's default_repo (store migration
 // 20261119000230), which main has too. Main at the commit this head merges reads a project's
@@ -368,27 +409,27 @@ func planEvents(spec Spec, history infraHistory) []plannedEvent {
 // project of the issue its row names (delivery_pull_requests.issue_key, which delivery.go
 // writes). So both modes write this one project row, the same rows of every table after it, and
 // no repository mapping.
-func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory, error) {
-	history := planInfra(spec)
+func writeProject(ctx context.Context, pool *store.Pool, spec Spec, fixture projectFixture) (projectHistory, error) {
+	history := planIssues(spec, fixture)
 	if _, err := pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee, next_number, default_repo) values ($1, 'Infrastructure', 'alice', 1, $2)
-	`, Project, Repos[0]); err != nil {
-		return infraHistory{}, fmt.Errorf("write the project %s: %w", Project, err)
+		insert into projects (key, name, default_assignee, next_number, default_repo) values ($1, $2, 'alice', 1, $3)
+	`, fixture.key, fixture.name, fixture.repos[0]); err != nil {
+		return projectHistory{}, fmt.Errorf("write the project %s: %w", fixture.key, err)
 	}
 	if err := copyIssues(ctx, pool, history); err != nil {
-		return infraHistory{}, err
+		return projectHistory{}, err
 	}
 	if err := copyEvents(ctx, pool, spec, history); err != nil {
-		return infraHistory{}, err
+		return projectHistory{}, err
 	}
 	if err := copyHandoffs(ctx, pool, history); err != nil {
-		return infraHistory{}, err
+		return projectHistory{}, err
 	}
 	if err := copyObservations(ctx, pool, history); err != nil {
-		return infraHistory{}, err
+		return projectHistory{}, err
 	}
-	if _, err := legion.PutSettings(ctx, pool, Project, evalfixture.StateURL, actor); err != nil {
-		return infraHistory{}, fmt.Errorf("write INFRA's legion_settings: %w", err)
+	if _, err := legion.PutSettings(ctx, pool, fixture.key, evalfixture.StateURL, actor); err != nil {
+		return projectHistory{}, fmt.Errorf("write %s's legion_settings: %w", fixture.key, err)
 	}
 	return history, nil
 }
@@ -401,7 +442,7 @@ func copyRows(ctx context.Context, pool *store.Pool, table string, columns []str
 	return nil
 }
 
-func copyIssues(ctx context.Context, pool *store.Pool, history infraHistory) error {
+func copyIssues(ctx context.Context, pool *store.Pool, history projectHistory) error {
 	rows := make([][]any, len(history.issues))
 	creator := helperActor(0)
 	for i, issue := range history.issues {
@@ -425,7 +466,7 @@ func copyIssues(ctx context.Context, pool *store.Pool, history infraHistory) err
 		if issue.closed == nil {
 			updated = issue.stretch[issue.reached-1]
 		}
-		rows[i] = []any{issue.key, Project, int32(issue.number), issue.title(), issue.status, parent, repo, route, creator,
+		rows[i] = []any{issue.key, history.fixture.key, int32(issue.number), issue.title(), issue.status, parent, repo, route, creator,
 			issue.opened, updated, issue.closed, int32(issue.events), fmt.Sprintf("%08d", issue.number), issue.priority,
 			claimedBy, claimedAt}
 	}
@@ -437,7 +478,7 @@ func copyIssues(ctx context.Context, pool *store.Pool, history infraHistory) err
 // eventSource streams the planned events into COPY, building each row's JSON as it goes, so the
 // log is never held as text whole.
 type eventSource struct {
-	history infraHistory
+	history projectHistory
 	events  []plannedEvent
 	at      int
 	values  []any
@@ -503,13 +544,13 @@ func (s *eventSource) Err() error { return nil }
 
 // copyEvents writes the event log in time order. An event is written as published, since every
 // one of them is history a live server published long ago, and none asks to be notified again.
-func copyEvents(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
+func copyEvents(ctx context.Context, pool *store.Pool, spec Spec, history projectHistory) error {
 	return copyRows(ctx, pool, "events", []string{"issue_key", "seq", "type", "actor", "payload", "notify", "published_at", "created_at"},
 		&eventSource{history: history, events: planEvents(spec, history)})
 }
 
 // copyHandoffs writes the handoff of each stretch a worked issue finished that writes one.
-func copyHandoffs(ctx context.Context, pool *store.Pool, history infraHistory) error {
+func copyHandoffs(ctx context.Context, pool *store.Pool, history projectHistory) error {
 	var rows [][]any
 	for _, issue := range history.issues {
 		for r, phase := range handoffPhases {
@@ -529,10 +570,10 @@ func copyHandoffs(ctx context.Context, pool *store.Pool, history infraHistory) e
 // begins (and done at its close), the slot the issue holds from its implementer's stretch to its
 // close, so it waits for one while admitted, and each role's claim, working through its stretch
 // and idle once it ends.
-func copyObservations(ctx context.Context, pool *store.Pool, history infraHistory) error {
+func copyObservations(ctx context.Context, pool *store.Pool, history projectHistory) error {
 	var rows [][]any
 	observe := func(issue, field, value string, at time.Time) {
-		rows = append(rows, []any{Project, issue, field, value, at})
+		rows = append(rows, []any{history.fixture.key, issue, field, value, at})
 	}
 	for _, issue := range history.issues {
 		if !issue.observed {

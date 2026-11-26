@@ -61,7 +61,9 @@ func (w window) live() map[string]string {
 // their database time together against groupBudgetMs. delivery marks a read of the Delivery page:
 // the timeline's first paint at this head (timelineCases) and the base's (baseCases), whose body
 // no budget judges. storedFigures marks a read of an offered range of the eval list, which the
-// stored figures answer (checkStoredFiguresReads).
+// stored figures answer (checkStoredFiguresReads). strict marks a read whose database budget binds
+// at ten times the stated run rate too (k14's, k14Cases), where the head's first paint's budgets
+// are k8's at the stated rate alone (report.overStated).
 type paintCase struct {
 	name           string
 	path           string
@@ -73,6 +75,7 @@ type paintCase struct {
 	groupBudgetMs  float64
 	delivery       bool
 	storedFigures  bool
+	strict         bool
 }
 
 // measuredCase is one read as the instrument saw it: cataloguedOwn is how many statements of the
@@ -138,30 +141,53 @@ func gzipSize(body []byte) int {
 // reads among them, is the first read after a restart twice.
 func headCases(project string, today time.Time, run int) []paintCase {
 	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
-	list := func(w window, compare *window, repo string) string {
-		query := url.Values{"from": {w.from.Format(time.RFC3339)}, "to": {w.to.Format(time.RFC3339)}, "limit": {"200"}}
-		if compare != nil {
-			query.Set("compare_from", compare.from.Format(time.RFC3339))
-			query.Set("compare_to", compare.to.Format(time.RFC3339))
-		}
-		if repo != "" {
-			query.Set("repo", repo)
-		}
-		return "/api/v1/projects/" + project + "/evals?" + query.Encode()
-	}
-	compare := url.Values{"compare_from": {c84.from.Format(time.RFC3339)}, "compare_to": {c84.to.Format(time.RFC3339)}, "limit": {"200"}}
 	repo := evalbench.Repos[0]
 	lists := []paintCase{
-		{name: "list-84d-compare", path: list(w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
-		{name: "list-84d-compare-repo", path: list(w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
-		{name: "list-28d", path: list(w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
-		{name: "list-28d-repo", path: list(w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-84d-compare", path: evalListPath(project, w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-84d-compare-repo", path: evalListPath(project, w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-28d", path: evalListPath(project, w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
+		{name: "list-28d-repo", path: evalListPath(project, w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true},
 	}
 	first := (max(run, 1) - 1) % len(lists)
 	cases := slices.Concat(lists[first:], lists[:first])
 	cases = append(cases, paintCase{name: "view-evals-84d-compare", kind: "evals", budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true,
-		view: map[string]any{"kind": "evals", "project": project, "window": w84.live(), "query": compare.Encode()}})
+		view: evalsView(project, w84, &c84)})
 	return append(cases, timelineCases("", today)...)
+}
+
+// evalListQuery is the query of a read of the eval list over w: its window, its compare range
+// where compare names one, its repository where repo names one, and its page of 200.
+func evalListQuery(w window, compare *window, repo string) url.Values {
+	query := url.Values{"from": {w.from.Format(time.RFC3339)}, "to": {w.to.Format(time.RFC3339)}, "limit": {"200"}}
+	if compare != nil {
+		query.Set("compare_from", compare.from.Format(time.RFC3339))
+		query.Set("compare_to", compare.to.Format(time.RFC3339))
+	}
+	if repo != "" {
+		query.Set("repo", repo)
+	}
+	return query
+}
+
+// evalListPath is the read of project's eval list over w (evalListQuery).
+func evalListPath(project string, w window, compare *window, repo string) string {
+	return "/api/v1/projects/" + project + "/evals?" + evalListQuery(w, compare, repo).Encode()
+}
+
+// k14Cases are k14's first paint of a k14 project (evalbench.K14Projects) in run run of its runs
+// (0 read as 1): the Evals tab's list read at 84 days with an 84-day compare range and at 28 days
+// with none, each with no repository, which the stored figures of the project's own cut answer,
+// the fold of all its deploy repositories' rows (R14, T19 path 2), under the first paint's server
+// budget and its database budgets, which R14 binds at both rates (strict). Run n starts with the
+// ((n-1) mod 2)th of them, so over two runs each is the first read after a restart once.
+func k14Cases(project string, today time.Time, run int) []paintCase {
+	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
+	lists := []paintCase{
+		{name: "list-84d-compare", path: evalListPath(project, w84, &c84, ""), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs, storedFigures: true, strict: true},
+		{name: "list-28d", path: evalListPath(project, w28, nil, ""), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs, storedFigures: true, strict: true},
+	}
+	first := (max(run, 1) - 1) % len(lists)
+	return slices.Concat(lists[first:], lists[:first])
 }
 
 // timelineCases are the Delivery timeline's first paint at this head (packages/dispatch/web
@@ -260,6 +286,8 @@ func paint(ctx context.Context, r *report, o options) error {
 		cases = baseCases("failure-day-", today)
 	case "failure-day":
 		cases = timelineCases("failure-day-", today)
+	case "k14":
+		cases = k14Cases(o.project, today, o.run)
 	}
 	firstLog, err := fileSize(o.pgLog)
 	if err != nil {
@@ -295,13 +323,16 @@ func paint(ctx context.Context, r *report, o options) error {
 	}
 	judgePaint(r, o, measured)
 	printHistories(r, o, measured)
-	if o.runsFile != "" {
+	if o.runsFile != "" && o.mode != "k14" {
 		if err := recordRun(o.runsFile, runOf(o.run, measured)); err != nil {
 			r.fail("k8 record run %d in %s: %v", o.run, o.runsFile, err)
 		}
 	}
 	if o.info {
 		return nil
+	}
+	if o.mode == "k14" {
+		return judgeK14Paint(r, o, measured)
 	}
 	indexes, err := failureIndexes(ctx, pool)
 	if err != nil {
@@ -625,7 +656,11 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 			r.fail("paint case=%s: no statement of its own was counted, so its database time measures nothing", one.name)
 		}
 		if one.budgetMs > 0 && own > one.budgetMs {
-			r.overStated("paint case=%s db_ms=%.2f is over its budget of %.0f ms", one.name, own, one.budgetMs)
+			if one.strict {
+				r.fail("paint case=%s db_ms=%.2f is over its budget of %.0f ms, which binds at both rates", one.name, own, one.budgetMs)
+			} else {
+				r.overStated("paint case=%s db_ms=%.2f is over its budget of %.0f ms", one.name, own, one.budgetMs)
+			}
 		}
 		switch {
 		case one.delivery:

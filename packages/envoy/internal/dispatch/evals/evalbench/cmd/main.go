@@ -8,9 +8,10 @@
 // -base writes the same history with no eval reading into a database the base's
 // envoy-dispatch migrated, the base being main at the commit this head merges (git merge-base
 // <head> origin/main), for k8's and k13's negative controls; -scale multiplies every count (0.02
-// loads in a pod in a few minutes); -ten-times writes ten times the stated run rate. Every time is
-// relative to -now, the current UTC midnight by default, so a load of the base and one of this
-// head with one -now and one -seed hold the same history at the same times.
+// loads in a pod in a few minutes); -ten-times writes ten times the stated run rate; -k14 adds the
+// two projects k14's writes and first paints read (evalbench's k14.go), which no other mode loads.
+// Every time is relative to -now, the current UTC midnight by default, so a load of the base and
+// one of this head with one -now and one -seed hold the same history at the same times.
 //
 // -failure-day writes a failure day (evalbench.AddFailureDay) into a database this command has
 // loaded, and nothing else: -failure-day-runs failed deploy runs with -failure-day-jobs failed
@@ -41,6 +42,7 @@ func main() {
 	flag.Float64Var(&spec.Scale, "scale", 1, "the share of INFRA's stated rate to write, above 0 and at most 1")
 	flag.BoolVar(&spec.TenTimes, "ten-times", false, "write ten times the stated run rate")
 	flag.BoolVar(&spec.Base, "base", false, "write into a database of the base, main at the commit this head merges (git merge-base <head> origin/main), with no eval reading")
+	flag.BoolVar(&spec.K14, "k14", false, "add the two projects at INFRA's size that k14 measures: PAIR, with two github_workflow sources, and MIXED, with a github_workflow source and an events source")
 	flag.StringVar(&spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
 	flag.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
 	flag.IntVar(&day.DaysAgo, "failure-day", 0, "write only a failure day into the loaded database, on the UTC day this many days before -now's, 1 to 84; 0 loads the fixture")
@@ -56,7 +58,7 @@ func main() {
 		spec.Now = at.UTC()
 	}
 	if database == "" {
-		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]")
+		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base] [-k14] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]")
 		os.Exit(2)
 	}
 	ctx := context.Background()
@@ -80,8 +82,8 @@ func main() {
 			added.Day.Format(time.DateOnly), added.Runs, added.Jobs, added.FailedJobs, time.Since(started).Seconds())
 		return
 	}
-	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t), ending at %s",
-		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.Now.Format(time.RFC3339))
+	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t, k14 projects: %t), ending at %s",
+		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.K14, spec.Now.Format(time.RFC3339))
 	counts, err := evalbench.Load(ctx, opened, spec, logf)
 	if err != nil {
 		fail(err)

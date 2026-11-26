@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -48,7 +50,9 @@ type heads struct {
 // that hold day rows and how far each project's stored figures are built (eval_figures_built).
 // This head runs every one of these consumers. The base, main at the commit this head merges,
 // runs no refresher and runs the facts consumer and the fill where its catalog holds their tables
-// (readConsumers), which a merge of main can change.
+// (readConsumers), which a merge of main can change. In mode k14 it reads the production signals'
+// loop too (prodevents/signals): its three cursors, and each source repository whose GitHub deploy
+// rows stand derived under another rule than its own, or under none (signalsOwed).
 type consumerState struct {
 	heads       heads
 	legionFacts bool
@@ -63,6 +67,8 @@ type consumerState struct {
 	dayProjects []string
 	built       map[string]time.Time
 	fill        *int64
+	signals     map[string]int64
+	signalsOwed []string
 }
 
 // walk is one row of eval_days_walks: builtBy is the build whose process last moved it.
@@ -262,7 +268,50 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	}); err != nil {
 		return consumerState{}, fmt.Errorf("read how far the stored figures are built: %w", err)
 	}
+	if mode == "k14" {
+		if err := readSignals(ctx, pool, &state); err != nil {
+			return consumerState{}, err
+		}
+	}
 	return state, nil
+}
+
+// readSignals reads the production signals' loop's cursors and, for each source repository's
+// rule (delivery.ReadSourceRules), whether its GitHub deploy rows stand derived under it
+// (production_deploy_rules): its project and the two fields of the rule that decide a deploy.
+func readSignals(ctx context.Context, pool *store.Pool, state *consumerState) error {
+	state.signals = map[string]int64{}
+	if err := collectPairs(ctx, pool, `select name, position from production_signal_cursors`, state.signals); err != nil {
+		return err
+	}
+	rules, err := delivery.ReadSourceRules(ctx, pool)
+	if err != nil {
+		return err
+	}
+	for _, rule := range rules.All() {
+		var project string
+		var names []string
+		var step *string
+		err := pool.QueryRow(ctx, `select project_key, production_job_names, production_apply_step_name from production_deploy_rules where repo = $1`,
+			strings.ToLower(rule.DeployRepo)).Scan(&project, &names, &step)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			state.signalsOwed = append(state.signalsOwed, fmt.Sprintf("the GitHub deploy rows of %s derived under its rule (none recorded)", rule.DeployRepo))
+		case err != nil:
+			return fmt.Errorf("read the rule the deploy rows of %s stand derived under: %w", rule.DeployRepo, err)
+		case project != rule.Project || !slices.Equal(names, rule.ProductionJobNames) || !sameStep(step, rule.ProductionApplyStepName):
+			state.signalsOwed = append(state.signalsOwed, fmt.Sprintf("the GitHub deploy rows of %s derived under its rule (derived under %s's %v)", rule.DeployRepo, project, names))
+		}
+	}
+	return nil
+}
+
+// sameStep reports whether two optional apply step names are one.
+func sameStep(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }
 
 // collectPairs reads a name and a position a row into into.
@@ -378,6 +427,14 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	if len(s.builtBy) == 0 {
 		missing = append(missing, "a day row")
 	}
+	if mode == "k14" {
+		missing = append(missing, s.signalsOwed...)
+		if previous != nil {
+			behind("the production signals", s.signals, "deploys", previous.changes)
+			behind("the production signals", s.signals, "checks", previous.events)
+			behind("the production signals", s.signals, "incidents", previous.events)
+		}
+	}
 	return missing
 }
 
@@ -438,6 +495,10 @@ func (s consumerState) summary(build string) string {
 		builds = append(builds, fmt.Sprintf("%s=%d", other, count))
 	}
 	slices.Sort(builds)
-	return line + fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d served=%d of %d rebuilding=%d figures_built=%d of %d day_rows_by_build=[%s]",
+	line += fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d served=%d of %d rebuilding=%d figures_built=%d of %d day_rows_by_build=[%s]",
 		s.days, len(s.walks), done, served, len(s.serving), s.rebuilding, len(s.built), len(s.dayProjects), strings.Join(builds, " "))
+	if s.signals != nil {
+		line += fmt.Sprintf(" signals_cursors=%v signals_rules_owed=%d", s.signals, len(s.signalsOwed))
+	}
+	return line
 }

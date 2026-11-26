@@ -1,19 +1,21 @@
-# The eval registry's measurement Job (dispatch://INFRA-2916, T15: k2, k8, k13, k16) on the build
-# farm. One pod of three containers that share the pod's network and one volume: `server` runs
-# envoy-dispatch and nothing else, held to the size of the deployment this judges (SERVER_CPU and
-# SERVER_MEMORY, request equal to limit), `postgres` runs a Postgres 18 of its own with
-# pg_stat_statements preloaded and its data on the volume, and `driver` serves nothing: it builds
-# the generator, the instrument and envoy-dispatch from the checkout, loads the fixture at INFRA's
-# stated rate (or ten times its run rate), and measures the first paint (evalbench/job.sh). A
-# supervisor in each of the other two (supervise.sh) runs its process on the driver's request,
-# through files in /scratch/control, so the driver restarts the server for every cold run and
-# Postgres for the information round; the supervisors end once the driver does, since the driver
-# holds their lock for as long as it runs. MODE is head (this commit's first paint, 8 times, each
-# after a fresh start of the server, k2, k13, k16, and the Delivery timeline's first paint over the
-# history and again over it with INFRA's worst day of deploy failures added) or base (the base's
-# Delivery page over the same two histories, k8's and k13's negative controls). BASE is the base:
-# main at the commit COMMIT merges, `git merge-base <COMMIT> origin/main`, which base mode builds
-# and loads.
+# The eval registry's measurement Job (dispatch://INFRA-2916, T15: k2, k8, k13, k16, and
+# dispatch://INFRA-978's k14, T19.9) on the build farm. One pod of three containers that share the
+# pod's network and one volume: `server` runs envoy-dispatch and nothing else, held to the size of
+# the deployment this judges (SERVER_CPU and SERVER_MEMORY, request equal to limit), `postgres` runs
+# a Postgres 18 of its own with pg_stat_statements preloaded and its data on the volume, and
+# `driver` serves nothing: it builds the generator, the instrument and envoy-dispatch from the
+# checkout, loads the fixture at INFRA's stated rate (or ten times its run rate), and measures the
+# first paint (evalbench/job.sh). A supervisor in each of the other two (supervise.sh) runs its
+# process on the driver's request, through files in /scratch/control, so the driver restarts the
+# server for every cold run and Postgres for the information round; the supervisors end once the
+# driver does, since the driver holds their lock for as long as it runs. MODE is head (this commit's
+# first paint, 8 times, each after a fresh start of the server, k2, k13, k16, and the Delivery
+# timeline's first paint over the history and again over it with INFRA's worst day of deploy
+# failures added), base (the base's Delivery page over the same two histories, k8's and k13's
+# negative controls) or k14 (this commit over the fixture with the two k14 projects added: k14's
+# writes with pages open and the two projects' first paints, run.sh's k14, with the GitHub stand-in
+# the driver runs on loopback for the server's App). BASE is the base: main at the commit COMMIT
+# merges, `git merge-base <COMMIT> origin/main`, which base mode builds and loads.
 #
 # The log of the `driver` container is the evidence: judge it by its RESULT and FAIL lines and its
 # closing SHAPE and VERDICT lines, never by the Job's phase. The SHAPE line (job.sh's header says
@@ -28,7 +30,10 @@
 # it reads record, and at any other scale smoke, which shows the script and its rules work and
 # judges no budget. At TEN_TIMES=1 a database time over a budget stated at the stated rate, and
 # k8's base control, print RECORD lines, which no verdict counts, while the first paint's server
-# time and body still fail (measure's -ten-times). The container exits 0 once
+# time and body still fail (measure's -ten-times); in mode k14 every bound fails at both rates,
+# R14's, so a k14 run prints no RECORD line. A k14 verdict is k14's evidence only with its RESULT
+# lines' counts: three writes measured whole at least and both projects' first paints
+# (k14-writes, k14-paints), which the run fails without. The container exits 0 once
 # it has printed that verdict, FAIL lines or not, so a failed check never runs the hour-long
 # measurement again; only a pod that ends before its verdict (a lost machine, an eviction, a failed
 # clone) is retried.
@@ -37,10 +42,15 @@
 # names no compute class, runtime class or machine size. Render it with render-job.py, which fills
 # the placeholders below from the environment, refuses when a required one is unset, and drops the
 # line of an optional one that is unset:
-#   COMMIT BASE MODE SCALE TEN_TIMES   the commit, its base, head or base, INFRA's scale (1) and
-#                          whether the rate is ten times (0 or 1)
+#   COMMIT BASE MODE SCALE TEN_TIMES   the commit, its base, head, base or k14, INFRA's scale (1)
+#                          and whether the rate is ten times (0 or 1)
+#   JOB_NAME OWNER BRANCH  the Job's name prefix, its owner label and the branch it measures, which
+#                          the run supplies, so this file names no issue, session or deployment
 #   PAINT_RUNS             (optional) how many times each first paint is measured
-#                          (EVALBENCH_PAINT_RUNS); unset, the head's 8 times and the rest once
+#                          (EVALBENCH_PAINT_RUNS); unset, the head's 8 times, k14's 2 a project
+#                          and the rest once
+#   CATCHUP                (optional) how long the consumers' catch-up may take (EVALBENCH_CATCHUP);
+#                          unset, 1h, and 150m in mode k14
 #   OMP_SESSION OMP_SESSION_TITLE      the session that runs it, as the farm's policy reads it
 #   LABEL_DOMAIN           the build farm's label domain, under which its policy reads a Job's
 #                          session, cost, branch, head and CPU class
@@ -56,38 +66,41 @@
 #   POD_CPU                the whole pod's CPU request: the driver gets what the server and Postgres
 #                          leave, and a pod that asks for the machine's CPUs keeps other pods off it
 #   DRIVER_MEMORY SCRATCH  the driver's memory and the size of the volume the run writes
-# One attempt takes at most two hours (the pod's deadline); the render writes the CPU-hours and
-# GiB-hours of the cost annotations from the sizes at that. Example:
-#   export COMMIT=<pushed sha> BASE=$(git merge-base <pushed sha> origin/main) MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
+# One attempt takes at most two hours (the pod's deadline), four in mode k14, whose load holds two
+# more projects at INFRA's size and whose catch-up is the longer for them; the render writes the
+# deadlines from the mode, the Job's being three attempts', and the CPU-hours and GiB-hours of the
+# cost annotations from the sizes at one attempt's length. Example:
+#   export COMMIT=<pushed sha> BASE=$(git merge-base <pushed sha> origin/main) MODE=k14 SCALE=1 TEN_TIMES=0 JOB_NAME=<prefix> OWNER=<owner> BRANCH=<branch>
+#   export OMP_SESSION=<id> OMP_SESSION_TITLE=<title> LABEL_DOMAIN=<domain>
 #   export COMPUTE_CLASS=<class> GATING_CLASS=<class> SERVER_CPU=<n> SERVER_MEMORY=<n>Gi PG_CPU=<n> PG_MEMORY=<n>Gi POD_CPU=<n> DRIVER_MEMORY=<n>Gi SCRATCH=<n>Gi COST_USD=<price>
 #   python3 render-job.py < job.yaml > "$TMPDIR/job.yaml"
 #   kubectl -n builds create --dry-run=server -f "$TMPDIR/job.yaml" && kubectl -n builds create -f "$TMPDIR/job.yaml"
 apiVersion: batch/v1
 kind: Job
 metadata:
-  generateName: infra2916-evalbench-
+  generateName: ${JOB_NAME}-
   namespace: builds
   labels:
-    owner: legion-infra-2916-implementer
+    owner: ${OWNER}
     ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
   annotations:
     ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
-    # The requests for one attempt's two hours at most: the pod's CPUs and the three containers'
-    # memory, each times two hours.
+    # The requests for one attempt's length at most (ATTEMPT_SECONDS): the pod's CPUs and the
+    # three containers' memory, each times that length.
     ${LABEL_DOMAIN}/cost-usd: "${COST_USD}"
     ${LABEL_DOMAIN}/expected-cpu-hours: "${CPU_HOURS}"
     ${LABEL_DOMAIN}/expected-memory-gib-hours: "${MEMORY_GIB_HOURS}"
-    ${LABEL_DOMAIN}/branch: "legion/INFRA-2916"
+    ${LABEL_DOMAIN}/branch: "${BRANCH}"
     ${LABEL_DOMAIN}/head: "${COMMIT}"
 spec:
   # A pod that ends before its verdict runs the measurement again from the start: it keeps nothing
   # between pods. The Job's deadline counts across every pod, the wait for a machine included, and
   # ends the Job whatever backoffLimit allows, so it is the pod's own once per attempt:
-  # (backoffLimit + 1) x 7200 s.
+  # (backoffLimit + 1) x ATTEMPT_SECONDS.
   backoffLimit: 2
   podReplacementPolicy: Failed
   ttlSecondsAfterFinished: 86400
-  activeDeadlineSeconds: 21600
+  activeDeadlineSeconds: ${JOB_DEADLINE_SECONDS}
   template:
     metadata:
       labels:
@@ -102,7 +115,7 @@ spec:
       restartPolicy: Never
       automountServiceAccountToken: false
       runtimeClassName: ${RUNTIME_CLASS}
-      activeDeadlineSeconds: 7200
+      activeDeadlineSeconds: ${ATTEMPT_SECONDS}
       terminationGracePeriodSeconds: 30
       nodeSelector:
         cloud.google.com/compute-class: ${COMPUTE_CLASS}
@@ -192,6 +205,7 @@ spec:
         - {name: EVALBENCH_SCALE, value: "${SCALE}"}
         - {name: EVALBENCH_TEN_TIMES, value: "${TEN_TIMES}"}
         - {name: EVALBENCH_PAINT_RUNS, value: "${PAINT_RUNS}"}
+        - {name: EVALBENCH_CATCHUP, value: "${CATCHUP}"}
         - {name: EVALBENCH_NODE, valueFrom: {fieldRef: {fieldPath: spec.nodeName}}}
         - {name: EVALBENCH_COMPUTE_CLASS, value: "${COMPUTE_CLASS}"}
         - {name: EVALBENCH_GATING_CLASS, value: "${GATING_CLASS}"}
