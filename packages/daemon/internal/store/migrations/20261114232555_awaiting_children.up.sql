@@ -89,7 +89,7 @@
 alter table issues drop constraint issues_phase_check;
 alter table issues add constraint issues_phase_check check (phase in (
   'admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing',
-  'reviewing', 'accepting', 'retro', 'merging', 'verifying', 'done', 'held'));
+  'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
 
 alter table issues add column children_wait_start text check (children_wait_start <> '');
 alter table issues add column children_wait_task text check (children_wait_task <> '');
