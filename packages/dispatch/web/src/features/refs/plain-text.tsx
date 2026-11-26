@@ -1,5 +1,5 @@
 import { type DispatchReadingSurface, mentionDrawn } from "@legion/contracts";
-import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useState } from "react";
 
 import type { DisplayTree } from "../../api/types";
 import {
@@ -81,7 +81,12 @@ function OwnNameRead({
   const name = answer?.name;
   const mention = answer?.mention;
   const answered = answer !== undefined;
-  useEffect(() => {
+  // In the layout phase, so the name lands in the commits of the answer that brought it, with no
+  // update left waiting once they end. A report from a passive effect leaves the line's update
+  // waiting on the next task, and a page whose many own reads answer one task after another then
+  // commits each answer while another update waits: React counts that run of commits as one
+  // nested update, and past fifty of them it stops the page with "Maximum update depth exceeded".
+  useLayoutEffect(() => {
     onName(address, answered ? { mention, name } : undefined);
   }, [address, answered, mention, name, onName]);
   return null;
