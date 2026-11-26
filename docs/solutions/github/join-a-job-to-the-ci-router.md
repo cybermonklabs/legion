@@ -96,8 +96,8 @@ its own workflows; this page covers this repository only.
 
    A job an event must hold back gets its `changes` output
    set false on that event instead of an `if:` that skips it, so `ci-ok` reads the skip as
-   unselected: that is how the slow suites are held back on a pull request that carries neither
-   the label `full-ci` nor the job's own `lane:<filter>` (step 2's term). `ci-ok` names such a job
+   unselected: that is how the slow suites are held back on a pull-request run whose event carries
+   neither the label `full-ci` nor the job's own `lane:<filter>` (step 2's term). `ci-ok` names such a job
    as not run at this head, with the label that would run it. `ci-ok` fails a job in none of the three classes, naming all three remedies, and
    `check-ci-filters.sh` fails when the map or a list is not exactly what the `if:`s test, when a
    job is in none of the classes or in two, when a job `CI_OK_ALWAYS_RUN` names is gated by a
@@ -457,7 +457,8 @@ text is checked on the group by ci.yaml's `pr-title` job, which finds it with
 find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
 carries. The slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
-when it carries the label `full-ci`, or `lane:<filter>` for one of them. The
+in a run whose event carries the label `full-ci`, or `lane:<filter>` for one of them
+(`CONTRIBUTING.md` says how to get such a run, and what to read before saying CI is green). The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's
 site on a push trigger of its own.
 

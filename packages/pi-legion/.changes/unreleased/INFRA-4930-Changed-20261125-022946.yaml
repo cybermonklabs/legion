@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    The worker, retro and architect skills say when a `full-ci` or `lane:<output>` label takes effect on
+    cybermonklabs/legion: CI reads the labels of the event that starts a run, so the label goes on
+    before the push whose run must carry it, a close and reopen or a draft and ready again starts
+    such a run with no commit, and the label comes off only after that run has started. Before a
+    pull request body says CI passed, its writer reads the `not run at this head:` lines of `ci-ok`
+    and names each job they list. A Go run outside CI counts for a held-back job's packages only when
+    its verdict names the packages it derived from the change's files at the head it ran.
+time: 2026-11-25T02:29:46.313254896Z
+custom:
+    Issue: INFRA-4930
