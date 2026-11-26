@@ -1423,31 +1423,45 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "limits"]);
   }
 
-  /** `GET <path>`, for `dispatch api`: one read of a route no method here names. `path` begins
-   *  `/api/v1` and may carry a query, and the contract's rule for it (`dispatch_api`) refuses a
-   *  scheme, a host and a dot segment, so it resolves under this client's server as every other
-   *  route does (`#url`). Answers Dispatch's JSON as `#response` reads it.
+  /** `GET <path>`, for `dispatch api`, and for the reads `dispatch inbox` makes of a server of the
+   *  release before (`inboxReadOfTheReleaseBefore`): one read of a route no method here names.
+   *  `path` begins `/api/v1` and may carry a query, and the contract's rule for `dispatch api`'s
+   *  (`dispatch_api`) refuses a scheme, a host and a dot segment, so it resolves under this
+   *  client's server as every other route does (`#url`). Answers Dispatch's JSON as `#response`
+   *  reads it.
    *
    *  It sends the GET once (one `#send`) and throws a refusal as `#response` throws it, an answer
    *  of no route (`404 NOT_FOUND`, "no route for …") included: unlike every other request this
-   *  client makes, it skips `#noRoute`, so it neither sends that request again nor turns the
-   *  answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written path
-   *  Dispatch has no route for is far more often a wrong path than half of a release in progress,
-   *  so Dispatch's own refusal, which names the route, is printed as it came. */
+   *  client makes but `meInbox`'s, it skips `#noRoute`, so it neither sends that request again nor
+   *  turns the answer into `DispatchNoRouteError`. The caller wrote this path, and a caller-written
+   *  path Dispatch has no route for is far more often a wrong path than half of a release in
+   *  progress, so Dispatch's own refusal, which names the route, is printed as it came. */
   async readRoute(path: string): Promise<unknown> {
     const url = new URL(path.slice(1), `${this.#baseUrl}/`).toString();
     return this.#response("GET", url, await this.#send("GET", url));
   }
 
   /** `GET /api/v1/me/inbox?state=<state>`: the caller's own Inbox from the one read, newest
-   *  activity first, every entry of it, since no `limit` is asked for. `inbox` holds the open asks
-   *  that wait on the caller - the asks handed to them, and the asks on the issues assigned to
-   *  them that nobody has handed on - beside their Reply and Agent rows, read or not; `unread`
-   *  holds the threads they wrote in that somebody else has written in since, and the one-off
-   *  messages they sent an agent session that it answered. The route reads the caller's own
-   *  `person` scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED. */
+   *  activity first, every entry of it for `inbox` and `unread`, since no `limit` is asked for
+   *  (under `dismissed`, which `dispatch inbox` does not ask for, the route answers one page of
+   *  200). `inbox` holds the open asks that wait on the caller - an ask waits on the person it was
+   *  handed to, else on its issue's assignee, else on its project's default assignee, so the
+   *  caller's are the asks handed to them, the asks nobody handed on of the issues assigned to
+   *  them, and the asks nobody handed on, on an issue nobody holds or on a project document, of a
+   *  project whose default assignee they are - beside their Reply and Agent rows, read or not;
+   *  `unread` holds the threads they wrote in that somebody else has written in since, and the
+   *  one-off messages they sent an agent session that it answered. The route reads the caller's
+   *  own `person` scope and refuses a credential without it with 403 OAUTH_SCOPE_REQUIRED.
+   *
+   *  It sends the GET once and throws an answer of no route as it came (`isNoRoute`), as
+   *  `readRoute` does: `dispatch inbox` has an answer of its own to a Dispatch without this route,
+   *  the two reads of the release before, which every build serves
+   *  (`inboxReadOfTheReleaseBefore`), so asking again over a roll's waits would only delay it.
+   *  kept for one release: dispatch-inbox-fallback
+   */
   async meInbox(state: InboxListState): Promise<MeInboxResponse> {
-    return this.#json("GET", ["api", "v1", "me", "inbox"], undefined, { state });
+    const url = this.#url(["api", "v1", "me", "inbox"], { state });
+    return this.#response<MeInboxResponse>("GET", url, await this.#send("GET", url));
   }
 
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may

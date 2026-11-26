@@ -1,5 +1,5 @@
 import type {
-  MeInboxResponse,
+  MyRepliesResponse,
   MyReplyRow,
   OpenAskRow,
   SessionAnswersResponse,
@@ -14,7 +14,12 @@ import {
 } from "@legion/contracts";
 import { actorText, deletedMark, editedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
-import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
+import {
+  type CredentialPendingRow,
+  type DispatchClient,
+  DispatchServiceError,
+  isNoRoute,
+} from "../dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
@@ -354,23 +359,23 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
 /**
  * What the person's Inbox page shows, as the `dispatch inbox` command prints it: each heading
  * with its count, then the rows under it, in the order the page bands them. The asks within a
- * band are in `inboxAskOrder`, and the threads in the one read's own order, which nothing
+ * band are in `inboxAskOrder`, and the threads in the order Dispatch answers them, which nothing
  * re-sorts.
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request still waiting on a decision, which is the viewer's by
  * construction because the list is read as `?approver=me`. Here that is the band's own rows and
- * nothing narrower, since the one read's `inbox` state holds only the asks that wait on the
- * caller, as the page's default view does; counting the rows it prints is therefore the page's
- * rule, and it is the one count that cannot disagree with the lines under it. An expired
- * credential request waits on nobody (`awaitsDecision`), so it is not counted here, as the page
- * does not count it, though `Credential requests` lists and counts it until somebody dismisses
- * it.
+ * nothing narrower, since the one read's `inbox` state, as the read of the release before
+ * (`inboxReadOfTheReleaseBefore`), holds only the asks that wait on the caller, as the page's
+ * default view does; counting the rows it prints is therefore the page's rule, and it is the one
+ * count that cannot disagree with the lines under it. An expired credential request waits on
+ * nobody (`awaitsDecision`), so it is not counted here, as the page does not count it, though
+ * `Credential requests` lists and counts it until somebody dismisses it.
  *
- * `Unread threads` is the page's thread list (the one read's `unread` state): the threads the
- * person is reading that somebody else has written in since, and the messages they sent an
- * agent session that it answered, newest first.
+ * `Unread threads` is the page's thread list (the one read's `unread` state, or the read of the
+ * release before): the threads the person is reading that somebody else has written in since, and
+ * the messages they sent an agent session that it answered, newest first.
  *
  * `Credential requests` is the broker's list as Dispatch relays it, in its order: the pending
  * requests first, then the expired ones nobody has dismissed.
@@ -409,6 +414,46 @@ function formatInboxSummary(
 }
 
 /**
+ * The rows of the one read's `state` that `dispatch inbox` prints - the asks of `inbox`, the
+ * threads of `unread` - read as the command read them before the one read, where `error` is the
+ * answer `GET /api/v1/me/inbox?state=<state>` got from a Dispatch without that route: the asks
+ * that wait on the caller from `GET /api/v1/inbox?assignee=me`, and the threads from
+ * `GET /api/v1/me/replies?kind=reply,agent`, which a server of the release before answers as it
+ * answered that release's command. The plugins release from main as this merges while Dispatch's
+ * own server is deployed by hand later, so for a while the command runs against such a server.
+ * The one read is asked once (`DispatchClient.meInbox`), so the answer of no route reaches here
+ * as it came (`isNoRoute`), and the command waits for no roll: every build serves the two routes
+ * read here. Any other failure is thrown as it came, and nothing is read.
+ * kept for one release: dispatch-inbox-fallback
+ */
+function inboxReadOfTheReleaseBefore(
+  client: DispatchClient,
+  state: "inbox",
+  error: unknown
+): Promise<OpenAskRow[]>;
+function inboxReadOfTheReleaseBefore(
+  client: DispatchClient,
+  state: "unread",
+  error: unknown
+): Promise<MyReplyRow[]>;
+async function inboxReadOfTheReleaseBefore(
+  client: DispatchClient,
+  state: "inbox" | "unread",
+  error: unknown
+): Promise<OpenAskRow[] | MyReplyRow[]> {
+  if (!isNoRoute(error)) throw error;
+  if (state === "inbox") {
+    return (await client.readRoute(
+      `/api/v1/inbox?${new URLSearchParams({ assignee: "me" })}`
+    )) as OpenAskRow[];
+  }
+  const replies = (await client.readRoute(
+    `/api/v1/me/replies?${new URLSearchParams({ kind: "reply,agent" })}`
+  )) as MyRepliesResponse;
+  return replies.rows ?? [];
+}
+
+/**
  * `dispatch inbox`: what the person's Inbox page shows. It names no owner, so it runs on the
  * session's context alone.
  */
@@ -417,11 +462,24 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
   // All four reads at once: they depend on nothing of each other, and the credential list is
   // the slow one, since Dispatch relays it to the secrets broker.
   const pending = settleSideRead(client.credentialPending());
-  const unread = settleSideRead(client.meInbox("unread"));
+  const unread = settleSideRead(
+    client.meInbox("unread").then(
+      meInboxThreads,
+      // kept for one release: dispatch-inbox-fallback
+      (error: unknown) => inboxReadOfTheReleaseBefore(client, "unread", error)
+    )
+  );
   let identity: WhoamiResponse;
-  let inbox: MeInboxResponse;
+  let asks: OpenAskRow[];
   try {
-    [identity, inbox] = await Promise.all([client.whoami(), client.meInbox("inbox")]);
+    [identity, asks] = await Promise.all([
+      client.whoami(),
+      client.meInbox("inbox").then(
+        meInboxAsks,
+        // kept for one release: dispatch-inbox-fallback
+        (error: unknown) => inboxReadOfTheReleaseBefore(client, "inbox", error)
+      ),
+    ]);
   } catch (error) {
     // The one read needs `person`, and a credential without it is refused 403
     // OAUTH_SCOPE_REQUIRED, whose message names the scope: the code is what the caller acts
@@ -429,15 +487,13 @@ export async function inboxCommand(context: SessionContext): Promise<DispatchToo
     throw refusalWithCode(error);
   }
   const viewer = whoamiPerson(identity);
-  const rows = inboxAskOrder(meInboxAsks(inbox));
+  const rows = inboxAskOrder(asks);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
   // no credential requests, so it lists and counts none.
   const requests: readonly CredentialPendingRow[] =
     sideRead(await pending, "credential requests", warnings)?.pending ?? [];
-  const unreadAnswer = sideRead(await unread, "unread threads", warnings);
-  const threads: readonly MyReplyRow[] =
-    unreadAnswer === undefined ? [] : meInboxThreads(unreadAnswer);
+  const threads: readonly MyReplyRow[] = sideRead(await unread, "unread threads", warnings) ?? [];
   return {
     text: formatInboxSummary(rows, threads, requests, Date.now()),
     details: {

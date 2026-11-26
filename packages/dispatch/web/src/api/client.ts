@@ -1371,12 +1371,36 @@ export class DispatchApiClient {
     return this.read("/api/v1/asks/open", {}, query);
   }
 
+  /**
+   * The open asks `listOpenAsks` was asked for under `query`, read as the page of the release
+   * before read them, from `GET /api/v1/inbox` under the same `project`, where `refusal` is a
+   * Dispatch process of the release before refusing that read: such a process takes
+   * `GET /api/v1/asks/open` only with `project` or `author_session`, and answers it with neither
+   * 400 AUTHOR_SESSION_OR_PROJECT_REQUIRED. So every page that draws every project's open asks
+   * still loads while such a process serves, during a roll or after a rollback. Any other failure
+   * is thrown as it came, and nothing is read.
+   * kept for one release: open-asks-scopeless-fallback
+   */
+  async openAsksOfTheReleaseBefore(refusal: unknown, query: { readonly project?: string }) {
+    if (
+      !(
+        refusal instanceof ApiError &&
+        refusal.status === 400 &&
+        refusal.code === "AUTHOR_SESSION_OR_PROJECT_REQUIRED"
+      )
+    ) {
+      throw refusal;
+    }
+    return await this.read("/api/v1/inbox", {}, query);
+  }
+
   /** `GET /api/v1/me/inbox`, the one read: every node tied to the signed-in person, once, with
    *  the relation kinds that tie it to them, newest first; where the node is a row the Inbox
    *  draws, the entry carries that row (`inboxEntryRow`). `state` narrows it to the page's own
    *  rows in that state - `unread`, `inbox` or `dismissed` - an absent `limit` answers every
-   *  entry, and `cursor` reads on from a page's `next_cursor`. Any key the route does not declare
-   *  is refused by name. Needs the `person` scope. */
+   *  entry, but under `dismissed` one page of 200, and `cursor` reads on from a page's
+   *  `next_cursor`. Any key the route does not declare is refused by name. Needs the `person`
+   *  scope. */
   getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}) {
     return this.read("/api/v1/me/inbox", {}, query);
   }

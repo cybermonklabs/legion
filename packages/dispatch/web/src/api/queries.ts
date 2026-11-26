@@ -45,16 +45,23 @@ export const openAsksKey = ["open-asks"] as const;
 /** The open asks the viewer can see (`GET /api/v1/asks/open`), as their rows: every one of every
  *  project by default, which the Inbox reads for every person's asks but the reader's own, and the
  *  margin, the Agents page and the Machines page read too; one project's (`project`) for its page.
- *  An Inbox card mounts its thread from these rows, so the read's requests count in the
- *  generations an ask event in flight marks (`ask-thread-freshness.ts`). */
+ *  A Dispatch process of the release before refuses the read of every project, and while one
+ *  serves, those rows are read as the page of that release read them
+ *  (`openAsksOfTheReleaseBefore`). An Inbox card mounts its thread from these rows, so the read's
+ *  requests count in the generations an ask event in flight marks (`ask-thread-freshness.ts`). */
 export const openAsksQuery = (project?: string) =>
   queryOptions({
     queryKey: [...openAsksKey, { project }],
     queryFn: async ({ client }) => {
       const fetch = beginInboxFetch(client, "open-asks");
+      const query = project === undefined ? {} : { project };
       let asks: OpenAskRow[] | undefined;
       try {
-        asks = (await api.listOpenAsks(project === undefined ? {} : { project })).asks ?? [];
+        asks = await api.listOpenAsks(query).then(
+          (answer) => answer.asks ?? [],
+          // kept for one release: open-asks-scopeless-fallback
+          (refusal: unknown) => api.openAsksOfTheReleaseBefore(refusal, query)
+        );
         return asks;
       } finally {
         finishInboxFetch(client, fetch, asks);
