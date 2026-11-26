@@ -36,6 +36,7 @@ var probeRunPattern = regexp.MustCompile(`^[0-9a-f]{8}$`)
 
 // The prober takes Options that hold nothing only supervision reads, which the full runtime refuses.
 func TestAProberNeedsNoSupervision(t *testing.T) {
+	t.Parallel()
 	if _, err := configure(proberOptions()); err == nil {
 		t.Fatal("configure accepted options with no token source, store or connections; the control must refuse")
 	}
@@ -47,6 +48,7 @@ func TestAProberNeedsNoSupervision(t *testing.T) {
 // Every refusal of what the probe itself reads stands for the prober: the namespace, the
 // digest-pinned image, the pool the runtime places every pod on, and each pod's reservation.
 func TestAProberRefusesWhatTheFullRuntimeRefusesOfTheProbe(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		edit func(*Options)
@@ -72,6 +74,7 @@ func TestAProberRefusesWhatTheFullRuntimeRefusesOfTheProbe(t *testing.T) {
 // is the one a booting daemon would pass, and the two never share one Sandbox. Each Prober draws a
 // run of its own.
 func TestAProberBuildsTheProbeSandboxTheDaemonBuilds(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	full, err := configure(goldenOptions())
@@ -119,6 +122,7 @@ func TestAProberBuildsTheProbeSandboxTheDaemonBuilds(t *testing.T) {
 // A prober with no token source, store or connections runs the probe end to end: it creates the
 // probe Sandbox under its own name, reads the OK line from its pod, passes, and deletes the Sandbox.
 func TestAProberProbesTheImage(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil, asProber()).succeeds(okLine(3))
 	if err := g.probe(probeOptions(t)); err != nil {
 		t.Fatalf("ProbeImage = %v, want a pass", err)
@@ -135,6 +139,7 @@ func TestAProberProbesTheImage(t *testing.T) {
 
 // The prober refuses what the daemon's probe refuses: a Failed probe pod fails it, quoting its log.
 func TestAProberRefusesAnImageTheDaemonsProbeRefuses(t *testing.T) {
+	t.Parallel()
 	g := newProbeRig(t, nil, asProber()).fails("legion probe-image: pi-legion speaks daemon API contract 2; this daemon requires 3")
 	err := g.probe(probeOptions(t))
 	wantContains(t, err, "pod "+probeName(testProject, testDigestHex, g.p.r.probeRun)+" Failed", "speaks daemon API contract 2")
@@ -145,6 +150,7 @@ func TestAProberRefusesAnImageTheDaemonsProbeRefuses(t *testing.T) {
 // nothing of the other's — no create meets the other's name, no delete takes it — and the probe
 // held in flight then passes on its first attempt, its Sandbox the one it created.
 func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
+	t.Parallel()
 	for _, daemonFirst := range []bool{true, false} {
 		name := map[bool]string{true: "the daemon's probe in flight", false: "the prober's probe in flight"}[daemonFirst]
 		t.Run(name, func(t *testing.T) {
@@ -203,6 +209,8 @@ func TestAProberAndABootingDaemonEachKeepTheirOwnProbeSandbox(t *testing.T) {
 // probe past many ticks and reads no Secret; the control, a runtime that does start one (start),
 // reads them within the same wait.
 func TestAProberRunsNoRefresherPastARefreshTick(t *testing.T) {
+	// Not parallel: it writes the package variable gitHubRefreshInterval, which every runtime's
+	// start reads.
 	g := newProbeRig(t, nil).succeeds(okLine(3))
 	g.autoStart.Store(true)
 	g.spawn(rootSpec(t))

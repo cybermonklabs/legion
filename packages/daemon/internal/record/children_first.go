@@ -191,9 +191,9 @@ func cycleAncestor(child DispatchIssueRow, parent Issue, byKey map[string]Issue)
 // (ChildrenFirstCandidates) and judges them (ChildWaits). It is one query whatever the number of
 // parents, because every judgement the daemon makes about children-first runs inside a
 // transaction that performs no I/O of its own and under the one fact lock every fact takes
-// (intake.ApplyFact): a read per parent would cost a round trip per unstarted issue on every fact
-// of every consumer. facts are the pass's own, which carry the gates each candidate is read
-// against and the records above the pass that its cycle walk crosses.
+// (intake.ApplyFact): a read per parent would cost a round trip per unstarted issue on every pass
+// (the pass rule on admit's Admission.Apply). facts are the pass's own, which carry the gates each
+// candidate is read against and the records above the pass that its cycle walk crosses.
 func ChildWaitsOf(ctx context.Context, tx pgx.Tx, store Store, project string, issues []Issue, facts LineFacts) (map[string]ChildWait, error) {
 	children, err := store.DispatchChildren(ctx, tx, project, ChildrenFirstCandidates(issues, facts.Gates))
 	if err != nil {

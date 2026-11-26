@@ -237,10 +237,15 @@ const (
 // the variable is unset.
 const stateAnswerOut = "LEGION_STATE_ANSWER_OUT"
 
-// baseContract is the contract main declares at this branch's last forward merge: the number of
-// its newest entry, role-identities (#4580's), which a plugin built from main states. It is read
-// from the registry, since no source line holds an entry's number.
-func baseContract() int { return entryNumber(roleIdentitiesContract) }
+// baseContract is the contract just below this branch's entry, treeInBacklogOrIceboxContract. A
+// build stamped in main's merge order (contractOrder, scripts/daemon-contract-order.sh --stamp)
+// numbers every entry the base holds first and appends this branch's entry after them, so there
+// the number below it is the base's own contract: what a plugin built from the base states. An
+// unstamped build ranks its entries by id, and an entry the base made after this one
+// (look-names-its-check, #5463's) then ranks above it, so there the number below it is only the
+// boundary the narrowing serves, not the base's contract. It is read from the registry, since no
+// source line holds an entry's number.
+func baseContract() int { return entryNumber(treeInBacklogOrIceboxContract) - 1 }
 
 // A caller whose plugin speaks a contract below entryNumber(treeInBacklogOrIceboxContract) reads
 // `admission.held`'s `reason` as a strict list that does not hold tree_in_backlog_or_icebox, and
