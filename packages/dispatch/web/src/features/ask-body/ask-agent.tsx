@@ -1,24 +1,18 @@
 import type { ReactNode } from "react";
 
 import type { Actor, AskResolution } from "../../api/types";
+import type { AgentNames } from "../conversation/CachedAuthor";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "../refs/AgentName";
 
-/**
- * How the ask body names an agent. `live`, on today's surfaces and in the Inbox, draws
- * `AgentName`, as `main` does: its session form reads the live agent registry, which starts the
- * agents poll. `cache` names the agent from the registry the cache already holds
- * (`useAgentText`), and starts no read, for a caller that sends no agents read on its load.
- */
-export type AskAgentNames = "live" | "cache";
-
-/** An agent, as the ask body names it. */
+/** An agent, as the ask body names it (`AgentNames`): `live` draws `AgentName`, `cache` names it
+ *  from the registry the cache already holds. */
 export function AskAgent({
   actor,
   agentNames,
   inline,
 }: {
   actor: Actor;
-  agentNames: AskAgentNames;
+  agentNames: AgentNames;
   inline?: boolean;
 }): ReactNode {
   return agentNames === "live" ? (
@@ -37,7 +31,7 @@ export function AskResolutionActor({
   agentNames,
   resolution,
 }: {
-  agentNames: AskAgentNames;
+  agentNames: AgentNames;
   resolution: AskResolution;
 }): ReactNode {
   return agentNames === "live" ? (

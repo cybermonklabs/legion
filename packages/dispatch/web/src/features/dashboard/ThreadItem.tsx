@@ -5,21 +5,18 @@ import { Link } from "react-router-dom";
 import { askThreadQuery, myRepliesKey } from "../../api/queries";
 import type {
   Actor,
-  AskWithTrees,
   CommentWithTrees,
   DisplayTree,
   MessageWithTrees,
   MyReplyRow,
 } from "../../api/types";
-import { compareTimestamps } from "../../lib/timestamps";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { newestAttempt } from "../agents/exchange-delivery";
-import { AskBody } from "../ask-body/AskBody";
+import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { AskReplyComposer, takesReply } from "../inbox/AskThread";
-import { useAskAnswerForm } from "../inbox/useAskAnswerForm";
 import { DASHBOARD_WORDS } from "../issue-page/page-words";
 import { RowText } from "../issue-page/RowText";
 import { useAgentText } from "../refs/AgentName";
@@ -29,8 +26,8 @@ import { commentQuery, EVENT_FRESH, messageQuery } from "../refs/reference-targe
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { answerAsk, createReply, declineAsk, getAskThread } from "./ask-writes";
-import { rowText } from "./row-text";
+import { unreadWrites } from "../threads/thread-layout";
+import { DashboardAskBody } from "./DashboardAskBody";
 
 /**
  * A thread of what waits on the reader (dispatch://INFRA-5702/spec#b-r-in-place): a row of the
@@ -64,18 +61,16 @@ interface Entry {
   readonly tree?: DisplayTree;
 }
 
-/** The writes of `entries` the reader has not read: each newer than the row's read mark that the
- *  reader did not write. */
-export function unreadEntries<Write extends Entry>(
-  row: Pick<MyReplyRow, "read_through">,
+/** The writes of `entries` the reader has not read: each the thread's row reads as unread
+ *  (`unreadWrites`, the one rule every surface reads it by) that the reader did not write. */
+function unreadEntries<Write extends Entry>(
+  row: MyReplyRow,
   entries: readonly Write[],
   viewer: string | undefined
 ): readonly Write[] {
-  const mark = row.read_through;
+  const unread = unreadWrites(row, entries);
   return entries.filter(
-    (entry) =>
-      !(entry.author.kind === "user" && entry.author.id === viewer) &&
-      (mark === undefined || compareTimestamps(entry.created_at, mark) > 0)
+    (entry) => unread.has(entry.id) && !(entry.author.kind === "user" && entry.author.id === viewer)
   );
 }
 
@@ -119,28 +114,37 @@ export function replySendKey(threadId: string): readonly unknown[] {
 
 const noReturn = (): void => {};
 
-function CommentThread({
+/** A comment's or a message's thread, from its own read (`CommentThread`, `MessageThread`): the
+ *  root and each reply the reader has not read, the Inbox's reply control for the thread - or,
+ *  where the root's author deleted it, the reply a draft kept for it - and the link to it. */
+function ReplyThread({
   closed,
   issueKey,
-  row,
-  viewer,
+  parentKind,
+  readKey,
+  replies,
+  root,
+  thread,
 }: {
   closed: boolean;
   issueKey: string;
-  row: MyReplyRow;
-  viewer: string | undefined;
+  /** What the root is, which names each entry's source, the reply's parent and the address. */
+  parentKind: "comment" | "message";
+  /** The key of the thread's own read, which a sent reply reads again. */
+  readKey: readonly unknown[];
+  /** The replies the reader has not read. */
+  replies: readonly (CommentWithTrees | MessageWithTrees)[];
+  root: CommentWithTrees | MessageWithTrees;
+  /** How a reply into a targeted message's thread is delivered. */
+  thread?: ReplyTarget["thread"];
 }): ReactNode {
   const queryClient = useQueryClient();
   const { agents, reach } = useReachedAgents();
-  const read = useQuery({ ...commentQuery(row.thread_id), ...EVENT_FRESH }).data;
-  if (read === undefined) return null;
-  const root: CommentWithTrees = read.comment;
-  const replies = unreadEntries(row, read.replies ?? [], viewer);
-  const entry = (comment: CommentWithTrees) => (
+  const entry = (post: CommentWithTrees | MessageWithTrees) => (
     <EntryView
-      entry={{ ...comment, tree: comment.body_tree }}
-      key={comment.id}
-      source={textSourceOf("comment", comment.id, comment.issue_key)}
+      entry={{ ...post, tree: post.body_tree }}
+      key={post.id}
+      source={textSourceOf(parentKind, post.id, post.issue_key)}
     />
   );
   return (
@@ -154,7 +158,7 @@ function CommentThread({
           actor={root.author}
           agentNames="cache"
           mutationKey={replySendKey(root.id)}
-          parentKind="comment"
+          parentKind={parentKind}
         />
       ) : (
         <fieldset
@@ -169,22 +173,53 @@ function CommentThread({
             box="inbox-thread-reply"
             closed={closed}
             inline
-            kind="comment"
             mutationKey={replySendKey(root.id)}
             onClose={noReturn}
             onSent={() => {
-              void queryClient.invalidateQueries({ queryKey: ["comment", root.id] });
+              void queryClient.invalidateQueries({ queryKey: readKey });
               void queryClient.invalidateQueries({ queryKey: myRepliesKey });
             }}
             owner={{ issueKey, kind: "issue" }}
             replyParent={root}
-            replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+            replyTo={{
+              actor: root.author,
+              excerpt: "",
+              id: root.id,
+              parentKind,
+              ...(thread === undefined ? {} : { thread }),
+            }}
             standing
           />
         </fieldset>
       )}
-      <ThreadLink to={buildIssuePath({ id: root.id, key: issueKey, kind: "comment" })} />
+      <ThreadLink to={buildIssuePath({ id: root.id, key: issueKey, kind: parentKind })} />
     </div>
+  );
+}
+
+function CommentThread({
+  closed,
+  issueKey,
+  row,
+  viewer,
+}: {
+  closed: boolean;
+  issueKey: string;
+  row: MyReplyRow;
+  viewer: string | undefined;
+}): ReactNode {
+  const read = useQuery({ ...commentQuery(row.thread_id), ...EVENT_FRESH }).data;
+  if (read === undefined) return null;
+  const root = read.comment;
+  return (
+    <ReplyThread
+      closed={closed}
+      issueKey={issueKey}
+      parentKind="comment"
+      readKey={commentQuery(root.id).queryKey}
+      replies={unreadEntries(row, read.replies ?? [], viewer)}
+      root={root}
+    />
   );
 }
 
@@ -199,107 +234,52 @@ function MessageThread({
   row: MyReplyRow;
   viewer: string | undefined;
 }): ReactNode {
-  const queryClient = useQueryClient();
-  const { agents, reach } = useReachedAgents();
   const read = useQuery({ ...messageQuery(issueKey, row.thread_id), ...EVENT_FRESH }).data;
   if (read === undefined) return null;
-  const root: MessageWithTrees = read.message;
+  const root = read.message;
   const all = read.replies ?? [];
-  const replies = unreadEntries(row, all, viewer);
   // A reply into a targeted thread is delivered as the thread's newest attempt was, which is how
   // the Inbox's thread addresses one.
   const last = newestAttempt([root, ...all]);
   const target = root.target;
-  const entry = (message: MessageWithTrees) => (
-    <EntryView
-      entry={{ ...message, tree: message.body_tree }}
-      key={message.id}
-      source={textSourceOf("message", message.id, message.issue_key)}
-    />
-  );
   return (
-    <div className="space-y-2">
-      <ol className="space-y-2">
-        {entry(root)}
-        {replies.map(entry)}
-      </ol>
-      {postDeletion(root) !== null ? (
-        <KeptReplyToDeleted
-          actor={root.author}
-          agentNames="cache"
-          mutationKey={replySendKey(root.id)}
-          parentKind="message"
-        />
-      ) : (
-        <fieldset
-          className="m-0 min-w-0 border-0 p-0"
-          onFocus={reach}
-          onPointerEnter={reach}
-          onTouchStart={reach}
-        >
-          <MentionComposer
-            agentNames="cache"
-            agents={agents}
-            box="inbox-thread-reply"
-            closed={closed}
-            inline
-            mutationKey={replySendKey(root.id)}
-            onClose={noReturn}
-            onSent={() => {
-              void queryClient.invalidateQueries({
-                queryKey: ["issue-message", issueKey, root.id],
-              });
-              void queryClient.invalidateQueries({ queryKey: myRepliesKey });
-            }}
-            owner={{ issueKey, kind: "issue" }}
-            replyParent={root}
-            replyTo={{
-              actor: root.author,
-              excerpt: "",
-              id: root.id,
-              parentKind: "message",
-              ...(target === null || target === undefined
-                ? {}
-                : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }),
-            }}
-            standing
-          />
-        </fieldset>
-      )}
-      <ThreadLink to={buildIssuePath({ id: root.id, key: issueKey, kind: "message" })} />
-    </div>
+    <ReplyThread
+      closed={closed}
+      issueKey={issueKey}
+      parentKind="message"
+      readKey={messageQuery(issueKey, root.id).queryKey}
+      replies={unreadEntries(row, all, viewer)}
+      root={root}
+      thread={
+        target === null || target === undefined
+          ? undefined
+          : { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target }
+      }
+    />
   );
 }
 
-function AskThreadBody({
-  ask,
+/** An ask's thread, from its own read: the ask by its body (`DashboardAskBody`), each reply the
+ *  reader has not read, the reply control while the ask takes one, and the link to it. Named
+ *  apart from the Inbox's `AskThread`, which the composer census tells mounts apart by. */
+function AskThreadItem({
   issueKey,
-  replies,
+  row,
+  viewer,
 }: {
-  ask: AskWithTrees;
   issueKey: string;
-  replies: readonly CommentWithTrees[];
+  row: MyReplyRow;
+  viewer: string | undefined;
 }): ReactNode {
-  // The thread is this item's own read (`threadQuery`), under the key the form reads it by.
-  const form = useAskAnswerForm({
-    answer: answerAsk,
-    ask,
-    createReply,
-    getAskThread,
-    readThread: false,
-  });
+  // The thread is this item's own read, under the key the ask's form reads it by
+  // (`DashboardAskBody`), so the form reads no thread of its own and the ask it draws is this one.
+  const read = useQuery(askThreadQuery(row.thread_id)).data;
+  if (read === undefined) return null;
+  const ask = read.ask;
+  const replies = unreadEntries(row, read.replies ?? [], viewer);
   return (
     <div className="space-y-2">
-      <AskBody
-        agentNames="cache"
-        ask={ask}
-        decline={declineAsk}
-        documentLink
-        form={form}
-        frame="card"
-        renderText={rowText}
-        urgencyWord
-      />
+      <DashboardAskBody ask={ask} />
       {replies.length === 0 ? null : (
         <ol className="space-y-2">
           {replies.map((reply) => (
@@ -311,31 +291,9 @@ function AskThreadBody({
           ))}
         </ol>
       )}
-      {takesReply(form.displayedAsk) ? (
-        <AskReplyComposer ask={form.displayedAsk} uploadOwner={{ issue: issueKey }} />
-      ) : null}
+      {takesReply(ask) ? <AskReplyComposer ask={ask} uploadOwner={{ issue: issueKey }} /> : null}
       <ThreadLink to={buildIssuePath({ id: ask.id, key: issueKey, kind: "ask" })} />
     </div>
-  );
-}
-
-function AskThread({
-  issueKey,
-  row,
-  viewer,
-}: {
-  issueKey: string;
-  row: MyReplyRow;
-  viewer: string | undefined;
-}): ReactNode {
-  const read = useQuery(askThreadQuery(row.thread_id)).data;
-  if (read === undefined) return null;
-  return (
-    <AskThreadBody
-      ask={read.ask}
-      issueKey={issueKey}
-      replies={unreadEntries(row, read.replies ?? [], viewer)}
-    />
   );
 }
 
@@ -354,7 +312,7 @@ export function ThreadItem({
 }): ReactNode {
   switch (row.kind) {
     case "ask":
-      return <AskThread issueKey={issueKey} row={row} viewer={viewer} />;
+      return <AskThreadItem issueKey={issueKey} row={row} viewer={viewer} />;
     case "comment":
       return <CommentThread closed={closed} issueKey={issueKey} row={row} viewer={viewer} />;
     case "message":

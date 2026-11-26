@@ -1,9 +1,14 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
 
-import { api } from "../../api/client";
 import { legionIssueQuery } from "../../api/legion-issue";
-import { issueCoverageQuery, issueQuery, issueResultsQuery, whoAmIQuery } from "../../api/queries";
+import {
+  handoffsQuery,
+  issueCoverageQuery,
+  issueQuery,
+  issueResultsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import { pageHairBorder, pageInkText, pagePaperBg } from "../../theme/classes";
 import { decisionsDocumentId } from "../decision-card/change-anchor";
 import { issueDecisionsQuery } from "../doc/spec-marks";
@@ -16,7 +21,7 @@ import { PhaseTrack } from "./PhaseTrack";
 import { Tiles } from "./ProgressTiles";
 import { threadQuery } from "./ThreadItem";
 import { useDashboardNames } from "./useDashboardNames";
-import { dashboardRepliesQuery, openAsksQuery, useWaitingItems } from "./useWaitingItems";
+import { openAsksQuery, useWaitingItems } from "./useWaitingItems";
 import { type DashboardPage, WAITING_STEP, WaitingList } from "./WaitingList";
 
 export interface DashboardTabProps {
@@ -49,6 +54,16 @@ function threadTexts(read: unknown): readonly string[] {
   return replies;
 }
 
+/** What the reads of the threads drawn answer, which Dashboard waits on before it asks for the
+ *  names they cite: whether any is still out, and the texts they hold. One function for every
+ *  render, so `useQueries` combines the answers again only when they change. */
+function threadReads(answers: readonly { readonly data: unknown; readonly isPending: boolean }[]) {
+  return {
+    pending: answers.some((answer) => answer.isPending),
+    texts: answers.flatMap((answer) => threadTexts(answer.data)),
+  };
+}
+
 /**
  * Dashboard (dispatch://INFRA-5702/spec#b-r-today-tab, #b-r-new-page): one screen of where the
  * issue stands for the reader, drawn from the top as R3, R4, R6 and R7 say - the phase track,
@@ -63,37 +78,22 @@ function threadTexts(read: unknown): readonly string[] {
 export default function DashboardTab({ issueKey, page }: DashboardTabProps): ReactNode {
   const issue = useQuery({ ...issueQuery(issueKey), ...EVENT_FRESH });
   const legion = useQuery(legionIssueQuery(issueKey)).data;
-  const handoffs = useQuery({
-    queryKey: ["handoffs", issueKey],
-    queryFn: () => api.listHandoffs(issueKey),
-    ...EVENT_FRESH,
-  }).data;
+  const handoffs = useQuery({ ...handoffsQuery(issueKey), ...EVENT_FRESH }).data;
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const asks = useQuery({ ...openAsksQuery(issueKey), ...EVENT_FRESH });
   const decisions = useQuery({ ...issueDecisionsQuery(issueKey, true), ...EVENT_FRESH });
-  const replies = useQuery({ ...dashboardRepliesQuery(issueKey), ...EVENT_FRESH });
   const results = useQuery({ ...issueResultsQuery(issueKey), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issueKey), ...EVENT_FRESH });
-  const items = useWaitingItems(issueKey);
+  // The list counts and draws once each read its items come from has answered (`loaded`), so no
+  // item is drawn that leaves, and no count stands, as a read lands.
+  const { items, loaded } = useWaitingItems(issueKey);
   const [drawn, setDrawn] = useState(WAITING_STEP);
-  // The list counts and draws once each read its items come from has answered, so no item is
-  // drawn that leaves, and no count stands, as a read lands.
-  const loaded =
-    issue.data !== undefined &&
-    viewer.data !== undefined &&
-    asks.data !== undefined &&
-    decisions.data !== undefined &&
-    replies.data !== undefined &&
-    coverage.data !== undefined;
   const shownThreads = items
     .slice(0, drawn)
     .flatMap((item) => (item.kind === "thread" ? [item.row] : []));
   const threads = useQueries({
     queries: shownThreads.map((row) => threadQuery(issueKey, row)),
-    combine: (answers) => ({
-      pending: answers.some((answer) => answer.isPending),
-      texts: answers.flatMap((answer) => threadTexts(answer.data)),
-    }),
+    combine: threadReads,
   });
   const texts = useMemo(
     () => [

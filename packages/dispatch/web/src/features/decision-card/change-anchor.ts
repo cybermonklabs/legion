@@ -1,4 +1,15 @@
-import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
+import type { QueryClient } from "@tanstack/react-query";
+
+import { api } from "../../api/client";
+import type {
+  Artifact,
+  CreateCommentInput,
+  Decision,
+  DecisionKeep,
+  DisplayTree,
+  IssueDecisions,
+} from "../../api/types";
+import { issueDecisionsQuery } from "../doc/spec-marks";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import { storedReading } from "./stored-reading";
@@ -16,8 +27,11 @@ import { storedReading } from "./stored-reading";
  *
  * The decision card's callers read these functions, and the new issue page's
  * `issue-page/decision-review.ts` reads `decisionsDocumentId`, `decisionWords` and `flat` to find
- * the Changes a person asked. This module, as every file under `features/decision-card/`, imports
- * no file under `features/issue-page/` (R22).
+ * the Changes a person asked. Keep and Change are written by the same rules on both pages
+ * (`useDecisionWrites.ts`, `issue-page/DecisionActions.tsx`): the row a Keep settles
+ * (`keptDecisions`), the comment a Change is (`changeCommentInput`) and the anchor it is sent with
+ * (`readChangeAnchor`). This module, as every file under `features/decision-card/`, imports no
+ * file under `features/issue-page/` (R22).
  */
 
 /**
@@ -149,6 +163,78 @@ export function changeAnchor(
   const above = wordsOf({ ...document, content: nodes.slice(0, heading + 1) });
   const start = above === "" ? 0 : above.length + 1;
   return { occurrence: matchesBefore(wordsOf(document), quote, start), quote };
+}
+
+/** The anchor a Change of `decision` is sent with, read at the send: the decisions document's
+ *  text, read once now, and the anchor `changeAnchor` counts over its reading and the decisions
+ *  the cache holds. With no reading - the read failed - the anchor names no place, and where
+ *  `changeAnchor` gives none it is `quote` alone, the words the Change quotes. */
+export function readChangeAnchor(
+  queryClient: QueryClient,
+  decision: Pick<Decision, "block_id" | "heading" | "text" | "text_tree">,
+  documentId: string,
+  issueKey: string,
+  quote: string
+): Promise<ChangeAnchor> {
+  return queryClient
+    .fetchQuery({
+      queryFn: () => api.getArtifactText(documentId),
+      queryKey: ["artifact", documentId, "text"],
+      staleTime: 0,
+    })
+    .then(
+      (text) => text.markdown_tree,
+      () => undefined
+    )
+    .then(
+      (tree) =>
+        changeAnchor(
+          decision,
+          queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+            ?.decisions,
+          tree
+        ) ?? { quote }
+    );
+}
+
+/** The comment a Change is: the issue's own, anchored to the decision's words (`anchor`) in the
+ *  decisions document `documentId`. A comment on an issue's document is the issue's own write:
+ *  the artifact route refuses it, naming the issue route (`send-request.ts` follows the same rule
+ *  for a thread's replies). */
+export function changeCommentInput(
+  documentId: string,
+  input: { readonly anchor: ChangeAnchor; readonly body: string }
+): CreateCommentInput {
+  return {
+    anchor: {
+      artifact: documentId,
+      occurrence: input.anchor.occurrence,
+      quote: input.anchor.quote,
+    },
+    body: input.body,
+  };
+}
+
+/** The decisions read `view` once a Keep of the text whose sum is `textSha` has landed (`kept`).
+ *  The Keep is of the text the card showed, which the server took, so it applies to the row that
+ *  still holds that text. A decision's changed version is the greatest of the blocks it holds now
+ *  and does not move when a block leaves it, so a row whose text changed since can carry the
+ *  version the Keep was taken at. */
+export function keptDecisions(
+  view: IssueDecisions | undefined,
+  kept: DecisionKeep,
+  textSha: string
+): IssueDecisions | undefined {
+  return view === undefined
+    ? view
+    : {
+        ...view,
+        decisions: (view.decisions ?? []).map((row) =>
+          row.block_id === kept.block_id && row.text_sha256 === textSha
+            ? { ...row, kept, waiting_review: false }
+            : row
+        ),
+      };
 }
 
 /** Where each decision's heading stands among the top-level nodes of the decisions document's

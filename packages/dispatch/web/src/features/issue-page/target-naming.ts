@@ -1,5 +1,6 @@
 import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
 import type { Artifact, DisplayTree, IssueDetails, ReferenceTarget } from "../../api/types";
+import { blockWords } from "../decision-card/adapters";
 import { storedReading } from "../decision-card/stored-reading";
 import { type AgentText, actorLabelText } from "../refs/AgentName";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
@@ -259,6 +260,19 @@ export function targetNaming(reads: IssueTreeReads): Omit<PublishedReferences, "
   return chipNaming((reads.targets ?? []).map((target) => context.chipOf(target.ref)));
 }
 
+/** What the page publishes of the batched name read until it answers: no target read, and the
+ *  same empty value on every render, so no surface beside the tree draws again for a read that
+ *  names nothing. The tree publishes it (`useIssueTree.ts`), and so does Dashboard
+ *  (`useDashboardNames`). */
+export const NO_TARGET_NAMING: Omit<PublishedReferences, "asked"> = {
+  ambiguous: new Set(),
+  deleted: new Map(),
+  edited: new Set(),
+  gone: new Set(),
+  readings: new Map(),
+  unnamed: new Set(),
+};
+
 /**
  * How the page names each target the batched reference read answered, by the chip naming it
  * (`targetNaming`), under the chip's own reference (`NodeChip.ref`). Each reference is in one of
@@ -356,24 +370,4 @@ function documentWord(issue: IssueDetails, document: Pick<Artifact, "id"> | unde
     if (document.id === roleDocument(issue, role)?.id) return PRESET_NAMES[role];
   }
   return NODE_TYPE_NAMES.document;
-}
-
-/** A directive's own opening line, `:::plan_task{#t1 serves="…"}`, and its closing fence. */
-const DIRECTIVE_OPENER = /^:{3,}[a-z_]/;
-const DIRECTIVE_FENCE = /^:{3,}\s*$/;
-
-/**
- * The words of the name the batched reference read gives a target (`ReferenceTarget.name`).
- * The read names a document's block by its stored excerpt, which is the block's source: a typed
- * block is a directive, so its excerpt opens on the directive's line - its type and its
- * attributes - and, where the excerpt holds the whole block, ends on its closing fence. Both are
- * markup and no word of the block (R21), so they are left out. Any other name is left as the
- * read gives it.
- */
-export function blockWords(name: string): string {
-  const lines = name.trimEnd().split("\n");
-  if (!DIRECTIVE_OPENER.test(lines[0] ?? "")) return name;
-  lines.shift();
-  if (DIRECTIVE_FENCE.test(lines.at(-1) ?? "")) lines.pop();
-  return lines.join("\n").trim();
 }

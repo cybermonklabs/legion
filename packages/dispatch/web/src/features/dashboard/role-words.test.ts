@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { LEGION_CLAIM_STATES } from "@legion/contracts/legion-api";
 
-import type { LegionIssueResponse } from "../../api/legion-issue";
+import type { LegionIssueResponse } from "../../api/types";
 import { ROLE_STATE_WORDS } from "../issue-page/page-words";
 import awaitingPersonBody from "./fixtures/legion-issue/awaiting_person.json";
 import planningBody from "./fixtures/legion-issue/planning.json";

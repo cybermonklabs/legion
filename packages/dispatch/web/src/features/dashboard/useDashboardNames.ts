@@ -3,11 +3,10 @@ import { useMemo, useRef } from "react";
 
 import { referenceTargetsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
-import { citedReferences } from "../issue-page/row-references";
-import { targetNaming, treeContext } from "../issue-page/target-naming";
+import { addAskedReference, citedReferences } from "../issue-page/row-references";
+import { chipNaming, NO_TARGET_NAMING, treeContext } from "../issue-page/target-naming";
 import { type PublishedReferences, usePublishReferenceNames } from "../refs/reference-names";
 import { EVENT_FRESH } from "../refs/reference-target";
-import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 
 /** What Dashboard names, and is asked to name, by its one batched read. */
 export interface DashboardNameSources {
@@ -55,15 +54,10 @@ export function useDashboardNames(
 ): DashboardNames {
   const cited = useMemo(() => {
     const refs = new Set<string>();
-    const add = (reference: string) => {
-      refs.add(reference);
-      const route = parseNodeReference(reference);
-      if (route?.kind === "spec" && route.block === undefined) {
-        refs.add(buildDispatchReference({ key: route.key, kind: "issue" }));
-      }
-    };
-    for (const text of texts) for (const reference of citedReferences(text)) add(reference);
-    for (const reference of references) add(reference);
+    for (const text of texts) {
+      for (const reference of citedReferences(text)) addAskedReference(refs, reference);
+    }
+    for (const reference of references) addAskedReference(refs, reference);
     return [...refs].sort();
   }, [references, texts]);
   // The set the read was last given while every read it waits on had answered, written during
@@ -75,23 +69,15 @@ export function useDashboardNames(
     ...EVENT_FRESH,
     placeholderData: keepPreviousData,
   }).data?.targets;
-  const naming = useMemo(
-    () =>
-      issue === undefined || targets === undefined
-        ? undefined
-        : { context: treeContext({ issue, targets }), names: targetNaming({ issue, targets }) },
-    [issue, targets]
-  );
+  // Each answered target named by its chip, as the page names it (`targetNaming`), from the one
+  // context the excerpts are read from too.
+  const naming = useMemo(() => {
+    if (issue === undefined || targets === undefined) return undefined;
+    const context = treeContext({ issue, targets });
+    return { context, names: chipNaming(targets.map((target) => context.chipOf(target.ref))) };
+  }, [issue, targets]);
   const published = useMemo(
-    (): PublishedReferences => ({
-      ambiguous: naming?.names.ambiguous ?? new Set(),
-      asked: new Set(cited),
-      deleted: naming?.names.deleted ?? new Map(),
-      edited: naming?.names.edited ?? new Set(),
-      gone: naming?.names.gone ?? new Set(),
-      readings: naming?.names.readings ?? new Map(),
-      unnamed: naming?.names.unnamed ?? new Set(),
-    }),
+    (): PublishedReferences => ({ ...(naming?.names ?? NO_TARGET_NAMING), asked: new Set(cited) }),
     [cited, naming]
   );
   usePublishReferenceNames(published);

@@ -2,70 +2,69 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useMemo } from "react";
 
 import { issueQuery } from "../../api/queries";
-import type { Decision, DisplayTree } from "../../api/types";
+import type { DisplayTree } from "../../api/types";
 import {
   card,
   decisionUnsureBorder,
   selectedCardBg,
   selectedCardBorder,
 } from "../../theme/classes";
-import { fromDecision } from "../decision-card/adapters";
+import {
+  cardPaths,
+  fromDecision,
+  markdownBodyBlocks,
+  type StatementWords,
+  withStatementTexts,
+} from "../decision-card/adapters";
 import { decisionsDocumentId } from "../decision-card/change-anchor";
 import {
   DecisionCard as DecisionCardBody,
   type DecisionCardProps,
   type DecisionText,
 } from "../decision-card/DecisionCard";
-import { useDecisionWrites } from "../decision-card/useDecisionWrites";
+import { useStatementExcerpts } from "../decision-card/useStatementExcerpts";
+import { WritableDecisionCard } from "../decision-card/WritableDecisionCard";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
-import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath, parseDispatchReference, referenceHref } from "../refs/routes";
+import { parseDispatchReference, referenceHref } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useCardStack } from "./card-stack";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
 /** The margin's renderer of a decision's text (R21): the text whole, by `MarkdownBody`, below
- *  the heading the card draws, so the reading's own heading is left out of it. The passage is a
- *  record of the issue's `decisions.md` (`source`). */
+ *  the heading the card draws, so the text's own heading is left out of it: out of the reading,
+ *  and out of the markdown where the answer carried no reading of it (`markdownBodyBlocks`, as
+ *  the Decisions tab's renderer splits it). The passage is a record of the issue's
+ *  `decisions.md` (`source`). */
 function MarginDecisionText({
   markdown,
   source,
   tree,
 }: DecisionText & { source: TextSource | undefined }): ReactNode {
   const body = useMemo(() => {
-    const content = tree?.content;
-    return tree === undefined || !Array.isArray(content)
-      ? tree
-      : { ...tree, content: (content as DisplayTree[]).filter((node) => node.type !== "heading") };
-  }, [tree]);
+    if (tree === undefined) {
+      return { markdown: markdownBodyBlocks(markdown).join("\n\n"), tree };
+    }
+    const content = tree.content;
+    return {
+      markdown,
+      tree: !Array.isArray(content)
+        ? tree
+        : {
+            ...tree,
+            content: (content as DisplayTree[]).filter((node) => node.type !== "heading"),
+          },
+    };
+  }, [markdown, tree]);
   return (
     <MarkdownBody
-      markdown={markdown}
+      markdown={body.markdown}
       source={source}
       surface="margin-decision-passage"
-      tree={body}
+      tree={body.tree}
     />
   );
-}
-
-/** A decision waiting for review, with the writes the margin hands the card: Keep and Change,
- *  the Decisions tab's own (`useDecisionWrites`), named after the heading's plain words. */
-function WritableDecision({
-  documentId,
-  issueKey,
-  model,
-  name,
-  ...props
-}: DecisionCardProps & {
-  documentId: string;
-  issueKey: string;
-  model: Decision;
-  name: string;
-}): ReactNode {
-  const { change, keep } = useDecisionWrites({ decision: model, documentId, issueKey, name });
-  return <DecisionCardBody {...props} change={change} issueKey={issueKey} keep={keep} />;
 }
 
 /** One decision beside a spec block it shaped, drawn by the decision card with its setting off
@@ -82,6 +81,7 @@ export function DecisionCard({
   item,
   onSelect,
   selected,
+  statementExcerpt,
 }: {
   /** The decisions document the card's Keep and Change write against: undefined where the
    *  margin writes none, on a closed issue or while the issue read names no such document. */
@@ -91,9 +91,15 @@ export function DecisionCard({
   item: DecisionMarginItem;
   onSelect(id: string): void;
   selected: boolean;
+  /** The words of a statement the decision shaped, by its reference, from the list's one read
+   *  of the statements' names (`useStatementExcerpts`). */
+  statementExcerpt: (reference: string) => StatementWords;
 }): ReactNode {
   const { decision } = item;
-  const shown = useMemo(() => fromDecision(decision), [decision]);
+  const shown = useMemo(
+    () => withStatementTexts(fromDecision(decision), statementExcerpt),
+    [decision, statementExcerpt]
+  );
   const route = parseDispatchReference(decision.ref);
   // A decision names the record it was made in; one naming no page of this dashboard - a
   // person (R5) - leaves the heading as plain words.
@@ -122,12 +128,9 @@ export function DecisionCard({
       ),
       words: heading,
     },
-    paths: {
-      ask: (id) => buildIssuePath({ id, key: issueKey, kind: "ask" }),
-      decision: href,
-      statement: (blockId) =>
-        `${buildIssuePath({ key: issueKey, kind: "spec" })}${blockFragment(blockId)}`,
-    },
+    // A statement opens at its block's fragment on the issue's spec page, so the card is handed
+    // no spec document (`specBlockPath`).
+    paths: { ...cardPaths(issueKey, undefined), decision: href },
     renderText: (text) => (
       <MarginDecisionText markdown={text.markdown} source={source} tree={text.tree} />
     ),
@@ -159,12 +162,11 @@ export function DecisionCard({
     >
       {reads}
       {decision.waiting_review && decisionsDocument !== undefined ? (
-        <WritableDecision
+        <WritableDecisionCard
           {...props}
           documentId={decisionsDocument}
           issueKey={issueKey}
           model={decision}
-          name={heading}
         />
       ) : (
         <DecisionCardBody {...props} />
@@ -183,9 +185,10 @@ const decisionKey = (item: DecisionMarginItem): string => item.id;
  *
  * Keep and Change write against the decisions document, whose id comes from the reads the page
  * already holds: the issue read's documents and the decisions read's address of it
- * (`decisionsDocumentId`). Both are read here from the cache alone, so the margin sends no read
- * of its own. A decision beside two blocks is two cards, which both read `["decisions", <key>]`,
- * so a write from one settles both.
+ * (`decisionsDocumentId`). Both are read here from the cache alone. A decision beside two blocks
+ * is two cards, which both read `["decisions", <key>]`, so a write from one settles both. The
+ * one read the margin sends of its own is the names of the statements the cards' decisions
+ * shaped, which their read holds no words for: one for the whole list (`useStatementExcerpts`).
  */
 export function DecisionList({
   blockPlacements,
@@ -209,6 +212,8 @@ export function DecisionList({
   const decisionsDocument = isClosed
     ? undefined
     : decisionsDocumentId(issue.data?.artifacts, decisionsRead.data);
+  const drawn = useMemo(() => decisions.map((item) => item.decision), [decisions]);
+  const statementExcerpt = useStatementExcerpts(drawn);
   // A card wants its block's height in the document; one whose block has no placement yet
   // stacks below the card before it.
   const wantedTop = useCallback(
@@ -241,6 +246,7 @@ export function DecisionList({
             item={item}
             onSelect={(id) => onSelect(id, item.blockId)}
             selected={selectedItemId === item.id}
+            statementExcerpt={statementExcerpt}
           />
         </div>
       ))}

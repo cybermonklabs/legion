@@ -14,19 +14,25 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { fromDecision } from "../decision-card/adapters";
+import {
+  cardPaths,
+  fromDecision,
+  markdownBodyBlocks,
+  specBlockPath,
+  withStatementTexts,
+} from "../decision-card/adapters";
 import {
   type CardDecision,
   DecisionCard,
   type DecisionCardProps,
 } from "../decision-card/DecisionCard";
-import { useDecisionWrites } from "../decision-card/useDecisionWrites";
-import { blockFragment } from "../refs/block-reference";
+import { useStatementExcerpts } from "../decision-card/useStatementExcerpts";
+import { WritableDecisionCard } from "../decision-card/WritableDecisionCard";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { PlainText } from "../refs/plain-text";
-import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
+import { buildIssuePath, DECISIONS_DOCUMENT_SLUG } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { useDecisionHeadingWords } from "./decision-heading";
+import { decisionHeadingTree, useDecisionHeadingWords } from "./decision-heading";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -105,20 +111,16 @@ function isUnsureBlock(node: DisplayTree): boolean {
  *  before this one serves none during a rolling deploy, and the markdown split the browser has
  *  always made is what draws the decision then, as every other view falls back to parsing. */
 function markdownBlocks(text: string): DecisionBlock[] {
-  return text
-    .split(/\n\s*\n/)
-    .map((block) => block.trim())
-    .filter((block) => block !== "" && !block.startsWith("#"))
-    .map((markdown) => ({
-      // The block's own markdown is its text here: with no reading there is nothing to flatten.
-      // It is what the references are read from as well, because it is what the browser parsed
-      // to draw this block: a reference some other block of the decision cites is no reference
-      // of this one.
-      text: markdown,
-      references: markdown,
-      tree: undefined,
-      unsure: markdown.startsWith(UNSURE_PREFIX),
-    }));
+  return markdownBodyBlocks(text).map((markdown) => ({
+    // The block's own markdown is its text here: with no reading there is nothing to flatten.
+    // It is what the references are read from as well, because it is what the browser parsed
+    // to draw this block: a reference some other block of the decision cites is no reference
+    // of this one.
+    text: markdown,
+    references: markdown,
+    tree: undefined,
+    unsure: markdown.startsWith(UNSURE_PREFIX),
+  }));
 }
 
 /** The blocks of a decision below its heading, each marked unsure or not, taken from the tree Go
@@ -146,14 +148,6 @@ function readDecisionBlocks(
       tree: { ...tree, content: [node] },
       unsure: isUnsureBlock(node),
     }));
-}
-
-/** The path that opens the issue's spec at `blockId`: through the spec's own document route when
- *  the issue's artifacts are loaded, as every in-app block link is built. */
-function specBlockPath(issueKey: string, spec: Artifact | undefined, blockId: string): string {
-  return spec === undefined
-    ? `${buildIssuePath({ key: issueKey, kind: "spec" })}${blockFragment(blockId)}`
-    : documentItemPath(spec, { blockID: blockId, id: blockId, kind: "comment" });
 }
 
 function Section({
@@ -224,33 +218,29 @@ function DecisionBlocks({
   );
 }
 
-/** A decision waiting for the reader's review, with the writes the tab hands the card: Keep and
- *  Change (`useDecisionWrites`), named after the heading's plain words. */
-function WritableDecision({
-  documentId,
-  issueKey,
-  model,
-  name,
+/** A decision of "Waiting for your review" with the writes the tab hands the card: Keep and
+ *  Change, named after the heading's plain words (`useDecisionHeadingWords`), which only the
+ *  writes read, so only a writable card reads them. */
+function WritableTabDecision({
+  source,
   ...props
-}: DecisionCardProps & {
-  documentId: string;
-  issueKey: string;
-  model: Decision;
-  name: string;
-}): ReactNode {
-  const { change, keep } = useDecisionWrites({ decision: model, documentId, issueKey, name });
-  return <DecisionCard {...props} change={change} issueKey={issueKey} keep={keep} />;
+}: Parameters<typeof WritableDecisionCard>[0] & { source: TextSource | undefined }): ReactNode {
+  const { reads, words } = useDecisionHeadingWords(props.model, source);
+  return (
+    <>
+      {reads}
+      <WritableDecisionCard {...props} heading={{ ...props.heading, words }} />
+    </>
+  );
 }
 
 /** One decision in its section, drawn by the decision card with its setting off (R20, R21) and
  *  the tab's own renderer; in "Waiting for your review" with Keep and Change, where the issue is
  *  open and its decisions document is known. The heading is a record of the decisions document
- *  too: the card draws it by the renderer, and names a link, a write and a form by its plain
- *  words (`useDecisionHeadingWords`). */
+ *  too: the card draws it by the renderer, and Keep and Change are named by its plain words. */
 function TabDecision({
   decision,
   documentId,
-  isClosed,
   issueKey,
   shown,
   spec,
@@ -260,16 +250,16 @@ function TabDecision({
   /** The issue's `decisions.md`, the document this text is written in, which its `#id`s name a
    *  question block of; undefined until the issue's documents are read. */
   documentId: string | undefined;
-  isClosed: boolean;
   issueKey: string;
   /** The decision as the card draws it (`fromDecision`). */
   shown: CardDecision;
   spec: Artifact | undefined;
-  /** Whether this section takes the decision's Keep and Change. */
+  /** Whether the card takes the decision's Keep and Change: in its section, on an open issue. */
   writes: boolean;
 }): ReactNode {
   const source = textSourceOf("artifact", documentId, issueKey);
-  const { reads, tree: headingTree, words: name } = useDecisionHeadingWords(decision, source);
+  // Read once per answer of the decisions read, which is when the decision is a new object.
+  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   const props: DecisionCardProps = {
     authorLine: false,
     decision: shown,
@@ -283,26 +273,24 @@ function TabDecision({
           variant="inline"
         />
       ),
-      words: name,
+      // The tab's heading links nowhere, so only Keep and Change are named by its words, which
+      // the writable card reads as plain words (`WritableTabDecision`).
+      words: decision.heading,
     },
-    paths: {
-      ask: (id) => buildIssuePath({ id, key: issueKey, kind: "ask" }),
-      statement: (blockId) => specBlockPath(issueKey, spec, blockId),
-    },
+    paths: cardPaths(issueKey, spec),
     renderText: (text) => (
       <DecisionBlocks markdown={text.markdown} source={source} tree={text.tree} />
     ),
   };
   return (
     <li className={`rounded-lg border p-3 ${card}`} data-decision={decision.block_id}>
-      {reads}
-      {writes && !isClosed && documentId !== undefined ? (
-        <WritableDecision
+      {writes && documentId !== undefined ? (
+        <WritableTabDecision
           {...props}
           documentId={documentId}
           issueKey={issueKey}
           model={decision}
-          name={name}
+          source={source}
         />
       ) : (
         <DecisionCard {...props} />
@@ -358,17 +346,19 @@ export function DecisionsPanel({
     queryFn: () => api.getIssueDecisions(issueKey),
     queryKey: ["decisions", issueKey],
   });
-  // Each decision beside the shape the card draws it by, made once per answer, so a card's text
-  // is a new object only when the decisions were read again and a repaint of the tab repaints no
-  // body it already drew. The three lists below are this one reading filtered, never three
-  // readings of it.
+  // The words of every statement the decisions shaped, from one read of their names.
+  const statementExcerpt = useStatementExcerpts(view.data?.decisions);
+  // Each decision beside the shape the card draws it by, made once per answer of the decisions
+  // read and of the statements' names, so a card's text is a new object only when the decisions
+  // were read again and a repaint of the tab repaints no body it already drew. The three lists
+  // below are this one reading filtered, never three readings of it.
   const rows = useMemo(
     () =>
       (view.data?.decisions ?? []).map((decision) => ({
         decision,
-        shown: fromDecision(decision),
+        shown: withStatementTexts(fromDecision(decision), statementExcerpt),
       })),
-    [view.data?.decisions]
+    [statementExcerpt, view.data?.decisions]
   );
   if (view.isPending) {
     return <LoadingSkeleton label="Decisions loading" />;
@@ -409,12 +399,11 @@ export function DecisionsPanel({
           <TabDecision
             decision={decision}
             documentId={documentId}
-            isClosed={isClosed}
             issueKey={issueKey}
             key={decision.block_id}
             shown={shown}
             spec={spec}
-            writes
+            writes={!isClosed}
           />
         ))}
       </Section>
@@ -423,7 +412,6 @@ export function DecisionsPanel({
           <TabDecision
             decision={decision}
             documentId={documentId}
-            isClosed={isClosed}
             issueKey={issueKey}
             key={decision.block_id}
             shown={shown}
@@ -437,7 +425,6 @@ export function DecisionsPanel({
           <TabDecision
             decision={decision}
             documentId={documentId}
-            isClosed={isClosed}
             issueKey={issueKey}
             key={decision.block_id}
             shown={shown}

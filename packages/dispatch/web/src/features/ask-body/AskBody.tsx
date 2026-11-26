@@ -4,6 +4,7 @@ import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef } from 
 import type { ArtifactOwner, DeclineAskInput, WriteBounds } from "../../api/client";
 import type { Ask } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { Dot, KindBullet } from "../../components/RowMarks";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -32,6 +33,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { DraftUploadStatus } from "../artifacts/ArtifactUpload";
+import type { AgentNames } from "../conversation/CachedAuthor";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { UnsentBox } from "../inbox/AskThread";
 import type { OwnedAsk } from "../inbox/ask-name";
@@ -50,7 +52,7 @@ import { AskBlockLink } from "./AskBlockLink";
 import { AskCompletionCard, type AskFrame, OrphanedAnchorNotice } from "./AskCompletionCard";
 import { AskHandOn } from "./AskHandOn";
 import { AskChoiceRow } from "./AskOptionRow";
-import { AskAgent, type AskAgentNames } from "./ask-agent";
+import { AskAgent } from "./ask-agent";
 import {
   ASK_APPROVAL_WORDS,
   ASK_CARD_WORDS,
@@ -118,15 +120,26 @@ function useFormRef(): [
   return [formRef, track];
 }
 
+/** The project of the document an ask was asked on: the Inbox row's `document`, else the
+ *  caller's `owner`, else the document the ask is anchored to. */
+function askDocumentProject(
+  ask: OwnedAsk,
+  displayedAsk: Ask,
+  owner: { project: string; slug: string } | undefined
+): string | undefined {
+  return (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
+}
+
 /** Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
- *  ask's issue, or the project of the document it was asked on. `document` is the Inbox row's:
- *  the ask read carries no owner, so the fresher `displayedAsk` cannot name it. */
+ *  ask's issue, or the project of the document it was asked on (`askDocumentProject`).
+ *  `document` is the Inbox row's: the ask read carries no owner, so the fresher `displayedAsk`
+ *  cannot name it. */
 export function askUploadOwner(
   ask: OwnedAsk,
   displayedAsk: Ask,
   owner: { project: string; slug: string } | undefined
 ): ArtifactOwner | undefined {
-  const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
+  const documentProject = askDocumentProject(ask, displayedAsk, owner);
   return displayedAsk.issue_key !== null
     ? { issue: displayedAsk.issue_key }
     : documentProject === undefined
@@ -136,7 +149,7 @@ export function askUploadOwner(
 
 export interface AskBodyProps {
   /** How the body names agents (`ask-agent.tsx`): `live` on today's surfaces and in the Inbox. */
-  agentNames: AskAgentNames;
+  agentNames: AgentNames;
   /** The document whose earlier version an orphaned anchor's "View original text" opens. */
   artifactSlug?: string;
   /** The ask as the caller holds it. An Inbox row's carries its document and its issue's
@@ -171,15 +184,6 @@ export interface AskBodyProps {
    *  right end of the first line, where an urgency so high carries one (R17). Off, it draws
    *  none: the card's notch says it. */
   urgencyWord: boolean;
-}
-
-/** The mark between two parts of a line, which a screen reader does not read. */
-function Dot(): ReactNode {
-  return (
-    <span aria-hidden="true" className="shrink-0">
-      ·
-    </span>
-  );
 }
 
 /**
@@ -348,11 +352,7 @@ export function AskBody({
     urgencyWord && (urgency === "blocking" || urgency === "high")
       ? ASK_LINE_WORDS.urgency[urgency]
       : undefined;
-  // The thread's own "still open?" wording must track the post-answer ask, not the possibly
-  // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
-  // round-trips down from the parent.
-  const currentAsk = completed ?? displayedAsk;
-  const turnHolder = askTurnHolder(currentAsk, (threadQuery.data?.replies ?? []).at(-1));
+  const turnHolder = askTurnHolder(displayedAsk, (threadQuery.data?.replies ?? []).at(-1));
 
   // Inside `NoTooltips` the actions are the page's (`ON_PAGE`): filled with the ink, or its
   // header control's rule and muted words.
@@ -408,7 +408,7 @@ export function AskBody({
               }
         }
         placeholder={answerPlaceholder}
-        project={(ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project}
+        project={askDocumentProject(ask, displayedAsk, owner)}
         readOnly={holdsFocus && refusing}
         rows={2}
         writing={dispatchWritingBox("ask-answer", "ask-answer")}
@@ -777,13 +777,7 @@ export function AskBody({
         // The bullet hangs left of the question's words, and everything under them stands at
         // the words' left edge: an 18 px column, its 7 px dot centred on the first line.
         <div className="flex gap-x-2">
-          <span
-            aria-hidden="true"
-            className="flex h-6 w-[18px] shrink-0 items-center justify-center"
-            data-ask-bullet=""
-          >
-            <i className={`block size-[7px] rounded-full ${pageKindBullet.question}`} />
-          </span>
+          <KindBullet colour={pageKindBullet.question} mark="data-ask-bullet" />
           <div className="min-w-0 flex-1">{rest}</div>
         </div>
       )}

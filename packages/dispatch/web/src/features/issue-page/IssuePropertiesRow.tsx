@@ -84,7 +84,7 @@ export function IssuePropertiesRow({
   // every view (dispatch://INFRA-5702/spec#b-r-header-count). Each read is kept fresh by the
   // events that name its key, never by its age (`EVENT_FRESH`), and none is the issue's whole
   // comments list: a Change is matched to its decision by its anchor, with no blocks read.
-  const waiting = useWaitingItems(issue.key);
+  const waiting = useWaitingItems(issue.key).items;
   // The document each approval request that waits on the reader is on, by artifact id: the
   // ask's own, else the one its approval names by slug, else the issue's spec. The header's
   // approval control for each carries Approve and Request changes, and is where the count puts

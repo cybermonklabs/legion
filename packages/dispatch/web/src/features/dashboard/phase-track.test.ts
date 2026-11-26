@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import type { LegionIssueResponse } from "../../api/legion-issue";
+import type { LegionIssueResponse } from "../../api/types";
 import { PHASE_WORDS } from "../issue-page/page-words";
 import accepting from "./fixtures/legion-issue/accepting.json";
 import admitted from "./fixtures/legion-issue/admitted.json";

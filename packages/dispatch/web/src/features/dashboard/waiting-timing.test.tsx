@@ -6,7 +6,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { ApiError, api } from "../../api/client";
-import { type LegionIssueResponse, legionIssueQuery } from "../../api/legion-issue";
+import { legionIssueQuery } from "../../api/legion-issue";
 import { myRepliesKey } from "../../api/queries";
 import type {
   Comment,
@@ -14,6 +14,7 @@ import type {
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
+  LegionIssueResponse,
   MyRepliesResponse,
 } from "../../api/types";
 import { anchorQuote, decisionsDocumentId } from "../decision-card/change-anchor";
@@ -133,16 +134,16 @@ function serve(store: Store): void {
   );
 }
 
-/** The header's count, as the new page's header reads it: the same hook's length. */
+/** The header's count, as the new page's header reads it: the number of the same hook's items. */
 function HeaderCount(): ReactNode {
-  return <output data-testid="header-count">{useWaitingItems(KEY).length}</output>;
+  return <output data-testid="header-count">{useWaitingItems(KEY).items.length}</output>;
 }
 
 /** What the list draws, beside the header's count, and a mismatch on any render. */
 const mismatches: string[] = [];
 
 function Harness({ store }: { store: Store }): ReactNode {
-  const items = useWaitingItems(KEY);
+  const { items } = useWaitingItems(KEY);
   // The names Dashboard publishes for what its items cite, asked before any read answers them,
   // so no text reads a reference of its own (R8); no batched read is made here.
   const names = useDashboardNames(store.issue, {

@@ -18,6 +18,7 @@ import type {
   IssueDecisions,
   IssueDetails,
 } from "../../api/types";
+import type { StatementWords } from "../decision-card/adapters";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionCard, DecisionList } from "./DecisionCard";
@@ -57,10 +58,19 @@ function item(decision: Partial<Decision>): DecisionMarginItem {
   };
 }
 
+/** A card's decisions here hold their statements' words, or shape none: no name is read. */
+const NO_EXCERPT = (): StatementWords => ({});
+
 function renderCard(decision: Partial<Decision>, onSelect: (id: string) => void = () => {}) {
   return render(
     <MemoryRouter>
-      <DecisionCard issueKey="CORE-1" item={item(decision)} onSelect={onSelect} selected={false} />
+      <DecisionCard
+        issueKey="CORE-1"
+        item={item(decision)}
+        onSelect={onSelect}
+        selected={false}
+        statementExcerpt={NO_EXCERPT}
+      />
     </MemoryRouter>
   );
 }
@@ -87,6 +97,33 @@ test("an unsure decision is drawn in the unsure colour and says so; a person's s
     expect(card).toHaveAttribute("data-decision-unsure", "true");
     expect(screen.getByText("Unsure")).toBeDefined();
     expect(screen.getByText("A person's decision")).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+// An answer that carried no reading of the text - a pod of the build before this one, during a
+// rolling deploy - hands the card the decision's markdown alone, its heading line first. The card
+// draws the heading above the text, so the text leaves its heading out, as the Decisions tab's
+// renderer does: the heading is drawn once.
+test("a decision read with no reading of its text draws its heading once", async () => {
+  const { decision, ...rest } = item({
+    text: "## Store notices in a table\n\nA table keeps them through a restart.",
+  });
+  const view = render(
+    <MemoryRouter>
+      <DecisionCard
+        issueKey="CORE-1"
+        item={{ ...rest, decision: { ...decision, text_tree: undefined } }}
+        onSelect={() => {}}
+        selected={false}
+        statementExcerpt={NO_EXCERPT}
+      />
+    </MemoryRouter>
+  );
+  try {
+    expect(await screen.findByText("A table keeps them through a restart.")).toBeDefined();
+    expect(screen.getAllByText("Store notices in a table")).toHaveLength(1);
   } finally {
     view.unmount();
   }
@@ -163,7 +200,13 @@ test("before the engine answers, the card is named after its heading as written"
   const html = renderToString(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <DecisionCard issueKey="CORE-1" item={item({})} onSelect={() => {}} selected={false} />
+        <DecisionCard
+          issueKey="CORE-1"
+          item={item({})}
+          onSelect={() => {}}
+          selected={false}
+          statementExcerpt={NO_EXCERPT}
+        />
       </MemoryRouter>
     </QueryClientProvider>
   );

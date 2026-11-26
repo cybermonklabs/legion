@@ -1,6 +1,6 @@
 import type { LegionClaimState } from "@legion/contracts/legion-api";
 
-import type { LegionRoleClaim } from "../../api/legion-issue";
+import type { LegionRoleClaim } from "../../api/types";
 import { ROLE_STATE_WORDS } from "../issue-page/page-words";
 
 /**

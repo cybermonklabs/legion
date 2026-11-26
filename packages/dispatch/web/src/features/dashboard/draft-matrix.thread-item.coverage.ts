@@ -3,11 +3,8 @@ import { answers, type CoverageEntry, cells } from "../../__tests__/composer-cen
 
 const HOST = "Dashboard thread item";
 const TYPED = ["typed"];
-const COMMENT =
-  "CommentThread | CommentThread <MentionComposer mutationKey={replySendKey(root.id)}>";
-const MESSAGE =
-  "MessageThread | MessageThread <MentionComposer mutationKey={replySendKey(root.id)}>";
-const ASK = "AskThreadBody | AskThreadBody <AskReplyComposer>";
+const REPLY = "ReplyThread | ReplyThread <MentionComposer mutationKey={replySendKey(root.id)}>";
+const ASK = "AskThreadItem | AskThreadItem <AskReplyComposer>";
 const ANSWER = "AskBody <MentionField askAnswer={true}> | address prop | useAskAnswerForm({ ask })";
 
 const REASONS = {
@@ -25,54 +22,63 @@ const allPages = ["comment", "message", "ask"].flatMap(pages);
 const sameAsk = { row: `${HOST} · an answer stays with its ask across waiting items · typed` };
 
 export const coverage: readonly CoverageEntry[] = [
-  ...answers(`${COMMENT} | address prop | mutationKey={replySendKey(root.id)}`, returns("comment")),
-  ...answers(`${COMMENT} | address prop | owner={{ issueKey, kind: "issue" }}`, issueAddress),
   ...answers(
-    `${COMMENT} | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}`,
-    returns("comment")
+    `${REPLY} | address prop | mutationKey={replySendKey(root.id)}`,
+    returns("comment"),
+    returns("message")
   ),
+  ...answers(`${REPLY} | address prop | owner={{ issueKey, kind: "issue" }}`, issueAddress),
   ...answers(
-    `${COMMENT} | conditional | !(postDeletion(root) !== null) ? …`,
-    cells(`${HOST} · the root is deleted · comment`, TYPED)
-  ),
-  ...answers(`${COMMENT} | early return | if (read === undefined) return …`, reads("comment")),
-  ...answers(
-    `${COMMENT} | lifetime | <MentionComposer mutationKey={replySendKey(root.id)}>`,
-    cells(`${HOST} · the page reloaded, then back · comment`)
-  ),
-
-  ...answers(`${MESSAGE} | address prop | mutationKey={replySendKey(root.id)}`, returns("message")),
-  ...answers(`${MESSAGE} | address prop | owner={{ issueKey, kind: "issue" }}`, issueAddress),
-  ...answers(
-    `${MESSAGE} | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "message", ...(target === null || target === undefined ? {} : { thread: { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }), }}`,
+    `${REPLY} | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind, ...(thread === undefined ? {} : { thread }), }}`,
+    returns("comment"),
     returns("message")
   ),
   ...answers(
-    `${MESSAGE} | conditional | !(postDeletion(root) !== null) ? …`,
+    `${REPLY} | conditional | !(postDeletion(root) !== null) ? …`,
+    cells(`${HOST} · the root is deleted · comment`, TYPED),
     cells(`${HOST} · the root is deleted · message`, TYPED)
   ),
-  ...answers(`${MESSAGE} | early return | if (read === undefined) return …`, reads("message")),
   ...answers(
-    `${MESSAGE} | lifetime | <MentionComposer mutationKey={replySendKey(root.id)}>`,
+    `${REPLY} | lifetime | <MentionComposer mutationKey={replySendKey(root.id)}>`,
+    cells(`${HOST} · the page reloaded, then back · comment`),
     cells(`${HOST} · the page reloaded, then back · message`)
   ),
-
-  ...answers(`${ASK} | address prop | ask={form.displayedAsk}`, returns("ask")),
   ...answers(
-    `${ASK} | conditional | (takesReply(form.displayedAsk)) ? …`,
+    "CommentThread | ReplyThread | early return | if (read === undefined) return …",
+    reads("comment")
+  ),
+  ...answers("CommentThread | ReplyThread | address prop | issueKey={issueKey}", issueAddress),
+  ...answers(
+    'CommentThread | ReplyThread | address prop | parentKind="comment"',
+    returns("comment")
+  ),
+  ...answers("CommentThread | ReplyThread | address prop | root={root}", returns("comment")),
+  ...answers(
+    "MessageThread | ReplyThread | early return | if (read === undefined) return …",
+    reads("message")
+  ),
+  ...answers("MessageThread | ReplyThread | address prop | issueKey={issueKey}", issueAddress),
+  ...answers(
+    'MessageThread | ReplyThread | address prop | parentKind="message"',
+    returns("message")
+  ),
+  ...answers("MessageThread | ReplyThread | address prop | root={root}", returns("message")),
+  ...answers(
+    'MessageThread | ReplyThread | address prop | thread={ target === null || target === undefined ? undefined : { delivery: deliveryMode(last?.delivery ?? "") ?? "steer", target } }',
+    returns("message")
+  ),
+
+  ...answers(`${ASK} | address prop | ask={ask}`, returns("ask")),
+  ...answers(
+    `${ASK} | conditional | (takesReply(ask)) ? …`,
     cells(`${HOST} · the ask opens again, then settles`, TYPED)
   ),
   ...answers(
     `${ASK} | lifetime | <AskReplyComposer>`,
     cells(`${HOST} · the page reloaded, then back · ask`, TYPED)
   ),
-  ...answers(`AskThreadBody | ${ANSWER}`, sameAsk),
-  ...answers(`AskItem | ${ANSWER}`, sameAsk),
-  ...answers(
-    "AskThread | AskThreadBody | early return | if (read === undefined) return …",
-    reads("ask")
-  ),
-  ...answers("AskThread | AskThreadBody | address prop | ask={read.ask}", returns("ask")),
+  ...answers(`${ASK} | early return | if (read === undefined) return …`, reads("ask")),
+  ...answers(`DashboardAskBody | ${ANSWER}`, sameAsk),
 
   ...answers(
     'ThreadItem | CommentThread | conditional | switch (row.kind) case "comment"',
@@ -86,8 +92,11 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers("ThreadItem | MessageThread | address prop | issueKey={issueKey}", issueAddress),
   ...answers("ThreadItem | MessageThread | address prop | row={row}", returns("message")),
-  ...answers('ThreadItem | AskThread | conditional | switch (row.kind) case "ask"', returns("ask")),
-  ...answers("ThreadItem | AskThread | address prop | row={row}", returns("ask")),
+  ...answers(
+    'ThreadItem | AskThreadItem | conditional | switch (row.kind) case "ask"',
+    returns("ask")
+  ),
+  ...answers("ThreadItem | AskThreadItem | address prop | row={row}", returns("ask")),
   ...answers('ItemBody | ThreadItem | conditional | switch (item.kind) case "thread"', allReturns),
   ...answers("ItemBody | ThreadItem | address prop | issueKey={issue.key}", issueAddress),
   ...answers("ItemBody | ThreadItem | address prop | row={item.row}", allReturns),

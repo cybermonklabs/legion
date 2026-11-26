@@ -1,9 +1,9 @@
 import { dispatchWritingBox } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, DisplayTree } from "../../api/types";
+import { Dot, KindBullet } from "../../components/RowMarks";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   dangerText,
@@ -21,7 +21,6 @@ import {
 import { MentionField } from "../conversation/MentionField";
 import { useAgentText } from "../refs/AgentName";
 import { usePlainHeadline } from "../refs/plain-text";
-import { blockQuery, blockText, blockTextTree } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
@@ -42,11 +41,14 @@ export interface CardLink {
   readonly created_at: string;
   /** Whether the decision changed after the tie. */
   readonly stale: boolean;
-  /** The statement's own `dispatch://` address, whose read names it where `text` is absent. */
+  /** The statement's own `dispatch://` address, by which the caller reads its words where the
+   *  read of the decision holds none (`withStatementTexts`). */
   readonly ref?: string;
-  /** The statement's words, whose first line is the link, where the read of the decision holds
-   *  them. */
+  /** The statement's words, whose first line is the link: the read of the decision's, else the
+   *  caller's batched read of the statements' names; none, or `""`, draws no line. */
   readonly text?: string;
+  /** The server's reading of `text`, where the read that gave the words sent one. */
+  readonly text_tree?: DisplayTree;
 }
 
 /** The change a person asked of the decision, which the caller found. */
@@ -154,14 +156,6 @@ export interface DecisionCardProps {
   readonly paths: CardPaths;
   readonly renderText: DecisionTextRenderer;
 }
-/** The mark between two parts of a line, which a screen reader does not read. */
-function Dot(): ReactNode {
-  return (
-    <span aria-hidden="true" className="shrink-0">
-      ·
-    </span>
-  );
-}
 
 /** The level word: off the setting, "Unsure" alone, for a decision its maker was unsure of or
  *  whose level is `high`; on it, the level the read holds, else "Unsure" for `unsure`. */
@@ -172,28 +166,21 @@ function levelWord(decision: CardDecision, authorLine: boolean): string | undefi
 }
 
 /** One statement the decision shaped, as a link by its first line, with "Changed since" and
- *  "out of date" where they apply. Where the decision's read holds no words for it, which is
- *  how the server answers a tie today, its line is read from the statement's own reference read
- *  (`blockQuery`), the read every reference to it on the page shares; a statement with no
+ *  "out of date" where they apply. Its words are the link's own (`CardLink.text`), which the
+ *  caller filled from one batched read of the statements' names where the decision's read holds
+ *  none, which is how the server answers a tie today (`withStatementTexts`); a statement with no
  *  words is drawn as nothing, and never by its block's id. A link holds no markup, so the line
- *  is the first line of the statement's text as plain words, from the reading the server made
- *  of it where the read carries one (`usePlainHeadline`): the reading list's
+ *  is the first line of the statement's text as plain words, from the reading the server made of
+ *  it where the read sent one (`usePlainHeadline`): the reading list's
  *  `decision-statement-line`. */
 function StatementLink({ link, to }: { link: CardLink; to: string }): ReactNode {
-  const read = useQuery({
-    ...blockQuery(link.ref),
-    enabled: link.text === undefined && link.ref !== undefined,
+  const { reads, text } = usePlainHeadline(link.text_tree, link.text, {
+    firstLine: true,
+    surface: "decision-statement-line",
   });
-  const node = read.data?.node;
-  const markdown = link.text ?? (node === undefined ? undefined : blockText(node));
-  const { reads, text } = usePlainHeadline(
-    link.text === undefined && node !== undefined ? blockTextTree(node) : undefined,
-    markdown,
-    { firstLine: true, surface: "decision-statement-line" }
-  );
   // Until the engine has answered, the first line as written: the load state of
   // `decision-statement-line`.
-  const asWritten = (markdown ?? "").trim().split("\n", 1)[0]?.replace(/\s+/gu, " ").trim() ?? "";
+  const asWritten = (link.text ?? "").trim().split("\n", 1)[0]?.replace(/\s+/gu, " ").trim() ?? "";
   const line = text?.text ?? asWritten;
   if (line === "") return null;
   return (
@@ -227,8 +214,8 @@ function StatementLink({ link, to }: { link: CardLink; to: string }): ReactNode 
  * `data-decision-card`.
  *
  * It writes nothing of its own: Keep and Change call the acts its caller hands it, so a caller
- * hands it another write with no change of the card. Its one read is a statement's name, where
- * the decision's read holds none (`StatementLink`). It imports neither `DecisionActions` nor
+ * hands it another write with no change of the card. It reads nothing of its own: a statement's
+ * words are its caller's (`StatementLink`). It imports neither `DecisionActions` nor
  * `RowText` (R21), and no file under `features/issue-page/` (R22). The caller draws the frame
  * around it.
  */
@@ -268,13 +255,7 @@ export function DecisionCard({
     // The bullet hangs left of the heading, and everything under it stands at the heading's left
     // edge: an 18 px column, its 7 px dot centred on the first line.
     <div className="flex gap-x-2" data-decision-card="">
-      <span
-        aria-hidden="true"
-        className="flex h-6 w-[18px] shrink-0 items-center justify-center"
-        data-decision-bullet=""
-      >
-        <i className={`block size-[7px] rounded-full ${pageKindBullet.decision}`} />
-      </span>
+      <KindBullet colour={pageKindBullet.decision} mark="data-decision-bullet" />
       <div className="min-w-0 flex-1 space-y-2">
         <div className="flex items-start justify-end gap-x-3">
           <h3

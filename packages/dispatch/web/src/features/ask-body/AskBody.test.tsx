@@ -7,10 +7,10 @@ import type { ReactNode } from "react";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { type PageWords, PageWordsProvider } from "../../components/tooltips";
+import type { AgentNames } from "../conversation/CachedAuthor";
 import { answeredAsk, renderCard } from "../inbox/ask-card-fixture";
 import { useAskAnswerForm } from "../inbox/useAskAnswerForm";
 import { AskBody } from "./AskBody";
-import type { AskAgentNames } from "./ask-agent";
 import { type AskTextRenderer, markdownText } from "./ask-text";
 
 // The ask body (dispatch://INFRA-5702/spec#b-r-ask-body, #b-r-ask-reads) drawn on its own, as a
@@ -57,7 +57,7 @@ function Body({
   renderText = markdownText,
   urgencyWord = false,
 }: {
-  agentNames?: AskAgentNames;
+  agentNames?: AgentNames;
   ask: Ask;
   frame?: "block" | "card";
   renderText?: AskTextRenderer;

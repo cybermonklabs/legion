@@ -9,16 +9,10 @@ import {
   pageMutedText,
   pageQuietText,
 } from "../../theme/classes";
-import { AskBody } from "../ask-body/AskBody";
-import { fromDecision } from "../decision-card/adapters";
-import {
-  type CardPaths,
-  DecisionCard,
-  type DecisionCardProps,
-} from "../decision-card/DecisionCard";
-import { useDecisionWrites } from "../decision-card/useDecisionWrites";
+import { cardPaths, fromDecision, withStatementTexts } from "../decision-card/adapters";
+import { DecisionCard, type DecisionCardProps } from "../decision-card/DecisionCard";
+import { WritableDecisionCard } from "../decision-card/WritableDecisionCard";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { useAskAnswerForm } from "../inbox/useAskAnswerForm";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { useSetFocusedNode } from "../issue-page/focused-node";
 import { DETAILS_ATTRIBUTE } from "../issue-page/margin-slot";
@@ -29,11 +23,9 @@ import {
   PRESET_NAMES,
 } from "../issue-page/page-words";
 import { RowText } from "../issue-page/RowText";
-import { blockFragment } from "../refs/block-reference";
-import { buildDispatchReference, buildIssuePath, documentItemPath } from "../refs/routes";
+import { buildDispatchReference } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
-import { answerAsk, createReply, declineAsk, getAskThread } from "./ask-writes";
-import { rowText } from "./row-text";
+import { DashboardAskBody } from "./DashboardAskBody";
 import { ThreadItem } from "./ThreadItem";
 import type { DashboardNames } from "./useDashboardNames";
 import type { WaitingItem } from "./useWaitingItems";
@@ -45,11 +37,10 @@ export type DashboardPage = "today" | "new";
 /** How many items the list draws at a time (R4). */
 export const WAITING_STEP = 5;
 
-/** A question or an approval request, by the ask body, answered in place. The ask is the issue's
- *  open asks read, which the item draws from: the form reads no thread of its own. On the new
- *  page, the focus going inside the item sets the page's focused node to the ask, so Details
- *  draws that ask's facts where it draws a focused node's (dispatch://INFRA-5702/spec#b-r-reads);
- *  today's page draws no Details panel. */
+/** A question or an approval request, by the ask body, answered in place (`DashboardAskBody`).
+ *  On the new page, the focus going inside the item sets the page's focused node to the ask, so
+ *  Details draws that ask's facts where it draws a focused node's
+ *  (dispatch://INFRA-5702/spec#b-r-reads); today's page draws no Details panel. */
 function AskItem({
   ask,
   issueKey,
@@ -59,26 +50,8 @@ function AskItem({
   issueKey: string;
   page: DashboardPage;
 }): ReactNode {
-  const form = useAskAnswerForm({
-    answer: answerAsk,
-    ask,
-    createReply,
-    getAskThread,
-    readThread: false,
-  });
   const setFocusedNode = useSetFocusedNode();
-  const body = (
-    <AskBody
-      agentNames="cache"
-      ask={ask}
-      decline={declineAsk}
-      documentLink
-      form={form}
-      frame="card"
-      renderText={rowText}
-      urgencyWord
-    />
-  );
+  const body = <DashboardAskBody ask={ask} />;
   if (page === "today") return body;
   // The ask as the page's focused node reads it: the ask by its own id, its address, its words,
   // who asked it and how it stands, which is open for every ask the list holds.
@@ -131,23 +104,6 @@ function StaleItem({
   );
 }
 
-/** A decision with Keep and Change, written as today's Decisions tab writes them. */
-function WritableDecision({
-  documentId,
-  issueKey,
-  model,
-  name,
-  ...props
-}: DecisionCardProps & {
-  documentId: string;
-  issueKey: string;
-  model: Decision;
-  name: string;
-}): ReactNode {
-  const { change, keep } = useDecisionWrites({ decision: model, documentId, issueKey, name });
-  return <DecisionCard {...props} change={change} issueKey={issueKey} keep={keep} />;
-}
-
 /** A decision to review, by the decision card with its author line and level word on (R5), its
  *  text and heading drawn by `RowText`. A statement it shaped is drawn by the words the batched
  *  name read gives it, so the card reads no statement of its own (R8). */
@@ -165,25 +121,13 @@ function DecisionItem({
 }): ReactNode {
   const source = textSourceOf("artifact", documentId, issue.key);
   const { reads, tree: headingTree, words: name } = useDecisionHeadingWords(decision, source);
-  const shown = useMemo(() => {
-    const card = fromDecision(decision);
-    return {
-      ...card,
-      links: card.links.map((link) =>
-        link.text !== undefined || link.ref === undefined
-          ? link
-          : { ...link, text: names.excerptOf(link.ref) }
-      ),
-    };
-  }, [decision, names]);
-  const spec = primarySpec(issue);
-  const paths: CardPaths = {
-    ask: (id) => buildIssuePath({ id, key: issue.key, kind: "ask" }),
-    statement: (blockId) =>
-      spec === undefined
-        ? `${buildIssuePath({ key: issue.key, kind: "spec" })}${blockFragment(blockId)}`
-        : documentItemPath(spec, { blockID: blockId, id: blockId, kind: "comment" }),
-  };
+  const shown = useMemo(
+    () =>
+      withStatementTexts(fromDecision(decision), (reference) => ({
+        text: names.excerptOf(reference),
+      })),
+    [decision, names]
+  );
   const props: DecisionCardProps = {
     authorLine: true,
     decision: shown,
@@ -191,7 +135,7 @@ function DecisionItem({
       node: <RowText markdown={decision.heading} source={source} tabStops tree={headingTree} />,
       words: name,
     },
-    paths,
+    paths: cardPaths(issue.key, primarySpec(issue)),
     renderText: (text) => (
       <RowText markdown={text.markdown} source={source} tabStops tree={text.tree} />
     ),
@@ -202,12 +146,11 @@ function DecisionItem({
       {documentId === undefined || issue.closed_at !== null ? (
         <DecisionCard {...props} />
       ) : (
-        <WritableDecision
+        <WritableDecisionCard
           {...props}
           documentId={documentId}
           issueKey={issue.key}
           model={decision}
-          name={name}
         />
       )}
     </>

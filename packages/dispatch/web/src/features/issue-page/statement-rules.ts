@@ -1,6 +1,6 @@
 import { primarySpec } from "../../api/issue-cache";
 import type { CheckBlock, CheckResult, DisplayTree, IssueCoverage } from "../../api/types";
-import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import { newestTimeFirst } from "../../lib/timestamps";
 import { parseNodeReference } from "../refs/routes";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import type { CheckState, StatementState } from "./page-words";
@@ -214,22 +214,11 @@ export function standingResults(check: CheckStateReads): readonly CheckResult[] 
   return (check.results ?? []).filter((result) => result.retracted === undefined);
 }
 
-/** `results` newest first, by the time each was recorded. The server already answers newest
- *  first; this reads the times themselves, so the order is the model's own and no caller
- *  depends on the order a read happened to arrive in. */
+/** `results` newest first, by the time each was recorded (`newestTimeFirst`). The server already
+ *  answers newest first; this reads the times themselves, so the order is the model's own and no
+ *  caller depends on the order a read happened to arrive in. */
 export function newestFirst(results: readonly CheckResult[]): readonly CheckResult[] {
-  return [...results].sort(newerFirst);
-}
-
-/** Orders two results newest first by the time each was recorded, to the microsecond the server
- *  writes (`compareTimestamps`), which `Date.parse` would cut to the millisecond and so tie. A
- *  time that cannot be read (`isTimestamp`) is the oldest possible, so a result with no readable
- *  time never outranks one that has one, two such tie, and no time throws. */
-function newerFirst(first: CheckResult, second: CheckResult): number {
-  const firstRead = isTimestamp(first.created_at);
-  const secondRead = isTimestamp(second.created_at);
-  if (firstRead && secondRead) return compareTimestamps(second.created_at, first.created_at);
-  return Number(secondRead) - Number(firstRead);
+  return [...results].sort((first, second) => newestTimeFirst(first.created_at, second.created_at));
 }
 
 /** One check of a statement, as the body draws it. */

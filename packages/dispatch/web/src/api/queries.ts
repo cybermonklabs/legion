@@ -1,4 +1,3 @@
-import type { LegionIssueResponse } from "@legion/contracts";
 import { INBOX_THREAD_KINDS } from "@legion/contracts";
 
 import {
@@ -23,6 +22,7 @@ import type {
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
+  LegionIssueResponse,
   MyRepliesResponse,
   ReferenceTarget,
 } from "./types";
@@ -145,6 +145,16 @@ export const issueStepsQuery = (key: string) =>
   queryOptions({
     queryKey: ["issue", key, "steps"],
     queryFn: () => api.listSteps(key),
+  });
+
+/** Each version of each phase handoff of one issue, without its body
+ *  (`GET /api/v1/issues/{key}/handoffs`): the Conversation's handoff cards and Dashboard's phase
+ *  track read the one key, which a handoff's event refreshes (`api/event-refresh.ts`). A card
+ *  reads a handoff's body when expanded. */
+export const handoffsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["handoffs", key],
+    queryFn: () => api.listHandoffs(key),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own

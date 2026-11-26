@@ -112,7 +112,6 @@ export interface AskAnswerForm {
   readonly answers: AskAnswerWithTrees[];
   readonly answerText: string;
   readonly askChanged: boolean;
-  readonly canAnswer: boolean;
   /** Whether Answer is refused for want of something to send, read from the form as a refusal
    *  found it while the form refuses (`refusedWhileOut`). */
   readonly cannotAnswer: boolean;
@@ -131,12 +130,10 @@ export interface AskAnswerForm {
   readonly displayedAsk: AskWithTrees;
   readonly edits: AskEditWithTrees[];
   readonly isApproval: boolean;
-  readonly isSubmitting: boolean;
   readonly mutation: KeyedWriteResult<Ask, AnswerPress, unknown>;
   /** Ask back has nothing to send, read as `cannotAnswer` is. */
   readonly nothingToAskBack: boolean;
   readonly otherSelected: boolean;
-  readonly questionChoice: boolean;
   /** Reads the names of the references the question's projection holds, for the labels of this
    *  form's writes; the card mounts it wherever it draws. */
   readonly questionReads: ReactNode;
@@ -156,7 +153,6 @@ export interface AskAnswerForm {
   readonly sendAnswer: (text: string) => void;
   readonly sendClarification: () => void;
   readonly setAnswerText: Dispatch<SetStateAction<string>>;
-  readonly setAnswerTextOf: (askId: string, next: SetStateAction<string>) => void;
   readonly setQuestionChoice: Dispatch<SetStateAction<boolean>>;
   readonly startChanging: () => void;
   readonly submit: (event: FormEvent<HTMLFormElement>) => void;
@@ -660,6 +656,9 @@ export function useAskAnswerForm({
   const [heldForm, setHeldForm] = useState<typeof formNow | null>(null);
   const held = refusedWhileOut ? (heldForm ?? formNow) : null;
   if (held !== heldForm) setHeldForm(held);
+  // What the refusing controls are drawn from: the press as the refusal found it while it
+  // refuses, else the form now.
+  const shown = held ?? formNow;
 
   return {
     answerFailure: mutation.error === null ? null : answerFailure(mutation),
@@ -668,25 +667,20 @@ export function useAskAnswerForm({
     answers,
     answerText,
     askChanged,
-    canAnswer,
-    cannotAnswer: held?.cannotAnswer ?? !canAnswer,
+    cannotAnswer: shown.cannotAnswer,
     canChangeAnswer,
     cancelChanging,
     changing,
-    choiceShown: held?.choice ?? questionChoice,
+    choiceShown: shown.choice,
     clarification,
     completed,
     disabledWhileOut,
     displayedAsk,
     edits,
     isApproval,
-    isSubmitting,
     mutation,
-    nothingToAskBack: held?.nothingToAskBack ?? trimmedAnswer === "",
+    nothingToAskBack: shown.nothingToAskBack,
     otherSelected,
-    questionChoice,
-    /** Reads the names of the references the question's projection holds, for the labels of
-     *  this form's writes; the card mounts it wherever it draws. */
     questionReads: question.reads,
     reasonFieldShownBefore,
     reasonRequired,
@@ -697,7 +691,6 @@ export function useAskAnswerForm({
     sendAnswer,
     sendClarification,
     setAnswerText,
-    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submitGuard,

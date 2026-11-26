@@ -13,7 +13,7 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
-import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import { compareTimestamps, isTimestamp, newestTimeFirst } from "../../lib/timestamps";
 import { decisionsDocumentId } from "../decision-card/change-anchor";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
@@ -27,7 +27,7 @@ import { EVENT_FRESH } from "../refs/reference-target";
  * rule (R10), so the count is the number of items and never the `total` of a read.
  *
  * - The questions: each open ask of `asks?state=open` other than an approval request whose turn
- *   is the reader's, by the turn rule `issue-page/waiting.ts` reads: it waits on a person
+ *   is the reader's, by the turn rule `readersTurn` reads: it waits on a person
  *   (`waitingOnHuman`) and that person (`waiting_on_person`) is the reader.
  * - The decisions: each decision of the review list (`inReviewList`, over the statements of the
  *   coverage read, `coverageStatements`), less one a person asked to change since it last changed
@@ -81,7 +81,7 @@ export interface WaitingReads {
 }
 
 /** One document an approval request covers, with the version it asks the reader to approve. */
-export type ApprovalDocument = NonNullable<AskApproval["documents"]>[number];
+type ApprovalDocument = NonNullable<AskApproval["documents"]>[number];
 
 /** A document of the issue read. */
 type IssueDocument = NonNullable<IssueDetails["artifacts"]>[number];
@@ -106,8 +106,6 @@ export type WaitingItem =
   | (ItemBase & { readonly kind: "decision"; readonly decision: Decision })
   | (ItemBase & { readonly kind: "thread"; readonly row: MyReplyRow });
 
-export type WaitingKind = WaitingItem["kind"];
-
 /** The newest of `moments` that is a time, or "" where none is. */
 function newest(moments: readonly (string | null | undefined)[]): string {
   return moments
@@ -116,14 +114,6 @@ function newest(moments: readonly (string | null | undefined)[]): string {
       (held, moment) => (held === "" || compareTimestamps(moment, held) > 0 ? moment : held),
       ""
     );
-}
-
-/** Orders two items newest first. An item whose time cannot be read is the oldest. */
-function newerFirst(first: WaitingItem, second: WaitingItem): number {
-  const firstRead = isTimestamp(first.at);
-  const secondRead = isTimestamp(second.at);
-  if (firstRead && secondRead) return compareTimestamps(second.at, first.at);
-  return Number(secondRead) - Number(firstRead);
 }
 
 /** The documents an approval request covers: each of `approval.documents`, or the one document
@@ -149,6 +139,19 @@ function isDaemon(author: MyReplyRow["root_author"], project: string): boolean {
   return author?.kind === "session" && author.id === `legion-daemon:${project}`;
 }
 
+/** The asks of `asks` whose turn is the reader's: each waits on a person (`waitingOnHuman`), and
+ *  that person (`waiting_on_person`) is the reader. While the reader's login has not resolved, no
+ *  ask is the reader's turn. Dashboard's list and its tiles read the turn by this one rule, so no
+ *  ask counts on both. */
+export function readersTurn(
+  asks: readonly IssueAskRow[],
+  viewer: string | undefined
+): IssueAskRow[] {
+  return viewer === undefined
+    ? []
+    : waitingOnHuman(asks).filter((ask) => ask.waiting_on_person === viewer);
+}
+
 /** R4's items over `reads`, newest first. */
 export function waitingItems(reads: WaitingReads): readonly WaitingItem[] {
   const { viewer, issue } = reads;
@@ -160,9 +163,10 @@ export function waitingItems(reads: WaitingReads): readonly WaitingItem[] {
       .flatMap((node) => (node.block_id === undefined ? [node.id] : [node.id, node.block_id]))
   );
 
-  const readersAsks = waitingOnHuman(
-    (reads.asks ?? []).filter((ask) => ask.state === "open" && !overtaken.has(ask.id))
-  ).filter((ask) => ask.waiting_on_person === viewer);
+  const readersAsks = readersTurn(
+    (reads.asks ?? []).filter((ask) => ask.state === "open" && !overtaken.has(ask.id)),
+    viewer
+  );
   const askTime = (ask: IssueAskRow) =>
     newest([ask.created_at, ask.edited_at, ask.asked_of_at, ask.last_reply?.created_at]);
   const questions: WaitingItem[] = readersAsks
@@ -236,7 +240,9 @@ export function waitingItems(reads: WaitingReads): readonly WaitingItem[] {
           .filter((row) => !isDaemon(row.root_author, issue.project) && !asked.has(row.thread_id))
           .map((row) => ({ at: row.reply.created_at, id: row.thread_id, kind: "thread", row }));
 
-  return [...questions, ...approvals, ...stale, ...decisions, ...threads].sort(newerFirst);
+  return [...questions, ...approvals, ...stale, ...decisions, ...threads].sort((first, second) =>
+    newestTimeFirst(first.at, second.at)
+  );
 }
 
 /** The issue's open asks, under the key R12 names, so an ask event's refresh of the prefix
@@ -251,7 +257,7 @@ export const openAsksQuery = (key: string) =>
  *  comments, never the issue's whole list, read through the issue's route, since the document's
  *  own refuses an issue's document (`400 ARTIFACT_LINKED`). A comment event's refresh of the prefix
  *  `["comments", key]` reaches it. */
-export const decisionChangesQuery = (key: string, artifact: string) =>
+const decisionChangesQuery = (key: string, artifact: string) =>
   queryOptions({
     queryKey: ["comments", key, { artifact }],
     queryFn: () => api.listComments(key, artifact),
@@ -260,20 +266,32 @@ export const decisionChangesQuery = (key: string, artifact: string) =>
 /** The reader's unread threads of the issue, every one, with no `limit`, under a key of its own
  *  beneath `myRepliesKey`, so each refresh of that prefix reaches it and it replaces no other
  *  reader's data (`myRepliesOwnerQuery` reads 200 under `[...myRepliesKey, {issue}]`). */
-export const dashboardRepliesQuery = (key: string) =>
+const dashboardRepliesQuery = (key: string) =>
   queryOptions({
     queryKey: [...myRepliesKey, "dashboard", key],
     queryFn: () => api.listMyReplies({ issue: key, state: "unread" }),
   });
 
+/** What waits on the reader, as `useWaitingItems` answers it. */
+export interface WaitingView {
+  /** R4's items over the reads that have answered, newest first. */
+  readonly items: readonly WaitingItem[];
+  /** Whether every read the items come from has answered - the reader's login, the issue, its
+   *  open asks, its decisions, its coverage and the reader's unread threads - so no item drawn
+   *  leaves, and no count moves, as a read lands. The decisions document's comments are waited
+   *  on by `waitingItems` itself. */
+  readonly loaded: boolean;
+}
+
 /**
  * What waits on the reader on issue `issueKey`, newest first: `waitingItems` over R8's reads. The
- * count of what waits is the length of what it answers. Each read is kept fresh by the events
- * that name its key, never by its age (`EVENT_FRESH`), so a part that mounts again sends none of
- * them a second time.
+ * count of what waits is the length of its items. Each read is kept fresh by the events that name
+ * its key, never by its age (`EVENT_FRESH`), so a part that mounts again sends none of them a
+ * second time.
  */
-export function useWaitingItems(issueKey: string): readonly WaitingItem[] {
-  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+export function useWaitingItems(issueKey: string): WaitingView {
+  const whoAmI = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data;
+  const viewer = whoAmI?.login;
   const issue = useQuery({ ...issueQuery(issueKey), ...EVENT_FRESH }).data;
   const asks = useQuery({ ...openAsksQuery(issueKey), ...EVENT_FRESH }).data;
   const decisions = useQuery({ ...issueDecisionsQuery(issueKey, true), ...EVENT_FRESH }).data;
@@ -285,9 +303,19 @@ export function useWaitingItems(issueKey: string): readonly WaitingItem[] {
   }).data;
   const coverage = useQuery({ ...issueCoverageQuery(issueKey), ...EVENT_FRESH }).data;
   const replies = useQuery({ ...dashboardRepliesQuery(issueKey), ...EVENT_FRESH }).data;
+  const loaded =
+    whoAmI !== undefined &&
+    issue !== undefined &&
+    asks !== undefined &&
+    decisions !== undefined &&
+    coverage !== undefined &&
+    replies !== undefined;
   return useMemo(
-    () => waitingItems({ asks, changes, coverage, decisions, issue, replies, viewer }),
-    [asks, changes, coverage, decisions, issue, replies, viewer]
+    () => ({
+      items: waitingItems({ asks, changes, coverage, decisions, issue, replies, viewer }),
+      loaded,
+    }),
+    [asks, changes, coverage, decisions, issue, loaded, replies, viewer]
   );
 }
 

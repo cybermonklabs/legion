@@ -11,6 +11,7 @@ import {
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
 import { SendStoppedError } from "../writes/keyed-write";
+import type { AgentNames } from "./CachedAuthor";
 import type { ComposerKind, ReplyTarget } from "./composer-model";
 import { useHeldSend, useHeldSends } from "./held-sends";
 import { GoneReply } from "./KeptReply";
@@ -124,7 +125,7 @@ export function KeptReplyToDeleted({
   readonly actor: Actor;
   /** How the deleted post's author is named (`GoneReply`): `cache` for a host that sends no
    *  agents read when it draws. */
-  readonly agentNames?: "live" | "cache";
+  readonly agentNames?: AgentNames;
   readonly mutationKey: MutationKey;
   readonly parentKind: ReplyTarget["parentKind"];
 }): ReactNode {

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 
 import type { Actor } from "../../api/types";
 import { AgentName } from "../refs/AgentName";
-import { CachedAuthor } from "./CachedAuthor";
+import { type AgentNames, CachedAuthor } from "./CachedAuthor";
 import type { ReplyTarget } from "./composer-model";
 import { addressWords } from "./send-request";
 import type { AwayDraft } from "./unsent-drafts";
@@ -48,7 +48,7 @@ export function GoneReply({
    *  form reads the live agent registry and starts the agents poll; `cache` names the author from
    *  the registry the cache already holds (`CachedAuthor`) and starts no read, for a host that
    *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). */
-  readonly agentNames?: "live" | "cache";
+  readonly agentNames?: AgentNames;
   readonly deleted?: boolean;
   readonly parentKind: ReplyTarget["parentKind"];
   readonly waits?: boolean;

@@ -7,9 +7,10 @@ import type { AskApproval } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { useTooltips } from "../../components/tooltips";
 import { dangerText, textMutedOnSurface } from "../../theme/classes";
+import type { AgentNames } from "../conversation/CachedAuthor";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
-import { AskAgent, type AskAgentNames } from "./ask-agent";
+import { AskAgent } from "./ask-agent";
 import { ASK_APPROVAL_WORDS } from "./ask-body-words";
 
 /**
@@ -71,7 +72,7 @@ export function EarlierApproval({
   agentNames = "live",
   approval,
 }: {
-  agentNames?: AskAgentNames;
+  agentNames?: AgentNames;
   approval: AskApproval;
 }): ReactNode {
   const [diffOpen, setDiffOpen] = useState(false);

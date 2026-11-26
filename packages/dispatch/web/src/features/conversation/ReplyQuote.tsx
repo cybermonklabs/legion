@@ -8,7 +8,7 @@ import { DeletedBody, EditedMark } from "../refs/PostMarks";
 import type { PostDeletion } from "../refs/post-marks";
 import { ReferenceHostIs } from "../refs/reference-host";
 import type { TextSource } from "../refs/text-references";
-import { CachedAuthor } from "./CachedAuthor";
+import { type AgentNames, CachedAuthor } from "./CachedAuthor";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
@@ -60,7 +60,7 @@ export function ReplyQuote({
    *  the live agent registry and starts the agents poll; `cache` names the author from the
    *  registry the cache already holds (`useAgentText`) and starts no read, for a caller that
    *  sends no agents read when it draws (dispatch://INFRA-5702/spec#b-r-reads). */
-  agentNames?: "live" | "cache";
+  agentNames?: AgentNames;
   author: Actor | undefined;
   /** The block of the parent the reply answers; null or absent when it answers the whole. */
   block?: ReplyBlockWithTrees | null;

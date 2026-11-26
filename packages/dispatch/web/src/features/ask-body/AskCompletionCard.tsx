@@ -23,6 +23,7 @@ import {
   textPrimaryOnSuccessCallout,
   textPrimaryOnSurface,
 } from "../../theme/classes";
+import type { AgentNames } from "../conversation/CachedAuthor";
 import { askResolutionBadge, askResolutionReason } from "../refs/actor";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
@@ -31,7 +32,7 @@ import type { DwellRef } from "../shell/useDwell";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskOptionList } from "./AskOptionList";
-import { AskAgent, type AskAgentNames, AskResolutionActor } from "./ask-agent";
+import { AskAgent, AskResolutionActor } from "./ask-agent";
 import { ASK_LINK_WORDS, ASK_RECORD_WORDS } from "./ask-body-words";
 import { type AskTextRenderer, markdownText } from "./ask-text";
 
@@ -45,7 +46,7 @@ export function AskEditHistory({
   edits,
   renderText,
 }: {
-  agentNames?: AskAgentNames;
+  agentNames?: AgentNames;
   ask: Ask;
   edits: AskEditWithTrees[];
   renderText: AskTextRenderer;
@@ -215,7 +216,7 @@ function AnsweredAsk({
   onChangeAnswer,
   renderText,
 }: {
-  agentNames: AskAgentNames;
+  agentNames: AgentNames;
   answers: AskAnswerWithTrees[];
   artifactSlug: string | undefined;
   ask: AskWithTrees;
@@ -336,7 +337,7 @@ function ResolvedAsk({
   frame,
   renderText,
 }: {
-  agentNames: AskAgentNames;
+  agentNames: AgentNames;
   ask: AskWithTrees & { resolution: AskResolution };
   documentLink: boolean;
   edits: AskEditWithTrees[];
@@ -414,7 +415,7 @@ export type AskFrame = "card" | "block";
 interface AskCompletionCardProps {
   /** How the record names agents (`ask-agent.tsx`): as every surface of today's pages does,
    *  unless the ask body it stands in says otherwise. */
-  agentNames?: AskAgentNames;
+  agentNames?: AgentNames;
   /** Every real answer, oldest first, from the ask's thread read. */
   answers?: AskAnswerWithTrees[];
   artifactSlug: string | undefined;

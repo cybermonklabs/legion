@@ -12,9 +12,9 @@ import {
 import configuredFalseBody from "../features/dashboard/fixtures/legion-issue/configured-false.json";
 import planningBody from "../features/dashboard/fixtures/legion-issue/planning.json";
 import testingBody from "../features/dashboard/fixtures/legion-issue/testing.json";
-import { type LegionIssueResponse, legionIssueQuery } from "./legion-issue";
+import { legionIssueQuery } from "./legion-issue";
 import { liveSocketFor } from "./live-socket";
-import type { DeliveryLiveDelta, LiveSubscribe } from "./types";
+import type { DeliveryLiveDelta, LegionIssueResponse, LiveSubscribe } from "./types";
 
 // The bodies the server at this branch's head answered (the fixtures' README says how each was
 // captured): an issue at planning, one at testing, and one of a project with no Legion daemon.

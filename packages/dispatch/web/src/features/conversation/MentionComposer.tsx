@@ -69,6 +69,7 @@ import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import { type FollowedBlocks, followEdit, spansFromBlocks, textareaValue } from "./block-spans";
+import type { AgentNames } from "./CachedAuthor";
 import {
   type AskOptionDraft,
   type Draft,
@@ -191,7 +192,7 @@ interface MentionComposerProps {
   /** How the quote of the post a reply answers names its author: `live`, as everywhere, or
    *  `cache`, from the registry the cache already holds, which starts no agents read when the
    *  composer draws (`ReplyQuote`). */
-  readonly agentNames?: "live" | "cache";
+  readonly agentNames?: AgentNames;
   readonly anchor?: ComposerAnchor;
   /** What the host says in place of the server's words when it refused this send for a mark the
    *  document no longer holds (`ANCHOR_MISSING`) and could not write that mark again: the margin's

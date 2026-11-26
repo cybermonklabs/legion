@@ -1,6 +1,6 @@
 import type { LegionPhase } from "@legion/contracts/legion-api";
 
-import type { LegionIssueResponse, LegionIssueState } from "../../api/legion-issue";
+import type { LegionIssueResponse, LegionIssueState } from "../../api/types";
 import { PHASE_WORDS } from "../issue-page/page-words";
 
 /**

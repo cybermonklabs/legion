@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { LegionIssueResponse } from "../../api/legion-issue";
+import type { LegionIssueResponse } from "../../api/types";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
 import { DASHBOARD_WORDS } from "../issue-page/page-words";
 import { legionRuns } from "./phase-track";

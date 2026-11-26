@@ -1,6 +1,6 @@
 import { type ReactNode, useId, useState } from "react";
 
-import { api, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import type { DeclineAskInput, WriteBounds } from "../../api/client";
 import type {
   AnswerAskInput,
   Ask,
@@ -33,6 +33,7 @@ import { AskBody, askUploadOwner } from "../ask-body/AskBody";
 import { AskEditHistory, type AskFrame } from "../ask-body/AskCompletionCard";
 import { ASK_CARD_WORDS, ASK_SHARED_WORDS } from "../ask-body/ask-body-words";
 import { markdownText } from "../ask-body/ask-text";
+import { answerAsk, createReply, declineAsk, getAskThread } from "../ask-body/ask-writes";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, itemRoute } from "../refs/routes";
@@ -45,17 +46,6 @@ import { AskThreadDisclosure } from "./AskThreadDisclosure";
 import type { OwnedAsk } from "./ask-name";
 import { askUrgency } from "./ask-urgency";
 import { useAskAnswerForm } from "./useAskAnswerForm";
-
-const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
-  api.answerAsk(id, input, bounds);
-const declineAsk = (id: string, input: DeclineAskInput, bounds: WriteBounds): Promise<Ask> =>
-  api.declineAsk(id, input, bounds);
-const getAskThread = (id: string): Promise<AskRead> => api.getAsk(id);
-const createReply = (
-  issueKey: string,
-  input: CreateCommentInput,
-  bounds: WriteBounds
-): Promise<Comment> => api.createComment(issueKey, input, bounds);
 
 export interface AskCardProps {
   artifactSlug?: string;

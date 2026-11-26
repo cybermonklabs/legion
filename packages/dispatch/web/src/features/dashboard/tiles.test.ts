@@ -10,7 +10,9 @@ import type {
   IssueCoverage,
   IssueDetails,
 } from "../../api/types";
+import { pageSegmentBg, pageSegmentDoneBg, pageSegmentProgressBg } from "../../theme/classes";
 import { checkStanding } from "../issue-page/statement-rules";
+import { tileViews } from "./ProgressTiles";
 import {
   childrenTile,
   metTile,
@@ -87,6 +89,27 @@ describe("the four tiles over the captured reads", () => {
     // While the reader's login has not resolved, no question is the reader's.
     expect(questionsTile(ASKS, undefined).counted).toHaveLength(6);
   });
+});
+
+// The children's bar draws a child whose work moves - started, and not done - in the progress
+// colour, by the statuses the page reads as moving (`issue-page/issue-status.ts`): one that waits
+// for review among them.
+test("the children's bar draws a child in review in the progress colour", () => {
+  const children = tileViews({
+    asks: ASKS,
+    coverage: COVERAGE,
+    issue: ISSUE,
+    results: RESULTS,
+    viewer: READER,
+  }).find((tile) => tile.key === "children");
+  // backlog, todo, in_progress, needs_review, done: the order of `childrenTile`'s statuses.
+  expect(children?.bar).toEqual([
+    { className: pageSegmentBg, count: 1 },
+    { className: pageSegmentBg, count: 1 },
+    { className: pageSegmentProgressBg, count: 1 },
+    { className: pageSegmentProgressBg, count: 1 },
+    { className: pageSegmentDoneBg, count: 3 },
+  ]);
 });
 
 test("the passed tile counts what checkStanding reads Passed", () => {

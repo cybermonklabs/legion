@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 
-import type { LegionIssueResponse } from "../../api/legion-issue";
-import type { HandoffSummary } from "../../api/types";
+import type { HandoffSummary, LegionIssueResponse } from "../../api/types";
 import {
   pageHairBorder,
   pageInkBorder,

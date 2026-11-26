@@ -12,6 +12,7 @@ import {
   pageSegmentDoneBg,
   pageSegmentProgressBg,
 } from "../../theme/classes";
+import { MOVING_STATUSES } from "../issue-page/issue-status";
 import { DASHBOARD_WORDS, NODE_TYPE_NAMES } from "../issue-page/page-words";
 import { useKnownReferences } from "../refs/reference-names";
 import { buildDispatchReference, parseNodeReference, referenceHref } from "../refs/routes";
@@ -41,10 +42,6 @@ interface TileView {
   readonly key: TileKey;
   readonly whole: number;
 }
-
-/** The statuses the children's bar draws in the progress colour; done is drawn in the passed
- *  colour, and every other status is the bar's own grey. */
-const IN_PROGRESS: readonly string[] = ["in_progress", "in_review", "testing"];
 
 /** The four tiles' numbers, wholes, bars and entries, from the reads Dashboard holds. */
 export function tileViews({
@@ -84,11 +81,13 @@ export function tileViews({
       whole: passed.whole,
     },
     {
+      // Done is drawn in the passed colour, a child whose work moves in the progress colour
+      // (`MOVING_STATUSES`), and every other status in the bar's own grey.
       bar: children.statuses.map(({ count, status }) => ({
         className:
           status === "done"
             ? pageSegmentDoneBg
-            : IN_PROGRESS.includes(status)
+            : MOVING_STATUSES.has(status)
               ? pageSegmentProgressBg
               : pageSegmentBg,
         count,

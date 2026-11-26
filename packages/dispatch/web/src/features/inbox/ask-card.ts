@@ -12,12 +12,12 @@
 /** An ask card anywhere on the page, wherever it is rendered. */
 const ASK_CARD = "[data-ask-card]";
 
-/** An ask card or an ask body anywhere on the page: an ask body draws an ask's controls where no
- *  card stands around it (Dashboard's), and a key pressed inside one is inside an ask too. */
-const ASK_CARD_OR_BODY = "[data-ask-card], [data-ask-body]";
+/** An ask body anywhere on the page: an ask body draws an ask's controls where no card stands
+ *  around it (Dashboard's), and a key pressed inside one is inside an ask too. */
+const ASK_BODY = "[data-ask-body]";
 
 /** Whether the reader is outside every ask card, so a page-level key is the page's to act on. */
 export function outsideAskCard(): boolean {
-  if (document.activeElement?.closest(ASK_CARD_OR_BODY) != null) return false;
+  if (document.activeElement?.closest(ASK_BODY) != null) return false;
   return document.activeElement?.closest(ASK_CARD) == null;
 }

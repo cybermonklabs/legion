@@ -8,7 +8,6 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../api/types";
-import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import {
   blockNodeId,
   checkStanding,
@@ -16,6 +15,7 @@ import {
   statementState,
 } from "../issue-page/statement-rules";
 import { issueStatuses } from "../project/board-model";
+import { readersTurn } from "./useWaitingItems";
 
 /**
  * Dashboard's four tiles (dispatch://INFRA-5702/spec#b-r-tiles), each a number of a whole: the
@@ -105,16 +105,13 @@ export function childrenTile(issue: Pick<IssueDetails, "children">): ChildrenTil
 
 /** The open asks whose turn is not the reader's, of all the issue's open asks (`asks?state=open`,
  *  approval requests among them). An ask's turn is the reader's by the rule what waits on the
- *  reader reads (`waitingOnHuman` and `waiting_on_person`), so no ask counts on both. While the
- *  reader's login has not resolved, no ask is the reader's turn. */
+ *  reader reads (`readersTurn`), so no ask counts on both. */
 export function questionsTile(
   asks: readonly IssueAskRow[] | undefined,
   viewer: string | undefined
 ): Tile<IssueAskRow> {
   const open = (asks ?? []).filter((ask) => ask.state === "open");
-  const readers = new Set(
-    waitingOnHuman(open).filter((ask) => viewer !== undefined && ask.waiting_on_person === viewer)
-  );
+  const readers = new Set(readersTurn(open, viewer));
   return { counted: open.filter((ask) => !readers.has(ask)), whole: open.length };
 }
 
