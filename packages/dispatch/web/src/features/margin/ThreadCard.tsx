@@ -1,11 +1,12 @@
 import { hashKey, type MutationKey } from "@tanstack/react-query";
-import { type ReactNode, useContext, useRef } from "react";
+import { type ReactNode, useContext, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Suggestion } from "../../api/types";
 import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -125,9 +126,12 @@ export interface ThreadCardProps {
    *  thread's own - so the card's reply composer stays mounted, hidden, keeping an unsent draft
    *  for when that reply ends. */
   hideReplyComposer?: boolean;
-  /** Ends a reply in the card's reply box without closing the thread: where the Conversation
-   *  tab's `r` put the reader in the box, its Escape and its Cancel reply give the focus back to
-   *  the turn `r` was pressed on (`ConversationTab`). Unset, they close the thread. */
+  /** What the card's reply box's Escape, its Cancel reply and its Discard draft do in place of
+   *  folding the card. The Conversation tab always hands one (`CommentTurn`): where its `r` put
+   *  the reader in the box, the focus goes back to the turn `r` was pressed on and the thread
+   *  stays open; elsewhere the thread closes as `onToggle` closes it, and an inline thread gives
+   *  the focus to its Expand thread. Unset, the card folds with the focus on its preview
+   *  (`foldFromReply`). */
   onReplyCancel?(): void;
   expanded: boolean;
   hovered: boolean;
@@ -453,13 +457,27 @@ export function ThreadCard({
   const editing = (comment: ThreadComment) =>
     postDeletion(comment) === null &&
     (editingId === comment.id || heldEdits.some((held) => held.request.edit?.id === comment.id));
+  // The comment whose editor a key or a button inside it ended last - a second Escape over
+  // `Discard draft?`, its Discard - and whose Edit takes the focus back once that editor has left
+  // the page, whatever other editor of the card stays open (`useFocusBack`, which reads that
+  // editor alone): the root's Edit stands beside its open editor, and a reply's is drawn again
+  // in the editor's place. Save hands nothing back: its editor stays until the saved words are
+  // read, by when the reader may be elsewhere.
+  const [editHandedBack, setEditHandedBack] = useState<string>();
+  const editFocus = useFocusBack(
+    threadItems.some((comment) => comment.id === editHandedBack && editing(comment))
+  );
   const renderEditor = (comment: ThreadComment) => (
     <MentionComposer
       box="margin-comment-edit"
       edit={{ body: comment.body, id: comment.id }}
       kind="comment"
       mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}
-      onClose={() => setEditingId(undefined)}
+      onClose={() => {
+        setEditHandedBack(comment.id);
+        editFocus.handBack();
+        setEditingId(undefined);
+      }}
       onSent={() => setEditingId(undefined)}
       owner={composerOwner(owner)}
       saveEdit={onEdit}
@@ -476,11 +494,22 @@ export function ThreadCard({
       <button
         className={`font-medium ${linkText} ${linkHoverText}`}
         onClick={() => setEditingId(comment.id)}
+        ref={comment.id === editHandedBack ? editFocus.opener : undefined}
         type="button"
       >
         Edit
       </button>
     ) : null;
+  // The card's own end of the reply its box holds, where the host hands no `onReplyCancel`:
+  // Escape in the box, its Cancel reply, and its Discard draft over a reply Dispatch refused or
+  // the reader stopped fold the card (`onToggle`), which takes the box away with the focus it
+  // holds, and the preview drawn again in its place, which opened the thread, takes the focus
+  // back (`useFocusBack`).
+  const foldFocus = useFocusBack(expanded);
+  const foldFromReply = () => {
+    foldFocus.handBack();
+    onToggle();
+  };
   /* Mounted while the card is expanded, under the thread's reply send name, so a reply still
      out or refused - which the held-send store keeps for the thread - is there each time the
      card expands. A closed issue takes a reply as it takes any comment, so the composer shows
@@ -491,13 +520,14 @@ export function ThreadCard({
      composer stays away from it. Its quote of the root marks the root edited as the root's own
      byline does (`replyParent`). `contents`, so the composer's own box is the one laid out. It
      sits next to the newest message: under the root in Newest first, at the foot of the thread
-     in Oldest first. Its Cancel reply, and Escape in its field, close the thread and keep the
-     draft for it, typed or refused or stopped, which the closed card says (`keptReply`); where
-     the Conversation tab's `r` put the reader in the box (`onReplyCancel`), they give the focus
-     back to the turn instead and the thread stays open. It answers the card's own comment
-     alone, which leaves the page with the card, so no line of it can outlive the comment it
-     names, and it is handed no `listed`. `data-thread-reply` tells its box from a comment's
-     edit box, which the Conversation tab's `r` leaves alone. */
+     in Oldest first. Its Cancel reply, Escape in its field, and its Discard draft end the reply:
+     the card folds with the focus on its preview (`foldFromReply`), keeping the draft for the
+     thread, typed or refused or stopped, which the closed card says (`keptReply`), unless
+     Discard draft dropped it; a host that hands `onReplyCancel` ends the reply its own way, as
+     the Conversation tab does. It answers the card's own comment alone, which leaves the page
+     with the card, so no line of it can outlive the comment it names, and it is handed no
+     `listed`. `data-thread-reply` tells its box from a comment's edit box, which the
+     Conversation tab's `r` leaves alone. */
   const replyComposer =
     expanded && rootDeleted === null ? (
       <div className="contents" data-thread-reply="" hidden={hideReplyComposer}>
@@ -509,8 +539,8 @@ export function ThreadCard({
           inline
           kind="comment"
           mutationKey={replyMutationKey}
-          onCancelReply={onReplyCancel ?? onToggle}
-          onClose={onToggle}
+          onCancelReply={onReplyCancel ?? foldFromReply}
+          onClose={onReplyCancel ?? foldFromReply}
           onSent={() => {}}
           owner={composerOwner(owner)}
           replyParent={root}
@@ -752,6 +782,7 @@ export function ThreadCard({
                 }
                 onToggle();
               }}
+              ref={foldFocus.opener}
               type="button"
             >
               {/* The compact sheet's stylesheet lays every button out inline-flex, so one block

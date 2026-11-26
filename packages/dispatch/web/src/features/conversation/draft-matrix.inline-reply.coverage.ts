@@ -184,7 +184,7 @@ export const coverage: readonly CoverageEntry[] = [
     reason: REASONS[8],
   }),
   ...answers(
-    "CommentTurn | - | form | if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone)",
+    "CommentTurn | - | form | if (onReply(commentReplyTarget(item.root, agentText, issueKey), button) && !isPhone)",
     { reason: REASONS[8] }
   ),
   ...answers("usePhoneThread | - | form | if (isPhoneViewport || outlived) return …", {

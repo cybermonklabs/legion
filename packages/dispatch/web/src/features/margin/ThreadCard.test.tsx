@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
+import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ComponentProps, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -722,6 +722,176 @@ for (const kept of ["typed", "refused", "stopped"] as const) {
     }
   });
 }
+
+/** An open margin card its host folds and opens as the margin's list does (`ToggledCard`), under
+ *  the thread's reply send name. */
+function renderMarginCard() {
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <ToggledCard
+          actionFailure={undefined}
+          artifactSlug="spec"
+          hovered={false}
+          isClosed={false}
+          onAction={() => {}}
+          onEdit={async () => undefined}
+          onRetryAction={() => {}}
+          owner={{ key: "CORE-1", kind: "issue" }}
+          pendingAction={false}
+          replyMutationKey={replyKey}
+          thread={thread()}
+          viewerLogin="alice"
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+// A key or a button in a margin card's reply box that ends the reply folds the card (`onToggle`),
+// which takes the box away with the focus it holds: the preview drawn again in its place, which
+// opened the thread, takes the focus back, never the page's body (`foldFromReply`;
+// dispatch://INFRA-2160, E1). Escape and Cancel reply end the reply the box holds.
+for (const ends of ["Escape", "Cancel reply"] as const) {
+  test(`${ends} in a margin card's reply box folds the card with the focus on its preview`, async () => {
+    const user = userEvent.setup();
+    const view = renderMarginCard();
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+    try {
+      await user.click(within(card).getByRole("textbox", { name: "Reply" }));
+      if (ends === "Escape") {
+        await user.keyboard("{Escape}");
+      } else {
+        await user.click(within(card).getByRole("button", { name: "Cancel reply" }));
+      }
+      expect(card).toHaveAttribute("aria-expanded", "false");
+      expect(within(card).getByRole("button", { expanded: false })).toHaveFocus();
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
+// Discard draft under a reply Dispatch refused drops the reply and ends it, as Cancel reply does:
+// the card folds with the focus on its preview (`foldFromReply`).
+test("Discard draft over a margin reply Dispatch refused folds the card with the focus on its preview", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const view = renderMarginCard();
+  const card = screen.getByTestId(`margin-comment-${root.id}`);
+  try {
+    await user.click(within(card).getByRole("textbox", { name: "Reply" }));
+    await user.paste("A reply Dispatch refuses");
+    await user.click(within(card).getByRole("button", { name: "Send" }));
+    await within(card).findByText(refusedText);
+    await user.click(within(card).getByRole("button", { name: "Discard draft" }));
+    expect(card).toHaveAttribute("aria-expanded", "false");
+    expect(within(card).getByRole("button", { expanded: false })).toHaveFocus();
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// Two editors open in one card: the root's, held open by a save Dispatch refused, and a reply's.
+// A second Escape over Discard draft? in the reply's editor ends that edit alone, and the reply's
+// Edit takes the focus back while the root's editor stays open (`useFocusBack`, which reads the
+// ended editor alone).
+test("a second Escape over Discard draft? in one of a card's two open editors gives the focus back to that comment's Edit", async () => {
+  const user = userEvent.setup();
+  // These comments are not indexed, so a save carries no block ids.
+  const commentBlocks = spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
+    blocks: [],
+    indexed: false,
+    item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
+  }));
+  const onEdit = jest.fn(async () => {
+    throw new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" });
+  });
+  const view = renderCard(undefined, { onEdit });
+  const card = screen.getByTestId(`margin-comment-${root.id}`);
+  try {
+    const [rootEdit] = within(card).getAllByRole("button", { name: "Edit" });
+    if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
+    await user.click(rootEdit);
+    await user.click(within(card).getByRole("textbox", { name: "Edit comment" }));
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Root comment, refused");
+    await user.click(within(card).getByRole("button", { name: "Save" }));
+    await within(card).findByText(refusedText);
+
+    const replyRow = card.querySelector<HTMLElement>("[data-reply]");
+    if (replyRow === null) throw new Error("The card draws no reply.");
+    await user.click(within(replyRow).getByRole("button", { name: "Edit" }));
+    await user.click(within(replyRow).getByRole("textbox", { name: "Edit comment" }));
+    await user.keyboard(" And a second thought.");
+    await user.keyboard("{Escape}");
+    expect(within(replyRow).getByRole("alert")).toHaveTextContent("Discard draft?");
+    await user.keyboard("{Escape}");
+    expect(within(replyRow).queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+    expect(within(card).getAllByRole("textbox", { name: "Edit comment" })).toHaveLength(1);
+    expect(within(replyRow).getByRole("button", { name: "Edit" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    commentBlocks.mockRestore();
+  }
+});
+
+// A second Escape over Discard draft? asks the edit to end, but a save Dispatch refused holds the
+// editor open. The reader presses Retry, then puts the focus in the thread's Reply box while the
+// save is out. When it lands, the editor closes; the Edit takes nothing, since the focus was not
+// lost with the editor (`useFocusBack`, `focusOnDocument`), and stays in the Reply box.
+test("an edit held open by a refused save that ends after the reader moved the focus leaves the focus where they put it", async () => {
+  const user = userEvent.setup();
+  // This comment is not indexed, so a save carries no block ids.
+  const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
+    blocks: [],
+    indexed: false,
+    item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
+  });
+  const retried = Promise.withResolvers<Comment>();
+  const onEdit = jest
+    .fn(async (): Promise<Comment> => retried.promise)
+    .mockRejectedValueOnce(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }));
+  const view = renderCard(undefined, { onEdit });
+  const card = screen.getByTestId(`margin-comment-${root.id}`);
+  try {
+    const [rootEdit] = within(card).getAllByRole("button", { name: "Edit" });
+    if (rootEdit === undefined) throw new Error("The root comment has no Edit button.");
+    await user.click(rootEdit);
+    await user.click(within(card).getByRole("textbox", { name: "Edit comment" }));
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Root comment, saved at last");
+    await user.click(within(card).getByRole("button", { name: "Save" }));
+    await within(card).findByText(refusedText);
+    await user.keyboard("{Escape}");
+    expect(within(card).getByText("Discard draft?")).toBeTruthy();
+    await user.keyboard("{Escape}");
+    // The refused save holds the editor open.
+    expect(within(card).getByRole("textbox", { name: "Edit comment" })).toBeTruthy();
+
+    await user.click(within(card).getByRole("button", { name: "Retry" }));
+    const replyBox = within(card).getByRole("textbox", { name: "Reply" });
+    await user.click(replyBox);
+    await act(async () => {
+      retried.resolve({ ...root, body: "Root comment, saved at last" });
+      await retried.promise;
+    });
+    await waitFor(() =>
+      expect(within(card).queryByRole("textbox", { name: "Edit comment" })).toBeNull()
+    );
+    expect(replyBox).toHaveFocus();
+  } finally {
+    retried.resolve(root);
+    view.unmount();
+    commentBlocks.mockRestore();
+  }
+});
 
 test("a terminal suggestion shows its disposition and has no Reopen control", () => {
   const accepted = comment("root-1", "Suggested replacement.", "2026-09-10T00:00:00Z", {

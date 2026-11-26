@@ -1,11 +1,14 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 
 import { heldPress } from "../../components/held-press";
 import { linkHoverText, linkText } from "../../theme/classes";
 
 /** The Reply action on a message turn: an icon-only button whose 44 px tap target shrinks to
  *  32 px on desktop like the copy-reference and pin controls beside it. `held` holds it while
- *  the composer it would address is busy with a send (`heldPress`). */
+ *  the composer it would address is busy with a send (`heldPress`). `onClick` is handed the
+ *  pressed button itself, since a WebKit click focuses no button and so the focus cannot name
+ *  it: the Conversation's docked composer gives the focus back to it as the reply it started
+ *  ends (`ConversationTab`'s `beginReply`). */
 export function ReplyButton({
   className = "",
   held = false,
@@ -13,13 +16,17 @@ export function ReplyButton({
 }: {
   className?: string;
   held?: boolean;
-  onClick: () => void;
+  onClick: (button: HTMLButtonElement) => void;
 }): ReactNode {
+  const button = useRef<HTMLButtonElement>(null);
   return (
     <button
       aria-label="Reply"
       className={`inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg refused:cursor-not-allowed refused:opacity-50 md:min-h-8 md:min-w-8 ${linkText} ${linkHoverText} ${className}`}
-      {...heldPress(held, onClick)}
+      {...heldPress(held, () => {
+        if (button.current !== null) onClick(button.current);
+      })}
+      ref={button}
       title="Reply"
       type="button"
     >

@@ -3283,3 +3283,35 @@ test("Margin restores edit controls and the draft when an owner save rejects", a
     listArtifactAsks.mockRestore();
   }
 });
+
+// A second Escape over Discard draft? in a margin card's edit composer ends the edit unsaved and
+// takes the editor away with the focus it holds: the focus goes back to the card's Edit, which
+// opened it, never to the page's body (`ThreadCard`, `useFocusBack`; dispatch://INFRA-2160, E1).
+test("a second Escape over Discard draft? in the margin's edit composer gives the focus back to the card's Edit", async () => {
+  const user = userEvent.setup();
+  const lease = documentComment("lease-comment", "Why does the lease return at noon?");
+  const { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view } =
+    renderDocumentMargin([lease]);
+
+  try {
+    const card = await screen.findByTestId(`margin-comment-${lease.id}`);
+    await expandThreadCard(user, card);
+    await user.click(await within(card).findByRole("button", { name: "Edit" }));
+    const field = within(card).getByRole("textbox", { name: "Edit comment" });
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Why does the lease return at midnight?");
+    await user.keyboard("{Escape}");
+    expect(within(card).getByRole("alert")).toHaveTextContent("Discard draft?");
+    expect(field).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(within(card).queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+    expect(within(card).getByRole("button", { name: "Edit" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifactComments.mockRestore();
+    commentBlocks.mockRestore();
+    getInbox.mockRestore();
+    listArtifactAsks.mockRestore();
+  }
+});

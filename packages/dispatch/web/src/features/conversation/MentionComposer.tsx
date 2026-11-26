@@ -1087,7 +1087,20 @@ export function MentionComposer({
           role="alert"
         >
           <span>Discard draft?</span>
-          <button className="font-semibold underline" onClick={discard} type="button">
+          <button
+            className="font-semibold underline"
+            onClick={() => {
+              // Back to the field the reader was writing in before the question, as Keep gives
+              // it back (`focusIntoView`), and ahead of the host's `onClose`: the Discard that
+              // held the focus goes with the question, so a composer that stays - the
+              // Conversation's docked one - keeps the caret in its field, and a host whose
+              // `onClose` ends the composer or moves the focus moves it on from there.
+              const field = lastFocusedField.current;
+              if (field !== null) focusIntoView(field);
+              discard();
+            }}
+            type="button"
+          >
             Discard
           </button>
           <button

@@ -99,7 +99,8 @@ export function ReplyTurn({
   /** The shared thread read mark (`useMarkThreadRead`), on the newest reply of a thread: the
    *  element it watches. */
   markRef?: DwellRef;
-  onReply?: () => void;
+  /** Starts a reply to this one, handed the Reply pressed (`ReplyButton`). */
+  onReply?: (button: HTMLButtonElement) => void;
   /** The parent the reply quotes: its author, its body, the block of it the reply answers (its
    *  `reply_block`), the record that text is (`TextSource`), its deletion and its edit, and its
    *  turn's path. */

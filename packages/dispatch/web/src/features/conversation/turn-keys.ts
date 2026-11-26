@@ -85,9 +85,10 @@ export function openReplyBox(opener: HTMLElement): void {
 
 /** How a key of the tab opened a comment thread inline. Enter or `o` opened it `standing`: its
  *  reply box takes no focus, which stays on the turn. `r` opened it, or reached its open box, to
- *  `reply`: the box has the focus, and Escape in it gives the focus back to the turn `r` was
- *  pressed on and leaves the thread open. A thread a click or a link opened is neither: its box
- *  takes the focus, and Escape in it closes the thread. */
+ *  `reply`: the box has the focus, and Escape in it, its Cancel reply and its Discard draft give
+ *  the focus back to the turn `r` was pressed on and leave the thread open. A thread a click or
+ *  a link opened is neither: its box takes the focus, and those close the thread with the focus
+ *  on the turn's Expand thread (`CommentTurn`). */
 export type KeyedThread = "standing" | "reply";
 
 /** A turn's Reply (`ReplyButton`), which `r` presses on a message. */
@@ -115,17 +116,18 @@ interface TurnKeysOptions {
 }
 
 /** What the turn keys give the tab: the threads it has open inline, how a key opened each, and
- *  where a reply a key started gives the focus back. */
+ *  where a reply a key or a Reply started gives the focus back. */
 export interface TurnKeys {
-  /** Called as the docked composer takes a reply (`beginReply`): a reply started by a click
-   *  starts from nowhere, and `r` notes its turn once its press has started the reply. */
-  readonly beginDockedReply: () => void;
-  /** The docked composer's Cancel reply, or Escape in it: a reply `r` started gives the focus
-   *  back to the turn it was pressed on, while that turn is in the page. */
+  /** Called as the docked composer takes a reply (`beginReply`), with `from`, the Reply pressed:
+   *  the reply starts from it, and `r` notes its turn in its place once its press has started
+   *  the reply. */
+  readonly beginDockedReply: (from: HTMLElement) => void;
+  /** The docked composer's Cancel reply, or Escape in it: the focus goes back to where the reply
+   *  started from, the Reply pressed or the turn `r` was pressed on, while it is in the page. */
   readonly giveBackFromDockedReply: () => void;
-  /** Escape in the reply box of comment `comment`'s thread, which `r` put the reader in: the
-   *  focus goes back to the turn `r` was pressed on, or to the thread's own turn where that one
-   *  is gone, and the thread stays open. */
+  /** Escape in the reply box of comment `comment`'s thread, which `r` put the reader in, its
+   *  Cancel reply or its Discard draft: the focus goes back to the turn `r` was pressed on, or to
+   *  the thread's own turn where that one is gone, and the thread stays open. */
   readonly giveBackFromThread: (comment: string) => void;
   /** The open threads a key of the tab opened, by how (`KeyedThread`): the thread card's reply
    *  box follows it. A thread a click opened, or a link, is in neither. */
@@ -180,8 +182,8 @@ export function useTurnKeys({
       return next;
     });
   }, []);
-  // The turn `r` started the docked composer's reply from, where Escape in it, or its Cancel
-  // reply, gives the focus back. A reply started by a click starts from nowhere.
+  // Where the docked composer's reply started from - the Reply pressed, or the turn `r` was
+  // pressed on - which Escape in the composer, or its Cancel reply, gives the focus back to.
   const dockedReplyFrom = useRef<HTMLElement | null>(null);
   const turnList = useRef<HTMLOListElement>(null);
   /** The turn or reply of the list that holds the keyboard's focus itself. */
@@ -321,8 +323,8 @@ export function useTurnKeys({
     },
   ]);
   return {
-    beginDockedReply: () => {
-      dockedReplyFrom.current = null;
+    beginDockedReply: (from) => {
+      dockedReplyFrom.current = from;
     },
     giveBackFromDockedReply: () => {
       const from = dockedReplyFrom.current;

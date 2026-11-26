@@ -308,7 +308,8 @@ interface TargetedMessageCardProps {
   readonly deleted: PostDeletion | null;
   readonly deliveries: readonly TargetedMessageAttempt[];
   readonly header: ReactNode;
-  readonly onReply?: () => void;
+  /** Starts a reply to the message, handed the Reply pressed (`ReplyButton`). */
+  readonly onReply?: (button: HTMLButtonElement) => void;
   readonly onRetry?: (delivery: MessageDeliveryMode) => void;
   /** Holds the Reply button while the composer it would address is busy with a send. */
   readonly replyHeld?: boolean;

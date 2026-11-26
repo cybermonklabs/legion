@@ -27,6 +27,7 @@ import type {
 } from "../../api/types";
 import { heldPress } from "../../components/held-press";
 import { PinButton } from "../../components/PinButton";
+import { useFocusBack } from "../../hooks/useFocusBack";
 import { FOOT_COMPOSER_FRAME_BOUND, useFootInset } from "../../hooks/useFootInset";
 import { useSending } from "../../hooks/useSending";
 import { useReleaseWhenLate, useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -234,7 +235,8 @@ function ConversationReply({
   issueKey: string;
   /** The shared thread read mark (`useMarkThreadRead`), on the thread's newest reply. */
   markRef?: DwellRef;
-  onReply: (target: ReplyTarget) => void;
+  /** Starts a reply to `target` from `from`, the Reply pressed (`beginReply`). */
+  onReply: (target: ReplyTarget, from: HTMLElement) => void;
   reply: MessageWithTrees;
   replyHeld: boolean;
   root: MessageConversation;
@@ -289,7 +291,7 @@ function ConversationReply({
               targetName,
             }
       }
-      onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
+      onReply={(button) => onReply(replyTargetFor(reply, root, issueKey), button)}
       quote={{
         author: parent?.author,
         block: reply.reply_block,
@@ -321,7 +323,7 @@ function Thread({
   agents: readonly Agent[] | undefined;
   currentReplyId: string | undefined;
   issueKey: string;
-  onReply: (target: ReplyTarget) => void;
+  onReply: (target: ReplyTarget, from: HTMLElement) => void;
   replyHeld: boolean;
   root: MessageConversation;
 }): ReactNode {
@@ -382,7 +384,8 @@ function MessageTurn({
   issueKey: string;
   item: Extract<Conversation, { kind: "message" }>;
   onPin: () => void;
-  onReply: (target: ReplyTarget) => void;
+  /** Starts a reply to `target` from `from`, the Reply pressed (`beginReply`). */
+  onReply: (target: ReplyTarget, from: HTMLElement) => void;
   pinned: boolean;
   register?: DwellRef;
   replyHeld: boolean;
@@ -421,7 +424,7 @@ function MessageTurn({
           {postDeletion(item.root) === null ? (
             <ReplyButton
               held={replyHeld}
-              onClick={() => onReply(replyTargetFor(item.root, item, issueKey))}
+              onClick={(button) => onReply(replyTargetFor(item.root, item, issueKey), button)}
             />
           ) : null}
           <TurnPin onPin={onPin} pinned={pinned} />
@@ -771,12 +774,14 @@ function CommentTurn({
   onEditingChange: (id: string | undefined) => void;
   onPhoneThreadToggle?: () => void;
   onPin: () => void;
-  /** Starts a reply, and says whether it did: a send that is out refuses it. On a phone a comment's
-   *  reply is its thread's, so the host opens the thread with it. */
-  onReply: (target: ReplyTarget) => boolean;
+  /** Starts a reply from `from`, the Reply pressed, and says whether it did: a send that is out
+   *  refuses it. On a phone a comment's reply is its thread's, so the host opens the thread with
+   *  it. */
+  onReply: (target: ReplyTarget, from: HTMLElement) => boolean;
   onRetryAction: () => void;
-  /** Where the thread's reply box gives the focus back on Escape, keeping the thread open, once
-   *  the tab's `r` put the reader in it (`ThreadCard`'s `onReplyCancel`). */
+  /** Where the thread's reply box gives the focus back on Escape, Cancel reply and Discard draft,
+   *  keeping the thread open, once the tab's `r` put the reader in it (`ThreadCard`'s
+   *  `onReplyCancel`). Unset, they close the thread with the focus on Expand thread. */
   onReplyCancel?: () => void;
   pendingAction: boolean;
   pinned: boolean;
@@ -863,6 +868,16 @@ function CommentTurn({
     }
     setExpanded(!expanded);
   };
+  // Escape in the thread's reply box, its Cancel reply and its Discard draft, where the tab's `r`
+  // did not put the reader there (`onReplyCancel`): the thread closes and takes the box away with
+  // the focus it holds, and the focus goes back to Expand thread, which opened it
+  // (`useFocusBack`). A thread whose own reply is out stays open (`toggleThread`), so nothing is
+  // handed back then.
+  const threadFocus = useFocusBack(expanded);
+  const closeFromReply = () => {
+    if (expanded && !replySendingNow()) threadFocus.handBack();
+    toggleThread();
+  };
   const reference = { id: item.root.id, key: issueKey, kind: "comment" } as const;
   return (
     <li
@@ -892,7 +907,7 @@ function CommentTurn({
         onEdit={editComment}
         onEditingChange={onEditingChange}
         onRetryAction={onRetryAction}
-        onReplyCancel={onReplyCancel}
+        onReplyCancel={onReplyCancel ?? closeFromReply}
         onToggle={toggleThread}
         owner={{ key: issueKey, kind: "issue" }}
         pendingAction={pendingAction}
@@ -934,6 +949,7 @@ function CommentTurn({
             aria-expanded={currentExpanded}
             className={`min-h-8 font-medium refused:cursor-not-allowed refused:opacity-50 ${linkText}`}
             {...heldPress(currentExpanded && replySending, toggleThread)}
+            ref={threadFocus.opener}
             type="button"
           >
             {currentExpanded ? "Collapse thread" : "Expand thread"}
@@ -943,8 +959,8 @@ function CommentTurn({
         {postDeletion(item.root) === null ? (
           <ReplyButton
             held={replyHeld}
-            onClick={() => {
-              if (onReply(commentReplyTarget(item.root, agentText, issueKey)) && !isPhone) {
+            onClick={(button) => {
+              if (onReply(commentReplyTarget(item.root, agentText, issueKey), button) && !isPhone) {
                 setExpanded(true);
               }
             }}
@@ -971,7 +987,8 @@ function TargetedMessageTurn({
   currentReplyId: string | undefined;
   issueKey: string;
   item: Extract<Conversation, { kind: "targeted-message" }>;
-  onReply: (target: ReplyTarget) => void;
+  /** Starts a reply to `target` from `from`, the Reply pressed (`beginReply`). */
+  onReply: (target: ReplyTarget, from: HTMLElement) => void;
   register?: DwellRef;
   replyHeld: boolean;
 }): ReactNode {
@@ -1020,7 +1037,7 @@ function TargetedMessageTurn({
       deleted={postDeletion(item.root)}
       deliveries={deliveryAttempts(item.root.deliveries ?? [], targetName)}
       header={<Avatar actor={asker} />}
-      onReply={() => onReply(replyTargetFor(item.root, item, issueKey))}
+      onReply={(button) => onReply(replyTargetFor(item.root, item, issueKey), button)}
       onRetry={retry.mutate}
       register={register}
       reference={reference}
@@ -1259,11 +1276,13 @@ export function ConversationTab({
   // The docked composer's reply. A message's Reply answers here at every width, and so does a
   // comment's above the phone layout - the same shared composer and send name
   // (`redirectedReplyTarget`'s doc comment explains why a Reply elsewhere while it holds a
-  // refusal redirects onto that comment or message instead of overwriting its draft).
+  // refusal redirects onto that comment or message instead of overwriting its draft). `from` is
+  // the Reply pressed, which the composer's Cancel reply and its Escape give the focus back to
+  // as they end the reply (`beginDockedReply`).
   const [replyTo, setReplyTo] = useHeldReplyTo(sendKey);
-  const beginReply = (target: ReplyTarget): boolean => {
-    beginDockedReply();
+  const beginReply = (target: ReplyTarget, from: HTMLElement): boolean => {
     if (sendingNow()) return false;
+    beginDockedReply(from);
     const reply = redirectedReplyTarget(store, sendKey, target);
     setReplyTo(reply);
     return reply.id === target.id;

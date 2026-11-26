@@ -3831,6 +3831,138 @@ test("r on a message presses its Reply, and Escape in the composer gives the foc
   }
 });
 
+// A composer a key or a button inside it ends gives the focus back to the control that opened it,
+// or keeps it in a composer that stays, never on the page's body (dispatch://INFRA-2160, E1).
+
+// Escape over a typed draft in the docked composer asks Discard draft?, and the question's Discard
+// takes itself away with the question while it holds the focus. The docked composer stays, so the
+// caret goes back to its Comment box, which held it before the question (`MentionComposer`).
+test("Discard over a typed draft in the Conversation's comment composer puts the caret back in its Comment box", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists();
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  try {
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", {
+      exact: true,
+      name: "Comment",
+    });
+    await user.click(field);
+    await user.keyboard("Half a thought about the clock");
+    await user.keyboard("{Escape}");
+    const question = within(composer).getByRole("alert");
+    expect(question).toHaveTextContent("Discard draft?");
+    await user.click(within(question).getByRole("button", { name: "Discard" }));
+    expect(within(composer).queryByRole("alert")).toBeNull();
+    expect(field.value).toBe("");
+    expect(field).toHaveFocus();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A second Escape over Discard draft? in a comment's edit composer ends the edit unsaved and takes
+// the editor away with the focus it holds: the focus goes back to the comment's Edit, which
+// opened it (`ThreadCard`, `useFocusBack`).
+test("a second Escape over Discard draft? in a Conversation comment's edit composer gives the focus back to the comment's Edit", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "Why is the clock shared?" })],
+  });
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+  try {
+    const card = await screen.findByTestId("margin-comment-comment-1");
+    await user.click(screen.getByRole("button", { name: "Expand thread" }));
+    await user.click(await within(card).findByRole("button", { name: "Edit" }));
+    const field = within(card).getByRole("textbox", { name: "Edit comment" });
+    await user.click(field);
+    await user.keyboard(" And since when?");
+    await user.keyboard("{Escape}");
+    expect(within(card).getByRole("alert")).toHaveTextContent("Discard draft?");
+    expect(field).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(within(card).queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+    expect(within(card).getByRole("button", { name: "Edit" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
+// A thread Expand thread opened, not the tab's `r`: Escape in its reply box ends the reply and
+// closes the thread, which takes the box away with the focus it holds. The focus goes to the
+// turn's Expand thread, which opened the thread (`CommentTurn`, `useFocusBack`).
+test("Escape in the reply box of a thread Expand thread opened closes the thread with the focus on its Expand thread", async () => {
+  const user = userEvent.setup();
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    await user.click(within(root).getByRole("button", { name: "Expand thread" }));
+    await user.click(await threadBox(root));
+    await user.keyboard("{Escape}");
+    expect(root.querySelector("[data-thread-reply]")).toBeNull();
+    const toggle = within(root).getByRole("button", { name: "Expand thread" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(toggle).toHaveFocus();
+  } finally {
+    page.cleanup();
+  }
+});
+
+// A thread `r` opened, whose reply Dispatch refused: the reply box's Discard draft drops the reply
+// and ends it as its Cancel reply does there (`onReplyCancel`, `giveBackFromThread`), so the
+// thread stays open, its box empty, and the focus goes back to the turn `r` was pressed on.
+test("Discard draft over a refused reply in a thread r opened gives the focus back to the turn and keeps the thread open", async () => {
+  const user = userEvent.setup();
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  const page = await renderTurns(turnLists(), "comment:comment-1");
+  try {
+    const root = page.turn("comment:comment-1");
+    act(() => root.focus());
+    await user.keyboard("r");
+    const box = await threadBox(root);
+    await waitFor(() => expect(box).toHaveFocus());
+    await user.paste("A reply Dispatch refuses");
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await user.click(await within(root).findByRole("button", { name: "Discard draft" }));
+    expect(within(root).getByRole("button", { name: "Collapse thread" })).toBeTruthy();
+    expect(((await threadBox(root)) as HTMLTextAreaElement).value).toBe("");
+    expect(document.activeElement).toBe(root);
+  } finally {
+    page.cleanup();
+    createComment.mockRestore();
+  }
+});
+
+// A reply the docked composer takes from a turn's Reply, pressed with the pointer: Cancel reply
+// ends it and takes itself away with the focus it holds, and the focus goes back to the Reply that
+// started the reply, which the press hands on (`ReplyButton`, `beginDockedReply`). A comment's
+// Reply and a message reply's Reply each start one.
+for (const [kind, turnId] of [
+  ["a comment's", "comment:comment-1"],
+  ["a message reply's", "message:message-2"],
+] as const) {
+  test(`Cancel reply in the Conversation's docked composer gives the focus back to ${kind} Reply that started the reply`, async () => {
+    const user = userEvent.setup();
+    const page = await renderTurns(turnLists(), turnId);
+    try {
+      const composer = screen.getByRole("form", { name: "Comment composer" });
+      await user.click(within(page.turn(turnId)).getByRole("button", { name: "Reply" }));
+      const cancel = await within(composer).findByRole("button", { name: "Cancel reply" });
+      await user.click(cancel);
+      expect(within(composer).queryByRole("button", { name: "Cancel reply" })).toBeNull();
+      expect(within(page.turn(turnId)).getByRole("button", { name: "Reply" })).toHaveFocus();
+    } finally {
+      page.cleanup();
+    }
+  });
+}
+
 // A turn the focus is given back to may stand anywhere in the list, far above the docked
 // composer or a long thread's box, and the browser's own scroll of a focused element centres one
 // not wholly in view: each turn takes the focus with no scroll of that kind, and scrolls to its
