@@ -337,6 +337,12 @@ export function IssuesTable({
   // the cells stick, and the `thead` does not (`DataTable`). Else the table's own stop, with no
   // scroll. A row the window has not drawn is out of their sight, so it is never where the focus
   // lands in the place of an issue that went.
+  // What the table's own actions say is leaving, read through a ref because they are read after
+  // this hook (`useIssueTableActions`, below): a row an action changed while that action and the
+  // read after it are out. The hand-off waits for each such row to leave the list by name, as the
+  // Inbox's does, so a landing never stands on a row the press is taking away however long the
+  // write and its read take.
+  const leavingNow = useRef<((key: string) => boolean) | undefined>(undefined);
   const landAtPlace = useLastMarkedPlace({
     control: (key) =>
       model.layout.scrollRef.current
@@ -344,6 +350,7 @@ export function IssuesTable({
         ?.querySelector<HTMLElement>(ROW_CHECKBOX) ?? null,
     head: () => model.layout.scrollRef.current?.querySelector("thead th") ?? null,
     lastMarked: () => lastMarked.current,
+    leaving: (key) => leavingNow.current?.(key) === true,
     list: tableStop,
     order: leaves,
     shown: Object.keys(selection).length !== 0,
