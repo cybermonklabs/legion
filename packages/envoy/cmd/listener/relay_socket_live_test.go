@@ -372,8 +372,8 @@ func (r *relayLiveRig) open(t *testing.T, s *relayLiveSession, token string) *re
 	case <-client.pongs:
 	case err := <-client.closed:
 		t.Fatalf("the socket of %s closed before its first pong: %v", s.id, err)
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the socket of %s answered no ping within 10 s", s.id)
+	case <-time.After(listenerWaitBound(t)):
+		t.Fatalf("the socket of %s answered no ping in time", s.id)
 	}
 	return client
 }
@@ -498,8 +498,8 @@ func TestARelaySocketRefusesAnotherSessionsSubjects(t *testing.T) {
 			if frame.Op != "err" || frame.Code != relayErrSubjectNotGranted || frame.sid(t) != int64(sid) {
 				t.Fatalf("a sub to %s was answered %s, want err %s for sid %d", subject, frame.raw, relayErrSubjectNotGranted, sid)
 			}
-		case <-time.After(3 * time.Second):
-			t.Errorf("a sub to %s was answered nothing within 3 s, want err %s", subject, relayErrSubjectNotGranted)
+		case <-time.After(listenerWaitBound(t)):
+			t.Errorf("a sub to %s was answered nothing in time, want err %s", subject, relayErrSubjectNotGranted)
 		}
 	}
 	// The frame names an event of the token's project, which the edge's rule passes to this
@@ -573,11 +573,11 @@ func TestAProbeOfASocketSessionReadsConnected(t *testing.T) {
 	}
 	<-client.closed
 	var state string
-	if !testwait.Holds(10*time.Second, 200*time.Millisecond, func() bool {
+	if !testwait.Holds(listenerWaitBound(t), 200*time.Millisecond, func() bool {
 		state = send()
 		return state == sessionStateStopped
 	}) {
-		t.Fatalf("a send to %s, whose socket closed, read %q for 10s, want %q", s.id, state, sessionStateStopped)
+		t.Fatalf("a send to %s, whose socket closed, read %q for the time it was given, want %q", s.id, state, sessionStateStopped)
 	}
 	rig.requireNoViolation(t)
 }
@@ -610,7 +610,7 @@ func TestAnOpenSocketClosesWhenItsTokenExpires(t *testing.T) {
 	reopened := rig.open(t, s, fresh.token)
 	rig.register(t, s, fresh.token, "epoch-2")
 	seen := map[string]bool{}
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for !seen[held.EventID] || !seen[after.EventID] {
 		if time.Now().After(deadline) {
 			t.Fatalf("after the reopen the socket was sent %v, want both %s (unanswered at the close) and %s (stored after it)", seen, held.EventID, after.EventID)
