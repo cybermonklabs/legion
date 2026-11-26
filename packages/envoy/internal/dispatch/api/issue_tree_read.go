@@ -1751,21 +1751,14 @@ func (b *issueTreeBuilder) queueRequirementChecks(batch *pgx.Batch, requirements
 }
 
 // requirementChecks is the requirement node target's checks member: the number of checks that
-// serve it (queueRequirementChecks), and 0 for one that is closed, the requirement or a block above
-// it in the tree overtaken for the reader, which the coverage read lists nothing under.
+// serve it (queueRequirementChecks), as GET /api/v1/issues/{key}/coverage counts them, whatever the
+// state of the requirement or of a block above it. The count is a fact, so a closed requirement,
+// one that is overtaken itself or stands under an overtaken block, answers it too. Closed means
+// that no gap is listed, which the coverage read's gaps say (coverTreeRequirements), and not that
+// nothing serves it (INFRA-1253's architect,
+// dispatch://INFRA-1253/comment/cb7311d9-ca4b-4c63-b083-d8f49a9a7efa).
 func (b *issueTreeBuilder) requirementChecks(target refs.Target) *int {
 	served := b.checks[target.ID]
-	for at, steps := target, 0; at != (refs.Target{}) && steps <= len(b.entries); steps++ {
-		if at.Kind == refs.BlockNodeKind && b.loaded[at].Node.State == graphstore.StateOvertaken {
-			served = 0
-			break
-		}
-		entry, held := b.entries[at]
-		if !held {
-			break
-		}
-		at = entry.parent
-	}
 	return &served
 }
 

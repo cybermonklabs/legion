@@ -44,8 +44,11 @@ type tupleCheck struct {
 // check of which holds a passing result against the words the check holds now is unproven - a
 // check holding no result, holding only a fail, or holding a pass recorded against a text sum it no
 // longer holds - and a retracted result counts as none; one a check proves is proved. A requirement
-// whose node or a node above it is overtaken is closed with its subtree: it lists no gap and
-// nothing under it. A proposed requirement is a question still open and raises no gap.
+// whose node or a node above it is overtaken is closed with its subtree: it lists no gap and no
+// proof row, and it still counts the checks and the plan tasks that serve it, since the count is a
+// fact and closed means only that no gap is listed (INFRA-1253's architect,
+// dispatch://INFRA-1253/comment/cb7311d9-ca4b-4c63-b083-d8f49a9a7efa). A proposed requirement is
+// a question still open and raises no gap.
 //
 // On an issue that is a view (docs.ViewOf, read with the walk: IssueTree.ViewOf) the read lists
 // the requirement nodes of the ancestor's tree, in that tree's order, that a check of the view or
@@ -244,42 +247,42 @@ func coverTreeRequirements(ctx context.Context, q queryer, who model.Actor, issu
 				return true
 			})
 		}
-		switch {
-		case read.closed(target):
-			requirement.Coverage = "closed"
-		default:
-			proved := false
-			for _, from := range serving[target.ID] {
-				check, serves := checks[from]
-				if !serves {
-					continue
-				}
-				switch check.typ {
-				case graphstore.BlockTypeCheck:
-					requirement.Checks++
+		closed := read.closed(target)
+		proved := false
+		for _, from := range serving[target.ID] {
+			check, serves := checks[from]
+			if !serves {
+				continue
+			}
+			switch check.typ {
+			case graphstore.BlockTypeCheck:
+				requirement.Checks++
+				if !closed {
 					requirement.Proof = append(requirement.Proof, model.RequirementProof{Check: from.ID, Issue: check.issue, Proves: proof[from]})
 					proved = proved || proof[from] == provesPass
-				case planTaskBlockType:
-					requirement.PlanTasks++
 				}
+			case planTaskBlockType:
+				requirement.PlanTasks++
 			}
-			switch {
-			case requirement.State == graphstore.StateProposed:
-				requirement.Coverage = graphstore.StateProposed
-			case requirement.Checks == 0:
-				requirement.Coverage = "gap"
-			case proved:
-				requirement.Coverage = "proved"
-			default:
-				requirement.Coverage = "unproven"
+		}
+		switch {
+		case closed:
+			requirement.Coverage = "closed"
+		case requirement.State == graphstore.StateProposed:
+			requirement.Coverage = graphstore.StateProposed
+		case requirement.Checks == 0:
+			requirement.Coverage = "gap"
+		case proved:
+			requirement.Coverage = "proved"
+		default:
+			requirement.Coverage = "unproven"
+		}
+		if !closed && requirement.State != graphstore.StateProposed && !owed {
+			if requirement.Checks == 0 {
+				requirement.Gaps = append(requirement.Gaps, noCheckReason)
 			}
-			if requirement.State != graphstore.StateProposed && !owed {
-				if requirement.Checks == 0 {
-					requirement.Gaps = append(requirement.Gaps, noCheckReason)
-				}
-				if hasPlan && requirement.PlanTasks == 0 {
-					requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
-				}
+			if hasPlan && requirement.PlanTasks == 0 {
+				requirement.Gaps = append(requirement.Gaps, noPlanTaskReason)
 			}
 		}
 		requirements = append(requirements, requirement)

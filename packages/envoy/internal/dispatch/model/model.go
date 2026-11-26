@@ -2171,8 +2171,9 @@ type OwedDocument struct {
 // Coverage is `gap` for a requirement no check serves, `unproven` for one no check of which holds
 // a passing result against the words it holds now, `proved` for one a check of which does,
 // `proposed` for a requirement still a question, which raises no gap, and `closed` for one whose
-// node or a node above it is overtaken, which lists nothing; Proof is each check that serves it,
-// once, with where its newest result that stands leaves it.
+// node or a node above it is overtaken, which lists no gap and no proof row and still counts the
+// checks and plan tasks that serve it; Proof is each check that serves a requirement that is not
+// closed, once, with where its newest result that stands leaves it.
 type RequirementCoverage struct {
 	BlockID   string             `json:"block_id"`
 	Ref       string             `json:"ref"`
