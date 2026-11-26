@@ -4,13 +4,14 @@
 //
 // Three places read it. .github/scripts/pg-connection-ceiling.sh checks that a CI lane's server
 // allows ServerConnections plus that server's superuser reserve, through
-// internal/dispatch/store/cmd/connections, and fails naming the max_connections of
-// .github/scripts/postgres-service-settings.sh to raise. packages/daemon/docker/legion-testpg
-// starts a pod's test server at that size, as a literal that testlimits_test.go holds to
-// ServerConnections. And every start of a Dispatch process in cmd/dispatch's tests takes one of
-// MaxProcessesAtOnce slots first and is checked against the server it meets
-// (cmd/dispatch/process_slots_test.go and connection_ceiling_test.go), so a server sized below the
-// suite fails there by name rather than as a 53300 refusal inside a room, a lease or a socket.
+// internal/dispatch/store/cmd/connections, and fails saying to raise max_connections in
+// .github/scripts/postgres-service-settings.sh and every Postgres service's command: line with
+// it. packages/daemon/docker/legion-testpg starts a pod's test server at that size, as a literal
+// that testlimits_test.go holds to ServerConnections. And every start of a Dispatch process in
+// cmd/dispatch's tests takes one of MaxProcessesAtOnce slots first and is checked against the
+// server it meets (cmd/dispatch/process_slots_test.go and connection_ceiling_test.go), so a server
+// sized below the suite fails there by name rather than as a 53300 refusal inside a room, a lease
+// or a socket.
 package testlimits
 
 import "github.com/sjawhar/envoy/internal/dispatch/store"

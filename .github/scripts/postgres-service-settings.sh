@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# The settings every CI Postgres service starts with, written once here, and their read-back from
-# the running server.
+# The settings every CI Postgres service starts with, and their read-back from the running server.
+# This file is the source every service's `command:` line is held to.
 #
 #   .github/scripts/postgres-service-settings.sh --command
 #   .github/scripts/postgres-service-settings.sh <container id> <service id>
 #
-# --command prints the server's command line, the value of each Postgres service's `command:` in
-# .github/workflows. .github/scripts/check-workflow-files.sh (rule 7) runs this form and refuses a
-# Postgres service whose `command:` is any other line, so this file is the one place a setting
-# changes. The second form reads each setting back from the server in the container and fails
+# --command prints the server's command line, the value each Postgres service's `command:` in
+# .github/workflows must carry. .github/scripts/check-workflow-files.sh (rule 7) runs this form and
+# refuses a Postgres service whose `command:` is any other line; it refuses the lines that differ
+# and writes none of them, so a change to a setting edits this file and each Postgres service's
+# `command:` with it (16 services in 14 files at this writing; the check names each one it
+# refuses). The second form reads each setting back from the server in the container and fails
 # unless each is what the command line asks for. Every job with a Postgres service runs it in its
 # step "Read the service's settings back", and check-workflow-files.sh refuses a job with no such
 # step for each of its Postgres services.
