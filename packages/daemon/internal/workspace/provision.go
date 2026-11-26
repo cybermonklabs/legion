@@ -67,7 +67,7 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	defer func() {
 		_ = source.remove()
 	}()
-	if err := ensureRepoClone(ctx, run, clock.Real(), workspace.Clone, GitHubURL(request.Repo), request.DefaultBranch, source); err != nil {
+	if err := ensureRepoClone(ctx, run, clock.Real(), workspace.Clone, GitHubURL(request.Repo), source); err != nil {
 		return Workspace{}, err
 	}
 	if err := ensureFetchConfiguration(ctx, run, workspace.Clone, source); err != nil {

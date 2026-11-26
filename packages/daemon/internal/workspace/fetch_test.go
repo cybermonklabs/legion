@@ -702,7 +702,7 @@ func issuePodRemote(t *testing.T, token func() (string, error), cacheURL string,
 func fillIssueClone(t *testing.T, run Runner, clock Clock, source remote) (string, error) {
 	t.Helper()
 	clone := filepath.Join(t.TempDir(), "repos", "github.com", "acme", "widgets")
-	return clone, ensureRepoClone(context.Background(), run, clock, clone, GitHubURL(ghrepo.MustParse("acme/widgets")), "main", source)
+	return clone, ensureRepoClone(context.Background(), run, clock, clone, GitHubURL(ghrepo.MustParse("acme/widgets")), source)
 }
 
 // Against a real git and curl reaching the stand-in as github.com, the failures a production

@@ -340,7 +340,7 @@ func GitHubURL(repository ghrepo.Repository) string {
 // The tmux runtime keeps its existing GitHub clone behaviour. The size-following steps share one
 // CloneTimeout, counted on clock from the first's start, each given what remains of it
 // (cloneSteps), not the runner's slow-command budget.
-func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, remote, defaultBranch string, source remote) error {
+func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, remote string, source remote) error {
 	jjDir := filepath.Join(cloneDir, ".jj")
 	if exists, err := pathExists(cloneDir); err != nil {
 		return err

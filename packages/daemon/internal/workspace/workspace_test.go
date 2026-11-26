@@ -384,7 +384,7 @@ func TestEnsureRepoCloneDoesNotDisarmTheCallersWorkingDirectory(t *testing.T) {
 	}
 	clone := filepath.Join(t.TempDir(), "clone")
 
-	if err := ensureRepoClone(context.Background(), run, clock.Real(), clone, run.remote, "main", remote{}); err != nil {
+	if err := ensureRepoClone(context.Background(), run, clock.Real(), clone, run.remote, remote{}); err != nil {
 		t.Fatalf("ensureRepoClone: %v", err)
 	}
 	if _, err := os.Stat(config); err != nil {
