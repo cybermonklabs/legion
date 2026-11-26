@@ -577,7 +577,8 @@ func TestEveryFieldAPersonSetsIsRecordedAsSetByOne(t *testing.T) {
 // out are copied forward, and a write that would store a larger one is refused
 // EVAL_VERSION_TOO_LARGE naming the version's largest field, its message within errorTextBytes,
 // and stores nothing:
-//   - a register write whose question alone passes the bound, naming question;
+//   - a register write whose question alone passes the bound, naming question, and one whose
+//     answer alone passes it, naming answer;
 //   - two register writes each within it, a question and then a decision of about half the bound
 //     each: the first is stored, and the second, whose version would hold both, is refused naming
 //     decision, its largest field;
@@ -633,6 +634,10 @@ func TestAVersionPastItsBoundIsRefusedNamingItsLargestField(t *testing.T) {
 	check("a question of the bound's bytes", register(Registration{ComputationChange: ComputationChange{Question: Set(text(MaxVersionBytes))}}), "question", -1)
 	if after := stored(); after != none {
 		t.Errorf("the refused register write left %v versions, series and readings, want %v", after, none)
+	}
+	check("an answer of the bound's bytes", register(Registration{Answer: Set(text(MaxVersionBytes))}), "answer", -1)
+	if after := stored(); after != none {
+		t.Errorf("the refused register write of an answer left %v versions, series and readings, want %v", after, none)
 	}
 	if err := register(Registration{ComputationChange: ComputationChange{Question: Set(text(MaxVersionBytes / 2))}}); err != nil {
 		t.Fatalf("a question of half the bound: %v", err)

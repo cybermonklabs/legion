@@ -120,7 +120,7 @@ test("each item is read as a project tab reads its items, and drawn from its own
   // the same repositories and the same page, and its window is the same days.
   const choice = readWindow(new URLSearchParams("window=28d"));
   const compare = compareRange({ kind: "previous" }, choice, before);
-  const [, , view] = evalsViewQuery({
+  const [, , , view] = evalsViewQuery({
     compare,
     kind: "experiment",
     offset: 0,

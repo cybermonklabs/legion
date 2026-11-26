@@ -526,7 +526,7 @@ func definitionTooLarge(definition Definition) error {
 		{"decision", definition.Decision}, {"failure_modes", definition.FailureModes}, {"unit", definition.Unit},
 		{"doc_block", definition.DocBlock}, {"target_judges", definition.TargetJudges}, {"owner_role", definition.OwnerRole},
 		{"person", definition.Person}, {"issue_key", definition.IssueKey}, {"replaced_by", definition.ReplacedBy},
-		{"links", definition.Links}, {"actor", definition.WrittenBy},
+		{"links", definition.Links}, {"answer", definition.Answer}, {"actor", definition.WrittenBy},
 	})
 	if err != nil || field == "" {
 		return err
