@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -68,9 +69,11 @@ func TestTheIdleViewCountsAStartThatWaitsForItsPodAsNoDelivery(t *testing.T) {
 	}
 }
 
-// The release reads the same set at its boundary as the rule that holds a pod: a start that
-// waits for the pod, queued before the mark, does not overtake the release, where any other start
-// queued before it does.
+// The release reads the same set at its boundary and at its teardown as the rule that holds a
+// pod: a start that waits for the pod, queued before the mark, does not overtake the release,
+// where any other start queued before it does. The teardown reads the starts below the release's
+// rows too (main's #5665), and the release of a pod no claim owns makes no boundary read, so the
+// teardown alone is what lets such a pod go for the start that waits for it.
 func TestAReleaseIsNotOvertakenByAStartThatWaitsForItsPod(t *testing.T) {
 	const first, boundary, last = 18, 20, 22
 	for _, tc := range []struct {
@@ -98,6 +101,14 @@ func TestAReleaseIsNotOvertakenByAStartThatWaitsForItsPod(t *testing.T) {
 			}
 			if decision.Act != tc.want || decision.Cause != tc.wantCause {
 				t.Errorf("the boundary = %s for %s, want %s for %s", decision.Act, decision.Cause, tc.want, tc.wantCause)
+			}
+			teardown, err := st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last},
+				record.OutOfWorkflow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if teardown.Act != tc.want || teardown.Cause != tc.wantCause {
+				t.Errorf("the teardown = %s for %s, want %s for %s", teardown.Act, teardown.Cause, tc.want, tc.wantCause)
 			}
 		})
 	}

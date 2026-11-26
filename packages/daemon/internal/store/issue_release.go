@@ -504,11 +504,13 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// release of a pod no claim owns makes no boundary read (the daemon's releaseUnownedPods),
 		// so for it this is the one read of the starts on both sides of its rows. The start rows
 		// read here are those that wait for a role of the pod, the one rule the idle hold and the
-		// boundary read too (idleWaitingRow), so neither a start queued for news alone nor a worker
-		// start that still waits for an admission slot its issue does not hold cancels the
-		// teardown: each wakes the claim this release suspended when it runs, as any start wakes
-		// one, and the role comes back with its news or its task in the pod that replaces this
-		// one. The release reads
+		// boundary read too (idleWaitingRow, less startWaitsForPodRow), so neither a start queued
+		// for news alone nor a worker start that still waits for an admission slot its issue does
+		// not hold cancels the teardown: each wakes the claim this release suspended when it runs,
+		// as any start wakes one, and the role comes back with its news or its task in the pod that
+		// replaces this one. Nor does a start that waits because the pod lacks the slot of its
+		// claim or the role of its step: it waits for this very release, which is the one thing
+		// that lets it start in a pod built with that name. The release reads
 		// every other queued start row where IssueSuspension reads only a production check's
 		// look, and needs no other narrowing: the read above has already returned a cancel for
 		// an issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an
@@ -522,8 +524,8 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and `+idleWaitingRow+` and (id < $4 or id > $3)
-					and kind = 'supervise' and payload->>'op' = 'start')`,
-				release.Issue, idleWaitingKinds, mark.last, mark.first).Scan(&overtaken); err != nil {
+					and kind = 'supervise' and payload->>'op' = 'start' and not `+fmt.Sprintf(startWaitsForPodRow, "$5")+`)`,
+				release.Issue, idleWaitingKinds, mark.last, mark.first, pods.StartWaitsForPodPrefix).Scan(&overtaken); err != nil {
 				return err
 			}
 		}
