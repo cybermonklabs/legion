@@ -57,3 +57,58 @@ test("a reader who moves to a field before the clipboard refuses keeps the focus
     });
   }
 });
+
+// Where the clipboard refuses and the reader has not acted, the fallback's text box takes the
+// focus and the page's selection, and leaving the page drops the focus to the body. The copy then
+// gives both back: the focus to the control that asked for the copy, and the reader's selection
+// to the words it held, so a keyboard reader's next key acts where they were. Chromium does what
+// the mock below does (INFRA-1109's tester read it on a page with a focused Copy button, a field's
+// caret and a selection of words: after the fallback the focus was on the body and the selection
+// empty).
+test("a copy through the fallback gives the focus back to the control that asked for it and the selection back to the reader", async () => {
+  const originalClipboard = navigator.clipboard;
+  const originalExecCommand = document.execCommand;
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: () => Promise.reject(new Error("denied")) },
+  });
+  Object.defineProperty(document, "execCommand", { configurable: true, value: () => true });
+  // A browser's `select()` focuses the text box and takes the selection; happy-dom's does neither.
+  const select = spyOn(HTMLTextAreaElement.prototype, "select").mockImplementation(function (
+    this: HTMLTextAreaElement
+  ) {
+    this.focus();
+    const range = document.createRange();
+    range.selectNodeContents(this);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  const words = document.createElement("p");
+  words.textContent = "Some words the reader selected.";
+  const button = document.createElement("button");
+  button.textContent = "Copy";
+  document.body.append(words, button);
+  try {
+    const range = document.createRange();
+    range.selectNodeContents(words);
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    button.focus();
+    const copied = await copyText("CORE-1");
+    expect(copied).toBe(true);
+    expect(document.activeElement, "the copy's fallback left the focus on the page's body").toBe(button);
+    expect(String(window.getSelection()), "the copy's fallback dropped the reader's selection").toBe(
+      "Some words the reader selected."
+    );
+  } finally {
+    words.remove();
+    button.remove();
+    select.mockRestore();
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+  }
+});
