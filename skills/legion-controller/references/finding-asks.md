@@ -16,7 +16,7 @@ A role sends a clear defect with its role token, the defect, its issue, where th
 1. Check it is clear: the fix needs no choice a person must make, in a repository of an owner your addressing line names. Otherwise open a decision ask as `findings.md` says, and reply `Moved dispatch://<ASK KEY>/ask/<new id>`.
 2. A defect that stops its sender's work is the sender's to fix, wherever the fix belongs, unless an issue that tracks it is claimed, `in_progress` and its holder said on Envoy that it works on it now (`findings.md`, "Search first"): reply `Not filed: it stops your work, so it is yours to fix` with `--mention-role <the sender's role token>`.
 3. Search first (`skill://dispatch-first`). When an open issue tracks it, comment the evidence there and reply `Filed dispatch://<that KEY>`.
-4. When the open pull request of a root in `admission.trees` changes the files the fix touches, it can carry the fix: `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`, and reply `Handed dispatch://<that KEY>` once a live holder took it. When Envoy kept it, or the root has no locator, go on to step 5; after a keep, also publish the new issue's link to that topic.
+4. When the open pull request of a root in `admission.trees` changes the files the fix touches, it can carry the fix: `envoy_publish` the defect, its evidence reference and the fix to `notifications.role.<issues.<KEY>.architect.locator.claim>`, and reply `Handed dispatch://<that KEY>` once a live holder took it. When Envoy kept it, or the root has no locator, go on to step 5.
 5. Otherwise file it where the fix belongs:
    `dispatch issue --project <KEY> --repo <owner/name> --title '<the defect>' --label legion --spec-file -`
    The spec states the defect, where the fix belongs and the fix, and ends with the `Filed for Legion from` line.
@@ -56,7 +56,7 @@ An answer that arrives while no controller runs never wakes you, a reference pub
 
    ```text
    notes=$(dispatch api --path '/api/v1/issues/<REPORT KEY>/comments') || { printf 'Dispatch read failed: %s\n' "$notes" >&2; exit 1; }
-   printf '%s' "$notes" | jq -cn 'input | if type == "array" then (. as $all | [.[] | select(.reply_to == null and (.body | startswith("Clear defect from "))) | .id as $id | select([$all[] | select(.reply_to == $id and .author.kind == "session" and (.body | test("^(Handed dispatch://|Filed dispatch://|Not filed:|Asked dispatch://|Moved dispatch://)")))] | length == 0) | {id, body}]) else error("Dispatch did not answer the list") end'
+   printf '%s' "$notes" | jq -cn 'input | if type == "array" then (. as $all | [.[] | select(.reply_to == null and (.body | startswith("Clear defect from "))) | .id as $id | select([$all[] | select(.reply_to == $id and .author.kind == "session" and (.body | test("^(Handed dispatch://|Filed dispatch://|Not filed:|Asked dispatch://)")))] | length == 0) | {id, body}]) else error("Dispatch did not answer the list") end'
    ```
 
    Take each as [Hand over a clear defect](#hand-over-a-clear-defect) says; reply `Not filed: <reason>` under one that is not clear, and open an ask for it instead.
