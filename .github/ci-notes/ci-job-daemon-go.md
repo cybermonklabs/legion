@@ -58,10 +58,13 @@ internal/store 274 s, internal/runtime/sandbox 156 s (its tests in parallel sinc
 internal/workflow 156 s. Run alone on 4 CPUs, each with its CPU over its time (build-cluster Jobs
 legion-ci-cmdlegion-4jtkm and -tl98h), cmd/legion keeps 1.1 cores busy, about 2.4 once its tests
 run beside each other (#5514), and internal/runtime/sandbox 1.2; internal/store, internal/workflow
-and the other long packages mostly wait on Postgres or a child, under half a core each. So the two
-that need cores run in different legs: plain leg 1 is cmd/legion's, beside internal/store and four
-waiting packages; plain leg 2 has internal/runtime/sandbox, internal/workspace, internal/workflow,
-internal/admit and the rest, about 866 s of package time over four cores.
+and the other long packages mostly wait on Postgres or a child, under half a core each, but their
+Postgres service runs on the same runner. With cmd/legion's tests beside each other and
+internal/store beside it in one leg, internal/store took 440 s and internal/api 244 s against
+medians of 274 s and 84 s (run 45731654069, job 139616724747). So plain leg 1 is cmd/legion's
+alone with three packages that need no cores and no Postgres (internal/leakguard, internal/record,
+internal/repocache); plain leg 2 is the rest, internal/store the longest, about 1,224 s of package
+time over four cores.
 
 The rules the legs keep:
 
