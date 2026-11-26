@@ -367,7 +367,7 @@ const (
 	overlapsWanted = 50
 	// overlapMargin is what overlapping leaves of the test binary's deadline: time for the
 	// subtest's typing peers to stop and their room to drain, which typeIntoDocument's cleanup
-	// waits up to 30 s for at each step, so the failure is reported before the timeout panics.
+	// waits for at each step, so the failure is reported before the timeout panics.
 	overlapMargin = 90 * time.Second
 )
 

@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
@@ -831,12 +832,19 @@ func TestRunWaitsToRelaunchAnUnfinishedClaimUntilOrphanReconciliationSucceeds(t 
 	thirdOverrides := fakeRuntime(third, &built{})
 	thirdOverrides.orphanSweep = 20 * time.Millisecond
 	final := startDaemon(t, cfg, thirdOverrides)
-	testwait.Eventually(t, "the third boot to launch after reconciliation succeeds", func() bool { return len(third.CallsOf("Spawn")) == 1 })
-	if spawned := third.CallsOf("Spawn")[0]; spawned.Spec.Generation != 2 {
-		t.Fatalf("the third boot spawned generation %d, want 2", spawned.Spec.Generation)
+	// The fake records Spawn as the call begins, and the machine records the process Spawn answers
+	// after the call returns, publishing the claim at the end of that decision (Machine.unlock): a
+	// read made once the call is recorded can come before the locator. So the wait is for the
+	// claim to hold its process, and the Spawn is read after it.
+	c := testwait.Until(t, "the third boot's launch after reconciliation succeeds to record its process", func() (api.OperatorClaim, bool) {
+		read := final.claim(token)
+		return read, read.Locator != nil
+	})
+	if c.State != string(supervise.StateLaunching) || c.Generation != 2 {
+		t.Fatalf("claim after successful reconciliation = %+v, want the one launching incarnation at generation 2", c)
 	}
-	if c := final.claim(token); c.State != string(supervise.StateLaunching) || c.Locator == nil {
-		t.Fatalf("claim after successful reconciliation = %+v, want the one launching incarnation", c)
+	if spawns := third.CallsOf("Spawn"); len(spawns) != 1 || spawns[0].Spec.Generation != 2 {
+		t.Fatalf("the third boot spawned %+v, want one launch at generation 2", spawns)
 	}
 }
 
@@ -1014,7 +1022,7 @@ func TestRunResolvesProviderKeysAtBootAndKeepsThemThroughThePrune(t *testing.T) 
 		"  AGENT_KEY:--no-request) echo '{\"key\":\"AGENT_KEY\",\"tier\":\"agent\"}' ;;\n" +
 		"  AGENT_KEY:--value) echo 'agent-value' ;;\n" +
 		"  *) exit 9 ;;\nesac\n"
-	if err := os.WriteFile(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "secrets"), []byte(stub), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	o := fakeRuntime(fake.NewRuntime(), &built{})

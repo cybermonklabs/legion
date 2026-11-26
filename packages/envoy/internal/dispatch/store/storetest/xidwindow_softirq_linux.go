@@ -212,10 +212,21 @@ func xidField(line []byte, index int) (int64, bool) {
 
 // readXidSoftirqs reads the softirq counts of the CPU the calling thread is pinned to, when the rig
 // holds it (xidWatchThreadClock), with the thread's CPU time the read took. A reading taken off
-// that CPU is not one: the thread was moved, so the CPU's counts are not its.
+// that CPU is not one: the thread was moved, so the CPU's counts are not its. The counts are read
+// under the held clock's lock, and a clock dropped since the read found it counts nothing, as a
+// thread the rig does not hold does: its descriptor is closed, and its number may be another
+// file's by now (xidHeldClock).
 func readXidSoftirqs() xidSoftirqReading {
 	held := (*xidHeldClocks.Load())[unix.Gettid()]
 	if held == nil || held.softirqs == nil {
+		return xidSoftirqReading{}
+	}
+	if xidHeldClockFound != nil {
+		xidHeldClockFound()
+	}
+	held.mu.Lock()
+	defer held.mu.Unlock()
+	if held.dropped {
 		return xidSoftirqReading{}
 	}
 	var before, after unix.Timespec

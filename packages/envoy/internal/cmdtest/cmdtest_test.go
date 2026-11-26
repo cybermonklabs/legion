@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenfd"
 )
 
@@ -23,6 +24,10 @@ const (
 	heldPortChildEnv = "CMDTEST_HELD_PORT_CHILD"
 	// heldPortFD is the variable Pass names the child's inherited socket in.
 	heldPortFD = "CMDTEST_LISTEN_FD"
+	// buildChildEnv makes this test binary's TestMain run its tests under Main ("main") or without
+	// it ("plain"): the processes the build rows (build_test.go) start, whose TestBuildChild builds
+	// hello.
+	buildChildEnv = "CMDTEST_BUILD_CHILD"
 )
 
 // TestMain runs this binary as the held-port child where heldPortChildEnv is set, and runs the
@@ -33,6 +38,9 @@ const (
 func TestMain(m *testing.M) {
 	if os.Getenv(heldPortChildEnv) == "1" {
 		os.Exit(heldPortChild())
+	}
+	if os.Getenv(buildChildEnv) == "main" {
+		os.Exit(Main(m))
 	}
 	os.Exit(m.Run())
 }
@@ -62,6 +70,7 @@ func heldPortChildCopyRefusal() error {
 // that has heldPortChildEnv=1 and no other. While TestMain is in the build no copy reaches it, so
 // this test is what holds the refusal.
 func TestAProcessStartedAsTheHeldPortChildStartsNoCopy(t *testing.T) {
+	// Not parallel: it unsets heldPortChildEnv (fixtureenv.Unset, through t.Setenv).
 	fixtureenv.Unset(t, heldPortChildEnv)
 	if err := heldPortChildCopyRefusal(); err != nil {
 		t.Fatalf("with %s unset: %v, want no refusal", heldPortChildEnv, err)
@@ -125,6 +134,7 @@ func heldPortChild() int {
 // that process holding it once Start returns: another program's bind in the meantime is refused,
 // the process serves on the socket, and nothing holds the socket once it exits.
 func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
+	t.Parallel()
 	held := HoldPort(t)
 	// The socket's inode names it whoever holds a descriptor of it, which a port does not: once the
 	// socket is closed, another program may bind the port and listen there.
@@ -164,8 +174,10 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial %s: %v\n%s", held.Addr, err, child.Output.String())
 	}
-	if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
-		t.Fatal(err)
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		if err := conn.SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
 	}
 	answer, err := bufio.NewReader(conn).ReadString('\n')
 	if err != nil {
@@ -193,6 +205,8 @@ func TestHeldPortStaysHeldUntilItsProcessServes(t *testing.T) {
 // that waits on Exited sees what afterExit did. afterExit sleeps before it records anything, so
 // an Exited closed before afterExit returned would show here as nothing recorded.
 func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
+	// Not parallel: the order it proves rests on a 200 ms sleep in the callback, which load could
+	// outlast and pass the test without the order.
 	// -test.run=^$ makes this test binary run no test and exit 0.
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	var runs int
