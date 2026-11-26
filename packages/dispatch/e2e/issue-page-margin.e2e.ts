@@ -3377,6 +3377,55 @@ test("below 1024 px a Comment that stands opens a composer", async ({ browser })
   });
 });
 
+// A sheet follows all the statement's text and threads. Opening it must bring the focused
+// field into view even when the selected words are several screens above it.
+test("a phone sheet brings the focused composer and its new thread into view", async ({
+  browser,
+}) => {
+  test.setTimeout(300_000);
+  if (!onBase("the focused composer and new thread in Spec's sheet enter the viewport", "PART_J")) {
+    return;
+  }
+  await phase(browser, seedNoThreads, async (page, seeded) => {
+    const block = "r-long-sheet";
+    const quote = "Keep these words";
+    const body = `${quote} on the first line. ${Array.from(
+      { length: 40 },
+      (_, index) => `Sentence ${index + 1} of the statement reads in full before its sheet.`
+    ).join(" ")}`;
+    await editArtifact(seeded.specArtifactId, {
+      ops: [
+        {
+          after: `block:${seeded.statementS1}`,
+          markdown: `:::requirement{#${block}}\n${body}\n:::`,
+          op: "insert",
+        },
+      ],
+    });
+    await page.setViewportSize(PHONE);
+    const traffic = watchApiRequests(page);
+    await openView(page, traffic, seeded.key, "spec");
+    const node = blockNode(seeded.specSlug, block);
+    await selectWords(page, node, quote, 0);
+    await commentControl(page).click();
+    const field = stageRow(page, node).locator("[data-text-threads]").getByRole("textbox").first();
+    await expect(field, "Comment focuses the field in its statement's phone sheet").toBeFocused();
+    await expect(field, "the focused phone sheet composer stands in the viewport").toBeInViewport();
+    await field.fill("A comment from the phone sheet.");
+    const written = page.waitForResponse(commentWrite);
+    await field.press("ControlOrMeta+Enter");
+    const response = await written;
+    expect(response.status(), "the phone sheet writes the selected words").toBe(201);
+    const { id } = (await response.json()) as { id: string };
+    const card = stageRow(page, node).locator(`[data-margin-item="${id}"]`);
+    await expect(card, "the new thread in the phone sheet has focus").toBeFocused();
+    await expect(
+      card,
+      "the new focused thread in the phone sheet enters the viewport"
+    ).toBeInViewport();
+  });
+});
+
 // c-thread-acts (3), R4 and R7: a press on a control of a thread acts, wherever the stack placed the
 // thread. A thread the stack pushed under the one above it moves level with its words when it takes
 // the focus (R2). On the running build of 3a39e128e8cb the card moved on the press's pointer down,
