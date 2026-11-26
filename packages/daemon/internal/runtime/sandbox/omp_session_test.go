@@ -277,7 +277,13 @@ func TestNothingChangesWithoutTheKey(t *testing.T) {
 			if tc.spec.ResumeSessionFile != "" {
 				session = []string{"--resume=" + tc.spec.ResumeSessionFile}
 			}
-			want := slices.Concat(r.agent, []string{"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default"},
+			// A launch of an arm's folder of texts names its root before the two plugins, and nothing
+			// else of its command moves with the key (TestATextsLaunchPutsItsRootAheadOfBothPlugins).
+			roots := []string{"--extension", envoyPlugin, "--extension", legionPlugin}
+			if root := l.textsRoot(); root != "" {
+				roots = slices.Concat([]string{"--extension", root}, roots)
+			}
+			want := slices.Concat(r.agent, roots, []string{"--model", "@default"},
 				session, []string{"--mode", "rpc", "--append-system-prompt", systemPromptPath(tc.spec.Generation)})
 			if got := l.agentArgv(r.agent); !slices.Equal(got, want) {
 				t.Errorf("the agent command is %q, want %q", got, want)

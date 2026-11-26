@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -133,7 +134,10 @@ const podUser = 1000
 // the rest of Claude Code's own variables are not here, and stay the operator's to set.
 // runtime.SessionExclusiveVariable is told a launch that resumes a recorded Oh My Pi session alone,
 // and owned in every pod: an operator that could set it could turn off what holds a resumed role
-// to the session the daemon recorded.
+// to the session the daemon recorded. texts.RootVariable is told a launch that runs an arm's
+// folder of texts alone (launch.runsTexts), and owned in every pod: it names the extension root
+// the pod's launcher built from a folder it checked, and an operator that could name another would
+// point the plugin at texts no check read.
 var runtimeOwned = func() map[string]bool {
 	owned := map[string]bool{
 		"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_ROLE": true, "LEGION_CONTROLLER": true,
@@ -155,6 +159,10 @@ var runtimeOwned = func() map[string]bool {
 		launcher.TestPGVariable: true,
 		// What holds a resumed Oh My Pi to the session it resumes (mainEnvironment).
 		runtime.SessionExclusiveVariable: true,
+		// The extension root of the arm's folder of texts a launch runs (launch.runsTexts), told to
+		// that launch alone: owned in every pod, since a spec or an operator's pod env naming a root
+		// would point the plugin at texts the launcher never checked.
+		texts.RootVariable: true,
 	}
 	// GIT_CONFIG_COUNT and each GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> GitConfigEnv sets.
 	for _, entry := range GitConfigEnv() {
@@ -966,6 +974,12 @@ func SessionFromVolume(file, root string) (string, error) {
 // image leaves unlinked from its profile: Oh My Pi loads a plugin that is both installed and named
 // by --extension twice, which the boot gate's pod lane refuses an image for.
 //
+// A launch that runs an arm's folder of texts (runsTexts) names the extension root its launcher
+// builds from the folder (textsRoot) before both plugins, `--extension <root>` first. Oh My Pi
+// gives an explicit root the bare name of a skill both it and a plugin ship and makes the plugin's
+// differing copy an alias, which the root's settings layer hides: a root named after the plugins
+// would make the plugin's copy the one the model reads. A Claude Code launch names none.
+//
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
 // for the `default` model role, which every pod's operator overlay sets, the operator's current
 // role is resolved per launch, and a resumed session without the flag runs the session file's
@@ -979,11 +993,12 @@ func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()
 	}
-	envoy, legion := envoyPlugin, legionPlugin
-	if l.spec.Plugins != nil {
-		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
+	envoy, legion := l.loadedPlugins()
+	argv := slices.Clone(agent)
+	if root := l.textsRoot(); root != "" {
+		argv = append(argv, "--extension", root)
 	}
-	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
+	argv = append(argv, "--extension", envoy, "--extension", legion, "--model", "@default")
 	switch {
 	case l.spec.ResumeSession != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSession)
@@ -995,6 +1010,42 @@ func (l launch) agentArgv(agent []string) []string {
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
 	}
 	return append(argv, "--mode", "rpc", "--append-system-prompt", systemPromptPath(l.spec.Generation))
+}
+
+// loadedPlugins are the roots of the two plugins this launch's Oh My Pi loads: the image's own
+// (envoyPlugin, legionPlugin) for a plain launch, and for an installing one (l.spec.Plugins set,
+// LEGION-164) the pair launcherCommand's install wrapper lands under this generation's own
+// directory (pluginRoots), installed before Oh My Pi starts. They are what the argv names after a
+// folder's root, and what the pod's launcher checks the folder's agents and skills against.
+func (l launch) loadedPlugins() (envoy, legion string) {
+	if l.spec.Plugins != nil {
+		return pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
+	}
+	return envoyPlugin, legionPlugin
+}
+
+// runsTexts is whether this launch runs an arm's folder of texts: its spec carries one
+// (runtime.SpawnSpec.Texts), and its harness is Oh My Pi, the only one whose agents, skills and
+// plugins the folder replaces. The daemon reads no such folder for a Claude Code role (the loader
+// refuses an arm that reaches one), and the fallback of a launch that falls back carries none.
+func (l launch) runsTexts() bool { return l.spec.Texts != nil && !l.runsClaude() }
+
+// textsRoot is where this launch's extension root of its folder of texts is built,
+// `<role state home>/legion-texts/g<generation>` (shimwire.TextsRoot), and "" for a launch that
+// runs no folder. The role's state home is on the issue's volume, which the pod's launcher and
+// every role's container mount at the same path, and is the XDG_STATE_HOME the start tells the
+// role (roleEnvironment), which the launcher holds the root to (shimwire.LauncherStart.Validate).
+func (l launch) textsRoot() string {
+	if !l.runsTexts() {
+		return ""
+	}
+	return textsRoot(l.spec.Role, l.spec.Generation)
+}
+
+// textsRoot is the extension root of role's generation, built from a folder of texts under the
+// role's state home.
+func textsRoot(role claim.Role, generation uint64) string {
+	return shimwire.TextsRoot(roleStateHome(role), generation)
 }
 
 // claudeArgv is the command the shim runs for a Claude Code role: the agent command
@@ -1559,8 +1610,19 @@ const settingsOverlays = "PI_CONFIG_FILES"
 // round that is to replace that pod (INFRA-484). A role whose kept pod holds none of its overlays
 // is told operatorEnv unchanged, exactly as a role with none configured is, and runs without them
 // until the round replaces its pod.
+//
+// A launch that runs an arm's folder of texts (runsTexts) names the settings layer of its root,
+// `<root>/texts-settings.yml`, after every overlay above, the arms' own included: the layer
+// hides the plugins' copies of the skills the folder replaces by adding to the
+// skills.ignoredSkills of the layers before it, and the launcher reads that base from this very
+// list (the layer must be its last entry), so a layer an overlay named later would outrank it. The
+// root is on the issue's volume, never in a pod's template, so a kept pod holds it as well as a
+// new one does.
 func (r *Runtime) roleOperatorEnv(l launch) []corev1.EnvVar {
 	overlays, carried := l.overlays(r)
+	if root := l.textsRoot(); root != "" {
+		overlays = slices.Concat(overlays, []string{filepath.Join(root, texts.SettingsLayerName)})
+	}
 	env := composeEntry(r.operatorEnv(), settingsOverlays, func(operator string) string {
 		own := strings.Join(overlays, ":")
 		switch {
@@ -1874,7 +1936,9 @@ func (r *Runtime) LaunchBound() time.Duration {
 // other, is also told Claude Code's own three (claudelaunch.Environment, runsClaude) and the
 // session its launcher keeps (claudelaunch.SessionVariable). An Oh My Pi role that resumes a
 // recorded session, and no other launch, is told last that the session is its alone
-// (runtime.SessionExclusiveVariable=1).
+// (runtime.SessionExclusiveVariable=1). A launch that runs an arm's folder of texts (runsTexts),
+// and no other, is told the extension root its launcher builds from it (texts.RootVariable, which
+// pi-envoy reads) and names the root's settings layer last in PI_CONFIG_FILES (roleOperatorEnv).
 func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	spec := l.spec
 	env := l.kind.agentEnv(l)
@@ -1980,6 +2044,12 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 		// daemon, so no launcher that predates it runs this launch. It is plain, so it travels in the
 		// start command alone (launchEnvironment) and changes nothing of the pod.
 		add(claudelaunch.SessionVariable, l.claude.session)
+	}
+	// The extension root of the arm's folder of texts, which the pod's launcher builds before it
+	// starts the child (shimwire.LauncherStart.Texts) and pi-envoy reads at load. It is plain, so it
+	// travels in the start command alone (launchEnvironment) and changes nothing of the pod.
+	if root := l.textsRoot(); root != "" {
+		add(texts.RootVariable, root)
 	}
 	env = append(env, roleEnvironment(spec.Role)...)
 	env = append(env, corev1.EnvVar{Name: "POD_UID", ValueFrom: &corev1.EnvVarSource{

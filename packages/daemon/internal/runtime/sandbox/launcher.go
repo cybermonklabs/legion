@@ -89,6 +89,11 @@ type launcherSession struct {
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
 	resumesBySession bool
+	// checksTexts is whether this launcher's hello said it checks a folder of texts a start hands
+	// it before it writes anything (shimwire.LauncherHello.ChecksTexts). A launcher built before it
+	// could says nothing, and would ignore the folder and start an unchecked root, so relaunch
+	// hands it none: its start is the control's.
+	checksTexts bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -118,7 +123,8 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, keptStar
 func (d *launchers) accept(token claim.Token, issue string, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
+		checksTexts: hello.ChecksTexts}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -361,11 +367,18 @@ func (d *launchers) current(session *launcherSession) bool {
 // as they do from the tmux runtime (runtime.ErrSessionFileMissing, runtime.ErrSessionStore). A
 // session the launcher's table holds no row of under the id it was named by is as gone as a file
 // the table does not hold, and the launcher answers both shimwire.SessionGone.
+//
+// A refusal over the folder of texts the start was handed (shimwire.LauncherStart.Texts) carries
+// the launcher's verdict in texts: the file the check found at fault, its cause and what it saw.
+// relaunch answers it with the start of the arm's control (relaunch's fallback), which no launcher
+// refuses for a folder it was not handed; every other refusal, and a texts refusal of that second
+// start, fails the launch.
 type startRefusal struct {
 	token      claim.Token
 	generation uint64
 	reason     string
 	session    shimwire.SessionRefusal
+	texts      *shimwire.TextsRefusal
 }
 
 func (e startRefusal) Error() string {
@@ -398,8 +411,11 @@ func (d *launchers) start(ctx context.Context, token claim.Token, session *launc
 	if !ok {
 		return fmt.Errorf("launcher %s start: got %T", token, answer)
 	}
+	if err := result.Validate(); err != nil {
+		return fmt.Errorf("launcher %s start generation %d: %w", token, command.Generation, err)
+	}
 	if !result.OK {
-		return startRefusal{token: token, generation: command.Generation, reason: result.Error, session: result.Session}
+		return startRefusal{token: token, generation: command.Generation, reason: result.Error, session: result.Session, texts: result.Texts}
 	}
 	// An OK answer naming another generation says the launcher started something, and not what it
 	// was asked: the Start's outcome is unknown, never a refusal, so the issued generation is stopped.
@@ -851,6 +867,16 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // generation's Oh My Pi process by that executable, and admits it alone of the role's processes to
 // the generation's session socket (internal/launcher's sessionPeer). A Claude Code start names
 // none: its agent opens no session socket of its own.
+//
+// A start of a launch that runs an arm's folder of texts (runsTexts) hands the launcher the folder,
+// the fingerprint the daemon read it at, the extension root to build from it (textsRoot, the
+// start's argv names it first and its environment as LEGION_TEXTS_ROOT) and the roots of the
+// two plugins the agent loads (loadedPlugins), which the launcher holds the folder's agents and
+// skills to; the launcher refuses the start before it writes anything where the folder fails a
+// check (relaunch then sends the control's start). The folder is named as the launcher's own view
+// of the container holds it: an operator's mount at or under the image's home is mounted under
+// HomeMountsDir and bound back at its own path only in each role's namespace
+// (containerHomePath), and the launcher runs outside every role's namespace.
 func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	dir := generationDir(l.spec.Generation)
 	shim := []string{r.tools.Legion, "worker-shim", connectFlag, r.streamURL, "--boot-token-file", dir + "/" + bootTokenKey, "--pod-safety", "--stop-grace", r.terminationGrace.String()}
@@ -895,6 +921,13 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	if !l.runsClaude() {
 		command.AgentExecutable = agent[0]
+	}
+	if l.runsTexts() {
+		envoy, legion := l.loadedPlugins()
+		command.Texts = &shimwire.LauncherTexts{
+			Folder: containerHomePath(l.spec.Texts.Folder), Fingerprint: l.spec.Texts.Fingerprint,
+			Root: l.textsRoot(), EnvoyRoot: envoy, LegionRoot: legion,
+		}
 	}
 	return command
 }

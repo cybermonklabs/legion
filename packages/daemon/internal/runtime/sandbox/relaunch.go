@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/texts"
 )
 
 // Spawn starts a fresh agent for spec's claim, over whatever the claim's Sandbox already holds
@@ -228,6 +229,20 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Sandbox and the pod, having stopped, recorded and sent nothing in the pod; the supervisor's next
 // Resume, which has the agent's own command resolve the id, ensures the Sandbox, reads the launcher
 // bindings and waits for the launcher again.
+//
+// A launch that runs an arm's folder of texts (launch.runsTexts) reaches its launcher as the
+// folder's start or as the control's, which is decided once the launcher's session is known and
+// never charges the launch for the folder: the control's start (runtime.SpawnSpec.FallBack, the
+// launch of no arm of the experiment: Legion's prompt, none of the arm's overlays and no arm among
+// the spend attributes' legion.arms) is the only start sent where the launcher's hello did not say
+// it checks folders (launchers.accept), and where the launch installs the plugin pair after its
+// start (l.spec.Plugins still set once the replacement is decided: their texts cannot be checked
+// before it, whereas a replaced pod's launch clears the install and keeps the folder). Otherwise
+// the folder's start goes first, and a launcher that refuses it over the folder (startRefusal's
+// texts, before it wrote anything of the generation) is answered in the same try with the control's
+// start under the id `start-<generation>-texts-fallback`, which the launcher refused nothing of;
+// that second start is held to every bound a start is, and its refusal fails the launch as any
+// start's does. Each of the three tells Options.TextsFellBack once, with the cause.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -510,6 +525,23 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err != nil {
 		return fail("serve the shared public leak check", err)
 	}
+	// The folder of texts a launch runs is the launcher's to check, and a launch whose state says
+	// it cannot is sent the control's start alone (the three cases above). The session is the exact
+	// one the start goes to, so what it said in its hello is what decides.
+	if l.runsTexts() {
+		var fault *texts.Fault
+		switch {
+		case !session.checksTexts:
+			fault = &texts.Fault{Cause: texts.LauncherCannotCheck}
+		case l.spec.Plugins != nil:
+			fault = &texts.Fault{Cause: texts.InstallsPlugins}
+		}
+		if fault != nil {
+			if l, err = r.fallBack(l, *fault); err != nil {
+				return fail("compose the prompt of its fallback", err)
+			}
+		}
+	}
 	// The start sent carries what this launch learned from the cluster since prepare measured it,
 	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
 	// supervise charges nothing, rather than failing in the writer as a charged launch failure.
@@ -524,13 +556,56 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.launchers.recordKeptPod(starting, session); err != nil {
 		return fail("record its pod with its kept volume", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, session, command); err != nil {
+	err = r.launchers.start(starting, spec.Claim, session, command)
+	// A launcher that refused the folder wrote nothing of the generation, so the control's start
+	// follows in this try, and the refusal is no failed launch: the launch is not charged for it.
+	// The second start is a start like any other, measured as one, and a refusal of it is returned.
+	var refused startRefusal
+	if l.runsTexts() && errors.As(err, &refused) && refused.texts != nil {
+		fault := texts.Fault{Path: refused.texts.Path, Cause: texts.Cause(refused.texts.Cause), Detail: refused.texts.Detail}
+		if l, err = r.fallBack(l, fault); err != nil {
+			return fail("compose the prompt of its fallback", err)
+		}
+		command = launcherCommand(l, r)
+		command.ID += textsFallbackStartSuffix
+		if err := l.checkStartFrame(command); err != nil {
+			return fail("measure its fallback start frame", err)
+		}
+		err = r.launchers.start(starting, spec.Claim, session, command)
+	}
+	if err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.nameSession(loc, l)
 	r.launchedDispatchToken(loc, carried)
 	r.join(loc)
 	return loc, nil
+}
+
+// textsFallbackStartSuffix follows the id of a start (launcherCommand's `start-<generation>`) in
+// the id of the start of an arm's control that relaunch sends after the launcher refused the
+// folder's start. The launcher remembers a refused start under its id and answers a start that
+// reuses the id with the same refusal, so the control's start cannot reuse the folder's.
+const textsFallbackStartSuffix = "-texts-fallback"
+
+// fallBack is l as the launch of no arm of its experiment, for the fault the launch's folder of
+// texts failed on (runtime.SpawnSpec.FallBack): the control's prompt, composed afresh since the
+// folder's role parts are gone from it, and the control's arms, so none of the arm's overlays
+// reaches PI_CONFIG_FILES and the arm is no member of the spend attributes' legion.arms. Nothing
+// else of l changes: its pod, its session and its secrets are the launch's own, and a spec's
+// Plugins stays as it was. Options.TextsFellBack is told once the prompt is composed, so a launch
+// that fails to build its fallback tells no one it ran it.
+func (r *Runtime) fallBack(l launch, fault texts.Fault) (launch, error) {
+	spec, report := l.spec.FallBack(fault)
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		return launch{}, err
+	}
+	l.spec, l.prompt = spec, prompt
+	if r.textsFellBack != nil {
+		r.textsFellBack(report)
+	}
+	return l, nil
 }
 
 // keptBy is what the live pod podUID of the Sandbox read as s was built with, for the role l starts

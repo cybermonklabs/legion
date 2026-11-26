@@ -552,6 +552,13 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// checksTexts is what every fake launcher's hello says of checking a folder of texts a start
+	// hands it (shimwire.LauncherHello.ChecksTexts, withChecksTexts): unset, each is a launcher
+	// built before it could.
+	checksTexts bool
+	// answerStart, when set, is asked of every Start a fake launcher receives and answers it with
+	// the result it returns; nil lets the launcher answer as it always does (withStartAnswer).
+	answerStart func(shimwire.LauncherStart) *shimwire.LauncherStartResult
 	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
 	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
 	heldStops <-chan struct{}
@@ -590,6 +597,16 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withChecksTexts has every fake launcher's hello say it checks a folder of texts a start hands it,
+// as a launcher of this release says.
+func withChecksTexts() rigOption { return func(g *rig, _ *Options) { g.checksTexts = true } }
+
+// withStartAnswer has every fake launcher answer a Start with the result answer returns for it,
+// as a launcher that refuses a folder of texts does; a nil result is the launcher's own answer.
+func withStartAnswer(answer func(shimwire.LauncherStart) *shimwire.LauncherStartResult) rigOption {
+	return func(g *rig, _ *Options) { g.answerStart = answer }
+}
 
 // withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
 // is closed.
@@ -1332,7 +1349,7 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	pod := g.pod(SandboxName(token))
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
-		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
+		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession, ChecksTexts: g.checksTexts,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -1363,6 +1380,12 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if start, ok := frame.(shimwire.LauncherStart); ok && g.answerStart != nil {
+					if result := g.answerStart(start); result != nil {
+						_ = writer.WriteFrame(*result)
+						continue
+					}
+				}
 				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
 					<-g.heldStops
 				}

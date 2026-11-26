@@ -242,6 +242,11 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 		"resume":            {spec: resume},
 		"controller":        {spec: controllerSpec(t)},
 		"controller-resume": {spec: controllerResume},
+		// worker-texts is the worker launched into an arm's folder of texts. Its Sandbox is the
+		// worker's byte for byte, since the root is built on the issue's volume and named in the
+		// start command alone, so no pod carries it; it is the one case whose launch is told the
+		// variable that names the root (TestLegionsOwnNamesAreWhatItsPodsCarry).
+		"worker-texts": {spec: textsLaunch(t, workerSpec(t))},
 		// controller-microvm is the controller's pod of root-microvm's project, whose type is
 		// microvm: the pod runs in a microVM and serves the metadata endpoint, on its Sandbox's disk
 		// of runtime.kubernetes.storage_class (TestTheControllerPodRunsInTheProjectsSandbox).
@@ -1564,11 +1569,19 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 			// launch is told (runtime.SessionExclusiveVariable).
 			resuming := stamping
 			resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
+			// The launch of an arm's folder of texts is told the root its launcher builds from it
+			// (texts.RootVariable), which no other launch is, and names its root's settings layer in
+			// PI_CONFIG_FILES, the operator's own list, which no set of the runtime's names holds: no
+			// spec is refused for naming it (composed), and a launch is told it only where something is
+			// added to it.
+			armed := textsLaunch(t, stamping)
 			told := map[string]bool{}
-			for _, spec := range []runtime.SpawnSpec{stamping, resuming, claudeWorkerSpec(t), controllerSpec(t)} {
+			for _, spec := range []runtime.SpawnSpec{stamping, resuming, armed, claudeWorkerSpec(t), controllerSpec(t)} {
 				spec.Env, spec.Secrets = nil, nil
 				for name := range envOf(workerOf(t, r, spec)) {
-					told[name] = true
+					if name != settingsOverlays {
+						told[name] = true
+					}
 				}
 			}
 			if owned := r.specOwned(); !maps.Equal(told, owned) {
@@ -2236,7 +2249,13 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 					}
 				}
 				for _, variable := range agent.Env {
-					env[variable.Name] = true
+					// The settings overlays are the operator's list, which the runtime only composes its
+					// own overlays into (roleOperatorEnv) and no spec is refused for naming, so no set of
+					// Legion's names holds it. A pod is told it wherever something is added to it, and
+					// the launch of an arm's folder of texts always adds its root's layer.
+					if variable.Name != settingsOverlays {
+						env[variable.Name] = true
+					}
 				}
 			}
 			// Each session store the pods are built under: the goldens' own, and one that names a
