@@ -80,9 +80,9 @@ func errNoBrokerConfigured() *apiError {
 }
 
 // brokerPersonScopes is what a broker token that acts for its person holds, a read-only one
-// included: the person scope alone, never approve (brokerTokenActor). Every such credential
-// shares this one slice, as personCredential shares model.Scopes, so a request allocates none;
-// nothing writes it.
+// included, but for an approve-only token (brokerApproveOnlyScopes): the person scope alone, never
+// approve (brokerTokenActor). Every such credential shares this one slice, as personCredential
+// shares model.Scopes, so a request allocates none; nothing writes it.
 var brokerPersonScopes = []string{model.ScopePerson}
 
 // brokerApproveOnlyScopes is what an approve-only token holds (brokerTokenActor): the person and

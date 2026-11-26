@@ -100,10 +100,12 @@ func (a *ActorAct) Holds(scope string) bool {
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds, any of ScopePerson, ScopeApprove and
 	// ScopeP0: a browser holds all three, and a personal token the set its row names, which may be
-	// none. A broker-issued token acting for its person holds ScopePerson alone. A named broker
-	// token (one the secrets broker scoped to a project) holds ScopeLegionStatus alone where the
-	// broker granted it, which the broker does for a Legion daemon's own token only
-	// (brokerTokenActor). No credential holds ScopeLegionStatus beside ScopePerson.
+	// none. A broker-issued token acting for its person holds ScopePerson alone
+	// (brokerPersonScopes), except an approve-only token, which holds ScopePerson and ScopeApprove
+	// (brokerApproveOnlyScopes); no broker-issued token holds ScopeP0. A named broker token (one
+	// the secrets broker scoped to a project) holds ScopeLegionStatus alone where the broker
+	// granted it, which the broker does for a Legion daemon's own token only (brokerTokenActor). No
+	// credential holds ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.

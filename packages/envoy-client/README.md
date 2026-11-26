@@ -1158,11 +1158,14 @@ person, as the Go client does:
   that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` scope, so the session writes as that
-person. It never gives a broker token `approve` or `p0`: a review, an answer to an approval
-request, a machine login's decision and a personal token's mint need the person's browser, or a
-personal token (`DISPATCH_TOKEN`) the person gave `approve`, and a write that makes an issue's own
-priority `0` (P0) needs the person's browser, or a personal token the person gave `p0`. A read
-trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds `person` too, and writes nothing.
+person. Dispatch gives `approve` to one broker-issued token only: the approve-only token that the
+secrets broker spends through Cipher's proxy and never releases to the box, which this client
+sends only a review with (`dispatch review`, below). Dispatch gives `p0` to no broker-issued
+token. So an answer to an approval request, a machine login's decision and a personal token's
+mint need the person's browser, or a personal token (`DISPATCH_TOKEN`) the person gave `approve`,
+and a write that makes an issue's own priority `0` (P0) needs the person's browser, or a personal
+token the person gave `p0`. A read trade's token (`DISPATCH_TOKEN_BROKER_READ`, below) holds
+`person` too, and writes nothing.
 
 The client reads the sign-ins as the Go client reads them (`signins.ts`). The directory is
 `AGENT_SECRETS_SIGNIN_DIR`, else `$XDG_STATE_HOME/agent-secrets/signins`, else
