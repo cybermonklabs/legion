@@ -425,7 +425,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="b640fd0d9f4d7604a9114c1cd51f5334ef8e506ccddcf9ac8aafe12c5fdb2fc9",
+        sha256="3df154d84b86345d03a92a04b9822eaa31b865e25105ec19d9ffb4b8c8d74635",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
