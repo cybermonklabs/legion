@@ -18,3 +18,10 @@ func tryLock(f *os.File) error {
 	}
 	return err
 }
+
+// unlock ends the flock of the open file f. A child that the process forks holds a copy of f's
+// descriptor until it starts its program, and the copy shares the flock, so closing f alone would
+// leave the lock held for that while.
+func unlock(f *os.File) {
+	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+}

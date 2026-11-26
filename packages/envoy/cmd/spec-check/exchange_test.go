@@ -560,8 +560,9 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 		code := printApproved(io.Discard, &stderr, fsys, approved, a, []string{"first-term"}, dir, printBounds{limit: 1 << 20, wait: 0})
 		return code, stderr.String()
 	}
-	// keptBeside is the one directory beside dir whose name says that print kept it.
-	keptBeside := func(t *testing.T, dir string) string {
+	// keptBeside is the one directory beside dir whose name says that print kept it; a failure names
+	// the exit and the lines of the run that should have kept it.
+	keptBeside := func(t *testing.T, dir string, code int, stderr string) string {
 		t.Helper()
 		var kept []string
 		for _, name := range dirNames(t, filepath.Dir(dir)) {
@@ -570,7 +571,7 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 			}
 		}
 		if len(kept) != 1 {
-			t.Fatalf("beside %s: %q, want one directory that print kept", dir, dirNames(t, filepath.Dir(dir)))
+			t.Fatalf("beside %s: %q, want one directory that print kept; the run exited %d with %q", dir, dirNames(t, filepath.Dir(dir)), code, stderr)
 		}
 		return kept[0]
 	}
@@ -592,7 +593,7 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 		}
 		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(first))
 		code, stderr := run(t, dir, changeAtExchange)
-		kept := keptBeside(t, dir)
+		kept := keptBeside(t, dir, code, stderr)
 		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed terms.yaml there while print ran, so compare each with the entry of that name in " + dir + "\n"
 		if code != 1 || stderr != want {
 			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
@@ -616,7 +617,7 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, stderr := run(t, dir, osFileSystem{})
-		kept := keptBeside(t, dir)
+		kept := keptBeside(t, dir, code, stderr)
 		want := "spec-check: print kept " + kept + ", which a killed run of print left beside " + dir + ": it holds notes, which print did not make\n"
 		if code != 1 || stderr != want {
 			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
@@ -640,7 +641,7 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 		}
 		writeKilledRecord(t, staging, map[string]string{})
 		code, stderr := run(t, dir, osFileSystem{})
-		kept := keptBeside(t, dir)
+		kept := keptBeside(t, dir, code, stderr)
 		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed notes there while print ran, so compare each with the entry of that name in " + dir + "\n" +
 			"spec-check: warning: " + filepath.Join(dir, "notes") + ": not a spec file (directory); the importer passes over it\n"
 		if code != 1 || stderr != want {
@@ -681,7 +682,7 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 			t.Fatal(err)
 		}
 		code, stderr = run(t, dir, osFileSystem{})
-		kept := keptBeside(t, dir)
+		kept := keptBeside(t, dir, code, stderr)
 		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed terms.yaml there while print ran, so compare each with the entry of that name in " + dir + "\n"
 		if code != 1 || stderr != want {
 			t.Fatalf("the next print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)

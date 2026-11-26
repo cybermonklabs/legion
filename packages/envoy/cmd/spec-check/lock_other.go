@@ -12,3 +12,6 @@ import (
 func tryLock(*os.File) error {
 	return errors.New(noFlock)
 }
+
+// unlock does nothing: with no flock, tryLock took no lock.
+func unlock(*os.File) {}

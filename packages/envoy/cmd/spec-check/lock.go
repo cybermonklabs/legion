@@ -65,12 +65,14 @@ func lockSpecDir(fsys fileSystem, dir string, wait time.Duration) (*specDirLock,
 		}
 		held, err := f.Stat()
 		if err != nil {
+			unlock(f)
 			f.Close()
 			return nil, err
 		}
 		if now, err := os.Stat(dir); err == nil && os.SameFile(held, now) {
 			return &specDirLock{dir: f, ino: inode(held), made: made, fsys: fsys}, nil
 		}
+		unlock(f)
 		f.Close()
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("another run of print removed and made the directory again while this run waited %s for its lock; run print again", wait)
@@ -85,14 +87,19 @@ func (l *specDirLock) hold(f *os.File) {
 
 // release ends the hold. When the run wrote nothing (kept is false), it first removes each
 // directory that it made and that is still empty, so a run that print refuses leaves no directory.
+// It ends each flock before it closes the descriptor: a child that the process forked and that has
+// not started its program holds a copy of the descriptor, which shares the flock, so the close of
+// this one alone would leave the lock held and refuse the next run.
 func (l *specDirLock) release(kept bool) {
 	if !kept {
 		removeDirs(l.fsys, l.made)
 	}
 	for _, f := range l.also {
+		unlock(f)
 		f.Close()
 	}
-	l.dir.Close() // closing the last descriptor of the open directory releases its flock
+	unlock(l.dir)
+	l.dir.Close()
 }
 
 // makeDirs makes dir and each directory above it that does not exist, and answers the ones that it
