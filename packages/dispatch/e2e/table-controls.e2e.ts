@@ -90,7 +90,6 @@ import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filte
 import {
   askCard,
   askControls,
-  hasReadingPane,
   inboxList,
   inboxPane,
   inboxRow,
@@ -114,6 +113,7 @@ import { focusThePage } from "./issue-page-g";
 import { rowSnooze } from "./keyboard-inbox";
 import { seedLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
+import { hasReadingPane } from "./reading-pane";
 import { sessionIds } from "./session-ids";
 import { expandedState, settledState } from "./settled";
 import {

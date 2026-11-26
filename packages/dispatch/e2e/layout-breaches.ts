@@ -683,53 +683,7 @@ export const issuePageBreaches: readonly KnownLayoutBreach[] = [
 /** The breaches the Inbox's fix pull request removes (slice C of dispatch://INFRA-5200): the
  *  Inbox, the Peek drawer and the Answers page - `features/inbox/**`, `features/answers/**`.
  *  That pull request deletes every entry here and leaves the array empty. */
-export const inboxBreaches: readonly KnownLayoutBreach[] = [
-  { route: "inbox", width: 360, kind: "clipped", element: '[data-testid="inbox-list"]', count: 2 },
-  { route: "inbox", width: 900, kind: "clipped", element: '[data-testid="inbox-list"]', count: 2 },
-  { route: "answers", width: 360, kind: "page-scroll", element: '[aria-label="Answered by you"]' },
-  { route: "answers", width: 900, kind: "page-scroll", element: "html" },
-  { route: "answers", width: 1280, kind: "page-scroll", element: "html" },
-  {
-    route: "agents",
-    state: "peek-drawer",
-    width: 360,
-    kind: "clipped",
-    element: '[data-testid="inbox-list"]',
-    count: 2,
-  },
-  {
-    route: "agents",
-    state: "peek-drawer",
-    width: 900,
-    kind: "clipped",
-    element: '[data-testid="inbox-list"]',
-    count: 2,
-  },
-  {
-    route: "agents",
-    state: "peek-drawer",
-    width: 1280,
-    kind: "clipped",
-    element: '[data-testid="inbox-list"]',
-    count: 2,
-  },
-  {
-    route: "agents",
-    state: "peek-drawer",
-    width: 1440,
-    kind: "clipped",
-    element: '[data-testid="inbox-list"]',
-    count: 2,
-  },
-  {
-    route: "agents",
-    state: "peek-drawer",
-    width: 1920,
-    kind: "clipped",
-    element: '[data-testid="inbox-list"]',
-    count: 2,
-  },
-];
+export const inboxBreaches: readonly KnownLayoutBreach[] = [];
 
 /** The breaches the other pages' fix pull request removes (slice D of dispatch://INFRA-5200):
  *  every page and part of one the two arrays above leave out. That pull request deletes every
