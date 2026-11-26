@@ -67,7 +67,8 @@
 # declares the one the script would name it, which --report too leaves out without calling the
 # branch empty; and a branch stacked on it, with an entry of its own
 # with no constant and the same issue key, over a main that took its base branch's entry as a
-# squash, where the refusal names its own entry by the name it would get with that entry gone.
+# squash, where the refusal names its own entry by the name it would get with that entry gone, and
+# over the main of another change's entry file that declares the name both entries would get.
 # After the first branch is converted and its row moved, the stacked branch is refused, the same
 # way, over a main that took the first branch as a squash: over its merge base with that main the
 # stacked branch reads N+1 as its own, and the refusal names the entry file that main holds of it;
@@ -499,6 +500,18 @@ refused "the conversion of a stacked entry with no constant over a main that too
   "entry $k of this branch is $squash_file of $named_squash" \
   "entry $((k + 1)) of this branch declares no constant, and the one this script names it, infra1569Contract, $squash_file of $named_squash declares" \
   -- --base "$named_squash"
+
+step "an entry held by its constant leaves its name to the entries after it"
+# Over the main where another change's entry file declares infra1569Contract, the same stacked
+# branch's entry $k opens no entry file, and the name the script gives it is that file's: so only
+# its constant holds it. The script names $((k + 1)) again with $k gone, infra1569Contract too, and
+# one run refuses both. A run that left $k's name taken would name $((k + 1)) infra15692Contract and
+# refuse $k alone; the run the refusal advises next would name $((k + 1)) infra1569Contract and
+# refuse it then.
+refused "the conversion of a stacked entry with no constant over a main whose entry file declares the name both would get" \
+  "entry $k of this branch declares no constant, and the one this script names it, infra1569Contract, $named_file of $named_main declares" \
+  "entry $((k + 1)) of this branch declares no constant, and the one this script names it, infra1569Contract, $named_file of $named_main declares" \
+  -- --base "$named_main"
 git checkout -q "$branch_stacked"
 cd "$repo"
 
