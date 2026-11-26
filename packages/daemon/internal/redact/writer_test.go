@@ -31,9 +31,9 @@ func TestWriterGivesEachWriteThroughTheURLRule(t *testing.T) {
 		err               error
 	}{
 		{
-			name:  "a write the rule shortens",
+			name:  "a write the rule changes",
 			write: `could not report: Post "https://legion-reader@daemon.example/legion/v1?token=` + planted + `": connection refused` + "\n",
-			want:  `could not report: Post "https://daemon.example/legion/v1": connection refused` + "\n",
+			want:  `could not report: Post "https://` + URLWithCredentials + `/legion/v1": connection refused` + "\n",
 		},
 		{
 			name:  "a write with no URL",
