@@ -598,20 +598,24 @@ func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t 
 // run recorded when it fired, so the row is a hanging command's, missing and in the error, never
 // unanswered; the rows after it, which the ended context leaves unrun, are unanswered.
 //
-// Each end is ordered by a fact, not a time. The context ends once Chromium has written that the
-// SIGTERM reached it (stopped), and Chromium exits once it has seen the release the row writes
-// after the context ended, writing released first. commandTimeout is answerBudget, so the rows
-// before the browser's answer inside it however loaded the machine, and the browser's Chromium,
-// which answers nothing until a signal, is cut there. The one span left is the grace,
-// procgroup.StopGrace, a span of the stop under test: a run whose grace ended before the release
-// reached Chromium ended its stop before the context ended, so it shows nothing of a stop that
-// outlasts the context, and is not judged. Chromium then writes no released. The row runs the
-// check again, within its bound, until a run of the right order comes, and fails naming the runs
-// it made when none comes.
+// commandTimeout is a second, as on main. The order of the two ends is a fact, not a time: the
+// context ends once Chromium has written that the SIGTERM reached it (stopped), and Chromium exits
+// once it has seen the release the row writes after the context ended, writing released first.
+// How late the timeout's stop came is read from Chromium's own marks: it writes started as its
+// first act once its trap is set, so a timeout counted from before that reaches it within its
+// second, and one that reaches it more than lateBy past that second stopped its command late,
+// which fails the run whatever its order. lateBy is main's: its context ended 400 ms past the
+// timeout, counted from Chromium's start, and failed a stop that came after it. The one span this
+// row does not own is its own cancel, which follows Chromium's stopped mark by a poll: a run in
+// which a loaded machine kept this process from it for half of procgroup.StopGrace or more may
+// have had the stop ended by the grace before the context ended, so it shows nothing of a stop
+// that outlasts the context, and is not judged. The row runs the check again, within its bound,
+// until a run of the right order comes, and fails naming the runs it made when none comes.
 func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDeadline(t *testing.T) {
 	was := commandTimeout
-	commandTimeout = answerBudget
+	commandTimeout = time.Second
 	t.Cleanup(func() { commandTimeout = was })
+	const lateBy = 400 * time.Millisecond
 	s := newStubs(t)
 	sleep, err := exec.LookPath("sleep")
 	if err != nil {
@@ -621,8 +625,9 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 	// ends it, the row's cleanup writes held, or this test process is gone, never on a timer of its own.
 	s.install("chromium", "#!/bin/sh\nSLEEP="+shellprefix.Literal(sleep)+"\nOWNER="+strconv.Itoa(os.Getpid())+"\n"+
 		"trap ': >\"$LEGION_TEST_RUN/stopped\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done; : >\"$LEGION_TEST_RUN/released\"; exit 1' TERM\n"+
+		": >\"$LEGION_TEST_RUN/started\"\n"+
 		"while [ ! -e \"$LEGION_TEST_RUN/held\" ] && kill -0 \"$OWNER\" 2>/dev/null; do \"$SLEEP\" 0.01; done\n")
-	watch := testwait.Bounded(t, 2*answerBudget, time.Second)
+	watch := testwait.Bounded(t, answerBudget, time.Second)
 	until := time.Now().Add(testwait.Bounded(t, 3*answerBudget, 2*answerBudget))
 	for runs := 1; ; runs++ {
 		run := filepath.Join(t.TempDir(), strconv.Itoa(runs))
@@ -631,35 +636,53 @@ func TestCheckImageKeepsARowItsOwnTimeoutEndedMissingThoughItsStopOutlastsTheDea
 		}
 		t.Cleanup(func() { _ = os.WriteFile(filepath.Join(run, "held"), nil, 0o644) })
 		ctx, cancel := context.WithCancel(context.Background())
-		stopped := make(chan bool, 1)
+		// cancelled is the moment this row ended the context, or the zero time where Chromium
+		// recorded no SIGTERM within watch, after which the row ends the context all the same.
+		cancelled := make(chan time.Time, 1)
 		go func() {
 			seen := testwait.Holds(watch, testwait.Poll, func() bool {
 				_, err := os.Stat(filepath.Join(run, "stopped"))
 				return err == nil
 			})
 			cancel()
+			at := time.Now()
 			_ = os.WriteFile(filepath.Join(run, "release"), nil, 0o644)
-			stopped <- seen
+			if !seen {
+				at = time.Time{}
+			}
+			cancelled <- at
 		}()
 
 		states, err := CheckImage(ctx, s.image("LEGION_TEST_RUN="+run))
 		ended := ctx.Err() != nil
 
-		if !<-stopped {
+		at := <-cancelled
+		if at.IsZero() {
 			t.Fatalf("run %d: the browser's Chromium recorded no SIGTERM within %s, so its own timeout never stopped it", runs, watch)
 		}
-		if _, statErr := os.Stat(filepath.Join(run, "released")); statErr != nil {
+		stopped, statErr := os.Stat(filepath.Join(run, "stopped"))
+		if statErr != nil {
+			t.Fatal(statErr)
+		}
+		// A Chromium with no started mark had the SIGTERM before its first act, which is no late stop.
+		if started, statErr := os.Stat(filepath.Join(run, "started")); statErr == nil {
+			if took := stopped.ModTime().Sub(started.ModTime()); took > commandTimeout+lateBy {
+				t.Fatalf("run %d: the timeout's SIGTERM reached the browser's Chromium %s after its start, more than its %s timeout and %s: the timeout stopped its command late", runs, took, commandTimeout, lateBy)
+			}
+		}
+		if gap := at.Sub(stopped.ModTime()); gap >= procgroup.StopGrace/2 {
 			if time.Now().Before(until) {
+				t.Logf("run %d is not judged: this row ended the context %s after the SIGTERM reached Chromium, half of the stop's %s grace or more", runs, gap, procgroup.StopGrace)
 				continue
 			}
-			t.Fatalf("no run of the right order in %d runs: in each, the timeout's stop ended before the release the row wrote once the context ended reached Chromium, so no run shows a stop that outlasts the context", runs)
+			t.Fatalf("no run of the right order in %d runs: in each, this row ended the context half of the stop's %s grace or more after the SIGTERM reached Chromium, so no run shows a stop that outlasts the context", runs, procgroup.StopGrace)
 		}
 		if !ended {
 			t.Fatalf("run %d: CheckImage returned before the context ended; the row needs the context to end while the timeout's stop is under way", runs)
 		}
 		got := byName(states)
-		if browser := got[Browser]; browser.Status != StatusMissing || !strings.HasSuffix(browser.Detail, " --version: timed out after "+answerBudget.String()) {
-			t.Fatalf("browser = %+v, want missing, its Chromium timed out after %s", browser, answerBudget)
+		if browser := got[Browser]; browser.Status != StatusMissing || !strings.HasSuffix(browser.Detail, " --version: timed out after "+commandTimeout.String()) {
+			t.Fatalf("browser = %+v, want missing, its Chromium timed out after %s", browser, commandTimeout)
 		}
 		if want := "capability browser is missing: " + got[Browser].Detail; err == nil || err.Error() != want {
 			t.Errorf("CheckImage = %v, want the error %q alone", err, want)
