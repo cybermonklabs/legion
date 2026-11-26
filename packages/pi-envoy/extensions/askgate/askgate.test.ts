@@ -6151,13 +6151,15 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   // Dispatch nothing and the call it lets run makes the round trip. The call runs as Oh My Pi runs
   // it: under bash, in the call's directory, with the environment the gate was given. The fake
   // Dispatch keeps every request it takes, the dry run's and the call's alike, each a process of
-  // its own, so no `fetch` another test file installs in this process reaches them.
+  // its own, so no `fetch` another test file installs in this process reaches them. It answers
+  // behind Dispatch's keyed layer (`keyedLayer`), which names each keyed write's key back, since the
+  // CLI reads a write's 2xx that names no key back as no answer of Dispatch's.
   test("the gate's read of an inline upload asks Dispatch nothing, and the call it lets run makes the round trip", async () => {
     const requests: Array<{ method: string; path: string; body?: unknown }> = [];
     const dispatch = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
-      async fetch(request) {
+      fetch: keyedLayer(async (request: Request) => {
         const route = new URL(request.url).pathname;
         const text = await request.text();
         const body: unknown = text === "" ? undefined : JSON.parse(text);
@@ -6179,7 +6181,7 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
           });
         }
         return new Response("unavailable", { status: 503 });
-      },
+      }),
     });
     try {
       const sessionEnv = { ...gateEnv, DISPATCH_URL: `http://127.0.0.1:${dispatch.port}` };

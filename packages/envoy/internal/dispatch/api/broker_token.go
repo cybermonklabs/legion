@@ -134,17 +134,9 @@ var legionStatusScopes = []string{model.ScopeLegionStatus}
 // person and holds the scope read alone, or a token narrowed to reading because its trade asked
 // for read, which names the person or the service, and the projects, that the same trade would
 // have named without read: an account entry's naming no person among them, narrowed, names its
-// account and writes nothing, as every read-only token does. Its credential is marked read-only
-// (model.Credential.ReadOnly), with the token's cut (model.Credential.Cut), and
-// refuseLimitedToken answers it 403 READ_ONLY_TOKEN on every route outside the read class
-// (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in check, an account
-// entry's write as its account and everything else the route does. While no build answers a read
-// at a past time, it answers one that carries a cut 403 AS_OF_TOKEN_NOT_SERVED on every read but
-// GET /api/v1/whoami. On a read it serves, it is the session it names, reading as that session
-// does.
 // account and writes nothing, as every read-only token does. The broker narrows no job's token.
 // Its credential is marked read-only (model.Credential.ReadOnly), with the token's cut
-// (model.Credential.Cut), and refuseReadOnlyToken answers it 403 READ_ONLY_TOKEN on every route
+// (model.Credential.Cut), and refuseLimitedToken answers it 403 READ_ONLY_TOKEN on every route
 // outside the read class (readClasses) and on GET /ws/live, ahead of the scope gate, the sign-in
 // check, an account entry's write as its account and everything else the route does. While no
 // build answers a read at a past time, it answers one that carries a cut 403

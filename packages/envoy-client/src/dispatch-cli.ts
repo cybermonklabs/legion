@@ -21,11 +21,9 @@ import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
+import { hostedDispatch, hostSession, unhostedDispatch } from "./dispatch-commands/host-session";
 import { printsJson, specCheckResultCommand } from "./dispatch-commands/issues";
 import { loginCommand } from "./dispatch-commands/login";
-import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
-import type { DispatchHost } from "./dispatch-cwd";
-import { hostedDispatch, hostSession, unhostedDispatch } from "./dispatch-commands/host-session";
 import {
   documentBytesRefusal,
   documentFieldRefusal,
@@ -33,12 +31,15 @@ import {
   uploadedFile,
 } from "./dispatch-commands/stored-text";
 import { type DispatchToolName, dispatchCommands } from "./dispatch-commands/table";
+import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
+import type { DispatchHost } from "./dispatch-cwd";
 import {
   checkDispatchCall,
   dispatchServerUrls,
   dryRunAsksDispatch,
   executeDispatchTool,
 } from "./dispatch-execute";
+import { unstorableBytes } from "./dispatch-file-text";
 import {
   AirlockRefusedError,
   AirlockTunnelRefusedError,
@@ -50,7 +51,6 @@ import {
   tokenNotChecked,
   writeOutcomeUnknown,
 } from "./dispatch-http";
-import { unstorableBytes } from "./dispatch-file-text";
 import {
   SESSION_VARIABLES,
   sessionDirectory,
