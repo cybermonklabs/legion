@@ -168,7 +168,10 @@
  *      route the run's label's Dispatch gives the `person` scope, which the world's shared agent
  *      token does not hold, and its agents' client calls, read out of the routes table and the
  *      client of the commit the run's built-from records, rebuilt as rule 2 rebuilds it
- *      (person-routes.ts's `labelPersonRoutes`). A run with a 403 whose label's routes cannot be
+ *      (person-routes.ts's `labelPersonRoutes`), or it is a 400 to the record of a result that the
+ *      agent's own transcript shows as RESULT_INPUT, the answer production's Dispatch gives that
+ *      input too (a commit short of 40 hex characters), where the agent's next record of that
+ *      result was taken (`correctedInput`). A run with a 403 whose label's routes cannot be
  *      read so is unhealthy. A request is the agent's whose daemon stand-in opened last before the
  *      request began (`agentBoots`); a run with no such log is unhealthy. It is read right after
  *      rule 7;
@@ -1211,9 +1214,10 @@ function personDeclared(run: Run): PersonDeclared {
 /** The error answers of Dispatch each scenario provokes on purpose, or that a correct agent meets
  * in it, by the role that meets them, each `<method> <path> <status>` with `{<name>}` for a path
  * segment of any value; every other error answer of the run's Dispatch to an agent but a 403
- * `personDeclared` declares is unhealthy (rule 16). The server's line keeps the status of an answer
- * and not the code its body carried, so a declaration names a path whose status says which answer
- * it was. Declared: HANDOFF_NOT_FOUND for the newest `review` handoff, for the reviewer of
+ * `personDeclared` declares and a 400 `correctedInput` takes is unhealthy (rule 16). The server's
+ * line keeps the status of an answer and not the code its body carried, so a declaration names a
+ * path whose status says which answer it was. Declared: HANDOFF_NOT_FOUND for the newest `review`
+ * handoff, for the reviewer of
  * reviewer-text-findings: its world records no review before the reviewer writes its own, and the
  * reviewer reads that phase first, as the skill has it, and at a completion made before its own
  * write, which the plugin reads it for.
@@ -1353,13 +1357,20 @@ export function unfinished(run: Pick<Run, "dir" | "scenario" | "label">): string
   return undefined;
 }
 
+/** One boot of an agent of the run (`agentBoots`): when its daemon stand-in opened, and its role,
+ * undefined for a boot past the roles the run's boot record boots. */
+interface AgentBoot {
+  readonly at: number;
+  readonly role: string | undefined;
+}
+
 /** When each agent of the run was booted, in order, with its role: the opening line each daemon
  * stand-in writes to <run>/daemon.log when it starts listening (daemon-standin.ts). rig.sh's
  * worker_boot starts a stand-in of its own before it launches each agent and stops it once that
  * agent has exited, keeping it for a relaunch (boot_agent), so the k-th opening line is the boot
  * of the k-th role the run's boot record boots (`bootDecisions`); a boot past those, or any boot
  * of a run with no record, has no role. */
-function agentBoots(run: Run): { readonly at: number; readonly role: string | undefined }[] {
+function agentBoots(run: Run): AgentBoot[] {
   const file = path.join(run.dir, DAEMON_LOG);
   if (!existsSync(file)) return [];
   const roles = (bootDecisions(run.dir) ?? [])
@@ -1375,10 +1386,113 @@ function agentBoots(run: Run): { readonly at: number; readonly role: string | un
     .map((at, index) => ({ at, role: roles[index] }));
 }
 
+/** When a request of the run's Dispatch log began: its line's time, which the server writes as the
+ * request ends, less its elapsed time. */
+function beganAt(request: DispatchRequest): number {
+  return Date.parse(request.time) - request.elapsed_ms;
+}
+
+/** Dispatch's 400 to the record of a result, the route `dispatch result` posts a check's result to
+ * (envoy-client's dispatch-commands/api.ts): RESULT_INPUT for a field outside its bounds, a commit
+ * that is not 40 lowercase hex among them, which production's Dispatch answers the same input
+ * (packages/envoy/internal/dispatch/api/results.go, `checkResultInput.refusal`), and
+ * UNKNOWN_CHECK, RESULT_CONTRADICTS and RESULT_COMMIT_UNKNOWN among the others. The server's line
+ * keeps the status and not the code, so which one it was is read off the agent's transcript
+ * (`correctedInput`). */
+const RESULT_REFUSED = "POST /api/v1/issues/{key}/results 400";
+/** The code of Dispatch's refusal of a result's field outside its bounds, in a `dispatch result`'s
+ * output: the CLI prints a refusal as `<code>: <message>` (envoy-client's errors.ts). */
+const RESULT_INPUT = /\bRESULT_INPUT\b/;
+/** A Dispatch issue key, which the CLI reads as a command's `--issue` when it is the command's
+ * first argument (envoy-client's dispatch-command.ts, ISSUE_KEY). */
+const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
+
+/** The issue and the check of each record of a result a `bash` call's command makes: each
+ * `dispatch result` command of it, read at a command's place as `bashHosts` reads one (a quoted
+ * string's text and a here-document's body hold none), that names its issue, by a bare key as its
+ * first argument or by `--issue`, and its check, by `--check`, each `--flag value` or
+ * `--flag=value` as the CLI reads them (envoy-client's dispatch-command.ts), and gives neither
+ * `--dry-run`, which posts to the dry run's route, nor `--help`, which posts nothing. */
+function resultRecords(call: Call): { issue: string; check: string }[] {
+  if (call.tool !== "bash") return [];
+  const { code } = withoutBodies(stringArg(call.args, "command") ?? "");
+  return commandsOf(spokenOf(code)).flatMap((one) => {
+    const invoked = invocationOf(one);
+    if (invoked?.name !== "dispatch" || invoked.words[0] !== "result") return [];
+    const words = invoked.words.slice(1);
+    if (words.includes("--dry-run") || words.includes("--help")) return [];
+    const value = (flag: string) => {
+      const at = words.findIndex((given) => given === flag || given.startsWith(`${flag}=`));
+      const word = words[at];
+      return word === flag ? words[at + 1] : word?.slice(flag.length + 1);
+    };
+    const issue = ISSUE_KEY.test(words[0] ?? "") ? words[0] : value("--issue");
+    const check = value("--check");
+    return issue === undefined || check === undefined ? [] : [{ issue, check }];
+  });
+}
+
+/** Whether `refused`, a request of `requests` (the run's Dispatch log's, in order) that is a 400 to
+ * the record of a result (RESULT_REFUSED), made by the agent `boot` of `boots` booted, is
+ * RESULT_INPUT that the agent corrected, an answer production's Dispatch gives the same input (the
+ * architect's ruling of 2026-11-26T02:21Z): the agent's own transcript (its session's own `.jsonl`,
+ * in sessions/ for the run's first role and in sessions/<role>/ for a later one, never a
+ * subagent's) shows that record refused with that code, and the agent's next record of that
+ * result was taken. A request is matched to the call that made it by its issue and by time: the
+ * call is the agent's last `bash` call recording a result of the issue the request's path names
+ * (`resultRecords`) that was made at or before the request began, and no request to that route
+ * and issue began between the call and the request. That call holds that one record, and its
+ * result's text names RESULT_INPUT. The next request of the log to that route and issue is the
+ * agent's (made after its boot and before the next) and answered 2xx, and the agent's next call
+ * recording a result of that issue holds one record, of the same check, made at or before that
+ * request began. A 400 the transcript shows as UNKNOWN_CHECK (a world that lost its check), or
+ * as no code, or one the agent never recorded again, is none. */
+function correctedInput(
+  run: Run,
+  boots: readonly AgentBoot[],
+  boot: AgentBoot,
+  requests: readonly DispatchRequest[],
+  refused: DispatchRequest
+): boolean {
+  if (boot.role === undefined) return false;
+  const issue = refused.path.split("/")[4];
+  const sessions = boots.indexOf(boot) === 0 ? "sessions" : path.join("sessions", boot.role);
+  const writes = run.calls
+    .map((call, index) => ({ call, index, records: resultRecords(call) }))
+    .filter(
+      ({ call, records }) =>
+        path.dirname(call.file) === sessions && records.some((one) => one.issue === issue)
+    )
+    .sort((a, b) => a.call.at - b.call.at || a.index - b.index);
+  const made = writes.findLastIndex(({ call }) => call.at <= beganAt(refused));
+  const [refusal, retry] = [writes[made], writes[made + 1]];
+  const same = (request: DispatchRequest) =>
+    request.method === refused.method && request.path === refused.path;
+  const at = requests.indexOf(refused);
+  const before = requests.slice(0, at).findLast(same);
+  const again = requests.slice(at + 1).find(same);
+  return (
+    refusal !== undefined &&
+    refusal.records.length === 1 &&
+    RESULT_INPUT.test(refusal.call.result ?? "") &&
+    (before === undefined || beganAt(before) < refusal.call.at) &&
+    again !== undefined &&
+    again.status >= 200 &&
+    again.status < 300 &&
+    boots.findLast((one) => one.at <= beganAt(again)) === boot &&
+    retry !== undefined &&
+    retry.records.length === 1 &&
+    retry.records[0]?.check === refusal.records[0]?.check &&
+    retry.call.at <= beganAt(again)
+  );
+}
+
 /** Rule 16: the first request of the run's Dispatch log (DISPATCH_LOG) that the server answered
  * with an error, 4xx or 5xx, which neither DISPATCH_DECLARED for the scenario and the role of the
- * agent that made it nor, for a 403, the run's own label (`personDeclared`) declares: the agent
- * booted last before the request began, its line's time less its elapsed time (`agentBoots`).
+ * agent that made it nor, for a 403, the run's own label (`personDeclared`) declares, and which is
+ * no 400 to the record of a result that the agent's own transcript shows as RESULT_INPUT and that
+ * the agent's next record of that result corrected (`correctedInput`): the agent booted last
+ * before the request began, its line's time less its elapsed time (`agentBoots`).
  * rig.sh runs the agents one after another and seeds the world before the first and reads it back
  * after the last with seed.ts, which takes no answer that is not 2xx, so every error answer
  * between two boots is that agent's, its plugins' included. One before the first boot, or after a
@@ -1393,19 +1507,26 @@ function dispatchUndeclared(run: Run): string | undefined {
   if (!existsSync(file))
     return `no Dispatch record: the run has no <run>/${DISPATCH_LOG}, so whether its Dispatch refused a call of its agents is unknown`;
   const boots = agentBoots(run);
+  const lines = readFileSync(file, "utf8")
+    .split("\n")
+    .flatMap((line, index) => {
+      const attributes = slogAttributes(line);
+      return attributes.get("msg") === REQUEST_MESSAGE
+        ? [{ index, parsed: DispatchRequest.safeParse(Object.fromEntries(attributes)) }]
+        : [];
+    });
+  // The requests `correctedInput` reads around a result's record. A line that is no request's
+  // makes the run unhealthy where the loop reaches it, as before.
+  const requests = lines.flatMap(({ parsed }) => (parsed.success ? [parsed.data] : []));
   let person: PersonDeclared | undefined;
-  for (const [index, line] of readFileSync(file, "utf8").split("\n").entries()) {
-    const attributes = slogAttributes(line);
-    if (attributes.get("msg") !== REQUEST_MESSAGE) continue;
-    const parsed = DispatchRequest.safeParse(Object.fromEntries(attributes));
+  for (const { index, parsed } of lines) {
     if (!parsed.success)
       throw new Error(
         `${DISPATCH_LOG}:${index + 1} is no request line of Dispatch's: ${parsed.error.message}`
       );
     const request = parsed.data;
     if (request.status < 400) continue;
-    const began = Date.parse(request.time) - request.elapsed_ms;
-    const boot = boots.findLast((one) => one.at <= began);
+    const boot = boots.findLast((one) => one.at <= beganAt(request));
     const role = boot?.role;
     const declared = role === undefined ? [] : (DISPATCH_DECLARED[run.scenario]?.[role] ?? []);
     if (declared.some((answer) => declares(answer, request))) continue;
@@ -1416,6 +1537,12 @@ function dispatchUndeclared(run: Run): string | undefined {
         return `dispatch refusal unknown: ${call} of the ${role}, answered 403, and which routes the ${run.label} label's Dispatch gives the person scope that its agents' client calls cannot be read: ${person.unknown}`;
       if (person.some((answer) => declares(answer, request))) continue;
     }
+    if (
+      boot !== undefined &&
+      declares(RESULT_REFUSED, request) &&
+      correctedInput(run, boots, boot, requests, request)
+    )
+      continue;
     if (boot?.role === undefined)
       return `dispatch refusal: ${call}, made ${boot === undefined ? "before the run's first agent was booted" : `after boot ${boots.indexOf(boot) + 1} of the run, past the roles its boot record boots`}, answered ${request.status}, which no role's declaration takes`;
     return `dispatch refusal: ${call} of the ${boot.role}, answered ${request.status}, which ${run.scenario} does not declare for that role`;

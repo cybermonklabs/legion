@@ -834,13 +834,20 @@ every route and answer the world models: one the gh stand-in recorded as answere
 catch-all write route (`^gh api `) answered a success that changed nothing, which filed no review
 thread comment and was no review submit; no request of an agent that the run's own Dispatch server
 answered with an error, 4xx or 5xx, by the server's own line of it in `<run>/logs/dispatch.log`,
-unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario and the agent's role
+unless `health.ts`'s `DISPATCH_DECLARED` declares that answer for the scenario and the agent's role,
 or it is Dispatch's 403 `OAUTH_SCOPE_REQUIRED` to a route the run's label's Dispatch gives the
 `person` scope (`routes_table.go`'s `routeScopes`) and its agents' client calls
 (`dispatch-http.ts`), which production gives every session of the shared agent token, declared
 for every agent and read out of the run's own commit by `person-routes.ts`'s `labelPersonRoutes`,
 so `dispatch send-to-agent`, `dispatch inbox` and `dispatch review` among them and any such route
-main adds; a 403 of a run whose label's routes cannot be read so is unhealthy (the agent booted
+main adds, or it is a 400 to `POST /api/v1/issues/{key}/results` that the agent's own transcript
+shows as `RESULT_INPUT`, which production's Dispatch answers the same input (a commit short of 40
+hex characters), and whose next record of that result Dispatch took (`correctedInput`: the agent's
+last `dispatch result` of that issue before the request, the one that made it, has a result
+naming that code, and the next request to that route and issue is the agent's, answered 2xx, after
+its next `dispatch result` of that issue, for the same check; a 400 its transcript shows as
+`UNKNOWN_CHECK`, or as no code, or one never recorded again is unhealthy); a 403 of a run whose
+label's routes cannot be read so is unhealthy (the agent booted
 last before the request began, by the opening line each daemon stand-in writes before its agent
 starts; `HANDOFF_NOT_FOUND` for the `review` handoff is declared for reviewer-text-findings'
 reviewer; a run
