@@ -177,9 +177,10 @@ func TestKnownSessionsCountsEachKindOfRecordOnItsOwn(t *testing.T) {
 	}
 }
 
-// The whole batch is one statement, however many ids it names: the identity is read on the
-// untraced pool, so what is counted is the route's own work.
-func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
+// The whole batch stays one statement, however many ids it names. The first statement resolves
+// the caller's viewer before that query, so the read makes two round trips. The identity is read
+// on the untraced pool, so neither count includes the request's sign-in lookup.
+func TestKnownSessionsReadsTheWholeBatchInTwoStatementsTheFirstItsViewer(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	knownSessionsFixture(t, database)
@@ -205,8 +206,9 @@ func TestKnownSessionsReadsTheWholeBatchInOneStatement(t *testing.T) {
 	if got := decodeBody[knownSessions](t, response).Sessions; len(got) != 4 {
 		t.Fatalf("known sessions = %s, want the four with a record", knownSessionsText(got))
 	}
-	if len(counted) != 1 {
-		t.Fatalf("asking about %d sessions made %d round trips, want one:\n%s",
+	requireViewerResolvedFirst(t, "the known-sessions read", counted)
+	if len(counted) != 2 {
+		t.Fatalf("asking about %d sessions made %d round trips, want 2, the first its viewer:\n%s",
 			len(ids), len(counted), strings.Join(roundTripLines(counted), "\n"))
 	}
 }
