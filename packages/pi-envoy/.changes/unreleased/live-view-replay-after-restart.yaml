@@ -8,3 +8,5 @@ body: |-
   person's Send still tagged with its Dispatch message. One of the plugin's own notices also shows
   once in the live view, where it showed twice.
 time: 2026-11-26T19:29:38Z
+custom:
+    Issue: pr5752
