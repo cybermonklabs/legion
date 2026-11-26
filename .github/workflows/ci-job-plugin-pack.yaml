@@ -249,8 +249,8 @@ jobs:
           consts: |
             packages/daemon/internal/testnats/nats.go Image
 
-      # The settings the service's command: line asks for, read back from the server; why each one
-      # is .github/scripts/postgres-service-settings.sh's header.
+      # The settings the service's command: line asks for, read back from the server.
+      # .github/scripts/postgres-service-settings.sh's header says why each one is set.
       - name: Read the service's settings back
         timeout-minutes: 2
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
