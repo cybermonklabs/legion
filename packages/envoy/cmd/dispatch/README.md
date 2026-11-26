@@ -5400,7 +5400,7 @@ Each item below names a path with its method and identity, then its purpose.
   `resolved_repo`, an inherited component attachment, the architecture tree's owner and `legion_managed_status` read only the ancestors in the issue's own project, so such an issue takes its own project's default repository, and a create that names no assignee and acts for no person lands on its own project's default assignee rather than the parent's.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   A priority of `0` needs the `p0` scope: without it the create is `403 OAUTH_SCOPE_REQUIRED` naming `p0`, before the duplicate check, and it writes nothing.
-  Priorities `1` to `3`, or none, need no scope, and an inherited priority is none of the new issue's own.
+  Priorities `1` to `3`, or none, need no scope; an inherited priority is not the new issue's own.
   A create from a reference that Dispatch already imported answers that issue and sets no priority.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
