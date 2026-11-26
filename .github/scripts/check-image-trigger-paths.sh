@@ -822,6 +822,7 @@ NON_BUILDING_ACTIONS = {
     "actions/cache/save",
     "actions/checkout",
     "actions/configure-pages",
+    "actions/create-github-app-token",
     "actions/deploy-pages",
     "actions/download-artifact",
     "actions/setup-go",
