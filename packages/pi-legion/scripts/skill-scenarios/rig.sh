@@ -2647,13 +2647,13 @@ fix_prompt() {
     fail "rig-world.json names no CI job of fix-judge-$1"
   own=$(beside_branch implementer)
   prefix=${own%implementer}
-  take="jj -R $(shell_word "$dir") git fetch --remote origin --branch $(shell_word "$prefix*"), then jj -R $(shell_word "$dir") duplicate $(shell_word "(::remote_bookmarks(glob:\"$prefix*\", exact:\"origin\") ~ ::remote_bookmarks(exact:\"$own\", exact:\"origin\")) ~ ::remote_bookmarks(exact:\"$branch\", exact:\"origin\")") --insert-before $(shell_word @)"
+  take="jj -R $(shell_word "$dir") git fetch --remote origin --branch $(shell_word "$branch") --branch $(shell_word "$prefix*"), then jj -R $(shell_word "$dir") rebase -b $(shell_word @) --onto $(shell_word "heads((::@ | remote_bookmarks(glob:\"$prefix*\", exact:\"origin\") | remote_bookmarks(exact:\"$branch\", exact:\"origin\")) & ::(remote_bookmarks(glob:\"*\", exact:\"origin\") ~ remote_bookmarks(exact:\"$own\", exact:\"origin\")))"), then jj -R $(shell_word "$dir") duplicate $(shell_word '@ & merges() & description(exact:"")') --insert-before $(shell_word @), then jj -R $(shell_word "$dir") describe -r $(shell_word '@- & merges() & description(exact:"")') -m $(shell_word 'merge: the work of the steps beside the fix')"
   {
     printf 'Continue %s. Issue: %s. Phase: implementing. Working copy: branch %s, directory %s.' "$title" "$worker_key" "$branch" "$dir"
     printf ' This is a fix: check k-ci failed at %s (CI job %s ended failure, page https://github.com/%s/actions/runs/%s/job/%s).' "$head" "$job" "$worker_repo" "$run" "$check"
     printf ' Push only from this working copy. Until your fix ends, push your commits only to your own branch %s, never to the branch of the task: run jj -R %s bookmark set %s -r @-, then jj -R %s git push --remote origin --bookmark %s.' "$own" "$dir" "$own" "$dir" "$own"
-    printf ' When your fix ends, push it to the branch of the task once, then complete. Before that push, fetch the branch of the task and rebase your own commits onto its head where it moved, and take the commits of the steps beside you: %s.' "$take"
-    printf ' That copies under your working copy each commit of their branches that the branch of the task does not hold; never rebase or rewrite one, since another working copy may stand on it. A commit that a step names by its id and could not push is in this clone by that id: copy it the same way, with jj duplicate <commit> --insert-before @.'
+    printf ' When your fix ends, push it to the branch of the task once, then complete. Before that push, take the commits of the steps beside you and the head of the branch of the task where it moved: %s.' "$take"
+    printf ' That puts their commits under yours as they are and rebases only yours, and a run of it again changes nothing; never rebase or rewrite one of their commits, since another working copy may stand on it. A commit that a step names by its id and could not push is in this clone by that id: copy it under your working copy once, with jj duplicate <commit> --insert-before @.'
     default_steps 1 implementer
     printf ' Pull request: #702.'
     default_task_text
