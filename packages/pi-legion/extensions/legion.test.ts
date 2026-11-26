@@ -5737,10 +5737,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   });
 
   // A claim 503 can also answer a claim that landed and stands, whose handover of the session it
-  // replaces is not recorded yet: the listener names it by the code `handover_unrecorded`, and a
-  // listener of the build before that code sends the same 503 with none, its text beginning "the
-  // claim landed, but". The controller then holds its role, and its waiting line says so; any
-  // other claim 503 wrote nothing, and its line says the controller holds no Envoy role yet.
+  // replaces is not recorded yet: the listener names it by the code `handover_unrecorded`. The
+  // controller then holds its role, and its waiting line says so; any other claim 503 wrote
+  // nothing, and its line says the controller holds no Envoy role yet.
   const handoverText =
     "the claim landed, but the handover record of the session it replaces did not store, so claim again";
   const holdsRole =
@@ -5751,12 +5750,6 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       "the handover 503",
       "ses_controller_handover_coded",
       { error: handoverText, code: "handover_unrecorded" },
-      holdsRole,
-    ],
-    [
-      "the handover 503 of a listener before its code",
-      "ses_controller_handover_uncoded",
-      { error: handoverText },
       holdsRole,
     ],
     [

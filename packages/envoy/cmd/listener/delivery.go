@@ -90,7 +90,8 @@ type listenerDeliveryHandlerConfig struct {
 	sessions     *session.SessionRegistry
 	// known is the known-session store a handover pass reads both sessions' last registrations
 	// from (handoverStands), the store listenerDeps.known is; nil on a listener with no store,
-	// whose handover passes copy nothing, and in a test config that runs no handover record.
+	// whose handover passes copy nothing and end at their first judge, as on a store whose bucket
+	// is not open, and in a test config that runs no handover record.
 	known             *session.KnownSessions
 	machineID         string
 	dedupeCache       *dedupe.Cache

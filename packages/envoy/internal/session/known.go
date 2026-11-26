@@ -763,13 +763,13 @@ func (s *KnownSessions) eachMatch(topic string, visit func(KnownSession)) {
 // RecordWithin ignores the record's Principal and PrincipalRecorded, and writes the ones the
 // bucket holds: the routes that write here - an interest change, a role claim's narrowing of the
 // session it took the role from - are no registration and know no principal, which is a
-// registration's alone to write, fenced on its admission (RecordRegistrationWithin). The keep reads
-// the record from the bucket's stream leader and writes over that very revision (a
-// compare-and-swap), so a registration another listener wrote a moment before - which this
-// listener's copy may not hold yet - is never written back over with the principal it replaced; a
-// write another one beat reads the leader again, up to knownKeepAttempts times. A leader read that
-// did not answer writes nothing and is the error: the principal this listener's copy names can be
-// one a later registration replaced, and no write may put it back.
+// registration's alone to write, fenced on its admission (RecordRegistrationWithin). A write that
+// keeps the stored principal reads the record from the bucket's stream leader and writes over that
+// very revision (a compare-and-swap), so a registration another listener wrote a moment before -
+// which this listener's copy may not hold yet - is never written back over with the principal it
+// replaced; a write another one beat reads the leader again, up to knownKeepAttempts times. A
+// leader read that did not answer writes nothing and is the error: the principal this listener's
+// copy names can be one a later registration replaced, and no write may put it back.
 //
 // A record whose encoding is past one NATS message is written in chunks and a manifest naming
 // them (kvchunk.Write), and the chunks of the record it replaces, as this listener's copy holds
@@ -786,9 +786,9 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // RecordWithin's skip of an unchanged record younger than the refresh age; TouchWithin passes
 // false, since a clean stop is one write per session lifetime and the whole point of it is to move
 // last_seen. admission is a registration's (RecordRegistrationWithin), whose write is fenced on
-// it and records the record's principal; every other write passes nil, and keeps the principal the
-// bucket holds, whatever principal the record carries (RecordWithin, TouchWithin), so no write but
-// a registration's ever writes a principal.
+// it and records the record's principal; every other write passes nil, a write that keeps the
+// stored principal: the principal the bucket holds, whatever principal the record carries
+// (RecordWithin, TouchWithin), so no write but a registration's ever writes a principal.
 //
 // A write that keeps the stored principal skips an unchanged record on this listener's copy
 // alone, since it changes no principal. A registration's skip is confirmed by its admission,
@@ -801,10 +801,10 @@ func (s *KnownSessions) RecordWithin(ctx context.Context, record KnownSession) e
 // answer for, is the registration's compare-and-swap write instead.
 //
 // A registration's write is one compare-and-swap at its admission's revision: a write another one
-// beat writes nothing and is ErrPrincipalUnrecorded (RecordRegistrationWithin). The keep reads
-// the record from the bucket's leader, writes the principal the leader holds over that very
-// revision, and reads the leader again after a write another one beat, up to knownKeepAttempts
-// times.
+// beat writes nothing and is ErrPrincipalUnrecorded (RecordRegistrationWithin). A write that keeps
+// the stored principal reads the record from the bucket's leader, writes the principal the leader
+// holds over that very revision, and reads the leader again after a write another one beat, up to
+// knownKeepAttempts times.
 //
 // No caller but the registration route fails its request over what this answers: a subscription
 // change (RecordWithin) and a clean stop (TouchWithin) each answer whatever the write did, and the
@@ -816,9 +816,8 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 	if watcher == nil || record.SessionID == "" {
 		return nil
 	}
-	keep := admission == nil
 	held, ok := s.cached(record.SessionID)
-	if keep && ok {
+	if admission == nil && ok {
 		record.Principal, record.PrincipalRecorded = held.Principal, held.PrincipalRecorded
 	}
 	now := s.now()
@@ -839,7 +838,7 @@ func (s *KnownSessions) writeWithin(ctx context.Context, record KnownSession, th
 		if err != nil {
 			return err
 		}
-		if bytes.Equal(buf, stored) && (keep || (admission != nil && admission.holds && s.leaderAt(ctx, watcher, record.SessionID, admission.revision))) {
+		if bytes.Equal(buf, stored) && (admission == nil || (admission.holds && s.leaderAt(ctx, watcher, record.SessionID, admission.revision))) {
 			return nil
 		}
 	}
@@ -921,9 +920,9 @@ func (s *KnownSessions) writeRecord(ctx context.Context, watcher *kvwatch.Watche
 	return written, nil
 }
 
-// knownKeepAttempts bounds the keep's writes over the revision the bucket's leader held
-// (writeWithin) when another write of the record lands between each one's read of the leader and
-// its own write.
+// knownKeepAttempts bounds the writes over the revision the bucket's leader held that a write which
+// keeps the stored principal makes (writeWithin) when another write of the record lands between
+// each one's read of the leader and its own write.
 const knownKeepAttempts = 3
 
 // TouchWithin moves sessionID's record to now, keeping its content, which is what a clean stop

@@ -232,12 +232,13 @@ func TestTheSuccessorsRouteNamesThePrincipalToDispatchAlone(t *testing.T) {
 }
 
 // A listener whose known-session bucket is not open can read no principal any session registered
-// as, and no retry changes that until its grant covers the bucket, so its successors route names no
-// successor, 200 with the empty list, as its claim route refuses every handover: Dispatch then
-// refuses another session's reply 403 at once, as it did before successors, where a 503 would have
-// it answer ENVOY_UNAVAILABLE to every such reply for as long as the bucket stays shut. The case
-// fails where the route answers that read 503; the control is the same read through the store
-// whose bucket is open, which names the successor.
+// as until an attempt of its own store's opens the bucket, which on a listener whose grant does not
+// carry it is not before the grant does, so its successors route names no successor, 200 with the
+// empty list, as its claim route refuses every handover: Dispatch then refuses another session's
+// reply 403 at once, as it did before successors, where a 503 would have it answer
+// ENVOY_UNAVAILABLE to every such reply for as long as the bucket stays shut. The case fails where
+// the route answers that read 503; the control is the same read through the store whose bucket is
+// open, which names the successor.
 func TestTheSuccessorsRouteNamesNoneWhileTheKnownSessionBucketIsNotOpen(t *testing.T) {
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)

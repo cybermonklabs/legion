@@ -371,29 +371,22 @@ function claimAnswered503With(body: Record<string, string>): EnvoyApiError {
 }
 
 // The one claim 503 that is no claim holding nothing: the claim landed and stands, and only the
-// handover of the session it replaces is not recorded. The listener names it by its code; one of
-// the build before that code sends the same 503 with none, whose text begins as below. Every other
-// claim 503 wrote nothing, and each wait's log line hands the caller the 503 to tell them apart.
+// handover of the session it replaces is not recorded. The listener names it by its code alone:
+// the same text with no code, or with another code, reads as a claim 503 that wrote nothing. Each
+// wait's log line hands the caller the 503 to tell them apart.
 test("a claim 503 whose claim stands is told from one that wrote nothing, and each wait hands its 503 to the log", async () => {
-  const handover = claimAnswered503With({
-    error:
-      "the claim landed, but the handover record of the session it replaces did not store, so claim again",
-    code: "handover_unrecorded",
-  });
-  const previousBuild = claimAnswered503With({
-    error:
-      "the claim landed, but whether this claim may hand over the messages of the session it replaces could not be read, so claim again",
-  });
+  const handoverText =
+    "the claim landed, but the handover record of the session it replaces did not store, so claim again";
+  const handover = claimAnswered503With({ error: handoverText, code: "handover_unrecorded" });
   expect(claimStandsWithoutHandover(handover)).toBe(true);
-  expect(claimStandsWithoutHandover(previousBuild)).toBe(true);
   expect(claimStandsWithoutHandover(claimAnswered503())).toBe(false);
-  // A code names its 503 by itself: any code but the handover's is not this one, whatever the text.
+  // The code names its 503 by itself: the handover's text with no code, or with any other code,
+  // is not this one.
+  expect(claimStandsWithoutHandover(claimAnswered503With({ error: handoverText }))).toBe(false);
   expect(
-    claimStandsWithoutHandover(
-      claimAnswered503With({ error: "the claim landed, but ...", code: "another_code" })
-    )
+    claimStandsWithoutHandover(claimAnswered503With({ error: handoverText, code: "another_code" }))
   ).toBe(false);
-  expect(claimStandsWithoutHandover(new Error("the claim landed, but nothing else"))).toBe(false);
+  expect(claimStandsWithoutHandover(new Error(handoverText))).toBe(false);
 
   const handed: unknown[] = [];
   let tries = 0;

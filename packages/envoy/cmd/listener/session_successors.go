@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -44,10 +43,15 @@ const sessionSuccessorsPattern = "/v1/sessions/{session}/successors"
 // The read runs within sendRequestBudget of the request's own context, as the registry route's
 // does, and one that did not answer is the bus-unavailable 503 with Retry-After: 1
 // (writeBusUnavailable). A listener whose known-session bucket is not open can read no principal
-// any session registered as, and stays so until its grant covers the bucket, so it names no
-// successor, as the claim route refuses every handover there (knownBucketNotOpenRefusal): a
-// retry would read nothing more. The route reads another session's records by design, so a broker
-// token is not narrowed to its own session here, as the registry route's read is not.
+// any session registered as, so it names no successor, as the claim route refuses every handover
+// there (knownBucketNotOpenRefusal), and answers 200 rather than 503: the bucket opens only once
+// an attempt of the store's own succeeds (session.KnownSessions, attempts at most 5 minutes
+// apart), which on a listener whose NATS grant does not carry the bucket is not before the grant
+// does, and Dispatch would answer every successor's reply 503 for as long as that lasts. So a
+// successor's reply Dispatch reads this for in the window before an attempt opens the bucket is
+// refused 403, which its sender does not retry. The route reads another session's records by
+// design, so a broker token is not narrowed to its own session here, as the registry route's read
+// is not.
 //
 // An edge listener reads the records too: its grant (natsgrant.Edge) keeps the stream's
 // STREAM.INFO, though it publishes no takeover lane and so writes no record of its own; the
@@ -96,16 +100,13 @@ func sessionSuccessorsHandler(d *listenerDeps) http.HandlerFunc {
 // principal, the rule each record was written under (handoverRefusal); one that does not is not
 // named, nor is any session only it leads to. Each session is read once, so a chain that comes
 // back round ends there. A sessionID whose principal nobody recorded, or the bucket holds no
-// record of, has none, and so has every session on a listener with no known-session store, or
-// whose known-session bucket is not open (session.ErrKnownSessionsUnavailable). A read that did
-// not answer - one the request's budget ended before the whole chain was read among them - is the
+// record of, has none, and so has every session on a listener whose known-session store cannot
+// answer (principalUnavailable: its bucket is not open, or it has no store). A read that did not
+// answer - one the request's budget ended before the whole chain was read among them - is the
 // error, never a list that names part of the chain.
 func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.KnownSessions, sessionID string) (string, []string, error) {
-	principal, recorded, err := recordedPrincipal(ctx, known, sessionID)
-	if errors.Is(err, session.ErrKnownSessionsUnavailable) {
-		return "", []string{}, nil
-	}
-	if err != nil || !recorded {
+	principal, state, err := recordedPrincipal(ctx, known, sessionID)
+	if err != nil || state != principalRecorded {
 		return "", []string{}, err
 	}
 	named := map[string]bool{sessionID: true}
@@ -122,11 +123,11 @@ func handoverSuccessors(ctx context.Context, client *bus.Client, known *session.
 					continue
 				}
 				named[successor] = true
-				other, recorded, err := recordedPrincipal(ctx, known, successor)
+				other, state, err := recordedPrincipal(ctx, known, successor)
 				if err != nil {
 					return "", nil, err
 				}
-				if recorded && other == principal {
+				if state == principalRecorded && other == principal {
 					successors = append(successors, successor)
 					next = append(next, successor)
 				}

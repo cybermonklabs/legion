@@ -452,16 +452,20 @@ func TestKnownSessionsWriteNoPrincipalTheLeaderDidNotConfirm(t *testing.T) {
 
 // A registration through a store whose bucket is not open writes nothing, while the bucket another
 // listener's store opened goes on naming the principal the session registered as before. Such a
-// store can read and write nothing until its grant covers the bucket, which no retry changes, so
-// its admission and its write answer ErrKnownSessionsUnavailable and not ErrPrincipalUnrecorded:
-// the registration route admits that registration with no principal recorded and a warning, where
-// a 503 would refuse every registration and heartbeat on the listener, and the claim route refuses
-// every handover while the bucket is shut (cmd/listener's handoverRefusal). The store that is not
-// open is the one a listener whose NATS user may not open the bucket holds
-// (TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives). The cases fail where such a
-// store answers a registration nil, as it answers every other write, or ErrPrincipalUnrecorded,
-// the route's 503. The controls are the same registration through the open store, which records
-// its principal and answers nil; the writes through the store that is not open that are no
+// store can read and write nothing until an attempt of its own opens the bucket, which on a
+// listener whose grant does not carry it is not before the grant does, so its admission and its
+// write answer ErrKnownSessionsUnavailable and not ErrPrincipalUnrecorded: the registration route
+// admits that registration with no principal recorded and a warning, where a 503 would refuse
+// every registration and heartbeat on the listener, and the claim route refuses every handover
+// while the bucket is shut (cmd/listener's handoverRefusal). The admission keeps that state
+// (Admission.notOpen), so the write of a registration admitted while the bucket was not open
+// writes nothing even through a store whose bucket opened since: the case that writes it through
+// the open store stands for that. The store that is not open is the one a listener whose NATS
+// user may not open the bucket holds (TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives).
+// The cases fail where such a registration answers nil, as the store answers every other write,
+// or ErrPrincipalUnrecorded, the route's 503, or where its write records its principal. The
+// controls are the same registration through the open store, admitted there, which records its
+// principal and answers nil; the writes through the store that is not open that are no
 // registration, which answer nil; and a registration through a nil store, which answers nil as
 // each of its writes does.
 func TestKnownSessionsARegistrationThroughAStoreNotOpenRecordsNoPrincipal(t *testing.T) {
@@ -493,8 +497,14 @@ func TestKnownSessionsARegistrationThroughAStoreNotOpenRecordsNoPrincipal(t *tes
 		t.Fatal("the store the case registers through has its bucket open; the case needs it not open")
 	}
 
+	notOpenAdmission, err := notOpen.AdmitRegistration(t.Context(), sessionID, person)
+	t.Run("case: the admission of a registration through the store whose bucket is not open", func(t *testing.T) {
+		if !errors.Is(err, ErrKnownSessionsUnavailable) || errors.Is(err, ErrPrincipalUnrecorded) {
+			t.Errorf("the admission answered %v; want %v, not %v", err, ErrKnownSessionsUnavailable, ErrPrincipalUnrecorded)
+		}
+	})
 	t.Run("case: a registration as another principal through the store whose bucket is not open", func(t *testing.T) {
-		err := notOpen.RecordRegistrationWithin(t.Context(), Admission{}, KnownSession{SessionID: sessionID, Principal: person})
+		err := notOpen.RecordRegistrationWithin(t.Context(), notOpenAdmission, KnownSession{SessionID: sessionID, Principal: person})
 		if !errors.Is(err, ErrKnownSessionsUnavailable) || errors.Is(err, ErrPrincipalUnrecorded) {
 			t.Errorf("the registration answered %v; want %v, not %v", err, ErrKnownSessionsUnavailable, ErrPrincipalUnrecorded)
 		}
@@ -502,10 +512,13 @@ func TestKnownSessionsARegistrationThroughAStoreNotOpenRecordsNoPrincipal(t *tes
 			t.Fatalf("the bucket's record names %q; the case needs it still naming %q", stored, service)
 		}
 	})
-	t.Run("case: the admission of a registration through the store whose bucket is not open", func(t *testing.T) {
-		_, err := notOpen.AdmitRegistration(t.Context(), sessionID, person)
+	t.Run("case: that registration's write once the bucket is open", func(t *testing.T) {
+		err := open.RecordRegistrationWithin(t.Context(), notOpenAdmission, KnownSession{SessionID: sessionID, Principal: person})
 		if !errors.Is(err, ErrKnownSessionsUnavailable) || errors.Is(err, ErrPrincipalUnrecorded) {
-			t.Errorf("the admission answered %v; want %v, not %v", err, ErrKnownSessionsUnavailable, ErrPrincipalUnrecorded)
+			t.Errorf("the registration answered %v; want %v, not %v", err, ErrKnownSessionsUnavailable, ErrPrincipalUnrecorded)
+		}
+		if stored := storedPrincipal(t, open, sessionID); stored != service {
+			t.Errorf("the bucket's record names %q; want it still naming %q, which the registration admitted while the bucket was not open may not write over", stored, service)
 		}
 	})
 	t.Run("control: a write through the store whose bucket is not open that is no registration", func(t *testing.T) {

@@ -80,9 +80,8 @@ const CodeMaybeStored = "maybe_stored"
 // stands, and names the session it replaces (previous_session_id), whose handover of that
 // session's unread messages was not recorded: the rule that holds a handover to one principal
 // could not be read, or the handover record did not store. The claimant holds the role; a caller
-// claims again (Retry-After: 1), and the claim it makes again judges and writes the handover. A
-// listener of an earlier build answers the same 503 with no code, its error opening "the claim
-// landed, but". Every other 503 of that route is a claim that wrote nothing.
+// claims again (Retry-After: 1), and the claim it makes again judges and writes the handover.
+// Every other 503 of that route is a claim that wrote nothing.
 const CodeHandoverUnrecorded = "handover_unrecorded"
 
 // ReadsHeader is the request header in which a client of the send and the publish routes names

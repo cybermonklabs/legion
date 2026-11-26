@@ -6,8 +6,7 @@ body: |-
   replaced session to the new session. The claim stays a hard claim. Plugin interface version 6:
   the Envoy role claim the interface carries takes the replaced session; install this release with
   the `@sjawhar/pi-envoy` released beside it. A claim 503 whose claim stands, where only the
-  handover of the replaced session is not recorded yet (code `handover_unrecorded`, or, from a
-  listener of the build before that code, an error that begins "the claim landed, but"), no longer
+  handover of the replaced session is not recorded yet (code `handover_unrecorded`), no longer
   reads as a claim that holds nothing: the controller's claim widget says the controller holds its
   Envoy role and claims again for the handover, and a typed controller claim that gives up on it
   after its counted tries fails saying the controller holds its role and only the handover is

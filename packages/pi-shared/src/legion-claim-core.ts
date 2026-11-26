@@ -341,20 +341,14 @@ export function listenerAskedToClaimAgain(error: unknown): boolean {
  *  (`listenerwire.CodeHandoverUnrecorded`). */
 const HANDOVER_UNRECORDED_CODE = "handover_unrecorded";
 
-/** How the error text of that 503 begins from a listener of the build before the code, which
- *  sends it with no code at all. */
-const HANDOVER_UNRECORDED_TEXT = "the claim landed, but";
-
 /**
  * Whether `error` is the listener's 503 to a role claim that landed and stands, so the session
  * holds the role, and that only the handover of the session the claim replaces is not recorded
- * yet: its `code` is `handover_unrecorded`, or, from a listener of the build before that code,
- * there is no code and the listener's error text begins "the claim landed, but". Every other
- * claim 503 wrote nothing. Read by name and shape, as `listenerAskedToClaimAgain` reads it.
+ * yet: its `code` is `handover_unrecorded`. Every other claim 503 wrote nothing. Read by name and
+ * shape, as `listenerAskedToClaimAgain` reads it.
  */
 export function claimStandsWithoutHandover(error: unknown): boolean {
   if (!(error instanceof Error) || !listenerAskedToClaimAgain(error)) return false;
   const { code } = error as Error & { readonly code?: unknown };
-  if (code !== undefined) return code === HANDOVER_UNRECORDED_CODE;
-  return error.message.startsWith(HANDOVER_UNRECORDED_TEXT);
+  return code === HANDOVER_UNRECORDED_CODE;
 }

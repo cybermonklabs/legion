@@ -402,14 +402,15 @@ func wantIf(want bool, eventIDs ...string) []string {
 	return eventIDs
 }
 
-// A record decides the rule for good only where it says which principal its session last
-// registered as. The replaced session with no record in an open store, one whose record a
-// listener of an earlier build wrote last (no principal recorded), a listener with no store at
-// all, and a store whose bucket is not open, which reads no record and records no principal
-// until its grant covers the bucket, are refused, and the refusal names why. What only a later
-// claim can read is errHandoverUnjudged, which the claim route answers 503: a claimant whose own
-// registration is not recorded with its principal yet. The control is the same claim where both
-// sessions registered on no credential, as the claim's own does, which stands.
+// A claim is refused where no record says which principal the replaced session last registered
+// as (recordedPrincipal). The replaced session with no record in an open store, one whose record a
+// listener of an earlier build wrote last (no principal recorded), and a store that cannot answer
+// - one whose bucket is not open, which reads no record and records no principal until an attempt
+// of its own opens the bucket, and a listener with no store at all, which reads as one - are
+// refused, and the refusal names why. What only a later claim can read is errHandoverUnjudged,
+// which the claim route answers 503: a claimant whose own registration is not recorded with its
+// principal yet. The control is the same claim where both sessions registered on no credential,
+// as the claim's own does, which stands.
 func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
@@ -460,7 +461,7 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 		refused(t, known, "ses_gate_unit_earlier", "ses_gate_unit_claimant_b", "earlier build")
 	})
 	t.Run("case: the listener keeps no known-session store", func(t *testing.T) {
-		refused(t, nil, "ses_gate_unit_any", "ses_gate_unit_claimant_c", "keeps no record")
+		refused(t, nil, "ses_gate_unit_any", "ses_gate_unit_claimant_c", knownBucketNotOpenRefusal)
 	})
 	t.Run("case: the claimant's own registration is not recorded with its principal yet", func(t *testing.T) {
 		register(t, "ses_gate_unit_replaced_d")
@@ -475,6 +476,47 @@ func TestTheHandoverGateRefusesWhatNoRegistrationAttests(t *testing.T) {
 		register(t, "ses_gate_unit_replaced_f", "ses_gate_unit_claimant_f")
 		if why, err := handoverRefusal(t.Context(), request, known, "ses_gate_unit_replaced_f", "ses_gate_unit_claimant_f"); why != "" || err != nil {
 			t.Errorf("handoverRefusal = %q, %v; want the handover to stand", why, err)
+		}
+	})
+}
+
+// A pass holds a store that cannot answer to be an error, not a refusal (handoverStands): a
+// refusal sets the record back (runTakeoverPass's setBack), which a listener that can read no
+// principal has no ground for, while an error ends the pass and leaves the record for a later
+// pass to judge. The cases are a store whose bucket is not open and a listener with no store at
+// all; each fails where handoverStands answers either as a handover that does not stand. The
+// control is an open store where both sessions registered as one principal, which stands, and
+// one where the successor registered as another, which does not, with no error.
+func TestAHandoverPassReadsAStoreThatCannotAnswerAsAnError(t *testing.T) {
+	client := setupPublishTestClient(t)
+	known := openKnownSessionsOn(t, client.Conn, time.Now)
+	const previous, successor, stranger = "ses_gate_stands_previous", "ses_gate_stands_successor", "ses_gate_stands_stranger"
+	registerAs(t, known, "service:example-fleet", previous, successor)
+	registerAs(t, known, "service:another-fleet", stranger)
+
+	for _, row := range []struct {
+		name  string
+		known *session.KnownSessions
+	}{
+		{name: "case: a store whose bucket is not open", known: &session.KnownSessions{}},
+		{name: "case: the listener keeps no known-session store", known: nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			principal, stands, err := handoverStands(t.Context(), row.known, previous, successor)
+			if !errors.Is(err, session.ErrKnownSessionsUnavailable) || stands || principal != "" {
+				t.Errorf("handoverStands = %q, %t, %v; want no principal, not standing, and %v", principal, stands, err, session.ErrKnownSessionsUnavailable)
+			}
+		})
+	}
+	t.Run("control: both sessions registered as one principal through an open store", func(t *testing.T) {
+		principal, stands, err := handoverStands(t.Context(), known, previous, successor)
+		if err != nil || !stands || principal != "service:example-fleet" {
+			t.Errorf("handoverStands = %q, %t, %v; want service:example-fleet, standing, no error", principal, stands, err)
+		}
+	})
+	t.Run("control: the successor registered as another principal through an open store", func(t *testing.T) {
+		if _, stands, err := handoverStands(t.Context(), known, previous, stranger); err != nil || stands {
+			t.Errorf("handoverStands = %t, %v; want not standing, no error", stands, err)
 		}
 	})
 }

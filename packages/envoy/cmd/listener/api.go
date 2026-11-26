@@ -3430,15 +3430,18 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// own record write is fenced on, below.
 		//
 		// A store whose bucket is not open (session.ErrKnownSessionsUnavailable) can read and
-		// write no record: its NATS grant does not carry the bucket, which no retry of the client's
-		// changes. Such a registration is admitted with no principal recorded, and answered with a
-		// warning that says so (knownBucketNotOpenWarning), and this listener refuses every
-		// claim's handover while its bucket stays shut (handoverRefusal), as the base did before
-		// any registration recorded a principal.
+		// write no record. It opens only once an attempt of the store's own succeeds
+		// (session.KnownSessions, attempts at most 5 minutes apart), which on a listener whose NATS
+		// grant does not carry the bucket is not before the grant does, so a 503 here would refuse
+		// every registration and heartbeat for as long as that lasts. Such a registration is
+		// admitted with no principal recorded, and answered with a warning that says so
+		// (knownBucketNotOpenWarning), and this listener refuses every claim's handover while its
+		// bucket is not open (handoverRefusal), as the base did before any registration recorded a
+		// principal. The admission keeps that state, so its own write below writes nothing even
+		// where the bucket opened since (session.Admission).
 		principal := requestPrincipal(r)
 		admission, err := d.known.AdmitRegistration(ctx, body.SessionID, principal)
-		knownNotOpen := errors.Is(err, session.ErrKnownSessionsUnavailable)
-		if err != nil && !knownNotOpen {
+		if err != nil && !errors.Is(err, session.ErrKnownSessionsUnavailable) {
 			logger.Warn("listener refused a registration whose principal it could not record first",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
 			w.Header().Set("Retry-After", "1")
@@ -3700,21 +3703,19 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// gate would read another principal, or none, as the one this session last registered as,
 		// so it is answered 503 with Retry-After: 1, and the client registers again until the
 		// record names the principal it registers as; everything this registration wrote before it
-		// stands, and its next attempt, admitted afresh, writes the same again. A store whose
-		// bucket is not open, at the admission or now, writes nothing: the registration is
-		// answered with knownBucketNotOpenWarning and logged at most once a minute.
-		if !knownNotOpen {
-			err = d.known.RecordRegistrationWithin(ctx, admission, session.KnownSession{
-				SessionID:    body.SessionID,
-				Title:        body.Title,
-				Capabilities: body.Capabilities,
-				Topics:       item.Topics,
-				Principal:    principal,
-			})
-			knownNotOpen = errors.Is(err, session.ErrKnownSessionsUnavailable)
-		}
+		// stands, and its next attempt, admitted afresh, writes the same again. A registration
+		// admitted while the bucket was not open writes nothing, whether or not the bucket opened
+		// since (session.ErrKnownSessionsUnavailable): it is answered with
+		// knownBucketNotOpenWarning and logged at most once a minute.
+		err = d.known.RecordRegistrationWithin(ctx, admission, session.KnownSession{
+			SessionID:    body.SessionID,
+			Title:        body.Title,
+			Capabilities: body.Capabilities,
+			Topics:       item.Topics,
+			Principal:    principal,
+		})
 		switch {
-		case knownNotOpen:
+		case errors.Is(err, session.ErrKnownSessionsUnavailable):
 			warnings = append(warnings, knownBucketNotOpenWarning)
 			warnKnownBucketNotOpen(logger, body.SessionID)
 		case err != nil:

@@ -121,14 +121,17 @@ func requestPrincipal(r *http.Request) string {
 // known-session bucket's leader did not answer, or the claimant's own registration is not
 // recorded with its principal yet. The claim stands, and the claim route answers 503 with
 // Retry-After: 1, as for a handover record that did not store, so the client claims again and the
-// handover is judged then, rather than refused for good on a read that did not answer. A bucket
-// this listener cannot open is no such read: it stays shut until the listener's grant covers it,
-// so the claim is refused instead (handoverRefusal).
+// handover is judged then, rather than refused on a read that did not answer. A bucket that is
+// not open is no such read: it opens only once an attempt of the store's own succeeds
+// (session.KnownSessions, attempts at most 5 minutes apart), which on a listener whose NATS grant
+// does not carry the bucket is not before the grant does, so the claim is refused instead
+// (handoverRefusal) rather than answered a 503 its client would retry for as long as that lasts.
 var errHandoverUnjudged = errors.New("the claim landed, but whether this claim may hand over the messages of the session it replaces could not be read, so claim again")
 
-// handoverReadBound bounds the reads of the two known-session records a handover is judged by
-// (handoverRefusal, handoverStands), each from the bucket's leader: the bound a claim's read of a
-// role's holder takes (roleHolderReadTimeout), inside the claim route's own budget.
+// handoverReadBound bounds each read of a known-session record a handover is judged by
+// (recordedPrincipal, for handoverRefusal, handoverStands and handoverSuccessors), each from the
+// bucket's leader: the bound a claim's read of a role's holder takes (roleHolderReadTimeout),
+// inside the claim route's own budget.
 const handoverReadBound = roleHolderReadTimeout
 
 // handoverRefusal is the rule a claim that landed and names replaced as the session it replaces
@@ -154,50 +157,48 @@ const handoverReadBound = roleHolderReadTimeout
 // which is every handover on a listener its clients reach with no credential; it may not name a
 // session that registered as a principal.
 //
-// replaced's record decides a refusal for good: a session the bucket holds no record of (none
-// registered within the retention), one whose record a listener of an earlier build wrote last,
-// which names no principal anybody recorded (session.KnownSession.PrincipalRecorded), a listener
-// with no known-session store at all (known nil, a connection with no JetStream), and a store
-// whose bucket is not open (session.ErrKnownSessionsUnavailable: a listener whose NATS grant does
-// not carry the bucket, whose registrations record no principal) are refused, since nothing says
-// which principal replaced last registered as. What only a later claim can read is the error,
-// wrapping errHandoverUnjudged: a read the leader did not answer, and a claimant whose own
-// registration is not recorded with its principal - a registration whose record did not store,
-// or one an earlier build took - which its next registration writes.
+// A claim is refused where replaced's record does not say which principal replaced last
+// registered as (recordedPrincipal): a session the bucket holds no record of (principalAbsent:
+// none registered within the retention), one whose record names no principal a registration of
+// this build recorded (principalUnrecorded: a listener of an earlier build wrote it last), and a
+// store that cannot answer (principalUnavailable: its bucket is not open, a listener with no
+// known-session store at all among them). The refused claim is answered 200 with a warning, and
+// its client does not name replaced again, so replaced's messages stay on its own subject. A
+// store that cannot answer is no lasting state: the store attempts its bucket again on its own,
+// at most 5 minutes apart, and picks up a grant that lands later with no restart, so a claim
+// refused in the window before an attempt opens it loses a handover a later claim would have
+// made. What only a later claim can read is the error, wrapping errHandoverUnjudged: a read the
+// leader did not answer, and a claimant whose own registration is not recorded with its
+// principal - a registration whose record did not store, or one an earlier build took - which
+// its next registration writes.
 // Dispatch lets a session answer a delivery attempt of the session it replaced only where a
 // handover record names it and the two still register as one principal (sessionSuccessorsHandler),
 // so that reply rule is held to this one too.
 func handoverRefusal(ctx context.Context, r *http.Request, known *session.KnownSessions, replaced, claimant string) (string, error) {
-	if known == nil {
-		return "this listener keeps no record of the principal any session registered as", nil
-	}
-	readCtx, cancel := context.WithTimeout(ctx, handoverReadBound)
-	defer cancel()
-	previous, found, err := known.Read(readCtx, replaced)
-	switch {
-	case errors.Is(err, session.ErrKnownSessionsUnavailable):
-		return knownBucketNotOpenRefusal, nil
-	case err != nil:
+	previous, state, err := recordedPrincipal(ctx, known, replaced)
+	if err != nil {
 		return "", fmt.Errorf("%w: %w", errHandoverUnjudged, err)
-	case !found:
+	}
+	switch state {
+	case principalUnavailable:
+		return knownBucketNotOpenRefusal, nil
+	case principalAbsent:
 		return fmt.Sprintf("this listener holds no record of the principal %s last registered as", replaced), nil
-	case !previous.PrincipalRecorded:
+	case principalUnrecorded:
 		return fmt.Sprintf("%s last registered through a listener of an earlier build, which recorded no principal for it", replaced), nil
 	}
-	own, found, err := known.Read(readCtx, claimant)
-	switch {
-	case errors.Is(err, session.ErrKnownSessionsUnavailable):
-		return knownBucketNotOpenRefusal, nil
-	case err != nil:
+	own, state, err := recordedPrincipal(ctx, known, claimant)
+	if err != nil {
 		return "", fmt.Errorf("%w: %w", errHandoverUnjudged, err)
-	case !found || !own.PrincipalRecorded:
+	}
+	if state != principalRecorded {
 		return "", fmt.Errorf("%w: the registration of %s is not recorded with its principal yet", errHandoverUnjudged, claimant)
 	}
 	principal := requestPrincipal(r)
 	switch {
-	case principal != own.Principal:
+	case principal != own:
 		return fmt.Sprintf("this claim's credential acts for another principal than the one %s last registered as", claimant), nil
-	case principal != previous.Principal:
+	case principal != previous:
 		return fmt.Sprintf("this claim's credential acts for another principal than the one %s last registered as", replaced), nil
 	}
 	return "", nil
@@ -215,7 +216,8 @@ const knownBucketNotOpenRefusal = "this listener's known-session bucket (envoy_k
 const knownBucketNotOpenWarning = "this registration's principal is not recorded, since this listener's known-session bucket (envoy_known_sessions) is not open: until it opens, no claim through this listener is handed the unread messages of the session it replaces"
 
 // knownBucketNotOpenWarnings holds back warnKnownBucketNotOpen's line for a minute after each one,
-// counting what it held back: the bucket stays shut until the listener's grant covers it, and
+// counting what it held back: the bucket stays shut until an attempt of the store's own opens it,
+// which on a listener whose NATS grant does not carry the bucket is not before the grant does, and
 // every registration and heartbeat meets it meanwhile.
 var knownBucketNotOpenWarnings struct {
 	mu   sync.Mutex
@@ -297,19 +299,26 @@ func claimHandover(ctx context.Context, r *http.Request, d *listenerDeps, logger
 
 // handoverStands is handoverRefusal's rule as a pass of previous's handover record to successor
 // holds it after the claim (handoverFence): whether the two sessions' last registrations name one
-// principal, each read from the known-session bucket's leader, and that principal. A session that
-// registers as another principal once the claim landed - a person who resumes an agent's
-// session, say - is then no longer the same principal's, and nothing more of previous's is copied
-// to successor. A session the bucket holds no record of, and one whose principal nobody recorded,
-// stands for no handover, and so does a listener with no known-session store; a read that did not
-// answer is the error, for the caller to try again.
+// principal, each read from the known-session bucket's leader (recordedPrincipal), and that
+// principal. A session that registers as another principal once the claim landed - a person who
+// resumes an agent's session, say - is then no longer the same principal's, and nothing more of
+// previous's is copied to successor. A session the bucket holds no record of, and one whose
+// principal nobody recorded, stands for no handover. A read that did not answer is the error, for
+// the caller to try again, and so is a store that cannot answer (principalUnavailable): a pass on a
+// listener that can read no principal ends there without setting its record back (setBack), and a
+// later pass, on a listener that can read them, judges it again.
 func handoverStands(ctx context.Context, known *session.KnownSessions, previous, successor string) (string, bool, error) {
-	principal, recorded, err := recordedPrincipal(ctx, known, previous)
-	if err != nil || !recorded {
+	principal, state, err := recordedPrincipal(ctx, known, previous)
+	switch {
+	case err != nil:
 		return "", false, err
+	case state == principalUnavailable:
+		return "", false, fmt.Errorf("read the principal %s last registered as: %w", previous, session.ErrKnownSessionsUnavailable)
+	case state != principalRecorded:
+		return "", false, nil
 	}
-	other, recorded, err := recordedPrincipal(ctx, known, successor)
-	return principal, recorded && other == principal, err
+	other, state, err := recordedPrincipal(ctx, known, successor)
+	return principal, state == principalRecorded && other == principal, err
 }
 
 // handoverFence is the gate a pass of previous's handover record to successor holds itself to
@@ -338,8 +347,9 @@ type handoverFence struct {
 
 // judge is the fence's verdict now: passWaits while previous is live, passRefused while the two
 // sessions do not last register as one principal - after the pass's first passCopies, as the
-// principal that judge read - and passCopies otherwise. A read that did not answer is the error,
-// which ends the pass for the next one to judge again.
+// principal that judge read - and passCopies otherwise. A read that did not answer, and a
+// known-session store that cannot answer (handoverStands), is the error, which ends the pass for
+// the next one to judge again.
 func (f *handoverFence) judge(ctx context.Context) (passVerdict, error) {
 	live, err := sessionLiveNow(ctx, f.cfg, f.previous)
 	if err != nil {
@@ -359,22 +369,46 @@ func (f *handoverFence) judge(ctx context.Context) (passVerdict, error) {
 	return passCopies, nil
 }
 
-// recordedPrincipal is the principal sessionID last registered as, read from the known-session
-// bucket's leader within handoverReadBound, and whether a registration of this build recorded one
-// (session.KnownSession.PrincipalRecorded): nothing recorded for a session the bucket holds no
-// record of, and for a listener with no store (known nil). A read that did not answer is the
-// error.
-func recordedPrincipal(ctx context.Context, known *session.KnownSessions, sessionID string) (string, bool, error) {
-	if known == nil {
-		return "", false, nil
-	}
+// principalRecord is what the known-session bucket's leader answers of the principal a session
+// last registered as (recordedPrincipal), the one reading the handover rule is built on
+// (handoverRefusal, handoverStands, handoverSuccessors).
+type principalRecord uint8
+
+const (
+	// principalUnavailable: the store cannot answer, since its bucket is not open
+	// (session.ErrKnownSessionsUnavailable), a nil store among them: whether the bucket holds a
+	// record of the session was not read. It lasts until an attempt of the store's own opens the
+	// bucket (session.KnownSessions), and on a nil store for good.
+	principalUnavailable principalRecord = iota
+	// principalAbsent: the bucket holds no record of the session, none registered within the
+	// retention.
+	principalAbsent
+	// principalUnrecorded: the session's record names no principal a registration of this build
+	// recorded (session.KnownSession.PrincipalRecorded): a listener of an earlier build wrote it
+	// last, or a registration as another principal had it cleared and has not written its own.
+	principalUnrecorded
+	// principalRecorded: a registration of this build recorded the principal, none included.
+	principalRecorded
+)
+
+// recordedPrincipal is what the known-session bucket's leader records of the principal sessionID
+// last registered as (principalRecord), read within handoverReadBound, and that principal, which
+// is "" for every answer but principalRecorded. A read that did not answer is the error.
+func recordedPrincipal(ctx context.Context, known *session.KnownSessions, sessionID string) (string, principalRecord, error) {
 	readCtx, cancel := context.WithTimeout(ctx, handoverReadBound)
 	defer cancel()
 	record, found, err := known.Read(readCtx, sessionID)
-	if err != nil {
-		return "", false, fmt.Errorf("read the principal %s last registered as: %w", sessionID, err)
+	switch {
+	case errors.Is(err, session.ErrKnownSessionsUnavailable):
+		return "", principalUnavailable, nil
+	case err != nil:
+		return "", principalUnavailable, fmt.Errorf("read the principal %s last registered as: %w", sessionID, err)
+	case !found:
+		return "", principalAbsent, nil
+	case !record.PrincipalRecorded:
+		return "", principalUnrecorded, nil
 	}
-	return record.Principal, found && record.PrincipalRecorded, nil
+	return record.Principal, principalRecorded, nil
 }
 
 // sessionLiveNow reports whether session answers now (sessionIsLive), read as a caller that takes
