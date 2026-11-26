@@ -1237,6 +1237,60 @@ test("a delete answering gone reads the tree again", async () => {
   expect(document.querySelector('[role="dialog"]')).toBeNull();
 });
 
+for (const { early, reply, movedOn } of [
+  { early: true, movedOn: false, reply: deleted.refused.NODE_GONE },
+  { early: false, movedOn: false, reply: deleted.refused.NOT_FOUND },
+  { early: false, movedOn: true, reply: deleted.refused.NODE_GONE },
+]) {
+  const order = early ? "before" : "after";
+  const result = movedOn ? "leaves focus where the reader moved" : "focuses the nearest row";
+  test(`${reply.body.code} ${result} when the row drops ${order} close`, async () => {
+    const user = userEvent.setup();
+    const out = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<TreeAnswer>();
+    const after = renamed(treeAfterDelete?.body) as TreeAnswer;
+    const reads = answerTreeReads(converted, read.promise);
+    const sent = answerNodeRoutes({ deletes: [deleted.dry_run, { ...reply, gate: out.promise }] });
+    const client = signedIn();
+    liveFeedOn(client);
+    const view = draw(undefined, undefined, client);
+    const dialog = await confirmDialog(view, user);
+    const at = rowIds(view).indexOf(rowId(STATEMENT_3));
+    expect(at).toBeGreaterThanOrEqual(0);
+    const confirm = [...dialog.querySelectorAll("button")].find(
+      (button) => button.textContent === CONTROL_LABELS.confirm_delete
+    );
+    if (confirm === undefined) throw new Error("the dialog has no confirm button");
+    await user.click(confirm);
+    await waitFor(() => expect(sent.deletes).toHaveLength(2));
+
+    // Simulate a cache update that got there ahead of the counted DELETE's answer.
+    if (early) {
+      act(() => client.setQueryData(outlineQuery(KEY, "graph").queryKey, after));
+      await waitFor(() => expect(rowOf(view, STATEMENT_3)).toBeNull());
+      expect(dialog.contains(document.activeElement)).toBe(true);
+    }
+    await act(async () => out.resolve());
+    await waitFor(() => expect(dialog.isConnected).toBe(false));
+    await waitFor(() => expect(reads.outline()).toBe(2));
+    if (!early) expect(document.activeElement).toBe(rowOf(view, STATEMENT_3));
+    const elsewhere = rowOf(view, STATEMENT_1);
+    if (movedOn) {
+      if (elsewhere === null) throw new Error("the first statement has no row");
+      await user.click(elsewhere);
+      expect(document.activeElement).toBe(elsewhere);
+    }
+    await act(async () => read.resolve(after));
+    await waitFor(() => expect(rowOf(view, STATEMENT_3)).toBeNull());
+    if (movedOn) {
+      expect(document.activeElement).toBe(elsewhere);
+    } else {
+      const rows = view.container.querySelectorAll<HTMLElement>("[data-node-row]");
+      expect(document.activeElement).toBe(rows[Math.min(at, rows.length - 1)]);
+    }
+  });
+}
+
 test("a refused delete keeps the tree and draws its line", async () => {
   const user = userEvent.setup();
   const reads = answerTreeReads();

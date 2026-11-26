@@ -1,11 +1,19 @@
-import { createContext, type ReactNode, useCallback, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal, flushSync } from "react-dom";
 
 import { ConfirmDialog } from "../../project/ConfirmDialog";
 import type { LensAct } from "../lenses/LensMenu";
-import { useNoteOwnAct } from "../own-act";
 import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { DrawnRow } from "../tree-fold";
+import { READER_ACTS } from "../useNodeEditing";
 import { type NodeWritesIssue, useNodeWrites } from "./node-writes";
 import type { NewPlace, PlaceLine, PlacementRow, RetypeAttributes, RetypeKind } from "./placement";
 
@@ -16,6 +24,18 @@ import type { NewPlace, PlaceLine, PlacementRow, RetypeAttributes, RetypeKind } 
  * to a row. `TreeRows.tsx` makes them (`useRowEdits`) in Graph alone, where the Lens act leaves
  * the row for the menu; Conversation and every filter draw their rows as today, with no menu.
  */
+
+/** One open delete confirm's hold on where its row stands in the outline (`RowReveal.deleting`),
+ *  so the outline can move the focus to the nearest surviving row once the delete takes the row
+ *  out, whether the row drops before or after the confirm closes. */
+export interface RowDelete {
+  /** The confirm closed on a cancel or a refusal that keeps the row: drop the hold and move no
+   *  focus. */
+  readonly cancel: () => void;
+  /** The delete was taken, or answered gone (`409 NODE_GONE` or `404`), and the confirm has
+   *  closed: move the focus to the nearest surviving row now, or as soon as a read drops it. */
+  readonly gone: () => void;
+}
 
 /** The reader taken to a row of the outline (`IssueTree.tsx`'s, `useRowReveal`). */
 export interface RowReveal {
@@ -31,6 +51,10 @@ export interface RowReveal {
    *  node leaves the focus to the outline's drop rule (R8). Nothing where the focus is on no row
    *  of the node. */
   readonly kept: (node: string) => void;
+  /** Begins tracking the focused row of the node of read id `node` while its delete confirm is
+   *  open, so `RowDelete.gone` still knows where the row stood if a read drops or redraws the tree
+   *  before the confirm closes (R6, R8). */
+  readonly deleting: (node: string) => RowDelete | undefined;
   /** Takes the reader to the row of the node of read id `node` wherever it stands, as the
    *  outline's keys do: the row a refusal's line names (R8). */
   readonly toRow: (node: string) => void;
@@ -91,6 +115,7 @@ const OPEN_STATUS = "open";
  *  run answered. Each pick is a new one, and its confirm is drawn anew. */
 interface DeleteAsk {
   readonly id: number;
+  readonly hold: RowDelete | undefined;
   readonly node: string;
   readonly count: number;
 }
@@ -117,10 +142,14 @@ export function useRowEdits({
   const key = act?.outline === "graph" ? act.issueKey : undefined;
   const [asked, setAsked] = useState<DeleteAsk | undefined>(undefined);
   const asks = useRef(0);
-  const confirmDelete = useCallback((node: string, count: number) => {
-    asks.current += 1;
-    setAsked({ count, id: asks.current, node });
-  }, []);
+  const confirmDelete = useCallback(
+    (node: string, count: number) => {
+      asks.current += 1;
+      const hold = reveal?.deleting(node);
+      setAsked({ count, hold, id: asks.current, node });
+    },
+    [reveal]
+  );
   const done = useCallback((ask: DeleteAsk) => {
     setAsked((held) => (held === ask ? undefined : held));
   }, []);
@@ -173,23 +202,11 @@ export function useRowEdits({
 }
 
 /**
- * The delete's confirm (R6): `features/project/ConfirmDialog.tsx`, over the page, never
- * `window.confirm`, titled `ANSWER_LINES.delete_confirm_title` and naming how many rows the delete
- * takes. Cancel, Escape and a press beside it close it and send nothing. Its confirm sends the
- * counted delete (`NodeWrites.remove`), once the node's moves before it have ended, and the
- * confirm stays open while it is out, taking no second confirm. Where the server answers that the
- * count moved (`409 DELETE_COUNT_MOVED`), the same confirm names the new count and waits for the
- * reader to confirm that one or cancel; any other answer closes it, a refusal's line drawn on the
- * row (`NodeWrites.lines`), and a refusal that reads the tree again, or a delete dropped unsent,
- * keeps the focus on the node's row where that read draws it (`RowReveal.kept`).
- *
- * It is closed in the task of its answer (`flushSync`), so the focus it took goes back to the row
- * at once (`useDialog`), before a read of the tree the taken delete starts can draw the tree
- * without that row: the row then leaves the tree with the focus. A taken delete is the reader's
- * own act on the node, noted by its read id (`own-act.ts`), so the outline's drop rule gives the
- * focus to the nearest row (`IssueTree.tsx`, `moveToRow`) rather than to the page's body, as it
- * does for a read of another session's. Closed in a later task, it could give the focus back to a
- * row a read had already taken away, which leaves it on the page's body.
+ * A counted delete keeps its confirm open until the answer. If the count changes, the reader
+ * confirms the new count or cancels. The dialog restores focus on close, but the row might
+ * already be gone, or `IssueTree` might have forgotten its position while the dialog had focus.
+ * After the dialog restores focus, a successful delete or a gone refusal uses the saved position
+ * to hand focus on when the row is gone. Other outcomes keep their existing focus policy.
  */
 function DeleteConfirm({
   ask,
@@ -203,22 +220,69 @@ function DeleteConfirm({
   reveal: RowReveal | undefined;
 }): ReactNode {
   const writes = useNodeWrites(issue);
-  const noteOwnAct = useNoteOwnAct();
   const [count, setCount] = useState(ask.count);
   const sending = useRef(false);
-  const close = () => onDone(ask);
+  const closed = useRef(false);
+  const portal = useRef<HTMLDivElement>(null);
+  const actedOutside = useRef(false);
+  useLayoutEffect(() => {
+    closed.current = false;
+    const listening = new AbortController();
+    const outside = (event: Event) => {
+      if (event.target instanceof Node && !portal.current?.contains(event.target)) {
+        actedOutside.current = true;
+      }
+    };
+    for (const type of READER_ACTS) {
+      window.addEventListener(type, outside, { capture: true, signal: listening.signal });
+    }
+    return () => {
+      closed.current = true;
+      listening.abort();
+    };
+  }, []);
+  const close = () => {
+    closed.current = true;
+    onDone(ask);
+  };
+  const cancel = () => {
+    ask.hold?.cancel();
+    close();
+  };
   const confirm = () => {
     if (sending.current) return;
     sending.current = true;
     void writes.remove(ask.node, count).then((outcome) => {
       sending.current = false;
+      if (closed.current) {
+        ask.hold?.cancel();
+        return;
+      }
       if (outcome.status === "count_moved") {
         setCount(outcome.count);
         return;
       }
-      if (outcome.status === "taken") noteOwnAct(ask.node);
+      const gone =
+        outcome.status === "taken" || (outcome.status === "refused" && outcome.line.gone);
+      const active = document.activeElement;
+      const outside =
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        !portal.current?.contains(active)
+          ? active
+          : undefined;
       flushSync(close);
-      if (outcome.status === "dropped" || (outcome.status === "refused" && outcome.line.reads)) {
+      if (outside?.isConnected === true) outside.focus({ preventScroll: true });
+      const keepFocus = !actedOutside.current && outside === undefined;
+      if (gone && keepFocus) {
+        ask.hold?.gone();
+        return;
+      }
+      ask.hold?.cancel();
+      if (
+        keepFocus &&
+        (outcome.status === "dropped" || (outcome.status === "refused" && outcome.line.reads))
+      ) {
         reveal?.kept(ask.node);
       }
     });
@@ -229,11 +293,11 @@ function DeleteConfirm({
   // gives back to the row as it closes: its presses stop at its root.
   return createPortal(
     // biome-ignore lint/a11y/noStaticElementInteractions: nothing is made interactive here - the handler only keeps the dialog's own presses out of the outline's.
-    <div onMouseDown={(event) => event.stopPropagation()}>
+    <div onMouseDown={(event) => event.stopPropagation()} ref={portal}>
       <ConfirmDialog
         body={`${ANSWER_LINES.confirm_takes} ${count.toLocaleString()} ${unit}`}
         confirmLabel={CONTROL_LABELS.confirm_delete}
-        onCancel={close}
+        onCancel={cancel}
         onConfirm={confirm}
         title={ANSWER_LINES.delete_confirm_title}
       />

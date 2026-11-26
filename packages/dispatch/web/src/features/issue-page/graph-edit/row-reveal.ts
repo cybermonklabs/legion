@@ -1,11 +1,11 @@
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 
 import type { TreeNode } from "../issue-tree";
-import { rowSelectorOf } from "../tree-focus";
+import { focusIsLoose, rowSelectorOf } from "../tree-focus";
 import { rowKeyOf } from "../tree-keys";
 import { abortOnReaderAct } from "../useNodeEditing";
 import { moveToRow } from "../useTreeKeymap";
-import type { RowReveal } from "./row-edits";
+import type { RowDelete, RowReveal } from "./row-edits";
 
 /** What the outline waits for to take the reader to a row of a node `id` (`TreeNode.id`): a move
  *  that was taken, until the outline draws the node under its new parent (`moved`); a write of the
@@ -16,6 +16,12 @@ type Pending =
   | { readonly kind: "moved"; readonly id: string; readonly parent: string }
   | { readonly kind: "kept"; readonly id: string; readonly from: string }
   | { readonly kind: "focus"; readonly key: string };
+
+interface DeleteWatch extends RowDelete {
+  readonly update: (root: TreeNode) => void;
+}
+
+const NODE_ROW = "[data-node-row]";
 
 /** The path from `node` down to the own row of the node `id`, its placement that is no
  *  transclusion (part T's second rows), or undefined where the tree under `node` holds none. */
@@ -59,6 +65,10 @@ function nodeOfRead(node: TreeNode, readId: string): TreeNode | undefined {
  * which the drop rule gives the nearest row; the node's row takes it back. The reader's first act
  * since lets it go, so a reader who moved on stays where they went.
  *
+ * A delete confirm remembers where its row was drawn before it took focus. On success or a gone
+ * refusal, it checks again after the dialog restores focus. If the row is still drawn, the same
+ * check runs when the outline next changes. Neither path depends on the outline's `heldRow`.
+ *
  * `toRow` takes the reader to the row of a node by its read id, as the outline's keys do
  * (`reach`: the row where it is drawn, else the path to it unfolded and drawn).
  */
@@ -75,8 +85,16 @@ export function useRowReveal({
 }): RowReveal {
   const [pending, setPending] = useState<Pending | undefined>(undefined);
   const acts = useRef<AbortController | undefined>(undefined);
-  useEffect(() => () => acts.current?.abort(), []);
+  const deleting = useRef<DeleteWatch | undefined>(undefined);
+  useEffect(
+    () => () => {
+      acts.current?.abort();
+      deleting.current?.cancel();
+    },
+    []
+  );
   useEffect(() => {
+    deleting.current?.update(root);
     if (pending === undefined) return;
     const rowOf = (key: string) => body.current?.querySelector<HTMLElement>(rowSelectorOf(key));
     if (pending.kind === "focus") {
@@ -121,6 +139,47 @@ export function useRowReveal({
       setPending(next);
     };
     return {
+      deleting: (readId) => {
+        deleting.current?.cancel();
+        const tree = latest.current.body.current;
+        const row = document.activeElement?.closest<HTMLElement>(NODE_ROW);
+        if (tree === null || row?.dataset.nodeReadId !== readId || !tree.contains(row)) return;
+        const key = row.dataset.rowKey;
+        let index = [...tree.querySelectorAll<HTMLElement>(NODE_ROW)].indexOf(row);
+        let reader: AbortController | undefined;
+        const watch: DeleteWatch = {
+          cancel: () => {
+            reader?.abort();
+            if (deleting.current === watch) deleting.current = undefined;
+          },
+          gone: () => {
+            if (deleting.current !== watch) return;
+            reader = abortOnReaderAct(watch.cancel);
+            watch.update(latest.current.root);
+          },
+          update: (drawnRoot) => {
+            const rows = [...tree.querySelectorAll<HTMLElement>(NODE_ROW)];
+            const at = rows.findIndex((row) => row.dataset.rowKey === key);
+            if (at >= 0) index = at;
+            if (reader === undefined) return;
+            const loose = focusIsLoose(tree);
+            if (
+              !loose &&
+              document.activeElement?.closest<HTMLElement>(NODE_ROW)?.dataset.nodeReadId !== readId
+            ) {
+              watch.cancel();
+              return;
+            }
+            if (at >= 0 || nodeOfRead(drawnRoot, readId) !== undefined) return;
+            watch.cancel();
+            // As in IssueTree, use the row now at that index, or the last row if it was at the end.
+            const nearest = rows[Math.min(index, rows.length - 1)];
+            if (nearest !== undefined && loose) moveToRow(nearest);
+          },
+        };
+        deleting.current = watch;
+        return watch;
+      },
       kept: (readId) => {
         const id = nodeOfRead(latest.current.root, readId)?.id;
         const focused = document.activeElement?.closest<HTMLElement>("[data-node-row]");
