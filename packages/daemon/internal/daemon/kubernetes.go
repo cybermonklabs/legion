@@ -624,6 +624,10 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled refuses every report it is given with
 // errVolumeReportsUnbound, which the launcher session logs.
+//
+// leakCheckBuilt is nil in production. A test passes it to receive the leak-check reader the
+// factory built and put into opts.LeakCheck, so the test checks that reader and not one it built
+// itself (controllerSweepKindRuntime).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, served func(ghrepo.Repository) bool,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, left *appauth.LeftOut, githubAPI string, kills *memoryGuardKills,
 	reports *volumeTrimReports, leakCheckBuilt func(sandbox.LeakCheckReader)) runtimeFactory {

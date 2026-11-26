@@ -18,7 +18,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/sjawhar/envoy/testpool"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -520,7 +519,7 @@ func assertDrainedPullRequests(t *testing.T, pool *pgxpool.Pool, records record.
 // rather than making one, since the caller also needs it for testdb.Delayed.
 func drainPool(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()
-	pool, err := testpool.NewPool(context.Background(), dsn)
+	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatalf("open test pool: %v", err)
 	}

@@ -40,8 +40,9 @@ import (
 
 const (
 	// clientPort and monitorPort are the server's client port and its monitoring port in the
-	// container. Each is published on a port that Docker picks, of the daemon's machine
-	// (daemonHost).
+	// container. On a daemon of this machine each is published on a loopback address of the
+	// container's own and a port the kernel picked there (loopbackPorts, start); on a daemon of
+	// another machine, on a port Docker picks on that machine (daemonHost).
 	clientPort  = "4222/tcp"
 	monitorPort = "8222/tcp"
 

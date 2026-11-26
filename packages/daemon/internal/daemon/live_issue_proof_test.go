@@ -3,15 +3,15 @@
 // The harness of this package's live proofs of one issue on an open pull request, whose roles the
 // fake runtime launches and the driver plays over the daemon's worker stream and HTTP routes:
 // behind_entry_fence_live_test.go, conflict_no_takeover_live_test.go,
-// conflict_merger_live_test.go and phase_entry_converge_live_test.go, each built with `-tags e2e`
-// by the script under scripts/e2e/ that bears its name. Each driver embeds liveIssueProof,
-// liveProof (live_proof_test.go) grown for that one issue: the issue's seed and the daemon's boot
-// over the fake runtime; the reads of a claim's token, its launch and the issue's state; each
-// role's agent, as the registered session it is over HTTP (liveSession) and as the turns a step
-// plays on the shim (liveClaimant); GitHub's REST API for the pull request at the head the driver
-// last pushed (liveGitHub); and a push to the issue's branch with GitHub's synchronize, and a push
-// onto the base. firstLine, the cut of a prompt a note prints, is here too, for these drivers and
-// the other e2e ones. What one proof alone drives stays in its driver.
+// conflict_merger_live_test.go, phase_entry_converge_live_test.go and parent_waits_live_test.go,
+// each built with `-tags e2e` by the script under scripts/e2e/ that bears its name. Each driver
+// embeds liveIssueProof, liveProof (live_proof_test.go) grown for that one issue: the issue's seed
+// and the daemon's boot over the fake runtime; the reads of a claim's token, its launch and the
+// issue's state; each role's agent, as the registered session it is over HTTP (liveSession) and as
+// the turns a step plays on the shim (liveClaimant); GitHub's REST API for the pull request at the
+// head the driver last pushed (liveGitHub); and a push to the issue's branch with GitHub's
+// synchronize, and a push onto the base. firstLine, the cut of a prompt a note prints, is here too,
+// for these drivers and the other e2e ones. What one proof alone drives stays in its driver.
 package daemon
 
 import (
@@ -244,21 +244,8 @@ func (p *liveIssueProof) publishPush(from, to, headSubject, sender string) {
 // sender and before, the head the move left; with none it names neither.
 func (p *liveIssueProof) publishSynchronize(before, head, sender string) {
 	p.t.Helper()
-	fields := map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(p.number),
-		"head_sha": head, "base_ref": p.base, "head_ref": "legion/" + p.key, "title": p.title,
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(p.number),
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	}
-	if sender != "" {
-		fields["before"], fields["sender"] = before, sender
-	}
-	payload, err := json.Marshal(fields)
-	if err != nil {
-		p.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), p.number)
-	p.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", p.number, head), string(payload))
+	p.publishPullRequest(livePullRequestEvent{action: "synchronize", number: p.number, issue: p.key, head: head, base: p.base,
+		title: p.title, updated: time.Now().UTC(), before: before, sender: sender}, fmt.Sprintf("pr-%d-synchronize-%s", p.number, head))
 }
 
 // publishBasePush publishes another pull request's merge onto the issue's base branch, as Envoy

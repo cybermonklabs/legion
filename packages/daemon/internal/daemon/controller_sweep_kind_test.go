@@ -90,6 +90,8 @@ runtime:
 // reader under githubAPI, the stand-in GitHub serveLiveLeakCheck serves. What the proof stands in
 // for: the agent is a sleep stub, the App tokens are placeholders (outboxTokens), the leak check is
 // a stand-in, and no repository is served, so the controller's gh files name no owner.
+// leakCheckBuilt, when not nil, receives the leak-check reader the factory built and put into the
+// runtime's options, so the untagged test checks that reader; the live proof passes nil.
 func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, githubAPI string, log *slog.Logger,
 	leakCheckBuilt func(sandbox.LeakCheckReader)) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes

@@ -241,13 +241,16 @@ func realTools(path string) (string, error) {
 	return linkDir(targets)
 }
 
-// runningBinary runs onPath with args, which make it run parentExe in a shell under itself, in dir,
-// under the process's environment with path as its PATH and env over it, and answers the absolute
-// path that prints: the program onPath ran. It gives the tool a fixed bound even though Guard runs
-// from TestMain before go test starts the test binary's timeout alarm. A run that prints no such
-// path is an error naming the command, its status, what it printed and its stderr.
+// runningBinaryTimeout bounds each tool read Guard makes. Guard runs from TestMain, before go test
+// arms the test binary's timeout alarm, so a tool that never answers would otherwise hold the
+// binary with nothing to name it.
 const runningBinaryTimeout = 30 * time.Second
 
+// runningBinary runs onPath with args, which make it run parentExe in a shell under itself, in dir,
+// under the process's environment with path as its PATH and env over it, and answers the absolute
+// path that prints: the program onPath ran. It gives the tool runningBinaryTimeout. A run that
+// prints no such path, or does not answer in time, is an error naming the command, its status,
+// what it printed and its stderr.
 func runningBinary(dir, path, onPath string, args, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), runningBinaryTimeout)
 	defer cancel()

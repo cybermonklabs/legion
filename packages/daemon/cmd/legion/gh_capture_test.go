@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 )
@@ -33,22 +32,4 @@ func realGHCandidates() (candidates []string, named bool) {
 		candidates = append(candidates, path)
 	}
 	return candidates, false
-}
-
-// sentWithoutCredentials says what a control run sent by host and path, and of each credential
-// only whether there was one: a gh the control refuses is a machine's own wrapper, which may carry
-// a real credential, and a test log is no place for it.
-func sentWithoutCredentials(requests []capturedRequest) string {
-	if len(requests) == 0 {
-		return "nothing"
-	}
-	sent := make([]string, 0, len(requests))
-	for _, r := range requests {
-		credential := "no credential"
-		if r.auth != "" {
-			credential = "another credential"
-		}
-		sent = append(sent, r.host+r.path+" with "+credential)
-	}
-	return strings.Join(sent, ", ")
 }

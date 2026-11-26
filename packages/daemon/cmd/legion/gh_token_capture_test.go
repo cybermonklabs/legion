@@ -23,6 +23,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
+// sentWithoutCredentials says what a control run sent by host and path, and of each credential
+// only whether there was one: a gh the control refuses is a machine's own wrapper, which may carry
+// a real credential, and a test log is no place for it.
+func sentWithoutCredentials(requests []capturedRequest) string {
+	if len(requests) == 0 {
+		return "nothing"
+	}
+	sent := make([]string, 0, len(requests))
+	for _, r := range requests {
+		credential := "no credential"
+		if r.auth != "" {
+			credential = "another credential"
+		}
+		sent = append(sent, r.host+r.path+" with "+credential)
+	}
+	return strings.Join(sent, ", ")
+}
+
 // Through the real gh and the real git, against a capture proxy standing in for GitHub: every
 // request `legion gh` and `legion git-credential` let through goes to GitHub alone and carries the
 // token of the owner of the repository it targets — -R before the command, a selector after `--`,
