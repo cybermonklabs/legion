@@ -585,6 +585,10 @@ function CriterionLine({
  * is out the box keeps the line's aim (`OutlineWriter.holdCriterion`): no other target, Escape or
  * the target line's control ends it, so its text and its refusal stay to be read.
  *
+ * A send disables the line while its write is out, and the browser then moves the focus from
+ * the field to the page. A refusal gives it back to the field, so Escape and the next Enter reach
+ * the line again; a focus the reader moved elsewhere meanwhile stays where they put it.
+ *
  * It is a form of its own, with the line that writes on the issue kept mounted and hidden beside
  * it, so the page keeps one box. Its words go into the issue's own text, which tells nobody they
  * name, and its hint says so in words of its own (`criterion`).
@@ -624,6 +628,22 @@ function CriterionForm({
   });
   // A line the page stops drawing while its write is out lets go of the box.
   useEffect(() => () => hold(false), [hold]);
+  // Whether a write of the line was out at the last render: its end with a refusal gives the
+  // field back the focus its disabled line moved to the page.
+  const wasOut = useRef(false);
+  useEffect(() => {
+    if (line.pending) {
+      wasOut.current = true;
+      return;
+    }
+    if (!wasOut.current) return;
+    wasOut.current = false;
+    const active = document.activeElement;
+    if (line.answer !== undefined && (active === null || active === document.body)) {
+      // The line's one field is its only textarea (`MentionField`).
+      form.current?.querySelector<HTMLTextAreaElement>("textarea")?.focus();
+    }
+  }, [line.answer, line.pending]);
   return (
     <form
       aria-label={CONTROL_LABELS.criterion_target}
