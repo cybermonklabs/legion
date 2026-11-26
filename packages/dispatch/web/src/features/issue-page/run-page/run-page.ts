@@ -146,7 +146,8 @@ export interface RunChange {
   /** The words the node's one line is cut from (`lineWordsRaw`): the first block of the server's
    *  reading of the references read's excerpt (`text_tree`), and of the excerpt as stored where
    *  the read sent none, each bare address as written; `""` where the excerpt holds none. The
-   *  page cuts its line from them and names each reference in it (`RunPage.tsx`'s `namedFirstLine`). */
+   *  page cuts its line from them and names each reference in it (`RunPage.tsx`'s
+   *  `namedFirstLine`). */
   readonly words: string;
   /** The page that opens the node; none where its address names no page. */
   readonly href?: string;
@@ -263,8 +264,8 @@ function partsOf(frames: readonly GraphFrame[]): RunPart[] {
 /** The nodes `edges` name, once each, in the read's order: each by its kind's word, the words its
  *  one line is cut from (`lineWordsRaw`), and the page its address opens. An edge of a kind, or
  *  to a node of a kind, that this page does not know is left out, as every list of a node's
- *  references leaves it (`drawsEdge`). `ChangedNodes` decides which of these nodes have a line
- *  or a kind word to draw. */
+ *  references leaves it (`drawsEdge`). `RunPage.tsx`'s `ChangedNodeList` decides which of these
+ *  nodes have a line or a kind word to draw. */
 function changedOf(edges: readonly ReadEdge[]): RunChange[] {
   const kinds: Readonly<Partial<Record<string, string>>> = NODE_REFERENCES_WORDS.kinds;
   const types: Readonly<Partial<Record<string, string>>> = NODE_TYPE_NAMES;

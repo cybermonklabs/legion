@@ -17,11 +17,16 @@ import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
 import {
   NOTHING_PUBLISHED,
   PublishedReferenceNames,
+  type PublishedReferences,
   useKnownReferences,
   usePublishReferenceNames,
 } from "../../refs/reference-names";
 import { EVENT_FRESH, standsFailed } from "../../refs/reference-target";
-import { buildDispatchReference, buildRunPath, parseNodeReference } from "../../refs/routes";
+import {
+  buildDispatchReference,
+  buildRunPath,
+  type DispatchReferenceRoute,
+} from "../../refs/routes";
 import { wordsOf } from "../../refs/tree-fragment";
 import { retryRead } from "../details-error";
 import { targetNaming } from "../issue-tree";
@@ -88,21 +93,29 @@ function runRow(run: TreeAnswerNode): ExtraReferenceRow {
   };
 }
 
-/** How a run's one-line place names a reference it cites (`referenceStandIns`): by the page's
- *  name for it once the batch has named it (`useRunTargets`), and by the words its author wrote
- *  until then, and wherever the batch answered that nothing answers to the target now, that the
- *  reader may not see it, that it is ambiguous or that it has no words to name it by (decision
- *  350). Such a reference is never drawn by its short form and never read on its own. A party,
- *  which the batch does not name, is named by its own read, and by its short form until that read
- *  answers, as every one-line place names one. */
+/** How a run's one-line place names a reference it cites (`referenceStandIns`), which writes an
+ *  issue as its key and asks this for every other reference. A target that is no party is named
+ *  by the page's name for it once the one batch has named it (`useRunTargets`), and by the words
+ *  its author wrote until then, and wherever the batch answered that nothing answers to the
+ *  target now, that the reader may not see it, that it is ambiguous or that it has no words to
+ *  name it by (decision 350); it is never read on its own. A party (a person, a role or an
+ *  agent's session), which the batch does not ask for, is named by a read of its own
+ *  (`useReferenceNames`, decision 340), and by the words its author wrote until that read answers
+ *  and wherever it names nothing, as a row of the issue page names one (`row-references.ts`'s
+ *  `rowReferenceWords`). No reference is drawn by its short form. */
 type RunNameOf = (reference: string) => string | undefined;
 
-/** The references a run's one-line places cite (`namedReferences`). */
+/** The references a run's one-line places cite (`namedReferences`), each once, in the order the
+ *  texts cite them. */
 interface RunReferences {
-  /** Each reference `referenceStandIns` asks a name for, once, in the order the texts cite them. */
-  readonly addresses: readonly string[];
-  /** The words its author wrote for each of those but a party: every reference the batch reads
-   *  (`useRunTargets`). */
+  /** Each target the one batch asks a name for (`useRunTargets`), by the route `rowReferences`
+   *  parsed it to: every reference but an issue and a party. */
+  readonly batched: ReadonlyMap<string, DispatchReferenceRoute>;
+  /** Each party, which the batch does not ask for and a read of its own names
+   *  (`useReferenceNames`). */
+  readonly parties: readonly string[];
+  /** The words its author wrote for each reference of either, which it is drawn as until it has
+   *  a name and wherever it has none. */
   readonly written: ReadonlyMap<string, string>;
 }
 
@@ -110,46 +123,56 @@ interface RunReferences {
  *  addresses `referenceStandIns` asks a name for, found as its `standIn` finds them, by
  *  `rowReferences` in each text without a typed block's source lines, with no bare key. That
  *  leaves out an issue, which is named by its key, and a reference on a typed block's own line,
- *  which no line draws, so this set and the lines drawn cannot differ. */
+ *  which no line draws. Each is sorted here, once, by the route that reader parsed it to: a party
+ *  (`isPartyRoute`) to a read of its own, and every other target to the one batch.
+ *
+ *  The set holds every reference of the whole texts, so it holds more than a line draws where a
+ *  caller cuts its line from a text, as the run's page cuts a changed node's first line
+ *  (`RunPage.tsx`'s `namedFirstLine`). That cut is made on each name's own length, which only the
+ *  batch's answer gives, so before that answer no cut can say which references the line draws: a
+ *  reference that a line cut off while an earlier one stood as its author wrote it can come into
+ *  the line once the earlier one is named by fewer characters. A set taken from that cut would
+ *  leave such a reference to a second batch, where the page sends one (R4). A reference past the
+ *  cut costs the batch one address more, and a party past it a read of its own. */
 function namedReferences(texts: readonly string[]): RunReferences {
-  const addresses = new Set<string>();
+  const batched = new Map<string, DispatchReferenceRoute>();
+  const parties: string[] = [];
   const written = new Map<string, string>();
   for (const text of texts) {
     for (const one of rowReferences(withoutDirectiveLines(text), [])) {
-      if (one.route.kind === "issue") continue;
-      addresses.add(one.reference);
       // One reference written in two forms - a `dispatch://` address and a dashboard address of
       // the same target, say - is drawn by the first form the texts hold, in their order, since
       // one `RunNameOf` names it in every line they draw.
-      if (!isPartyRoute(one.route) && !written.has(one.reference)) {
-        written.set(one.reference, one.written);
-      }
+      if (one.route.kind === "issue" || written.has(one.reference)) continue;
+      written.set(one.reference, one.written);
+      if (isPartyRoute(one.route)) parties.push(one.reference);
+      else batched.set(one.reference, one.route);
     }
   }
-  return { addresses: [...addresses], written };
+  return { batched, parties, written };
 }
 
-/** The names of `addresses` that the page has not published or asked for, read in one batched
- *  read of reference targets (`referenceTargetsQuery`, decision 515) and published from its
- *  answer, so each line reads them from the store and mounts no read of its own. A reference this
- *  read asked for stays in its set while `addresses` cites it, although its answer is now
+/** The names of the `batched` targets that the page has not published or asked for, read in one
+ *  batched read of reference targets (`referenceTargetsQuery`, decision 515) and published from
+ *  its answer, so each line reads them from the store and mounts no read of its own. A reference
+ *  this read asked for stays in its set while `batched` cites it, although its answer is now
  *  published: dropping it would drop the query that holds the answer. */
-function useRunTargets(addresses: readonly string[], issue: IssueDetails | undefined) {
+function useRunTargets(
+  batched: ReadonlyMap<string, DispatchReferenceRoute>,
+  issue: IssueDetails | undefined
+): PublishedReferences {
   const known = useKnownReferences();
   // The batch is chosen once the first commit has laid out, so a publisher mounted in that same
   // commit has registered what it asks for. Until then nothing is asked for in the store.
   const [ready, setReady] = useState(false);
   useLayoutEffect(() => {
-    if (addresses.length > 0) setReady(true);
-  }, [addresses.length]);
+    if (batched.size > 0) setReady(true);
+  }, [batched.size]);
   const held = useRef<ReadonlySet<string>>(NOTHING_PUBLISHED.asked);
   const asked = useMemo(() => {
     if (!ready) return NOTHING_PUBLISHED.asked;
     const next = new Set<string>();
-    for (const ref of addresses) {
-      const route = parseNodeReference(ref);
-      // A party (a person, a role) is named by the registry, which this read does not answer.
-      if (route === undefined || isPartyRoute(route)) continue;
+    for (const [ref, route] of batched) {
       if (
         !held.current.has(ref) &&
         (known.asked.has(ref) ||
@@ -170,40 +193,60 @@ function useRunTargets(addresses: readonly string[], issue: IssueDetails | undef
     return next.size === previous.size && [...next].every((ref) => previous.has(ref))
       ? previous
       : next;
-  }, [addresses, issue?.key, known, ready]);
+  }, [batched, issue?.key, known, ready]);
   useLayoutEffect(() => {
     held.current = asked;
   }, [asked]);
   const query = useMemo(() => referenceTargetsQuery([...asked]), [asked]);
   const { data } = useQuery({ ...query, ...EVENT_FRESH });
+  // The key is the set itself, so a set that changes - a run the tree read adds cites a new
+  // comment, or another publisher stops naming a reference this set left to it - is a read under
+  // a new key, which holds no answer while it is out, nor after it fails. Meanwhile the answer of
+  // the set the read answered last stands for each reference the new set asks for, so a name
+  // already drawn stays drawn. The new set keeps every reference of the set before that the lines
+  // still cite (`held`), so its answer, once it comes, names each of those and stands alone. Only
+  // references the set asks for are published, so a reference the lines cite again after dropping
+  // it is asked for again, not left to a name this read published for an earlier set. The held
+  // answer is read from the cache by an observer that never fetches, which also keeps it from
+  // garbage collection. This is the pattern of `useIssueTree.ts`'s `useLastAnswered`, written
+  // again here rather than shared, since this round admits no line of that file (R6, decision
+  // 529). The ref is written during render only with the set the read answers in that render, so
+  // it never stands over a newer one.
+  const lastAnswered = useRef(asked);
+  if (data !== undefined) lastAnswered.current = asked;
+  const answeredSet = lastAnswered.current;
+  const heldQuery = useMemo(() => referenceTargetsQuery([...answeredSet]), [answeredSet]);
+  const { data: heldAnswer } = useQuery({ ...heldQuery, ...EVENT_FRESH, enabled: false });
+  const targets = useMemo(
+    () => data?.targets ?? heldAnswer?.targets.filter((target) => asked.has(target.ref)),
+    [asked, data, heldAnswer]
+  );
   const published = useMemo(
     () =>
       asked.size === 0
         ? NOTHING_PUBLISHED
         : {
-            ...(data === undefined
-              ? NOTHING_PUBLISHED
-              : targetNaming({ issue, targets: data.targets })),
+            ...(targets === undefined ? NOTHING_PUBLISHED : targetNaming({ issue, targets })),
             asked,
           },
-    [asked, data, issue]
+    [asked, issue, targets]
   );
   usePublishReferenceNames(asked.size === 0 ? undefined : published);
   return useMemo(
     () =>
-      ready || addresses.length === 0
+      ready || batched.size === 0
         ? published
-        : { ...NOTHING_PUBLISHED, asked: new Set(addresses) },
-    [addresses, published, ready]
+        : { ...NOTHING_PUBLISHED, asked: new Set(batched.keys()) },
+    [batched, published, ready]
   );
 }
 
-/** Draws a run's one-line places (`draw`) with the page's name for each reference they cite,
- *  read in one batch (`useRunTargets`), and the words its author wrote for each the batch has not
- *  named (`RunNameOf`). `issue` is the issue the page shows, whose own documents are named by the
- *  issue read; the run's page shows none. The batch's references are handed to the lines as asked
- *  for from the first render, before the store holds them, so no line mounts a read of its own
- *  while the batch is out. */
+/** Draws a run's one-line places (`draw`) with each reference they cite named as `RunNameOf`
+ *  says: a target by the page's name for it, read in one batch (`useRunTargets`), a party by a
+ *  read of its own, and each by the words its author wrote where it has no name. `issue` is the
+ *  issue the page shows, whose own documents are named by the issue read; the run's page shows
+ *  none. The batch's references are handed to the lines as asked for from the first render,
+ *  before the store holds them, so no line mounts a read of its own while the batch is out. */
 export function RunReferenceNames({
   draw,
   issue,
@@ -214,26 +257,30 @@ export function RunReferenceNames({
   texts: readonly string[];
 }): ReactNode {
   const references = useMemo(() => namedReferences(texts), [texts]);
-  const published = useRunTargets(references.addresses, issue);
+  const published = useRunTargets(references.batched, issue);
   const props = { children: createElement(RunNameReader, { draw, references }), published };
   return createElement(PublishedReferenceNames, props);
 }
 
 function RunNameReader({
   draw,
-  references: { addresses, written },
+  references: { batched, parties, written },
 }: {
   draw: (nameOf: RunNameOf) => ReactNode;
   references: RunReferences;
 }): ReactNode {
-  // Only a party is read here, as every line reads one, since the batch does not name it. Every
-  // other reference is the batch's, named by its answer or drawn as written: a read of its own
-  // would be the read per target that decision 515 removes.
-  const parties = useMemo(() => addresses.filter((ref) => !written.has(ref)), [addresses, written]);
-  const { names, reads } = useReferenceNames(parties, undefined);
+  // A target the batch asks for is named by the name the store projected from the batch's
+  // answer, and is never read on its own: that read would be the read per target that decision
+  // 515 removes. Only a party is read here, as every line reads one, since the batch does not ask
+  // for it; the read answers it no name while it is out and where Dispatch knows no such party.
+  const { names } = useKnownReferences();
+  const { names: partyNames, reads } = useReferenceNames(parties, undefined);
   const nameOf = useMemo<RunNameOf>(
-    () => (reference) => names.get(reference)?.name ?? written.get(reference),
-    [names, written]
+    () => (reference) => {
+      const name = batched.has(reference) ? names.get(reference) : partyNames.get(reference)?.name;
+      return name === undefined || name === "" ? written.get(reference) : name;
+    },
+    [batched, names, partyNames, written]
   );
   return createElement(Fragment, null, reads, draw(nameOf));
 }
@@ -270,23 +317,18 @@ function RunExcerpts({
   nameOf: RunNameOf;
   rows: readonly ExtraReferenceRow[];
 }): ReactNode {
-  const held = useRef({ named: rows, rows });
-  const named = useMemo(() => {
-    const previous = held.current.rows === rows ? held.current.named : rows;
-    let next: ExtraReferenceRow[] | undefined;
-    for (const [at, row] of rows.entries()) {
-      if (row.excerpt === undefined) continue;
-      const references = referenceStandIns(nameOf);
-      const excerpt = references.named(references.standIn(row.excerpt));
-      if (excerpt === previous[at]?.excerpt) continue;
-      next ??= [...previous];
-      next[at] = excerpt === row.excerpt ? row : { ...row, excerpt };
-    }
-    return next ?? previous;
-  }, [nameOf, rows]);
-  useLayoutEffect(() => {
-    held.current = { named, rows };
-  }, [named, rows]);
+  // The rows are named anew whenever the names change, and `draw` reads them as it draws; a row
+  // whose question no name changes is handed on as it came.
+  const named = useMemo(
+    () =>
+      rows.map((row) => {
+        if (row.excerpt === undefined) return row;
+        const references = referenceStandIns(nameOf);
+        const excerpt = references.named(references.standIn(row.excerpt));
+        return excerpt === row.excerpt ? row : { ...row, excerpt };
+      }),
+    [nameOf, rows]
+  );
   return draw(named);
 }
 

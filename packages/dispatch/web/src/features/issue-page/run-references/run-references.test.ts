@@ -4,8 +4,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { ApiError, api } from "../../../api/client";
-import type { DispatchUser, ReferenceTarget, ReferenceTargets } from "../../../api/types";
-import { ReferenceNamesProvider } from "../../refs/reference-names";
+import { usersQuery } from "../../../api/queries";
+import type { Agent, DispatchUser, ReferenceTarget, ReferenceTargets } from "../../../api/types";
+import { agentsQuery } from "../../refs/agent-registry";
+import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseNodeReference, shortForm } from "../../refs/routes";
 import { issueDetails } from "../decisions-filter/decisions-fixtures";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
@@ -97,89 +99,46 @@ test("a run's row reads its question's words from the reading the tree read send
   expect(rows.map((row) => row.excerpt)).toEqual(["Who ships the release?"]);
 });
 
-// A run's question is a one-line place (the reading list's `referenced-by-run-question`): each
-// reference it cites is named as decision 350 names one there - an issue by its key, any other
-// target by the page's name for it once the page's batched read has named it, and as its asker
-// wrote it until then - and never by its short form.
-test("a run's row names each reference in its question by its name once read, and as its asker wrote it until then", async () => {
-  const named = `dispatch://${KEY}/comment/${COMMENT}`;
-  const unnamed = `dispatch://${KEY}/comment/${SECOND_COMMENT}`;
-  const route = parseNodeReference(unnamed);
-  if (route === undefined) throw new Error(`${unnamed} names no node`);
-  const question = `Does dispatch://CORE-2 wait on ${named} or on ${unnamed}?`;
-  const issue = issueDetails();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(
-    issueTreeQuery(issue.key).queryKey,
-    treeOf(
-      [ISSUE_NODE, commentNode(COMMENT), runNode(RUN, ASKED_AT, question)],
-      [changedBy(COMMENT, RUN)]
-    )
-  );
-  // The page's batched read names the first comment, and has been asked for the second and
-  // holds no answer for it.
-  const published = publishedNames(new Map([[named, "Warm the cache first"]]), {
-    asked: [unnamed],
-  });
-  const wrapper = ({ children }: { children: ReactNode }) =>
-    createElement(
-      QueryClientProvider,
-      { client },
-      createElement(ReferenceNamesProvider, null, createElement(Publisher, { published }), children)
-    );
-  function Questions(): ReactNode {
-    const { rows } = useRunRows(issue, false);
-    return createElement(NamedRunRows, {
-      draw: (named) => named.map((row) => createElement("p", { key: row.key }, row.excerpt)),
-      issue,
-      rows,
-    });
-  }
-  const { container, unmount } = render(createElement(Questions), { wrapper });
-  try {
-    const expected = `Does CORE-2 wait on Warm the cache first or on ${unnamed}?`;
-    const excerpt = await screen.findByText(expected);
-    expect([...container.querySelectorAll("p")].map((row) => row.textContent)).toEqual([expected]);
-    expect(excerpt.textContent).not.toContain(shortForm(route));
-  } finally {
-    unmount();
-    client.clear();
-  }
-});
-
-// Decision 350: where the batched read answers that nothing answers to a target a run's question
-// cites, or answers with no words to name it by, the question draws the reference as its asker
-// wrote it and reads it no more, as it draws every reference the read has not answered yet.
-test("a run's reference the batch answers gone or with no name reads as its author wrote it", async () => {
-  const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
-  const gone = "dispatch://CORE-2/comment/5b7d9f1c-3e5a-4b7d-9f1c-3e5a7b9d1f2b";
-  // A block of another issue, whose words the read sends no reading of, so the page has no words
-  // to name it by (`tree-drafts.ts`'s `readingOf`) and publishes it unnamed.
-  const block = "dispatch://CORE-2/spec#b-r4";
-  const question = `Does ${named} wait on ${gone} or on ${block} first?`;
-  const targets = [
-    { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
-    { gone: true, kind: "comment", name: "", ref: gone },
-    { gone: false, kind: "block", name: ":::requirement{#r4}\nShip it.\n:::", ref: block },
-  ] satisfies ReferenceTarget[];
-  const answer = Promise.withResolvers<ReferenceTargets>();
-  const batch = spyOn(api, "getReferenceTargets").mockReturnValue(answer.promise);
+/** Details' run rows for `runs`, the runs the issue's tree read answers, each question drawn as
+ *  a paragraph of its own under the page's store of names, beside what another page publishes
+ *  there (`published`) where a case gives it. The batched read of reference targets answers by
+ *  `batch`, and a read of one comment or one block of its own is refused, which a case counts.
+ *  `answerRuns` answers the tree read anew, as a refresh of it does. */
+function drawQuestions(
+  runs: readonly TreeAnswerNode[],
+  {
+    batch = () => Promise.resolve({ targets: [] }),
+    published,
+  }: {
+    readonly batch?: (refs: readonly string[]) => Promise<ReferenceTargets>;
+    readonly published?: PublishedReferences;
+  } = {}
+) {
+  const batched = spyOn(api, "getReferenceTargets").mockImplementation(batch);
   const comments = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
   const blocks = spyOn(api, "getReferences").mockRejectedValue(new ApiError(404, {}));
   const issue = issueDetails();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(
-    issueTreeQuery(issue.key).queryKey,
-    treeOf(
-      [ISSUE_NODE, commentNode(COMMENT), runNode(RUN, ASKED_AT, question)],
-      [changedBy(COMMENT, RUN)]
-    )
-  );
+  const answerRuns = (answered: readonly TreeAnswerNode[]) => {
+    client.setQueryData(
+      issueTreeQuery(issue.key).queryKey,
+      treeOf(
+        [ISSUE_NODE, ...answered],
+        answered.map((run) => changedBy(KEY, run.id))
+      )
+    );
+  };
+  answerRuns(runs);
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(
       QueryClientProvider,
       { client },
-      createElement(ReferenceNamesProvider, null, children)
+      createElement(
+        ReferenceNamesProvider,
+        null,
+        published === undefined ? null : createElement(Publisher, { published }),
+        children
+      )
     );
   function Questions(): ReactNode {
     const { rows } = useRunRows(issue, false);
@@ -190,85 +149,21 @@ test("a run's reference the batch answers gone or with no name reads as its auth
     });
   }
   const { container, unmount } = render(createElement(Questions), { wrapper });
-  const drawn = () => [...container.querySelectorAll("p")].map((row) => row.textContent ?? "");
-  const shortForms = [named, gone, block].map((reference) => {
-    const route = parseNodeReference(reference);
-    if (route === undefined) throw new Error(`${reference} names no node`);
-    return shortForm(route);
-  });
-  try {
-    // While the batch is out, each of the three reads as its asker wrote it.
-    await screen.findByText(question);
-    expect(drawn()).toEqual([question]);
-    expect(batch.mock.calls).toEqual([[[named, gone, block].sort()]]);
-    await act(async () => answer.resolve({ targets }));
-    const expected = `Does Warm the cache first wait on ${gone} or on ${block} first?`;
-    await screen.findByText(expected);
-    expect(drawn()).toEqual([expected]);
-    for (const short of shortForms) expect(drawn()[0]).not.toContain(short);
-    expect(batch).toHaveBeenCalledTimes(1);
-    expect(comments, "a comment read of its own").toHaveBeenCalledTimes(0);
-    expect(blocks, "a block read of its own").toHaveBeenCalledTimes(0);
-  } finally {
-    unmount();
-    client.clear();
-    batch.mockRestore();
-    comments.mockRestore();
-    blocks.mockRestore();
-  }
-});
-
-/** Draws Details' run row for a run whose question is `question`, with the batched read answering
- *  `targets`, and answers the excerpt it draws once that read has answered, beside the reads of
- *  one target of their own that the row sent. */
-async function questionOnceAnswered(
-  question: string,
-  targets: readonly ReferenceTarget[],
-  settled: string
-): Promise<{ readonly drawn: string; readonly ownReads: number }> {
-  const batch = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [...targets] });
-  const comments = spyOn(api, "getComment").mockRejectedValue(new ApiError(404, {}));
-  const blocks = spyOn(api, "getReferences").mockRejectedValue(new ApiError(404, {}));
-  const issue = issueDetails();
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(
-    issueTreeQuery(issue.key).queryKey,
-    treeOf(
-      [ISSUE_NODE, commentNode(COMMENT), runNode(RUN, ASKED_AT, question)],
-      [changedBy(COMMENT, RUN)]
-    )
-  );
-  const wrapper = ({ children }: { children: ReactNode }) =>
-    createElement(
-      QueryClientProvider,
-      { client },
-      createElement(ReferenceNamesProvider, null, children)
-    );
-  function Questions(): ReactNode {
-    const { rows } = useRunRows(issue, false);
-    return createElement(NamedRunRows, {
-      draw: (named) => named.map((row) => createElement("p", { key: row.key }, row.excerpt)),
-      issue,
-      rows,
-    });
-  }
-  const { container, unmount } = render(createElement(Questions), { wrapper });
-  try {
-    // The case's named reference draws its name once the batch has answered.
-    await screen.findByText(settled);
-    expect(batch).toHaveBeenCalledTimes(1);
-    const drawn = [...container.querySelectorAll("p")].map((row) => row.textContent ?? "");
-    return {
-      drawn: drawn.join("\n"),
-      ownReads: comments.mock.calls.length + blocks.mock.calls.length,
-    };
-  } finally {
-    unmount();
-    client.clear();
-    batch.mockRestore();
-    comments.mockRestore();
-    blocks.mockRestore();
-  }
+  return {
+    answerRuns: (answered: readonly TreeAnswerNode[]) => act(() => answerRuns(answered)),
+    batch: batched,
+    blocks,
+    client,
+    close: () => {
+      unmount();
+      client.clear();
+      batched.mockRestore();
+      comments.mockRestore();
+      blocks.mockRestore();
+    },
+    comments,
+    drawn: () => [...container.querySelectorAll("p")].map((row) => row.textContent ?? ""),
+  };
 }
 
 /** The short form `reference` draws where no name and no written words stand for it. */
@@ -278,47 +173,141 @@ function shortFormOf(reference: string): string {
   return shortForm(route);
 }
 
-// Decision 350: a short reference whose id two or more targets carry names none of them. The
-// batched read answers it ambiguous (`ReferenceTarget.ambiguous`), and the question draws it as
-// its asker wrote it, never by a short form and never read again.
-test("a run's reference the batch answers ambiguous reads as its author wrote it", async () => {
-  const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
-  const ambiguous = "dispatch://CORE-2/spec#b-abcd1234";
-  const question = `Does ${named} answer ${ambiguous}?`;
-  const settled = `Does Warm the cache first answer ${ambiguous}?`;
-  const { drawn, ownReads } = await questionOnceAnswered(
-    question,
-    [
-      { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
-      { ambiguous: true, gone: true, kind: "block", name: "", ref: ambiguous },
-    ],
-    settled
-  );
-  expect(drawn).toBe(settled);
-  expect(drawn).not.toContain(shortFormOf(ambiguous));
-  expect(ownReads, "a read of one target of its own").toBe(0);
+// A run's question is a one-line place (the reading list's `referenced-by-run-question`): each
+// reference it cites is named as decision 350 names one there - an issue by its key, any other
+// target by the page's name for it once the page's batched read has named it, and as its asker
+// wrote it until then - and never by its short form.
+test("a run's row names each reference in its question by its name once read, and as its asker wrote it until then", async () => {
+  const named = `dispatch://${KEY}/comment/${COMMENT}`;
+  const unnamed = `dispatch://${KEY}/comment/${SECOND_COMMENT}`;
+  const question = `Does dispatch://CORE-2 wait on ${named} or on ${unnamed}?`;
+  // The page's batched read names the first comment, and has been asked for the second and
+  // holds no answer for it.
+  const published = publishedNames(new Map([[named, "Warm the cache first"]]), {
+    asked: [unnamed],
+  });
+  const view = drawQuestions([runNode(RUN, ASKED_AT, question)], { published });
+  try {
+    const expected = `Does CORE-2 wait on Warm the cache first or on ${unnamed}?`;
+    await screen.findByText(expected);
+    expect(view.drawn()).toEqual([expected]);
+    expect(view.drawn()[0]).not.toContain(shortFormOf(unnamed));
+  } finally {
+    view.close();
+  }
 });
 
-// Decision 350: the batched read answers a target the reader may not see as gone, as it answers
-// one nothing addresses (`reference_targets.go`), so the reader learns nothing of it. The question
-// draws it as its asker wrote it, never by a short form and never read again.
-test("a run's reference the reader may not see reads as its author wrote it", async () => {
+// Decision 350: where the batched read answers that nothing answers to a target a run's question
+// cites, or answers with no words to name it by, the question draws the reference as its asker
+// wrote it and reads it no more, as it draws every reference the read has not answered yet. The
+// read answers a target the reader may not see as it answers one nothing addresses, gone with no
+// name (`reference_targets.go`), so the reader learns nothing of it, and the question draws it
+// the same way.
+test("a run's reference the batch answers gone or with no name reads as its author wrote it", async () => {
   const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
+  const gone = "dispatch://CORE-2/comment/5b7d9f1c-3e5a-4b7d-9f1c-3e5a7b9d1f2b";
   // A comment of an issue the reader may not see.
   const hidden = "dispatch://SECRET-1/comment/6c8e0a2d-4f6b-4c8e-0a2d-4f6b8c0e2a3c";
-  const question = `Does ${named} wait on ${hidden}?`;
-  const settled = `Does Warm the cache first wait on ${hidden}?`;
-  const { drawn, ownReads } = await questionOnceAnswered(
-    question,
-    [
-      { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
-      { gone: true, kind: "comment", name: "", ref: hidden },
-    ],
-    settled
-  );
-  expect(drawn).toBe(settled);
-  expect(drawn).not.toContain(shortFormOf(hidden));
-  expect(ownReads, "a read of one target of its own").toBe(0);
+  // A block of another issue, whose words the read sends no reading of, so the page has no words
+  // to name it by (`tree-drafts.ts`'s `readingOf`) and publishes it unnamed.
+  const block = "dispatch://CORE-2/spec#b-r4";
+  const question = `Does ${named} wait on ${gone}, on ${hidden} or on ${block} first?`;
+  const targets = [
+    { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
+    { gone: true, kind: "comment", name: "", ref: gone },
+    { gone: true, kind: "comment", name: "", ref: hidden },
+    { gone: false, kind: "block", name: ":::requirement{#r4}\nShip it.\n:::", ref: block },
+  ] satisfies ReferenceTarget[];
+  const answer = Promise.withResolvers<ReferenceTargets>();
+  const view = drawQuestions([runNode(RUN, ASKED_AT, question)], { batch: () => answer.promise });
+  try {
+    // While the batch is out, each of the four reads as its asker wrote it.
+    await screen.findByText(question);
+    expect(view.drawn()).toEqual([question]);
+    expect(view.batch.mock.calls).toEqual([[[named, gone, hidden, block].sort()]]);
+    await act(async () => answer.resolve({ targets }));
+    const expected = `Does Warm the cache first wait on ${gone}, on ${hidden} or on ${block} first?`;
+    await screen.findByText(expected);
+    expect(view.drawn()).toEqual([expected]);
+    for (const reference of [named, gone, block]) {
+      expect(view.drawn()[0]).not.toContain(shortFormOf(reference));
+    }
+    expect(
+      view.drawn()[0],
+      "a run's reference the reader may not see reads as its author wrote it"
+    ).not.toContain(shortFormOf(hidden));
+    expect(view.batch).toHaveBeenCalledTimes(1);
+    expect(view.comments, "a comment read of its own").toHaveBeenCalledTimes(0);
+    expect(view.blocks, "a block read of its own").toHaveBeenCalledTimes(0);
+  } finally {
+    view.close();
+  }
+});
+
+// Decision 350: a short reference whose id two or more targets carry names none of them. The
+// batched read answers it gone, with the name "" and `ambiguous` (`reference_targets.go`), and the
+// question draws it as its asker wrote it, never by a short form and never read again.
+test("a run's reference the batch answers ambiguous reads as its author wrote it", async () => {
+  const named = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
+  // A comment's id written short, which two comments of CORE-2 carry.
+  const ambiguous = "dispatch://CORE-2/comment/9d0e2f4a";
+  const question = `Does ${named} answer ${ambiguous}?`;
+  const targets = [
+    { gone: false, kind: "comment", name: "Warm the cache first", ref: named },
+    { ambiguous: true, gone: true, kind: "comment", name: "", ref: ambiguous },
+  ] satisfies ReferenceTarget[];
+  const view = drawQuestions([runNode(RUN, ASKED_AT, question)], {
+    batch: () => Promise.resolve({ targets }),
+  });
+  try {
+    const settled = `Does Warm the cache first answer ${ambiguous}?`;
+    // The case's named reference draws its name once the batch has answered.
+    await screen.findByText(settled);
+    expect(view.drawn()).toEqual([settled]);
+    expect(view.drawn()[0]).not.toContain(shortFormOf(ambiguous));
+    expect(view.batch).toHaveBeenCalledTimes(1);
+    expect(
+      view.comments.mock.calls.length + view.blocks.mock.calls.length,
+      "a read of one target of its own"
+    ).toBe(0);
+  } finally {
+    view.close();
+  }
+});
+
+// The batch's key is its set of references, so a run the tree read adds whose question cites a
+// comment the set did not hold is a read under a new key, which holds no answer while it is out.
+// Meanwhile the name the set before it drew stays drawn, and once the new read answers, both
+// comments are named.
+test("a run's name already drawn stays drawn while a new run's batch is out, and both are named once it answers", async () => {
+  const first = "dispatch://CORE-2/comment/4a6c8e0b-2d4f-4a6c-8e0b-2d4f6a8c0e1a";
+  const second = "dispatch://CORE-2/comment/5b7d9f1c-3e5a-4b7d-9f1c-3e5a7b9d1f2b";
+  const firstRun = runNode(FIRST_RUN, "2026-11-17T08:00:00Z", `Does the release wait on ${first}?`);
+  const firstNamed = { gone: false, kind: "comment", name: "Warm the cache first", ref: first };
+  const secondNamed = { gone: false, kind: "comment", name: "Check the logs", ref: second };
+  const later = Promise.withResolvers<ReferenceTargets>();
+  const view = drawQuestions([firstRun], {
+    batch: (refs) =>
+      refs.includes(second) ? later.promise : Promise.resolve({ targets: [firstNamed] }),
+  });
+  try {
+    const firstQuestion = "Does the release wait on Warm the cache first?";
+    await screen.findByText(firstQuestion);
+    // The tree read answers anew with a newer run, whose question cites the second comment.
+    await view.answerRuns([firstRun, runNode(RUN, ASKED_AT, `Or on ${second}?`)]);
+    await waitFor(() =>
+      expect(view.batch.mock.calls).toEqual([[[first]], [[first, second].sort()]])
+    );
+    expect(view.drawn(), "the first name while the new batch is out").toEqual([
+      `Or on ${second}?`,
+      firstQuestion,
+    ]);
+    await act(async () => later.resolve({ targets: [firstNamed, secondNamed] }));
+    await screen.findByText("Or on Check the logs?");
+    expect(view.drawn()).toEqual(["Or on Check the logs?", firstQuestion]);
+  } finally {
+    view.close();
+  }
 });
 
 // Spec R1 (v19), decision 340 with decision 350: a party (an agent, a role or a person) stays out
@@ -372,6 +361,61 @@ test("a run's party reference reads as its author wrote it until its read answer
     client.clear();
     users.mockRestore();
     batch.mockRestore();
+  }
+});
+
+// Spec R1 (v19), decision 340: a role is named by its own read of the registry, and only while a
+// session the registry lists holds it (`reference-target.ts`'s `roleKnown`): a run's question is
+// no record of an issue whose collaborators could record it. A role no session holds names
+// nothing, so it reads as the words its author wrote while that read is out and after it
+// answers, never by its short form.
+test("a run's role that no session holds reads as its author wrote it while its read is out and after it answers", async () => {
+  const role = "dispatch://role/surveyor";
+  const question = `Should ${role} check the release first?`;
+  const registry = Promise.withResolvers<Agent[]>();
+  const agents = spyOn(api, "listAgents").mockReturnValue(registry.promise);
+  const view = drawQuestions([runNode(RUN, ASKED_AT, question)]);
+  try {
+    await screen.findByText(question);
+    expect(view.drawn(), "while the registry's read is out").toEqual([question]);
+    expect(agents).toHaveBeenCalledTimes(1);
+    await act(async () => registry.resolve([]));
+    await waitFor(() =>
+      expect(view.client.getQueryState(agentsQuery().queryKey)?.status).toBe("success")
+    );
+    await act(async () => {});
+    expect(view.drawn(), "once the registry answered no holder").toEqual([question]);
+    expect(view.batch, "a party in the batched read").not.toHaveBeenCalled();
+  } finally {
+    view.close();
+    agents.mockRestore();
+  }
+});
+
+// Spec R1 (v19), decision 340: a person is named by their login once the one read of everyone
+// who has signed in lists it (`reference-target.ts`'s `personKnown`). A login that read does not
+// list names nothing, so it reads as the words its author wrote while the read is out and after
+// it answers, never by its short form.
+test("a run's person Dispatch does not know reads as its author wrote it while its read is out and after it answers", async () => {
+  const person = "dispatch://person/nobody@example.com";
+  const question = `Did ${person} sign off on the release?`;
+  const people = Promise.withResolvers<DispatchUser[]>();
+  const users = spyOn(api, "listUsers").mockReturnValue(people.promise);
+  const view = drawQuestions([runNode(RUN, ASKED_AT, question)]);
+  try {
+    await screen.findByText(question);
+    expect(view.drawn(), "while the read of people is out").toEqual([question]);
+    expect(users).toHaveBeenCalledTimes(1);
+    await act(async () => people.resolve([{ login: "ada@example.com" }]));
+    await waitFor(() =>
+      expect(view.client.getQueryState(usersQuery().queryKey)?.status).toBe("success")
+    );
+    await act(async () => {});
+    expect(view.drawn(), "once the read of people answered without the login").toEqual([question]);
+    expect(view.batch, "a party in the batched read").not.toHaveBeenCalled();
+  } finally {
+    view.close();
+    users.mockRestore();
   }
 });
 

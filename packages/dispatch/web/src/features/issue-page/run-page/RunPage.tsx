@@ -155,11 +155,15 @@ function namedFirstLine(words: string, nameOf: (reference: string) => string | u
  * The nodes the run changed (`RunChange`), each by its first line, beside its kind's word where
  * the page has one, as a link to the page it opens where it opens one. The line is cut by R1's
  * first-line rule and each reference in it named as a run's one-line place names one
- * (`namedFirstLine`, `RunReferenceNames`): an issue by its key, any other target by its name once
- * the page's batched read has named it, and by the words its author wrote until then and wherever
- * Dispatch answers that it has none, that the reader may not see it or that it is ambiguous, never
- * by its short form. A node whose words hold none is named by its kind's word alone, which is then
- * its link, or left out if it has neither.
+ * (`namedFirstLine`, `RunReferenceNames`'s `RunNameOf`): an issue by its key, with no read; any
+ * other target that is no party by its name once the page's one batched read has named it, and
+ * by the words its author wrote until then and wherever that read answers that it has no name,
+ * that nothing answers to it, that the reader may not see it or that it is ambiguous, and never
+ * read again; and a party (a person, a role or an agent's session) by a read of its own, and by
+ * the words its author wrote until that read answers and wherever it names nothing. No reference
+ * is drawn by its short form. The naming is handed each node's whole words (`RunChange.words`),
+ * not its cut line, since which references the cut line holds waits on their names
+ * (`run-references.ts`'s `namedReferences`).
  */
 function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode {
   const words = useMemo(() => changed.map((node) => node.words), [changed]);
@@ -171,6 +175,9 @@ function ChangedNodes({ changed }: { changed: readonly RunChange[] }): ReactNode
   );
 }
 
+/** Draws each changed node's line, its references named by `nameOf`, beside its kind's word. A
+ *  node whose words hold none is named by its kind's word alone, which is then its link, and a
+ *  node that has neither is left out. */
 function ChangedNodeList({
   changed,
   nameOf,
