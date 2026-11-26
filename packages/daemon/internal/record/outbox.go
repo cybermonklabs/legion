@@ -1295,8 +1295,28 @@ type SuperviseRequest struct {
 	// with no delivery pending, so the entry test alone would drop the retry's own task and
 	// relaunch the worker with no prompt. The outbox row-id guard still holds
 	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
-	// time.
+	// time. It says nothing of who asked for the start (Decided below): the phase-entry upgrade
+	// stamped it on each owed start whose claim already held an entry
+	// (migrations/20261111225552_phase_entry.up.sql), whoever had queued that start.
 	ResendEntry bool `json:"resendEntry,omitempty"`
+	// Decided marks a start a person, the controller or the issue's architect decided. Two starts
+	// carry it: the held phase's retry (workflow.Engine.restart), by any route into it — the
+	// architect's retry_or_escalate, the operator's `legion claims retry` of a phase worker, a
+	// person's todo on a held root — and admission's start of a promoted root's architect
+	// (workflow.Engine.StartPromotedArchitect), which a todo on the root brings, the controller's
+	// restart of a tree among them. It is the one start that launches again the agent of a claim
+	// held for OpenAI's cyber-policy refusal: the outbox hands it to the claim's retry
+	// (supervise.RequestRetry's Decided, which supervise.Claim.RetryHeld reads), and that retry
+	// starts the agent in a new session (supervise's freshSession). Every other start of such a
+	// claim is one the daemon makes by itself, which the machine refuses, whatever other mark it
+	// carries. A row a release before this field wrote carries no Decided, so its start of a held
+	// claim is refused too; where that start is of the issue's phase the refusal holds the issue
+	// for its architect (the daemon outbox's heldStartRefused), and the architect's retry then
+	// writes a row that carries it. A release before this field refuses a row that carries it
+	// (DisallowUnknownFields), so the way back takes the key off every supervise row, with every
+	// daemon of the database stopped, before the earlier image boots (docs/kubernetes.md, under
+	// 20261125223008_claim_held_for).
+	Decided bool `json:"decided,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow's Engine.ResumeTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
@@ -2800,6 +2820,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.ResendEntry && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start that resends the entry its role's row names requires a start with a task and a phase")
+		}
+		if value.Decided && (value.Op != "start" || value.News || value.CheckLook != 0) {
+			return fmt.Errorf("a supervise request someone decided is a start, and neither a start for news alone nor a production check's look")
 		}
 		if value.NeedsSlot && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start held for an admission slot requires a start with a task and a phase")

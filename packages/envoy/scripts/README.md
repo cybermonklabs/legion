@@ -1680,6 +1680,38 @@ where a state has no fit, it says the slowest state is not known and names the s
 The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
 CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
 
+## session-titles-scale.sh
+
+Times what the first boot of the release that carries `session_titles` does before it listens, on a store larger than production's (dispatch://INFRA-5573, R4):
+migrations `20261117100008`, `20261117100010`, `20261117100015` and `20261117100016`, applied by `store.Migrate` as the boot applies them, and `store.FillSessionTitles`, timed together as one span.
+It runs `TestSessionTitlesBootScale` (`internal/dispatch/store`), one run for each session count, each on a database of its own, which it creates and drops.
+A run migrates its database with every shipped migration but those four, writes 15,000 issues across 22 projects (161 open and 540 done P0 issues among them, production's counts of 2026-11-23),
+and writes the floor of events: the larger of 1,500,000 and 1.25 times production's newest event id, every one a `comment.created` event by a session actor that stamps a title, spread evenly over the run's sessions.
+Each event's payload is about 1.7 KB of JSON that does not compress, so each heap row stays as wide as a row Postgres keeps whole, under its 2 KB TOAST threshold; production's mean payload is about 2 KB.
+It then vacuums and analyzes `events` and `issues`, checkpoints, and times `Migrate` and the fill.
+A run fails when its store holds fewer events than the floor, when `Migrate` applied anything but the four, when the fill left a session without its title, or when the span took more than 60 s,
+the bound that, with the boot's 30 s database probe and its other steps before `/healthz`, keeps the boot inside the compose deployer's 90 s (`wait_for_health` in `deploy/scripts/autodeploy.sh`).
+
+It runs as a Job in the cluster's `builds` namespace, beside a Postgres of the Job's own, never against a server that holds anything of value.
+The Job runs it from `packages/envoy` of a clone of the commit under test:
+
+```bash
+cd packages/envoy && DISPATCH_SESSION_TITLES_SCALE_URL=postgres://postgres:<password>@127.0.0.1:5432/postgres?sslmode=disable \
+  DISPATCH_SESSION_TITLES_SCALE_NEWEST_EVENT_ID=<production's newest event id> scripts/session-titles-scale.sh
+```
+
+`DISPATCH_SESSION_TITLES_SCALE_NEWEST_EVENT_ID` is production's newest event id on the day of the run, read through `GET /api/v1/events/log?after=<id>&limit=1` (the highest `after` that still answers an event).
+`DISPATCH_SESSION_TITLES_SCALE_SESSIONS` (default `110000 11000`) lists the session counts, space-separated.
+`DISPATCH_SESSION_TITLES_SCALE_LOAD` is the negative control's alone: each run loads that many events instead of the floor, and must fail its count check.
+`SESSION_TITLES_SCALE_SCRATCH` (default `/scratch`) holds `GOCACHE`, `GOTMPDIR` and the test's log, `session-titles-scale.log`.
+A run needs about 3.5 GB of the server's disk for its database and write-ahead log.
+
+It prints the server's version and the settings the times depend on, then the test's output, then each run's line that starts `session-titles-scale:` again, last.
+That line names the verdict, the node (`NODE_NAME`), the CPUs, the server's version, production's newest event id, the floor, the event count, the heap's and the TOAST table's sizes, the mean payload, the sessions and the issues,
+and the time of the migrations, the time of the fill, the span and its margin under 60 s.
+The script exits with the test's own status, and with 1 when the test printed fewer such lines than the runs it was given.
+CI never runs it: the test skips while `DISPATCH_SESSION_TITLES_SCALE_URL` is unset.
+
 ## going-smoke.sh
 
 Proves, on a booted server, that the real `envoy-dispatch` binary answers a question over HTTP and

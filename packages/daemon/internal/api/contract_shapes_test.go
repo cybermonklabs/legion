@@ -392,7 +392,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 		phase.Done, phase.Held}
 	causeWords := []supervise.FailureCause{supervise.CauseLaunchRefused, supervise.CauseDied,
 		supervise.CauseNeverRegistered, supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted,
-		supervise.CauseProviderError, supervise.CauseUnrecorded}
+		supervise.CauseProviderError, supervise.CauseCyberPolicy, supervise.CauseUnrecorded}
 	updateWords := []UpdateState{UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStateAnswered}
 	mergeWords := []record.MergeState{record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
 		record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
