@@ -63,6 +63,21 @@ func newSession(t testing.TB, id string, life time.Duration) *session {
 	}
 }
 
+// jobService is the service a job's token names: the identity its job entry lists, here a pod's
+// Kubernetes service account as the exchange spells its subject.
+const jobService = "system:serviceaccount:example-ns:example-job"
+
+// newJobSession is a job's session: its token names the job entry's identity as its service and
+// no person, the entry's project scope and whole list - named with its one project, or public
+// with the private projects its entry lists - and no OAuth scope, as the exchange mints it.
+func newJobSession(t testing.TB, id string, life time.Duration, scope string, projects ...string) *session {
+	t.Helper()
+	s := newSession(t, id, life)
+	s.answer.Person, s.answer.Service = "", jobService
+	s.answer.ProjectScope, s.answer.Projects = scope, projects
+	return s
+}
+
 // request is the authorization request the server sends for this session connecting with nonce:
 // its token in the CONNECT's token field and its proof over nonce in the signature field, which
 // nats.go base64url-encodes.
@@ -141,6 +156,31 @@ func TestASessionTokenGetsItsOwnChannel(t *testing.T) {
 	require.Equal(t, time.Unix(a.answer.ExpiresAt, 0), decision.Expires)
 	require.Contains(t, decision.Grant.Subscribe, "notifications.envoy.deliver.ses_a")
 	require.NotContains(t, decision.Grant.Subscribe, "notifications.envoy.deliver.*")
+}
+
+// A job's live token, named with its one project or public with its entry's private projects,
+// beside a proof over this connection's nonce, is answered as a person's session's token is: with
+// natsgrant.Session's grant of its own session, named session/<id>, expiring with the token.
+func TestAJobsSessionTokenGetsItsOwnChannel(t *testing.T) {
+	for _, row := range []struct {
+		name     string
+		scope    string
+		projects []string
+	}{
+		{"a job's named token", ciphertoken.ProjectScopeNamed, []string{"ACME"}},
+		{"a job's public token", ciphertoken.ProjectScopePublic, []string{"PRIVA", "PRIVB"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			job := newJobSession(t, "ses_job", 15*time.Minute, row.scope, row.projects...)
+			decision, err := Decide(t.Context(), Deps{Introspect: introspector(job)}, nil, job.request(t, "nonce-of-this-connection"))
+			require.NoError(t, err)
+			want, err := natsgrant.Session("ses_job")
+			require.NoError(t, err)
+			require.Equal(t, want, decision.Grant)
+			require.Equal(t, "session/ses_job", decision.Name)
+			require.Equal(t, time.Unix(job.answer.ExpiresAt, 0), decision.Expires)
+		})
+	}
 }
 
 // A service's platform token, from an account the deployment lists, is answered with its kind's
@@ -241,6 +281,10 @@ func TestRefusals(t *testing.T) {
 	readOnly := newSession(t, "ses_reader", 15*time.Minute)
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
+	// A public token is a job's, which names a service and no person: one beside a person, which
+	// no entry that names a person mints, is no session's credential (ciphertoken.SessionCaller).
+	publicForPerson := newJobSession(t, "ses_public_person", 15*time.Minute, ciphertoken.ProjectScopePublic, "PRIVA")
+	publicForPerson.answer.Person = "person@example.com"
 	// A token narrowed to reading is read-only too, whatever project scope it narrows, so each
 	// answer of the golden file the broker's own test holds its narrowed answers to is no
 	// session's credential to the auth service either: each is a session of its own, presenting
@@ -257,7 +301,7 @@ func TestRefusals(t *testing.T) {
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
 	}
-	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly}, narrowed...)
+	introspected := append([]*session{a, expired, dotted, foreign, unbounded, readOnly, publicForPerson}, narrowed...)
 	deps := Deps{Introspect: introspector(introspected...), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
@@ -291,6 +335,7 @@ func TestRefusals(t *testing.T) {
 		{"a proof of another key", deps, nil, otherKey.request(t, "nonce"), labelKeyMismatch, "key mismatch"},
 		{"a live token that is no session's credential", deps, nil, foreign.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a read-only token", deps, nil, readOnly.request(t, "nonce"), labelNotASession, "token is no session's credential"},
+		{"a public token beside a person", deps, nil, publicForPerson.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a proof that is no base64url", deps, nil, badSig, labelProofInvalid, "proof invalid: jws"},
 		{"a token that names no expiry", deps, nil, unbounded.request(t, "nonce"), labelNoExpiry, "token names no expiry"},
 		{"a session id that is not one subject token", deps, nil, dotted.request(t, "nonce"), labelBadSessionID, "session id is not one subject token"},
