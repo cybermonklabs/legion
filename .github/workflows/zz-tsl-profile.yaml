@@ -9,8 +9,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        leg: [base, install, directives, both]
-        rep: [1, 2, 3]
+        leg: [base, directives]
+        rep: [1, 2]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     steps:
@@ -28,6 +28,7 @@ jobs:
           CI_TS_INSTALL: ${{ (matrix.leg == 'install' || matrix.leg == 'both') && '1' || '' }}
           CI_FAST_DIRECTIVES: ${{ (matrix.leg == 'directives' || matrix.leg == 'both') && '1' || '' }}
           PROF_LOG: ${{ runner.temp }}/prof.json
+          PROF_SAMPLE: ${{ runner.temp }}/sample.json
         run: |
           s=$(date +%s.%N)
           .github/scripts/ci-filters-generate.sh "$RUNNER_TEMP/ci-filters.yaml"
@@ -41,4 +42,21 @@ jobs:
           for r in recs:
               if r["wall"] >= 0.4:
                   print(f"   {r['t0']:6.2f} +{r['wall']:5.2f} cpu {r['cpu']:5.2f}  {' '.join(r['args'])[:100]}")
+          PY
+          python3 - "$RUNNER_TEMP/sample.json" <<'PY'
+          import json, sys, itertools
+          d = json.load(open(sys.argv[1]))
+          print("inclusive main-thread seconds:")
+          for n, c in d["incl"][:60]:
+              print(f"  {c/100:6.2f}  {n}")
+          print("self:")
+          for n, c in d["self"][:25]:
+              print(f"  {c/100:6.2f}  {n}")
+          print("timeline (phase changes):")
+          last = None
+          for t, ph in d["timeline"]:
+              key = " > ".join(ph.split(" > ")[:4])
+              if key != last:
+                  print(f"  {t:6.2f}  {key[:180]}")
+                  last = key
           PY

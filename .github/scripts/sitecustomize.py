@@ -48,3 +48,45 @@ if os.environ.get("PROF_LOG"):
             _pr.dump_stats(os.environ["PROF_CPROFILE"])
 
         atexit.register(_dump_prof)
+
+
+if os.environ.get("PROF_SAMPLE"):
+    import atexit, collections, sys, threading, time
+
+    _main = threading.main_thread().ident
+    _incl = collections.Counter()
+    _self = collections.Counter()
+    _timeline = []
+    _stop = False
+    _start = time.monotonic()
+
+    def _name(f):
+        return f"{os.path.basename(f.f_code.co_filename)}:{f.f_code.co_name}"
+
+    def _sample():
+        while not _stop:
+            frame = sys._current_frames().get(_main)
+            if frame is not None:
+                names, f = [], frame
+                while f is not None:
+                    names.append(_name(f))
+                    f = f.f_back
+                for n in set(names):
+                    _incl[n] += 1
+                _self[names[0]] += 1
+                engine = [n for n in reversed(names) if n.split(":")[0] in (
+                    "ci_filter_coverage.py", "ci_job_reads.py", "ci_filter_sources.py", "go_build_tags.py",
+                    "ci_ts_listing.py", "ci_workflow_rules.py", "go_legs.py") or n.startswith("<string>")]
+                _timeline.append((round(time.monotonic() - _start, 2), " > ".join(engine[:6])))
+            time.sleep(0.01)
+
+    threading.Thread(target=_sample, daemon=True).start()
+
+    def _dump_sample():
+        global _stop
+        _stop = True
+        import json
+        with open(os.environ["PROF_SAMPLE"], "w") as f:
+            json.dump({"incl": _incl.most_common(80), "self": _self.most_common(40), "timeline": _timeline}, f)
+
+    atexit.register(_dump_sample)
