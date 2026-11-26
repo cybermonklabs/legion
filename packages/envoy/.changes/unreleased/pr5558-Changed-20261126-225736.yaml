@@ -1,0 +1,5 @@
+kind: Changed
+body: 'A `before_merge` check read at one commit (`?at=`) answers as a head there does. A fail there is `no/fail`, with its result and that commit.'
+time: 2026-11-26T22:57:36Z
+custom:
+    Issue: pr5558
