@@ -43,9 +43,24 @@ func NodeSearchOwnersSQL(docs string) string {
 // RoomBlockRowSQL answers null and the owner is the document, which the case answers without the
 // probe and without the block_id_key digest the probe computes for every node it reads.
 //
-// Every read of node_search that answers a document reads the node's document through it: search's
-// document arm, the related-item check's probe of a lexeme and the near-copy gate's scoring.
+// Search uses this to answer the document of a matching block. The related and duplicate checks
+// read document rows directly and need no block-owner resolution.
 func NodeSearchDocumentSQL(alias, owner string) string {
 	return `coalesce(case when ` + owner + `.kind = 'tree' then ` +
 		graphstore.RoomBlockRowSQL(owner+".id", NodeSearchBlockSQL(alias)) + ` end, ` + owner + `.id)`
+}
+
+// SearchVisibilityJoin joins a search candidate's artifact address, then joins only a node that
+// the registry hides from the acting credential. The caller keeps candidates with no such row.
+// This is VisibleEnd's test over search's non-standing kinds: a missing node or a null visibility
+// test never hides a candidate. An anti-join lets Postgres choose between indexed lookups for
+// small result sets and filtering many candidates together for a broadly matching query.
+func SearchVisibilityJoin(kind, id, param string) string {
+	visible := VisibilityMarker + `every kind */` + visibleHeldRow("hidden", authorIsOfRow("hidden", param))
+	return `
+  left join artifacts visible_artifact on ` + kind + ` = 'document' and visible_artifact.id::text = ` + id + `
+  left join graph_nodes hidden
+    on hidden.kind = case ` + kind + ` when 'document' then 'artifact' else ` + kind + ` end
+   and hidden.id = case ` + kind + ` when 'document' then visible_artifact.ref_key else ` + id + ` end
+   and not (` + visible + `)`
 }

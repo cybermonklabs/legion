@@ -734,8 +734,8 @@ func (s *server) routes() []apiRoute {
 			routeRow{http.MethodPost, "/api/v1/writes/_test/slow", authAny, "Test hook: {method, path, delay_ms} delays every keyed run of that method and path by delay_ms after its key is claimed, on the handler's own context; 0 disarms.", s.armSlowWrite},
 			routeRow{http.MethodPost, "/api/v1/settings/new-issue/_test", authAny, "Test hook: {label, session} replaces, on the process the call lands on, the new-issue label and session GET /api/v1/settings/new-issue answers from its environment; an empty value is none.", s.setNewIssueSettings},
 			routeRow{http.MethodGet, "/api/v1/messages/_test/queued", authAny, "Test hook: list the targeted messages this process queued itself for a session neither the listener's registry nor its known-session store held, each as the envelope its session's subject would hold: {queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}, oldest first; 404 QUEUED_ON_BUS on a process that publishes them to NATS.", s.listQueuedMessages},
-			routeRow{http.MethodPut, "/api/v1/_test/holds/neighbourhood-read", authAny, "Test hook: hold this process's next graph neighbourhood read for a Go duration.", s.armRelatedReadHold(&s.relatedReadHolds.neighbourhood)},
-			routeRow{http.MethodPut, "/api/v1/_test/holds/related-search", authAny, "Test hook: hold this process's next related search's keyword stage for a Go duration.", s.armRelatedReadHold(&s.relatedReadHolds.search)},
+			routeRow{http.MethodPut, "/api/v1/_test/holds/neighbourhood-read", authAny, "Test hook: hold this process's next graph neighbourhood read for a Go duration.", s.armNeighbourhoodReadHold},
+			routeRow{http.MethodPut, "/api/v1/_test/holds/related-search", authAny, "Test hook: hold this process's next related search's keyword stage for a Go duration.", s.armRelatedSearchHold},
 		)
 	}
 	routes := make([]apiRoute, len(rows))

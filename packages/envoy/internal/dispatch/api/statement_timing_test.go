@@ -38,15 +38,20 @@ const (
 // Which protocol each statement is under, and why:
 //
 //   - Protocol 1 pairs, whose two sides one schema runs: the issue list unpaged and paged, the
-//     project list, agentLastActivity, the issue's children, and the five statements of
-//     search's document arm - searchQuery, searchQueryMeaning, relatedKeywordQuery,
-//     relatedMeaningQuery and relatedProbeSQL. The listing and the project list add no
+//     project list, agentLastActivity and the issue's children take benchtime.Pair (the after
+//     median strictly below the before median). The listing and the project list add no
 //     migration, agentLastActivity reads events_session_actor_created_at_idx, which migration
-//     0026 built, the children read walks issues_parent_key, and the document arm's older text
-//     reads artifact_versions, a table this release's schema still holds; so on a database at
-//     this release's schema both texts of each are measurable, and the pair is the committed
-//     regression check. The two related statements are gated on the document arm they share
-//     and reported whole beside it, for the reason given where that pair is measured.
+//     0026 built, and the children read walks issues_parent_key.
+//
+//   - Moved-read pairs (root R22, benchtime.PairMovedRead): the four gated statements whose
+//     document arm moved onto node_search (R17) - searchQuery, searchQueryMeaning over main's
+//     document arm, the document arm relatedKeywordQuery and relatedMeaningQuery share, and
+//     relatedProbeSQL. Their before text reads artifact_versions, a table this release's schema
+//     still holds, so both sides run on one schema; each is held to root R22's rule for a moved
+//     read (after median at most 2 times before, or at most 1 ms more where after is under 2 ms),
+//     and logs both medians and their ratio. The two related statements are gated on the document
+//     arm they share (relatedDocumentKeywordLeg, reading node_search's document rows) and reported
+//     whole beside it, for the reason given where that pair is measured.
 //
 //   - Protocol 2, one side alone: listIssueAsksQueryAll, listIssueRootMessagesQuery and
 //     listArtifactAsksQueryOpen. This release edits the two ask statements only to read each
@@ -196,12 +201,12 @@ func TestStatementTimings(t *testing.T) {
 	// the first row it meets, which is not the statement production runs.
 	probeArguments := []any{subjects.Project, subjects.ProbeLexemes, subjects.Issue, (*string)(nil)}
 
-	// The pair database has node_search for this build's document arm and artifact_versions
-	// for the before arm. document_search is the historical schema marker, not a source
-	// for either arm. The rewrites use the same bound parameters as before. The runner
-	// alternates texts on one connection and fails a Pair unless the after median is
-	// lower. The older database, without the marker, runs only the before texts under
-	// the same names. The two meaning statements are
+	// The pair database has node_search for this build's document arm (block rows for search,
+	// document rows for the related check and probe) and artifact_versions for the before arm.
+	// document_search is the historical schema marker, not a source for either arm. The rewrites
+	// use the same bound parameters as before. The runner alternates texts on one connection and
+	// holds these four moved-read pairs to root R22 (PairMovedRead). The older database, without
+	// the marker, runs only the before texts under the same names. The two meaning statements are
 	// the exception, and their names say so: this release deletes the whole-text rows four of
 	// main's five meaning arms read, so main's meaning text measures a statement whose arms
 	// find nothing here, and the pair and report below take a before side of their own under a
@@ -225,7 +230,7 @@ func TestStatementTimings(t *testing.T) {
 		return
 	}
 
-	runner.Pair(t, "searchQuery, keywords only",
+	runner.PairMovedRead(t, "searchQuery, keywords only",
 		benchtime.Statement{SQL: mainSearchQuery, Args: searchArguments},
 		benchtime.Statement{SQL: searchQuery, Args: afterSearchArguments})
 	// The before side is this release's own meaning body over main's document arm
@@ -239,7 +244,7 @@ func TestStatementTimings(t *testing.T) {
 	//
 	// Both sides are the scoped shape: afterSearchMeaningArguments binds the subject's project,
 	// and that is the statement search sends for one (runMeaningSearch, meaningProjectScope).
-	runner.Pair(t, "searchQueryMeaning, over main's document arm",
+	runner.PairMovedRead(t, "searchQueryMeaning, over main's document arm",
 		benchtime.Statement{SQL: searchQueryMeaningOverMainsDocumentArm, Args: afterSearchMeaningArguments},
 		benchtime.Statement{SQL: searchQueryMeaningScoped, Args: afterSearchMeaningArguments})
 	// relatedKeywordQuery and relatedMeaningQuery are gated on the document arm they share
@@ -261,7 +266,7 @@ func TestStatementTimings(t *testing.T) {
 	// write runs; each report's name is its before text's, which is what a reader lines up
 	// against the Before branch's reading on the older schema.
 	documentLegArguments := []any{lexemeQuery, subjects.Project, lexemes, weights}
-	runner.Pair(t, "the document arm relatedKeywordQuery and relatedMeaningQuery share",
+	runner.PairMovedRead(t, "the document arm relatedKeywordQuery and relatedMeaningQuery share",
 		benchtime.Statement{
 			SQL:  documentLegStatement(mainRelatedDocumentKeywordLeg, mainRelatedTermWeights),
 			Args: documentLegArguments,
@@ -279,7 +284,7 @@ func TestStatementTimings(t *testing.T) {
 		benchtime.Statement{SQL: relatedMeaningQueryOverMainsDocumentArm, Args: relatedMeaningOverMainsArguments, Setup: meaningSetup},
 		benchtime.Statement{SQL: relatedMeaningScopedExcludingQuery, Args: relatedMeaningExcludingArguments, Setup: meaningSetup})
 
-	runner.Pair(t, "relatedProbeSQL",
+	runner.PairMovedRead(t, "relatedProbeSQL",
 		benchtime.Statement{SQL: mainRelatedProbeSQL, Args: probeArguments},
 		benchtime.Statement{SQL: relatedProbeSQL, Args: probeArguments})
 }
@@ -319,13 +324,6 @@ with q as materialized (select $1::tsquery as tsq, ''::text as term, '{}'::text[
 )
 select count(*) from document_arm`
 }
-
-// relatedDocumentKeywordLeg is the document arm of the related-item check's keyword legs alone:
-// searchDocumentKeywordLeg under relatedCoordinationRank, the rank relatedKeywordQuery and
-// relatedMeaningQuery rank their arms by, which makes it the after side of that arm's pair. It
-// is built here rather than beside those two statements because this measurement is its only
-// reader, and a server would otherwise build it at start for nothing.
-var relatedDocumentKeywordLeg = searchDocumentKeywordLeg(relatedCoordinationRank)
 
 // databaseHoldsDocumentSearch answers whether the database under measurement holds
 // document_search (migration 20261101182447), which is what decides how the five document-arm

@@ -594,19 +594,15 @@ select l.lexeme, l.tf, quote_literal(l.lexeme),
 
 // relatedProbeSQL answers which of the given lexemes some item of the project holds, leaving out
 // the excluded owner's items. Each kind probes its own search index with an exists: issues, then
-// documents through node_search (migration 20261125160000_issue_tree_node_search), the
-// GIN-indexed vector of each block node, then comments, asks and messages.
+// documents through node_search's document rows (node_kind = 'artifact', migration
+// 20261125160000_issue_tree_node_search, served by node_search_document_vector), then comments,
+// asks and messages.
 //
-// The document arm reads a node as a block of its document as search does (the owner by its
-// ref_key, refs.NodeSearchDocumentSQL, and no converted document's old owner). The GIN match and
-// the document's kind, project and exclusions stand behind an offset 0, which keeps the planner
-// from folding the arm into the exists around it, costed as the search for one row, where a scan
-// of the whole table starts cheapest; and the ask test runs only on the rows those keep. Unlike
-// search's arm and the near-copy gate, the probe needs one row a lexeme and stops there, so it
-// tests the few it reads one at a time (graphstore.InsideAskBlockSQL): the node's own text from
-// its row, then its block parents. On the measurement database the issues arm answers every one
-// of the twenty probe lexemes and this arm never runs, so its cost there is its planning alone,
-// which four relations keep small.
+// The document arm's lexeme test is a subquery of its own behind `offset 0`, which keeps the
+// planner from folding it into the exists around it, costed as the search for one row where a
+// sequential scan starts cheapest; planned on its own, each lexeme probes
+// node_search_document_vector directly, as main probed document_search. Document rows already hold
+// search_document_text's vector (ask blocks stripped), so no ask-block walk is needed here.
 //
 // An item on no document (an issue's comment or ask) is never the excluded document's, so the
 // document test applies only when $4 names one: `is distinct from` a null $4 would leave out
@@ -621,14 +617,12 @@ with probe as (
 select p.lexeme from probe p
  where exists (select 1 from issues i where i.search @@ p.tq and i.project_key = $1 and i.key <> $3)
     or exists (select 1
-                 from (select s.node_address, s.text from node_search s
-                        join artifacts o on o.ref_key = ` + refs.NodeSearchOwnerSQL("s") + `
-                        join artifacts a on a.id = ` + refs.NodeSearchDocumentSQL("s", "o") + `
-                        where s.search @@ p.tq and a.kind = 'doc' and a.project_key = $1
-                          and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid
-                          and not exists (select 1 from document_rooms moved where moved.artifact_id = o.id)
-                        offset 0) eligible
-                where not ` + graphstore.InsideAskBlockSQL("eligible.node_address", "eligible.text") + `)
+                 from (select s.node_address from node_search s
+                        where s.node_kind = '` + graphstore.KindArtifact + `' and s.search @@ p.tq
+                        offset 0) s
+                 join artifacts a on a.ref_key = s.node_address
+                where a.kind = 'doc' and a.project_key = $1
+                  and a.issue_key is distinct from $3 and a.id is distinct from $4::uuid)
     or exists (select 1 from comments c
                  left join issues i on i.key = c.issue_key
                  left join artifacts a on a.id = c.artifact_id

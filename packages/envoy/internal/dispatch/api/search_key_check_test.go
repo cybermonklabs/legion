@@ -172,7 +172,9 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	const word = "zorptangle"
 	ctx := context.Background()
 	embedder := &fakeEmbedder{vectors: map[string][]float32{query: queryVector()}}
-	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{
+		embedder: embedder, duplicateBound: nearCopyVerdictBound(t), relatedBound: meaningVerdictBound(t),
+	})
 	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, project, "Survey gear", first+"\n\n"+moved+"\n")
 	if spec := readDecisionDocument(t, database, issue.Key, "spec"); spec.room != spec.id {
@@ -371,12 +373,65 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 		t.Errorf("the document_search row of the spec names version %d, want version %d, the one the trigger filled it from", filled, version)
 	}
 
+	var whole, blocksBeside int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from node_search s join document_search old on old.artifact_id = $1::uuid
+		        where s.node_kind = 'artifact' and s.node_address = $2
+		          and s.text = '' and s.text_seq = old.number and s.search = old.search),
+		       (select count(*) from node_search where node_kind = 'block' and node_address = any($3::text[]))
+	`, issue.PrimaryArtifactID, spec.refKey, roomBlocks).Scan(&whole, &blocksBeside); err != nil {
+		t.Fatalf("read the search rows of %s and its blocks: %v", spec.refKey, err)
+	}
+	if whole != 1 || blocksBeside != len(roomBlocks) {
+		t.Fatalf("node_search holds %d whole-document rows matching the version vector of %s and %d block rows, want 1 and %d",
+			whole, spec.refKey, blocksBeside, len(roomBlocks))
+	}
+	searchCensus, err := graphcensus.StoreCensus(ctx, database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
+	if err != nil {
+		t.Fatalf("take the search row census: %v", err)
+	}
+	at := slices.IndexFunc(searchCensus.Kinds, func(kind graphcensus.KindReport) bool {
+		return kind.Kind == "document_search_node"
+	})
+	if at < 0 {
+		t.Fatal("the store census did not check document_search_node")
+	}
+	if kind := searchCensus.Kinds[at]; kind.Rows == 0 || kind.Nodes == 0 ||
+		kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+		t.Fatalf("document_search_node census: %+v; want document rows and zero differences", kind)
+	}
+
 	// Emptied, document_search changes no answer of this build's search, which reads node_search.
 	if _, err := database.Pool.Exec(ctx, `delete from document_search`); err != nil {
 		t.Fatalf("empty document_search: %v", err)
 	}
 	if again := searchKeyHits(searchResponse(t, handler, "q="+word+"&keywords_only=true")); !slices.Equal(again, searchKeyHits(lexical)) {
 		t.Errorf("with document_search empty the search route answers %+v for %q, want %+v as before: this build's search reads node_search alone", again, word, searchKeyHits(lexical))
+	}
+
+	requireRelatedDocumentRows(t)
+	// An issue's own vector also contains the spec. Remove that alternative match so the
+	// keyword check must return the document and the near-copy gate must score its vector.
+	if _, err := database.Pool.Exec(ctx, `update issues set search = ''::tsvector where key = $1`, issue.Key); err != nil {
+		t.Fatalf("clear the issue vector of %s: %v", issue.Key, err)
+	}
+	refreshTermStats(t, database, project)
+	created := createIssueRequest(t, handler, map[string]any{
+		"project": project, "title": word + " theodolite recalibration mounting bracket", "force": true,
+	})
+	requireAnsweredCreate(t, created)
+	suggestions := createdSuggestions(t, created)
+	if !slices.ContainsFunc(suggestions.Related, func(hit model.WriteSuggestion) bool {
+		return hit.Kind == "document" && hit.ID == issue.PrimaryArtifactID
+	}) {
+		t.Errorf("with document_search empty, the related check returned %+v, want document %s",
+			suggestions, issue.PrimaryArtifactID)
+	}
+	if !slices.ContainsFunc(suggestions.TitleMatches, func(hit model.DuplicateCandidate) bool {
+		return hit.Key == issue.Key
+	}) {
+		t.Errorf("with document_search empty, the duplicate check returned %+v, want the issue of document %s",
+			suggestions.TitleMatches, issue.PrimaryArtifactID)
 	}
 
 	// The census reads the authors a moved block's node is to name off the spec's record of the
@@ -403,5 +458,29 @@ func TestSearchFollowsABlockThatChangesOwner(t *testing.T) {
 	if authors.Rows != 2 || authors.Nodes != 0 || authors.RowDifferences != 2 || authors.NodeDifferences != 0 || !slices.Equal(read, want) {
 		t.Errorf("with the carried authors taken off the store census reads block_author rows=%d tuples=%d, the row differences %v and the tuple differences %+v, want two rows, no tuple and %v",
 			authors.Rows, authors.Nodes, read, authors.ReportedNodes, want)
+	}
+}
+
+// Inspect the document keyword arm in the statements the check runs, not a separate copy.
+// The page may still look up a meaning hit's block vector; that lookup is not a keyword arm.
+func requireRelatedDocumentRows(t *testing.T) {
+	t.Helper()
+	for _, statement := range []struct{ name, sql string }{
+		{"relatedKeywordQuery", relatedKeywordQuery},
+		{"relatedKeywordExcludingQuery", relatedKeywordExcludingQuery},
+		{"relatedMeaningQuery", relatedMeaningQuery},
+		{"relatedMeaningExcludingQuery", relatedMeaningExcludingQuery},
+		{"relatedMeaningScopedQuery", relatedMeaningScopedQuery},
+		{"relatedMeaningScopedExcludingQuery", relatedMeaningScopedExcludingQuery},
+		{"relatedMeaningJoinedQuery", relatedMeaningJoinedQuery},
+		{"relatedMeaningJoinedExcludingQuery", relatedMeaningJoinedExcludingQuery},
+	} {
+		_, arms, starts := strings.Cut(statement.sql, "select 'document' as kind, 'keyword'")
+		arm, _, ends := strings.Cut(arms, "select 'comment' as kind, 'keyword'")
+		if !starts || !ends || strings.Count(arm, "node_search") != 1 ||
+			!strings.Contains(arm, "s.node_kind = 'artifact' and s.search @@") ||
+			!strings.Contains(arm, "ts_rank_cd(s.search,") || strings.Contains(arm, "v.search") {
+			t.Errorf("%s must match and rank its document keyword arm from document rows alone:\n%s", statement.name, arm)
+		}
 	}
 }
