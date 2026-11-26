@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-
+import { beforeAll, expect, test } from "bun:test";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   COMPACT_VIEWPORT_QUERY,
   MD_VIEWPORT_QUERY,
@@ -7,6 +7,12 @@ import {
   READING_PANE_QUERY,
 } from "../shell/useDialog";
 import { DESKTOP_WIDTH, PHONE_WIDTH, stubViewport } from "./margin-fixture";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // The phone rows of the draft matrix draw a phone only if the stub answers as a phone does: the
 // phone and compact queries true, and the `md:` and reading pane queries, which are `rem` widths,
