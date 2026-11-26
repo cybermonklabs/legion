@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -99,10 +100,13 @@ type Config struct {
 	MachineLoginURL string
 	// Store holds the sessions.
 	Store *store.Store
-	// Machine reads the records and decides them (ReadRecord, PendingForApprover, ApplyDecision),
-	// and its group reader (requests.Machine.Groups) says whether the signed-in person is a member
-	// of a group approver and so sees the buttons (record.MayDecide).
+	// Machine reads the records and decides them (ReadRecord, PendingForApprover,
+	// ApplyPageDecision), and its group reader (requests.Machine.Groups) says whether the signed-in
+	// person is a member of a group approver and so sees the buttons (record.MayDecide).
 	Machine *requests.Machine
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 }
 
 // Page is the approval page and its sign-in, whose methods are the broker's routes for them.
@@ -355,6 +359,9 @@ const (
 	codeSignInUnverified = "SIGN_IN_UNVERIFIED"
 	// A verified sign-in the Workspace rule refuses (oidc.WorkspaceLogin).
 	codeSignInAccountRefused = "SIGN_IN_ACCOUNT_REFUSED"
+	// A verified sign-in by a Google account that no longer holds the person's address, which
+	// Dispatch named replaced when another account took it (store.ErrSubjectReplaced).
+	codeSignInAccountReplaced = "SIGN_IN_ACCOUNT_REPLACED"
 )
 
 // writeMessage writes m as the page's answer with status, noting code on the answer's record

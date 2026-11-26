@@ -1,6 +1,6 @@
 package config
 
-//ci:reads deploy/kubernetes/operator-route/pod.yml TestLoadForValidationRefusesUnderKubernetes
+//ci:reads deploy/kubernetes/operator-route/pod.yml `packages/daemon/internal/config/kubernetes_test.go#operatorRoutePod` reads it under ../../../.. for the tests of the operator route's placeholders
 
 import (
 	"fmt"
@@ -1461,7 +1461,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		{
 			name: "projects absent",
 			body: kubernetesWith("projects:\n  LEGSMOKE: {}\n", ""),
-			want: "projects is required when runtime is kubernetes: every pod works one issue of a configured project",
+			want: "projects is required when runtime is kubernetes: every pod works one issue of one of the projects it names",
 		},
 		{
 			name: "omp_invocation set",

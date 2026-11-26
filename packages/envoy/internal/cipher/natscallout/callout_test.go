@@ -149,6 +149,23 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 	}
 }
 
+// Through the service, the hub refuses the connection of a session whose person Dispatch holds,
+// whose token the broker's introspection answers live and held, and admits a session whose person
+// it does not hold, on the same hub at the same time: a held person's broker token opens no NATS
+// connection, as it opens no broker route.
+func TestTheHubRefusesASessionWhosePersonDispatchHolds(t *testing.T) {
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	served, held := newSession(t, "ses_served", 15*time.Minute), newSession(t, "ses_held", 15*time.Minute)
+	held.answer.Held = true
+	startService(t, url, keys, Deps{Introspect: introspector(served, held)}, Decide)
+
+	_, err := connectSession(t, url, held, nil)
+	require.ErrorIs(t, err, nats.ErrAuthorization, "the hub admitted a session whose person Dispatch holds")
+	_, err = connectSession(t, url, served, nil)
+	require.NoError(t, err, "the hub refused a session whose person Dispatch does not hold")
+}
+
 // Through the service, a session answers a request asked on a reply subject naming it
 // (bus.SessionReplySubject), as every relay frame, connection probe and agent stream replay asks,
 // and the server refuses the same answer on another session's reply

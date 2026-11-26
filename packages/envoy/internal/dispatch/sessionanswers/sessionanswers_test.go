@@ -12,13 +12,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // A message the listener stored for a session that is not running (state 'queued') is a person's
 // words the session owes an answer for exactly as a sent one is: it reaches that session when it
 // runs again, so both delivery arms read the two states alike (INFRA-626). An attempt that
 // failed, and one still pending, reach nobody and are left out.
 func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for state, want := range map[string]int{"sent": 1, "queued": 1, "failed": 0, "pending": 0} {
@@ -59,6 +65,7 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 // the generic plan Postgres caches for it afterwards, which knows neither the session nor the
 // window's start.
 func TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var messageID string

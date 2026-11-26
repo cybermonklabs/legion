@@ -25,23 +25,40 @@ const requestTimeout = 10 * time.Second
 const dispatchServer = "Dispatch"
 
 // HTTPClient calls Dispatch's native /api/v1 routes, presenting the daemon's credential through the
-// transport it was made with (New).
+// transport it was made with (New). Every write names as its actor the session actor answers.
 type HTTPClient struct {
 	baseURL    string
 	timeout    time.Duration
 	httpClient *http.Client
+	// session is the session every write names as its actor (WritesAs). It is empty for a client
+	// made with no option, whose writes name the session of the key's project (DaemonSession).
+	session string
+}
+
+// Option sets one thing of the client New makes.
+type Option func(*HTTPClient)
+
+// WritesAs makes every write of the client name session as its actor, on an issue of any project.
+// Under dispatch_token_broker the daemon passes the session its broker token proves, because
+// Dispatch refuses a write whose actor names another session (403 ACTOR_SESSION_MISMATCH).
+func WritesAs(session string) Option {
+	return func(c *HTTPClient) { c.session = session }
 }
 
 // New creates a client for one Dispatch server whose every request goes through transport, which
 // presents the daemon's credential: BearerTransport for the bearer dispatch_token_file names, or,
 // under dispatch_token_broker, the daemon's own broker token (cipherclient.NewTokenTransport). The
-// client sets no Authorization of its own.
-func New(baseURL string, transport http.RoundTripper) *HTTPClient {
-	return &HTTPClient{
+// client sets no Authorization of its own. Each option sets one thing of the client (WritesAs).
+func New(baseURL string, transport http.RoundTripper, options ...Option) *HTTPClient {
+	c := &HTTPClient{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		timeout:    requestTimeout,
 		httpClient: &http.Client{Transport: transport},
 	}
+	for _, option := range options {
+		option(c)
+	}
+	return c
 }
 
 // BearerTransport is a RoundTripper that sends each request through base (http.DefaultTransport
@@ -159,7 +176,7 @@ func (c *HTTPClient) SetStatus(ctx context.Context, key, status string) (Issue, 
 	var response issueResponse
 	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(key), daemonWrite{
 		Status: status,
-		Actor:  daemonActor(key),
+		Actor:  c.actor(key),
 	}, &response); err != nil {
 		return Issue{}, err
 	}
@@ -177,7 +194,7 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(issue.Key), daemonWrite{
 		Status:           status,
 		ExpectedSequence: issue.LastSeq,
-		Actor:            daemonActor(issue.Key),
+		Actor:            c.actor(issue.Key),
 	}, &response); err != nil {
 		return Issue{}, err
 	}
@@ -192,7 +209,7 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 // this caller may not release the holder, and 409 CLAIM_CONTENDED when the holder changed twice
 // while the request ran, so nothing was applied.
 func (c *HTTPClient) ReleaseClaim(ctx context.Context, key string) error {
-	return c.request(ctx, http.MethodDelete, "/api/v1/issues/"+url.PathEscape(key)+"/claim", daemonWrite{Actor: daemonActor(key)}, nil)
+	return c.request(ctx, http.MethodDelete, "/api/v1/issues/"+url.PathEscape(key)+"/claim", daemonWrite{Actor: c.actor(key)}, nil)
 }
 
 // PutGatedSteps publishes the deployment's design-gate steps onto project's row through PUT
@@ -208,7 +225,7 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 	}
 	return c.request(ctx, http.MethodPut, "/api/v1/projects/"+url.PathEscape(project)+"/gated-steps", gatedStepsWrite{
 		Steps: steps,
-		Actor: daemonActor(project),
+		Actor: c.actor(project),
 	}, nil)
 }
 
@@ -234,39 +251,40 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 	}
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/design-gates", designGatesWrite{
 		Gates: gates,
-		Actor: daemonActor(key),
+		Actor: c.actor(key),
 	}, nil)
 }
 
 // PutRoleHolders publishes the session of each Legion role of the issue through PUT
-// /api/v1/issues/{key}/role-holders, as the daemon's own session, which is the one caller that
-// route takes. The write replaces the issue's whole set, appends no event and notifies nobody.
-// The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
-// body that names no list, and the empty list is the publication that removes every holder.
-// Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
-// an issue it does not know; a Dispatch older than the route answers its router's 404 (NoRoute),
-// which the outbox's row waits on until the server release that has it.
+// /api/v1/issues/{key}/role-holders, as the daemon's own session: the route takes a Legion
+// daemon's session alone. The write replaces the issue's whole set, appends no event and notifies
+// nobody. The list is always sent, empty for an issue where no session holds a role: Dispatch
+// refuses a body that names no list, and the empty list is the publication that removes every
+// holder. Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404
+// ISSUE_NOT_FOUND for an issue it does not know; a Dispatch older than the route answers its
+// router's 404 (NoRoute), which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
 	if holders == nil {
 		holders = []RoleHolder{}
 	}
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/role-holders", roleHoldersWrite{
 		Holders: holders,
-		Actor:   daemonActor(key),
+		Actor:   c.actor(key),
 	}, nil)
 }
 
 // PutStep writes one start or one end of a step onto Dispatch's record id of the issue key,
-// through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session, the one session the
-// route takes a record of the issue from. The write appends no event and notifies nobody. Dispatch
-// answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER for any other writer, 404
-// ISSUE_NOT_FOUND for an issue it does not know and 409 STEP_OTHER_ISSUE for an id that is a
-// record of another issue; a Dispatch older than the route answers its router's 404 (NoRoute),
-// which the outbox's row waits on until the server release that has it.
+// through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session: the route takes a
+// record of the issue from a Legion daemon's session alone. The write appends no event and
+// notifies nobody. Dispatch answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER
+// for any other writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409
+// STEP_OTHER_ISSUE for an id that is a record of another issue; a Dispatch older than the route
+// answers its router's 404 (NoRoute), which the outbox's row waits on until the server release
+// that has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{
 		StepWrite: write,
-		Actor:     daemonActor(key),
+		Actor:     c.actor(key),
 	}, nil)
 }
 
@@ -282,7 +300,7 @@ func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write St
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/rating", stepRatingWrite{
 		StepWrite:  write,
 		PlanRating: rating,
-		Actor:      daemonActor(key),
+		Actor:      c.actor(key),
 	}, nil)
 }
 
@@ -303,24 +321,25 @@ func (c *HTTPClient) PutStepExperiment(ctx context.Context, key, id string, writ
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/experiment", stepExperimentWrite{
 		StepWrite:      identity,
 		StepExperiment: experiment,
-		Actor:          daemonActor(key),
+		Actor:          c.actor(key),
 	}, nil)
 }
 
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
-// issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
-// the route takes a plan of the issue from. The write appends no event and notifies nobody. The
-// plan's source, document, version and tasks are one fact: a write whose version is above the
-// version Dispatch holds replaces all four, and a write at or below it changes nothing, a version
-// left out (the source default) counting as 0, so a plan sent again or late changes nothing.
-// Dispatch answers 400 PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other
-// writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id
-// that is a plan of another issue; a Dispatch older than the route answers its router's 404
-// (NoRoute), which the outbox's row waits on until the server release that has it.
+// issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session: the route takes
+// a plan of the issue from a Legion daemon's session alone. The write appends no event and
+// notifies nobody. The plan's source, document, version and tasks are one fact: a write whose
+// version is above the version Dispatch holds replaces all four, and a write at or below it
+// changes nothing, a version left out (the source default) counting as 0, so a plan sent again or
+// late changes nothing. Dispatch answers 400 PLAN_INPUT for a plan it will not take, 403
+// STEP_WRITER for any other writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409
+// PLAN_OTHER_ISSUE for an id that is a plan of another issue; a Dispatch older than the route
+// answers its router's 404 (NoRoute), which the outbox's row waits on until the server release
+// that has it.
 func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
 		PlanWrite: plan,
-		Actor:     daemonActor(key),
+		Actor:     c.actor(key),
 	}, nil)
 }
 
@@ -331,7 +350,7 @@ func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite
 // cannot be lost), and the one event the write makes carries both. An issue a person already
 // labelled gets the status alone.
 func (c *HTTPClient) HandOver(ctx context.Context, issue Issue, status string) error {
-	write := daemonWrite{Status: status, ExpectedSequence: issue.LastSeq, Actor: daemonActor(issue.Key)}
+	write := daemonWrite{Status: status, ExpectedSequence: issue.LastSeq, Actor: c.actor(issue.Key)}
 	if !issue.HandedOver {
 		write.LabelsAdd = []string{LegionLabel}
 	}
@@ -343,7 +362,7 @@ func (c *HTTPClient) HandOver(ctx context.Context, issue Issue, status string) e
 func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
 	return c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/messages", daemonWrite{
 		Body:  body,
-		Actor: daemonActor(key),
+		Actor: c.actor(key),
 	}, nil)
 }
 
@@ -387,7 +406,7 @@ func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content stri
 	if err := c.request(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", artifactUpload{
 		Name:    name,
 		Content: content,
-		Actor:   daemonActor(key),
+		Actor:   c.actor(key),
 	}, &response); err != nil {
 		return "", err
 	}
@@ -855,14 +874,23 @@ func transportFailure(err error) error {
 	return &TransientError{Err: err}
 }
 
-// DaemonSession is the session the daemon writes every Dispatch status and message of the issue key
-// under: legion-daemon:<PROJECT>, PROJECT being the key's.
+// DaemonSession is the session of the Legion daemon of the project it is given,
+// legion-daemon:<PROJECT>, PROJECT being key up to its first "-": a project key is its own project.
+// Every write of a client made with no option names the session of the key it is on, which is how
+// the daemon writes with dispatch_token_broker off. Under dispatch_token_broker the daemon makes its
+// client WritesAs the session of its own project, the one its broker token proves, and every write
+// names that session instead.
 func DaemonSession(key string) string {
 	project, _, _ := strings.Cut(key, "-")
 	return "legion-daemon:" + project
 }
 
-func daemonActor(key string) actor {
+// actor is the actor a write on key names: the session the client writes as (WritesAs), or, for a
+// client made with no option, the session of the key's project (DaemonSession).
+func (c *HTTPClient) actor(key string) actor {
+	if c.session != "" {
+		return actor{Kind: "session", ID: c.session}
+	}
 	return actor{Kind: "session", ID: DaemonSession(key)}
 }
 
