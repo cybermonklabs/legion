@@ -887,7 +887,7 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 			"project": "DEMO", "title": "Sub-issue of " + title, "parent": epic, "force": true,
 		})).Key
 		return epic, child, []map[string]any{
-			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": title, "parent": epic, "force": true}),
+			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": title, "parent": epic, "force": true, "spec": title + " is split out of its epic.\n"}),
 			goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$0"}, 0),
 		}
 	}
@@ -1003,7 +1003,8 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 				})
 			}
 			run := rig.ran(t, "split the epic of "+found.title,
-				goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": found.title, "external": found.external, "parent": epic, "force": true}),
+				goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": found.title, "external": found.external, "parent": epic, "force": true,
+					"spec": found.title + " is the half of the epic tracked upstream.\n"}),
 				goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$0"}, 0))
 			plan := rig.plan(t, run)
 			if states := rowStates(plan); !slices.Equal(states, []string{"done", "skipped"}) {
@@ -1029,7 +1030,7 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 	t.Run("a text that reads as \"$N\" is kept and sent as written", func(t *testing.T) {
 		epic, child, _ := split(t, "Priced")
 		run := rig.ran(t, "split the epic of Priced, priced",
-			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "$100", "parent": epic, "force": true}),
+			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "$100", "parent": epic, "force": true, "spec": "A price split out of its epic.\n"}),
 			goingChange("dispatch_issue_update", map[string]any{"issue": child, "title": "$0", "parent": "$0"}, 0))
 		var created string
 		if err := rig.database.Pool.QueryRow(context.Background(), `select key from issues where title = $1`, "$100").Scan(&created); err != nil {
@@ -1050,8 +1051,8 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 		rig.loop.script.set(words, func(n int) agenttest.Reply {
 			if n == 1 {
 				return proposing(
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "First edited half", "parent": epic, "force": true}),
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Second edited half", "parent": epic, "force": true}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "First edited half", "parent": epic, "force": true, "spec": "The first half of the epic.\n"}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Second edited half", "parent": epic, "force": true, "spec": "The second half of the epic.\n"}),
 					goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$0"}, 0))
 			}
 			return answered("Split.")
@@ -1100,8 +1101,8 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 			name: "a new issue the move does not need",
 			changes: func(epic, child string) []map[string]any {
 				return []map[string]any{
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "First half", "parent": epic, "force": true}),
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Second half", "parent": epic, "force": true}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "First half", "parent": epic, "force": true, "spec": "The first half of the epic.\n"}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Second half", "parent": epic, "force": true, "spec": "The second half of the epic.\n"}),
 					goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$1"}, 0),
 				}
 			},
@@ -1121,7 +1122,7 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 			name: "a change the plan does not hold",
 			changes: func(epic, child string) []map[string]any {
 				return []map[string]any{
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Only half", "parent": epic, "force": true}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Only half", "parent": epic, "force": true, "spec": "The one half of the epic.\n"}),
 					goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": "$5"}, 0),
 				}
 			},
@@ -1131,7 +1132,7 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 			name: "a new issue as the item a change changes",
 			changes: func(epic, _ string) []map[string]any {
 				return []map[string]any{
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Renamed at once", "parent": epic, "force": true}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Renamed at once", "parent": epic, "force": true, "spec": "A half of the epic, renamed once it exists.\n"}),
 					goingChange("dispatch_issue_update", retitle("$0", "Renamed new issue"), 0),
 				}
 			},
@@ -1141,7 +1142,7 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 			name: "a new issue inside an object",
 			changes: func(epic, child string) []map[string]any {
 				return []map[string]any{
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Wrapped half", "parent": epic, "force": true}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Wrapped half", "parent": epic, "force": true, "spec": "A half of the epic.\n"}),
 					goingChange("dispatch_issue_update", map[string]any{"issue": child, "parent": map[string]any{"key": "$0"}}, 0),
 				}
 			},
@@ -1151,7 +1152,7 @@ func TestAChangeNamesTheIssueAnEarlierCreateMakes(t *testing.T) {
 			name: "a new issue in a list within a list",
 			changes: func(epic, child string) []map[string]any {
 				return []map[string]any{
-					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Nested blocker", "parent": epic, "force": true}),
+					goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Nested blocker", "parent": epic, "force": true, "spec": "The work that blocks the sub-issue.\n"}),
 					goingChange("dispatch_issue_update", map[string]any{"issue": child, "blocked_by": []any{[]any{"$0"}}}, 0),
 				}
 			},
@@ -1777,6 +1778,180 @@ func TestAReopenBesideOtherFieldsIsProposedAsTwoChanges(t *testing.T) {
 		}
 		if read := rig.issueRead(t, issue); read.Status != "todo" || read.ClosedAt != nil || read.Priority == nil || *read.Priority != 0 {
 			t.Errorf("%s is %s (closed at %v) with priority %v, want todo, open, at P0", issue, read.Status, read.ClosedAt, read.Priority)
+		}
+	})
+}
+
+// TestAPlanCallHoldsACreateOfAnIssueToItsSpec: R9 gives a filed issue "a short spec that the agent
+// wrote from the words", so on the line File as a new issue, whatever its person's mode, and in a
+// run in Ask, the plan call refuses a create of an issue whose spec is absent, empty or white space
+// alone, naming the change and telling the model to write a short spec from the person's words and
+// propose the plan again, and keeps nothing; a create with a spec is kept with that spec, as
+// before. In Auto-review each of them is kept: there a create with a title alone is the create R5
+// lets through, which TestWhatWaitsInEachMode runs (the ruling of
+// dispatch://INFRA-1588/comment/2169c650-03f6-4a81-992d-316bd1270841).
+func TestAPlanCallHoldsACreateOfAnIssueToItsSpec(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	// propose makes a plan call of a working run of alice's, of kind ("" for a run of the words)
+	// and mode, that proposes one create of an issue with arguments, and answers the run and the
+	// server's refusal, nil where it kept the plan. The run is stopped once its call is answered,
+	// so alice's runs that work stay under the 3 one person may have.
+	propose := func(t *testing.T, kind, mode string, arguments map[string]any) (string, *agentwire.Error) {
+		t.Helper()
+		run, token := rig.working(t, "alice", "file "+goingText(arguments, "title"))
+		defer rig.exec(t, `update going_runs set state = 'stopped', lease_token = null, lease_owner = null, lease_ends_at = null where id = $1::uuid`, run)
+		rig.exec(t, `update going_runs set kind = nullif($2, ''), mode = $3 where id = $1::uuid`, run, kind, mode)
+		encoded, err := json.Marshal(arguments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = rig.call(agentwire.CallRequest{Run: run, LeaseToken: token, Step: 2, Call: 1, Kind: agentwire.KindPlan,
+			Proposal: &agentwire.PlanProposal{Summary: "File it.", Changes: []agentwire.PlanChange{{Tool: goingIssueCreateTool, Arguments: encoded}}}})
+		var refused *agentwire.Error
+		if errors.As(err, &refused) {
+			return run, refused
+		}
+		if err != nil {
+			t.Fatalf("the plan call: %v", err)
+		}
+		return run, nil
+	}
+	specs := []struct {
+		name string
+		// spec is the create's spec, absent where it is nil.
+		spec any
+		// blank is whether the spec names nothing: absent, empty or white space alone.
+		blank bool
+	}{
+		{"no spec", nil, true},
+		{"an empty spec", "", true},
+		{"a spec of white space alone", " \n\t \n", true},
+		{"a spec", "The dome's shutter sticks in the cold, so the night's observing starts late.\n", false},
+	}
+	for _, path := range []struct {
+		name, kind, mode string
+		// required is whether the path files each issue with a spec.
+		required bool
+	}{
+		{"in Ask", "", goingModeAsk, true},
+		{"on the new-issue line in Ask", agentwire.RunNewIssue, goingModeAsk, true},
+		{"on the new-issue line in Auto-review", agentwire.RunNewIssue, goingModeAutoReview, true},
+		{"in Auto-review", "", goingModeAutoReview, false},
+	} {
+		for index, c := range specs {
+			refuses := path.required && c.blank
+			verdict := "kept"
+			if refuses {
+				verdict = "refused"
+			}
+			t.Run(path.name+", a create with "+c.name+" is "+verdict, func(t *testing.T) {
+				arguments := map[string]any{"project": "DEMO", "title": "Shutter " + path.name + " " + strconv.Itoa(index), "force": true}
+				if c.spec != nil {
+					arguments["spec"] = c.spec
+				}
+				run, refused := propose(t, path.kind, path.mode, arguments)
+				if refuses {
+					requireRefusalNames(t, refused, "0", goingIssueCreateTool, "spec")
+					if !strings.Contains(refused.Message, goingNoSpec) {
+						t.Errorf("the refusal says %q, want it to tell the model %q", refused.Message, goingNoSpec)
+					}
+					if kept := rig.count(t, `select count(*) from going_plans where run_id = $1::uuid`, run); kept != 0 {
+						t.Errorf("the refused call kept %d plans, want none", kept)
+					}
+					return
+				}
+				if refused != nil {
+					t.Fatalf("the plan call answered %+v, want the plan kept", refused)
+				}
+				rows := rig.keptRows(t, run)
+				if len(rows) != 1 || rows[0].tool != goingIssueCreateTool {
+					t.Fatalf("the plan holds %d rows, want the one create", len(rows))
+				}
+				if kept, err := goingRowArguments(rows[0].arguments); err != nil || kept["spec"] != c.spec {
+					t.Errorf("the kept create's arguments are %s (%v), want its spec as proposed, %q", rows[0].arguments, err, c.spec)
+				}
+			})
+		}
+	}
+}
+
+// TestARunToldItsNewIssueHasNoSpecProposesThePlanAgain: a run whose model proposes a create of an
+// issue with no spec is told the plan call's refusal, and its next proposal, the same create with
+// a spec, is kept: in Ask as the run's one plan, which waits for its person with that spec, and on
+// the line File as a new issue as the issue the run files at once, which holds that spec.
+func TestARunToldItsNewIssueHasNoSpecProposesThePlanAgain(t *testing.T) {
+	t.Parallel()
+	rig := newGoingPlanRig(t)
+	// script makes the first model call of the run of words propose the create of an issue
+	// titled title with no spec, its second the same create with spec, and every later one answer.
+	script := func(words, title, spec string) {
+		rig.loop.script.set(words, func(n int) agenttest.Reply {
+			create := map[string]any{"project": "DEMO", "title": title}
+			switch n {
+			case 1:
+				return proposing(goingChange(goingIssueCreateTool, create))
+			case 2:
+				create["spec"] = spec
+				return proposing(goingChange(goingIssueCreateTool, create))
+			}
+			return answered("No further call of this run was scripted.")
+		})
+	}
+	// toldNoSpec fails t unless the second model call of the run of words was told the plan
+	// call's refusal of its first proposal.
+	toldNoSpec := func(t *testing.T, words string) {
+		t.Helper()
+		asked := rig.loop.fake.Asking(words)
+		if len(asked) < 2 || !slices.ContainsFunc(asked[1].ToolResults(), func(result string) bool {
+			return strings.Contains(result, agentwire.CodeCallRefused) && strings.Contains(result, goingNoSpec)
+		}) {
+			t.Fatalf("the run's second model call was not told its create has no spec: the run made %d model calls", len(asked))
+		}
+	}
+
+	t.Run("in Ask the plan proposed again, with a spec, is kept and waits", func(t *testing.T) {
+		const words = "file the shutter that sticks in the cold"
+		const spec = "The dome's shutter sticks in the cold, so the night's observing starts late.\n"
+		script(words, "The shutter sticks in the cold", spec)
+		run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+		plan := rig.waiting(t, run)
+		toldNoSpec(t, words)
+		if plan.Plan != 1 || len(plan.Rows) != 1 || plan.Rows[0].Tool != goingIssueCreateTool || plan.Rows[0].State != "waiting" {
+			t.Fatalf("the run's plan is number %d with rows %+v, want plan 1 with its one create waiting", plan.Plan, plan.Rows)
+		}
+		if kept, err := goingRowArguments(plan.Rows[0].Arguments); err != nil || goingText(kept, "spec") != spec {
+			t.Errorf("the waiting create's arguments are %s (%v), want its spec %q", plan.Rows[0].Arguments, err, spec)
+		}
+		if plans := rig.count(t, `select count(*) from going_plans where run_id = $1::uuid`, run); plans != 1 {
+			t.Errorf("the run kept %d plans, want the one proposed again", plans)
+		}
+	})
+
+	t.Run("on the new-issue line the create proposed again, with a spec, is filed with it", func(t *testing.T) {
+		const words = "file a bug: the focuser slips when the tube points up"
+		const title = "The focuser slips when the tube points up"
+		const spec = "The focuser slips out of focus when the telescope's tube points up.\n"
+		script(words, title, spec)
+		page := rig.issue(t, "Focusers")
+		response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs", map[string]any{
+			"words": words, "kind": agentwire.RunNewIssue,
+			"context": map[string]any{"path": "/issues/" + page, "project": "DEMO", "issue": page},
+		}, "alice")
+		if response.Code != http.StatusCreated {
+			t.Fatalf("POST /api/v1/going/runs answered %d %s", response.Code, response.Body.String())
+		}
+		run := decodeBody[goingRun](t, response).ID
+		if record := rig.ended(t, run, time.Minute); record.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+		}
+		toldNoSpec(t, words)
+		filed := rig.issueRead(t, rig.endFrame(t, run).Issue)
+		if filed.Title != title || !strings.Contains(documentMarkdown(t, rig.mux, filed.PrimaryArtifactID), strings.TrimSpace(spec)) {
+			t.Errorf("the run filed %q, want %q holding its spec %q", filed.Title, title, spec)
+		}
+		if made := rig.count(t, `select count(*) from issues where title = $1`, title); made != 1 {
+			t.Errorf("the run filed %d issues titled %q, want one", made, title)
 		}
 	})
 }

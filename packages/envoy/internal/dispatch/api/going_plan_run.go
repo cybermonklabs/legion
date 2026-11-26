@@ -861,12 +861,8 @@ func goingCarryWrite(seen goingRowShown, after goingObservation) (goingRowShown,
 // It answers the rows to run, the same a claim of the run would (goingPendingRows), and how many
 // rows wait for the person. A second review of the plan approves nothing more.
 func (a *AgentListener) reviewCall(ctx context.Context, request agentwire.CallRequest, run goingCallRun) (agentwire.CallAnswer, *agentwire.Error) {
-	var mode string
-	if err := a.s.deps.Store.Pool.QueryRow(ctx, `select coalesce(mode, '') from going_runs where id = $1::uuid`, run.id).Scan(&mode); err != nil {
-		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
-	}
-	if mode != goingModeAutoReview {
-		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "this run's mode is %s, which no review lets a change through in", mode)
+	if run.mode != goingModeAutoReview {
+		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "this run's mode is %s, which no review lets a change through in", run.mode)
 	}
 	tx, err := a.s.deps.Store.Pool.Begin(ctx)
 	if err != nil {

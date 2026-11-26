@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The command bar files a new issue only with a spec on its line File as a new issue, whatever the
+  person's mode, and in a plan in Ask: a new issue its agent proposes there with no spec, or with
+  a spec of spaces alone, is refused, and the agent is told to write a short spec from the
+  person's words and propose the plan again. In Auto-review a new issue with a title alone still
+  runs, as before.

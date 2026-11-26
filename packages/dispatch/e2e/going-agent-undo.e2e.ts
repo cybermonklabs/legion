@@ -66,7 +66,12 @@ test("Undo of the split writes each old value back, closes the new issue, and ke
         turns: [
           proposePlan("Split the observatory.", [
             {
-              arguments: { parent: split.parent, project: "CORE", title: "The second half" },
+              arguments: {
+                parent: split.parent,
+                project: "CORE",
+                spec: "The second half of the observatory's work, split out of it.\n",
+                title: "The second half",
+              },
               tool: "dispatch_issue",
             },
             {

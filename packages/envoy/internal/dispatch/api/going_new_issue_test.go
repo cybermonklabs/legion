@@ -113,7 +113,8 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 		t.Cleanup(func() { rig.served.newIssueOverride.Store(&newIssueSettings{Label: "from-the-bar", Session: session}) })
 		const words = "new issue: show the upload size limit next to the button"
 		rig.loop.script.set(words, func(int) agenttest.Reply {
-			return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "Show the upload size limit"}))
+			return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "Show the upload size limit",
+				"spec": "The upload button shows the largest file it takes.\n"}))
 		})
 		run := start(t, words, rig.issue(t, "Uploads"))
 		if record := rig.ended(t, run.ID, time.Minute); record.state != "done" {
@@ -130,7 +131,8 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 		const missing = "DEMO-9999"
 		const words = "file a bug under DEMO-9999: the export button is grey"
 		rig.loop.script.set(words, func(int) agenttest.Reply {
-			return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The export button is grey", "parent": missing}))
+			return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The export button is grey", "parent": missing,
+				"spec": "The export button shows grey, as if it were off.\n"}))
 		})
 		page := rig.issue(t, "Export buttons")
 		before := issues(t)
@@ -165,7 +167,8 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 		const words = "file a bug labelled bug: the export button is grey"
 		rig.loop.script.set(words, func(n int) agenttest.Reply {
 			if n == 1 {
-				return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The export button is grey", "labels": "bug"}))
+				return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The export button is grey", "labels": "bug",
+					"spec": "The export button shows grey, as if it were off.\n"}))
 			}
 			return answered("The create was refused.")
 		})
@@ -190,7 +193,8 @@ func TestTheNewIssueLineFilesAtOnce(t *testing.T) {
 		t.Cleanup(func() { close(release) })
 		rig.loop.script.set(words, func(n int) agenttest.Reply {
 			if n == 1 {
-				return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The board's legend covers its first column"}))
+				return proposing(goingChange(goingIssueCreateTool, map[string]any{"project": "DEMO", "title": "The board's legend covers its first column",
+					"spec": "The legend of a board hides the cards of its first column.\n"}))
 			}
 			// Held until the test ends, so the run still works when its person stops it.
 			return agenttest.Reply{Hold: release, Text: "Filed."}

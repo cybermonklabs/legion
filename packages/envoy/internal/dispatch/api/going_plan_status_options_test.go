@@ -468,7 +468,7 @@ func TestAnExpandedChangeRenumbersTheChangesAfterIt(t *testing.T) {
 	other := rig.issue(t, "Issue to move under the new epic")
 	changes := []map[string]any{
 		goingChange("dispatch_issue_update", map[string]any{"issue": root, "status": "in_progress", "include_children": true}),
-		goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "New epic after the start", "force": true}, 0),
+		goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "New epic after the start", "force": true, "spec": "The epic that follows the one started.\n"}, 0),
 		goingChange("dispatch_issue_update", map[string]any{"issue": other, "parent": "$1"}, 1),
 		goingChange("dispatch_issue_update", retitle(root, "Epic started with its parts"), 0),
 	}
@@ -538,7 +538,7 @@ func TestAChangeWithAnOptionIsHeldToItsToolsRuleBeforeItIsWrittenOut(t *testing.
 			goingChange("dispatch_issue_update", map[string]any{"issue": "DEMO-99999", "status": "todo", "include_children": true})},
 			[]string{"1"}},
 		{"an option on the issue a create of the plan makes", []map[string]any{
-			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by the plan", "force": true}),
+			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by the plan", "force": true, "spec": "An issue the plan makes.\n"}),
 			goingChange("dispatch_issue_update", map[string]any{"issue": "$0", "status": "todo", "include_children": true}, 0)},
 			[]string{"1", "issue", "$0"}},
 	} {

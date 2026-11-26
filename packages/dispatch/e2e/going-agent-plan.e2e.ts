@@ -32,7 +32,12 @@ import { withAlice } from "./users";
 function splitPlan(split: Split, summary = "Split the observatory in two."): ChatTurn {
   return proposePlan(summary, [
     {
-      arguments: { parent: split.parent, project: "CORE", title: "Raise the dome, second half" },
+      arguments: {
+        parent: split.parent,
+        project: "CORE",
+        spec: "The second half of the observatory's work, split out of it.\n",
+        title: "Raise the dome, second half",
+      },
       tool: "dispatch_issue",
     },
     {

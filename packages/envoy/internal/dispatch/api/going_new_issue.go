@@ -4,8 +4,10 @@ package api
 // a run of the kind new_issue (POST /api/v1/going/runs, agentwire.RunNewIssue): a Fast run whose
 // one task is to file the person's words as one new issue, with its title, project, parent,
 // priority and a short spec the agent writes from the words. Its plan is that issue's create alone
-// (dispatch_issue), and the Enter that started the run approved it, so the plan is kept with the
-// create approved and the agent runs it at once: the one plan of the bar that waits for nobody.
+// (dispatch_issue), carrying a spec whatever its person's mode, or the plan call refuses it and
+// tells the model to write one (goingNoSpec); and the Enter that started the run approved it, so
+// the plan is kept with the create approved and the agent runs it at once: the one plan of the bar
+// that waits for nobody.
 // The create carries what the deployment names for a new issue: the label of
 // DISPATCH_NEW_ISSUE_LABEL among its labels, and the route of DISPATCH_NEW_ISSUE_SESSION, which no
 // argument of the tool holds, kept on the row's approval and put in the create's body

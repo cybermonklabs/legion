@@ -251,7 +251,8 @@ func TestUndoOfOneRun(t *testing.T) {
 	})
 
 	t.Run("a created issue is closed and holds no message", func(t *testing.T) {
-		run := rig.ran(t, "file Made by the run", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by the run", "force": true}))
+		run := rig.ran(t, "file Made by the run", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by the run", "force": true,
+			"spec": "An issue the run files.\n"}))
 		line := rig.undone(t, run, "dispatch_issue")[0]
 		if !line.Outcome.OK || line.Undo != goingUndoCloseCreated || rig.issueRead(t, line.Item).Status != "done" {
 			t.Fatalf("Undo of the create answered %+v and left %s %s, want it closed", line, line.Item, rig.issueRead(t, line.Item).Status)
@@ -476,7 +477,7 @@ func TestUndoOfOneRun(t *testing.T) {
 	t.Run("a created issue whose undo's process ended resumes at the close", func(t *testing.T) {
 		renamed := rig.issue(t, "Renamed beside a create")
 		run := rig.ran(t, "file one issue and rename another",
-			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made before the undo ended", "force": true}),
+			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made before the undo ended", "force": true, "spec": "An issue the run files.\n"}),
 			goingChange("dispatch_issue_update", retitle(renamed, "Renamed by the run")))
 		var created string
 		if err := rig.database.Pool.QueryRow(ctx, `select key from issues where title = 'Made before the undo ended'`).Scan(&created); err != nil {
@@ -691,7 +692,7 @@ func TestARunSaysWhetherUndoTakesItBack(t *testing.T) {
 		})).Key
 		rig.landsBeside(t, http.MethodPost, "/api/v1/issues")
 		run := rig.ran(t, "file Held upstream again", goingChange("dispatch_issue", map[string]any{
-			"project": "DEMO", "title": "Held upstream again", "external": "acme/held#9", "force": true,
+			"project": "DEMO", "title": "Held upstream again", "external": "acme/held#9", "force": true, "spec": "The issue held upstream, filed again.\n",
 		}))
 		if landed := rig.count(t, `select count(*) from going_landings where run_id = $1::uuid and phase = 'do' and answer->>'status' = '200'`, run); landed != 1 {
 			t.Fatalf("the create recorded %d landings answered 200, want 1", landed)
@@ -925,7 +926,8 @@ func TestAKeptValueNamesWhoChangedIt(t *testing.T) {
 	})
 
 	t.Run("an issue the run created and another moved names who moved it", func(t *testing.T) {
-		run := rig.ran(t, "file Moved after the run", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Moved after the run", "force": true}))
+		run := rig.ran(t, "file Moved after the run", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Moved after the run", "force": true,
+			"spec": "An issue another person moves after the run.\n"}))
 		created := rig.textOf(t, `select key from issues where title = 'Moved after the run'`)
 		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+created, map[string]any{"status": "in_progress"})
 		comment(t, created)
@@ -1180,7 +1182,8 @@ func (rig goingPlanRig) thread(t *testing.T, issue, body string, resolved bool) 
 // item, read off the store or its route, holds what it held before the change.
 var goingUndoRuns = map[string]func(t *testing.T, rig goingPlanRig){
 	"dispatch_issue": func(t *testing.T, rig goingPlanRig) {
-		line := rig.undoneOnce(t, "file Made and undone", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made and undone", "force": true}))
+		line := rig.undoneOnce(t, "file Made and undone", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made and undone", "force": true,
+			"spec": "An issue the run files and its Undo closes.\n"}))
 		if status := rig.issueRead(t, line.Item).Status; status != "done" {
 			t.Fatalf("the issue the run made is %s after Undo, want it closed", status)
 		}

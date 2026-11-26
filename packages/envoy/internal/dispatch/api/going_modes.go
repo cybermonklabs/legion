@@ -38,7 +38,9 @@ var goingClassesThatWait = map[goingWriteClass]bool{
 }
 
 // goingAutoReviewClasses are the classes Auto-review may let through: a change of fields, of
-// links and of a claim, and a create with no text but a title.
+// links and of a claim, and a create with no text but a title, which for an issue only a run in
+// Auto-review keeps in its plan: a run in Ask and a new-issue run file each issue with a spec
+// (goingCallRun.specRequired).
 var goingAutoReviewClasses = map[goingWriteClass]bool{
 	goingClassField: true, goingClassLink: true, goingClassClaim: true, goingClassCreatePlain: true,
 }

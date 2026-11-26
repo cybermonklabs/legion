@@ -894,11 +894,30 @@ func goingNewIssueShown(create goingPlanRowStored, edited map[string]any) string
 	return strings.TrimSpace(title + " (new)")
 }
 
+// goingNoSpec is why a plan call refuses a create of an issue (goingIssueCreateTool) whose spec
+// is absent, empty or white space alone, where the run files each issue with a spec
+// (goingCallRun.specRequired). It is worded for the model, which reads it as the answer of its
+// plan call, and tells it what to do: write the spec, as the new-issue prompt asks for one
+// (going/agent's newIssuePrompt), and propose the plan again.
+const goingNoSpec = "the issue has no spec, and an issue this run files carries one: write a short spec in markdown from the person's words alone, " +
+	"what they want and why in a few sentences, and propose the plan again"
+
+// specRequired reports whether each create of an issue the run proposes must carry a spec, as R9
+// gives a filed issue "a short spec that the agent wrote from the words" (the ruling of
+// dispatch://INFRA-1588/comment/2169c650-03f6-4a81-992d-316bd1270841): on the line File as a new
+// issue (a new-issue run), whatever its person's mode, and in a run in Ask, a run stored with no
+// mode among them. A run in Auto-review is held to none: there a create with a title alone is the
+// create Auto-review may let through (goingAutoReviewClasses, R5).
+func (run goingCallRun) specRequired() bool {
+	return run.kind == agentwire.RunNewIssue || run.mode != goingModeAutoReview
+}
+
 // planCall is a plan call (agentwire.KindPlan): the run's model proposes its plan, which the
 // server keeps with its rows waiting. Each change must name a write tool, need only changes before
 // it, name a new issue of the plan ("$N") only where it may (goingNewIssueRefusal), hold
-// arguments its tool's schema and translation take, over an item the person may read, and, for an
-// update of an issue, not reopen a closed issue beside a field its route refuses there
+// arguments its tool's schema and translation take, over an item the person may read, for a
+// create of an issue in a run that files each issue with a spec, carry one (goingNoSpec), and, for
+// an update of an issue, not reopen a closed issue beside a field its route refuses there
 // (goingReopenRefusal); the first that does not refuses the plan CALL_REFUSED, naming the change
 // and why, which the model is told.
 // A dispatch_issue_update change that sets include_children, unlink_children or include_parent is
@@ -991,6 +1010,9 @@ func (a *AgentListener) planCall(ctx context.Context, request agentwire.CallRequ
 			refusal := goingCallRefusal(change.Tool, err)
 			refusal.Message = fmt.Sprintf("change %d: %s", index, refusal.Message)
 			return agentwire.CallAnswer{}, refusal
+		}
+		if change.Tool == goingIssueCreateTool && run.specRequired() && strings.TrimSpace(goingText(arguments, "spec")) == "" {
+			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused, "change %d (%s): %s", index, change.Tool, goingNoSpec)
 		}
 		if shown.Deleted {
 			return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeCallRefused,

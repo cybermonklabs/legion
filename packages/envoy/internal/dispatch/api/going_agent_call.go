@@ -143,10 +143,11 @@ func (a *AgentListener) call(ctx context.Context, request agentwire.CallRequest)
 }
 
 // goingCallRun is the run a call is made for, as its row stands at the call: its kind is
-// agentwire.RunNewIssue for a new-issue run, "" for a run of its person's words.
+// agentwire.RunNewIssue for a new-issue run, "" for a run of its person's words, and its mode is
+// going_runs.mode, ask or auto_review, "" for a run stored with none.
 type goingCallRun struct {
-	id, login, kind, level string
-	used                   agentwire.Budget
+	id, login, kind, level, mode string
+	used                         agentwire.Budget
 }
 
 // runCall makes the call: it checks the run's lease, resolves the run's person from its grant,
@@ -335,9 +336,9 @@ func (a *AgentListener) callRun(ctx context.Context, request agentwire.CallReque
 	var used []byte
 	var withdrawer goingRunWithdrawer
 	err := a.s.deps.Store.Pool.QueryRow(ctx, `
-		select author_login, coalesce(kind, ''), coalesce(level, ''), budget_used, lease_token::text, state, `+goingRunWithdrawerOf("r.id")+`
+		select author_login, coalesce(kind, ''), coalesce(level, ''), coalesce(mode, ''), budget_used, lease_token::text, state, `+goingRunWithdrawerOf("r.id")+`
 		from going_runs r where id = $1::uuid
-	`, request.Run).Scan(&run.login, &run.kind, &run.level, &used, &token, &state, &withdrawer)
+	`, request.Run).Scan(&run.login, &run.kind, &run.level, &run.mode, &used, &token, &state, &withdrawer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return goingCallRun{}, goingStaleLease(request.Run)
 	}
