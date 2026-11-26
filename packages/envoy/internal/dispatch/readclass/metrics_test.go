@@ -86,22 +86,22 @@ func metricLabels(source *serverSource, pkg *checkedPackage) []metricLabel {
 		labels = append(labels, label)
 	}
 	for _, file := range pkg.files {
-		functionsOf(file, func(_ string, node ast.Node) {
+		ast.Inspect(file, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.CallExpr:
 				called := pkg.calledFunc(node)
 				if called == nil || called.Pkg() == nil || called.Pkg().Path() != metricsPath || !called.Signature().Variadic() {
-					return
+					return true
 				}
 				params := called.Signature().Params()
 				if !isLabels(params.At(params.Len() - 1).Type()) {
-					return
+					return true
 				}
 				first := params.Len() - 1
 				if node.Ellipsis.IsValid() {
 					labels = append(labels, metricLabel{position: source.position(node),
 						problem: "a series labelled by a spread slice, whose names the walk cannot read: pass each label as a [2]string literal"})
-					return
+					return true
 				}
 				for _, pair := range node.Args[min(first, len(node.Args)):] {
 					read(node, pair)
@@ -109,7 +109,7 @@ func metricLabels(source *serverSource, pkg *checkedPackage) []metricLabel {
 			case *ast.CompositeLit:
 				named, ok := types.Unalias(pkg.info.Types[node].Type).(*types.Named)
 				if !ok || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != metricsPath || named.Obj().Name() != "GaugeSample" {
-					return
+					return true
 				}
 				for _, element := range node.Elts {
 					field, ok := element.(*ast.KeyValueExpr)
@@ -127,6 +127,7 @@ func metricLabels(source *serverSource, pkg *checkedPackage) []metricLabel {
 					}
 				}
 			}
+			return true
 		})
 	}
 	return labels
