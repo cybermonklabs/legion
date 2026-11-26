@@ -39,8 +39,10 @@ func TestAProgramWrittenWhileTheProcessForksRuns(t *testing.T) {
 }
 
 // A program Append adds to runs at once in the same way: each run writes a program's first line
-// with Write, which holds the lock, adds its last with Append and runs it, so the one span a fork
-// beside it could meet the program open for writing in is Append's.
+// with Write, which holds the lock, adds its other five one Append each and runs it, so the only
+// spans a fork beside it could meet the program open for writing in are Append's. One Append a
+// run met 1 to 3 refusals in 400 runs, and none in one of five, with Append's lock taken out; five
+// give a fork five spans a run.
 //
 // Not parallel: its forks are the condition it measures.
 func TestAProgramAppendedToWhileTheProcessForksRuns(t *testing.T) {
@@ -50,8 +52,10 @@ func TestAProgramAppendedToWhileTheProcessForksRuns(t *testing.T) {
 		if err := programfile.Write(path, os.O_EXCL, 0o755, strings.NewReader("#!/bin/sh\n")); err != nil {
 			return fmt.Errorf("write the program: %w", err)
 		}
-		if err := programfile.Append(path, strings.NewReader("exit 0\n")); err != nil {
-			return fmt.Errorf("append to the program: %w", err)
+		for _, line := range []string{":\n", ":\n", ":\n", ":\n", "exit 0\n"} {
+			if err := programfile.Append(path, strings.NewReader(line)); err != nil {
+				return fmt.Errorf("append to the program: %w", err)
+			}
 		}
 		if err := exec.Command(path).Run(); err != nil {
 			return fmt.Errorf("run the program: %w", err)
