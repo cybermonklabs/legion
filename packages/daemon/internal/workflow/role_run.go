@@ -157,11 +157,12 @@ func startsWork(request record.SuperviseRequest) bool {
 // and 0 for a role the daemon holds no claim row of at all, which was given nothing) is below
 // entry, and no queued start of the role carries an entry at or above it. That second term is
 // what keeps one entry to one start row: the given number moves when the outbox queues the
-// delivery, not when the transition writes the row, and an admission pass runs on every fact of
-// the project, so without it every pass between the write and the delivery would write another
-// start for the same entry. A stop that still acts (actingStop) undoes the start it outlives,
-// which may run first, so past one only a queued start newer than the stop counts, which is the
-// body StartFor reads the same rows with.
+// delivery, not when the transition writes the row, and more than one reading of the entries can
+// come between the two — an admission pass on each fact that writes a record, the tick's and a
+// hold release's (the pass rule on admit's Admission.Apply), and the entry sweep's every minute —
+// so without it each of them would write another start for the same entry. A stop that still
+// acts (actingStop) undoes the start it outlives, which may run first, so past one only a queued
+// start newer than the stop counts, which is the body StartFor reads the same rows with.
 //
 // Two tests the caller holds are deliberately not here, because each is about the issue rather
 // than about the role's entry: that the role is the one that works the issue's current phase
@@ -206,6 +207,24 @@ func GivenEntry(run record.RoleRun) int64 {
 func queuedStart(run record.RoleRun) bool {
 	for _, queued := range run.Queued {
 		if startsWork(queued.Request) {
+			return true
+		}
+	}
+	return false
+}
+
+// startBringsBack is whether a queued start of the claim resumes it once the pod that refused the
+// claim's launch is replaced (podRefusedLaunch): any start that reaches the claim's token at the
+// issue's generation, whatever role its payload names (record.Store.ClaimQueued), the outbox start
+// whose own launch the pod refused among them, but a wake's. A keyed agent's claim holds the role
+// of each of its steps in turn, so the start of its next step reaches it as much as a start of the
+// role it holds now. A wake's start (record.SuperviseRequest.WakeKind) finishes without acting on a
+// claim the daemon suspended, and the daemon suspends every claim whose launch its pod refused
+// (supervise's podRefused). A start of an earlier generation finishes without acting too, and
+// ClaimQueued reads none.
+func startBringsBack(queued []record.QueuedSupervise) bool {
+	for _, row := range queued {
+		if row.Request.Op == "start" && row.Request.WakeKind == "" {
 			return true
 		}
 	}

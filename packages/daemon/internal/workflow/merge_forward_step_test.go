@@ -198,3 +198,106 @@ func TestAMergeForwardTellsNoRoleTheDeploymentLost(t *testing.T) {
 		})
 	}
 }
+
+// A merge forward tells nothing to a claim that runs in the slot of a role the deployment no longer
+// defines, whatever its step's role: in `implementer checker:a tester:a` key a's agent is named
+// checker (record.NameAgents) and runs the tester's step in the checker's slot, so with the checker
+// dropped from the settings, the issue at that tester step has the implementer asked to merge the
+// base forward and the tester's claim, key a's, sent no hold, and the landing sends it no landed
+// message: its task is stopped, and a message held for it would wake a claim no pod of the
+// deployment has a slot for. The control is the same issue under a deployment that defines the
+// checker, whose tester is told both.
+func TestAMergeForwardTellsNoClaimInTheSlotOfARoleTheDeploymentLost(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name          string
+		lost          bool
+		asked, landed []string
+	}{
+		{name: "the checker lost", lost: true, asked: []string{"implementer ask"}, landed: []string{}},
+		{name: "control: the checker defined", asked: []string{"implementer ask", "tester hold"}, landed: []string{"tester landed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := func(after time.Duration) *Engine {
+				e := readsAfter(after)
+				if tc.lost {
+					e.cfg.Deployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+				}
+				return e
+			}
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			seedStepsPlan(t, pool, "LEGION-208", 1, "implementer", "checker:a", "tester:a")
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning)
+			})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "legion-legion-legion-208-checker", StepTask: "a",
+				StepPlace: 3, Entry: 1})
+
+			applyRefusingNothing(t, pool, engine(0), conflictingRead(requiresCI))
+			applyRefusingNothing(t, pool, engine(conflictConfirmWait), conflictingRead(requiresCI))
+			if got := toldWho(mergeForwardMessages(t, pool)); !reflect.DeepEqual(got, tc.asked) {
+				t.Fatalf("the merge forward queued %v, want %v", got, tc.asked)
+			}
+			asked := len(mergeForwardMessages(t, pool))
+			applyRefusingNothing(t, pool, engine(3*time.Minute), intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+				Branch: "legion/LEGION-208", Base: "main", HeadSHA: forwardHead, Before: conflictHead, Sender: "legion-implementer[bot]"})
+			if got := toldWho(mergeForwardMessages(t, pool)[asked:]); !reflect.DeepEqual(got, tc.landed) {
+				t.Fatalf("the landing queued %v, want %v", got, tc.landed)
+			}
+		})
+	}
+}
+
+// A merge forward whose implementer cannot be asked is asked of nobody, and the record keeps no
+// ask: in `checker:a implementer:a tester` key a's agent is named checker (record.NameAgents) and
+// works the implementer's step in the checker's slot, so with the checker dropped from the
+// settings an ask would wake a claim no pod of the deployment has a slot for. The issue at the
+// tester's step is then sent no message: no ask, and no hold, which would keep the tester waiting
+// for a merge nobody makes. Its architect is told of no ask, and the record's merge forward stays
+// empty, so a later confirmed read of that head asks again, under a deployment that defines the
+// checker again. The control is the same issue under a deployment that defines the checker: the
+// ask and the hold go, the architect is told, and the record keeps the ask.
+func TestAMergeForwardWhoseImplementerRunsInALostSlotAsksNothingAndRecordsNoAsk(t *testing.T) {
+	requiresCI := &record.BaseRules{Required: []string{"ci"}}
+	for _, tc := range []struct {
+		name string
+		lost bool
+	}{
+		{name: "the checker lost", lost: true},
+		{name: "control: the checker defined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			engine := func(after time.Duration) *Engine {
+				e := readsAfter(after)
+				if tc.lost {
+					e.cfg.Deployment = plan.Deployment{Roles: plan.BuiltinRoles()}
+				}
+				return e
+			}
+			pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+			seedStepsPlan(t, pool, "LEGION-208", 1, "checker:a", "implementer:a", "tester")
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().MoveTask(t.Context(), tx, "LEGION-208", 1, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning)
+			})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "legion-legion-legion-208-checker", StepTask: "a",
+				StepPlace: 2, Entry: 1})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "legion-legion-legion-208-tester", StepTask: "a",
+				StepPlace: 3, Entry: 1})
+
+			applyRefusingNothing(t, pool, engine(0), conflictingRead(requiresCI))
+			applyRefusingNothing(t, pool, engine(conflictConfirmWait), conflictingRead(requiresCI))
+			told, asked, notices := toldWho(mergeForwardMessages(t, pool)), recordedPR(t, pool, "LEGION-208").MergeForward, capNotices(t, pool, "checks-red")
+			if tc.lost {
+				if len(told) != 0 || asked != nil || notices != 0 {
+					t.Fatalf("the merge forward queued %v, recorded the ask %+v and told the architect %d times, want nothing: the implementer cannot be asked",
+						told, asked, notices)
+				}
+				return
+			}
+			if want := []string{"implementer ask", "tester hold"}; !reflect.DeepEqual(told, want) || asked == nil || asked.Head != conflictHead || notices != 1 {
+				t.Fatalf("the merge forward queued %v, recorded the ask %+v and told the architect %d times, want %v, the ask of %s and one notice",
+					told, asked, notices, want, conflictHead)
+			}
+		})
+	}
+}

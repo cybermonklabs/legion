@@ -131,8 +131,8 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // an update round past its bound or an idle rule would otherwise take a pod that holds the stopped
 // role's unpushed work; and, for a stop that ends after its pause ended, only where no role of the
 // pod is live then (store.IssueHasLiveRoleTx, decision 6) — and the stopped claim's own open
-// resume closed, one that names that claim or names none (store.CloseRoleOpenResumeTx, given the
-// claim's token); and either the launch it is owed — a held wake of the pause
+// resume closed, the one that names that claim (store.CloseRoleOpenResumeTx, given the claim's
+// token); and either the launch it is owed — a held wake of the pause
 // (store.PodRecords.TakePodWake with pods.WakePause, which cancels the role's own backstop)
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
 // phase serving its generation, its backstop. A start owed once the pause has ended, with no
@@ -274,14 +274,14 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	if err != nil {
 		return made, err
 	}
-	if made.expedited, err = store.ExpeditePauseStopRowsTx(ctx, tx, p.project, c.Issue, c.Role, at); err != nil {
+	if made.expedited, err = store.ExpeditePauseStopRowsTx(ctx, tx, p.project, c.Issue, c.Token, c.Role, at); err != nil {
 		return made, err
 	}
 	if c.State != supervise.StateSuspended {
 		return made, nil
 	}
 	if first {
-		if _, err := store.CloseRoleOpenResumeTx(ctx, tx, p.token, c.Issue, c.Role, c.Token, at); err != nil {
+		if _, err := store.CloseRoleOpenResumeTx(ctx, tx, p.token, c.Issue, c.Token, at); err != nil {
 			return made, err
 		}
 	}
@@ -312,12 +312,12 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 }
 
 // wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment the wake pacing lets a launch
-// of the claim token out becomes the stuck clock of that claim's open resume, one that names the
-// claim or names none (store.Store.SetResumeClock, which never moves a clock back), so a launch
-// that waited its turn in a long queue is not warned stuck for the wait, and another claim of the
-// same role keeps its own clock. The machine calls it inside its decision, so the write runs on a
-// goroutine of its own, as podResume's stamp does, under a hold mark of its own; a failed write is
-// logged and the clock keeps the moment it had.
+// of the claim token out becomes the stuck clock of that claim's open resume
+// (store.Store.SetResumeClock, which never moves a clock back), so a launch that waited its turn in
+// a long queue is not warned stuck for the wait, and another claim of the same role keeps its own
+// clock. The machine calls it inside its decision, so the write runs on a goroutine of its own, as
+// podResume's stamp does, under a hold mark of its own; a failed write is logged and the clock
+// keeps the moment it had.
 func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Role, at time.Time) {
 	if issue == "" || role == claim.RoleController {
 		return
@@ -325,7 +325,7 @@ func (p *projectPause) wakeLetOut(token claim.Token, issue string, role claim.Ro
 	go func() {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
-		if _, err := p.store.SetResumeClock(ctx, p.token, issue, role, token, at); err != nil {
+		if _, err := p.store.SetResumeClock(ctx, p.token, issue, token, at); err != nil {
 			p.log.Warn("wake: could not start a resume's stuck clock at its launch's let-out moment",
 				"claim", token, "at", at, "error", err)
 		}
@@ -443,15 +443,16 @@ func (p *projectPause) resumeOwedSpawn(token claim.Token, pause int64) {
 }
 
 // applyResumePass applies the resume's one admission pass as a fact of its own
-// (intake.ProjectResumed), keyed on the ended pause, through the workflow's handlers: admission
-// promotes on it as on every fact that is not a Dispatch issue, and nothing else acts on it. It is
-// not the controller's tick, which would also queue the controller a tick notice: the resume
-// wakes nobody by itself. A failed pass is logged; the next fact or tick promotes the line.
+// (intake.ProjectResumed), keyed on the ended pause, through the workflow's handlers: admission's
+// pass rule runs the pass on it whatever it wrote (admit.Admission.Apply), and nothing else acts
+// on it. It is not the controller's tick, which would also queue the controller a tick notice:
+// the resume wakes nobody by itself. A failed pass is logged; the next pass the rule runs
+// promotes the line, the tick's at the latest, and any other fact that writes nothing runs none.
 func (p *projectPause) applyResumePass(ctx context.Context, ended store.Pause) {
 	w := p.workflow
 	eventID := fmt.Sprintf("project-resumed:%s:%d", p.project, ended.ID)
 	if _, err := intake.ApplyFact(ctx, w.pool, "pause", eventID, intake.ProjectResumed{}, w.handlers...); err != nil {
-		p.log.Error("pause: the resume's admission pass failed; the next fact or tick promotes the line",
+		p.log.Error("pause: the resume's admission pass failed; the next admission pass promotes the line",
 			"pause", ended.ID, "error", err)
 	}
 }
@@ -565,9 +566,15 @@ func pauseStopClaimOf(c supervise.Claim) store.PauseStopClaim {
 //     transaction;
 //   - failed or retired, or no machine at all: the stop row ends `failed`.
 //
-// The claim is the one of the role on the row's issue, or, on a row keyed by the project, of the
-// issue its payload names (record.SuperviseRequest.Issue, pause.StopKey): a claim of another
-// project's issue. Each line the executor writes names the claim's issue.
+// The claim is the one the row names (record.SuperviseRequest.Claim, pause.StopRow): two claims of
+// one issue can hold one role — the agent of a key on a step of another role, beside that role's
+// own claim of an earlier version of the plan — so the role alone would stop the other one, or no
+// machine, and leave the claim the pause asked to stop running and its stop row open. A row the
+// release before wrote names no claim, and stops the claim of the worker on the role's step
+// (workerToken), as every other executor reaches the claim of a row that names a role alone, of the
+// row's issue, or, on a row keyed by the project, of the issue its payload names
+// (record.SuperviseRequest.Issue, pause.StopKey): a claim of another project's issue. Each line the
+// executor writes names the claim's issue.
 func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) error {
 	if r.trees == nil {
 		return errors.New("pause stop executor has no store")
@@ -581,7 +588,7 @@ func (r *outbox) pauseStop(ctx context.Context, row record.OutboxRow, payload re
 		r.pauseStopEnded(row, issue, payload.Role, held.ID)
 		return nil
 	}
-	token, err := claim.NewToken(r.project, issue, payload.Role)
+	token, err := r.workerToken(ctx, issue, payload.Role, payload.Claim)
 	if err != nil {
 		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 	}

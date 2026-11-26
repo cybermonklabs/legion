@@ -104,7 +104,7 @@ func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t
 // it: a backend puts its own directories under it (Claude Code's CLAUDE_CONFIG_DIR,
 // claudeConfigDir), and those reach the prose under `<agent>` as well.
 func documentedPath(dir, issue string, role claim.Role) string {
-	home := roleStateHome(role)
+	home := roleStateHome(claim.Agent(role))
 	if rest, under := strings.CutPrefix(dir, home); under && (rest == "" || strings.HasPrefix(rest, "/")) {
 		return path.Dir(home) + "/<agent>" + rest
 	}

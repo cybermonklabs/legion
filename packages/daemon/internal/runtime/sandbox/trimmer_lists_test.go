@@ -305,7 +305,7 @@ func cacheHomeInstalls(script, cacheHome string, protected map[string]bool) (ren
 // against is the one the pod sets.
 func roleCacheHome(t *testing.T, role claim.Role) string {
 	t.Helper()
-	for _, env := range roleEnvironment(role) {
+	for _, env := range roleEnvironment(claim.Agent(role)) {
 		if env.Name == "XDG_CACHE_HOME" {
 			return env.Value
 		}
@@ -323,7 +323,7 @@ func roleCacheHome(t *testing.T, role claim.Role) string {
 func renderedStartWrapper(t *testing.T, role claim.Role) string {
 	t.Helper()
 	r := sandboxRuntime(t, SandboxConfig{})
-	return startScript(roleStateHome(role), 3, testPlugins(), claudeConfigDir(role),
+	return startScript(roleStateHome(claim.Agent(role)), 3, testPlugins(), claudeConfigDir(claim.Agent(role)),
 		installLockWait(r.bootTimeout, r.registrationIntervals))
 }
 

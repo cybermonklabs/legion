@@ -162,7 +162,7 @@ func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 	}
 	var roles []string
 	for _, role := range kind.roles(r) {
-		if role != claim.RoleController && !claim.IsBuiltin(role) {
+		if claim.IsDeploymentRole(role) {
 			roles = append(roles, string(role))
 		}
 	}
@@ -441,8 +441,8 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if err := r.checkLocator(*k.Locator); err != nil {
 		return nil, err
 	}
-	slot := slotOf(k.Locator.Claim)
-	kind := podKindFor(slot)
+	slot, _ := k.Locator.Claim.Slot()
+	kind := podKindFor(launcherOf(slot))
 	if !roundCovers(kind) {
 		return nil, nil
 	}
@@ -494,7 +494,7 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
 		drifted = append(drifted, "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
-	for _, moved := range r.driftedInPod(pod, slot) {
+	for _, moved := range r.driftedInPod(pod, launcherOf(slot)) {
 		drifted = append(drifted, moved.String())
 	}
 	return drifted, nil
@@ -619,26 +619,13 @@ func templateRoles(s *sandbox) []claim.Role {
 	return builtRoles(s.Spec.PodTemplate.Spec)
 }
 
-// templateLacks is what a pod built with held lacks of a launch whose claim runs in slot (slotOf)
-// on a step of role, as a refusal names it: "the role <role>" where the pod lacks the role (the
-// one name a claim named for its role asks), "the slot <slot>" where it lacks only the slot, "the
-// slot <slot> and the role <role>" where it lacks two names, and "" where it holds both, where a
-// token names no slot, or where held is empty (a template no launcher of this layout wrote).
-func templateLacks(held []claim.Role, slot, role claim.Role) string {
-	if len(held) == 0 {
-		return ""
-	}
-	lacksSlot := slot != "" && !slices.Contains(held, slot)
-	lacksRole := !slices.Contains(held, role)
-	switch {
-	case lacksRole && (slot == role || !lacksSlot):
-		return "the role " + string(role)
-	case lacksSlot && lacksRole:
-		return "the slot " + string(slot) + " and the role " + string(role)
-	case lacksSlot:
-		return "the slot " + string(slot)
-	}
-	return ""
+// templateLacks answers, for a role, whether the Sandbox s's template was built without it: a
+// template that holds roles (templateRoles) lacks each role it does not hold, and a template no
+// launcher of this layout wrote holds none and lacks nothing. It is the one rule both a launch into
+// a kept pod (runtime.PodLacks, in relaunch) and PodLacksRole judge a pod by.
+func templateLacks(s *sandbox) func(role claim.Role) bool {
+	held := templateRoles(s)
+	return func(role claim.Role) bool { return len(held) > 0 && !slices.Contains(held, role) }
 }
 
 // builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
@@ -671,7 +658,7 @@ func rolesDrift(s *sandbox, roles []claim.Role) []string {
 }
 
 // PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
-// template was built without role (templateRoles), and true; "" and false where the issue has
+// template was built without role (templateLacks), and true; "" and false where the issue has
 // no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
 // makes no API call.
 func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
@@ -687,7 +674,7 @@ func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
 	if !livePod(s, pod) {
 		return "", false
 	}
-	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, role) {
+	if !templateLacks(s)(role) {
 		return "", false
 	}
 	return string(pod.UID), true
@@ -696,21 +683,23 @@ func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
 // SlotWaitsForCredential satisfies runtime.IssuePodRoles: the uid of the issue's pod whose
 // launcher of slot is connected and said in its hello no credential wait (launchers.credentialWaits),
 // and false; "" and true where that launcher waits, or where no launcher of the slot is connected.
-// It reads the launchers this runtime accepted and makes no API call.
-func (r *Runtime) SlotWaitsForCredential(issue string, slot claim.Role) (string, bool) {
+// It refuses a slot no claim token of the issue carries (claim.AgentToken), and a project no token
+// spells: no launcher serves such a slot, and an answer that it waits would let a re-role into it
+// start with no credential wait. It reads the launchers this runtime accepted and makes no API call.
+func (r *Runtime) SlotWaitsForCredential(issue string, slot claim.Agent) (string, bool, error) {
 	project, err := claim.ProjectToken(r.project)
 	if err != nil {
-		return "", true
+		return "", false, fmt.Errorf("the credential wait of the slot %s of %s: %w", slot, issue, err)
 	}
 	token, err := issuePod{}.claimToken(project, issue, slot)
 	if err != nil {
-		return "", true
+		return "", false, fmt.Errorf("the credential wait of the slot %s of %s: %w", slot, issue, err)
 	}
 	pod, waits := r.launchers.credentialWaits(token)
 	if waits {
-		return "", true
+		return "", true, nil
 	}
-	return pod, false
+	return pod, false, nil
 }
 
 // PodRunsOtherImage satisfies runtime.IssuePodImage: the uid of the issue's live pod (livePod)

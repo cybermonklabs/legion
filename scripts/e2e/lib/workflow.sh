@@ -590,20 +590,10 @@ reviewer_commented() {
 # reviewer_completed ISSUE: the daemon recorded the reviewer's completion of the issue's open round,
 # which names the reviewer's Dispatch handoff record (the reviewer pushes nothing).
 reviewer_completed() { daemon_state | jq -e --arg issue "$1" '(.issues[$issue].workers.reviewer.handoffRecord.id // "") != ""' >/dev/null; }
-# assert_review_round_handoff ISSUE ROUND checks the reviewer's handoff record of a changes-requested
-# round. The review ends the round whether or not the reviewer has completed
-# (workflow.Engine.reviewRound), so the issue can stand in implementing before the daemon records
-# the completion that names the record. The move into reviewing clears the reviewer's record of the
-# round before, so a record in the state is this round's. It waits for that completion
-# (reviewer_completed), then checks the record (assert_handoff_record).
-assert_review_round_handoff() {
-  until_true 600 "the daemon to record the reviewer's completion of $1's round $2, naming its handoff record" reviewer_completed "$1"
-  assert_handoff_record "$1" reviewer reviewing "$2"
-}
 # approve_as_reviewer asks the reviewer for the round's last review and waits for it to approve the
 # head on its own: the reviewer approves the code head and pushes nothing above it, its handoff
-# being a record on the Dispatch issue. Retro commits nothing, so the merge carries no retro
-# learning onto the smoke main, and clean_smoke_main removes any an earlier merge left there.
+# being a record on the Dispatch issue. Retro commits nothing either, so the merge carries no retro
+# learning onto the smoke main; clean_smoke_main removes what merges from before that change left.
 approve_as_reviewer() {
   local issue=$1 app
   app=$(role_app reviewer) || return 1
@@ -656,7 +646,7 @@ release_smoke_main() {
   note "released $repo main ($smoke_main_lock)"
 }
 # smoke_main_leftovers prints each path on the smoke repository's main under docs/solutions/, the
-# retro learnings a proof pull request merged before retro stopped committing left there, or under
+# retro learnings merged proof pull requests carried there before retro stopped committing, or under
 # .legion/, which only a merge from before handoffs moved to Dispatch can have left.
 smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
@@ -923,7 +913,7 @@ clean_smoke_main() {
     gh api -X DELETE "repos/$repo/contents/$path" -f message="proof fixture: remove $path" -f sha="$sha" -f branch="$branch" >/dev/null
   done <<<"$paths"
   url=$(gh -R "$repo" pr create --base main --head "$branch" --title "proof fixture: remove the handoffs and learnings Stage 3 runs merged ($project)" \
-    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges from before retro stopped committing left, and any .legion/ handoffs a merge from before retro removed them left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
+    --body "The Stage 3 proof run $project removes what merged proof pull requests left on main: docs/solutions/ retro learnings, which proof merges carried before retro stopped committing, and any .legion/ handoffs a merge from before handoffs moved to Dispatch left. This is a proof fixture change by the proof's human-merge identity; it changes no product.")
   smoke_cleanup_url=$url
   pr=${url##*/}
   timeout_hook=report_smoke_pr_merge_state
@@ -1057,9 +1047,20 @@ role_handoff() {
   db_value "select p.handoff_commit from phases p join issues i on i.key = p.issue
     where p.issue = '$issue' and p.role = '$role' and p.handoff_commit <> ''${phases:+ and i.phase in ($phases)}"
 }
-# review_round ISSUE prints the implementer's review round: 0 before its first return.
+# review_round ISSUE prints the issue's review round (its returns to implementing): 0 before its
+# first return. The daemon keeps it where it keeps every count of returns (record.ReturnCounts): on
+# the task the plan runs, for an issue with plan rows at its generation, and on the implementer's
+# phases row for one with none.
 review_round() {
-  db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer'), 0)"
+  local planned
+  planned=$(db_value "select exists (select 1 from issue_plans p join issues i on i.key = p.issue and i.generation = p.generation
+    where p.issue = '$1')")
+  if [ "$planned" = t ]; then
+    db_value "select coalesce((select t.rounds from plan_tasks t join issues i on i.key = t.issue and i.generation = t.generation
+      where t.issue = '$1' and t.state = 'running'), 0)"
+  else
+    db_value "select coalesce((select rounds from phases where issue = '$1' and role = 'implementer'), 0)"
+  fi
 }
 # handoff_word ROLE prints the word of the Dispatch handoff record ROLE's file-backed phase ends
 # with (the daemon's phase.HandoffFile): plan, implement, test or review.
@@ -1077,6 +1078,21 @@ handoff_word() {
 # (.workers[ROLE].handoffRecord), and nothing before that completion.
 role_handoff_record() {
   daemon_state | jq -r --arg issue "$1" --arg role "$2" '.issues[$issue].workers[$role].handoffRecord // empty | "\(.id) \(.version)"'
+}
+# role_handoff_recorded ISSUE ROLE [BEFORE]: ROLE's completion of its current file-backed phase has
+# named a Dispatch handoff record (role_handoff_record prints one) other than BEFORE, the
+# `<id> <version>` role_handoff_record printed before the round's review was asked for. A review
+# round ends on the reviewer's decision, whether or not the reviewer has completed (the daemon's
+# roundRejected and roundApproved, workflow/review.go), so a check of the reviewer's record first
+# waits for it with this, bounded (until_true), rather than reading it at the move the decision
+# made. The transition that starts a role on a phase empties the record the role named for its
+# previous phase (workflow's clearHandoff, engine.go), so from the move into reviewing until the
+# round's completion the state shows no reviewer record, and a BEFORE read in reviewing is empty;
+# a BEFORE read before that move is the earlier round's record, which the wait does not take.
+role_handoff_recorded() {
+  local now
+  now=$(role_handoff_record "$1" "$2")
+  [ -n "$now" ] && [ "$now" != "${3:-}" ]
 }
 # assert_handoff_record ISSUE ROLE PHASE ROUND: ROLE's completion of that phase round named a
 # Dispatch handoff record, and Dispatch holds that record (GET /api/v1/handoffs/<id>) as ISSUE's

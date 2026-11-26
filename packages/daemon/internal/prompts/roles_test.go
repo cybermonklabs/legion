@@ -153,7 +153,7 @@ func refusedClasses(label string, lines []string) []string {
 	return classes
 }
 
-// Every role a claim can be on has its own part, and none is blank: a blank part boots a worker with
+// Every role of Legion's a claim can be on has its own part, and none is blank: a blank part boots a worker with
 // no instructions at all. The merger composes no core.
 func TestEveryRoleHasItsPartAndTheMergerHasNoCore(t *testing.T) {
 	for _, role := range claim.Roles {

@@ -108,7 +108,7 @@ func movesTheTesterStep(t *testing.T, h *harness) claim.Token {
 		t.Fatal(err)
 	}
 	if err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: later,
+		return record.NewStore().PutPhase(ctx, tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: later,
 			StepTask: "a", StepPlace: 2, Entry: 3})
 	}); err != nil {
 		t.Fatalf("move the tester's step of LEGION-209 to %s: %v", later, err)

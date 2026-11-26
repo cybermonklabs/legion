@@ -103,12 +103,19 @@ type DesignGateDocument struct {
 }
 
 // RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
-// is one of the six Legion roles or a role the deployment defines, and Session the session that
-// holds it on the issue. The role is a string here rather than claim.Role, because this package
+// is a role of the issue, one of the six Legion roles or a role the deployment defines, Session the
+// session that holds it, Claim the token of the claim that session runs, and WorksStep whether that
+// claim is the worker on the role's step as the record gives it (record.WorkerClaim). Two claims of
+// one issue can hold one role — the agent of a key on a step of another role, beside that role's
+// own claim of an earlier version of the plan — so a role can be named for several sessions, each
+// by its own claim; Dispatch keeps the session of the step's worker where its way back folds a
+// role to one session. The role is a string here rather than claim.Role, because this package
 // names Dispatch's wire shapes.
 type RoleHolder struct {
-	Role    string `json:"role"`
-	Session string `json:"session"`
+	Role      string `json:"role"`
+	Session   string `json:"session"`
+	Claim     string `json:"claim"`
+	WorksStep bool   `json:"works_step"`
 }
 
 // StepWrite is the body of a step record's write, as Dispatch's route takes it, the actor aside:

@@ -56,8 +56,8 @@ type RecordFieldDecision struct {
 
 // ClaimRecordFields is every field of `supervise.Claim`, in the order the record declares them.
 var ClaimRecordFields = []RecordFieldDecision{
-	{Field: "Token", Column: ColumnOperator, Keys: []string{"token"},
-		Reason: "the operator's routes address a claim by it; both agent surfaces carry a claim under the issue and the role that hold it"},
+	{Field: "Token", Column: ColumnAgents, Keys: []string{"token"},
+		Reason: "two claims of one issue can hold one role, so the issue and the role do not name a claim; both agent surfaces name each claim by its token (the stranded token's contract entry)"},
 	{Field: "Project", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Tree", Column: ColumnOperator, Keys: []string{"tree"},
 		Reason: "the operator's listing names each claim's tree; an agent reads it as its issue's own `tree`"},
@@ -122,6 +122,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the store never writes it, so the state route would serve a constant for it while the operator route reads the live machine"},
 	{Field: "DeathCharged", Column: ColumnWithheld,
 		Reason: "the supervisor's own accounting of one dead process: the record that keeps a second report of that process from being charged a second death"},
+	{Field: "UnrecordedRefusal", Column: ColumnOperator, Keys: []string{"unrecordedRefusal"},
+		Reason: "the store never writes it, so the state route would serve a constant for it while the operator route reads the live machine"},
 	{Field: "AwaitsPod", Column: ColumnWithheld,
 		Reason: "the update round's own reading of a claim that records no process, which the store never writes and a restart forgets; the claim's lastStartFailure names the same pod in the runtime's words"},
 	{Field: "RegisteredPods", Column: ColumnWithheld,
@@ -173,6 +175,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,
 		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in an architect's catch-up, and no surface"},
+	{Field: "RoleChange", Column: ColumnWithheld,
+		Reason: "the other role this claim took, which reaches its agent in the first prompt of the new role and no surface"},
 	{Field: "SessionLost", Column: ColumnWithheld,
 		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }

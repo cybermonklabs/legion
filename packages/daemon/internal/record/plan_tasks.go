@@ -97,14 +97,17 @@ func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string
 	for give := 1; given[branch]; give++ {
 		branch = claim.TaskBranchOfGive(issue, plan.TaskSlug(task), give)
 	}
-	if _, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3)`,
-		issue, int64(generation), branch); err != nil {
+	tag, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3)`,
+		issue, int64(generation), branch)
+	if err != nil {
 		return "", fmt.Errorf("%s: %w", describe, err)
 	}
-	if _, err := tx.Exec(ctx, `update plan_tasks set branch = $4 where issue = $1 and generation = $2 and task = $3`,
+	noteRowsWritten(ctx, tag)
+	if tag, err = tx.Exec(ctx, `update plan_tasks set branch = $4 where issue = $1 and generation = $2 and task = $3`,
 		issue, int64(generation), task, branch); err != nil {
 		return "", fmt.Errorf("%s: %w", describe, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return branch, nil
 }
 
@@ -114,10 +117,12 @@ func (s *Postgres) AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string
 // closeEarlierPullRequests), which GitHub keeps with its commits while no row of the record names
 // it any longer. A name recorded already is left as it is.
 func (s *Postgres) RecordBranchGiven(ctx context.Context, tx pgx.Tx, issue string, generation uint64, branch string) error {
-	if _, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3) on conflict do nothing`,
-		issue, int64(generation), branch); err != nil {
+	tag, err := tx.Exec(ctx, `insert into plan_branches (issue, generation, branch) values ($1, $2, $3) on conflict do nothing`,
+		issue, int64(generation), branch)
+	if err != nil {
 		return fmt.Errorf("record %s among the names %s gave at generation %d: %w", branch, issue, generation, err)
 	}
+	noteRowsWritten(ctx, tag)
 	return nil
 }
 
@@ -138,6 +143,7 @@ func (s *Postgres) SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -155,6 +161,7 @@ func (s *Postgres) SetJoinUnmerged(ctx context.Context, tx pgx.Tx, issue string,
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("write whether the join branch of task %s of %s at generation %d merged into its branch: the plan holds no such task", task, issue, generation)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -173,6 +180,7 @@ func (s *Postgres) SetStartReason(ctx context.Context, tx pgx.Tx, issue string, 
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("write why the step of task %s of %s at generation %d was started: the plan holds no such task that is running", task, issue, generation)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -199,6 +207,9 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 	}
 	if len(kept) > 0 {
 		return fmt.Errorf("%s: the plan holds no waiting or stopped task %v", describe, kept)
+	}
+	if len(deleted) > 0 {
+		noteRecordWrite(ctx)
 	}
 	return nil
 }
@@ -244,6 +255,7 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is in the workflow, or the task no such step", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -267,6 +279,7 @@ func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is not done and in the workflow", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -294,6 +307,7 @@ func (s *Postgres) HoldTask(ctx context.Context, tx pgx.Tx, issue string, genera
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is running or held", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -310,6 +324,7 @@ func (s *Postgres) ReleaseTask(ctx context.Context, tx pgx.Tx, issue string, gen
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is held", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }
 
@@ -335,5 +350,6 @@ func (s *Postgres) SetStepWait(ctx context.Context, tx pgx.Tx, issue string, gen
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%s: the plan holds no such task that is running", describe)
 	}
+	noteRecordWrite(ctx)
 	return nil
 }

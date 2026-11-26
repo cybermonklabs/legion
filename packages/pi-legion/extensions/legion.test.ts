@@ -766,7 +766,7 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:500-520 at the
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:541-561 at the
  * pinned tag): the child's transcript sits inside a directory named after the parent's
  * transcript file, minus its `.jsonl` extension, so
  * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
@@ -1245,7 +1245,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       tree: "REPO-42",
       issue: "REPO-43",
     });
-    // A role of the deployment (contract 258), `checker`, works a step as a phase worker does.
+    // A role of the deployment (the deployment roles' contract entry), `checker`, works a step as a
+    // phase worker does.
     const checker = classifySession({
       LEGION_ROLE: "checker",
       LEGION_TREE: "REPO-42",
@@ -3700,8 +3701,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
-    // A role of the deployment (contract 258) comes due after the six, at the twelfth tick, so a
-    // pod's roles still start their attempts on ticks of their own.
+    // A role of the deployment (the deployment roles' contract entry) comes due after the six, at
+    // the twelfth tick, so a pod's roles still start their attempts on ticks of their own.
     test("a role of the deployment comes due after the six, at the twelfth tick", async () => {
       const due = CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.length;
       expect(due).toBe(12);

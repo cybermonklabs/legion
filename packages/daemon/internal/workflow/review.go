@@ -189,7 +189,8 @@ const conflictConfirmWait = time.Minute
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
 // once the state is recorded, whatever the read decided - this read is the one that moves an
-// approved issue on to its task's next step (accepting, in the default steps), as often as not.
+// approved issue on to its task's next step (accepting, in the default steps), or to its retro
+// where the review is the task's last step, as often as not.
 // The base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
@@ -1335,7 +1336,8 @@ func undecidedReason(row record.PhaseRow, pr record.PullRequest) string {
 }
 
 // implementationReady moves issue from implementing to its task's next step (testing, in the
-// default steps) on the implementer's completion of
+// default steps), or to its retro where the implementer's step is the task's last, on the
+// implementer's completion of
 // the round that row records, once the pull request pr is recorded open or merged
 // (TriggerImplementationReady: a record closed without merging, or none, moves nothing). It
 // reads no CI result: a settlement that arrived while the implementer worked moved nothing and
@@ -1647,9 +1649,10 @@ func taskSentence(w Walk) string {
 	return fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
 }
 
-// recordRound counts w's task one more review round, which only a review that requested changes
-// ends, and tells the architect once for each value review_round_cap holds, its notice naming the
-// task (taskLabel). The counts are the task's, where recordPass keeps them. The move's own pair and
+// recordRound counts w's task one more review round, which a review that requested changes ends,
+// as the fail of a step of the type review whose agent is not the owner does (Walk.reviewFails),
+// and tells the architect once for each value review_round_cap holds, its notice naming the task
+// (taskLabel). The counts are the task's, where recordPass keeps them. The move's own pair and
 // the deployment's hooks are counted where every backward move passes (recordPass), so a round and
 // a move are counted apart: this one is the cap's, and everything it writes it writes in the move's
 // own transaction. The cap's message on the issue keeps its fixed start, which a reader of a fleet

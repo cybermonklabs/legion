@@ -210,7 +210,8 @@ the next of them:
 
 Each fact the read applies carries an id built from what GitHub showed, never from the time, so
 one observation is applied once however many reads see it, and the webhook arriving after it
-changes nothing. These reads share the implement App's hourly limit with every pane's `gh`: a
+changes nothing. These reads share the implement App's hourly limit with everything else that acts
+as that App, the `gh` of each pane on an implementer's or a merger's step among them: a
 rate-limit answer ends the start's reads there, and each issue's next handoff reads it. The
 implementer's completion of implementing reads its branch's open pull request with the implement
 App too, and is refused `HANDOFF_NO_PULL_REQUEST` when there is none and the record holds none
@@ -311,14 +312,15 @@ Dispatch read them, delete the files, then install every App from
   only). Each takes `cpu` and `memory` (the limits), `cpu_request` and `memory_request` (what the
   scheduler reserves of them), `ephemeral_storage` (the disk limit) and
   `ephemeral_storage_request` (what the scheduler reserves of it), each optional, each request at
-  most its limit, and the daemon's defaults fill the rest: `issue` 3 CPU and 19Gi, request and
+  most its limit, and the daemon's defaults fill the rest: `issue` 2 CPU and 8Gi, request and
   limit alike, 80Gi of disk over a 6Gi request; `controller` 1 CPU and 4Gi, 10Gi of disk over 1Gi.
   A workflow role's key is refused (`runtime.kubernetes.resources.<role> is gone: an issue pod has
   one reservation, runtime.kubernetes.resources.issue`). Under gVisor every process of a pod already
-  used whatever the pod had free, so the pod's peak must fit its reservation: an issue pod measured
-  at 1-minute resolution used its whole 19Gi for minutes while its reviewer ran a review
-  (2026-10-21). A cpu or memory request the file leaves out equals the limit, so a deployment that
-  sets none runs only `Guaranteed` pods. A lower request — `issue: {memory: 32Gi, memory_request:
+  used whatever the pod had free, so the pod's peak must fit its reservation: an issue pod that
+  still ran its own builds, measured at 1-minute resolution, used its whole 19Gi for minutes while
+  its reviewer ran a review (2026-10-21). A cpu or memory request the file leaves out equals the
+  limit, so a deployment that sets none runs only `Guaranteed` pods.
+  A lower request — `issue: {memory: 32Gi, memory_request:
   8Gi}` for issues whose memory comes in bursts — makes the issue pod `Burstable`: more pods fit a
   node and a cluster that bills by requests bills less, but under node memory pressure the kubelet
   evicts a `Burstable` pod using more than its request before any `Guaranteed` one, or the kernel
@@ -348,8 +350,8 @@ Dispatch read them, delete the files, then install every App from
   stays Pending Unschedulable, it logs `boot probe is waiting on capacity` with the scheduler's
   reason and tries again every 5 minutes, serving nothing until the probe passes, and the
   `pool-capacity` row of `legion state`'s capability report then records how many attempts waited
-  and why, open until `capabilities.decided.pool-capacity` names a reason. An issue pod, whatever
-  roles it runs, sums to 3 CPU and 19 GiB at the defaults, its disk limits to 80Gi over 6Gi requested. A container
+  and why, open until `capabilities.decided.pool-capacity` names a reason. An issue pod reserves
+  2 CPU and 8 GiB at the defaults, with a disk limit of 80Gi over a 6Gi request. A container
   past its disk limit has its own pod evicted, the offending issue's alone, rather than the node
   reaching `DiskPressure` where another tree's pod can go; the 1Gi request reserves almost no disk,
   so a node's root volume can be oversubscribed by the pods' limits — an operator who knows the
@@ -358,9 +360,11 @@ Dispatch read them, delete the files, then install every App from
   Autopilot adds its own to an issue or controller pod): an issue pod carries a disk of its own and
   shares none, so the
   scheduler places it wherever the pool has room and Karpenter
-  adds nodes under the pool's limits. Concurrent issue pods are bounded by what the pool's
-  `limits.cpu` and `limits.memory` leave for pods of that sum (two per 8-vCPU floor node, about 80
-  at `limits.cpu: 256`, or `limits.memory` / 19 GiB when that is smaller) once the probe pod and,
+  adds nodes under the pool's limits. Concurrent issue pods are bounded by the nodes the pool's
+  `limits.cpu` and `limits.memory` let Karpenter make, since Karpenter counts each node's whole
+  capacity against those limits (three pods per 8-vCPU floor node, so about 96 on the 32 floor
+  nodes of `limits.cpu: 256`, or three on each of `limits.memory` / 64 GiB floor nodes when that is
+  smaller) once the probe pod and,
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod where it holds no slot —
   through `accepting`, `retro` and `merging`, which hold none, on to its own close — and an issue
@@ -463,8 +467,8 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session, a fresh one
-  where the task had no tester step. Every other
+  With `tester`, the merge hands the check's first look to the claim that works the tester's step,
+  in its session, or to the tester in a fresh one where the task had no tester step. Every other
   claim of a child is retired. A root's are suspended with the rest of its tree for the linger,
   and retired when the linger ends. With `off`, no check opens at all: a child's close retires
   every claim of the child and releases its pod, and a root's close suspends every claim of its
@@ -1158,9 +1162,11 @@ To stand it up:
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
 `slow`, and the rest the example names).
-The daemon refuses to boot when an agent's role has no model, or its model's key does not work.
+The task agents Legion's prompts dispatch take the models of `review`, `oracle`, `deep`,
+`smol` and `slow`.
+The daemon refuses to boot when one of those roles has no model, or its model's key does not work.
 `smol` and `slow` left unset take the `default` role's model, which the daemon accepts.
-Nothing refuses a missing `default`: an Oh My Pi session whose role names no model then starts,
+Nothing refuses a missing `default`. An Oh My Pi session whose role names no model then starts,
 silently, on one of Oh My Pi's built-in models.
 Set every variable your route depends on in `pod.env`, which outranks a repository's own `.env`.
 
@@ -1240,7 +1246,9 @@ To hand the controller back to a person, set `controller: operator`, drop
 and restart the daemon: at boot it stops its own controller's claim and releases the pod, deleting
 the volume its Sandbox owned, and retires the claim with the session it recorded; you then start
 the controller on your machine as below.
-Switching to `controller: daemon` again starts a fresh controller, not the old session.
+Switching to `controller: daemon` again relaunches the retired claim after the keeper's first
+one-minute wait, on fresh budgets and on the session it recorded, which the session database
+keeps: the controller comes back on its old conversation, in a pod with a new, empty volume.
 
 A daemon built before LEGION-592 cannot run against a database a `controller: daemon` daemon used:
 it lists the controller's claim as an issue keyed `""`, which every agent's plugin refuses. So to
@@ -1359,13 +1367,16 @@ Closing the terminal leaves the project without one, and the daemon logs
    reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
    first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
-   pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
-   or a resumed worker, runs the new one. At a release that moves the daemon API contract, the
-   daemon moves its own controller (`controller: daemon`) for you where it knows a plugin pair to
-   install: it relaunches the controller at once onto the release's plugins, and that relaunch
-   replaces the controller's pod when the pod runs another image. `legion config check` prints the
-   gap that leaves it relaunching none. To move a long-running agent over now, suspend and resume
-   its claim:
+   pod keeps the image it started with until it is replaced. An issue pod on another image has
+   drifted, so an update round asks each of its agents to push its work and answer, and the daemon
+   replaces the pod once each has answered, or at the round's bound (`pod_update_grace_minutes`);
+   each agent then comes back on the new pod in its own session. The controller's pod, which no
+   round covers, takes the new image at its next launch. At a release that moves the daemon API
+   contract, the daemon moves its own controller (`controller: daemon`) for you where it knows a
+   plugin pair to install: it relaunches the controller at once onto the release's plugins, and
+   that relaunch replaces the controller's pod when the pod runs another image.
+   `legion config check` prints the gap that leaves it relaunching none. Otherwise, to move the
+   controller over now, suspend and resume its claim:
 
    ```sh
    legion claims list    --config legion.yaml --operator-token-file operator-token
@@ -1382,22 +1393,36 @@ Closing the terminal leaves the project without one, and the daemon logs
    began under its own deadlines. Until the stop lands the hold lives only in the daemon's memory,
    so before restarting
    the daemon wait until `legion claims list` shows the claim `suspended`, not merely
-   `suspensionHeld`. The resumed agent continues the same conversation in a new pod — and that
-   pod brings a disk of its own, so its workspace is provisioned afresh from the issue's branch
-   and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
+   `suspensionHeld`. The resumed agent continues the same conversation. An issue's agent starts
+   again in the pod that is still there, with the workspace as the issue's roles left it: no idle
+   rule releases an issue pod while an operator's suspension holds one of its claims and no other
+   claim is live, and an update round replaces it only after the operator's resume. Where another
+   claim of the issue stayed live and the pod went idle, the idle release replaced the pod before
+   the resume, and the next pod gets back only what the release saved, the unpushed commits, the
+   working-copy change and the bookmarks on them (all of the workspace on a kept volume). Let the
+   agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
    claim of an open issue live and idle between phases and while the root waits on a person. A child
    that left the workflow and is set back to `todo` gets its own architect and the agent of its
    first step back, on their kept sessions, at its next first phase start, and each other agent at
    the start of its step. A claim whose session supervise's `forgetSession` has dropped comes back
-   in a new session instead. The daemon suspends or ends claims only when an issue leaves the
-   workflow, when a claim moves to another tree, for a production check after the issue is done,
-   or when an agent's next step is of another role than the one its claim holds: the start of that
-   step suspends the claim at the end of its turn, keeping its session, gives it the step's role
-   and resumes it on the same session. A phase start gives its task to that live claim. At boot
-   the daemon resumes by rule a suspended worker that still owns its issue's phase, but never a
-   claim an
+   in a new session instead. Besides an operator's suspension, a project pause
+   (`legion project pause`), the stop of a task (an owner's `stop_task`, or the daemon's for a
+   failed step no step takes back), which suspends the claim of the task's running step and keeps
+   its session, a root agent's report of its own exit and the release of an idle
+   issue pod (`runtime.kubernetes.idle_release`), the daemon suspends or ends claims only when an
+   issue leaves the workflow, when a claim moves to another tree, for a production check after the
+   issue is done, or when an agent's next step is of another role than the one its claim holds:
+   the start of that step suspends the claim at the end of its turn, keeping its session, gives
+   it the step's role and resumes it on the same session. That session can hold a GitHub token of
+   the earlier role's App that the agent printed, which GitHub accepts until it expires, so the
+   first prompt the agent takes in the new role tells it that any GitHub token it saw in an
+   earlier role is no longer its to use and that its `gh` and `git` now act as the new role's App;
+   a claim that comes back holding no task is sent that sentence alone. A phase start gives its
+   task to that live claim. The next wake for a claim that an idle release suspended resumes it.
+   At boot the daemon resumes by rule a suspended worker that still owns its issue's phase, but
+   never a claim an
    operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
    operator-suspended architect waits until the operator resumes it. A notice for a child whose
    own architect an operator suspended goes to the architect above that child. A drain therefore

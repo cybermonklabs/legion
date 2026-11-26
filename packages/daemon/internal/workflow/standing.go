@@ -90,7 +90,7 @@ func ownersText(text string) string {
 // on the task's branch). An issue with no plan rows names nothing else, so it is told today's task
 // with that one line, and the prompts read a task with no `Task:` line as such an issue's. An
 // issue with plan rows names the task of the worker's step: a step's worker is told
-// ` Task: <id>. Step <i> of <n>: <role>.`, the task's steps (stepsLine), at the first step of a task
+// ` Task: <id>. Step <i> of <n>: <step>.`, the task's steps (stepsLine), at the first step of a task
 // that needs other tasks the work it starts from (startsFrom) and the join it repairs where GitHub
 // refused one as a conflict (joinToRepair), at a step of the type implementation the base of its
 // task's pull request where that is not the issue's default branch (pullRequestBase), the report of
@@ -261,10 +261,10 @@ func pullRequestPart(issue record.Issue, pr *record.PullRequest) string {
 	return text
 }
 
-// stepsLine is ` Steps: 1 <role>, 2 <role>, ….`: each step of a task by its place, words, the steps
+// stepsLine is ` Steps: 1 <step>, 2 <step>, ….`: each step of a task by its place, words, the steps
 // as its plan writes them (plan.Words), in the order they run, each at its place from 1
 // (Walk.Steps). Where merges, the task's line ends with Legion's retro and merge after its last
-// step (plan.Line), and so does the steps line: ` Steps: 1 <role>, 2 <role>, … then Legion's retro
+// step (plan.Line), and so does the steps line: ` Steps: 1 <step>, 2 <step>, … then Legion's retro
 // and merge.` A task that does not merge is done when its last step passes, and its line ends
 // there.
 func stepsLine(words []string, merges bool) string {
@@ -368,7 +368,7 @@ func pullRequestBase(base string) string {
 	return fmt.Sprintf(" Open the pull request of this task against %s: gh pr create --base %s.", base, base)
 }
 
-// reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
+// reportsBefore is one ` Step <j> (<step>) reported: <word> version <v>.` for each step of w's
 // task before the step at place whose role's phases row holds a handoff record: the record that
 // role's completion of that step named, which `dispatch handoff-read --phase <word> --version <v>`
 // reads. Each step is named as its plan writes it, its word of words (plan.Words). A role runs at

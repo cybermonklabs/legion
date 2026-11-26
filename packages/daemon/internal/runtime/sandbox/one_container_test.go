@@ -35,8 +35,8 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
 // disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation, by default the six roles' former
-// sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
+// and both init containers carry the one issue-pod reservation, by default 2 CPU and 8Gi, each
+// requested in full, and an 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	t.Parallel()
 	opts := goldenOptions()
@@ -126,8 +126,8 @@ func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 		t.Errorf("the role homes volume is %+v, want an emptyDir on the node's disk", homes)
 	}
 	reservation := corev1.ResourceRequirements{
-		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
-		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("3"), corev1.ResourceMemory: resource.MustParse("19Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("6Gi")},
+		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("80Gi")},
 	}
 	for _, container := range slices.Concat(pod.InitContainers, pod.Containers) {
 		if !sameRequirements(container.Resources, reservation) {
@@ -459,9 +459,9 @@ func TestAnEndedPodOfTheEarlierLayoutReportsTheRolesOwnContainer(t *testing.T) {
 }
 
 // A claim's locator in an issue pod names the pod's one container, `roles`, so the slot whose
-// enrollment, address record and launcher are read is the claim's (slotOf, its agent's name,
-// whatever role its step is on): an enrolled pod holding the slot's own key directory is alive,
-// and a generation the slot's record says was told a moved daemon URL is stale.
+// enrollment, address record and launcher are read is the claim's (claim.Token.Slot, its agent's
+// name, whatever role its step is on): an enrolled pod holding the slot's own key directory is
+// alive, and a generation the slot's record says was told a moved daemon URL is stale.
 func TestAnIssuePodsRoleIsReadFromItsClaimNotItsContainer(t *testing.T) {
 	t.Parallel()
 	broker := func(o *Options) {

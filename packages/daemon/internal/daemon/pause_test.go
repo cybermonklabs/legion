@@ -752,8 +752,8 @@ func TestAFactOfTheResumedSpawnOfAnotherProjectsIssueTouchesNoRowOfThatProject(t
 		// logged is the line the daemon writes of the fact, "" for none.
 		logged string
 	}{
-		{name: "its claim failed", fact: func(claim.Token) intake.Fact {
-			return intake.ClaimFailed{Issue: issue, Role: role, Reason: "the claim's start budget ran out"}
+		{name: "its claim failed", fact: func(token claim.Token) intake.Fact {
+			return intake.ClaimFailed{Issue: issue, Role: role, Claim: token, Reason: "the claim's start budget ran out"}
 		}},
 		{name: "its session was lost", fact: func(claim.Token) intake.Fact {
 			return intake.SessionLost{Issue: issue, Role: role, Detail: "/sessions/ses-other-root-architect.jsonl is in no session store"}

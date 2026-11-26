@@ -340,25 +340,29 @@ const (
 	pauseStopRowsOfPause = pauseStopRows + ` and payload->>'pause' = $1::bigint::text`
 )
 
-// ExpeditePauseStopRowsTx makes due at at every `pause_stop` row of the claim of issue's role that
-// waits for a later moment, and answers the keys of the rows it moved, each once: a stop the claim
-// held for its turn retries on a bounded wait (the outbox's pauseStop), and the stop transaction
-// that records the claim stopped makes its row due at once, so it ends within a lane's wake of
-// the turn's end (decision 4). The claim's rows are those of project, the Dispatch key, that its
-// outbox runs: keyed by issue, or keyed by the project and naming issue in their payload
-// (record.SuperviseRequest.Issue), as the row of a claim of another project's issue is. The
+// ExpeditePauseStopRowsTx makes due at at every `pause_stop` row of the claim token, which holds
+// role on issue, that waits for a later moment, and answers the keys of the rows it moved, each
+// once: a stop the claim held for its turn retries on a bounded wait (the outbox's pauseStop), and
+// the stop transaction that records the claim stopped makes its row due at once, so it ends within
+// a lane's wake of the turn's end (decision 4). The claim's rows are those of project, the
+// Dispatch key, that its outbox runs: keyed by issue, or keyed by the project and naming issue in
+// their payload (record.SuperviseRequest.Issue), as the row of a claim of another project's issue
+// is. A row names its claim (record.SuperviseRequest.Claim): two claims of one issue can hold one
+// role, and the stop of the one is no stop of the other. A row the release before wrote names no
+// claim and is moved for each claim of its role, which costs that row an earlier run at most. The
 // caller wakes the lifecycle lane of each key once the transaction commits.
-func ExpeditePauseStopRowsTx(ctx context.Context, tx pgx.Tx, project, issue string, role claim.Role, at time.Time) ([]string, error) {
+func ExpeditePauseStopRowsTx(ctx context.Context, tx pgx.Tx, project, issue string, token claim.Token, role claim.Role, at time.Time) ([]string, error) {
 	rows, err := tx.Query(ctx, `update outbox set next_at = $4
 		where `+pauseStopRows+` and split_part(issue, '-', 1) = $1 and (issue = $2 or payload->>'issue' = $2)
-		and payload->>'role' = $3 and next_at > $4 returning issue`,
-		project, issue, string(role), at)
+		and (payload->>'claim' = $3 or (coalesce(payload->>'claim', '') = '' and payload->>'role' = $5))
+		and next_at > $4 returning issue`,
+		project, issue, string(token), at, string(role))
 	if err != nil {
-		return nil, fmt.Errorf("make the pause stops of %s's %s due: %w", issue, role, err)
+		return nil, fmt.Errorf("make the pause stops of %s due: %w", token, err)
 	}
 	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("make the pause stops of %s's %s due: %w", issue, role, err)
+		return nil, fmt.Errorf("make the pause stops of %s due: %w", token, err)
 	}
 	slices.Sort(keys)
 	return slices.Compact(keys), nil

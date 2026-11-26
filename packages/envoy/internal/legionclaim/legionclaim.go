@@ -1,8 +1,8 @@
 // Package legionclaim is Legion's role grammar and claim token as Envoy reads them: the six roles
 // of an issue, the grammar a role the deployment defines takes, and the one split of a claim token
 // in Envoy. It imports the standard library alone, so each reader of a role or of a token's issue
-// - the secrets broker, Dispatch's role holders, the Legion agent registry - takes it without the
-// dependencies of any of the others.
+// - the secrets broker, Dispatch's role holders and its reading of a session's title, the Legion
+// agent registry - takes it without the dependencies of any of the others.
 package legionclaim
 
 import (
@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Roles are the six Legion roles, in the order the workflow reaches them (claim.Roles,
+// Roles are the six Legion roles, in the order of the default steps (claim.Roles,
 // LEGION_ROLES in packages/contracts). A role the deployment defines in its settings is a role of
 // an issue too (IsRole), and every reader that orders roles puts such a role after the six.
 var Roles = []string{"architect", "planner", "implementer", "tester", "reviewer", "merger"}

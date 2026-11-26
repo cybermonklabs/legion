@@ -10,8 +10,8 @@
 // keys outside it every pod needs.
 //
 // Load reads the file and nothing it names but a role's prompt file: a path key (`instructions`,
-// `private_name_rules_file`, `envoy_token_file`, `nats_nkey_seed_file`,
-// `nats_daemon_nkey_seed_file`, `operator_token_file`,
+// `private_name_rules_file`,
+// `envoy_token_file`, `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
 // `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, the daemon's read of the

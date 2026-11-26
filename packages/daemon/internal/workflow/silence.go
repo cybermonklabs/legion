@@ -110,6 +110,11 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
+	// The run is the run of the agent that works the role's step (rowClaim), a keyed agent on a step
+	// of another role included. A key that yields no claim token has no run, and is passed over as
+	// admission's resumeSlottedWorkers passes over one. A fact the sweep read off another claim of
+	// the role (held) - two claims of one issue can hold one role - says nothing of the worker's
+	// quiet, and is passed over too. A fact that names no claim is the worker's.
 	token, err := e.rowClaim(scope, role)
 	if err != nil || held != "" && held != token {
 		return nil, nil

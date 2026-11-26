@@ -19,7 +19,7 @@ import (
 // refused plan, 409 PLAN_REFUSED with its reason, through the engine itself: the workflow refuses
 // it before it writes anything, so the route never answers the write's error, 500
 // FACT_APPLY_FAILED. Version 1 names key a implementer; version 2 gives the role implementer to a
-// fresh step 1 beside key a, whose name that would take.
+// fresh step 1 beside key a, whose name that would take, so the reason names key a and the name.
 func TestARegisteredVersionThatWouldRenameAKeyIsAnswered409(t *testing.T) {
 	h := newHarness(t)
 	records := record.NewStore()
@@ -44,6 +44,5 @@ func TestARegisteredVersionThatWouldRenameAKeyIsAnswered409(t *testing.T) {
 		t.Fatalf("register version 1 = %d %s, want 200", recorder.Code, recorder.Body)
 	}
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), PlanReason{Task: "a",
-		Reason: "step 1 of task a needs an agent of its own, and another agent of this plan holds the name implementer of its role from an earlier version; " +
-			"this release runs one agent of each role for an issue. This release of Legion does not carry it out yet."})
+		Reason: intake.AgentUnnamed("a", 1, "implementer", "a").Reason})
 }

@@ -669,6 +669,18 @@ failure until it is given another run. The issue's architect reads it with the `
 claim the daemon holds no cause and sentence for, or with `legion claims list --json` for the
 whole record.
 
+**`refusal-unrecorded` in that column** is no failure. The claim's last launch was refused by its
+issue's pod, and the daemon's database has not taken a fact that records the refusal: its report,
+before which the issue and the controller are not told, or the check the daemon makes when a
+start of the claim ends, which tells nobody either way. Until one is taken, the claim's start is
+not queued. The daemon tries each such fact again, at least once an hour, and logs each failed
+try at ERROR (`apply a launch its issue's pod refused`, or `apply the end of a start row of a
+claim its pod refused`). `legion claims list --json` shows `unrecordedRefusal`, of the oldest
+such fact: `since`, when its first try failed, `attempts`, and `error`, its last try's error.
+Look at the database first. The word goes once every such fact is taken, and at once when the
+claim launches on another pod, since the facts of the refusal it left are then not applied. A
+claim that failed prints its failure's word instead.
+
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
 image pins, from the repository the deployment names (`LEGION_LEAK_CHECK_REPOSITORY` and
@@ -1039,9 +1051,10 @@ The state names the same claims on every read, after a restart or not, each with
 legion state --config legion.yaml --json | jq '.strandedClaims'
 ```
 
-Act only on the claims this list names, and leave out any you suspended on purpose. A claim's token
-is `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows: it ends in the
-name of the claim's agent, the role of that agent's first step, whatever role its step is on now.
+Act only on the claims this list names, and leave out any you suspended on purpose. A claim of an
+issue has the token `legion-<project>-<issue, lowercased>-<agent>`, as `legion claims list` shows:
+it ends in the name of the claim's agent, the role of that agent's first step, whatever role its
+step is on now; the project's controller claim is `legion-<project>-controller`.
 The line and `legion state` name a role's own claim by its issue and role, and the claim of an agent
 named for another role by its token beside them (`WIDGETS-12 tester (claim
 legion-widgets-widgets-12-implementer)`), so two claims of one role on one issue read apart.
@@ -1324,7 +1337,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 
 ## A pod does not come up
 
-- **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (3 CPU and 19 GiB for
+- **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (2 CPU and 8 GiB for
   an issue pod at the defaults) and lands wherever the pool has room, so a pool at its limits leaves
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
@@ -1572,8 +1585,8 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 These arrive as messages on the Dispatch issue:
 
 - **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
-  implementer's counted rounds reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)).
+  task's counted rounds reached three (`plan_tasks.rounds`; on an issue with no plan rows, the
+  implementer's phases row) ([what counts a round](/legion/legion/concepts/#review-signalling)).
   A review's request for changes raises the count.
   So does the fail of a step of the type review whose agent is not the owner.
   A tester's fail, the fail of a step of another type and a move back raise none.
@@ -1776,6 +1789,21 @@ keeps the refusal, so the same call again is answered `HANDOFF_ALREADY_RECORDED`
 completion is made again at the new head. A completion of a phase the issue has already left is
 recorded as before. Where the task's reviewer step already ran, the reviewer is asked to read
 the merge and approve the new head. A red check sends nothing back from anywhere.
+
+That refusal compares heads by name, so one completion at `step` escapes it. A role the deployment
+defines reports the commit its workspace stands on, `@-`. When that role made a commit of its own on
+top of the head a merge forward replaced, its completion names that commit, which is neither the
+replaced head nor the new one, and the daemon takes it: it keeps the heads each merge forward
+replaced and left, not a commit graph, and a commit the role did not push is on no remote. To find
+such a pass, read the commit the role reported:
+
+```sh
+legion state --config legion.yaml --json | jq -r '.issues["<KEY>"].workers["<role>"].handoffCommit'
+```
+
+In the issue's workspace, `git log -1 --format=%P <commit>` prints that commit's parents.
+If a parent is the `head` named by `workflow: the merge forward landed`, the step judged the code before the merge.
+The current phase's worker sends the task back to that step with `request_backward_move` and sets `return_to` to the step's place.
 
 The pull request's state as the daemon sees it:
 

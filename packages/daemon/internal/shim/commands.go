@@ -203,12 +203,12 @@ func describedArgs(jj, dir string) []string {
 // working copy needs, and only that one runs: `jj metaedit --update-author` on an undescribed @
 // (adoptionArgs), `jj new` on a described one. That read, like any jj command run without
 // --ignore-working-copy, first snapshots the working copy. Both commands run in the working copy
-// itself, never in the shim's own directory: jj reads the repository of the directory it runs in,
-// whatever -R names, and migrates that repository's legacy configuration (workspace.RunCommand). A
-// failure is answered in workspace.RunCommand's words, which name the command and its exit or its
-// timeout, with jj's standard error: the daemon decides what a failed adoption means. A shim
-// without LEGION_WORKSPACE was not started by a runtime, and refuses; a PATH without jj refuses
-// naming jj and the PATH searched (openWorkspace).
+// itself, never in the shim's own directory: jj reads the repository of the directory it runs
+// in, whatever -R names, and migrates that repository's legacy configuration
+// (workspace.RunCommand). A failure is answered in workspace.RunCommand's words, which name the
+// command and its exit or its timeout, with jj's standard error: the daemon decides what a failed
+// adoption means. A shim without LEGION_WORKSPACE was not started by a runtime, and refuses; a
+// PATH without jj refuses naming jj and the PATH searched (openWorkspace).
 func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	budget := time.Duration(request.TimeoutMs) * time.Millisecond

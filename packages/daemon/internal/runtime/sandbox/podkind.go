@@ -32,9 +32,10 @@ type podKind interface {
 	// its own: the runtime's issue roles for an issue pod (Runtime.issueRoles), the controller for
 	// the controller's pod.
 	roles(r *Runtime) []claim.Role
-	// claimToken is the claim of a launcher of role, one of roles, on a pod of this kind of project,
-	// issue being the issue key its Secrets carry (secretAnnotations).
-	claimToken(project, issue string, role claim.Role) (claim.Token, error)
+	// claimToken is the claim of the launcher of slot, the slot of one of roles (a launcher of a role
+	// serves the slot of that name), on a pod of this kind of project, issue being the issue key its
+	// Secrets carry (secretAnnotations).
+	claimToken(project, issue string, slot claim.Agent) (claim.Token, error)
 	// prepare resolves what the kind decides of a launch, its working directory above all,
 	// refusing a spec it cannot honour.
 	prepare(l *launch) error
@@ -158,8 +159,8 @@ func (issuePod) container() string { return runtime.IssuePodContainer }
 // resources is the one issue-pod reservation.
 func (issuePod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Issue }
 
-func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token, error) {
-	return claim.NewToken(project, issue, role)
+func (issuePod) claimToken(project, issue string, slot claim.Agent) (claim.Token, error) {
+	return claim.AgentToken(project, issue, slot)
 }
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
@@ -575,7 +576,7 @@ func (controllerPod) container() string { return runtime.ControllerPodContainer 
 // resources is the controller's pod's reservation.
 func (controllerPod) resources(r *Runtime) corev1.ResourceRequirements { return r.resources.Controller }
 
-func (controllerPod) claimToken(project, _ string, _ claim.Role) (claim.Token, error) {
+func (controllerPod) claimToken(project, _ string, _ claim.Agent) (claim.Token, error) {
 	return claim.ControllerToken(project), nil
 }
 

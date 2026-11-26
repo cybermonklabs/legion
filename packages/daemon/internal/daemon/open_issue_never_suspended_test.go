@@ -345,10 +345,10 @@ func TestOpenIssueSuspensionInvariantKeepsTheExceptions(t *testing.T) {
 				v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: time.Now()}
 				task := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.",
 					State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceStep, Position: 1}}
-				steps := []record.PlanStep{
+				steps := record.NameAgents(nil, []record.PlanStep{
 					{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-				}
+				}, nil)
 				return records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps)
 			}); err != nil {
 				t.Fatal(err)

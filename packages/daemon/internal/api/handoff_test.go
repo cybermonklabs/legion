@@ -2212,7 +2212,7 @@ func TestHandoffCompleteHoldsAnAdoptedRunToTheHeldTasksOwnEntry(t *testing.T) {
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
-		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
+		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, not the phase's current entry 2",
 		"nothing was recorded",
 		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
 		"complete it with a handoff of its own, never this completion's record, commit or verdict",
@@ -2297,5 +2297,26 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 				t.Fatalf("the completion names generation %d, want the delivery's %d", completion.Generation, delivered)
 			}
 		})
+	}
+}
+
+// Two claims of one issue can hold the tester's role: key a's agent, `…-implementer`, on the
+// tester's step, and the tester's own claim. The same report from each is a completion of its own,
+// so the two take two keys, and the workflow's refusal of the one, recorded under its key, never
+// answers the other's completion HANDOFF_ALREADY_RECORDED. The role's own claim, and a grant that
+// names no claim, keep the key a completion had before.
+func TestTwoClaimsOfOneRoleCompleteUnderKeysOfTheirOwn(t *testing.T) {
+	keyed := credential.Grant{Issue: "LEGION-209", Role: claim.RoleTester, Claim: "legion-legion-legion-209-implementer"}
+	own := credential.Grant{Issue: "LEGION-209", Role: claim.RoleTester, Claim: "legion-legion-legion-209-tester"}
+	if completionWho(keyed) == completionWho(own) {
+		t.Fatalf("key a's agent and the tester's own claim both complete as %q, want a key each", completionWho(own))
+	}
+	for _, grant := range []credential.Grant{own, {Issue: "LEGION-209", Role: claim.RoleTester}} {
+		if got := completionWho(grant); got != "tester" {
+			t.Fatalf("the claim %q of the tester completes as %q, want the key it had, tester", grant.Claim, got)
+		}
+	}
+	if got := completionWho(keyed); got != "tester@implementer" {
+		t.Fatalf("key a's agent completes as %q, want tester@implementer", got)
 	}
 }

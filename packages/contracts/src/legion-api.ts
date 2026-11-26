@@ -57,11 +57,11 @@ export const LegionInstant = timestamp.regex(
  * the role working it: `workers` is keyed by role, each of `LEGION_ROLES` or a role of the
  * deployment. `awaiting_person` is a root that keeps its admission slot while its architect waits
  * on a person's answer (`waitingOn` on the issue record). `step` runs each step of a role the
- * deployment defines, which the issue names in `stepRole` (contract 258). `accepting` is the
- * architect's acceptance, where the issue's task places its `acceptance:owner` step (in the
- * default steps, between the reviewer's approval and retro): no worker runs it. The merger merges
- * in `merging`, and the daemon closes the issue when it reads that merge (`done`); the production
- * check after the close is no phase (`check` on the issue record). */
+ * deployment defines, which the issue names in `stepRole` (the deployment roles' contract entry).
+ * `accepting` is the architect's acceptance, where the issue's task places its `acceptance:owner`
+ * step (in the default steps, between the reviewer's approval and retro): no worker runs it. The
+ * merger merges in `merging`, and the daemon closes the issue when it reads that merge (`done`);
+ * the production check after the close is no phase (`check` on the issue record). */
 export const LEGION_WORKFLOW_PHASES = [
   "admitted",
   "awaiting_person",
@@ -78,8 +78,9 @@ export const LEGION_WORKFLOW_PHASES = [
   "held",
 ] as const;
 
-/** The `api.PhaseBackwardRequest` targets contract-12's daemon accepts, and `step` since contract
- * 258. Future state-only phases join this list only with their daemon transition. */
+/** The `api.PhaseBackwardRequest` targets contract-12's daemon accepts, and `step` since the
+ * deployment roles' contract entry. Future state-only phases join this list only with their daemon
+ * transition. */
 export const LEGION_PHASE_BACKWARD_TARGETS = [
   "admitted",
   "planning",
@@ -270,11 +271,14 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
-/** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
- * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
- * until a session of the claim reports on `claims/ready` (the controller's never does), and
- * `failure` is absent for a claim the daemon holds no cause and sentence for. */
+/** `api.ClaimView` — `token` names the claim (the stranded token's contract entry: two claims of
+ * one issue can hold one role, so the issue and the role do not name a claim), `session` is empty
+ * until the claim's agent registers one, `locator` is absent while no process runs (queued,
+ * suspended, failed, retired), `capabilities` is absent until a session of the claim reports on
+ * `claims/ready` (the controller's never does), and `failure` is absent for a claim the daemon
+ * holds no cause and sentence for. */
 const legionClaimView = z.object({
+  token: nonEmptyString.optional(),
   session: z.string().optional(),
   state: z.enum(LEGION_CLAIM_STATES),
   locator: legionLocator.optional(),
@@ -751,7 +755,11 @@ const legionPendingStatusWrite = z.object({
  * it, and no rule the daemon runs queues that start, so nothing will wake it either. That state
  * arrived with contract 56, and a pod whose claims record a contract below it is served this
  * report without its retired entries (`api`'s `stateFor`, `withoutUnadmittedStrandedStates`)
- * rather than being made to refuse the whole state over a third value its enum does not name.
+ * rather than being made to refuse the whole state over a third value its enum does not name. Its
+ * `role` is read by the role grammar, not `LEGION_ROLES`: the deployment roles' contract entry
+ * opens the field (`openFrom` in the daemon's `enumerated-fields.json` rows), so a role the
+ * deployment defines reaches this build, and a caller below the entry is served no entry of such a
+ * role.
  *
  * Who suspended a suspended one is not here and must never be added: a session parses this body
  * with the schema of the contract its plugin was built at, and a Kubernetes deployment relaunches
@@ -792,7 +800,7 @@ const legionHeldOutboxRow = z.object({
  * string, so a lane a later daemon names is read rather than refused. `dueAt` is required: the
  * controller's `read_state` summary names the earliest of them (`pi-legion/src/tools.ts`), and
  * the daemon writes it on every wake. The rest is optional, since no plugin code reads it
- * (LEGION_ANSWER_READS). */
+ * (LEGION_ANSWER_READS). Its `role` is read by the role grammar, as a stranded claim's is. */
 const legionWakeWaiting = z.object({
   claim: nonEmptyString.optional(),
   issue: issueKey.optional(),
@@ -846,10 +854,10 @@ const legionIssue = z.object({
   generation: z.number().int().nonnegative().optional(),
   phase: z.enum(LEGION_PHASES),
   /** The role of the deployment that works the issue's running step, where the issue stands at
-   * `step` or its hold took it out of `step` (contract 258): no phase names such a role, so the
-   * phase alone does not say who works the issue. Absent at every other phase, whose role the
-   * phase names, and from every issue of the body the route serves a caller before 258, which is
-   * served an issue at `step` as `implementing`. */
+   * `step` or its hold took it out of `step` (the deployment roles' contract entry): no phase
+   * names such a role, so the phase alone does not say who works the issue. Absent at every other
+   * phase, whose role the phase names, and from every issue of the body the route serves a caller
+   * below that entry, which is served an issue at `step` as `implementing`. */
   stepRole: stepRole.optional(),
   status: nonEmptyString.optional(),
   /** The key of the root of the issue's tree, equal to `key` on a root (contract 51). A child
@@ -900,6 +908,10 @@ const legionIssue = z.object({
    * caller below 250. */
   priority: dispatchPriority,
   workers: z.partialRecord(z.string(), legionPhaseView).optional(),
+  /** `api.Issue.OtherClaims` — each claim of the issue that neither `architect` nor `workers`
+   * shows, with the role it holds (the stranded token's contract entry): the other claim of a role
+   * a keyed agent works the step of, found by its token. */
+  otherClaims: z.array(z.object({ role: stepRole, claim: legionClaimView })).optional(),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
   /** The design gate as this issue stands in it, one entry for each step that holds its tree: the
@@ -1457,7 +1469,7 @@ const legionEndedPause = z.object({
  * and role, and `askedAt`, when the pause asked it to stop. A role in a turn stops when that turn
  * ends, so it is listed until then. The controller's summary names each by its issue and role,
  * so those two are required; `claim` and `askedAt` are optional, since no plugin code reads them
- * (LEGION_ANSWER_READS). */
+ * (LEGION_ANSWER_READS). Its `role` is read by the role grammar, as a stranded claim's is. */
 const legionPauseStop = z.object({
   claim: nonEmptyString.optional(),
   issue: issueKey,
@@ -1594,7 +1606,10 @@ export type LegionHealth = z.output<typeof LegionHealthResponse>;
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
- * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`. */
+ * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
+ * Its `role` is read by the role grammar, as a stranded claim's is: a plugin below the deployment
+ * roles' contract entry is refused the registration of a claim of a role the deployment
+ * defines. */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1759,11 +1774,15 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
-/** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles whose
- * claims it suspended (sorted, as the store holds them), when the release completed, and the size
- * of the git bundle of unpushed work it saved, zero when the workspace held none. `roles` is
- * required because `read_release_records` reads it: the empty list is the whole mark of a
- * release no wake can reach, which that report counts and measures nowhere, and the daemon
+/** `api.ReleaseRecord` — one issue pod the daemon released: the run it released, the roles of the
+ * claims it suspended (each once, sorted, as the store holds them), the tokens of those claims
+ * (`claims`, sorted; the stranded token's contract entry), when the release completed, and the
+ * size of the git bundle of unpushed work it saved, zero when the workspace held none. Two claims
+ * of one issue can hold one role, a keyed agent's on another role's step among them, so `claims`
+ * names what `roles` cannot; it is absent on a release that suspended no claim and on one
+ * recorded before that entry.
+ * `roles` is required because `read_release_records` reads it: the empty list is the whole mark
+ * of a release no wake can reach, which that report counts and measures nowhere, and the daemon
  * writes the list on every release, empty rather than null. `issue` is required because that
  * report reads it too: a wake a project pause held names no release, and ends the releases of its
  * issue instead. */
@@ -1772,12 +1791,16 @@ const legionReleaseRecord = z.object({
   issue: issueKey,
   generation: z.number().int().nonnegative().optional(),
   roles: z.array(nonEmptyString),
+  claims: z.array(nonEmptyString).optional(),
   at: timestamp,
   bundleBytes: z.number().int().nonnegative().optional(),
 });
 
 /** `api.ResumeRecord` — one wake of a released pod and what it cost: the release it ended (0 when
- * no release row is recorded for it), the role of the claim it brought back, what woke it, when
+ * no release row is recorded for it), the role of the claim it brought back, that claim's token
+ * (`claim`, the stranded token's contract entry; absent on a wake recorded before it, which
+ * stands for each claim of its role: two claims of one issue can hold one role and each can be
+ * woken), what woke it, when
  * the wake reached the daemon, and `podReadyAt` and `firstTurnAt`, the first turn of that claim,
  * each absent until it is observed. `stuck` is a wake that went ten minutes with no turn of the
  * claim it brought back. `pause` is the project pause that held
@@ -1791,6 +1814,7 @@ const legionResumeRecord = z.object({
   release: z.number().int().nonnegative(),
   issue: issueKey,
   role: nonEmptyString.optional(),
+  claim: nonEmptyString.optional(),
   kind: nonEmptyString,
   at: timestamp,
   podReadyAt: timestamp.optional(),
@@ -2035,6 +2059,21 @@ export const LegionOperatorClaimResponse = z.object({
    * for another reason. These routes are the only surface the controller's claim reaches, so the
    * controller's cause is read here alone. */
   leakCheckCause: nonEmptyString.optional(),
+  /** The oldest fact of a launch of the claim its issue's pod refused that the daemon's store has
+   * not taken (`supervise.Claim.UnrecordedRefusal`): the report that tells the issue and the
+   * controller and queues the claim's start, or a re-check at the end of a start row. The daemon
+   * tries each such fact again, at least once an hour, for as long as it fails and the refusal it
+   * names stands; `since` is when that fact's first try failed, `attempts` how many of its tries
+   * have failed, `error` its last try's error. Absent while no such fact fails. The store never
+   * writes it, so these routes, which read the live machine, alone carry it, and
+   * `legion claims list` prints it as the cause word `refusal-unrecorded`. */
+  unrecordedRefusal: z
+    .object({
+      since: timestamp,
+      attempts: z.number().int().positive(),
+      error: nonEmptyString,
+    })
+    .optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;
@@ -2453,9 +2492,9 @@ export const LegionPhaseBackwardRequest = z.strictObject({
   to: z.enum(LEGION_PHASE_BACKWARD_TARGETS),
   reason: nonEmptyString,
   issue: nonEmptyString.optional(),
-  /** The step of the running task the move returns to, by its place, 1 for its first (contract
-   * 258): the daemon judges it as it judges a failed step's `returnTo`, and `to` must be the phase
-   * that step runs as. */
+  /** The step of the running task the move returns to, by its place, 1 for its first (the
+   * deployment roles' contract entry): the daemon judges it as it judges a failed step's
+   * `returnTo`, and `to` must be the phase that step runs as. */
   returnTo: z.number().int().positive().optional(),
   /** The task of the issue's plan the move is of (the tasks entry): an architect's move that names
    * none is of the one task at `accepting`, and the daemon answers `409 TASK_REQUIRED` where two or
@@ -2559,11 +2598,15 @@ export const LegionTaskStopRequest = z.strictObject({
 /** What plugin code takes the value of in one issue's record: `legion-phase-ops.ts` reads the
  * issue's phase for a fieldless `handoff_complete`. A named check report reads no record.
  * `handoff-record.ts` reads each task's state, phase, branch, agent and wait for the step a
- * completion or an update signal is of (`stepCopy`). `phase-reminder.ts` reads the phase and, at
- * `step`, the issue's `stepRole`. `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read
- * the architect's claim state. The controller's `read_state` summary (`pi-legion/src/tools.ts`)
- * reads each issue's status, hold reason, slot and design gate. It also reads the state and both
- * turn times of the architect's claim and every worker's claim.
+ * completion or an update signal is of (`stepCopy`).
+ * `phase-reminder.ts` reads the phase and, at `step`, the issue's `stepRole`, and the token of the
+ * claim that works its role's step (`workers{}.claim.token`, the stranded token's contract entry).
+ * A claim view's token sits under `otherClaims[].claim` as well.
+ * `phase-reminder.ts` and `pi-legion/src/stall-evidence.ts` read the architect's claim state.
+ * The controller's `read_state` summary (`pi-legion/src/tools.ts`) reads each issue's status, hold
+ * reason, slot and design gate. It also reads the state and both turn times of the architect's
+ * claim, every worker's claim and each other claim of the issue, with its role and its token
+ * (`otherClaims`, the stranded token's contract entry).
  * The record route and the state's `issues{}` answer the same node, so the read set below names
  * these paths at both, `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under
  * the state's prefix. They are written once here because the two entries must say the same thing.
@@ -2586,6 +2629,14 @@ const ISSUE_RECORD_READS = [
   "workers{}.claim.state",
   "workers{}.claim.lastTurnStart",
   "workers{}.claim.lastTurnEnd",
+  "workers{}.claim.token",
+  "otherClaims",
+  "otherClaims[].role",
+  "otherClaims[].claim",
+  "otherClaims[].claim.state",
+  "otherClaims[].claim.lastTurnStart",
+  "otherClaims[].claim.lastTurnEnd",
+  "otherClaims[].claim.token",
   "designGate",
   "designGate.currentVersion",
   "designGate.approvedVersion",

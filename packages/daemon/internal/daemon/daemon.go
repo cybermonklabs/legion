@@ -241,6 +241,12 @@ type overrides struct {
 	// serves the socket `legion start` inherited from LEGION_LISTEN_FD (handed); a test's hands
 	// over a listener it holds.
 	listen func(network, address string) (net.Listener, error)
+	// paneLegion is the legion executable a tmux daemon's boot hands workerbin.Install, which every
+	// script of the panes' launcher directory execs: bin/legion, bin/gh, bin/git and bin/jj. Empty,
+	// in production, is this process's own executable. A test whose panes run these scripts (a live
+	// proof over localRuntime, through its daemonOverrides) names the legion it built
+	// (buildProofLegion).
+	paneLegion string
 	// streamListen takes the worker stream's listener for the address the stream binds
 	// (stream.Options.Listen); nil, in production, binds it. A test whose two daemons must listen
 	// on one worker_stream_port hands over a socket it holds across both, so the port is never free
@@ -518,6 +524,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.launchRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
+		plan.stepWorkers = workflow.stepWorkers
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
 		// configured, and the launch that follows it must honour the draw it made.
@@ -530,6 +537,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		plan.podRefused = workflow.podRefused
 		// From here on, a claim write that changes a role holder queues its issue's publication in
 		// its own transaction, and the store tells the issue once that commits, so its lane is woken
 		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
@@ -561,11 +569,14 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		}
 	}
 	if cfg.Runtime.Name == "tmux" {
-		executable, err := os.Executable()
-		if err != nil {
-			workflow.stop()
-			st.Close()
-			return fmt.Errorf("resolve this daemon's executable for the pane legion launcher: %w", err)
+		executable := o.paneLegion
+		if executable == "" {
+			executable, err = os.Executable()
+			if err != nil {
+				workflow.stop()
+				st.Close()
+				return fmt.Errorf("resolve this daemon's executable for the pane legion launcher: %w", err)
+			}
 		}
 		// The panes inherit this daemon's PATH (tmux.PaneEnvironment), so Install reads its first
 		// git there to decide whether the launcher directory holds a git wrapper.
@@ -1091,6 +1102,10 @@ type plan struct {
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
 	// launch's addressing names; nil without a workflow.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
+	// stepWorkers is the agent of each step of the plan of a claim's issue, read from the plan rows
+	// the store records at each launch (workflowRuntime.stepWorkers), which the launch's addressing
+	// names; nil without a workflow.
+	stepWorkers func(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error)
 	// repositories is the repository state the workflow fills, empty until its preparations read
 	// GitHub: the rename rule every gh bundle resolves a configured pair against
 	// (repositories.servesRepository, appauth.GitHubCredential) and, under the Kubernetes runtime,
@@ -1154,6 +1169,11 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
+	// podRefused tells the workflow that a claim's launch was refused because its issue pod cannot
+	// run it until that pod is replaced, and the workflow queues a start of the claim wherever its
+	// outbox holds none that brings the claim back; nil without a workflow, where nobody is told and
+	// nothing is queued.
+	podRefused func(m *supervise.Machine, c supervise.Claim, pod, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -2048,7 +2068,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, copies: p.instructionsCopies, secrets: p.secrets, prompts: p.prompts,
 			roles:    cfg.Roles,
-			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, log: log,
+			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.launchRepository, owner: p.owner, stepWorkers: p.stepWorkers, log: log,
 			appOwners:   p.appOwners(cfg.Runtime.Name, deploymentApps(cfg.Roles)),
 			designSteps: cfg.Gates.Steps(), productionCheck: cfg.Projects[cfg.Project].ProductionCheck, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -2070,6 +2090,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
+		PodRefused:              p.podRefused,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),

@@ -140,7 +140,7 @@ func TestACompletionOfAnEntryRaisedAfterTheRoutesReadMovesNothing(t *testing.T) 
 				entry = first
 			}
 			result := applyFacts(t, pool, engine)(string(tc.role)+"-pass", intake.HandoffComplete{Generation: root.Generation, Issue: root.Key, Role: tc.role,
-				Claim: claim.Token(string(tc.role) + "-claim"), Summary: "checked", Commit: tc.commit, Verdict: "pass", Entry: entry,
+				Claim: second.Claim, Summary: "checked", Commit: tc.commit, Verdict: "pass", Entry: entry,
 				HandoffRecord: tc.record, HandoffVersion: version})
 			got := issueOf(t, pool, engine, root.Key)
 			if refusalCode(result) != tc.refused || got.Phase != tc.then {

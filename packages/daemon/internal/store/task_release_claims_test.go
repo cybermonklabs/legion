@@ -1,6 +1,7 @@
 package store
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -11,7 +12,26 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
+// queuedStartClaims are the claims of the `start` rows queued for the root issue, in id order:
+// the claims a cancel brought back.
+func queuedStartClaims(t *testing.T, st *Store) []string {
+	t.Helper()
+	rows, err := st.Pool().Query(t.Context(), `select payload->>'claim' from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, rootIssue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resumed
+}
+
+// Two claims can hold one role: the role's own claim and a task agent's. A cancel resumes the
+// claim this release's stop suspended, by its token, and not the other claim of its role, which an
+// earlier release left `released`.
 func TestAReleaseCancelResumesOnlyTheClaimThisReleaseSuspendedAmongOneRole(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := t.Context()
@@ -26,34 +46,32 @@ func TestAReleaseCancelResumesOnlyTheClaimThisReleaseSuspendedAmongOneRole(t *te
 		t.Fatal(err)
 	}
 	markRelease(t, st, first, boundary, last, 0)
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary); err != nil {
 		t.Fatal(err)
 	}
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
 	if err != nil {
 		t.Fatal(err)
 	}
-	rows, err := st.Pool().Query(ctx, `select payload->>'claim' from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, rootIssue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resumed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatal(err)
-	}
+	resumed := queuedStartClaims(t, st)
 	want := "legion-legion-legion-208-implementer"
-	if len(resumed) != 1 || resumed[0] != want || len(cancelled.Resumed) != 1 {
+	if len(resumed) != 1 || resumed[0] != want || !slices.Equal(cancelled.Resumed, []claim.Role{claim.RoleImplementer}) {
 		t.Fatalf("the release cancel resumed tokens %v and roles %v, want only %s, not the earlier release's %s", resumed, cancelled.Resumed, want, other)
 	}
 }
 
-func TestAReleaseRecordsEachSameRoleClaimAndKeepsOneRoleForItsPodRecord(t *testing.T) {
+// Two task agents' claims of one role, each recorded twice by its stop's row, are each recorded
+// once on the mark, by its token, with the role it holds: the pod's release record names that role
+// once (PodRelease.Roles). A cancel resumes both claims.
+func TestAReleaseRecordsAndResumesEachTaskAgentClaimOfOneRole(t *testing.T) {
+	t.Parallel()
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
 	ctx := t.Context()
 	openRunningTree(t, st)
 	markRelease(t, st, first, boundary, last, 0)
 	var tokens []string
+	var want []ReleasedClaim
 	for _, agent := range []claim.Agent{"implementer-2", "implementer-3"} {
 		token, err := claim.AgentToken("legion", rootIssue, agent)
 		if err != nil {
@@ -64,31 +82,24 @@ func TestAReleaseRecordsEachSameRoleClaimAndKeepsOneRoleForItsPodRecord(t *testi
 			t.Fatal(err)
 		}
 		for range 2 {
-			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, token, claim.RoleImplementer, boundary); err != nil {
+			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, token, boundary); err != nil {
 				t.Fatal(err)
 			}
 		}
 		tokens = append(tokens, string(token))
+		want = append(want, ReleasedClaim{Token: token, Role: claim.RoleImplementer})
 	}
-	var roles, recorded []string
-	if err := st.Pool().QueryRow(ctx, `select suspended, suspended_claims from issue_releases where project = 'legion' and issue = $1`, rootIssue).Scan(&roles, &recorded); err != nil {
-		t.Fatal(err)
+	decision, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
+	if err != nil {
+		t.Fatalf("read the release's mark through its workspace check: %v", err)
 	}
-	if len(roles) != 1 || roles[0] != string(claim.RoleImplementer) || len(recorded) != 2 || recorded[0] != tokens[0] || recorded[1] != tokens[1] {
-		t.Fatalf("the mark recorded roles %v and claims %v, want one implementer role and exactly %v", roles, recorded, tokens)
+	if !slices.Equal(decision.Suspended, want) {
+		t.Fatalf("the mark recorded claims %v, want exactly %v, each once and of the implementer's role", decision.Suspended, want)
 	}
 	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := st.Pool().Query(ctx, `select payload->>'claim' from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, rootIssue)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resumed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(resumed) != 2 || resumed[0] != tokens[0] || resumed[1] != tokens[1] {
+	if resumed := queuedStartClaims(t, st); !slices.Equal(resumed, tokens) {
 		t.Fatalf("the release resumed %v, want exactly %v", resumed, tokens)
 	}
 }

@@ -111,6 +111,63 @@ func TestARetryOfWorkTheIssueLeftLeavesTheFailedClaimAsItWas(t *testing.T) {
 	}
 }
 
+// A start that leaves the session its claim records (StartWork's LeaveSession) brings the claim
+// back in a session of its own: the rule's resume of a suspended claim and the workflow's retry of
+// a retired one each spawn a fresh agent, and the claim records the session it left as abandoned.
+// The control is the same start naming a session the claim does not record, which resumes the one
+// it does and abandons nothing.
+func TestAStartThatLeavesTheRecordedSessionSpawnsAFreshAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stop  func(h *harness)
+		start func(h *harness, start StartWork) Event
+	}{
+		{"the rule's resume of a suspended claim", func(h *harness) {
+			h.must(RequestSuspend{Claim: h.token, By: SuspendedByDaemon, Reason: "the test stops it"})
+			h.wantState(StateSuspended)
+		}, func(h *harness, start StartWork) Event {
+			return RequestRuleResume{Claim: h.token, Reason: "the test starts it", Start: start}
+		}},
+		{"the workflow's retry of a retired claim", func(h *harness) {
+			h.must(RequestStop{Claim: h.token})
+			h.wantState(StateRetired)
+		}, func(h *harness, start StartWork) Event { return RequestRetry{Claim: h.token, Start: start} }},
+	} {
+		for _, leave := range []struct {
+			name    string
+			session string
+			spawns  bool
+		}{
+			{"it names the session the claim records", session, true},
+			{"the control: it names another session", "ses-another", false},
+		} {
+			t.Run(tc.name+": "+leave.name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateIdle)
+				tc.stop(h)
+				spawns, resumes := len(h.calls("Spawn")), len(h.calls("Resume"))
+
+				h.must(tc.start(h, StartWork{LeaveSession: leave.session}))
+
+				h.wantState(StateLaunching)
+				spawned, resumed := len(h.calls("Spawn"))-spawns, len(h.calls("Resume"))-resumes
+				got := h.claim()
+				if leave.spawns {
+					if spawned != 1 || resumed != 0 || got.Session != "" || got.Abandoned.Session != session {
+						t.Fatalf("the start spawned %d and resumed %d, and the claim records %q and abandoned %q; want one spawn, no resume, no session and %s abandoned",
+							spawned, resumed, got.Session, got.Abandoned.Session, session)
+					}
+					return
+				}
+				if spawned != 0 || resumed != 1 || got.Session != session || got.Abandoned.Session != "" {
+					t.Fatalf("the start spawned %d and resumed %d, and the claim records %q and abandoned %q; want one resume of %s and nothing abandoned",
+						spawned, resumed, got.Session, got.Abandoned.Session, session)
+				}
+			})
+		}
+	}
+}
+
 // A start's launch the wake pacing parks waits its turn written launching with no process, and the
 // issue can leave the start's work during the wait. The turn judges the work again: a launch whose
 // work the issue left starts no process and suspends the claim for the daemon, its task retired

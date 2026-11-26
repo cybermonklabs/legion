@@ -45,10 +45,10 @@ func runAtCheckerStep(t *testing.T, pool *pgxpool.Pool, key string, generation u
 		}
 		v := record.PlanVersion{Issue: key, Generation: generation, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: fixedNow}
 		task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: key, Generation: generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: generation, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
-		}
+		}, nil)
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
 			records.MoveTask(ctx, tx, key, generation, "a", record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning),

@@ -123,6 +123,11 @@ type specs struct {
 	// for a daemon with no workflow, which records no issue to walk, and in a test whose specs
 	// literal leaves it out; every claim of such a specs is addressed to its tree's architect.
 	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
+	// stepWorkers is the agent of each step of the plan of c's issue as the store records it at
+	// the launch (workflowRuntime.stepWorkers), which the claim's addressing names
+	// (addressingFragment). It is nil for a daemon with no workflow and in a test whose specs
+	// literal leaves it out; the addressing of such a specs names no step.
+	stepWorkers func(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error)
 	// runtimeName is cfg.Runtime.Name: a stale-plugin install (stalePluginInstall) is Kubernetes'
 	// alone, since a tmux pane always resumes on the plugin installed on the daemon's host.
 	runtimeName string
@@ -251,7 +256,13 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
+	var workers []stepWorker
+	if s.stepWorkers != nil {
+		if workers, err = s.stepWorkers(ctx, s.project, c); err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
+		}
+	}
+	addressing := addressingFragment(s.project, c, architect, workers, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
 	// Every architect owns a plan, whose steps name the roles this sentence lists; it stands
 	// before the tree architect's design-gate line, and the production check line ends every
 	// architect's addressing.
@@ -313,29 +324,46 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	passthrough(spec.Env, refusalCooldownVariables...)
 	// A role the deployment defines runs the model its settings give it; Legion's roles name none
 	// and run the profile's own (runtime.SpawnSpec.Model).
-	if role, defined := s.roleOf(c.Role); defined && !claim.IsBuiltin(c.Role) {
+	if role, defined := s.roleOf(c.Role); defined && claim.IsDeploymentRole(c.Role) {
 		spec.Model = role.Model
 	}
 	return spec, nil
 }
 
 // roleIdentities is the table of every role's identity a launch of c carries
-// (runtime.RoleIdentitiesVariable), given own, c's own identity. A role of c's own App takes own,
-// since one App commits as one identity, and asks nothing more. The other App's roles take that
-// App's identity, resolved once for all of them (otherAppIdentity). When it cannot be resolved,
-// the table leaves them out and the daemon logs one warning naming c, that App and the error, so
-// a failed mint of one App's lease fails no launch of the other App's role, and the push step
-// leaves the author of a commit whose trailer names a role left out as it is. A resolution that
-// failed once ctx had ended is the launch's own end rather than the other App's failure: it is
-// the error, and nothing is logged.
+// (runtime.RoleIdentitiesVariable), given own, c's own identity: Legion's roles and each role the
+// deployment defines, by the App each acts as (appauth.AppRoleFor). A role of c's own App takes
+// own, since one App commits as one identity, and asks nothing more. The other App's roles take
+// that App's identity, resolved once for all of them (otherAppIdentity). When it cannot be
+// resolved, the table leaves them out and the daemon logs one warning naming c, that App and the
+// error, so a failed mint of one App's lease fails no launch of the other App's role, and the push
+// step leaves the author of a commit whose trailer names a role left out as it is. A resolution
+// that failed once ctx had ended is the launch's own end rather than the other App's failure: it
+// is the error, and nothing is logged.
 func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository ghrepo.Repository, own runtime.GitIdentity) (map[claim.Role]runtime.GitIdentity, error) {
-	app := appauth.AppRoleFor(c.Role)
-	identities := make(map[claim.Role]runtime.GitIdentity, len(claim.Roles))
+	deployed := deploymentApps(s.roles)
+	app, err := appauth.AppRoleFor(c.Role, deployed)
+	if err != nil {
+		return nil, err
+	}
+	roles := slices.Clone(claim.Roles)
+	for _, role := range s.roles {
+		roles = append(roles, role.Name)
+	}
+	identities := make(map[claim.Role]runtime.GitIdentity, len(roles))
 	var others []claim.Role
-	for _, role := range claim.Roles {
-		if appauth.AppRoleFor(role) == app {
+	otherApp := appauth.Implement
+	if app == appauth.Implement {
+		otherApp = appauth.Review
+	}
+	for _, role := range roles {
+		roleApp, err := appauth.AppRoleFor(role, deployed)
+		switch {
+		case err != nil:
+			continue
+		case roleApp == app:
 			identities[role] = own
-		} else {
+		default:
 			others = append(others, role)
 		}
 	}
@@ -349,14 +377,14 @@ func (s specs) roleIdentities(ctx context.Context, c supervise.Claim, repository
 			identities[role] = other
 		}
 	case ctx.Err() != nil:
-		return nil, fmt.Errorf("the git identity of the %s App: %w", appauth.AppRoleFor(others[0]), err)
+		return nil, fmt.Errorf("the git identity of the %s App: %w", otherApp, err)
 	default:
 		log := s.log
 		if log == nil {
 			log = slog.Default()
 		}
 		log.Warn("legion launch carries no identity of the other App's roles: its role identities hold its own App's roles alone",
-			"claim", c.Token, "app", appauth.AppRoleFor(others[0]), "error", err)
+			"claim", c.Token, "app", otherApp, "error", err)
 	}
 	return identities, nil
 }
@@ -418,6 +446,60 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 		return "", fmt.Errorf("read the architect that owns %s: %w", c.Token, err)
 	}
 	return owner, nil
+}
+
+// stepWorker is one step of an issue's plan, at its task and its place from 1, its role, and the
+// claim of the agent that works it: what a launch's addressing names (addressingFragment).
+type stepWorker struct {
+	task     string
+	position int
+	role     string
+	token    claim.Token
+}
+
+// stepWorkersOf is each step of p, by task and place, with the claim of its agent
+// (record.StepToken): the token of the name of the step's agent, which every step of a task with
+// stored plan rows holds, its default steps included, and for a step of the key owner, whose agent
+// is the tree's architect and has no name on the issue, that architect's token. A nil plan has no
+// step.
+func stepWorkersOf(project, issue, tree string, p *record.StoredPlan) ([]stepWorker, error) {
+	if p == nil {
+		return nil, nil
+	}
+	var workers []stepWorker
+	for _, task := range slices.Sorted(maps.Keys(p.Steps)) {
+		for _, step := range p.Steps[task] {
+			token, err := record.StepToken(project, issue, tree, step)
+			if err != nil {
+				return nil, fmt.Errorf("the agent of step %d of task %s of %s: %w", step.Position, task, issue, err)
+			}
+			workers = append(workers, stepWorker{task: task, position: step.Position, role: step.Role, token: token})
+		}
+	}
+	return workers, nil
+}
+
+// stepWorkers is specs.stepWorkers: the agent of each step of the plan c's issue runs now, at the
+// issue's current generation (stepWorkersOf), read in a read-only transaction of its own as
+// owningArchitect reads. An issue the workflow does not record, or one with no plan rows, has no
+// step to name.
+func (w *workflowRuntime) stepWorkers(ctx context.Context, project string, c supervise.Claim) ([]stepWorker, error) {
+	var workers []stepWorker
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := w.records.Issue(ctx, tx, c.Issue)
+		if err != nil || issue == nil {
+			return err
+		}
+		p, err := w.records.Plan(ctx, tx, issue.Key, issue.Generation)
+		if err != nil {
+			return err
+		}
+		workers, err = stepWorkersOf(project, issue.Key, issue.Tree, p)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read the step agents of %s: %w", c.Token, err)
+	}
+	return workers, nil
 }
 
 // passthrough merges into env each of names the daemon's own environment holds, and no other: a
@@ -614,7 +696,7 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	return addressingFragment(project, c, architect, repo, defaultBranch, owners), nil
+	return addressingFragment(project, c, architect, nil, repo, defaultBranch, owners), nil
 }
 
 // addressingFragment is the sentence that tells an agent where it and its peers are reached: its
@@ -627,6 +709,16 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
 // architect of such an issue, a sub-architect, owns that issue itself, so its architect is the one
 // above it, and the sentence names it that way.
+//
+// workers is the agent of each step of the plan c's issue runs (specs.stepWorkers). Two claims of
+// one issue can hold one role — the agent of a key works a step of another role than its name —
+// so a topic spelled from a role reaches the agent named for that role, which need not be the one
+// that works the role's step: the sentence names the topic of each step's agent, and says what a
+// role's own topic reaches. An issue with no plan rows names no step, and keeps the rule that
+// spells a sibling's topic from its role, saying the case it holds in: with no plan rows, each role
+// of the issue is its own agent. The line is written at the launch, and the issue can run a plan
+// later, so it bounds the rule to the time before one and names `dispatch steps`, which gives the
+// agent of each step of that plan.
 //
 // The copy of the claim a launch is built from (supervise's spawnSpec) can carry two marks, and
 // each adds a sentence. A launch that follows a forget (c.SessionLost) starts a fresh session on a
@@ -643,14 +735,24 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
 // as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
 // agent's registration chose, and the quotes bound it in a text the agent reads.
-func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, workers []stepWorker, repo ghrepo.Repository, defaultBranch string, owners []string) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
 		owner = "the architect above you is"
 	}
-	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+
-		"the project's controller is `%s%s`; a sibling role on your issue is your topic with the trailing `-<role>` replaced.",
-		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project))
+	siblings := "your issue had no plan rows when you were started, so each of its roles is its own agent until it runs a plan: " +
+		"a sibling role on your issue is your topic with the trailing `-<role>` replaced, " +
+		"and once your issue runs a plan, `dispatch steps --issue " + c.Issue + "` gives the agent of each of its steps."
+	if len(workers) > 0 {
+		steps := make([]string, len(workers))
+		for i, w := range workers {
+			steps[i] = fmt.Sprintf("step %d of task %s (%s) `%s%s`", w.position, w.task, w.role, notify.RoleTopicPrefix, w.token)
+		}
+		siblings = "the agent of each step of your issue's plan is on its topic: " + strings.Join(steps, ", ") +
+			"; your topic with the trailing `-<role>` replaced reaches the agent named for that role, which need not be the one that works that role's step."
+	}
+	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; the project's controller is `%s%s`; %s",
+		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project), siblings)
 	// The agent a launch after a forget starts is a fresh session on a claim that had one: nothing in
 	// it says an earlier session existed, so it would read an empty transcript as a fresh start and
 	// redo work that is already pushed (dispatch://INFRA-714 R8). A session the launcher could not
@@ -687,7 +789,31 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 		return fragment
 	}
 	return fragment + " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
-		repo.String(), defaultBranch, RepositoriesClause(owners))
+		repo.String(), defaultBranch, workerRepositoriesClause(owners))
+}
+
+// workerRepositoriesClause is a worker's RepositoriesClause, exact for each owner it names in an
+// issue pod as on a tmux pane: the owners are its role's App's that appOwners kept, and its token
+// reaches every repository of those whose directory its gh holds. A pane holds its own role's
+// whole bundle, so there that is each of them. An issue pod holds the directories every role's
+// bundle held when the pod was created (the sandbox runtime's ghDirsShared), and appOwners keeps
+// only the owners every App of the pod's roles is installed on now (appauth.AddressingDirs), so
+// the one owner it names that the pod lacks is one those Apps were installed on after the pod was
+// created, which the update round the install opens closes by replacing the pod
+// (docs/kubernetes.md, the owners a pod projects). The clause says so in words rather than
+// naming the pod's own directories: the runtime fixes those when it makes the pod, after this
+// text is composed and on a path that hands the composition nothing, so naming them would need a
+// read of the pod this launch does not have. A role App installed on no owner is told so, as
+// RepositoriesClause tells it.
+func workerRepositoriesClause(owners []string) string {
+	const pod = ": in an issue pod, an owner the Apps of your pod's roles were installed on after the pod was created has none until the update round that install opens replaces the pod."
+	switch len(owners) {
+	case 0:
+		return RepositoriesClause(owners)
+	case 1:
+		return "your role's GitHub App is installed on the owner " + owners[0] + ", and its token reaches every repository of that owner once your gh holds its directory" + pod
+	}
+	return "your role's GitHub App is installed on the owners " + strings.Join(owners, ", ") + ", and its token reaches every repository of those owners whose directory your gh holds" + pod
 }
 
 // RepositoriesClause tells an agent how far its GitHub token reaches, as a clause that ends in a

@@ -146,7 +146,7 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, owner susp
 	if err != nil || row.HandoffCommit == "" {
 		return false, err
 	}
-	armed, err := e.cfg.Pods.OpenPodBackstop(ctx, tx, issue.Key, owner.token, claim.RoleMerger)
+	armed, err := e.cfg.Pods.OpenPodBackstop(ctx, tx, issue.Key, owner.token)
 	if err != nil || armed {
 		return false, err
 	}

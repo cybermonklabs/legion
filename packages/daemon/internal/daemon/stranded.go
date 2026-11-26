@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -55,7 +56,8 @@ func strandedReleaseWakes(ctx context.Context, st *store.Store, tx pgx.Tx, proje
 	}
 	wakes := make([]workflow.ReleasedWake, 0, len(resumes))
 	for _, resume := range resumes {
-		wakes = append(wakes, workflow.ReleasedWake{Issue: resume.Issue, Role: resume.Role, ClockAt: resume.ClockAt, Stuck: resume.Stuck})
+		wakes = append(wakes, workflow.ReleasedWake{Claim: claim.Token(resume.Claim),
+			ClockAt: resume.ClockAt, Stuck: resume.Stuck})
 	}
 	return wakes, nil
 }

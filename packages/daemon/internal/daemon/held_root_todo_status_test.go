@@ -66,10 +66,10 @@ func TestTheRetroThatEndsAChildrenHoldLandsOnTheBoard(t *testing.T) {
 					GivenBy: mustClaimToken(t, rootKey, claim.RoleArchitect), GivenAt: now.Add(-time.Hour)}
 				task := record.PlanTask{Issue: rootKey, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.",
 					State: record.TaskRunning, Place: record.TaskPlace{Kind: record.PlaceRetro}}
-				steps := []record.PlanStep{
+				steps := record.NameAgents(nil, []record.PlanStep{
 					{Issue: rootKey, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: rootKey, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-				}
+				}, nil)
 				for _, put := range []error{
 					records.PutIssue(ctx, tx, root),
 					records.PutIssue(ctx, tx, child),

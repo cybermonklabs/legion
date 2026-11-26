@@ -475,7 +475,7 @@ func claudeWorkerSpec(t *testing.T) runtime.SpawnSpec {
 const claudeTranscriptID = "9f1c2d3e-4a5b-4c6d-8e7f-0a1b2c3d4e5f"
 
 func claudeTranscript(role claim.Role) string {
-	return claudeConfigDir(role) + "/projects/--legion-workspaces-sjawhar-legion-smoke-legion-208--/" + claudeTranscriptID + ".jsonl"
+	return claudeConfigDir(claim.Agent(role)) + "/projects/--legion-workspaces-sjawhar-legion-smoke-legion-208--/" + claudeTranscriptID + ".jsonl"
 }
 
 // claudeResumeSpec is claudeWorkerSpec relaunched on the transcript a replaced pod's role
@@ -578,6 +578,15 @@ type rig struct {
 	// (shimwire.LauncherHello.ResumesBySession, withResumesBySession): unset, each is a launcher
 	// built before it could.
 	resumesBySession bool
+	// noCredentialWait has every fake launcher's hello say nothing of waiting for a start's
+	// credential (shimwire.LauncherHello.CredentialWait, withoutCredentialWait): a launcher of the
+	// release before, which starts a child at once. Unset, each says it waits, as a launcher of
+	// this release does.
+	noCredentialWait bool
+	// holdStart, when set, is what every fake launcher waits on, or the rig's end, before it
+	// answers a start it has recorded: a start the launcher is still waiting on, as a real
+	// launcher waits for its slot's gh files to hold the start's credential. Guarded by commandsMu.
+	holdStart chan struct{}
 	// heldStops, when set, holds every fake launcher's answer to a stop until it is closed
 	// (withHeldStops), as a launcher whose child takes its grace to exit holds it.
 	heldStops <-chan struct{}
@@ -621,6 +630,10 @@ func withCauselessLeakCheck() rigOption {
 // withResumesBySession has every fake launcher's hello say it can look a session up by its id and
 // resume the file it finds, as a launcher of this release says.
 func withResumesBySession() rigOption { return func(g *rig, _ *Options) { g.resumesBySession = true } }
+
+// withoutCredentialWait has every fake launcher's hello say nothing of waiting for a start's
+// credential, as a launcher of the release before says nothing.
+func withoutCredentialWait() rigOption { return func(g *rig, _ *Options) { g.noCredentialWait = true } }
 
 // withHeldStops has every fake launcher of this rig receive a stop and answer it only once release
 // is closed.
@@ -1302,14 +1315,15 @@ func (g *rig) launcher(token claim.Token) {
 	}
 	g.wanted[token] = true
 	g.commandsMu.Unlock()
-	if launcherOf(g, token) != nil || g.pod(SandboxName(token)) == nil {
+	if launcherSessionOf(g, token) != nil || g.pod(SandboxName(token)) == nil {
 		return
 	}
 	g.connect(token)
 }
 
-// launcherOf is the session the runtime holds for token's launcher, or nil.
-func launcherOf(g *rig, token claim.Token) *launcherSession {
+// launcherSessionOf is the session the runtime holds for token's launcher, or nil. (launcherOf is
+// the runtime's own: the role of the pod's launcher that serves a slot.)
+func launcherSessionOf(g *rig, token claim.Token) *launcherSession {
 	g.r.launchers.mu.Lock()
 	defer g.r.launchers.mu.Unlock()
 	return g.r.launchers.sessions[token]
@@ -1366,6 +1380,7 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 	session := g.r.launchers.accept(token, launcherIssue(token), g.keptSince(token), shimwire.LauncherHello{
 		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
 		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled, ResumesBySession: g.resumesBySession,
+		CredentialWait: !g.noCredentialWait,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
@@ -1400,6 +1415,18 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 			g.commandsMu.Unlock()
 			switch command := frame.(type) {
 			case shimwire.LauncherStart, shimwire.LauncherStop:
+				if _, start := frame.(shimwire.LauncherStart); start {
+					g.commandsMu.Lock()
+					hold := g.holdStart
+					g.commandsMu.Unlock()
+					if hold != nil {
+						select {
+						case <-hold:
+						case <-g.ctx.Done():
+							return
+						}
+					}
+				}
 				if _, stop := frame.(shimwire.LauncherStop); stop && g.heldStops != nil {
 					<-g.heldStops
 				}
@@ -1597,15 +1624,15 @@ func claimLabels(_ claim.Role) map[string]string {
 
 // sandboxLocator is a recorded process locator in its claim's pod's one container.
 func sandboxLocator(token claim.Token, uid string) runtime.Locator {
-	slot := slotOf(token)
-	if slot == "" {
+	slot, ok := token.Slot()
+	if !ok {
 		panic("test token names no slot")
 	}
 	return runtime.Locator{
 		Runtime:     runtime.RuntimeSandbox,
 		Claim:       token,
 		Incarnation: runtime.SandboxIncarnation(uid, 1),
-		Sandbox:     &runtime.SandboxLocator{Namespace: testNamespace, Name: SandboxName(token), PodUID: uid, Container: podContainer(slot), Generation: 1},
+		Sandbox:     &runtime.SandboxLocator{Namespace: testNamespace, Name: SandboxName(token), PodUID: uid, Container: podContainer(launcherOf(slot)), Generation: 1},
 	}
 }
 

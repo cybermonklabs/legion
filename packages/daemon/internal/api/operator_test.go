@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -119,6 +120,28 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 	}
 }
 
+// A daemon built with no record refuses a spawn, as every route of the server that reads the record
+// refuses without one ("record dependencies are unavailable"): the claim of an issue's role is the
+// worker on that role's step, which only the record names, so the route creates and launches
+// nothing rather than reaching the role's own token, which may be the wrong agent.
+func TestASpawnWithoutTheRecordIsRefusedAndLaunchesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject,
+		OperatorToken: testOperatorToken, Controller: h.store, Releaser: h.runtime, Trees: h.store,
+		Steps: config.DesignGateRootIssues.Steps()}).Handler
+
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	if recorder.Code != http.StatusInternalServerError || !strings.Contains(recorder.Body.String(), "record dependencies are unavailable") {
+		t.Fatalf("spawn with no record = %d %s, want 500 naming the record dependencies", recorder.Code, recorder.Body)
+	}
+	if calls := h.runtime.Calls(); len(calls) != 0 {
+		t.Fatalf("the refused spawn reached the runtime: %v", h.runtime.Methods())
+	}
+	if _, found := h.supervisor.Machine(architectToken); found {
+		t.Fatalf("the refused spawn created the claim %s", architectToken)
+	}
+}
+
 // The operator's spawn never waits for the wake pacing, whatever the daemon's wake queue holds: a
 // person is waiting on this answer, and the route answers with the claim launched rather than
 // with one parked launching for a turn minutes out (supervise's reserveWake, RequestSpawn.Exempt).
@@ -188,6 +211,58 @@ func TestSpawnRefusesARequestItCannotName(t *testing.T) {
 	}
 	if calls := h.runtime.Calls(); len(calls) != 0 {
 		t.Fatalf("a refused spawn reached the runtime: %v", h.runtime.Methods())
+	}
+}
+
+// The route takes a name of the role grammar, and a launch of one that is neither Legion's nor a
+// role the deployment defines fails at each attempt after its claim row is written, so a mistyped
+// role is a 400 that names the roles the deployment has, and writes no claim and launches nothing.
+// "acceptance" is a role of a step in the deployment's table (plan.BuiltinRoles) and no claim's.
+// The controls are a role the deployment defines, which launches, and one of Legion's six, which
+// launches in a deployment that defines no role of its own.
+func TestSpawnRefusesARoleTheDeploymentDoesNotDefine(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		deployment plan.Deployment
+		role       claim.Role
+		refusal    string
+	}{
+		{"a mistyped role of a deployment that defines the checker", checkerDeployment(), "chekcer",
+			`role "chekcer" is not a spawnable role; deployment-defined roles: checker`},
+		{"a role of a step that is no claim's", checkerDeployment(), "acceptance",
+			`role "acceptance" is not a spawnable role; deployment-defined roles: checker`},
+		{"the checker of a deployment that defines none", plan.Deployment{}, "checker",
+			`role "checker" is not a spawnable role; deployment-defined roles: none`},
+		{"the control: the checker of a deployment that defines it", checkerDeployment(), "checker", ""},
+		{"the control: Legion's tester", plan.Deployment{}, claim.RoleTester, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessIn(t, true, tc.deployment)
+			body := spawnBody()
+			body.Role = tc.role
+			noDraw := func(context.Context, pgx.Tx) error { return nil }
+			if _, err := h.store.OpenOperatorTreeLifecycle(t.Context(), testProject, body.Tree, noDraw); err != nil {
+				t.Fatalf("open the tree for the worker: %v", err)
+			}
+			recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", body)
+			if tc.refusal == "" {
+				if recorder.Code != http.StatusCreated {
+					t.Fatalf("spawn of %s = %d, want 201; body %s", tc.role, recorder.Code, recorder.Body)
+				}
+				return
+			}
+			wantRefusal(t, recorder, http.StatusBadRequest, tc.refusal)
+			token, err := claim.NewToken(testProject, body.Issue, tc.role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, found := h.supervisor.Machine(token); found {
+				t.Fatalf("a refused spawn wrote the claim %s", token)
+			}
+			if calls := h.runtime.Calls(); len(calls) != 0 {
+				t.Fatalf("a refused spawn reached the runtime: %v", h.runtime.Methods())
+			}
+		})
 	}
 }
 

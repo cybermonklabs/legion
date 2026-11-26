@@ -195,7 +195,11 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	podUID, slot := incarnation, ""
 	if loc := m.claim.Locator; loc.Runtime == runtime.RuntimeSandbox && loc.Sandbox != nil {
 		podUID = loc.Sandbox.PodUID
-		slot = enrollmentSlot(m.claim, loc.Sandbox.Generation)
+		var named bool
+		if slot, named = enrollmentSlot(m.claim, loc.Sandbox.Generation); !named {
+			m.log.Error("supervise: agent-secrets: not enrolling a pod process whose claim token names no slot of its pod", "incarnation", incarnation)
+			return nil
+		}
 	}
 	if m.claim.Enrollment == nil || m.claim.Enrollment.Incarnation != incarnation {
 		if m.identity == nil || m.identity.incarnation != incarnation || m.claim.Session == "" {
@@ -280,22 +284,20 @@ func (m *Machine) ensureEnrolled(ctx context.Context) error {
 	return nil
 }
 
-// enrollmentSlot is the broker's slot of a pod process of c at generation: `<agent>-g<generation>`,
-// the agent being the slot of the pod the process runs in, the name c's token ends in
-// (claim.Token.Cut), or `controller` for the controller's token. It is never the role c's step is
-// on now: two claims of one role can run in one issue pod at one generation, and the broker keeps
-// one live enrollment per slot of a pod, so a slot spelled from the role would refuse the second
-// claim's (ErrAlreadyEnrolled), and a keyed agent would change slots at each re-role. A claim named
-// by its role keeps the slot it always had, since its agent's name is that role. A token that
-// names neither, which no claim of the daemon's holds, is spelled from c's role.
-func enrollmentSlot(c Claim, generation uint64) string {
-	name := string(c.Role)
-	if c.Token.IsController() {
-		name = string(claim.RoleController)
-	} else if _, agent, ok := c.Token.Cut(); ok {
-		name = string(agent)
+// enrollmentSlot is the broker's slot of a pod process of c at generation: `<slot>-g<generation>`,
+// the slot being the one of the pod the process runs in (claim.Token.Slot), the name c's token
+// ends in, or `controller` for the controller's token. It is never the role c's step is on now: two
+// claims of one role can run in one issue pod at one generation, and the broker keeps one live
+// enrollment per slot of a pod, so a slot spelled from the role would refuse the second claim's
+// (ErrAlreadyEnrolled), and a keyed agent would change slots at each re-role. A claim named by its
+// role keeps the slot it always had, since its agent's name is that role. A token that names no
+// slot, which no claim of the daemon's holds, has none, and its process is not enrolled.
+func enrollmentSlot(c Claim, generation uint64) (string, bool) {
+	slot, ok := c.Token.Slot()
+	if !ok {
+		return "", false
 	}
-	return fmt.Sprintf("%s-g%d", name, generation)
+	return fmt.Sprintf("%s-g%d", slot, generation), true
 }
 
 // revokeUnheld revokes at the broker, while its process lives, the enrollment of a claim that does

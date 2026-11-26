@@ -80,10 +80,7 @@ func seedSessionClaims(t *testing.T, pool *pgxpool.Pool, claims ...ownerClaim) {
 	}
 	inTx(t, pool, func(tx pgx.Tx) {
 		for _, c := range claims {
-			token, err := claim.NewToken(project, c.issue, c.role)
-			if err != nil {
-				t.Fatalf("the %s claim token of %s: %v", c.role, c.issue, err)
-			}
+			token := ownerToken(t, c.issue, c.role)
 			var turn *time.Time
 			if c.turn {
 				turn = &fixedNow
@@ -96,6 +93,20 @@ func seedSessionClaims(t *testing.T, pool *pgxpool.Pool, claims ...ownerClaim) {
 			}
 		}
 	})
+}
+
+// ownerToken is the token of the claim of role on issue, as seedSessionClaims stores it.
+func ownerToken(t *testing.T, issue string, role claim.Role) claim.Token {
+	t.Helper()
+	project, err := claim.ProjectToken(testProject)
+	if err != nil {
+		t.Fatalf("project token: %v", err)
+	}
+	token, err := claim.NewToken(project, issue, role)
+	if err != nil {
+		t.Fatalf("the %s claim token of %s: %v", role, issue, err)
+	}
+	return token
 }
 
 // ownedMember is a record of the tree: key under parent ("" for the root), in phase at, with
@@ -318,6 +329,25 @@ func rolesOf(rows []effect, op record.SuperviseOp) []claim.Role {
 	return roles
 }
 
+// sameRoles reports whether got and want hold the same roles, each as often, in any order. A walk
+// over every claim of an issue writes a row naming each stored claim, in token order, and then a
+// row by the role alone for each other role (workflow's claimTargets). So the order of its rows
+// follows which claims the record stores, and nothing depends on it: each row is a request of its
+// own, which the outbox runs on its own.
+func sameRoles(got, want []claim.Role) bool {
+	return slices.Equal(slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(want)))
+}
+
+// supervisedByRole is rows, each a supervise row, sorted by the role it names, for a comparison of
+// the rows of a walk over every claim in any order (sameRoles).
+func supervisedByRole(rows []effect) []effect {
+	return slices.SortedFunc(slices.Values(rows), func(a, b effect) int {
+		left, _ := a.payload.(record.SuperviseRequest)
+		right, _ := b.payload.(record.SuperviseRequest)
+		return strings.Compare(string(left.Role), string(right.Role))
+	})
+}
+
 // childNotices is every child-closed, child-status and status-reasserted notice of rows: what the
 // architects hear of a move of an issue, or of its set-back.
 func childNotices(rows []effect) []record.Notice {
@@ -353,7 +383,7 @@ func (r *ownerRig) assertLeft(key, status string) {
 	if status == record.DoneStatus {
 		op, other, kind, releases = "issue_close", "suspend", "child-closed", 0
 	}
-	if got := rolesOf(rows, op); !reflect.DeepEqual(got, claim.Roles) {
+	if got := rolesOf(rows, op); !sameRoles(got, claim.Roles) {
 		r.t.Fatalf("%s requests for %s after the move to %s = %v, want one for each role %v", op, key, status, got, claim.Roles)
 	}
 	if got := rolesOf(rows, other); len(got) != 0 {
@@ -581,45 +611,29 @@ func TestTheOwningArchitectsBacklogThenDoneEndsAtDone(t *testing.T) {
 		t.Fatalf("the outbox after the done = %#v, want the backlog's rows %#v first", rows, first)
 	}
 	reason := ownerChild + " is done"
-	// The daemon queues one issue_close for each role, naming the claim the issue stores of it by
-	// its token (treeClaims: the architect's and the implementer's), in the order it reads them;
-	// the rows are compared in the order claim.Roles lists the roles.
-	var closes, rest []effect
-	for _, row := range rows[len(first):] {
-		if row.kind == record.OutboxKindSupervise {
-			closes = append(closes, row)
-		} else {
-			rest = append(rest, row)
+	// The close names each claim the record stores for the child by its token, and reaches each
+	// other role by the role alone (workflow's claimTargets).
+	stored := map[claim.Role]bool{}
+	for _, c := range treeClaims() {
+		if c.issue == ownerChild {
+			stored[c.role] = true
 		}
 	}
-	roleOf := func(row effect) int {
-		request, _ := row.payload.(record.SuperviseRequest)
-		return slices.Index(claim.Roles, request.Role)
-	}
-	slices.SortStableFunc(closes, func(a, b effect) int { return roleOf(a) - roleOf(b) })
-	var want []effect
+	var closes []effect
 	for _, role := range claim.Roles {
-		var token claim.Token
-		for _, stored := range treeClaims() {
-			if stored.issue == ownerChild && stored.role == role {
-				var err error
-				if token, err = claim.NewToken("legion", ownerChild, role); err != nil {
-					t.Fatalf("the %s's claim of %s: %v", role, ownerChild, err)
-				}
-			}
+		request := record.SuperviseRequest{Op: "issue_close", Tree: ownerRoot, Role: role, Generation: 1, Reason: reason}
+		if stored[role] {
+			request.Claim = ownerToken(t, ownerChild, role)
 		}
-		want = append(want, effect{kind: record.OutboxKindSupervise, issue: ownerChild,
-			payload: record.SuperviseRequest{Op: "issue_close", Tree: ownerRoot, Role: role, Claim: token, Generation: 1, Reason: reason}})
+		closes = append(closes, effect{kind: record.OutboxKindSupervise, issue: ownerChild, payload: request})
 	}
-	if !reflect.DeepEqual(closes, want) {
-		t.Fatalf("the issue_close rows the done added = %#v, want %#v", closes, want)
-	}
-	wantRest := []effect{
+	after := []effect{
 		{kind: record.OutboxKindIssueSuspend, issue: ownerChild, payload: record.IssueSuspend{Tree: ownerRoot, Generation: 1, TreeGeneration: 1}},
-		{kind: record.OutboxKindNotice, issue: ownerChild, payload: record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: reason}},
-	}
-	if !reflect.DeepEqual(rest, wantRest) {
-		t.Fatalf("the other rows the done added = %#v, want %#v", rest, wantRest)
+		{kind: record.OutboxKindNotice, issue: ownerChild, payload: record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: reason}}}
+	added := rows[len(first):]
+	if len(added) != len(closes)+len(after) || !reflect.DeepEqual(supervisedByRole(added[:len(closes)]), supervisedByRole(closes)) ||
+		!reflect.DeepEqual(added[len(closes):], after) {
+		t.Fatalf("the rows the done added = %#v, want the closes %#v in any order, then %#v", added, closes, after)
 	}
 	if check := rig.check(ownerChild); check != nil {
 		t.Fatalf("the production check of %s = %+v, want none: it has no merged pull request", ownerChild, check)
@@ -661,7 +675,7 @@ func (r *ownerRig) assertCheckOpened(key string, number int, added []effect) {
 	}
 	added = rowsFor(added, key)
 	want := slices.DeleteFunc(slices.Clone(claim.Roles), func(role claim.Role) bool { return role == claim.RoleTester })
-	if got := rolesOf(added, "issue_close"); !reflect.DeepEqual(got, want) {
+	if got := rolesOf(added, "issue_close"); !sameRoles(got, want) {
 		r.t.Fatalf("issue_close requests the done added for %s = %v, want one for each role but the tester, %v", key, got, want)
 	}
 	if got := rolesOf(added, "suspend"); len(got) != 0 {

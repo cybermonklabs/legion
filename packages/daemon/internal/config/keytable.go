@@ -491,6 +491,13 @@ func (g memberGroup) topLevel() string {
 	return g.Path
 }
 
+// podDefault is the Default text of a `resources.<POD>` key the daemon fills itself: its own limit
+// or request for an issue pod and for the controller's, given from defaultResources so the table
+// holds no copy of the default.
+func podDefault(side, issue, controller string) string {
+	return "the daemon's own " + side + " for that pod: `" + issue + "` for an issue pod, `" + controller + "` for the controller's"
+}
+
 // nestedKeys is every mapping whose nested keys carry a description, by the path an operator
 // writes them under. describedMembers looks a group up by that path, so a reader that passes a
 // path this list does not hold is a bug TestNoKeyBypassesTheKeyTable catches, never a value.
@@ -688,17 +695,17 @@ var nestedKeys = []memberGroup{
 			Description: "The taint effect tolerated: `NoSchedule`, `NoExecute` or `PreferNoSchedule`."},
 	}},
 	{Path: kubernetesKey + ".resources.<POD>", Members: []member{
-		{Name: "cpu", Default: "the daemon's own limit for that pod: `3` for an issue pod, `1` for the controller's", RequiredBy: "no",
+		{Name: "cpu", Default: podDefault("limit", defaultResources.Issue.CPU, defaultResources.Controller.CPU), RequiredBy: "no",
 			Description: "The CPU limit every container of the pod carries, as a Kubernetes quantity."},
 		{Name: "cpu_request", Default: "the pod's own `cpu`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that CPU, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "memory", Default: "the daemon's own limit for that pod: `19Gi` for an issue pod, `4Gi` for the controller's", RequiredBy: "no",
+		{Name: "memory", Default: podDefault("limit", defaultResources.Issue.Memory, defaultResources.Controller.Memory), RequiredBy: "no",
 			Description: "The memory limit every container of the pod carries; under gVisor every process of the pod draws on this one number, so the pod's whole peak must fit it."},
 		{Name: "memory_request", Default: "the pod's own `memory`, which is what makes a pod that raises a limit alone Guaranteed", RequiredBy: "no",
 			Description: "What the scheduler reserves of that memory, at most the limit; below the limit the pod is Burstable rather than Guaranteed."},
-		{Name: "ephemeral_storage", Default: "the daemon's own limit for that pod: `80Gi` for an issue pod, `10Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage", Default: podDefault("limit", defaultResources.Issue.EphemeralStorage, defaultResources.Controller.EphemeralStorage), RequiredBy: "no",
 			Description: "The pod's bound on the node's own disk — the image's content and each role's home and `/tmp`, the issue volume being its own — past which that pod alone is evicted."},
-		{Name: "ephemeral_storage_request", Default: "the daemon's own request for that pod: `6Gi` for an issue pod, `1Gi` for the controller's", RequiredBy: "no",
+		{Name: "ephemeral_storage_request", Default: podDefault("request", defaultResources.Issue.EphemeralStorageRequest, defaultResources.Controller.EphemeralStorageRequest), RequiredBy: "no",
 			Description: "What the scheduler reserves of that disk; an operator who knows the root volume raises it so no pod is placed where a full node could not hold it."},
 		{Name: "requests", Default: "", RequiredBy: "no",
 			Description: "Removed: a reservation is its `cpu` and `memory` limits, with `cpu_request` and `memory_request` below them where set; the loader refuses a file that still sets it."},

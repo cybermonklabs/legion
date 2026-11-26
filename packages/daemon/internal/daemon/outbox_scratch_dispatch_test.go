@@ -27,7 +27,9 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -263,31 +265,7 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 
 	holders := func() []dispatch.RoleHolder {
 		t.Helper()
-		request, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/role-holders", nil)
-		if err != nil {
-			t.Fatalf("build the role-holder read: %v", err)
-		}
-		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := pollClient.Do(request)
-		if err != nil {
-			t.Fatalf("read the role holders of %s: %v", issue, err)
-		}
-		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(response.Body)
-			t.Fatalf("read the role holders of %s = %s %s", issue, response.Status, body)
-		}
-		var read struct {
-			Issue   string                `json:"issue"`
-			Holders []dispatch.RoleHolder `json:"holders"`
-		}
-		if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
-			t.Fatalf("decode the role holders of %s: %v", issue, err)
-		}
-		if read.Issue != issue {
-			t.Fatalf("the read answered issue %q, want %s", read.Issue, issue)
-		}
-		return read.Holders
+		return scratchRoleHolders(t, baseURL, token, issue)
 	}
 	run := func() {
 		t.Helper()
@@ -304,7 +282,7 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 		t.Fatalf("before the lane ran, Dispatch lists %+v, want no holder", got)
 	}
 	run()
-	if got, want := holders(), []dispatch.RoleHolder{{Role: "tester", Session: "ses-tester"}}; !reflect.DeepEqual(got, want) {
+	if got, want := holders(), []dispatch.RoleHolder{ownHolder(t, issue, claim.RoleTester, "ses-tester")}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("after the publication, Dispatch lists %+v, want %+v", got, want)
 	}
 
@@ -334,6 +312,79 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	if len(refused) != 1 || !strings.Contains(refused[0], "level=ERROR") || !strings.Contains(refused[0], "issue="+issue) ||
 		!strings.Contains(refused[0], "code=INVALID_ROLE_HOLDER") {
 		t.Fatalf("the refusal was logged as %q, want one ERROR line naming %s and INVALID_ROLE_HOLDER", refused, issue)
+	}
+}
+
+// scratchRoleHolders is the role holders of issue as the scratch Dispatch at baseURL answers them
+// (GET /api/v1/issues/{key}/role-holders), each with its role, session, claim and whether it works
+// its role's step.
+func scratchRoleHolders(t *testing.T, baseURL, token, issue string) []dispatch.RoleHolder {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/role-holders", nil)
+	if err != nil {
+		t.Fatalf("build the role-holder read: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := pollClient.Do(request)
+	if err != nil {
+		t.Fatalf("read the role holders of %s: %v", issue, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("read the role holders of %s = %s %s", issue, response.Status, body)
+	}
+	var read struct {
+		Issue   string                `json:"issue"`
+		Holders []dispatch.RoleHolder `json:"holders"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
+		t.Fatalf("decode the role holders of %s: %v", issue, err)
+	}
+	if read.Issue != issue {
+		t.Fatalf("the read answered issue %q, want %s", read.Issue, issue)
+	}
+	return read.Holders
+}
+
+// Two live claims of one issue hold one role: the agent implementer's claim, which the tester's
+// phases row names on the tester's step, and the tester's own claim of an earlier version of the
+// plan. The daemon's board lane publishes both to a real Dispatch built from this tree, each with
+// its token and whether it works the step, and Dispatch lists both sessions as holders of the
+// tester's role. Before 20261124213825 Dispatch refused the set, a role named twice (400
+// INVALID_ROLE_HOLDER), the lane ended the row, and Dispatch kept a set with neither session.
+func TestTwoLiveClaimsOfOneRoleBothHoldItOnScratchDispatch(t *testing.T) {
+	t.Parallel()
+	baseURL, token := startScratchDispatch(t)
+	issue := createScratchDispatchIssue(t, baseURL)
+	r := newRoleHoldersRig(t)
+	r.runner.dispatch = dispatch.New(baseURL, dispatch.BearerTransport(token, nil))
+	putOutboxIssue(t, r.pool, r.records, record.Issue{Key: issue, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: issue, Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing"})
+	own := r.seedClaim(issue, claim.RoleTester, "ses-own", "ready", time.Minute)
+	keyed := r.seedClaim(issue, claim.RoleImplementer, "ses-keyed", "working", time.Minute)
+	if _, err := r.pool.Exec(r.ctx, `update claims set role = 'tester' where token = $1`, string(keyed)); err != nil {
+		t.Fatalf("re-role the keyed claim to the tester: %v", err)
+	}
+	if err := store.Transact(r.ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue, Role: claim.RoleTester, Claim: keyed, StepTask: "t", StepPlace: 2, Entry: 2})
+	}); err != nil {
+		t.Fatalf("name the keyed claim on the tester's step: %v", err)
+	}
+
+	r.enqueue(issue)
+	if err := r.runner.RunOnce(r.ctx); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+	if rows := outboxRows(t, r.pool); rows != 0 {
+		t.Fatalf("the outbox holds %d rows after the run, want the publication finished", rows)
+	}
+	want := []dispatch.RoleHolder{
+		{Role: "tester", Session: "ses-keyed", Claim: string(keyed), WorksStep: true},
+		{Role: "tester", Session: "ses-own", Claim: string(own)},
+	}
+	if got := scratchRoleHolders(t, baseURL, token, issue); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Dispatch lists %+v, want both claims of the tester %+v", got, want)
 	}
 }
 

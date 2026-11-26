@@ -82,7 +82,7 @@ func seedsPlanIn(t *testing.T, tx pgx.Tx, words ...string) {
 	for i, role := range words {
 		steps = append(steps, record.PlanStep{Issue: "LEGION-208", Generation: 1, Task: "a", Position: i + 1, Role: role, Type: roles[role].Type})
 	}
-	if err := record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps); err != nil {
+	if err := record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps, nil)); err != nil {
 		t.Fatalf("write the plan of LEGION-208: %v", err)
 	}
 }

@@ -54,6 +54,7 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "architect": {
+        "token": "legion-legion-legion-208-architect",
         "session": "ses_architect_208",
         "state": "ready",
         "locator": {

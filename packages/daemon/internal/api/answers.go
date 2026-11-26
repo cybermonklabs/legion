@@ -244,7 +244,8 @@ var frozenAnswers = []Answer{
 }
 
 // EnumeratedField is one field of one answer that a plugin parses with a strict enumeration,
-// which admits the values its own contract names and no other.
+// which admits the values its own contract names and no other: at every contract, or below
+// OpenFrom where the row has one.
 type EnumeratedField struct {
 	// Answer is the answer the field is a field of.
 	Answer AnswerID `json:"answer"`
@@ -252,14 +253,19 @@ type EnumeratedField struct {
 	// root, with a map's key and a list's index written as `*`, which is the spelling the
 	// records use (`packages/contracts/fixtures/daemon-api/contract-shapes.json`).
 	KeyPath string `json:"keyPath"`
-	// Values is every value the field may take, each with the contract it arrived at, sorted by
-	// value. A value older than ServingFloor is recorded from the floor up, as an answer is.
+	// Values is every value the field may take below OpenFrom, each with the contract it arrived
+	// at, sorted by value. A value older than ServingFloor is recorded from the floor up, as an
+	// answer is.
 	Values []EnumeratedValue `json:"values"`
-	// Until is the contract from which the field is no enumeration, 0 for a field enumerated at
-	// every contract: a reader at Until or above takes any value of a grammar no list of values
-	// holds, so a record from Until up carries no domain of the field, and a reader below it is
-	// served only the values the list names (its own serving-down).
-	Until int `json:"until,omitempty"`
+	// OpenFrom is the contract from which the field is no enumeration, and 0 for a field that is
+	// one at every contract. An entry ends a field's enumeration at its own number
+	// (contracts.go's openedFields) when the field comes to take any word of a grammar that no
+	// list holds, as a claim's role takes any role a deployment defines from
+	// deploymentRolesContract's entry. A reader at or above OpenFrom parses the field with no
+	// enumeration, so the record of such a contract holds no domain of it and the gate checks
+	// none of its values there. A reader below it parses the field with the list of Values, so
+	// a caller below it is served no value that list does not admit, as before.
+	OpenFrom int `json:"openFrom,omitempty"`
 }
 
 // EnumeratedValue is one value of an enumerated field and the contract that value arrived at.
@@ -271,7 +277,7 @@ type EnumeratedValue struct {
 // EnumeratedFields is one row per field of an answer that a plugin reads with a strict
 // enumeration, with each value and the contract it arrived at: the rows of the numbered entries
 // (enumeratedFields) and then each entry's, in number order, with the values an entry adds to an
-// older field (contracts.go).
+// older field and the end an entry puts to an older field's enumeration (contracts.go).
 //
 // It is here because a value a contract does not admit refuses that contract's reader as surely
 // as a key it does not know: `packages/contracts/src/legion-api.ts` reads `answeredBy` as
@@ -299,6 +305,13 @@ type EnumeratedValue struct {
 // it is a row: `escalated` is recorded at the floor, which is the one value every record below
 // that contract admits, and the two words that contract added are recorded at it (holdReasons).
 //
+// A field whose reader comes to take any word of a grammar, rather than the words of a list, is
+// no enumeration from the contract that makes it so: that contract's entry opens the field's row
+// (EnumeratedField.OpenFrom). Its values stay what the readers below that contract admit. The
+// four rows of a claim's role are such fields: `strandedClaims.*.role`, the registration's
+// `role`, `wakesWaiting.*.role` and `paused.waitsOn.*.role` are Legion's six below
+// deploymentRolesContract's entry and any role of the role grammar from it (claimRoles).
+//
 // Each value's arrival is the later of two readings, and each row says which of them decided
 // it: the contract the value first appears in the plugin's own list at, and the contract the
 // field itself arrived at, since a field that arrives at 55 can carry no value older than 55.
@@ -313,9 +326,9 @@ type EnumeratedValue struct {
 // gained `task-stopped` and `children` at OwnerPlanContract, `admission.held.*.reason`, which
 // gained `children_before_retro` and `task_stopped` there, and an issue's `phase` with the two
 // fields that take the workflow's phases, `heldFrom` and a held task's `phase`, which gained `step`
-// at deploymentRolesContract, so every other list is recorded whole at its own field's arrival.
-// (`suspendedBy` gained `released` at 48 and is no row here: the operator claim answers carry it
-// and no plugin parses them.)
+// at deploymentRolesContract's entry, so every other list is recorded whole at its own field's
+// arrival. (`suspendedBy` gained `released` at 48 and is no row here: the operator claim answers
+// carry it and no plugin parses them.)
 func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
 // enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken
@@ -328,17 +341,12 @@ func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 // company the day a per-issue field is added to one of them: the record route would answer that
 // field with no domain recorded and no gate on its values. So an entry's rows of the state take
 // their record's rows the same way (withIssueRecordRows).
-//
-// The `role` of a claim is a row at each of its key paths (a stranded claim's, a waiting wake's, a
-// pause stop's and the registration's) up to deploymentRolesContract and none from it (Until):
-// from that contract a reader takes there any role of the role grammar (claim.IsRole), a domain
-// no list of values holds, and a caller below it is served the state's stranded claims, waiting
-// wakes and pause stops of Legion's six roles alone (shaping.go's withoutDeploymentRoleClaims).
 func enumeratedFields() []EnumeratedField {
 	return append(withIssueRecordRows(stateEnumeratedFields),
 		// `role` of the claim a registration issued (claim.RegisterResponse.Role). The
 		// controller's registration answers `controller` under a `z.literal` and is no row.
-		EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles, Until: deploymentRolesContract},
+		// Open from deploymentRolesContract's entry (claimRoles says why).
+		EnumeratedField{Answer: AnswerRegister, KeyPath: "role", Values: claimRoles},
 		// `outcome` of one record the controller's replay took, how its replay ended
 		// (api.ReplayedGiveUpView.Outcome, intake.ReplayOutcome). The answer arrived whole at
 		// intakeGiveUpsContract, so no older caller is served a value of it.
@@ -368,8 +376,8 @@ const issueKeyPath = "issues.*."
 // two of them. Each row under issueKeyPath is a row of the record answer too (enumeratedFields).
 var stateEnumeratedFields = []EnumeratedField{
 	// `phase` of an issue, where the workflow holds it (api.Issue.Phase, LEGION_PHASES). Its list
-	// grew: `step` arrived at deploymentRolesContract, and an issue at step is served as
-	// implementing below that contract (shaping.go's withoutDeploymentRoles).
+	// grew: `step` arrives with deploymentRolesContract's entry (its enumeratedValues), and an
+	// issue at step is served as implementing below that entry (shaping.go's withoutDeploymentRoles).
 	{Answer: AnswerState, KeyPath: "issues.*.phase", Values: phases},
 	// `state` of a claim view, where a claim is in its life (api.ClaimView.State,
 	// LEGION_CLAIM_STATES). The architect's view and each worker's carry the one field.
@@ -410,22 +418,26 @@ var stateEnumeratedFields = []EnumeratedField{
 	// below that contract whole (shaping.go's withoutMemory).
 	{Answer: AnswerState, KeyPath: "issues.*.memoryGroup", Values: memoryGroups},
 	{Answer: AnswerState, KeyPath: "issues.*.memoryDrawMode", Values: memoryDrawModes},
-	// `state` of one claim nothing will wake (api.StrandedClaim). Its list grew: `retired`
-	// arrived at 56, and an entry carrying it is dropped whole below that contract (shaping.go's
-	// withoutUnadmittedStrandedStates), so no body below 56 carries the value and the gate passes
-	// without a serving-down of its own.
+	// `role` and `state` of one claim nothing will wake (api.StrandedClaim). The state's list
+	// grew: `retired` arrived at 56, and an entry carrying it is dropped whole below that
+	// contract (shaping.go's withoutUnadmittedStrandedStates), so no body below 56 carries the
+	// value and the gate passes without a serving-down of its own. The role is Legion's six below
+	// deploymentRolesContract's entry and open from it, as the wake's and the pause stop's below
+	// are (claimRoles says why).
+	{Answer: AnswerState, KeyPath: "strandedClaims.*.role", Values: claimRoles},
 	{Answer: AnswerState, KeyPath: "strandedClaims.*.state", Values: strandedStates},
-	// `role` of one claim nothing will wake (api.StrandedClaim), of one wake the pacing holds
-	// (api.WakeWaiting.Role), which arrived with `wakesWaiting` and is served down below that
-	// contract whole (shaping.go's withoutWakesWaiting), and of one claim whose stop the
-	// project's open pause waits on (api.PauseStopView.Role), which arrived with `paused` and is
-	// served down below that contract whole (shaping.go's withoutPause). Each is enumerated up to
-	// deploymentRolesContract (enumeratedFields says why). The wake's `kind` and the pause's
-	// `by.kind` and `endedBy.kind` are no rows: the first is an unconstrained string, and the other
-	// two are discriminators read with a `z.literal`.
-	{Answer: AnswerState, KeyPath: "strandedClaims.*.role", Values: claimRoles, Until: deploymentRolesContract},
-	{Answer: AnswerState, KeyPath: "wakesWaiting.*.role", Values: wakeRoles, Until: deploymentRolesContract},
-	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles, Until: deploymentRolesContract},
+	// `role` of one wake the pacing holds (api.WakeWaiting.Role). It arrived with
+	// `wakesWaiting`, which is served down below that contract whole (shaping.go's
+	// withoutWakesWaiting), and is open from deploymentRolesContract's entry (claimRoles). The
+	// wake's `kind` beside it is no row: the schema leaves it an unconstrained string, so a lane a
+	// later daemon names is read rather than refused.
+	{Answer: AnswerState, KeyPath: "wakesWaiting.*.role", Values: wakeRoles},
+	// `role` of one claim whose stop the project's open pause still waits on
+	// (api.PauseStopView.Role). It arrived with `paused`, which is served down below that
+	// contract whole (shaping.go's withoutPause), and is open from deploymentRolesContract's
+	// entry (claimRoles). The pause's `by.kind` and `endedBy.kind` are no rows: each is the
+	// discriminator of a discriminated union, read with a `z.literal`.
+	{Answer: AnswerState, KeyPath: "paused.waitsOn.*.role", Values: pauseStopRoles},
 	// `runtime` of the registered controller's locator, the runtime this daemon runs under
 	// (api.ControllerLocator.Runtime).
 	{Answer: AnswerState, KeyPath: "controllerLocator.runtime", Values: controllerRuntimes},
@@ -503,9 +515,8 @@ var stateEnumeratedFields = []EnumeratedField{
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
 // value recorded at that one contract, sorted by value as the type requires. A field whose list
 // did grow is written out value by value instead, with each value's own arrival (waitAnswers,
-// strandedStates), or joined from one such list per contract (joinedValues). The values are the
-// daemon's own constants wherever the tree declares them, so a word renamed there is renamed
-// here.
+// strandedStates). The values are the daemon's own constants wherever the tree declares them, so
+// a word renamed there is renamed here.
 func valuesFrom[V ~string](since int, values ...V) []EnumeratedValue {
 	recorded := make([]EnumeratedValue, 0, len(values))
 	for _, value := range values {
@@ -515,13 +526,18 @@ func valuesFrom[V ~string](since int, values ...V) []EnumeratedValue {
 	return recorded
 }
 
-// joinedValues is the lists of one field joined into one list, sorted by value as the type
-// requires: a field whose list grew, written as the values it arrived with and then the values
-// each later contract added to it (phases, workflowPhases).
-func joinedValues(lists ...[]EnumeratedValue) []EnumeratedValue {
-	joined := slices.Concat(lists...)
-	slices.SortFunc(joined, func(a, b EnumeratedValue) int { return strings.Compare(a.Value, b.Value) })
-	return joined
+// arrivedWith is values as a field that arrived at contract carries them: each value recorded at
+// the later of its own arrival and the field's, since a field carries no value older than itself
+// (EnumeratedFields says why the earliest arrival of a list is its field's own). It is how a later
+// key path of a field already enumerated elsewhere takes that field's list. contract may be an
+// entry's id: the lists it takes are frozen rows, each value of which arrived at or below
+// LastNumberedContract, so the entry is the later, and the registry resolves its id to its number.
+func arrivedWith(contract int, values []EnumeratedValue) []EnumeratedValue {
+	recorded := slices.Clone(values)
+	for i := range recorded {
+		recorded[i].Since = max(recorded[i].Since, contract)
+	}
+	return recorded
 }
 
 // waitAnswers is every value of `answeredBy`, which the two rows above share because they are
@@ -558,9 +574,10 @@ var strandedStates = []EnumeratedValue{
 // the list is the reader's: `integrating` is a member of that enumeration and no phase this
 // daemon writes, since phase.All has never held it. The field is older than the floor, and the
 // list has lost one value since: `awaiting_merge`, which contract 86 took out of the workflow and
-// out of that enumeration (version.go's 86). It has gained one: `step`, a step of a role the
-// deployment defines, at deploymentRolesContract, below which an issue at step is served as
-// implementing (shaping.go's withoutDeploymentRoles).
+// out of that enumeration (version.go's 86). It gains one with deploymentRolesContract's entry:
+// `step`, a step of a role the deployment defines, which the entry adds to this field
+// (its enumeratedValues), and below which an issue at step is served as implementing
+// (shaping.go's withoutDeploymentRoles).
 //
 // A removed value needs no serving-down, which is why no row below records `awaiting_merge` at
 // any contract. This table records each value's arrival (`Since`) and nothing else, and the one
@@ -570,25 +587,22 @@ var strandedStates = []EnumeratedValue{
 // an `omitempty` key no issue carries. So a value leaves this list the day the enumeration of
 // this daemon's own contract drops it, and every other value's row stays where it is. The list
 // stays literal for that reason: `integrating` and `unrecorded` are no phase.Phase constant.
-var phases = joinedValues(
-	valuesFrom(ServingFloor,
-		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-		"retro", "merging", "integrating", "done", "held", "unrecorded"),
-	valuesFrom(deploymentRolesContract, "step"))
+var phases = valuesFrom(ServingFloor,
+	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
+	"retro", "merging", "integrating", "done", "held", "unrecorded")
 
 // workflowPhases is every phase of the workflow, which two fields of the decided record share:
 // an issue's `heldFrom` and the phase a claim's held task was queued for. It is the list of
 // `phases` without `unrecorded`, since `unrecorded` is what an issue the workflow holds no row
 // for reads its own `phase` as and is no phase a hold or a task names. Both fields arrived at
-// recordFieldsContract, so the list is recorded there, and it lost `awaiting_merge` and gained
-// `step` with `phases` for the reasons that roster gives: a hold from step and a task queued for
-// step are served as of implementing below deploymentRolesContract. It stays literal for the
-// reason `phases` does: `integrating` is no phase.Phase constant.
-var workflowPhases = joinedValues(
-	valuesFrom(recordFieldsContract,
-		"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
-		"retro", "merging", "integrating", "done", "held"),
-	valuesFrom(deploymentRolesContract, "step"))
+// recordFieldsContract, so the list is recorded there, and it lost `awaiting_merge` with
+// `phases` for the reason that roster gives. Both fields gain `step` with deploymentRolesContract's
+// entry, as `phases` does: a hold from step and a task queued for step are served as of
+// implementing below that entry. It stays literal for the reason `phases` does: `integrating` is
+// no phase.Phase constant.
+var workflowPhases = valuesFrom(recordFieldsContract,
+	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
+	"retro", "merging", "integrating", "done", "held")
 
 // failureCauses is every word the site that failed a claim can choose
 // (supervise.FailureCause), which the failure record's `cause` and the `pendingCause` beside it
@@ -671,9 +685,17 @@ var floorRoles = []claim.Role{
 	claim.RoleReviewer, claim.RoleMerger,
 }
 
-// claimRoles is every role a claim can hold below deploymentRolesContract, which four rows share:
-// the stranded report's, the registration's, the wake's and the pause stop's, those last two at
-// their own arrivals (wakeRoles, pauseStopRoles). The list has not moved since the floor.
+// claimRoles is the six roles of Legion, which four rows share: the stranded report's, the
+// registration's, the wake's and the pause stop's, those last two at their own arrivals
+// (wakeRoles, pauseStopRoles). The list has not moved since the floor. From
+// deploymentRolesContract's entry a claim may also hold a role the deployment defines, any word
+// of the role grammar (claim.IsRole) that no list holds, and a reader of that entry reads each
+// of the four fields by that grammar. So the entry opens the four rows at its number
+// (EnumeratedField.OpenFrom), and the six stay their domain below it, where a reader still
+// parses each field with an enumeration of the six. A caller below the entry is served no
+// stranded claim, waiting wake or pause stop of a role outside the six (shaping.go's
+// withoutDeploymentRoleClaims), and no registration of a claim of such a role (claims.go's
+// register refuses it).
 var claimRoles = valuesFrom(ServingFloor, floorRoles...)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that

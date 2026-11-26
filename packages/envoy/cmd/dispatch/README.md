@@ -200,17 +200,18 @@ Unset, `DISPATCH_SERVER_URL`'s origin is the only one.
 An entry that is not an absolute http(s) URL with no path, query, fragment or user refuses the start, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin or to another entry is taken once.
 A proof naming an origin neither setting names is refused as any wrong target is, and a proof is spent once whichever origin it names.
 That list is the one setting of its own this credential takes.
-A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
+A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, the service a read entry names, or the identity a job entry lists), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
 A read-only token names no project, unless it narrows a token scoped to one project, and then it names that project as the one it reads as and writes none.
+A job's `public` token names no one project either (below).
 Every actor such a write records carries `proven: true`, as a browser's person does, while a session a body names under any other credential carries no `proven`:
 a reader that trusts only a session the server saw proved reads that mark, and a document version's author keeps it only when every write merged into that author carried it.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, or the project scope `none` or a narrowed one in any shape but a read-only token's)
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, or the project scope `none` or a narrowed one in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
@@ -279,12 +280,28 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
+A job's token is the token the broker mints from a job entry: `BROKER_EXCHANGE_JOB_ACCOUNTS` for a pod, `BROKER_EXCHANGE_JOB_WORKFLOWS` for a GitHub Actions workflow, and `BROKER_VM_EXCHANGE_JOB_ACCOUNTS` for a machine.
+The entry names an identity, its projects and, where it fixes one, a session, and it names no person.
+The token names that identity as its service (a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's `<repository>/<workflow path>@<ref>`, or a Google account's address), names no person and holds no OAuth scope.
+Its project scope is one of two:
+`named` with the one project its entry names, or `public` with the private projects its entry lists, 0 to 16 of them, beside which it reaches every public project.
+`brokerTokenActor` resolves it to the session it names, with `Service` set to that identity, no `Owner` and no scope, and carries its project scope and its list on the credential (`model.Credential.ProjectScope` and `Projects`).
+A `named` job's token sets `Actor.Project`, so the project check below judges its writes as it judges a person's named token for the same project: for both, a write to another project is `403 PROJECT_SCOPE` until dispatch://INFRA-4799 changes that.
+A `public` job's token names no one project, so the project check holds it to none: it writes wherever Dispatch's own rules let a token that names no project write, a write that belongs to the deployment included.
+The private projects of its list limit no write at this release.
+It holds no OAuth scope, so every route whose `scopes` name `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED` at its scope gate.
+With `DISPATCH_LEGION_STATUS_SCOPE` on, a job's token, `named` or `public`, holds neither `person` nor `legion-status`, so Dispatch refuses it a Legion issue's status write, the removal of its `legion` label and the move after which it is no longer a Legion issue, with `403 LEGION_STATUS_SCOPE_REQUIRED`, as it refuses every credential that holds neither (below).
+The sign-in check below lets it write, and Dispatch records each write under the token's session, for its service, and under no person.
+`GET /api/v1/whoami` answers it with `owner` null, `service` its identity, `session` its session, `scopes` `[]`, `project` its one project for a `named` token and null for a `public` one, and `project_scope` `named` or `public`, which tells it from a machine's token, whose `project_scope` is `person` and whose every write the sign-in check refuses.
+The access log's `credential` names it `broker-token:service:<identity>` (below).
+The Envoy listener and the NATS auth service take both shapes too, through the same verifier (`internal/ciphertoken`).
+
 A Legion daemon's own broker token holds the OAuth scope `legion-status` and no other.
 The broker grants that scope only to the token of an account entry whose fixed session is `legion-daemon:<PROJECT>` of the entry's own project, and Dispatch reads it only on a token scoped to one project.
 No other credential holds it: a personal token cannot (`400 TOKEN_SCOPES_INPUT`), and no credential holds it beside `person`.
 With `DISPATCH_LEGION_STATUS_SCOPE` on, a write of a Legion issue's status, the removal of its `legion` label, and a move after which it is no longer a Legion issue need `legion-status` or `person` (`/api/v1/issues/{key}` (PATCH), Routes below, and `/api/v1/issues/{key}/status-change` (POST)).
 The daemon passes with its own broker token.
-The shared token, a personal token without `person`, a project's other broker tokens and a pod's Kubernetes token hold neither scope, so with the setting on Dispatch refuses them these writes, whatever session the request body names, but for one.
+The shared token, a personal token without `person`, a project's other broker tokens, a job's token and a pod's Kubernetes token hold neither scope, so with the setting on Dispatch refuses them these writes, whatever session the request body names, but for one.
 An architect of an issue above writes a Legion issue's status `done`, `backlog`, `icebox` or `triage` once its claim is ready: its broker token proves its session, and the daemon's own token has published that session as the architect of an issue above the Legion issue, of the Legion issue's own project, before the call and after it (`internal/dispatch/api/legion_status_scope.go`).
 With `include_children` it writes `backlog`, `icebox` or `triage` only, with `unlink_children` or `include_parent` nothing, and its removal of the `legion` label and its move out from under every labelled issue stay refused.
 
@@ -317,16 +334,16 @@ addressing another session's conversation is `403 SESSION_SCOPE`, naming the ses
 Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
 
-The sign-in check refuses every write by a credential that names a service and no person under the project scope `person`
-— an access token the broker issued to a machine nobody has signed in on
-— `403 SIGN_IN_REQUIRED`, naming that service and `agent-secrets login`, the command that signs a person in on the machine.
+The sign-in check refuses every write by a broker-issued credential that names a service and no person, unless its project scope is `named` or `public`: the two shapes of a job's token (above), and under `named` an exchange account entry's token that names no person (below).
+So it refuses an access token the broker issued to a machine nobody has signed in on, whose project scope is `person`, with `403 SIGN_IN_REQUIRED`, naming that service and `agent-secrets login`, the command that signs a person in on the machine.
+The rule names the project scopes that write and refuses every other, so it fails closed: a project scope the broker answers later is refused until this rule names it.
 It stands in front of every mutating route whatever its class, and outermost of the three, so such a caller is told it may make no write at all rather than which project the write it tried belongs to.
-Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
-A broker token that does name a person, and every other credential, reaches the handler as before.
-A broker token that names a service and no person under the project scope `named` reaches the handler too, where before this release it was refused `401 BROKER_TOKEN_NOT_A_SESSION`: the broker mints it only from a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<service account>==`), its service is that account, and each of its writes is recorded as the token's session acting for the account and for no person.
-Every verifier admits that shape only when its service is a Kubernetes account (`system:serviceaccount:<namespace>:<name>`).
+Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because nobody signed in on that machine and no job entry lists it, so nobody stands behind the write.
+A broker token that names a person, a job's token and every other credential pass this check.
+A broker token that names a service, no person and no project under the project scope `named` passes it too, where before this release it was refused `401 BROKER_TOKEN_NOT_A_SESSION`: the broker mints it from a `BROKER_EXCHANGE_ACCOUNTS` entry that names no person and no project (`<service account>==`), its service is that account, and each of its writes is recorded as the token's session acting for the account and for no person.
+Every verifier admits that shape only when its service is a Kubernetes account (`system:serviceaccount:<namespace>:<name>`) and it holds no OAuth scope, as the broker mints it.
 Such a token holds no OAuth scope, so a route that needs `person` or `approve` refuses it `403 OAUTH_SCOPE_REQUIRED`.
-`GET /api/v1/whoami` answers `sign_in_required` from the same decision this check makes: true for a machine nobody has signed in on whose token may write, and false for every other credential, this account token and every read-only token among them.
+`GET /api/v1/whoami` answers `sign_in_required` from the same decision this check makes: true for a machine nobody has signed in on whose token may write, and false for every other credential, a job's token and this account token and every read-only token among them.
 A read-only token may name a service and no person too, an account entry's narrowed to reading among them, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
 The project check is a no-op for a credential that carries no project
@@ -335,6 +352,8 @@ The session check is a no-op only for a credential that proves no session
 — a browser cookie, a personal agent token, a Kubernetes service-account token and the shared token; every broker-issued token proves its session, and the session check holds it to that session's own rows.
 That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
 A read-only token may carry a project, as a token narrowed from one scoped to a project does, but none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
+A job's `public` token carries no project either, so the project check is a no-op for it, and the session check holds it to the session it proved, as it holds every broker token.
+A job's `named` token carries its one project, and the project check judges it as it judges a person's named token for that project.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -706,12 +725,12 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the shared verifier, which Cognito tokens, pods' tokens and the listener go through, reads none of them.
   A refusal logs `msg="dispatch: sign-in refused" email=<email> hd=<hd> reason=<reason>`, where a pool refusal logs `username=<username>`.
 
-  Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
+- Either way, Dispatch keeps the issuer's refresh token and confirms the person with it at least hourly, the hour measured on the database's clock (`people.confirmed_at`), so processes whose clocks differ agree on when it lapses.
   A refresh the issuer refuses (`400` or `401` with the OAuth error `invalid_grant`:
   the token expired, was revoked or is not the client's), or one whose ID token no longer passes the rule or names another email, ends every session they hold.
   A refresh that fails any other way (the issuer undiscovered, down or slow, a `5xx` or `429`, another OAuth error, or an answer without an ID token that verifies) ends nothing:
   the request that found the confirmation lapsed is refused `503 SIGNIN_UNAVAILABLE`, the sessions and the refresh token are kept, and the first request after the issuer answers again refreshes and is served.
-  A refresh is one request to the issuer's token endpoint, with the client's secret sent the way the issuer's discovery document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
+  A refresh is one request to the issuer's token endpoint (two at most where the issuer's discovery document names neither method, below), with the client's secret sent the way that document lists in `token_endpoint_auth_methods_supported`: by HTTP Basic where it names `client_secret_basic` (Google's does), else in the form where it names `client_secret_post`.
   Each request to the token endpoint has ten seconds, and the whole refresh, which also reads the person's row and, the first time, the discovery document, has fifteen; a refusal ends the sessions when its answer comes within both.
   An issuer whose document names neither is asked by HTTP Basic and, when that fails, may be asked again in the form, so its refusal can need both requests to answer within the fifteen seconds.
   The list says what the issuer supports, not what each client may use, so an issuer that holds a client to the one `token_endpoint_auth_method` it registered (RFC 7591 section 2) refuses a client registered for `client_secret_post` alone, under a document that names `client_secret_basic`, with `invalid_client` and no second request in the form: its sign-ins fail, and its refreshes end nothing and are answered `503 SIGNIN_UNAVAILABLE`.
@@ -1833,7 +1852,12 @@ only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number
 — checks, comments, issues, a push of a tag, job events, `pr.<n>.review` — is acknowledged with no decode.
 A wanted message runs under its key: a pull request under its repository and number, read from the subject, a push of a branch under its repository, read from the subject, and a workflow run under its payload's `repo` and `run_id`.
 The intake hands a push of a branch to the architecture importer, which imports every enabled component source on that repository and branch at once rather than at its next five-minute pass (`delivery.PushImports`, `architecture.Importer.Pushed`).
-The intake runs only while `delivery_settings` holds a row (`Intake.Run`), so a push is imported this way only where delivery is configured, and elsewhere the five-minute pass is a source's only automatic import.
+The intake binds its durable and runs whether or not `delivery_settings` holds a row (`Intake.Run`): a `pull_request` envelope's head row and a push of a branch read no setting, and only the delivery timeline's own work, a merged pull request's row and a workflow run, waits for the settings (`Intake.route`).
+It binds only once the settings cache's first read of `delivery_settings` has answered, whatever it found (`SettingsCache.Read`), so a deployment with settings never routes an envelope by the nothing the cache holds before that read.
+Its durable asks for new messages only (`DeliverNewPolicy`), and a take-over that creates it with no start recorded creates it at the stream's next sequence, as an explicit start, so a first bind hands the intake none of the stream's retained history.
+A take-over of a durable that exists starts it right after its ack floor, by the rule the session consumers read the floor with (`bus.AckFloor`), and a durable that delivers from the stream's first message (`DeliverAll`), has no start of its own and whose own delivered and acknowledged counts are 0 starts at the stream's next sequence too (`takeOverStart`, which says why each start is what it is).
+A start past the stream's end, after the stream was cut or created again, is moved back to the first message the stream holds and logged at `ERROR`, as the session consumers move one (`withinStream`).
+A durable lost while the intake delivers from it, deleted or gone with the stream's data, is logged at `ERROR` and created again right after the last ack floor the intake read of it, a start recorded in the hold's token so another holder creates it there too, and the envelopes published before the new create are delivered (`heldDurable.check`).
 A push is no delivery fact: a push of a branch calls the importer once, a push of a tag calls nothing, and neither records an `issue.deployed` or moves the Delivery page's event freshness, `last_event_at` (`TestTheIntakeHandsABranchPushToItsImporter`).
 A hand-off that fails is logged at `WARN` (`process event`) and the envelope acknowledged, as `Intake.deliver` does for a handler's error other than `ErrHeadNotStored`, since the importer's five-minute pass imports the source all the same.
 Messages of one key run in delivery order, each after the one before has finished, since each fetches its pull request's or run's current state from GitHub and writes it, and run at once an older fetch could be written over a newer one;
@@ -1922,10 +1946,10 @@ the contracting migration — one that drops, renames or narrows — ships no ea
 - A narrowing — a type made smaller, a nullable column made `not null`, a check added
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
-No migration is an exception to that rule: a change that cannot be written that way is split into releases that can, so no release stops every server process.
+No migration is an exception to that rule but one, `20261124213825` (below), after which the release before cannot write `issue_role_holders` while both serve: every other change that cannot be written that way is split into releases that can, and no release stops every server process.
 `0113`, `0117` and `20261111210103` below were each deployed with no server of the earlier release running, under an exception this rule no longer has (`20261111210103` ships in `legion-envoy-v30.11.0`), and a deployment still on a release before one of them crosses it once that way, before it runs more than one replica.
 So a release from a build below `20261111210103` onto this one or any later one is stop-the-world: stop every server process of the old release, then start the new one.
-The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it.
+The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it but that of `20261124213825`.
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -2285,7 +2309,7 @@ A census that refuses on it is repaired on the release still serving, before the
 **`0117` was deployed with no server of the earlier release running:
 deploy it that way, and never start a release older than `0117` over it again.**
 A deployment still on a release before it crosses it once with Dispatch stopped, before it runs more than one replica.
-The last such migration is `20261111210103` (below), and every release after it rolls.
+The last such migration before `20261124213825_issue_role_holders_by_session` is `20261111210103` (below); `20261124213825` is the one exception after it (below, and `internal/dispatch/store/README.md`), and every other release after `20261111210103` rolls.
 Stop the earlier release, or scale it to zero, before the new release boots and migrates:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica (`packages/envoy/infra/README.md`);
 a deployment running more than one replica, which rolls, is scaled to zero first.
@@ -2947,10 +2971,19 @@ The head of the call's recovery point stays in `request_keys.recovery`, and a ro
 Each step adds one row, where the step would otherwise rewrite a growing value in the key's row.
 A new table: the foreign key holds `request_keys` in `SHARE ROW EXCLUSIVE` for the migration's transaction, so a keyed request's claim waits behind it while a read does not; otherwise nothing existing is read or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
-Migration `20261121192021_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionagents.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
+Migration `20261124122030_issue_role_holders_any_role` widens the `role` check of `issue_role_holders` from the six Legion roles to the role grammar, `^[a-z][a-z0-9-]{0,31}$` other than `controller`, the names `legionclaim.IsRole` takes: a role a Legion deployment defines in its settings holds a role of an issue as the six do, and the route takes it (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The check is dropped without `cascade` and added back `not valid`, so no stored row is read: each was written under the narrower check.
-It widens and narrows nothing, so it rolls: the release before it writes only the six and reads a role as text.
+It narrows nothing, so it rolls: the release before it writes only the six, which the wider check takes, and reads a role as text.
 Both statements are catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
+
+Migration `20261124213825_issue_role_holders_by_session` keys `issue_role_holders` by session: it drops the primary key on `(issue_key, role)`, so the unique index on `(issue_key, session)` is the table's key and a role can have more than one session, and adds `claim`, the token of the claim a session holds its role by, and `works_step`, whether that claim works the role's step, at the constant defaults `''` and `false`.
+Two claims of one issue can hold one role (an agent's on another role's step, beside that role's own claim of an earlier version of the plan), and the route refused a set that named a role twice, so the second claim's session held no role.
+Every statement is catalog-only, so the census exempts it from the table size limit at any size, and its census answers `0`.
+**It is the one migration after `20261111210103` that does not roll.**
+The release before it inserts with `on conflict (issue_key, role)`, which Postgres refuses once no unique index on exactly those columns stands, so while both releases serve, a role-holder publication that reaches a server of the release before is answered `500`.
+The Legion daemon is the one writer of the table, and it retries a `500` on its publication rather than ending it, so the set lands once a server of this release takes it, and nothing is lost.
+The release before's reads of the table, an issue's set and the role of one session, answer over the new key as they did.
+Its way back is in its header: run with Dispatch stopped and before the earlier image starts, it folds each role two sessions hold back to one row (the session whose claim works the role's step, else the newest), drops the two columns, puts the key on `(issue_key, role)` back and deletes the version row.
 
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
 It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
@@ -3246,13 +3279,13 @@ A project left with no default after both statements is one to name a person on 
 Reaching the migration with one left stops it, and its refusal names the repair that works from there: nothing is serving by then, so it is `update projects set default_assignee = '<the person''s email>' where key = '<KEY>';` on the database itself.
 
 **`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
-The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
+The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because that release is deployed with no server of the earlier release running: a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica, does that, and a deployment above one replica, which rolls, is scaled to zero first (`packages/envoy/infra/README.md`):
 no server of the earlier release serves while the migration runs, and the release that boots over it names a default on every project it creates.
 An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
 recover a failed deploy forward, as `0113` and `0117` require.
 
-A migration runs while the build before it is still serving.
-The app Deployment of `envoy-infra:gcp:Dispatch` rolls above one replica (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
+Above one replica a migration runs while the build before it is still serving.
+The app Deployment of `envoy-infra:gcp:Dispatch` is recreated at one replica and rolls above one (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
 — and again for as long as a rollback lasts — the previous image's queries run against the new schema.
 A migration may therefore only add: a table, an index, a trigger, a column that is nullable or defaulted, a constraint added `not valid`.
 In the same release as the code that depends on it, it may not drop or rename a column or a table, change a column's type, or tighten a constraint the running build's queries would violate.
@@ -4512,8 +4545,8 @@ Each item below names a field of the line, then what it holds.
 - `credential`
 
   Only on a `session` line: the credential behind the session.
-  `token:<owner>`, `service:<subject>`, `shared-token` or `broker-token:<person>`.
-  For every one but the last that session id is the caller's own text; under a broker-issued token the credential itself named it.
+  `token:<owner>`, `service:<subject>`, `shared-token`, or, for a broker-issued token, `broker-token:<person>`, which is `broker-token:service:<service>` for a token that names no person (a machine's, or a job's, whose service is the identity its job entry lists).
+  For every one but a broker-issued token's, that session id is the caller's own text; under a broker-issued token the credential itself named it.
 
 - `aborted`
 
@@ -5076,12 +5109,13 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/whoami` (GET; cookie, trusted header, bearer, or a broker-issued DPoP token)
 
-  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, scopes, cut, sign_in_required}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
-  `service` is a verified service-account token's Kubernetes subject, or, for a broker-issued token naming no person, the fleet its machine belongs to (a machine's token) or the Kubernetes account an exchange entry lists (an exchange entry's account token), null for every other credential;
+  Who the server takes the caller for: `{kind: "user", login, scopes}` for a person (`login` their lowercase email), `{kind: "agent", owner, service, session, project, project_scope, scopes, cut, sign_in_required}` for every other credential (`owner` is a personal token's owner or a broker-issued token's person, by lowercase email, null for the shared token and for a broker-issued token that names a service;
+  `service` is a verified service-account token's Kubernetes subject, or the service a broker-issued token naming no person names: the fleet of a machine nobody has signed in on, a read entry's service, the Kubernetes account an exchange entry lists (an exchange entry's account token), or a job's identity as its job entry lists it (a pod's `system:serviceaccount:<namespace>:<name>`, a workflow's `<repository>/<workflow path>@<ref>`, or a Google account's address), null for every other credential;
   `session` is the session the credential itself proved, which only a broker-issued token does, null otherwise;
-  `project` is the one project key that credential may write, null where it names none;
+  `project` is the one project key that credential may write, null where it names none: a job's token whose entry names one project answers that project, and a job's token whose entry names `public`, which names no one project, answers null;
+  `project_scope` is a broker-issued token's project scope (`model.Credential.ProjectScope`), left out for every other credential: `named` for a token an operator's or a job's entry mapped to its project, and for an exchange entry's account token, `public` for a job's token, `person` for a person's own token and for a machine's, and `none` for a read entry's token, while a token narrowed to reading answers the word it narrows;
   `cut` is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut;
-  `sign_in_required` is true where Dispatch refuses every write of the credential `403 SIGN_IN_REQUIRED` until a person signs in on its machine, which is a machine's broker-issued token, and false for every other credential, an exchange entry's account token and every read-only credential among them; it is the decision the sign-in check makes, and an older Dispatch omits it).
+  `sign_in_required` is true where Dispatch refuses every write of the credential `403 SIGN_IN_REQUIRED` until a person signs in on its machine, which is a machine's broker-issued token, and false for every other credential, a job's token and an exchange entry's account token and every read-only credential among them; it is the decision the sign-in check makes, and an older Dispatch omits it).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, with `read` after them for a read-only credential, and every caller is answered it.
   A read-only token that carries a cut is answered here, and refused `403 AS_OF_TOKEN_NOT_SERVED` on every other read.
   A Legion daemon's own broker token answers `["legion-status"]`: with `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential make the three writes of a Legion issue that `/api/v1/issues/{key}` (PATCH) and `/api/v1/issues/{key}/status-change` (POST) refuse to any other, but for the owning architect's status write (`/api/v1/issues/{key}` (PATCH), below).
@@ -5692,7 +5726,7 @@ Each item below names a path with its method and identity, then its purpose.
     It asks the repository the result's `check_results.commit_repo` names where it names one, and the repository the issue resolves to otherwise: asked of the issue's own repository, a commit only a linked repository holds names no pull request on any read, and a linked pull request whose head reaches it after the record would never be learned.
 
   - Without that read it would stand at no basis for ever:
-    the read-through the record itself makes runs once, while no pull request carries the commit, and a deployment holding no delivery settings binds no intake durable and so consumes no `pull_request` event at all (`delivery.Intake.Run`).
+    the read-through the record itself makes runs once, while no pull request carries the commit, and a `pull_request` event Dispatch never received (a webhook GitHub did not deliver, or one sent before the intake's durable existed) writes no head.
 
   - One repository and commit costs at most one such read every `delivery.CommitPullReadStaleAfter` (five minutes), however often the Verification tab refetches.
 
@@ -5819,28 +5853,30 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/role-holders` (PUT; cookie, trusted header, or bearer; with `DISPATCH_LEGION_STATUS_SCOPE` on, only the Legion daemon's own broker token; with it off, the actor must be the Legion daemon's session)
 
-  Publish the session that holds each role of the issue: `{holders: [{role, session}], actor}`, each pair naming both its role and its session.
-  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionrole.IsRole`).
+  Publish the session that holds each role of the issue: `{holders: [{role, session, claim, works_step}], actor}`, each holder naming its role and its session, and the token of the claim it holds the role by and whether that claim works the role's step where the daemon knows them.
+  The role is one of `architect`, `planner`, `implementer`, `tester`, `reviewer` and `merger`, or a role the Legion deployment defines in its settings: a name of `^[a-z][a-z0-9-]{0,31}$` other than `controller` (`legionclaim.IsRole`).
   The session is a session id (`text.IsSessionID`) of at most 256 bytes: it holds no whitespace, no control character, no backtick and none of `/?#<>"'[]|`.
   The body is the whole set of the issue, and `[]` is an issue where no session holds a role.
+  A role can be named for more than one session: two claims of one issue can hold one role, each by its own token.
+  A claim is the Legion claim token of an agent of the issue (`legionclaim.CutClaimToken`), named once.
   The write replaces the stored set, so a session that the body does not name holds no role of the issue.
-  A pair that did not change keeps its `recorded_at`.
+  A holder whose role, session and claim did not change keeps its `recorded_at`.
   The session `legion-daemon:<project>`, the key up to its first `-`, is the session that the daemon of the issue's project writes as.
   With `DISPATCH_LEGION_STATUS_SCOPE` on, only a credential that proves this session and holds `legion-status` can publish.
   Every other credential is `403 ROLE_HOLDER_FORBIDDEN`, including a shared token whose `actor` names the daemon.
   With the setting off, any actor other than the daemon's session is `403 ROLE_HOLDER_FORBIDDEN`.
   A bearer with no proven session can name the daemon in its body, but the project's `proven_sessions` setting can refuse it.
   With `proven_sessions` on (`/api/v1/projects/{key}/proven-sessions`, above), an actor whose credential does not prove the daemon's session is `403 ROLE_HOLDER_NOT_PROVEN`, after the `400` and `404` refusals.
-  Each stored pair carries a mark that says whether the daemon's own token wrote it (`issue_role_holders.daemon_proven`, Database migrations above).
-  Each publication sets the mark on every pair it stores or keeps, regardless of either setting.
-  Only a marked pair identifies an architect who can write a Legion issue's status under the status guard.
+  Each stored holder carries a mark that says whether the daemon's own token wrote it (`issue_role_holders.daemon_proven`, Database migrations above).
+  Each publication sets the mark on every holder it stores or keeps, regardless of either setting.
+  Only a marked holder identifies an architect who can write a Legion issue's status under the status guard.
   The answer does not carry the mark.
-  A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a role or a session named twice and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
+  A body without `holders`, a role that is no name of that grammar or is `controller`, a session that is not a session id or is longer than 256 bytes, a session or a claim named twice, a claim that is no claim token of the issue and an empty session are each `400 INVALID_ROLE_HOLDER`, and nothing is stored.
   An issue that Dispatch does not know is `404 ISSUE_NOT_FOUND`.
   The write takes a closed issue, appends no issue event and notifies nobody.
   Each publication the route takes marks the issue's project (`project_role_holder_marks`) in the transaction that writes the set, an empty set included, and a refused one marks nothing.
   The mark puts the issues of the project that Legion runs under the check of who writes their spec and Verification document (`403 DOCUMENT_WRITER_NOT_ARCHITECT`, Document errors below).
-  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, recorded_at}`, Legion's six in the order of the default steps, then every role the deployment defines by name.
+  The answer is `200 {issue, holders}`, the set that this write stored, each holder `{role, session, claim, works_step, recorded_at}`, Legion's six in the order of the default steps, then every role the deployment defines by name, the sessions of one role by session.
 
   - **Two writes of one issue.**
     A write holds the issue's owner lock (`store.LockOwner`), which a second write of the same issue waits for, so the stored set is always one whole set.

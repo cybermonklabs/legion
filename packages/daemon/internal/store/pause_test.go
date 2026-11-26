@@ -49,10 +49,11 @@ func seedPauseClaims(t *testing.T, st *Store) {
 }
 
 // pauseStopRow is the pause service's stop row, encoded and keyed as the daemon does (pause.StopRow
-// and pause.StopKey, which this package's tests cannot import): by the claim's issue, or by the
-// pause's project, naming the claim's issue, for a claim of another project's issue.
+// and pause.StopKey, which this package's tests cannot import): naming the claim it stops, keyed
+// by the claim's issue, or by the pause's project, naming the claim's issue, for a claim of another
+// project's issue.
 func pauseStopRow(pause Pause, stop PauseStopClaim) (PauseRow, error) {
-	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
+	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role, Claim: stop.Claim,
 		Generation: stop.Generation, Pause: pause.ID}
 	key := stop.Issue
 	if project, _, _ := strings.Cut(stop.Issue, "-"); project != pause.Project {
@@ -276,8 +277,9 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 	resumedAt := pausedAt.Add(30 * time.Minute)
 	resume := func(issue, role string, woke time.Time) int64 {
 		var id int64
-		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-			values (0, $1, $2, $3, 'delivery', $4) returning id`, "legion", issue, role, woke).Scan(&id); err != nil {
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at)
+			values (0, $1, $2, $3, $5, 'delivery', $4) returning id`, "legion", issue, role, woke,
+			"legion-legion-"+strings.ToLower(issue)+"-"+role).Scan(&id); err != nil {
 			t.Fatalf("seed the resume of %s's %s: %v", issue, role, err)
 		}
 		return id
@@ -296,8 +298,8 @@ func TestAResumeEndsThePauseAndWhatItStillWaitedOn(t *testing.T) {
 		t.Fatal(err)
 	}
 	var other int64
-	if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at)
-		values (0, 'infra', 'INFRA-5', 'implementer', 'delivery', $1) returning id`, pausedAt.Add(-time.Hour)).Scan(&other); err != nil {
+	if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at)
+		values (0, 'infra', 'INFRA-5', 'implementer', 'legion-infra-infra-5-implementer', 'delivery', $1) returning id`, pausedAt.Add(-time.Hour)).Scan(&other); err != nil {
 		t.Fatal(err)
 	}
 
@@ -566,22 +568,22 @@ func TestAHeldWakeRecordsItsPauseAndPairsWithNoRelease(t *testing.T) {
 		t.Fatalf("the unheld wake's resume = release %d, pause %v, clock %s; want the issue's release, no pause, clock %s", release, held, clock, pausedAt)
 	}
 
-	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, releasedToken, pausedAt.Add(5*time.Minute)); err != nil || !set {
+	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", releasedToken, pausedAt.Add(5*time.Minute)); err != nil || !set {
 		t.Fatalf("set the implementer's clock = %t, %v; want it set", set, err)
 	}
-	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, releasedToken, pausedAt.Add(time.Minute)); err != nil || !set {
+	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", releasedToken, pausedAt.Add(time.Minute)); err != nil || !set {
 		t.Fatalf("set the implementer's clock earlier = %t, %v; want the open resume found", set, err)
 	}
 	if _, _, clock := read(claim.RoleImplementer); !clock.Equal(pausedAt.Add(5 * time.Minute)) {
 		t.Fatalf("the implementer's clock = %s, want %s: a clock never moves back", clock, pausedAt.Add(5*time.Minute))
 	}
 	inTx(t, st, func(tx pgx.Tx) error {
-		if closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", "LEGION-208", claim.RoleImplementer, releasedToken, pausedAt.Add(time.Hour)); err != nil || !closed {
+		if closed, err := CloseRoleOpenResumeTx(ctx, tx, "legion", "LEGION-208", releasedToken, pausedAt.Add(time.Hour)); err != nil || !closed {
 			t.Fatalf("close the implementer's open resume = %t, %v; want it closed", closed, err)
 		}
 		return nil
 	})
-	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", claim.RoleImplementer, releasedToken, pausedAt.Add(2*time.Hour)); err != nil || set {
+	if set, err := st.SetResumeClock(ctx, "legion", "LEGION-208", releasedToken, pausedAt.Add(2*time.Hour)); err != nil || set {
 		t.Fatalf("set the clock of a closed resume = %t, %v; want no open resume found", set, err)
 	}
 }

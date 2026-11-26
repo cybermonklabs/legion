@@ -498,14 +498,18 @@ func (s *Service) tellsController(ctx context.Context, by store.PauseActor) (boo
 }
 
 // StopRow is the `pause_stop` row of one claim the pause asks to stop (decision 4): a supervise row
-// naming the pause, the claim's role, tree and generation, and a reason the stopped claim's log
-// line carries, keyed as StopKey keys it. The pause's transaction builds its rows with it, and so
-// do the daemon's catch-up after a pause and its boot's pass while paused
+// naming the pause, the claim's token, role, tree and generation, and a reason the stopped claim's
+// log line carries, keyed as StopKey keys it. The row names the claim by its token
+// (record.SuperviseRequest.Claim): two claims of one issue can hold one role — the agent of a key
+// on a step of another role, beside that role's own claim of an earlier version of the plan — so
+// the issue and the role do not name the claim the stop is for. The pause's transaction builds its
+// rows with it, and so do the daemon's catch-up after a pause and its boot's pass while paused
 // (store.Store.AskPauseStops, AskLivePauseStops), so every stop of a pause is one row of one
 // shape. A row keyed by the project names the claim's issue in its payload
-// (record.SuperviseRequest.Issue), which the executor reads its claim from.
+// (record.SuperviseRequest.Issue), which the executor's lines name, and from which it reads the
+// claim of the worker on the role's step for a row the release before wrote, which names no claim.
 func StopRow(pause store.Pause, stop store.PauseStopClaim) (store.PauseRow, error) {
-	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role,
+	request := record.SuperviseRequest{Op: "pause_stop", Tree: stop.Tree, Role: stop.Role, Claim: stop.Claim,
 		Generation: stop.Generation, Pause: pause.ID,
 		Reason: fmt.Sprintf("project %s is paused (pause %d): %s", pause.Project, pause.ID, pause.Reason)}
 	key := StopKey(pause, stop.Issue)

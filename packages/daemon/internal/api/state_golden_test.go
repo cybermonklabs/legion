@@ -48,13 +48,13 @@ func goldenPath(name string) string {
 // state goldens written from populatedState, state.json (TestStateGolden) and
 // state-narrowed-repositories.json (TestStateNarrowedRepositoriesGolden), so a key added here moves
 // both goldens: every key the loader models is set but `roles` and `role_types`, which
-// `internal/api/settings_test.go` pins, and every value a credential, its source or its file could
-// be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
-// password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
-// provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
-// on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo and a query
-// on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while `pi_legion` pins the
-// version form). Every path the settings emit (`state_dir`, `instructions`,
+// `internal/api/settings_test.go` pins, and every value a credential, its source or its
+// file could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a
+// DSN password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key,
+// each provider key's store key, the pod's env values, volume, Secret and ServiceAccount names,
+// userinfo on `envoy_url` and the first `nats_urls` entry, which the settings mask, and userinfo
+// and a query on `plugins.pi_envoy`'s tarball URL, which the settings mask and drop while
+// `pi_legion` pins the version form). Every path the settings emit (`state_dir`, `instructions`,
 // `private_name_rules_file`, the hook's `prompt_file`) is a fixed absolute literal, so the goldens
 // do not churn with the temporary directory the file is written under.
 // Hosts are placeholders.
@@ -392,6 +392,7 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Architect: &ClaimView{
+					Token:   "legion-legion-legion-208-architect",
 					Session: "ses_architect_208",
 					State:   "ready",
 					Locator: &runtime.Locator{
@@ -529,6 +530,12 @@ func populatedState(t *testing.T) State {
 				GivenEntry:       4,
 				EntryQueuedAt:    &entryQueued,
 				EntryConfirmedAt: &entryConfirmed,
+				// The reviewer's own claim of an earlier version of the plan, beside the claim
+				// of the agent of a key that works the reviewer's step: a claim `workers` does
+				// not show, listed with its role and found by its token (the stranded token's
+				// entry).
+				OtherClaims: []OtherClaimView{{Role: claim.RoleReviewer,
+					Claim: ClaimView{Token: "legion-legion-legion-208-reviewer", Session: "ses_reviewer_208_v1", State: "suspended"}}},
 				PullRequest: &PullRequestView{
 					Repo:   "acme/widgets",
 					Number: 1247,
@@ -1691,13 +1698,13 @@ func approvedAt(version *int) string {
 // intakeGiveUpsContract's row does as well, no issue's `podHold` (withoutPodHold), since
 // podHoldContract's row does too, and every other key as a caller at shapedAnswersContract is
 // served it, since no other row of stateNarrowings stands between shapedAnswersContract and
-// repositoriesLiveContract. The row of deploymentRolesContract, above them all, also holds
-// back the roles of the deployment. shapedAnswersContract's row and pauseContract's stand at or
-// below the contract it is served at, which is why the golden carries `lowestPluginContract`,
-// each claim view's `updateState` and `paused`. The mark's `daemon` names this daemon's own
-// contract, which an entry moves, so it is taken out before the golden is compared or written
-// and held to that number here, as TestStateGolden takes out its marks; the `caller` is 199,
-// which no entry moves, and stays.
+// repositoriesLiveContract. The row of deploymentRolesContract, above them all, also holds back the
+// roles of the deployment, which this caller is served without too. shapedAnswersContract's row
+// and pauseContract's stand at or below the contract it is served at, which is why the golden
+// carries `lowestPluginContract`, each claim view's `updateState` and `paused`. The mark's
+// `daemon` names this daemon's own contract, which an entry moves, so it is taken out before the
+// golden is compared or written and held to that number here, as TestStateGolden takes out its
+// marks; the `caller` is 199, which no entry moves, and stays.
 // `packages/contracts/src/legion-api.test.ts` parses it with a copy of contract 152's schema of
 // the block, so the narrowing is held to the reader it is written for, and its drift gate holds
 // every key of the file to that copy.
@@ -2170,13 +2177,14 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 // project's records — so the rows carry only what is served.
 //
 // Two rows of each list, because one row of each pins less than the shape, and a third resume:
-//   - the releases are a release that suspended two roles and saved a bundle, and one whose
-//     stops suspended no claim and whose workspace the check read clean (recordPodRelease
-//     counts only the claims this release's own stops suspended, and the store reads an empty
-//     `roles` column back as none): `roles` is `[]` and never `null`, and `bundleBytes` is 0
-//     rather than absent;
-//   - the resumes are a wake whose pod was Ready and whose role took its first turn, which is
-//     the row that fills both optional stamps, and a wake of a pod with no release row recorded
+//   - the releases are a release that suspended two claims of two roles, named in `claims`, and
+//     saved a bundle, and one whose stops suspended no claim and whose workspace the check read
+//     clean (recordPodRelease counts only the claims this release's own stops suspended, and the
+//     store reads an empty `roles` column back as none): `roles` is `[]` and never `null`,
+//     `claims` is absent, and `bundleBytes` is 0 rather than absent;
+//   - the resumes are a wake whose pod was Ready and whose claim took its first turn, which is
+//     the row that fills both optional stamps and names the claim it woke in `claim`, here the
+//     agent of a key on the implementer's step; a wake of a pod with no release row recorded
 //     for it (`release` is 0) that went ten minutes with no turn, so it is `stuck` and its
 //     `firstTurnAt` is left out until something observes it; and a wake a project pause held
 //     (decision 15 of dispatch://INFRA-3759), which pairs with no release and names its pause in
@@ -2189,11 +2197,12 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 	golden(t, "release-records.json", releaseRecordsBody(store.PodReleaseRecords{
 		Releases: []store.PodRelease{
 			{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
-				At: released, BundleBytes: 4096},
+				Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"},
+				At:     released, BundleBytes: 4096},
 			{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 		},
 		Resumes: []store.PodResume{
-			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Kind: "delivery",
+			{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Claim: "legion-legion-legion-208-tester", Kind: "delivery",
 				At: released.Add(30 * time.Minute), PodReadyAt: released.Add(31 * time.Minute),
 				FirstTurnAt: released.Add(32 * time.Minute)},
 			{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",

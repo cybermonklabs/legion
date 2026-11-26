@@ -33,39 +33,38 @@ const StrandedReleaseWake = 10 * time.Minute
 // state serves (api.Issue.ArchitectStalls) and reads no bound of its own.
 const ArchitectGateWake = 90 * time.Minute
 
-// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and
-// the role the wake was for, when its stuck clock started, and whether a stuck pass has already
-// said so. The daemon reads them from its own records (store.Store.UnfinishedPodResumesTx,
-// which selects the resumes whose woken role has taken no first turn and passes over a paused
-// project's) and hands them in, so this rule stays what every other rule here is: a judgement
-// over values.
+// ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the claim the
+// wake brought back, when its stuck clock started, and whether a stuck pass has
+// already said so. The daemon reads them from its own records
+// (store.Store.UnfinishedPodResumesTx, which selects the resumes whose woken claim has taken no
+// first turn and passes over a paused project's) and hands them in, so this rule stays what every
+// other rule here is: a judgement over values.
+//
+// Claim is the token of the claim the wake brought back (pod_resumes.claim): two claims can hold
+// one role of an issue, the agent of a key on a step of another role beside that role's own claim,
+// and a wake of one is no wake of the other.
 //
 // ClockAt is the resume's stuck clock (pod_resumes.clock_at): the latest of the wake's own moment,
 // the moment the wake pacing let the launch out, and the moment a project's resume ended the pause
 // that held it (decision 14 of dispatch://INFRA-3759). A wake that waited its turn in the pacing,
 // or waited out a pause, is no wake the replacement pod failed to come back from.
 type ReleasedWake struct {
-	Issue   string
-	Role    string
+	Claim   claim.Token
 	ClockAt time.Time
 	Stuck   bool
 }
 
-// releasedRole keys a released claim's recorded wakes by the pod and the role they were for,
-// which is all a wake record names of the claim (it carries no claim token).
-type releasedRole struct{ issue, role string }
-
-// strandedReleaseWakes is each released claim whose wake ran out of StrandedReleaseWake: the
-// wakes whose stuck clock started more than that ago, and the ones already marked stuck, which is
-// the same fact recorded. A claim with no wake is not here, and neither is one whose clock is
-// younger than the bound: the pod it is coming back as is still being built.
-func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]bool {
-	woken := make(map[releasedRole]bool, len(wakes))
+// strandedReleaseWakes is the token of each released claim whose wake ran out of
+// StrandedReleaseWake: the wakes whose stuck clock started more than that ago, and the ones
+// already marked stuck, which is the same fact recorded. A claim with no wake is not here, and
+// neither is one whose clock is younger than the bound: the pod it is coming back as is still
+// being built.
+func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[claim.Token]bool {
+	woken := map[claim.Token]bool{}
 	for _, wake := range wakes {
-		if !wake.Stuck && now.Sub(wake.ClockAt) <= StrandedReleaseWake {
-			continue
+		if wake.Stuck || now.Sub(wake.ClockAt) > StrandedReleaseWake {
+			woken[wake.Claim] = true
 		}
-		woken[releasedRole{issue: wake.Issue, role: wake.Role}] = true
 	}
 	return woken
 }
@@ -142,12 +141,13 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // serves it as strandedClaims. project is the Dispatch project key whose lifecycles are read.
 //
 // A released claim — one whose idle pod the daemon released (supervise.Claim.Released) — is
-// left out of both cases while its pod is coming back: the next wake for its role resumes it, and
-// the boot resumes no such claim. It is stranded on one fact alone, whatever its role: a wake for
-// it ran out of StrandedReleaseWake with no turn of the woken role (wakes, which the daemon reads
-// of its own records). That is the wake the pod never came back from, and nothing in the daemon
-// takes it again. A released claim nothing has woken is not stranded: it waits for a delivery, as
-// a released pod is meant to.
+// left out of both cases while its pod is coming back: the next wake of the claim resumes it, and
+// the boot resumes no such claim. It is stranded on one fact alone, whatever its role: a wake that
+// names it by its token ran out of StrandedReleaseWake with no turn of the claim it woke (wakes,
+// which the daemon reads of its own records). A wake of another claim of its role is not one: two
+// claims can hold one role, and the other's wake brings back the other. That is the wake the pod
+// never came back from, and nothing in the daemon takes it again. A released claim nothing has
+// woken is not stranded: it waits for a delivery, as a released pod is meant to.
 //
 // Candidates' queued starts and their claims are read through RoleRuns in bounded batches: a
 // fleet of hundreds of suspended claims makes a few snapshot queries, never one pair per claim.
@@ -198,9 +198,9 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 			continue
 		}
 		// A released claim is held to R6's one fact and nothing else: it is stranded only once a
-		// wake for it has run out of StrandedReleaseWake with no turn, and then whatever its role,
+		// wake of it has run out of StrandedReleaseWake with no turn, and then whatever its role,
 		// since the pod the wake was taken for never came back.
-		if c.Released() && !woken[releasedRole{issue: c.Issue, role: string(c.Role)}] {
+		if c.Released() && !woken[c.Token] {
 			continue
 		}
 		// current is the phase the start that would wake the claim names; the architect's names
@@ -214,6 +214,10 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// child's next first phase start. One that its own exit retired is reported nowhere, as
 		// Stranded's comment says.
 		var current phase.Phase
+		// The worker of a step is the claim of the agent the step names (record.RunningStep.Agent),
+		// which the claim's token ends in: two claims can hold one role (the agent of a key on a
+		// step of another role, beside that role's own claim of an earlier version of the plan), and
+		// only the worker is one a start of the step brings back.
 		_, agent, named := c.Token.Cut()
 		at := slices.IndexFunc(issue.Running, func(step record.RunningStep) bool {
 			return named && step.Role == c.Role && step.Agent == agent

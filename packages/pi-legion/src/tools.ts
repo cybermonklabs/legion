@@ -119,8 +119,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   read_build: [],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
-  fresh_session: ["issue", "role"],
-  compact: ["issue", "role"],
+  fresh_session: ["issue", "role", "claim"],
+  compact: ["issue", "role", "claim"],
   pause: ["reason"],
   resume: [],
   replay_give_up: ["giveUp", "consumer", "throughSeq"],
@@ -327,20 +327,30 @@ function stateSummary(state: LegionState): string {
       const gate = issue.designGate;
       lines.push(`  gate ${gate.currentVersion} approved ${gate.approvedVersion ?? "none"}`);
     }
-    const claims: Array<readonly [string, SummaryClaim]> = [];
-    if (issue.architect !== undefined) claims.push(["architect", issue.architect]);
-    // Each worker of the issue's map: Legion's six in the order of the default steps, then each role of the
-    // deployment (contract 258) in the map's order.
+    // Each claim with its label and what ends its line: the token of a claim `workers` does not show.
+    const claims: Array<readonly [string, SummaryClaim, string]> = [];
+    if (issue.architect !== undefined) claims.push(["architect", issue.architect, ""]);
+    // Each worker of the issue's map: Legion's six in the order of the default steps, then each
+    // role of the deployment (the deployment roles' contract entry) in the map's order.
     const deployed = Object.keys(issue.workers ?? {}).filter((role) => !isLegionRole(role));
     for (const role of [...LEGION_ROLES, ...deployed]) {
       const claim = issue.workers?.[role]?.claim;
-      if (claim !== undefined) claims.push([role, claim]);
+      if (claim !== undefined) claims.push([role, claim, ""]);
     }
-    for (const [role, claim] of claims) {
+    // Each other claim of the issue, with the role it holds (the stranded token's contract
+    // entry): two claims of one issue can hold one role, and `workers` shows one of them, so the
+    // other is listed after the
+    // workers, marked as another claim of its role, with its token: issue and role reach only the
+    // claim `workers` shows, and fresh_session and compact reach this one by its token (`claim`).
+    for (const other of issue.otherClaims ?? []) {
+      const token = other.claim.token === undefined ? "" : ` claim ${other.claim.token}`;
+      claims.push([`${other.role} (another claim)`, other.claim, token]);
+    }
+    for (const [role, claim, token] of claims) {
       // A working claim whose last turn began hours ago is wedged; an idle claim's end is when
       // it last did anything, and a dash is a turn the daemon recorded none of.
       lines.push(
-        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}`
+        `  ${role} ${claim.state} ${claim.lastTurnStart ?? "-"} ${claim.lastTurnEnd ?? "-"}${token}`
       );
     }
   }
@@ -441,12 +451,21 @@ function toolSchema(pi: PiApi): unknown {
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
-    // A claim's role, one of Legion's six or a role of the deployment (contract 221): the role
-    // grammar of Dispatch's step record. The operation's own check (`isStepRole`) also refuses the
-    // controller, whose claim holds no issue.
+    // A claim's role, one of Legion's six or a role of the deployment (the deployment roles'
+    // contract entry): the role grammar of Dispatch's step record. The operation's own check
+    // (`isStepRole`) also refuses the controller, whose claim holds no issue.
     role: z
       .string()
       .regex(/^[a-z][a-z0-9-]{0,31}$/)
+      .optional(),
+    // A claim's token (the stranded token's contract entry), for fresh_session and compact: two
+    // claims of one issue can hold one role, and issue and role reach the one that works the
+    // role's step.
+    claim: z
+      .string()
+      .describe(
+        "fresh_session's and compact's claim token, as a notice names it, for a claim of the issue and role that does not work the role's step; leave it out to reach the claim that does"
+      )
       .optional(),
     // The give-ups replay_give_up and discard_give_up take: one record by its id, or a consumer's
     // open records through a stream sequence, checked whole before a grant is minted
@@ -626,8 +645,11 @@ export function createLegionTool(deps: {
         "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
         "register_plan (issue, artifactId, version) gives Legion the plan of an issue you own: a document on that issue, by its id, slug " +
         "or filename as a dispatch command's --artifact takes it, at a version Dispatch has. Its one `plan_task` block names in `steps` the " +
-        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner`, with `implementer` " +
-        "in it and before each `tester`, `reviewer` or `acceptance:owner` step; a " +
+        "steps its task runs, in the order they run: some of `planner implementer tester reviewer acceptance:owner` and of the roles " +
+        "the deployment defines, each named once, with `implementer` in it, before each `tester`, `reviewer` or `acceptance:owner` " +
+        "step and after each other step of the type implementation; a step may carry a key after its role: acceptance carries `owner` " +
+        "and no other, any other role any key but `owner` or none, and the steps of one key run as one agent in one claim and one " +
+        "session (`implementer:a tester:a`); a " +
         "task that names none runs the project's default steps, and Legion runs the retro and the merge itself. Give it before the issue's " +
         "work starts: a root's before its design gate opens, a child's before release_children releases it. The answer is the plan Legion " +
         "took, each task with its steps. Its `added` names each task the version added over the plan in force, every task of a first " +
@@ -699,8 +721,11 @@ export function createLegionTool(deps: {
         "With set_status, the controller moves an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cites that reason in a comment on the issue. " +
         "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
         "controller's report issue's icebox, because that issue holds no work. " +
-        "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
-        "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
+        "fresh_session (issue, role, and optionally claim) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
+        "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. " +
+        "issue and role reach the claim that works the role's step; two claims of one issue can hold one role, so name the " +
+        "other one by the token a notice gives (claim), which the daemon refuses for a token of another issue (INVALID_CLAIM) " +
+        "and for a claim that holds another role (CLAIM_NOT_OF_ROLE); compact takes claim the same way. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
         "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
         "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
@@ -805,9 +830,9 @@ export function createLegionTool(deps: {
             },
             parameters
           );
-          // A successful phase completion, or a backward move, which hands the issue to an earlier
-          // step of its task, closes phase input. A report with check_opened_at leaves it open for
-          // this session's phase work.
+          // A successful phase completion or backward move closes phase input: a backward move hands
+          // the issue to an earlier step of its task. A report with check_opened_at leaves it open
+          // for this session's phase work.
           // `ready_for_update` ends no phase: it answers the pod's update message, and the worker
           // then waits for its process to be replaced rather than working, so the turn it ends
           // after answering earns no reminder (the `update-answered` input of
@@ -867,16 +892,23 @@ export function createLegionTool(deps: {
                 `${operation} requires role ${LEGION_ROLES.join(", ")} or a role of the deployment`
               );
             }
+            // A claim the controller names by its token (the stranded token's contract entry) is
+            // sent only when named, since a daemon below that entry refuses the member as unknown.
+            const named = parameters.claim;
+            if (named !== undefined && (typeof named !== "string" || named.trim() === "")) {
+              throw new Error(`${operation}'s claim is a claim token, as a notice names it`);
+            }
+            const target = { issue, role, ...(named === undefined ? {} : { claim: named }) };
             const { grantId } = await controllerGrant(active.sessionID);
             if (operation === "compact") {
               // The answer is the daemon's own: a compaction Oh My Pi refused or skipped says so
               // and names why, and the claim is back whatever it says.
-              return jsonSuccess(await client.compact({ grantId, issue, role }));
+              return jsonSuccess(await client.compact({ grantId, ...target }));
             }
             // The daemon's answer again: empty for a claim whose phase was restarted or needed
             // no restart, and naming the refusal where the claim came back owing no task and
             // the workflow refused the restart that would have handed it one.
-            return jsonSuccess(await client.freshSession({ grantId, issue, role }));
+            return jsonSuccess(await client.freshSession({ grantId, ...target }));
           }
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {

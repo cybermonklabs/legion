@@ -312,6 +312,19 @@ func TestATokenOfADeploymentRole(t *testing.T) {
 	}
 }
 
+func TestIsDeploymentRoleDistinguishesTheIssueClaimRoles(t *testing.T) {
+	for _, role := range []Role{"checker", "code-checker", Role("c" + strings.Repeat("x", 31))} {
+		if !IsDeploymentRole(role) {
+			t.Errorf("IsDeploymentRole(%q) = false, want true", role)
+		}
+	}
+	for _, role := range append(slices.Clone(Roles), RoleController, "", "Checker", Role("c"+strings.Repeat("x", 32))) {
+		if IsDeploymentRole(role) {
+			t.Errorf("IsDeploymentRole(%q) = true, want false", role)
+		}
+	}
+}
+
 // A claim can be on one of Legion's six or on any name of the role grammar but the controller's;
 // IsBuiltin takes the six alone.
 func TestARoleIsLegionsOrANameOfTheRoleGrammar(t *testing.T) {
@@ -400,6 +413,44 @@ func TestATokenEndsInItsAgent(t *testing.T) {
 	}
 	if _, agent, ok := ControllerToken("legion").Cut(); ok {
 		t.Errorf("Cut of the controller's token = %q, want none: it names no issue", agent)
+	}
+}
+
+// A claim token gives back the project token it was built from, so the token of another claim of
+// its issue can be built with NewToken's checks, and a token that names no agent of an issue gives
+// none.
+func TestATokenGivesItsProject(t *testing.T) {
+	for token, want := range map[Token]string{
+		"legion-legion-infra-12-implementer-2": "legion",
+		"legion-acme-acme-1-checker":           "acme",
+	} {
+		if project, ok := token.Project(); !ok || project != want {
+			t.Errorf("%s.Project() = %q, %t; want %q", token, project, ok, want)
+		}
+	}
+	for _, token := range []Token{ControllerToken("legion"), "legion-acme-acme-1-controller", "legion-acme-acme-1", ""} {
+		if project, ok := token.Project(); ok {
+			t.Errorf("%s.Project() = %q, want none: it names no agent of an issue", token, project)
+		}
+	}
+}
+
+// The slot of a claim's process is the agent its token ends in, which can be no role, and the
+// controller's name for the controller's token; a token that names neither has no slot.
+func TestATokensSlotIsItsAgentOrTheControllers(t *testing.T) {
+	for token, want := range map[Token]Agent{
+		"legion-legion-infra-12-implementer-2": "implementer-2",
+		"legion-legion-infra-12-tester":        "tester",
+		ControllerToken("legion"):              Agent(RoleController),
+	} {
+		if slot, ok := token.Slot(); !ok || slot != want {
+			t.Errorf("%s.Slot() = %q, %t; want %q", token, slot, ok, want)
+		}
+	}
+	for _, token := range []Token{"legion-legion-infra-12", "legion-legion-infra-12-Tester", "legion-legion-infra-12-controller", ""} {
+		if slot, ok := token.Slot(); ok {
+			t.Errorf("%s.Slot() = %q; want no slot", token, slot)
+		}
 	}
 }
 

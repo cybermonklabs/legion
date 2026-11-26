@@ -356,8 +356,8 @@ var settingsForbiddenKeys = []string{
 // exercises is an exemption nobody has read.
 var settingsPathKeys = map[string]string{
 	"settings.hooks[].prompt_file":     "the file a hook's words are read from, the deployment's own prose for its agents, carried as a path exactly as `instructions` is",
-	"settings.roles[].prompt_file":     "the file a role of the deployment starts with as its prompt, the deployment's own prose for its agents, carried as a path exactly as a hook's `prompt_file` is",
 	"settings.private_name_rules_file": "the deployment's private-name rule file, carried as a path alone and never its rules, exactly as `instructions` is",
+	"settings.roles[].prompt_file":     "the file a role of the deployment starts with as its prompt, the deployment's own prose for its agents, carried as a path exactly as a hook's `prompt_file` is",
 }
 
 // The maximal kubernetes file, with a role of the deployment and a type of its own appended,

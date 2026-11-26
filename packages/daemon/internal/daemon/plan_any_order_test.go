@@ -348,8 +348,8 @@ func (r *inFlightRig) seedPlanInReviewing(issue *inFlightIssue) {
 		values ($1, 1, 1, 'owner', $2, $3, now() - interval '4 hours')`, key, "plan-"+key, string(r.tokenOf(key, claim.RoleArchitect)))
 	r.exec(`insert into plan_tasks (issue, generation, task, plan_version, block_text, state, running_kind, position, pass, rounds, backward_moves)
 		values ($1, 1, 'a', 1, $2, 'running', 'step', 2, 1, 1, '{"reviewing-implementing": 1}')`, key, releaseBeforeTaskText)
-	r.exec(`insert into plan_steps (issue, generation, task, position, role, type)
-		values ($1, 1, 'a', 1, 'implementer', 'implementation'), ($1, 1, 'a', 2, 'reviewer', 'review')`, key)
+	r.exec(`insert into plan_steps (issue, generation, task, position, role, type, agent)
+		values ($1, 1, 'a', 1, 'implementer', 'implementation', 'implementer'), ($1, 1, 'a', 2, 'reviewer', 'review', 'reviewer')`, key)
 	r.exec(`update phases set step_task = 'a', step_place = case role when 'implementer' then 1 else 2 end, pass = 0, rounds = 0
 		where issue = $1`, key)
 	r.exec(`update claims set plugin_contract = $2 where issue = $1`, key, api.OwnerPlanContract)

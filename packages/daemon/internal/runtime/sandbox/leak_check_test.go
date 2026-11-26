@@ -594,7 +594,7 @@ func TestALeakCheckHopThatRunsPastItsBoundRefusesTheStart(t *testing.T) {
 			}
 		}},
 		"a launcher that reads nothing": {withDeafLauncher(), func(t *testing.T, g *rig, token claim.Token) {
-			if session := launcherOf(g, token); session != nil {
+			if session := launcherSessionOf(g, token); session != nil {
 				t.Fatal("the daemon still holds the connection whose write ran out, want it dropped so the launcher dials again")
 			}
 		}},

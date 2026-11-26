@@ -48,10 +48,11 @@ import (
 // arrived above the caller's contract, today the word contract 56 added; the table does declare
 // that field, so a record below 56 admits two values where this daemon's own admits three, and a
 // body carrying the third below 56 is red here. The other is the roles' band
-// (withoutDeploymentRoleClaims, withoutDeploymentRoles). Below deploymentRolesContract it drops
-// each entry of a role of the deployment and serves an issue at `step` as `implementing`. The
-// table declares those role and phase fields with their values up to that contract (answers.go's
-// EnumeratedFields). So a body carrying such a role or `step` below it is red here too.
+// (withoutDeploymentRoleClaims, withoutDeploymentRoles). Below deploymentRolesContract's entry it
+// drops each entry of a role of the deployment and serves an issue at `step` as `implementing`.
+// The table declares those role fields with Legion's six and the phase fields with `step` from
+// that entry (answers.go's EnumeratedFields). So a body carrying such a role, or `step` below the
+// entry, is red here too.
 // state_caller_test.go and state_deployment_roles_test.go hold the dropping itself, entry by
 // entry.
 //
@@ -75,9 +76,11 @@ const keyPathRule = "a key path is one key of a body, written as the dotted path
 //
 // A domain is held under the field's own key path, and it is the sorted set of the values whose
 // arrival (answers.go's EnumeratedFields) is at or below that contract: what a reader there
-// admits, and not what the fixture bodies happen to carry.
+// admits, and not what the fixture bodies happen to carry. A field open at that contract
+// (EnumeratedField.OpenFrom at or below it) has no domain there: its reader takes any value.
 const valueDomainRule = "a value domain is held under the key path of a field answers.go's EnumeratedFields declares, " +
-	"and holds the sorted values whose arrival is at or below that contract"
+	"and holds the sorted values whose arrival is at or below that contract; " +
+	"a field open at that contract holds no domain"
 
 // frozenRecordsMissing is what a missing fixture reads as: what it holds, and the rules its
 // records are read by.
@@ -114,7 +117,7 @@ type shapeKey struct {
 
 // answerShape is what one answer carries at one contract: whether it writes a body at all, the
 // sorted key paths of every body its routes write at that contract, and the sorted values those
-// bodies carry at each key path the table declares enumerated.
+// bodies carry at each key path the table declares enumerated at that contract.
 type answerShape struct {
 	noBody bool
 	paths  []string
@@ -370,8 +373,12 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 // starts again at its first value, so the thirteen issues carry every value of every list. Each
 // issue's architect carries a failure, a pending cause and a held task, as a worker does. No
 // other body carries them on an architect, so without this body no record describes those keys
-// at their architect paths, and the value comparison reads no value there. Each issue also carries
-// a merge wait with every key of one, whose `mergeState` and `toldState` take value i of the
+// at their architect paths, and the value comparison reads no value there. Each issue also lists
+// one other claim (`otherClaims`, the stranded token's entry) with a failure, a pending cause and
+// a held task, in state i of a claim view's states, so the thirteen carry every value of the five
+// fields at their `otherClaims` paths, every one of which arrived at that entry with the key. Each
+// issue also carries a merge wait with every key of one, whose `mergeState` and `toldState` take
+// value i of the
 // merge states, so the thirteen issues carry all eight words at both key paths. The project's
 // pause waits on the stop of one claim of each role, so `paused.waitsOn.*.role` carries every role,
 // where populatedState's pause waits on an implementer alone. Its repositories block names five
@@ -444,6 +451,18 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			},
 		}
 	}
+	// otherClaim is issue i's other claim of the implementer's role: the claim view claimView
+	// builds, with its token, in state i of the claim view's states, its update state, causes and
+	// held task's phase further along their lists than the worker's.
+	stateWords := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
+		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking,
+		supervise.StateIdle, supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired}
+	otherClaim := func(i int, key string) ClaimView {
+		view := claimView("ses_other_"+key, updateWords[(i+2)%len(updateWords)], i+5, phaseWords[(i+2)%len(phaseWords)])
+		view.Token = claim.Token("legion-values-" + strings.ToLower(key) + "-tester")
+		view.State = string(stateWords[i%len(stateWords)])
+		return view
+	}
 	notSlot := false
 	issues := make(map[string]Issue, len(phaseWords))
 	keys := make([]string, 0, len(phaseWords))
@@ -470,6 +489,7 @@ func stateCarryingEveryDeclaredValue(t *testing.T) State {
 			Workers: map[claim.Role]PhaseView{
 				claim.RoleImplementer: {Claim: claimView("ses_implementer_"+key, updateWords[(i+1)%len(updateWords)], i+3, heldFrom)},
 			},
+			OtherClaims: []OtherClaimView{{Role: claim.RoleImplementer, Claim: otherClaim(i, key)}},
 			PullRequest: &PullRequestView{
 				Repo: "acme/widgets", Number: 2000 + i, Head: "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29", State: "open",
 				MergeState: string(mergeWords[i%len(mergeWords)]),
@@ -623,15 +643,17 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		// The release-records golden's own value (TestReleaseRecordsResponseGolden), built
 		// through releaseRecordsBody from the store's rows as the route builds it. Its third
 		// resume is a wake a project pause held, the one resume that carries `pause` (contract
-		// 178), which the record of every contract below 178 describes no key of.
+		// 178), which the record of every contract below 178 describes no key of. Its first
+		// release names the claims it suspended (`claims`, the stranded token's entry).
 		AnswerReleaseRecords: {roots: typesOf(ReleaseRecordsResponse{}), bodies: []any{releaseRecordsBody(store.PodReleaseRecords{
 			Releases: []store.PodRelease{
 				{ID: 101, Issue: "LEGION-208", Generation: 3, Roles: []string{"implementer", "tester"},
-					At: released, BundleBytes: 4096},
+					Claims: []string{"legion-legion-legion-208-implementer", "legion-legion-legion-208-tester"},
+					At:     released, BundleBytes: 4096},
 				{ID: 102, Issue: "LEGION-209", Generation: 1, At: released.Add(15 * time.Minute)},
 			},
 			Resumes: []store.PodResume{
-				{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Kind: "delivery",
+				{ID: 201, Release: 101, Issue: "LEGION-208", Role: "implementer", Claim: "legion-legion-legion-208-tester", Kind: "delivery",
 					At: released.Add(30 * time.Minute), PodReadyAt: released.Add(31 * time.Minute),
 					FirstTurnAt: released.Add(32 * time.Minute)},
 				{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",
@@ -961,7 +983,8 @@ func collectKeyPaths(value any, path string, shape declaredShape, into map[strin
 }
 
 // enumeratedPathsOf is the key paths of the fields the table declares enumerated for one answer,
-// sorted.
+// sorted, open at some contract or not: the fixtures' census asks every one of them for a body
+// (TestEveryDeclaredValueAndKeyPathIsCarriedByAFixtureBody).
 func enumeratedPathsOf(fields []EnumeratedField, id AnswerID) []string {
 	paths := []string{}
 	for _, field := range fields {
@@ -973,24 +996,30 @@ func enumeratedPathsOf(fields []EnumeratedField, id AnswerID) []string {
 	return paths
 }
 
-// enumeratedPathsAt is enumeratedPathsOf at one contract: the key paths of the fields the table
-// declares enumerated for one answer, less a field that is no enumeration from its Until up at
-// such a contract, whose values a reader there takes by a grammar (domainsOf holds no domain of
-// it there either).
+// enumeratedPathsAt is the key paths of the fields the table declares enumerated for one answer
+// at contract, sorted: enumeratedPathsOf less each field open at contract (openAt). A reader
+// there parses such a field with no enumeration, so the gate reads none of its values there.
 func enumeratedPathsAt(fields []EnumeratedField, id AnswerID, contract int) []string {
-	return enumeratedPathsOf(slices.DeleteFunc(slices.Clone(fields), func(field EnumeratedField) bool {
-		return field.Until != 0 && contract >= field.Until
-	}), id)
+	enumerated := slices.DeleteFunc(slices.Clone(fields), func(field EnumeratedField) bool {
+		return openAt(field, contract)
+	})
+	return enumeratedPathsOf(enumerated, id)
+}
+
+// openAt is whether field is no enumeration at contract: its row is open from a contract at or
+// below it (EnumeratedField.OpenFrom).
+func openAt(field EnumeratedField, contract int) bool {
+	return field.OpenFrom != 0 && field.OpenFrom <= contract
 }
 
 // domainsOf is what one contract admits at each enumerated field of one answer: the values whose
-// arrival is at or below it, sorted, by the field's key path (valueDomainRule). A field that is no
-// enumeration from its Until up has no domain at such a contract. An answer with no declared
-// field reads as an empty map, never nil, so every record writes `domains`.
+// arrival is at or below it, sorted, by the field's key path (valueDomainRule), and no domain of
+// a field open at it. An answer with no declared field reads as an empty map, never nil, so every
+// record writes `domains`.
 func domainsOf(fields []EnumeratedField, id AnswerID, contract int) map[string][]string {
 	domains := map[string][]string{}
 	for _, field := range fields {
-		if field.Answer != id || field.Until != 0 && contract >= field.Until {
+		if field.Answer != id || openAt(field, contract) {
 			continue
 		}
 		admitted := []string{}
@@ -1099,7 +1128,8 @@ func (k callerKind) askedBody(t *testing.T, handler http.Handler, target string,
 
 // servedShapes is every answer at every contract of SupportedContracts, as caller reads it: the
 // key paths of the bodies it reads that a record can hold, and the values those bodies carry at
-// each key path the table declares enumerated (answers.go's EnumeratedFields). The key paths are
+// each key path the table declares enumerated at that contract (answers.go's EnumeratedFields,
+// enumeratedPathsAt), so a field open there has no value read. The key paths are
 // every path the bodies carry (carriedShapes) but the settings paths no reader at that contract
 // types (withoutUntypedSettings), so the comparison and the `-update` writer, which both read
 // this, hold and write the same set.
@@ -1923,9 +1953,10 @@ func TestEveryEnumeratedFieldsEarliestValueArrivedWithItsKey(t *testing.T) {
 	}
 }
 
-// What the gate catches, shown by six kinds of change a shape change would make, the fifth of
+// What the gate catches, shown by seven kinds of change a shape change would make, the fifth of
 // them made to two fields, and what it lets pass by design: a settings key no reader types. Each
-// is applied to a copy inside this case, so none of them edits a file and none needs a commit.
+// is applied to a copy inside this case, or to a registry installed for one subtest, so none of
+// them edits a file and none needs a commit.
 //
 // A shape change is a new entry: a scratch one here, whose number is next, one above this
 // daemon's own, and whose body is this daemon's own body where the change makes no other, since a
@@ -2063,6 +2094,52 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 					}
 				}
 			})
+		}
+	})
+
+	t.Run("a deployment role served below the entry, its drop taken away", func(t *testing.T) {
+		// The control of the drop (shaping.go's withoutDeploymentRoleClaims): this build's own
+		// entries, with the band of deploymentRolesContract's entry keeping every stranded claim,
+		// waiting wake and pause stop, as a daemon that opened the four role rows and left the drop
+		// out would serve them. The golden state carries the checker's stranded claim on
+		// LEGION-241, so each contract below the entry is served `checker` at
+		// `strandedClaims.*.role`, where the record's domain is Legion's six, and the gate names it
+		// there once each. From the entry on the row is open (answers.go's claimRoles), and the
+		// gate names nothing, though the checker is served there too.
+		added := entryNumber(deploymentRolesContract)
+		checker := func(c StrandedClaim) bool { return c.Role == "checker" }
+		if !slices.ContainsFunc(populatedState(t).StrandedClaims, checker) {
+			t.Fatal("the golden state carries no stranded claim of the checker; this proves nothing")
+		}
+		entries := slices.Clone(registeredEntries)
+		at := slices.IndexFunc(entries, func(entry contractEntry) bool {
+			return entry.id == deploymentRolesContract
+		})
+		if at < 0 {
+			t.Fatalf("this package registers no entry %d", deploymentRolesContract)
+		}
+		bands := slices.Clone(entries[at].bands)
+		for place := range bands {
+			bands[place].state, bands[place].left = nil, nil
+		}
+		entries[at].bands = bands
+		installContractRegistry(t, testRegistry(t, "", entries...))
+		undropped := servedShapes(t, callerKinds[0])
+		problems := allShapeProblems(recordsByKey(onFile), undropped, SupportedContracts())
+		var below []int
+		for _, contract := range SupportedContracts() {
+			if contract < added {
+				below = append(below, contract)
+			}
+		}
+		wantProblemsNaming(t, problems, "strandedClaims.*.role", below, 0)
+		for _, problem := range problems {
+			var contract int
+			if _, err := fmt.Sscanf(problem, "contract %d, ", &contract); err != nil || contract >= added ||
+				!strings.Contains(problem, "`checker`") {
+				t.Errorf("the gate reported a problem other than `checker` below the entry's number %d: %s",
+					added, problem)
+			}
 		}
 	})
 

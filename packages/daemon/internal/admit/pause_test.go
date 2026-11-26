@@ -93,7 +93,7 @@ func TestAPausedProjectPromotesNothingUntilItsPauseEnds(t *testing.T) {
 }
 
 // The resume's one admission pass is a fact of its own (intake.ProjectResumed, decision 22 of
-// dispatch://INFRA-3759): admission promotes on it as on every fact that is not a Dispatch issue,
+// dispatch://INFRA-3759): the pass rule (Admission.Apply) runs the pass on it whatever it wrote,
 // so the root the pause kept waiting takes the free slot at once. It is no controller tick: the
 // controller is registered, and no tick notice is queued.
 func TestTheResumesPassPromotesAndQueuesNoTickNotice(t *testing.T) {
@@ -418,9 +418,9 @@ func TestTheGateArmCountsNoTimeBeforeTheArchitectsLetOut(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := pool.Exec(context.Background(), `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
-					values (0, $1, $2, $3, $4, $5, $6, $7)`, project, root, string(claim.RoleArchitect), pods.WakePause,
-					began.Add(time.Minute), tc.letOut, pause); err != nil {
+				if _, err := pool.Exec(context.Background(), `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+					values (0, $1, $2, $3, $8, $4, $5, $6, $7)`, project, root, string(claim.RoleArchitect), pods.WakePause,
+					began.Add(time.Minute), tc.letOut, pause, string(architectToken(t, root))); err != nil {
 					t.Fatalf("record the architect's resume pause %d held: %v", pause, err)
 				}
 			}

@@ -30,7 +30,7 @@ export interface ClaimCapability {
   readonly sessionID: string;
   readonly tree: string;
   readonly issue: string;
-  /** One of Legion's six or a role of the deployment (contract 258). */
+  /** One of Legion's six or a role of the deployment (the deployment roles' contract entry). */
   readonly role: LegionStepRole;
   readonly secret: string;
   readonly claimToken: string;
@@ -427,7 +427,8 @@ export function legionToolDescription(host: {
     "(PLAN_RATING_REQUIRED, PLAN_RATING_UNEXPECTED or PLAN_RATING_INPUT). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
-    "write this phase's handoff), " +
+    "write this phase's handoff), HANDOFF_NOT_THE_STEPS_WORKER (another claim of your role works the step: end this turn without " +
+    "completing), " +
     "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
@@ -454,9 +455,9 @@ export function legionToolDescription(host: {
  * `legion.daemonApiVersion` a pack writes, which the client states on every request as
  * `pluginContract` and `read_build` answers beside the daemon's own). It is the host's manifest
  * and never a path on the image: an Oh My Pi role's relaunch onto the daemon's contract installs
- * the plugin pair fresh under the state home of its claim's agent, which is the same whatever
- * role the agent's step is on, so the build at `/opt/legion/pi-legion` is another one. A Claude
- * Code role in a pod installs no plugin, and its build is its image's own claude-envoy. */
+ * the plugin pair fresh under the state home of its claim's agent, which is the same whatever role
+ * the agent's step is on, so the build at `/opt/legion/pi-legion` is another one. A Claude Code
+ * role in a pod installs no plugin, and its build is its image's own claude-envoy. */
 export interface PluginBuild {
   readonly name: string;
   readonly version: string;
@@ -490,8 +491,9 @@ export interface PhaseOpRuntime {
   /** What a completion by `role` of `step` reports beside its summary (`findHandoffReport` with
    * the pane's environment and Dispatch): the newest record of the phase the role works or, once
    * the step has moved on, of the phase it left, or `@-` alone where that left phase has none or
-   * the implementer's left record names no head. Throws naming the remedy when the phase the role
-   * works has no handoff record, Dispatch does not answer, or, while the step stands in
+   * the implementer's left record names no head, or at `step`, the phase of a role of the
+   * deployment, which writes no record. Throws naming the remedy when the phase the role works
+   * writes records and has none, Dispatch does not answer, or, while the step stands in
    * implementing, the implementer's record names no head, the commit its working copy stands on
    * is not pushed, or its record's head is not that pushed commit. */
   readonly handoffReport: (step: StepCopy, role: LegionStepRole) => Promise<HandoffReport>;
@@ -705,6 +707,10 @@ export async function executePhaseOp(
           throw new Error(`a phase worker moves only its own issue ${claim.issue}, not ${named}`);
         }
       }
+      // The target `step` and `return_to` arrived with the daemon's roles of a deployment
+      // (deploymentRolesContract's entry). An older daemon refuses either with a 400 and moves
+      // nothing: `step` as `INVALID_PHASE`, and `returnTo` as a body with an unknown field. So the
+      // move is sent as asked, and that refusal is the answer the caller reads.
       await daemon.phaseBackward({
         grantId: await mintClaimGrant(daemon, claim),
         to: args.to,

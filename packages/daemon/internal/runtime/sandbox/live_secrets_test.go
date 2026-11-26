@@ -54,9 +54,11 @@ func (r *liveRig) ensureEnrolled(c *liveClaim) (string, error) {
 }
 
 // agentSecretsSlot is the broker's slot of c's process as the daemon spells it (supervise's
-// enrollmentSlot): the slot of c's agent, the name its token ends in, and the generation.
+// enrollmentSlot): the slot of c's agent, the name its token ends in (claim.Token.Slot), and the
+// generation.
 func agentSecretsSlot(c *liveClaim) string {
-	return fmt.Sprintf("%s-g%d", slotOf(c.token), c.loc.Sandbox.Generation)
+	slot, _ := c.token.Slot()
+	return fmt.Sprintf("%s-g%d", slot, c.loc.Sandbox.Generation)
 }
 
 // enroll is the daemon's enrollment of c's process: the identity its hello carried, the

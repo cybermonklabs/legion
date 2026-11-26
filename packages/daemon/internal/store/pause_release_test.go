@@ -364,7 +364,7 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 			SuspendedBy: supervise.SuspendedByReleased}); err != nil {
 			t.Fatalf("seed the released %s of %s: %v", role, otherIssue, err)
 		}
-		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, token, role, otherBoundary); err != nil {
+		if err := st.ReleaseSuspendedClaim(ctx, "legion", otherIssue, token, otherBoundary); err != nil {
 			t.Fatalf("record the %s's suspension: %v", role, err)
 		}
 	}
@@ -422,7 +422,7 @@ func heldOpenResume(t *testing.T, st *Store, role claim.Role) (int64, bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, pause, open, err := st.OpenPodResume(context.Background(), "legion", rootIssue, role, token)
+	_, pause, open, err := st.OpenPodResume(context.Background(), "legion", rootIssue, token)
 	if err != nil {
 		t.Fatalf("read the open resume of %s: %v", role, err)
 	}
@@ -444,7 +444,7 @@ func TestTheStuckAndStrandedReadsMeasureTheStuckClockAndPassOverAPausedProject(t
 		t.Fatalf("take the architect's wake = %t, %v", taken, err)
 	}
 	clock := woke.Add(30 * time.Minute)
-	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, claim.RoleArchitect, "legion-legion-legion-208-architect", clock); err != nil {
+	if _, err := st.SetResumeClock(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", clock); err != nil {
 		t.Fatalf("start the architect's stuck clock at its let-out: %v", err)
 	}
 	reads := func(before time.Time) (stuck, unfinished []PodResume) {
@@ -702,10 +702,14 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 		if resume.byPause {
 			held, kind = &pause.ID, pods.WakePause
 		}
+		token, err := claim.NewToken("legion", resume.issue, resume.role)
+		if err != nil {
+			t.Fatal(err)
+		}
 		var id int64
-		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
-			values (0, 'legion', $1, $2, $3, $4, $5, $6) returning id`, resume.issue, string(resume.role), kind, pausedAt.Add(time.Minute),
-			resumedAt.Add(resume.letOut), held).Scan(&id); err != nil {
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7) returning id`, resume.issue, string(resume.role), string(token), kind,
+			pausedAt.Add(time.Minute), resumedAt.Add(resume.letOut), held).Scan(&id); err != nil {
 			t.Fatalf("record the resume of %s's %s: %v", resume.issue, resume.role, err)
 		}
 		if resume.launched {
@@ -740,22 +744,22 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 }
 
 // Decision 12 of dispatch://INFRA-3759, as review rounds 3 and 4 of dispatch://INFRA-4109 set it:
-// the sweep's read names, for each hold, every role of the pod that the hold's own pause still
-// owes a launch (PausePodHold.Owed). A round keeps the pod for a role only while the pause still
-// owes that role a launch, so the daemon reads it role by role and never from the latest let-out
-// of all the roles.
+// the sweep's read names, for each hold, every claim of the pod that the hold's own pause still
+// owes a launch (PausePodHold.Owed). A round keeps the pod for a claim only while the pause still
+// owes that claim a launch, so the daemon reads it claim by claim and never from the latest
+// let-out of all the claims.
 //
 // Both pods were held by the pause and their holds ended at the resume. On the first pod, the
-// pause still owes the implementer and the tester a launch: each has a resume of that pause that
-// no first turn stamped, nothing closed and no ready stamped, and each is named, in order. The
-// architect became ready (MarkPodResumeReady) and its resume stays open, as a role the daemon
-// suspended before its first turn leaves it. The reviewer took its first turn, and the merger's
-// resume was closed. None of those three is owed, and neither is the planner, whose open resume is
-// of a later pause. The second pod has the same four resumes and no other: its hold is read where
-// it ended or its pause let a launch out after since, and is missing from a read past both,
-// whatever its open, ready resume. The latest let-out still counts every resume of the pause
-// (PausePodHold.LetOut).
-func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing.T) {
+// pause still owes the own claims of the implementer and the tester a launch: each has a resume of
+// that pause that no first turn stamped, nothing closed and no ready stamped, and each is named,
+// in token order. The architect became ready (MarkPodResumeReady) and its resume stays open, as a
+// role the daemon suspended before its first turn leaves it. The reviewer took its first turn, and
+// the merger's resume was closed. None of those three is owed, and neither is the planner, whose
+// open resume is of a later pause. The second pod has the same four resumes and no other: its hold
+// is read where it ended or its pause let a launch out after since, and is missing from a read
+// past both, whatever its open, ready resume. The latest let-out still counts every resume of the
+// pause (PausePodHold.LetOut).
+func TestTheSweepsReadOfTheHoldsNamesEachClaimItsPauseStillOwesALaunch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -774,14 +778,23 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 	later, _ := pauseLegion(t, st, resumedAt.Add(time.Minute))
 	endPause(t, st, later.ID, resumedAt.Add(2*time.Minute))
 
-	// resume writes the resume of issue's role that held held, with its stuck clock letOut after
-	// the resume, and answers its id.
+	// own is the token of the own claim of issue's role, the claim each resume below names.
+	own := func(issue string, role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("legion", issue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	// resume writes the resume of the own claim of issue's role that held held, with its stuck
+	// clock letOut after the resume, and answers its id.
 	resume := func(issue string, role claim.Role, held Pause, letOut time.Duration) int64 {
 		t.Helper()
 		var id int64
-		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
-			values (0, 'legion', $1, $2, $3, $4, $5, $6) returning id`, issue, string(role), pods.WakePause, pausedAt.Add(time.Minute),
-			resumedAt.Add(letOut), held.ID).Scan(&id); err != nil {
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7) returning id`, issue, string(role), string(own(issue, role)), pods.WakePause,
+			pausedAt.Add(time.Minute), resumedAt.Add(letOut), held.ID).Scan(&id); err != nil {
 			t.Fatalf("record the resume of %s's %s: %v", issue, role, err)
 		}
 		return id
@@ -794,12 +807,9 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 			t.Fatalf("stamp the first turn of %s's reviewer: %v", issue, err)
 		}
 		resume(issue, claim.RoleMerger, pause, 2*time.Minute)
-		merger, err := claim.NewToken("legion", issue, claim.RoleMerger)
-		if err != nil {
-			t.Fatalf("the merger's claim of %s: %v", issue, err)
-		}
+		merger := own(issue, claim.RoleMerger)
 		if err := Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-			_, err := CloseRoleOpenResumeTx(ctx, tx, "legion", issue, claim.RoleMerger, merger, resumedAt.Add(3*time.Minute))
+			_, err := CloseRoleOpenResumeTx(ctx, tx, "legion", issue, merger, resumedAt.Add(3*time.Minute))
 			return err
 		}); err != nil {
 			t.Fatalf("close the resume of %s's merger: %v", issue, err)
@@ -809,13 +819,13 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 	resume(rootIssue, claim.RoleImplementer, pause, 3*time.Minute)
 	resume(rootIssue, claim.RoleTester, pause, 0)
 
-	owed := fmt.Sprint([]claim.Role{claim.RoleImplementer, claim.RoleTester})
+	owed := fmt.Sprint([]claim.Token{own(rootIssue, claim.RoleImplementer), own(rootIssue, claim.RoleTester)})
 	for _, tc := range []struct {
 		since time.Duration
-		// want is each hold the read returns, by issue, with the roles its pause owes a launch.
+		// want is each hold the read returns, by issue, with the claims its pause owes a launch.
 		want map[string]string
 	}{
-		{since: -time.Minute, want: map[string]string{rootIssue: owed, nothingOwed: fmt.Sprint([]claim.Role(nil))}},
+		{since: -time.Minute, want: map[string]string{rootIssue: owed, nothingOwed: fmt.Sprint([]claim.Token(nil))}},
 		{since: 10 * time.Minute, want: map[string]string{rootIssue: owed}},
 	} {
 		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
@@ -831,7 +841,67 @@ func TestTheSweepsReadOfTheHoldsNamesEachRoleItsPauseStillOwesALaunch(t *testing
 			got[hold.Issue] = fmt.Sprint(hold.Owed)
 		}
 		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
-			t.Fatalf("the roles the holds owe a launch, read since the resume %+v = %v, want %v", tc.since, got, tc.want)
+			t.Fatalf("the claims the holds owe a launch, read since the resume %+v = %v, want %v", tc.since, got, tc.want)
 		}
+	}
+}
+
+// The launch a pause owes is the claim's it stopped (the owed start names that claim,
+// record.SuperviseRequest.Claim), so the sweep's read names each claim the hold's pause still owes
+// a launch (PausePodHold.Owed), not its role. Two claims hold the tester's role on LEGION-208's
+// pod: the agent of key a, `…-implementer`, on the tester's step, and the tester's own claim. The
+// pause stopped both, and each has a resume of that pause that no first turn stamped, nothing
+// closed and no ready stamped, so the read names both, in token order. A third claim on the
+// tester's step, the agent of key b, `…-reviewer`, became ready since, so the pause owes it nothing
+// and the read leaves it out. A read by role names the tester twice, and a reader of the role
+// takes the launch one claim is owed as owed to each claim of the role.
+func TestTheSweepsReadOfTheHoldsNamesEachOfTwoClaimsOfOneRoleItsPauseOwesALaunch(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	resumedAt := pausedAt.Add(time.Hour)
+	if _, err := holdPod(st, pause, rootIssue, pausedAt); err != nil {
+		t.Fatalf("hold the pod of %s: %v", rootIssue, err)
+	}
+	if _, err := st.EndPausePodHold(ctx, "LEGION", rootIssue, PausePodHoldResumed, resumedAt); err != nil {
+		t.Fatalf("end the hold of %s at the resume: %v", rootIssue, err)
+	}
+	endPause(t, st, pause.ID, resumedAt)
+
+	// agent is the token of the agent named for role on LEGION-208.
+	agent := func(role claim.Role) claim.Token {
+		t.Helper()
+		token, err := claim.NewToken("legion", rootIssue, role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return token
+	}
+	keyA, own, keyB := agent(claim.RoleImplementer), agent(claim.RoleTester), agent(claim.RoleReviewer)
+	// resume writes the resume of the pause for the claim of, on the tester's step, with its stuck
+	// clock at the resume, and answers its id.
+	resume := func(of claim.Token) int64 {
+		t.Helper()
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, claim, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6, $7) returning id`, rootIssue, string(claim.RoleTester), string(of), pods.WakePause,
+			pausedAt.Add(time.Minute), resumedAt, pause.ID).Scan(&id); err != nil {
+			t.Fatalf("record the resume of %s on the tester's step: %v", of, err)
+		}
+		return id
+	}
+	resume(keyA)
+	resume(own)
+	if err := st.MarkPodResumeReady(ctx, resume(keyB), resumedAt.Add(time.Minute)); err != nil {
+		t.Fatalf("stamp the ready of %s: %v", keyB, err)
+	}
+
+	holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("read the holds since the resume: %v", err)
+	}
+	want := fmt.Sprint([]claim.Token{keyA, own})
+	if len(holds) != 1 || holds[0].Pause != pause.ID || fmt.Sprint(holds[0].Owed) != want {
+		t.Fatalf("the holds read past the resume = %+v, want pause %d's hold of %s, owing a launch to %s", holds, pause.ID, rootIssue, want)
 	}
 }

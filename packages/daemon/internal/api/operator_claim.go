@@ -123,6 +123,23 @@ type OperatorClaim struct {
 	// its process or failed for another reason. The controller's claim is on no claim view of the
 	// state, so these routes are where its cause is read.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// UnrecordedRefusal is the oldest fact of a launch of the claim its issue's pod refused that
+	// the store has not taken (supervise.Claim.UnrecordedRefusal): the report that tells the issue
+	// and the controller and queues the claim's start, or a re-check at the end of a start row,
+	// which the daemon tries again, at least once an hour, for as long as it fails and the refusal
+	// it names stands. Absent while no such fact fails. The store never writes it, so these
+	// routes, which read the live machine, are the one surface that carries it, and `legion claims
+	// list` prints it as the cause word `refusal-unrecorded` where the claim carries no failure
+	// record.
+	UnrecordedRefusal *UnrecordedRefusalView `json:"unrecordedRefusal,omitempty"`
+}
+
+// UnrecordedRefusalView is supervise.UnrecordedRefusal as the operator routes serve it: when the
+// first failed try of the fact failed, how many tries have failed, and the last failed try's error.
+type UnrecordedRefusalView struct {
+	Since    time.Time `json:"since"`
+	Attempts int       `json:"attempts"`
+	Error    string    `json:"error"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -287,6 +304,9 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		Step:               StepViewOf(step),
 		Failure:            FailureViewOf(c),
 		LeakCheckCause:     c.LeakCheckCause,
+	}
+	if u := c.UnrecordedRefusal; u != nil {
+		view.UnrecordedRefusal = &UnrecordedRefusalView{Since: u.Since, Attempts: u.Attempts, Error: u.Error}
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{

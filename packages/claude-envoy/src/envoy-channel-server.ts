@@ -2678,11 +2678,6 @@ export async function runEnvoyChannelServer(): Promise<void> {
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
       // for a restarting daemon.
-      // A call that returned without throwing closes this session's phase when it is a step's
-      // completion or a backward move, which hands the issue to an earlier step of its task. A
-      // report with check_opened_at leaves the phase open. `ready_for_update` ends no phase: it
-      // answers the pod's update message (`updateAnswered`, `./legion-phase-hook`). The rule is
-      // `phaseInputAfter`, which the Oh My Pi host's `createLegionTool` reads too.
       const answer = await answerLegionTool(
         legionRuntime,
         request.params.arguments ?? {},

@@ -400,8 +400,8 @@ func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 	server, named := document.MCPServers[claudelaunch.MCPServer]
 	if !named || server.Command != "/usr/local/bin/bun" ||
 		!slices.Equal(server.Args, []string{"/opt/legion/claude-envoy/dist/envoy-channel.js"}) ||
-		server.Env["CLAUDE_PLUGIN_DATA"] != claudeConfigDir(spec.Role)+"/envoy-plugin-data" {
-		t.Errorf("the MCP document is %q, want the image's bun running the claude-envoy server with its data under %s", raw, claudeConfigDir(spec.Role))
+		server.Env["CLAUDE_PLUGIN_DATA"] != claudeConfigDir(claim.Agent(spec.Role))+"/envoy-plugin-data" {
+		t.Errorf("the MCP document is %q, want the image's bun running the claude-envoy server with its data under %s", raw, claudeConfigDir(claim.Agent(spec.Role)))
 	}
 	if got := slices.Index(start.Argv, "--mcp-config"); got < 0 || start.Argv[got+1] != generationDir(spec.Generation)+"/"+claudeMCPFile {
 		t.Errorf("the start command's argv %q does not read the document where the launcher writes it", start.Argv)

@@ -242,10 +242,12 @@ func recordedContractAtOrBelow(n int) int {
 // state and the record: the release records' row serves every resume without its `pause`
 // (withoutResumePauses), and the refusal's row serves a PauseFailure as its Failure alone, with
 // no `setting`, `pause` or `lastPause`. The refusal's row does the same below OwnerPlanContract
-// for a PlanRefusal, which loses its `reasons`. These follow strip, as every band of
-// stateNarrowings does, and placedByPod places the caller of each by its pod, so a band here
-// reaches the caller of a pod as the state's do. A plain refusal, a claim.Refusal or a Failure,
-// carries no key of either contract and is the identity at every contract.
+// for a PlanRefusal, which loses its `reasons`. Below the stranded token's entry
+// (entryNumber(strandedTokenContract)) the release records' row serves every release without its
+// `claims` and every resume without its `claim` (withoutRecordClaims). These follow strip, as
+// every band of stateNarrowings does, and placedByPod places the caller of each by its pod, so a
+// band here reaches the caller of a pod as the state's do. A plain refusal, a claim.Refusal or a
+// Failure, carries no key of any of those contracts and is the identity at every contract.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in, the one row of the numbered entries' stand-ins (standIns). A
@@ -280,6 +282,9 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		}
 		if strip < pauseContract {
 			records = withoutResumePauses(records)
+		}
+		if strip < entryNumber(strandedTokenContract) {
+			records = withoutRecordClaims(records)
 		}
 		return records, took
 	case AnswerRefusal:
@@ -998,7 +1003,8 @@ const shapedAnswersContract = 193
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract the key arrived at stays where it is. It moves only with this
-// change's own number, as the last number of answers.go's SupportedContracts does.
+// change's own number, and answers.go's SupportedContracts names the constant rather than its
+// number.
 const dispatchCredentialContract = 275
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1741,6 +1747,23 @@ func withoutNeedsOrAdded(registered PlanRegisterResponse) PlanRegisterResponse {
 	return registered
 }
 
+// withoutClaimTokens is the issue whose claim views carry no `token` and which carries no
+// `otherClaims`, the two keys strandedTokenContract added to an issue: two claims of one issue can
+// hold one role, so the state names each claim by its token and lists the claims its `architect`
+// and `workers` do not show, and a plugin below the contract reads a claim view and an issue as
+// strict objects. An issue that carries neither is returned as it is (withEachClaimView copies
+// only what it changes).
+func withoutClaimTokens(issue Issue) (Issue, bool) {
+	issue, moved := withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.Token = ""
+		return view
+	})
+	if issue.OtherClaims != nil {
+		issue.OtherClaims, moved = nil, true
+	}
+	return issue, moved
+}
+
 // withoutUnadmittedWaitAnswer is the issue whose wait carries no `answeredAt` and no
 // `answeredBy` where that `answeredBy` is a value restore's reader does not admit: one the
 // declared table holds back from restore (answers.go's EnumeratedFields; fieldArrivals.heldBack
@@ -2137,6 +2160,35 @@ func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse 
 		resumes[i] = resume
 	}
 	records.Resumes = resumes
+	return records
+}
+
+// withoutRecordClaims is records with no release carrying `claims` and no resume carrying
+// `claim`, the two keys strandedTokenContract added to the release records beside the stranded
+// claims' token: two claims of one issue can hold one role, so a release's roles no longer name the
+// claims it suspended and a resume's role no longer names the claim it woke, and a plugin below the
+// contract reads a release and a resume as strict objects. Each key is `omitempty` and absent
+// where there is none to name, so records that carry neither are returned as they are, with no
+// copy made. Otherwise a list is copied before one of its entries is written, so the body the
+// route built is left as it was, and each list stays non-nil, as every list of the body is
+// (ReleaseRecordsResponse).
+func withoutRecordClaims(records ReleaseRecordsResponse) ReleaseRecordsResponse {
+	if slices.ContainsFunc(records.Releases, func(release ReleaseRecord) bool { return len(release.Claims) > 0 }) {
+		releases := make([]ReleaseRecord, len(records.Releases))
+		for i, release := range records.Releases {
+			release.Claims = nil
+			releases[i] = release
+		}
+		records.Releases = releases
+	}
+	if slices.ContainsFunc(records.Resumes, func(resume ResumeRecord) bool { return resume.Claim != "" }) {
+		resumes := make([]ResumeRecord, len(records.Resumes))
+		for i, resume := range records.Resumes {
+			resume.Claim = ""
+			resumes[i] = resume
+		}
+		records.Resumes = resumes
+	}
 	return records
 }
 

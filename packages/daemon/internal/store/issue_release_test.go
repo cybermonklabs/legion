@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -41,8 +42,9 @@ func openRunningTree(t *testing.T, store *Store) {
 
 // markRelease is the mark ReleaseIdleIssue leaves, written by hand so a fence can be tested on
 // its own: the ids of the release's first row, of its boundary and of its last, the newest
-// start row the pod's claims held when the release was marked, and the roles whose claims the
-// release's own stops have suspended so far.
+// start row the pod's claims held when the release was marked, and the claims the release's own
+// stops have suspended so far, each named by the role whose own claim it is (its token,
+// issue_releases.suspended).
 func markRelease(t *testing.T, store *Store, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
 	markReleaseOf(t, store, rootIssue, first, boundary, last, started, suspended...)
@@ -51,10 +53,8 @@ func markRelease(t *testing.T, store *Store, first, boundary, last, started int6
 // markReleaseOf is markRelease for the pod of issue.
 func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, last, started int64, suspended ...claim.Role) {
 	t.Helper()
-	roles := make([]string, 0, len(suspended))
 	tokens := make([]string, 0, len(suspended))
 	for _, role := range suspended {
-		roles = append(roles, string(role))
 		token, err := claim.NewToken("legion", issue, role)
 		if err != nil {
 			t.Fatal(err)
@@ -62,8 +62,8 @@ func markReleaseOf(t *testing.T, store *Store, issue string, first, boundary, la
 		tokens = append(tokens, string(token))
 	}
 	_, err := store.Pool().Exec(context.Background(), `insert into issue_releases
-		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, suspended_claims, marked_at)
-		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, $7, now())`, issue, first, boundary, last, started, roles, tokens)
+		(project, issue, generation, first_row, boundary_row, last_row, started_row, role, suspended, marked_at)
+		values ('legion', $1, 1, $2, $3, $4, $5, 'architect', $6, now())`, issue, first, boundary, last, started, tokens)
 	if err != nil {
 		t.Fatalf("mark the release of %s: %v", issue, err)
 	}
@@ -252,12 +252,13 @@ func TestTheTeardownIsCancelledByAPhaseStartQueuedAfterTheReleaseAndNotByAStartO
 	}
 }
 
-// A start that waits because the issue's pod was built before its role, queued above the
-// release's rows, does not cancel the teardown either: the pod cannot run it, and the release is
-// one of the two things that let it start (idleWaitingRow, pods.StartWaitsForPodPrefix). A
-// teardown that read it as the pod being used again would cancel the very release it waits for,
-// and the start would wait on until the pod's update round. The control is the same start before
-// its first try, its last error empty: it is the pod being used again, and cancels the release.
+// A start that waits because the issue's pod lacks the slot of its claim or the role of its step,
+// queued above the release's rows, does not cancel the teardown either: the pod cannot run it, and
+// the release is one of the two things that let it start (idleWaitingRow,
+// pods.StartWaitsForPodPrefix). A teardown that read it as the pod being used again would cancel
+// the very release it waits for, and the start would wait on until the pod's update round. The
+// control is the same start before its first try, its last error empty: it is the pod being used
+// again, and cancels the release.
 func TestTheTeardownIsNotCancelledByAStartThatWaitsForItsPod(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -1241,27 +1242,42 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 	openRunningTree(t, st)
 	markRelease(t, st, first, boundary, last, 0)
 
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", boundary); err != nil {
 		t.Fatalf("record the architect's suspension: %v", err)
 	}
 	// The row ran twice: one claim, one entry.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", claim.RoleArchitect, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-architect", boundary); err != nil {
 		t.Fatalf("record the architect's suspension again: %v", err)
 	}
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary+1); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary+1); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
+	// A second claim of the implementer's role, the agent of a key on its step: a claim of its
+	// own, which the set names beside the role's own claim.
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-tester", boundary+2); err != nil {
+		t.Fatalf("record the keyed agent's suspension: %v", err)
+	}
 	// A row of a release this mark is not records nothing.
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-tester", claim.RoleTester, last+5); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-reviewer", last+5); err != nil {
 		t.Fatalf("record a stale row's suspension: %v", err)
+	}
+	releasedClaim(t, st, claim.RoleArchitect)
+	releasedClaim(t, st, claim.RoleImplementer)
+	if err := st.PutClaim(ctx, supervise.Claim{Token: "legion-legion-legion-208-tester", Project: "legion", Tree: rootIssue,
+		Issue: rootIssue, Role: claim.RoleImplementer, TreeEpoch: 1, Generation: 1, State: supervise.StateSuspended,
+		SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+		t.Fatalf("seed the keyed agent's claim: %v", err)
 	}
 
 	decision, err := st.IssueReleaseCheck(ctx, "legion", rootIssue, first)
 	if err != nil {
 		t.Fatalf("read the release's mark through its workspace check: %v", err)
 	}
-	if len(decision.Suspended) != 2 || decision.Suspended[0] != claim.RoleArchitect || decision.Suspended[1] != claim.RoleImplementer {
-		t.Fatalf("the mark's suspended roles = %v, want the architect and the implementer in the order their stops ran", decision.Suspended)
+	want := []ReleasedClaim{{Token: "legion-legion-legion-208-architect", Role: claim.RoleArchitect},
+		{Token: "legion-legion-legion-208-implementer", Role: claim.RoleImplementer},
+		{Token: "legion-legion-legion-208-tester", Role: claim.RoleImplementer}}
+	if !slices.Equal(decision.Suspended, want) {
+		t.Fatalf("the mark's suspended claims = %v, want %v: each claim by its token, in the order their stops ran", decision.Suspended, want)
 	}
 	if decision.Release <= 0 {
 		t.Fatalf("the decision's release id = %d, want the id the mark carries", decision.Release)
@@ -1326,7 +1342,7 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			if !tc.late && !tc.unrecorded {
 				recordRelease(t, st, at)
 			}
-			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary); err != nil {
+			if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary); err != nil {
 				t.Fatalf("record the implementer's suspension: %v", err)
 			}
 			if tc.woken {
@@ -1380,7 +1396,7 @@ func TestACancelOfAnIssueOutOfTheWorkflowQueuesNoResumeSoItsCloseActs(t *testing
 	openRunningTree(t, st)
 	releasedClaim(t, st, claim.RoleImplementer)
 	first, boundary, last := releaseThroughTheStore(t, st, rootIssue)
-	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", claim.RoleImplementer, boundary); err != nil {
+	if err := st.ReleaseSuspendedClaim(ctx, "legion", rootIssue, "legion-legion-legion-208-implementer", boundary); err != nil {
 		t.Fatalf("record the implementer's suspension: %v", err)
 	}
 

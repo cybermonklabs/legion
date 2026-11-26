@@ -126,6 +126,7 @@ func runsTheDefaultTask(key string) func(*testing.T, *pgxpool.Pool, *Admission, 
 				steps = append(steps, record.PlanStep{Issue: key, Generation: stored.Generation, Task: "default", Position: i + 1, Role: step.Role,
 					AgentKey: step.Key, Type: roles[step.Role].Type})
 			}
+			steps = record.NameAgents(nil, steps, nil)
 			v := record.PlanVersion{Issue: key, Generation: stored.Generation, Source: record.PlanSourceDefault, GivenAt: fixedNow}
 			task := record.PlanTask{Issue: key, Generation: stored.Generation, Task: "default", BlockText: "The project's default steps.",
 				StepsByDefault: true, State: record.TaskWaiting}
@@ -378,6 +379,17 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
 				}
 			}}},
+		// A launch the issue's pod refused is told on the issue and to the controller, and, with no
+		// start of the claim in the outbox, the claim's start is queued, to wait for the pod
+		// (workflow's podRefusedLaunch): it moves no issue, so the step's run stays open.
+		"PodRefusedLaunch": {{name: "a launch its pod refused is told and its start queued, and keeps the step", arrange: none, source: "supervise",
+			fact: intake.PodRefusedLaunch{Issue: inRetro, Role: claim.RoleImplementer, Pod: "pod-1",
+				Detail: "the pod pod-1 was built without checker, the role of its step"}, keeps: inRetro}},
+		// The end of a start row of a claim whose launch its pod refused reads the claim's starts
+		// again and queues one where none stands (workflow's refusedStartEnded): it moves no issue,
+		// so the step's run stays open.
+		"RefusedStartEnded": {{name: "a refused claim's ended start row queues its start, and keeps the step", arrange: none, source: "outbox",
+			fact: intake.RefusedStartEnded{Issue: inRetro, Role: claim.RoleImplementer}, keeps: inRetro}},
 	}
 	kinds := appliedFactKinds(t)
 	for _, kind := range kinds {

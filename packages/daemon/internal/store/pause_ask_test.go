@@ -133,7 +133,7 @@ func TestAPauseAsksTheStopOfALiveClaimOfAnotherProjectsIssueUnderItsProjectsKey(
 	var keys []string
 	inTx(t, st, func(tx pgx.Tx) error {
 		var err error
-		keys, err = ExpeditePauseStopRowsTx(ctx, tx, "LEGION", foreign.Issue, foreign.Role, pausedAt.Add(time.Minute))
+		keys, err = ExpeditePauseStopRowsTx(ctx, tx, "LEGION", foreign.Issue, foreign.Token, foreign.Role, pausedAt.Add(time.Minute))
 		return err
 	})
 	if !slices.Equal(keys, []string{"LEGION"}) {
@@ -167,6 +167,68 @@ func TestAPauseAsksTheStopOfALiveClaimOfAnotherProjectsIssueUnderItsProjectsKey(
 	}
 	if got := pauseCount(t, st, `select count(*) from project_pauses where ended_at is null`); got != 0 {
 		t.Fatalf("open pauses after the refused pause = %d, want none", got)
+	}
+}
+
+// Two claims of one issue can hold one role: the agent implementer's claim on LEGION-209's
+// tester step, beside the tester's own claim. The stop transaction of the one makes due its own
+// `pause_stop` row, which names it, and leaves the other's row waiting for that claim's own turn.
+// A row the release before wrote names no claim, and is made due for each claim of its role.
+func TestTheExpediteOfAClaimsStopMovesThatClaimsRowsAlone(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	seedPauseClaims(t, st)
+	keyed := supervise.Claim{Token: "legion-legion-legion-209-implementer", Project: "legion", Tree: "LEGION-208", Issue: "LEGION-209",
+		Role: claim.RoleTester, Generation: 2, State: supervise.StateWorking}
+	if err := st.PutClaim(ctx, keyed); err != nil {
+		t.Fatal(err)
+	}
+	own := claim.Token("legion-legion-legion-209-tester")
+	pause, _ := pauseLegion(t, st, pausedAt)
+	later := pausedAt.Add(time.Hour)
+	if _, err := st.Pool().Exec(ctx, `update outbox set next_at = $1 where `+pauseStopRows, later); err != nil {
+		t.Fatal(err)
+	}
+	due := func(token claim.Token) int {
+		t.Helper()
+		return pauseCount(t, st, `select count(*) from outbox where `+pauseStopRows+` and issue = 'LEGION-209'
+			and payload->>'claim' = $1 and next_at < $2`, string(token), later)
+	}
+	expedite := func(token claim.Token) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) error {
+			keys, err := ExpeditePauseStopRowsTx(ctx, tx, "LEGION", "LEGION-209", token, claim.RoleTester, pausedAt.Add(time.Minute))
+			if err == nil && !slices.Equal(keys, []string{"LEGION-209"}) {
+				t.Fatalf("the expedite of %s moved the rows keyed %v, want LEGION-209's", token, keys)
+			}
+			return err
+		})
+	}
+
+	expedite(keyed.Token)
+	if got := due(keyed.Token); got != 1 {
+		t.Fatalf("the keyed claim's stop rows due = %d, want its one", got)
+	}
+	if got := due(own); got != 0 {
+		t.Fatalf("the tester's own stop rows due after the keyed claim's expedite = %d, want none: they wait for its own turn", got)
+	}
+
+	legacy, err := record.NewOutboxRow("LEGION-209", record.SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208",
+		Role: claim.RoleTester, Generation: 2, Pause: pause.ID}, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ($1, $2, $3, 0, $4, '')`,
+		string(legacy.Kind), legacy.Issue, legacy.Payload, later); err != nil {
+		t.Fatal(err)
+	}
+	expedite(own)
+	if got := due(own); got != 1 {
+		t.Fatalf("the tester's own stop rows due = %d, want its one", got)
+	}
+	if got := pauseCount(t, st, `select count(*) from outbox where `+pauseStopRows+` and issue = 'LEGION-209'
+		and payload->>'claim' is null and next_at < $1`, later); got != 1 {
+		t.Fatalf("the role's stop row the release before wrote, due = %d, want it made due with the tester's own", got)
 	}
 }
 

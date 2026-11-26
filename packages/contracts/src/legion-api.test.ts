@@ -278,9 +278,11 @@ const schemas: Record<string, z.ZodType> = {
       values: z.array(
         z.strictObject({ value: z.string().min(1), since: z.number().int().positive() })
       ),
-      // The contract from which the field is no enumeration: a reader there takes any value of
-      // a grammar no list holds. Absent for a field enumerated at every contract.
-      until: z.number().int().positive().optional(),
+      // The contract from which the field is no enumeration (`EnumeratedField.OpenFrom`), which
+      // an entry fixture's `open: true` sets at the entry's number: a reader there takes any
+      // value of a grammar no list holds. Absent for a field enumerated at every contract. The
+      // numbered entries' rows open no field, so this file holds it on no row.
+      openFrom: z.number().int().positive().optional(),
     })
   ),
   // Nor this one: what the daemon serves every contract it supports
@@ -298,10 +300,11 @@ const schemas: Record<string, z.ZodType> = {
   // `domains` is the other half of a record: for each field of that answer the daemon's table
   // declares enumerated (`enumerated-fields.json`), under the field's own key path, the sorted
   // values whose arrival is at or below that contract — what a reader there admits, and not
-  // what any sample body carries. An answer with no such field writes `{}`. The rule it stands
-  // for is that a value refuses a reader as a key does: a body carrying a value the reader's
-  // enumeration does not name is refused whole, which is why the record carries the domain and
-  // the daemon serves an unadmitted value down.
+  // what any sample body carries. A field open at that contract (`openFrom` at or below it)
+  // holds no domain there, since its reader takes any value. An answer with no such field writes
+  // `{}`. The rule it stands for is that a value refuses a reader as a key does: a body carrying
+  // a value the reader's enumeration does not name is refused whole, which is why the record
+  // carries the domain and the daemon serves an unadmitted value down.
   "contract-shapes.json": z.array(
     z.strictObject({
       contract: z.number().int().positive(),
@@ -497,7 +500,6 @@ test("every answer schema the module exports is the schema of a golden", () => {
     `these answer schemas have no Go-written golden under fixtures/daemon-api: ${without.join(", ")}`
   ).toEqual([]);
 });
-
 
 /** The answer schema this module parses each answer of the daemon's table with, by the id the
  * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
@@ -714,11 +716,11 @@ function enumeratedFields(roots: Record<string, z.ZodType>): {
 // it, so the row is passed over here; a row no record carries at all is compared as any other,
 // and fails.
 //
-// A second kind has a field of this module, which reads it by a grammar rather than a list: a row
-// the daemon declares enumerated only below a contract (`until`) at or below this build's own. The
-// role of a claim is one: from the deployment roles' contract a reader takes any role of the role
-// grammar (`legionStepRole`). Such a row is passed over, and this build must read it with no
-// `z.enum`, or the row's `until` is wrong.
+// A row open at or below this build's contract (`openFrom`) is a field this build's reader takes
+// any value of, a word of a grammar no list holds, so this module reads it with no `z.enum` and
+// the case holds it to that. The row's values are what readers below `openFrom` admit, which
+// their own schemas hold. The four rows of a claim's role are such rows from the deployment
+// roles' contract entry, which this module reads by the role grammar (`legionStepRole`).
 //
 // The rows and the records are this build's (`daemon-api-records.ts`): `enumerated-fields.json`
 // and `contract-shapes.json`, which hold the numbered entries', with the rows and the records
@@ -752,6 +754,13 @@ test("every enumerated field the daemon declares holds this build's own values",
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and ANSWER_SCHEMAS names no schema for that answer`
     ).toBeDefined();
     const read = members.get(field);
+    if (row.openFrom !== undefined && row.openFrom <= build.contract) {
+      expect(
+        read,
+        `the daemon opens \`${row.keyPath}\` of the ${row.answer} answer at ${row.openFrom}, at or below this build's contract ${build.contract}, and this module still reads it with a z.enum`
+      ).toBeUndefined();
+      continue;
+    }
     expect(
       read,
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and this module reads it with no z.enum`
@@ -856,7 +865,10 @@ test("the example entry fixtures compose the one record expected of them", () =>
 test("an entry row that adds one enumerated value twice is refused, naming the entry", () => {
   const examples = path.join(import.meta.dir, "..", "testdata", "entry-fixture-examples");
   const base: ContractRecords = JSON.parse(readFileSync(path.join(examples, "base.json"), "utf8"));
-  expect(base.enumeratedFields.map((row) => row.keyPath)).toEqual(["issues.*.phase"]);
+  expect(base.enumeratedFields.map((row) => row.keyPath)).toEqual([
+    "issues.*.phase",
+    "issues.*.role",
+  ]);
   // A row the base holds, and a row no record before it declares.
   for (const keyPath of ["issues.*.phase", "issues.*.kind"]) {
     const entry = {
@@ -873,6 +885,40 @@ test("an entry row that adds one enumerated value twice is refused, naming the e
       `entry 20261126000000_twice (contract ${base.contract + 1}) adds \`merging\` to \`${keyPath}\` of the state answer in enumerated-fields.json, and that row holds it already`
     );
   }
+});
+
+// An entry opens a row of `enumerated-fields.json` that a row before it declares and no entry
+// before it opened, as the daemon's gate requires (`withEnumeratedRows` in `internal/api`): a row
+// no record before it declares is refused, naming the entry, and so is an entry that opens a row
+// an entry before it opened. The first opening of the base's `issues.*.role` is taken, open from
+// the entry's number, which is the control: the refusals are of the two conditions alone.
+test("an entry row that opens no row, or an open one, is refused, naming the entry", () => {
+  const examples = path.join(import.meta.dir, "..", "testdata", "entry-fixture-examples");
+  const base: ContractRecords = JSON.parse(readFileSync(path.join(examples, "base.json"), "utf8"));
+  const opening = (name: string, number: number, keyPath: string) => ({
+    name,
+    number,
+    fixture: {
+      answers: [],
+      routes: [],
+      answerRows: [],
+      enumeratedRows: [{ answer: "state", keyPath, values: [], open: true as const }],
+    },
+  });
+  const first = opening("20261126000000_open", base.contract + 1, "issues.*.role");
+  const opened = composeEntries(base, [first]).at(-1)?.enumeratedFields;
+  expect(opened?.find((row) => row.keyPath === "issues.*.role")?.openFrom).toBe(base.contract + 1);
+  expect(opened?.find((row) => row.keyPath === "issues.*.phase")?.openFrom).toBeUndefined();
+
+  expect(() =>
+    composeEntries(base, [opening("20261126000000_open", base.contract + 1, "issues.*.kind")])
+  ).toThrow(
+    `entry 20261126000000_open (contract ${base.contract + 1}) opens \`issues.*.kind\` of the state answer in enumerated-fields.json, and the rows before it hold no such row`
+  );
+  const again = opening("20261126000001_again", base.contract + 2, "issues.*.role");
+  expect(() => composeEntries(base, [first, again])).toThrow(
+    `entry 20261126000001_again (contract ${base.contract + 2}) opens \`issues.*.role\` of the state answer in enumerated-fields.json, and that row is open from ${base.contract + 1} already`
+  );
 });
 
 // What that equality catches, and the one place it is blind. A key no schema names is dropped
@@ -920,7 +966,7 @@ test("the gate names a key no schema names, and is blind under the loose blocks"
 // `workers` is keyed by a plain string, so the schema no longer holds the role names and the gate
 // above cannot see a role the Go side adds. The key list it held is held here instead: every
 // worker key of every golden is a role of the step grammar, one of Legion's six or a role of the
-// deployment (contract 258), as LEGION-241's `checker` is.
+// deployment (the deployment roles' contract entry), as LEGION-241's `checker` is.
 test("every golden's worker keys are roles of the step grammar", () => {
   const states = Object.keys(schemas).filter((name) => schemas[name] === LegionStateResponse);
   expect(states.length).toBeGreaterThan(0);
@@ -1155,10 +1201,10 @@ test("the phase lists are the daemon's, with awaiting_person after admitted and 
   ).toBeTrue();
 });
 
-// Contract 258: a step of a role of the deployment runs as the phase `step`, and the issue names
-// the role that works it, `stepRole`, at `step` and while a hold keeps it out of that step. An
-// issue whose pod was built before that role names it in `startWaitsForPod` and holds no claim of
-// it; a held issue keeps the failed claim of that role as its worker.
+// A step of a role of the deployment runs as the phase `step`, and the issue names the role that
+// works it, `stepRole`, at `step` and while a hold keeps it out of that step. An issue whose pod
+// was built before that role names it in `startWaitsForPod` and holds no claim of it; a held issue
+// keeps the failed claim of that role as its worker.
 test("the state golden carries an issue at step and the role of the deployment that works it", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   const atStep = state.issues["LEGION-240"];
@@ -1170,8 +1216,8 @@ test("the state golden carries an issue at step and the role of the deployment t
   expect(Object.keys(held?.workers ?? {})).toEqual(["checker"]);
 });
 
-// Contract 258: a move back may go to `step` and name the step it returns to by its place,
-// 1 for the task's first (`api.PhaseBackwardRequest.ReturnTo`), as a failed completion does.
+// A move back may go to `step` and name the step it returns to by its place, 1 for the task's first
+// (`api.PhaseBackwardRequest.ReturnTo`), as a failed completion does.
 test("a move back may go to step and name the place it returns to", () => {
   const move = { grantId: "grant-208", to: "step", reason: "the check failed", returnTo: 2 };
   expect(LegionPhaseBackwardRequest.safeParse(move).error?.issues ?? []).toEqual([]);
@@ -2078,6 +2124,40 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
+// A claim whose refused launch's fact the store has not taken carries `unrecordedRefusal` on the
+// operator routes (`api.OperatorClaim.UnrecordedRefusal`): when the first failed try failed, how
+// many tries have failed, and the last try's error. The daemon writes it only while such a fact
+// fails, and the schema must name it, since a key it does not name is stripped. A count below one
+// or an empty error, which the daemon never writes, is refused.
+test("an operator claim carries a refusal the store has not recorded", () => {
+  const listing = fixture("operator-claims.json") as {
+    claims: {
+      token: string;
+      unrecordedRefusal?: { since: string; attempts: number; error: string };
+    }[];
+  };
+  const testerClaim = "legion-legion-legion-211-tester";
+  const tester = listing.claims.find((claim) => claim.token === testerClaim);
+  if (tester === undefined) {
+    throw new Error(`operator-claims fixture lacks ${testerClaim}`);
+  }
+  const unrecorded = {
+    since: "2026-11-23T17:00:00Z",
+    attempts: 3,
+    error: `apply fact supervise/pod-refused:${testerClaim}:1: the database did not answer`,
+  };
+  tester.unrecordedRefusal = unrecorded;
+  expect(
+    LegionOperatorClaimsResponse.parse(listing).claims.find((claim) => claim.token === testerClaim)
+      ?.unrecordedRefusal
+  ).toEqual(unrecorded);
+
+  tester.unrecordedRefusal = { ...unrecorded, attempts: 0 };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+  tester.unrecordedRefusal = { ...unrecorded, error: "" };
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // it shaped the body to — and the body it narrows for a caller below it carries no such key at
@@ -2956,10 +3036,11 @@ test("a reader at the previous contract parses the state body this daemon serves
   const golden = fixture("state.json") as {
     strandedClaims: { issue: string; role: string; state: string; token?: string }[];
   };
-  // Each entry names its claim's token since contract 259, a key the 45 reader does not know: a
-  // strict object refuses the entry, and so the whole state body, over it. That is why the state
-  // route serves a pod below 259 every entry without it (`api`'s `withoutStrandedTokens`, pinned
-  // on the Go side), and the entries below are read as such a pod is served them.
+  // Each entry names its claim's token since the stranded token's contract entry, a key the 45
+  // reader does not know: a strict object refuses the entry, and so the whole state body, over it.
+  // That is why the state route serves a pod below that entry every entry without it (`api`'s
+  // `withoutStrandedTokens`, pinned on the Go side), and the entries below are read as such a pod
+  // is served them.
   const withToken = golden.strandedClaims[0];
   if (withToken?.token === undefined) {
     throw new Error("state fixture lacks a stranded claim with its token");
@@ -2997,10 +3078,11 @@ test("a reader at the previous contract parses the state body this daemon serves
     expect(refused.error?.issues[0]?.path).toEqual(["state"]);
   }
 
-  // A claim of a role of the deployment (contract 258), LEGION-241's checker, is the other entry
-  // this reader cannot take: its role enum names Legion's six. That is why the state route serves
-  // a pod below 258 the report without it (`api`'s row of `stateNarrowings` for the roles of a
-  // deployment, pinned on the Go side) rather than the body it would refuse.
+  // A claim of a role of the deployment (the deployment roles' contract entry), LEGION-241's
+  // checker, is the other entry this reader cannot take: its role enum names Legion's six. That is
+  // why the state route serves a pod below that entry the report without it (`api`'s row of
+  // `stateNarrowings` for the roles of a deployment, pinned on the Go side) rather than the body it
+  // would refuse.
   const deployed = state.strandedClaims.filter((stranded) => !builtin.has(stranded.role));
   expect(deployed).toEqual([{ issue: "LEGION-241", role: "checker", state: "failed" }]);
   for (const stranded of deployed) {
@@ -3105,12 +3187,25 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // contract below the 201 the caller states (`recordedContractAtOrBelow`), INFRA-4605's, which
   // moved no answer's shape, and the lowest plugin contract reports the claims of the snapshot the
   // route projected the body from, a pod at 201, which `state.json`'s own fixture does not hold.
-  // The mark holds no `daemon`: the narrowed golden omits the daemon's own number,
-  // which an entry moves, and the Go golden test holds it to that number separately.
-  // Remove every later state band as well as the repositories block: assignments, deployment
-  // roles, stranded tokens, tasks, intake give-ups, pod holds, priority, claim cause times and
-  // dispatch credentials. The caches source is a later value too, stripped below while keeping
-  // its other fields. Read recorded contracts from this build's registry-backed fixture set.
+  // The mark holds no `daemon`: `TestStateNarrowedRepositoriesGolden` takes out the daemon's own
+  // number, which an entry moves, and holds it to that number apart.
+  // Seven frozen bands stand above 199: the repositories block's at 202; contract 220's, which takes
+  // `plan` off each assignment; the intake's give-ups' at 228, so the narrowing leaves
+  // `intakeGiveUps` off; the pod hold's at 246, which leaves `podHold` off every issue
+  // (`withoutPodHold`); contract 250's, which takes `priority` off each issue and off its
+  // `waitingLine`; contract 256's, which takes `lastDeathAt` and `lastStartFailureAt` off each
+  // claim view; and contract 275's, which takes `dispatchCredential` off the state; so the
+  // golden's issues, rows and claim views are compared without them. The tasks entry
+  // (`tasksContract`) also stands above the seven bands. It serves each issue without its `tasks`
+  // (`withoutTasks`). The roles of a deployment's entry (`deploymentRolesContract`) stands above
+  // them all: it serves the state golden's issues at step and its claims of a role of the
+  // deployment as a caller below that entry reads them (`belowDeploymentRoles`). The stranded
+  // token's entry (`strandedTokenContract`) stands above that: it serves each claim nothing will
+  // wake and each claim view without its `token`, and each issue without its `otherClaims`
+  // (`withoutStrandedTokens`, `withoutClaimTokens`). One value strip stands above 199 as well:
+  // `caches`, the source of the repository-cache-room row, arrived at contract 213, so that row is
+  // served here without its `source`, every other field of it and every other row as the state
+  // golden holds them.
   const recordedBelow = daemonApiRecords(fixtureDir)
     .records.map((record) => record.contract)
     .filter((contract) => contract < repositoriesLiveContract);
@@ -3130,8 +3225,6 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     intakeGiveUps: _giveUps,
     ...rest
   } = fixtureBody("state.json");
-  const below = belowDeploymentRoles(rest) as Record<string, unknown>;
-  const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
   const withoutCauseTimes = (view: unknown): unknown => {
     if (!isJsonObject(view)) {
       return view;
@@ -3140,7 +3233,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     return kept;
   };
   const issues = Object.fromEntries(
-    Object.entries(below.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
+    Object.entries(rest.issues as Record<string, Record<string, unknown>>).map(([key, issue]) => {
       const { podHold: _podHold, priority: _priority, ...kept } = issue;
       const narrowed: Record<string, unknown> = { ...kept };
       const line = kept.waitingLine;
@@ -3178,12 +3271,36 @@ test("a reader at contract 152 parses the repositories block served below 202", 
     const { source: _source, ...kept } = row;
     return kept;
   });
+  const below = belowDeploymentRoles({ ...rest, issues, capabilities: withoutCachesSource });
+  const stranded = below.strandedClaims as Record<string, unknown>[] | undefined;
+  const withoutToken = (view: unknown): unknown => {
+    if (typeof view !== "object" || view === null) return view;
+    const { token: _token, ...kept } = view as Record<string, unknown>;
+    return kept;
+  };
+  const issuesWithoutTokens = Object.fromEntries(
+    Object.entries((below.issues ?? {}) as Record<string, Record<string, unknown>>).map(
+      ([key, { otherClaims: _others, tasks: _tasks, architect, workers, ...issue }]) => [
+        key,
+        {
+          ...issue,
+          ...(architect === undefined ? {} : { architect: withoutToken(architect) }),
+          ...(workers === undefined
+            ? {}
+            : {
+                workers: Object.fromEntries(
+                  Object.entries(workers as Record<string, Record<string, unknown>>).map(
+                    ([role, worker]) => [role, { ...worker, claim: withoutToken(worker.claim) }]
+                  )
+                ),
+              }),
+        },
+      ]
+    )
+  );
   expect(narrowedRest).toEqual({
     ...below,
-    capabilities: withoutCachesSource,
-    issues: Object.fromEntries(
-      Object.entries(issues).map(([key, { tasks: _tasks, ...issue }]) => [key, issue])
-    ),
+    issues: issuesWithoutTokens,
     ...(stranded === undefined
       ? {}
       : { strandedClaims: stranded.map(({ token: _token, ...kept }) => kept) }),
@@ -3201,8 +3318,9 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   ]);
 });
 
-/** `state` as the state route serves it to a caller below the roles of a deployment (contract
- * 258, `withoutDeploymentRoles` and `withoutDeploymentRoleClaims` in `internal/api/shaping.go`):
+/** `state` as the state route serves it to a caller below the roles of a deployment (the
+ * deployment roles' contract entry, `withoutDeploymentRoles` and `withoutDeploymentRoleClaims` in
+ * `internal/api/shaping.go`):
  * an issue at `step` at `implementing`, a hold from `step` as one from `implementing`, a pending
  * task at `step` as one at `implementing`, no `stepRole` and no `startWaitsForPod`; and no
  * stranded claim, waiting wake or pause stop of a role outside Legion's six. An issue's workers
@@ -3359,7 +3477,8 @@ test("the state golden shows a claim's capability report beside its locator", ()
 // each claim state the rule can name (internal/api's state_golden_test.go says so): LEGION-210's
 // failed implementer, whose issue is held, LEGION-211's suspended one, LEGION-212's retired
 // tester, which only a start of the phase it owns — one no rule the daemon runs queues — would
-// relaunch (contract 56) — four keys each, neither the suspended nor the retired one wider than
+// relaunch (contract 56), and LEGION-241's failed checker, a role of the deployment (the deployment
+// roles' contract entry) — four keys each, neither the suspended nor the retired one wider than
 // the failed one, the fourth the claim's token, which tells two claims of one role on one issue
 // apart — and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list may be left out", () => {
@@ -3974,10 +4093,10 @@ test("a claim's registration and the controller's are told apart by their schema
   expect(LegionControllerRegisterResponse.safeParse(claim).success).toBeFalse();
 });
 
-// A role of the deployment (contract 258): a claim of it registers, an operator acts on it, and
-// the state names it among the claims nothing will wake, the wakes the pacing holds and the stops
-// an open pause waits on. The controller's claim holds no issue, so no request of a claim recovery
-// may name it.
+// A role of the deployment (the deployment roles' contract entry): a claim of it registers, an
+// operator acts on it, and the state names it among the claims nothing will wake, the wakes the
+// pacing holds and the stops an open pause waits on. The controller's claim holds no issue, so no
+// request of a claim recovery may name it.
 test("a claim, a registration and an operator's claim take a role of the deployment", () => {
   const registration = { ...fixtureBody("register.json"), role: "checker" };
   expect(LegionRegisterResponse.safeParse(registration).error?.issues ?? []).toEqual([]);

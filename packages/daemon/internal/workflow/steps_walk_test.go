@@ -172,7 +172,7 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, record.PhaseRow{})
 		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
-			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan held no tester."}})
+			Claim: workerOr(t, pool, root.Key, claim.RoleImplementer, "implement-claim"), Summary: "retro done", Commit: "head", PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan held no tester."}})
 		var rated []record.StepRecord
 		for _, write := range stepWrites(t, pool, root.Key) {
 			if write.PlanRating != nil {

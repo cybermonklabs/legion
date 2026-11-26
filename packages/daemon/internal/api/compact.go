@@ -213,8 +213,9 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // oversight: a fresh session stops the controller's process and starts it again, which is the
 // daemon's controller keeper's to do in every state the controller is in, and a compaction
 // stops nothing — the session, its process and everything the controller holds stay, and only
-// the transcript gets shorter. The controller's own door still cannot name it, since
-// `controller` is no role a claim token is built from (claimCompact).
+// the transcript gets shorter. The controller's own door still cannot name it, since that door
+// names a claim by an issue and a role of it, or by the token of an agent of that issue, and the
+// controller's claim belongs to no issue (controllerClaim).
 //
 // So the refusals of this door are the only ones a controller claim ever reads, and what they
 // name as starting it again is never the fresh session, which would refuse the very claim they

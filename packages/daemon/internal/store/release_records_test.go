@@ -146,7 +146,7 @@ func TestTheStrandedReadSeesOnlyTheWakesOfTheNewestRelease(t *testing.T) {
 		t.Helper()
 		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, _, err := RecordPodWakeTx(ctx, tx, PodResume{Release: release, Project: "legion", Issue: rootIssue,
-				Role: role, Kind: pods.WakeDelivery, At: when})
+				Role: role, Claim: "legion-legion-legion-208-" + role, Kind: pods.WakeDelivery, At: when})
 			return err
 		}); err != nil {
 			t.Fatalf("record the wake of %s: %v", role, err)

@@ -302,7 +302,7 @@ func replacedThroughAProcessBesideAWaitingClaim(t *testing.T, work runtime.Works
 // line as found, which is "found work" or "found no work".
 func wantReadThroughTheTester(t *testing.T, rig *podUpdateRig, line map[string]any, found string) {
 	t.Helper()
-	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Role != claim.RoleTester {
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) != 1 || reads[0].Issue != podUpdateIssue || reads[0].Token != rig.tokens[claim.RoleTester] {
 		t.Errorf("the workspace was read %+v, want one read of %s through the tester", reads, podUpdateIssue)
 	}
 	if line["workspaceRead"] != found || line["workspaceReadBy"] != string(claim.RoleTester) {

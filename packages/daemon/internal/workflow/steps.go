@@ -102,6 +102,17 @@ func placeNamed(place record.TaskPlace, at phase.Phase) stepSite {
 	return stepSite{at: at, place: place, named: true}
 }
 
+// resolveSite uses the named place on a stored walk. A legacy walk locates the phase on its line.
+func (w Walk) resolveSite(site stepSite) (record.TaskPlace, bool) {
+	if site == (stepSite{}) {
+		return record.TaskPlace{}, false
+	}
+	if site.named && w.Stored {
+		return site.place, true
+	}
+	return w.placeIn(site.at)
+}
+
 // stepAt is the one place that decides the step issue runs at site on w, the walk of its run, and
 // whether its runs are recorded (placeOnWalk), and false for no place and for a phase that runs no
 // step — admitted, awaiting a person, held, done, a phase the walk's line does not hold — or a
@@ -119,13 +130,7 @@ func stepAt(w Walk, issue record.Issue, site stepSite) (standing, bool) {
 // runs today's steps of the task default (todaysSteps), so an issue that ran before plan rows
 // keeps the ids of its records.
 func placeOnWalk(w Walk, site stepSite) (place record.StepPlace, role stepRole, typ plan.Type, ok bool) {
-	if site == (stepSite{}) {
-		return record.StepPlace{}, "", "", false
-	}
-	stands, ok := site.place, site.named
-	if !site.named || !w.Stored {
-		stands, ok = w.placeIn(site.at)
-	}
+	stands, ok := w.resolveSite(site)
 	if !ok {
 		return record.StepPlace{}, "", "", false
 	}
@@ -403,28 +408,22 @@ func (e *Engine) placeToken(s TaskScope, at phase.Phase, role claim.Role) (claim
 }
 
 // stepToken is the claim token of the agent that does the work of place on w, issue's walk, whose
-// role is role: the one function that makes the token of a step's agent, which each entry takes
-// (enter) and writes to the step's phases row (record.PhaseRow.Claim) and to its step record
-// (startStep). A step of the key owner is the tree's architect's, as the accepting step's is
-// (startAgent). Where AgentAt names an agent, it is that agent's token (claim.AgentToken), so the
-// steps of one key are one claim; where it names none — the merge, and every place of a run with no
-// plan rows — it is the role's own token (R20).
+// role is role, which each entry takes (enter) and writes to the step's phases row
+// (record.PhaseRow.Claim) and to its step record (startStep). Where the walk holds a step for place
+// (stepAt), it is that step's token (record.StepToken, the one rule of it): a step of the key owner
+// is the tree's architect's, as the accepting step's is (startAgent), and every other step's is its
+// agent's (claim.AgentToken), so the steps of one key are one claim. Where it holds none — the
+// merge, and every place of a run with no plan rows — it is the role's own token (R20).
 func (e *Engine) stepToken(issue record.Issue, w Walk, place record.TaskPlace, role claim.Role) (claim.Token, error) {
-	if w.Stored && place.Kind == record.PlaceStep && place.Position >= 1 && place.Position <= len(w.Steps) {
-		step := w.Steps[place.Position-1]
-		if plan.AgentOf(w.Task, place.Position, plan.Step{Role: step.Role, Key: step.AgentKey}).Owner() {
-			return stepClaim(issue, issue.Tree, claim.RoleArchitect)
-		}
-	}
-	name := w.AgentAt(place)
-	if name == "" {
+	step, ok := w.stepAt(place)
+	if !ok {
 		return stepClaim(issue, issue.Key, role)
 	}
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {
 		return "", err
 	}
-	return claim.AgentToken(project, issue.Key, name)
+	return record.StepToken(project, issue.Key, issue.Tree, step)
 }
 
 // acceptingAgent is the agent of issue's accepting step: the claim of the architect that owns

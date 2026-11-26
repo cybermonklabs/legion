@@ -291,12 +291,12 @@ func TestProjectShowsOperatorSpawnedClaimsWithoutRecordIssue(t *testing.T) {
 		t.Fatalf("operator-spawned issue key = %q, want %q", view.Key, issue)
 	}
 	// No round is open over either claim, which every claim view says of itself
-	// (api.UpdateStateOf).
-	architectView := api.ClaimView{Session: "session-1", State: string(supervise.StateReady), UpdateState: api.UpdateStateNone}
+	// (api.UpdateStateOf), and each view names its claim's token.
+	architectView := api.ClaimView{Token: architect, Session: "session-1", State: string(supervise.StateReady), UpdateState: api.UpdateStateNone}
 	if !reflect.DeepEqual(view.Architect, &architectView) {
 		t.Fatalf("operator-spawned architect = %#v, want %#v", view.Architect, &architectView)
 	}
-	implementerView := api.ClaimView{Session: "session-2", State: string(supervise.StateIdle), UpdateState: api.UpdateStateNone}
+	implementerView := api.ClaimView{Token: implementer, Session: "session-2", State: string(supervise.StateIdle), UpdateState: api.UpdateStateNone}
 	if got, want := view.Workers[claim.RoleImplementer], (api.PhaseView{Claim: implementerView}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("operator-spawned implementer = %#v, want %#v", got, want)
 	}
@@ -1340,25 +1340,25 @@ func TestTheServedStateNamesTheRunningDeploymentRole(t *testing.T) {
 		issues: []record.Issue{issue("LEGION-70", phase.Step), held, atTesting, child, stopped},
 		phases: map[string][]record.PhaseRow{
 			"LEGION-70": {
-				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: "legion-70-implementer", Entry: 2},
-				{Issue: "LEGION-70", Role: checker, Claim: "legion-70-checker", Entry: 3},
+				{Issue: "LEGION-70", Role: claim.RoleImplementer, Claim: realToken("LEGION-70", claim.RoleImplementer), Entry: 2},
+				{Issue: "LEGION-70", Role: checker, Claim: realToken("LEGION-70", checker), Entry: 3},
 			},
-			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: "legion-71-checker", Entry: 4}},
-			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: "legion-72-tester", Entry: 2}},
-			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: "legion-73-checker", Entry: 2}},
+			"LEGION-71": {{Issue: "LEGION-71", Role: checker, Claim: realToken("LEGION-71", checker), Entry: 4}},
+			"LEGION-72": {{Issue: "LEGION-72", Role: claim.RoleTester, Claim: realToken("LEGION-72", claim.RoleTester), Entry: 2}},
+			"LEGION-73": {{Issue: "LEGION-73", Role: checker, Claim: realToken("LEGION-73", checker), Entry: 2}},
 		},
 		stopped: map[string]record.RunningStep{"LEGION-74": checkerStep},
 	}
 	claims := []supervise.Claim{
-		{Token: "legion-70-implementer", Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
+		{Token: realToken("LEGION-70", claim.RoleImplementer), Issue: "LEGION-70", Role: claim.RoleImplementer, State: supervise.StateIdle,
 			Session: "ses_implementer_70", GivenEntry: 2},
-		{Token: "legion-70-checker", Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-70", checker), Issue: "LEGION-70", Role: checker, State: supervise.StateSuspended,
 			Session: "ses_checker_70", GivenEntry: 1},
-		{Token: "legion-71-checker", Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
+		{Token: realToken("LEGION-71", checker), Issue: "LEGION-71", Role: checker, State: supervise.StateSuspended,
 			Session: "ses_checker_71", GivenEntry: 1},
-		{Token: "legion-72-tester", Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
+		{Token: realToken("LEGION-72", claim.RoleTester), Issue: "LEGION-72", Role: claim.RoleTester, State: supervise.StateWorking,
 			Session: "ses_tester_72", GivenEntry: 2},
-		{Token: "legion-73-checker", Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
+		{Token: realToken("LEGION-73", checker), Issue: "LEGION-73", Role: checker, State: supervise.StateWorking,
 			Session: "ses_checker_73", GivenEntry: 2,
 			Handshake: supervise.EntryHandshake{Entry: 2, Generation: 1, QueuedAt: queuedAt, ConfirmedAt: confirmedAt}},
 	}

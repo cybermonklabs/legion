@@ -43,13 +43,30 @@ func deploymentEngine() *Engine { return withDeployment(returnEngine()) }
 // stepHead is the commit every completion of these tests reports.
 const stepHead = "0123456789abcdef0123456789abcdef01234567"
 
+// workerOr is the claim role's phases row of key names on the step it runs, the claim a real
+// route's grant carries (the step's worker), or fallback where the row runs no step or names no
+// claim: a completion from any other claim of the role is refused (HANDOFF_NOT_THE_STEPS_WORKER).
+func workerOr(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role, fallback claim.Token) claim.Token {
+	t.Helper()
+	var token string
+	if err := pool.QueryRow(t.Context(), `select coalesce((select claim from phases
+		where issue = $1 and role = $2 and step_task <> '' and claim <> ''), '')`, key, string(role)).Scan(&token); err != nil {
+		t.Fatalf("read the worker on %s's %s step: %v", key, role, err)
+	}
+	if token == "" {
+		return fallback
+	}
+	return claim.Token(token)
+}
+
 // stepReports applies role's completion of key at its generation 1 with verdict ("" for none),
-// summary and returnTo (0 for none), as the route hands it to the engine, and fails the test on a
-// refusal; handoffRecord is the handoff record it names ("" for none).
+// summary and returnTo (0 for none), as the route hands it to the engine, from the step's worker
+// (workerOr), and fails the test on a refusal; handoffRecord is the handoff record it names (""
+// for none).
 func stepReports(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role, verdict, summary, handoffRecord string, returnTo int) {
 	t.Helper()
-	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: claim.Token(string(role) + "-claim"), Summary: summary, Commit: stepHead,
-		Verdict: verdict, HandoffRecord: handoffRecord, HandoffVersion: 1, ReturnTo: returnTo}
+	fact := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: workerOr(t, pool, key, role, claim.Token(string(role)+"-claim")),
+		Summary: summary, Commit: stepHead, Verdict: verdict, HandoffRecord: handoffRecord, HandoffVersion: 1, ReturnTo: returnTo}
 	if result := applyFacts(t, pool, engine)(string(role)+"-"+verdict+"-"+handoffRecord+"-"+summary, fact); result.Refusal != nil {
 		t.Fatalf("the %s's completion of %s was refused: %+v", role, key, result.Refusal)
 	}
@@ -145,10 +162,12 @@ func lastEndOfStep(t *testing.T, pool *pgxpool.Pool, key string, step int) recor
 }
 
 // Two steps of roles the deployment defines are two places of one phase: in `implementer checker
-// linter` the checker's pass starts the linter, the issue stays at step with the linter running, a
-// late completion of the checker moves nothing, and the linter's fail naming step 2 starts the
-// checker again. In `implementer checker linter critic`, the critic's fail naming step 3 starts the
-// linter again, and the critic's step ends failed, returned to 3.
+// linter` the checker's pass starts the linter, the issue stays at step with the linter running, the
+// linter's row and the record of its step name the linter's own claim and not the checker's (the
+// place the task stands at, not the first place that runs as step), a late completion of the
+// checker moves nothing, and the linter's fail naming step 2 starts the checker again. In
+// `implementer checker linter critic`, the critic's fail naming step 3 starts the linter again, and
+// the critic's step ends failed, returned to 3.
 func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 	types := map[string]string{"checker": "testing", "linter": "testing", "critic": "review"}
 
@@ -165,6 +184,22 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 		}
 		if starts := roleStartsOf(t, pool, root.Key, "linter"); len(starts) != 1 {
 			t.Fatalf("the linter's starts = %+v, want one", starts)
+		}
+		linter, err := stepClaim(root, root.Key, "linter")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := workerOr(t, pool, root.Key, "linter", ""); got != linter {
+			t.Fatalf("the linter's row names the claim %q, want the linter's own, %q", got, linter)
+		}
+		var started []string
+		for _, write := range writesAt(stepWrites(t, pool, root.Key), "step", 3) {
+			if isStart(write) {
+				started = append(started, write.Agent)
+			}
+		}
+		if len(started) != 1 || started[0] != string(linter) {
+			t.Fatalf("the starts of step 3 name the agents %q, want one, the linter's claim %q", started, linter)
 		}
 
 		fact := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: "checker", Claim: "checker-claim", Summary: "Checked again.", Commit: stepHead, Verdict: "pass"}
@@ -351,13 +386,9 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		engine := deploymentEngine()
 		root := checkerAtStep2(t, pool)
 		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
-		project, err := claim.ProjectToken(root.Project)
+		checker, err := stepClaim(root, root.Key, "checker")
 		if err != nil {
-			t.Fatalf("the project token: %v", err)
-		}
-		checker, err := claim.NewToken(project, root.Key, "checker")
-		if err != nil {
-			t.Fatalf("the checker's token: %v", err)
+			t.Fatal(err)
 		}
 
 		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Claim: checker})
@@ -717,6 +748,44 @@ func TestABootStopsATaskWhoseRoleTheDeploymentLost(t *testing.T) {
 	kept := migratedPool(t)
 	defined := checkerAtStep2(t, kept)
 	seedTreeLifecycle(t, kept, defined.Key)
+	applyRefusingNothing(t, kept, deploymentEngine(), intake.DaemonBooted{Boot: 1})
+	if task := taskOf(t, kept, deploymentEngine(), defined.Key); task.State != record.TaskRunning {
+		t.Fatalf("task a under a deployment that defines the checker = %s (%q) after the boot, want running", task.State, task.StoppedReason)
+	}
+}
+
+// A keyed agent runs in the slot of its name, the role of its first step (record.NameAgents), so
+// in `implementer checker:a tester:a` key a's agent is named checker and runs the tester's step in
+// the checker's slot. A daemon that restarts with settings that no longer define the checker,
+// while the task stands at that tester step, stops the task at its boot as it stops a step of the
+// checker itself: the reason names the step, the agent and its slot's role, and the owner is told
+// once, in a task-stopped notice that names the checker. The control is the same task under a
+// deployment that defines the checker, which the boot leaves running.
+func TestABootStopsATaskWhoseAgentIsNamedForARoleTheDeploymentLost(t *testing.T) {
+	keyedAtTester := func(t *testing.T, pool *pgxpool.Pool) record.Issue {
+		t.Helper()
+		root := stepRoot(t, pool, phase.Testing)
+		seedStepsAt(t, pool, root.Key, root.Generation, 3, map[string]string{"checker": "testing"}, "implementer", "checker:a", "tester:a")
+		seedTreeLifecycle(t, pool, root.Key)
+		return root
+	}
+	pool := migratedPool(t)
+	engine := lostChecker()
+	root := keyedAtTester(t, pool)
+
+	applyRefusingNothing(t, pool, engine, intake.DaemonBooted{Boot: 1})
+
+	const why = "step 3 is the work of the agent checker, which runs in the slot of the role checker, which the deployment no longer defines"
+	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != why {
+		t.Fatalf("task a after the boot = %s stopped with %q, want stopped with %q", task.State, task.StoppedReason, why)
+	}
+	stopped := noticesOf(t, pool, root.Key, "task-stopped")
+	if len(stopped) != 1 || stopped[0].Role != "checker" || stopped[0].Reason != "task a of LEGION-208 was stopped: "+why {
+		t.Fatalf("the task-stopped notices = %+v, want exactly one, naming the checker, with the reason", stopped)
+	}
+
+	kept := migratedPool(t)
+	defined := keyedAtTester(t, kept)
 	applyRefusingNothing(t, kept, deploymentEngine(), intake.DaemonBooted{Boot: 1})
 	if task := taskOf(t, kept, deploymentEngine(), defined.Key); task.State != record.TaskRunning {
 		t.Fatalf("task a under a deployment that defines the checker = %s (%q) after the boot, want running", task.State, task.StoppedReason)

@@ -358,9 +358,10 @@ func LongestPost(body string) string {
 type NoticeKind string
 
 // Notice is a role-facing workflow observation. A phase-finished notice carries the finishing
-// worker's own summary and, beside it, the verdict it gave (the tester's pass or fail). A
-// review-stuck notice's summary names the fact that wrote it, and its topic is the topic of the
-// claim of the worker on the reviewer's step, which the architect asks for the decision.
+// worker's own summary and, beside it, the verdict it gave (the pass or fail of the tester or of
+// a role of the deployment). A review-stuck notice's summary names the fact that wrote it, and its
+// topic is the topic of the claim of the worker on the reviewer's step, which the architect asks
+// for the decision.
 type Notice struct {
 	Kind NoticeKind `json:"kind"`
 	Role claim.Role `json:"role,omitempty"`
@@ -995,9 +996,13 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
 //
-// A pod-wait-held notice names an issue whose pod lacks the slot of a start's claim or the role
-// of its step, built before the deployment defined that name, where the start waits for it (the
-// outbox's roleWaitsForItsPod), and nothing ends that wait until
+// A pod-wait-held notice names an issue whose pod a start waits for: one that lacks the slot of
+// the start's claim or the role of its step, built before the deployment defined that name (the
+// outbox's roleWaitsForItsPod), or one whose launcher of a re-roled claim's slot starts a child
+// before its gh files hold the new role's credential (reroleWaitsForCredential). The workflow
+// also tells it of a claim whose launch that pod refused, at the first refusal and hourly while
+// the pod stands (podRefusedLaunch), which the pod's replacement ends. Otherwise nothing ends
+// that wait until
 // an operator acts: the idle rule keeps the pod because an operator's suspension holds a claim of
 // it (the daemon's releaseUnownedPod, told once per streak of that hold), or the deployment's idle
 // release is off and no claim records a process in the pod, so no update round opens over it
@@ -1377,9 +1382,37 @@ type SuperviseRequest struct {
 	// refuses a row that carries it (DisallowUnknownFields): the way back of
 	// migrations/20261122131321_delivery_branch.up.sql takes it off every supervise row.
 	Branch string `json:"branch,omitempty"`
+	// RefusedPod marks a start a refused launch queued (workflow's queueRefusedStart): the uid of
+	// the issue pod whose refusal of the claim's launch queued it (supervise.Machine.RefusedPod).
+	// The end of a start marked with the pod that still refuses the claim asks the workflow for no
+	// further start (the daemon outbox's startRowEnded, which says why). Every other start carries
+	// none. The release before decodes strictly (DisallowUnknownFields), so the way back of
+	// 20261124213820_plan_step_agent deletes the key from each queued row before that release boots.
+	RefusedPod string `json:"refusedPod,omitempty"`
+	// LeaveSession is the session a start's claim must not resume: the session the claim recorded
+	// when the step was written whose agent took a name a key's agent held in an earlier generation
+	// (PlanStep.LeaveSession), which every start of that agent carries. The claim leaves it where it
+	// still records it, so the agent starts in a session of its own, and a claim that runs it is
+	// suspended first (the daemon outbox's start, supervise's revive); a claim that records another
+	// session has left it already, and the start resumes that one. Every other start carries none.
+	// The release before decodes strictly, so the way back of 20261124213820_plan_step_agent deletes
+	// the key from each queued row before that release boots.
+	LeaveSession string `json:"leaveSession,omitempty"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
+
+// BringsBack says whether the request is a start that brings a role back and hands it nothing: a
+// start that carries no task, no news, no entry, no production check's look and no wake's mark. It
+// is the start a re-admission's promotion writes for each role of a mid-phase member that has run
+// and is not the phase's own (admit's startMidPhaseMembers): the role comes back and is told
+// nothing. Such a start serves no work of the phase it names, which is the phase the member stood
+// in when it was queued, so it is held to that phase alone (Issue.HoldsStart) and not to the role
+// of the step: at the phase step the role is the running step's, and a role that ran another step
+// of the task is never that.
+func (r SuperviseRequest) BringsBack() bool {
+	return r.Op == "start" && r.Phase != "" && r.Task == "" && !r.News && r.Entry == 0 && r.CheckLook == 0 && r.WakeKind == ""
+}
 
 // GateSeed records the design document version that starts a gate, and the step whose row it
 // starts: the seed reads that document from Dispatch and applies what it finds there.
@@ -1427,29 +1460,43 @@ type IssueSuspend struct {
 
 func (IssueSuspend) OutboxKind() OutboxKind { return OutboxKindIssueSuspend }
 
-// IssueWorkspaceCheck is the first act of an idle pod's release: it asks the shim of Role — a role
-// whose process is still running in the pod, because this row runs before the `release` rows that
-// stop them — to read whether the workspace every role of the issue shares holds work that no
-// branch or tag on origin holds (runtime.WorkspaceWorkReader). Only a shim can read it: it runs the
-// `jj` of the workspace it already works in, and it dies with its role's process, so the read has
-// to happen while that process is there. A read that finds work, or that fails, declines the
-// release: the pod stays with the work, and Role is told once that the release waits for its push
-// (internal/daemon's checkIssueWorkspace). The daemon pushes nothing for a role.
+// IssueWorkspaceCheck is the first act of an idle pod's release: it asks the shim of the claim it
+// names (Claim), or, for a row the release before wrote, of the claim of the worker on Role's
+// step — a claim whose process is still running in the pod, because this row runs before the
+// `release` rows that stop them — to read whether the workspace every role of the issue shares
+// holds work that no branch or tag on origin holds (runtime.WorkspaceWorkReader). Only a shim can
+// read it: it runs the `jj` of the workspace it already works in, and it dies with its claim's
+// process, so the read has to happen while that process is there. A read that finds work, or that
+// fails, declines the release: the pod stays with the work, and the claim is told once that the
+// release waits for its push (internal/daemon's checkIssueWorkspace). The daemon pushes nothing.
 //
 // It stops nothing, so a release cancelled here costs only the read, and it sits before the
 // release's boundary (the first `release` row), so a delivery queued while it runs, save a start
 // that waits for its pod, still cancels the whole release (outbox.cancelRelease). The teardown
 // waits for it (store.IssueRelease).
 //
-// CloseRoles makes this the workspace check of a pod whose issue left the workflow. A clean
-// read queues its close; a failed read or unpushed work keeps the pod. TurnStart fences that
-// close against a newer turn, as an idle release's mark fences its own stops.
+// CloseRoles, where it names any role, makes the row the first act of another act: the close of a
+// pod whose issue left the workflow while its tree runs on (workflow.LeftPodClose), which marks no
+// release. Those are the live roles the close stops, as the pass that queued it saw them; the
+// stops themselves are decided again from a view read in the store's own transaction
+// (workflow.LeftPodCloseAfterCheck), so this list identifies the act and no reader takes a stop
+// from it. A clean read queues the close's stops and the Sandbox suspension itself
+// (internal/daemon's checkLeftPodWorkspace). A row with no CloseRoles is a release's.
+//
+// TurnStart, on a close's row, is the newest turn start of the issue's claims in the view the pass
+// queued the close from (pods.IdleView.NewestTurnStart), zero where none had had a turn: the close
+// stops no claim after a turn that started since, as a release's mark holds the same moment for its
+// own stops (issue_releases.turn_start). The check holds the close on a turn before its decision
+// (workflow.LeftPodCloseAfterCheck), and each `suspend` it queues carries the moment on
+// (SuperviseRequest.TurnStart), so a turn between the decision and the stop holds that stop. A
+// release's row leaves it zero, since its mark holds it.
 type IssueWorkspaceCheck struct {
 	Tree           string     `json:"tree"`
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	Role           claim.Role `json:"role"`
-	// Claim names the shim to ask; an older row asks the worker on Role's step.
+	// Claim is the claim whose shim is asked. A row that names none asks the worker on Role's
+	// step (WorkerClaim), as a row the release before wrote does.
 	Claim      claim.Token  `json:"claim,omitempty"`
 	CloseRoles []claim.Role `json:"closeRoles,omitempty"`
 	TurnStart  time.Time    `json:"turnStart,omitzero"`
@@ -1458,11 +1505,11 @@ type IssueWorkspaceCheck struct {
 func (IssueWorkspaceCheck) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
 
 // IssueRelease is the last act of an idle pod's release, queued behind the workspace check
-// (IssueWorkspaceCheck) and the per-role `release` supervise rows that stopped the pod's role
-// processes: it asks the runtime's release (runtime.IssueReleaser), which suspends the issue's
-// Sandbox and waits its pod out, keeps a Sandbox that owns the issue's kept volume and deletes
-// every other Sandbox with the role Secrets it owns, and records the release. Both workflow
-// generations and this row's ID fence a start or a re-admission that came after, as an
+// (IssueWorkspaceCheck) and the `release` supervise rows, one for each live claim, that stopped
+// the pod's processes: it asks the runtime's release (runtime.IssueReleaser), which suspends the
+// issue's Sandbox and waits its pod out, keeps a Sandbox that owns the issue's kept volume and
+// deletes every other Sandbox with the role Secrets it owns, and records the release. Both
+// workflow generations and this row's ID fence a start or a re-admission that came after, as an
 // IssueSuspend's do.
 //
 // Unlike a close, the issue stays in the workflow: the claims keep their phase and their pending
@@ -2071,7 +2118,7 @@ var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 // (validateOutboxPayload). The hold and the landed also go to a role the deployment defines, the
 // worker of a step that runs as step, which reads the head as the tester and the reviewer do.
 func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
-	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsRole(role) && !claim.IsBuiltin(role) {
+	if (step == MergeForwardHold || step == MergeForwardLanded) && claim.IsDeploymentRole(role) {
 		return true
 	}
 	return slices.Contains(mergeForwardRoles[step], role)
@@ -2730,6 +2777,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 				return fmt.Errorf("a supervise %s on %s names the branch %q; only a start with a task names one, and it is the branch of a task of its issue other than the issue's own",
 					value.Op, issue, value.Branch)
 			}
+		}
+		if value.RefusedPod != "" && value.Op != "start" {
+			return fmt.Errorf("a supervise %s names the refused pod %q; only a start a refused launch queued names one", value.Op, value.RefusedPod)
+		}
+		if value.LeaveSession != "" && value.Op != "start" {
+			return fmt.Errorf("a supervise %s names the session %q to leave; only a start names one", value.Op, value.LeaveSession)
 		}
 		if value.TurnStart != nil && value.Op != "suspend" {
 			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)

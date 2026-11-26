@@ -7,7 +7,7 @@ import (
 
 // TestASessionTitleNamesARoleAndItsIssue is the title parsing every rule reads a Legion session
 // through (packages/pi-legion/src/session-title.ts). The role is one of Legion's six or a role the
-// deployment defines, a name of the role grammar but the controller's (legionrole.IsRole): the
+// deployment defines, a name of the role grammar but the controller's (legionclaim.IsRole): the
 // owner's acceptance step and a role with a "-" in it among them. A name outside the grammar is no
 // role, and so is no Legion session's title.
 func TestASessionTitleNamesARoleAndItsIssue(t *testing.T) {

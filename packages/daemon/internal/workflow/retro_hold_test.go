@@ -186,6 +186,7 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		}
 		statuses = statusWrites(t, pool, "LEGION-208")
 
+		top := topEntryOf(t, pool, "LEGION-208")
 		childLeavesDone(t, pool, engine)
 
 		assertWalksAt(t, pool, engine, "LEGION-208", phase.Retro, record.TaskPlace{Kind: record.PlaceRetro})
@@ -197,8 +198,8 @@ func TestAParentWithNoAcceptanceIsHeldBeforeItsRetro(t *testing.T) {
 		if len(starts) != 1 {
 			t.Fatalf("the release wrote %d starts of the retro, want one", len(starts))
 		}
-		if starts[0].Entry != implementerEntry+1 || starts[0].ResendEntry {
-			t.Fatalf("the retro's start is at entry %d (resend %v), want a raised entry %d", starts[0].Entry, starts[0].ResendEntry, implementerEntry+1)
+		if starts[0].Entry <= top || starts[0].ResendEntry {
+			t.Fatalf("the retro's start is at entry %d (resend %v), want above the previous entry %d", starts[0].Entry, starts[0].ResendEntry, top)
 		}
 		if starts[0].Task != controlStarts[0].Task {
 			t.Fatalf("the retro's task = %q, want the task the approval starts it with: %q", starts[0].Task, controlStarts[0].Task)
@@ -414,13 +415,13 @@ func TestAReviewersReportAfterItsApprovalHeldAParentForItsChildrenIsTaken(t *tes
 	stepChild(t, pool, heldParentChild, phase.Implementing, nil)
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	move(t, pool, engine, root.Key, TriggerImplementationReady, record.TaskPlace{}, record.PhaseRow{})
-	seedClaimSession(t, pool, "reviewer-claim", "ses-reviewer")
+	seedClaimSession(t, pool, workerOr(t, pool, root.Key, claim.RoleReviewer, "reviewer-claim"), "ses-reviewer")
 	// The review event approves the round before the reviewer reports: its row has no report yet.
 	move(t, pool, engine, root.Key, TriggerReviewApproved, record.TaskPlace{}, roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer))
 	if held := issueOf(t, pool, engine, root.Key); !record.HeldForChildren(held) {
 		t.Fatalf("%s after the approval stands in %s with hold %+v, want held from retro for its children", root.Key, held.Phase, held.Hold)
 	}
-	report := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Summary: "approved",
+	report := intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleReviewer, Claim: workerOr(t, pool, root.Key, claim.RoleReviewer, "reviewer-claim"), Summary: "approved",
 		Commit: "c0ffee", HandoffRecord: "review-late", HandoffVersion: 1}
 	apply := applyFacts(t, pool, engine)
 

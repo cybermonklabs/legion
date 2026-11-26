@@ -43,10 +43,10 @@ func planByOwner(t *testing.T, pool *pgxpool.Pool, key string, place record.Task
 		v := record.PlanVersion{Issue: key, Generation: stored.Generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: ownersArchitect(t, key), GivenAt: fixedNow}
 		task := record.PlanTask{Issue: key, Generation: stored.Generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: key, Generation: stored.Generation, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: key, Generation: stored.Generation, Task: "a", Position: 2, Role: "tester", Type: "testing"},
-		}
+		}, nil)
 		for _, put := range []error{
 			records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps),
 			records.MoveTask(ctx, tx, key, stored.Generation, "a", place, record.TaskRunning),

@@ -49,11 +49,11 @@ func TestAnOwedStartOfAnotherStepsRoleIsEnded(t *testing.T) {
 				}
 				v := record.PlanVersion{Issue: key, Generation: 1, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner, GivenBy: architect, GivenAt: fixedNow}
 				task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-				steps := []record.PlanStep{
+				steps := record.NameAgents(nil, []record.PlanStep{
 					{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 					{Issue: key, Generation: 1, Task: "a", Position: 2, Role: string(checker), Type: "testing"},
 					{Issue: key, Generation: 1, Task: "a", Position: 3, Role: string(linter), Type: "testing"},
-				}
+				}, nil)
 				if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 					t.Fatalf("seed the plan of %s: %v", key, err)
 				}

@@ -256,15 +256,21 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
    * dropped when the record says this role no longer works this phase — the shape of a worker
    * that completed its phase from the shell instead of the tool; at `step`, which no role's phase
-   * names, the role that works it is the issue's `stepRole`, a role of the deployment — and when
-   * the daemon has failed this role's claim, which is the daemon's own word that this process is
-   * finished: a claim the daemon failed runs no further turn in this process — its retry
-   * relaunches this session in a new process, or starts a new session once the daemon's
-   * `forgetSession` (its supervise package) has dropped this one — and a reminder written now
-   * reaches nobody who can act on it. That is what stops Claude Code's reminder, which has no
-   * refused-turn settle of its own for a turn the provider never answered. Everything else fails
-   * open and is logged at debug: an unreachable daemon is exactly when a stalled worker must still
-   * be nudged.
+   * names, the role that works it is the issue's `stepRole`, a role of the deployment — when
+   * another claim of this role works the role's step, and when the daemon has failed this claim,
+   * which is the daemon's own word that this process is finished. Two claims of one issue can hold
+   * one role — the agent of a key on a step of another role, beside that role's own claim of an
+   * earlier version of the plan — and only the worker on the step, the claim the record names by
+   * its token under `workers` (the stranded token's contract entry), works the phase: the other
+   * claim is not reminded, so it never reaches the architect as that role's worker. A record that
+   * names no token, from a daemon below that entry, keeps the role's rule. A claim the daemon
+   * failed runs no further turn in
+   * this process — its retry relaunches this session in a new process, or starts a new session
+   * once the daemon's `forgetSession` (its supervise package) has dropped this one — and a
+   * reminder written now reaches nobody who can act on it. That is what stops Claude Code's
+   * reminder, which has no refused-turn settle of its own for a turn the provider never answered.
+   * Everything else fails open and is logged at debug: an unreachable daemon is exactly when a
+   * stalled worker must still be nudged.
    */
   const recordCheck = async (): Promise<RecordCheck> => {
     const claim = deps.claim();
@@ -294,7 +300,17 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: false, record };
     }
-    const state = record.workers?.[claim.role]?.claim?.state;
+    const worker = record.workers?.[claim.role]?.claim;
+    if (worker?.token !== undefined && worker.token !== claim.claimToken) {
+      deps.log.debug("legion: another claim works this role's step; no reminder is sent", {
+        issue: claim.issue,
+        role: claim.role,
+        claim: claim.claimToken,
+        worker: worker.token,
+      });
+      return { reminds: false, record };
+    }
+    const state = worker?.state;
     if (state === "failed") {
       deps.log.debug("legion: the daemon has failed this claim; no reminder is sent", {
         issue: claim.issue,

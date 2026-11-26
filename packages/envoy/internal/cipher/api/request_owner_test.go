@@ -188,8 +188,8 @@ func TestALaterEnrollmentOfTheSameClaimReadsAndCancels(t *testing.T) {
 }
 
 // TestAnotherClaimOfTheSameServiceCannotCancel: the claim, not the service, is whose a pod's
-// request is, so another role of the same issue under the same launcher is refused NOT_YOURS on
-// both routes and the request is still pending for its own claim.
+// request is, so another agent's claim of the same issue under the same launcher is refused
+// NOT_YOURS on both routes and the request is still pending for its own claim.
 func TestAnotherClaimOfTheSameServiceCannotCancel(t *testing.T) {
 	ts := newTestServer(t)
 	daemon := ts.serviceLogin(t)

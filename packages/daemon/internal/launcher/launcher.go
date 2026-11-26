@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -395,7 +394,9 @@ func (m *manager) logf(format string, args ...any) {
 // still dialing. The memory guard settings it carries, or their absence, go to the pod's guard,
 // and what it carries decides whether the kill reports of this role's processes go on this
 // connection (openMemoryReports); what it carries for the pod's cache trimmer is put in force with
-// the writer (applyAck).
+// the writer (applyAck). The commands are read by a goroutine of their own (readCommands) and
+// handled here one at a time, in the order they arrived, so a stop that arrives while a start
+// waits for its slot's gh files is read at once and ends that wait.
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -463,26 +464,97 @@ func (m *manager) serve(ctx context.Context, address string) error {
 		carried = ack.KernelKills
 	}
 	m.openMemoryReports(writer, carried)
+	commands := make(chan readCommand)
+	done := make(chan struct{})
+	defer close(done)
+	go m.readCommands(reader, commands, done)
 	for {
-		frame, err := readFrame(reader)
-		if err != nil {
-			return fmt.Errorf("read command: %w", err)
+		next := <-commands
+		if next.err != nil {
+			return fmt.Errorf("read command: %w", next.err)
 		}
 		var answer shimwire.Frame
-		switch command := frame.(type) {
+		switch command := next.frame.(type) {
 		case shimwire.LauncherStart:
 			answer = m.start(ctx, command)
+			m.startAnswered(command.Generation)
 		case shimwire.LauncherStop:
 			answer = m.stop(command)
 		case shimwire.LauncherLeakCheck:
 			answer = m.check.receive(ctx, command, m.logf)
 		default:
-			return fmt.Errorf("command: got %T", frame)
+			return fmt.Errorf("command: got %T", next.frame)
 		}
 		if err := writer.WriteFrame(answer); err != nil {
 			return fmt.Errorf("answer %T: %w", answer, err)
 		}
 	}
+}
+
+// readCommand is one frame read off a daemon connection, or the error that ended the reading.
+type readCommand struct {
+	frame shimwire.Frame
+	err   error
+}
+
+// readCommands reads a daemon connection's commands and hands each to serve, in order, until a
+// read fails or serve has returned (done). It marks each start as it hands it on (startStops), and
+// a stop of a marked start's generation closes that start's mark before the stop is handed on,
+// which ends the start's wait for its slot's gh files (awaitGitHubCredential): serve handles one
+// command at a time, and the stop the daemon sends after a start it gave up on would otherwise
+// wait behind the start's whole bound.
+func (m *manager) readCommands(reader *shimwire.Reader, commands chan<- readCommand, done <-chan struct{}) {
+	for {
+		frame, err := readFrame(reader)
+		switch command := frame.(type) {
+		case shimwire.LauncherStart:
+			m.markStart(command.Generation)
+		case shimwire.LauncherStop:
+			m.stopStart(command.Generation)
+		}
+		select {
+		case commands <- readCommand{frame: frame, err: err}:
+		case <-done:
+			return
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// markStart marks a start of generation that serve has yet to answer (startStops).
+func (m *manager) markStart(generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.startStops == nil {
+		m.startStops = map[uint64]chan struct{}{}
+	}
+	if _, marked := m.startStops[generation]; !marked {
+		m.startStops[generation] = make(chan struct{})
+	}
+}
+
+// stopStart closes the mark of generation's start, if serve has yet to answer one (startStops).
+func (m *manager) stopStart(generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	stopped, marked := m.startStops[generation]
+	if !marked {
+		return
+	}
+	select {
+	case <-stopped:
+	default:
+		close(stopped)
+	}
+}
+
+// startAnswered drops the mark of generation's start, which serve has answered (startStops).
+func (m *manager) startAnswered(generation uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.startStops, generation)
 }
 
 // validate refuses a configuration that is neither of the launcher's two forms: the controller
@@ -698,6 +770,11 @@ type manager struct {
 	child      *child
 	lastExit   *shimwire.LauncherExit
 	requests   map[string]request
+	// startStops is, for each start of this role's connection that serve has yet to answer, by
+	// its generation, the mark a stop of that generation closes (readCommands), which ends the
+	// start's wait for its slot's gh files (awaitGitHubCredential). Guarded by mu; nil until the
+	// connection's first start.
+	startStops map[uint64]chan struct{}
 	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
 	// of the container shares: the first role start that carries a workspace tells it which
 	// clone to sweep, when the container's working directory did not (gitLockSweep.learn). It is
@@ -861,7 +938,10 @@ func (m *manager) state() error {
 // start runs command's generation. ctx is the container's: once it has ended (the container's
 // SIGTERM) no generation starts, since one started then would be given the whole stop grace from
 // that moment and outlast the pod's own; the session lookup a resume waits on ends with it too.
+// The wait for the slot's gh files to hold the credential the start names ends sooner, at the
+// bound the start names or at a stop of its generation (awaitGitHubCredential).
 func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shimwire.LauncherStartResult {
+	received := time.Now()
 	if err := command.Validate(); err != nil {
 		return shimwire.LauncherStartResult{ID: command.ID, Error: err.Error()}
 	}
@@ -965,7 +1045,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// the daemon wrote into the slot's Secret just before: the child starts only once the kubelet's
 	// projection holds it, so its first push or comment is never made as the App the files held.
 	if command.GitHubCredential != nil {
-		if err := m.awaitGitHubCredential(ctx, env, *command.GitHubCredential); err != nil {
+		if err := m.awaitGitHubCredential(ctx, env, command.Generation, *command.GitHubCredential, received); err != nil {
 			return abandon(err)
 		}
 	}
@@ -1016,20 +1096,31 @@ func (m *manager) ghRoot(env []string) string {
 }
 
 // awaitGitHubCredential waits, reading once a second, until the slot's hosts.yml that want names
-// holds a token whose SHA-256 is want's digest, and answers why it stopped waiting when ctx ends
-// first.
-func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, want shimwire.LauncherGitHubCredential) error {
+// holds a token whose SHA-256 is want's digest. Where the files do not hold it first, it answers
+// why it stopped waiting: the bound want names passed, counted from received, the moment the
+// start of generation reached the launcher; a stop of that generation closed the mark of its
+// start (startStops, which readCommands marks; a start no connection marked has none, and no stop
+// ends its wait); or ctx, the container's, ended. The daemon sets the bound to what remains of its
+// own wait on the start before the stop grace, so the refusal reaches it while it still waits,
+// and the stop it sends after a start it gave up on finds no child.
+func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, generation uint64, want shimwire.LauncherGitHubCredential,
+	received time.Time) error {
+	m.mu.Lock()
+	stopped := m.startStops[generation]
+	m.mu.Unlock()
 	if !filepath.IsLocal(want.HostsFile) {
 		return fmt.Errorf("the start names the gh file %q, which is not under the slot's gh directory", want.HostsFile)
 	}
 	path := filepath.Join(m.ghRoot(env), filepath.FromSlash(want.HostsFile))
+	bound := time.Duration(want.WaitMs) * time.Millisecond
+	expired := time.NewTimer(time.Until(received.Add(bound)))
+	defer expired.Stop()
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
 		if data, err := os.ReadFile(path); err == nil {
 			if token, err := ghconfig.TokenFromHosts(data); err == nil {
-				sum := sha256.Sum256([]byte(token))
-				if hex.EncodeToString(sum[:]) == want.TokenDigest {
+				if shimwire.GitHubTokenDigest(token) == want.TokenDigest {
 					return nil
 				}
 			}
@@ -1037,6 +1128,10 @@ func (m *manager) awaitGitHubCredential(ctx context.Context, env []string, want 
 		select {
 		case <-ctx.Done():
 			return errors.New("the slot's gh files do not hold the credential of this start yet")
+		case <-stopped:
+			return fmt.Errorf("a stop of generation %d ended the wait for the slot's gh files to hold the credential of this start", generation)
+		case <-expired.C:
+			return fmt.Errorf("the slot's gh files did not hold the credential of this start within its bound of %s", bound)
 		case <-tick.C:
 		}
 	}

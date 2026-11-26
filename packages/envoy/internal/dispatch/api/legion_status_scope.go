@@ -14,8 +14,8 @@ package api
 //
 // The Legion daemon owns a Legion issue's status. Its own broker token holds legion-status, and a
 // person's own credential holds person. Every other credential holds neither: the shared token, a
-// personal token without person, a project's broker token and a pod's Kubernetes token. R26
-// refuses each of them, but for one exception.
+// personal token without person, a project's broker token, a job's broker token and a pod's
+// Kubernetes token. R26 refuses each of them, but for one exception.
 //
 // The exception is the owning architect's write (writtenByOwningArchitect). For a credential that
 // holds neither scope, it lifts the refusal of a step's status write, rule (a), and nothing else,
@@ -282,8 +282,8 @@ func (options statusChangeOptions) architectWrites(status string) bool {
 // step's issue's own project, so it ends at the first issue of another project as at a root, and
 // it stops at parentDepthCap links above the step's issue. The step's own row names no key, as
 // legionManagedStatusOfRowSQL's does, so its role holders do not count. A pair is marked when the daemon's own broker token published it
-// (daemon_proven, putIssueRoleHolders). The role holders key (issue_key, role) finds each issue's
-// architect.
+// (daemon_proven, putIssueRoleHolders). The role holders key (issue_key, session) finds the session's
+// row of each issue, and its role says whether that session is the issue's architect.
 var owningArchitectSQL = `with recursive ` + issueChainSQL(`select null::text as key, $1::text as parent_key, '{}'::text[] as labels, $2::text as project_key, 0 as depth`) + `
 	select exists (
 		select 1 from chain c join issue_role_holders h on h.issue_key = c.key

@@ -7,6 +7,7 @@
   "repo": "acme/widgets",
   "defaultBranch": "main",
   "architect": {
+    "token": "legion-legion-legion-208-architect",
     "session": "ses_architect_208",
     "state": "ready",
     "locator": {
@@ -135,6 +136,17 @@
       "rounds": 0
     }
   },
+  "otherClaims": [
+    {
+      "role": "reviewer",
+      "claim": {
+        "token": "legion-legion-legion-208-reviewer",
+        "session": "ses_reviewer_208_v1",
+        "state": "suspended",
+        "pluginContract": 0
+      }
+    }
+  ],
   "pullRequest": {
     "repo": "acme/widgets",
     "number": 1247,

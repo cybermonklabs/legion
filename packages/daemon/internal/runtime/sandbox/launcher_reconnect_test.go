@@ -103,7 +103,10 @@ func TestALaunchWhoseLauncherReconnectsBeforeItsStartIsWrittenFailsAndTheNextTry
 	}))
 	g.r.launchers.beforeStart = func(ctx context.Context, _ claim.Token) {
 		if armed.CompareAndSwap(true, false) {
-			if session := launcherOf(g, workerToken); session != nil {
+			g.r.launchers.mu.Lock()
+			session := g.r.launchers.sessions[workerToken]
+			g.r.launchers.mu.Unlock()
+			if session != nil {
 				session.close()
 			}
 			close(dropped)
@@ -236,7 +239,7 @@ func awaitLaunch(t *testing.T, result <-chan launched) launched {
 // says hello again.
 func dropLauncher(t *testing.T, g *rig, token claim.Token) {
 	t.Helper()
-	session := launcherOf(g, token)
+	session := launcherSessionOf(g, token)
 	if session == nil {
 		t.Fatalf("no launcher of %s is connected to drop", token)
 	}
@@ -261,12 +264,11 @@ type redialedLauncher struct {
 // the test when the resolver refuses the hello.
 func redial(t *testing.T, g *rig, token claim.Token, running uint64, hangUp bool) *redialedLauncher {
 	t.Helper()
-	_, agent, ok := token.Cut()
+	_, slot, ok := token.Cut()
 	if !ok {
 		t.Fatalf("%s names no role", token)
 	}
-	// The rig's tokens are role tokens, whose agent is their role.
-	role := claim.Role(agent)
+	role := launcherOf(slot)
 	name := SandboxName(token)
 	pod := g.pod(name)
 	if pod == nil || g.secret(roleSecretName(name, role)) == nil {

@@ -2160,6 +2160,14 @@ const REVIEWED_WAIT_SITES: readonly {
       "the pool identity's default fetch (:171), called only at :197 under AbortSignal.timeout(POOL_TIMEOUT_MS)",
   },
   {
+    file: "packages/cipher-client/src/github-actions-identity.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "a GitHub Actions run's identity's default fetch (:83), called only at :90 under AbortSignal.timeout(TIMEOUT_MS) (:87)",
+  },
+  {
     file: "packages/cipher-client/src/metadata-identity.ts",
     text: "request(",
     count: 1,

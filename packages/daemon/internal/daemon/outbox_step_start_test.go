@@ -32,11 +32,11 @@ func seedStepStartPlan(t *testing.T, pool *store.Pool, records record.Store, at 
 		v := record.PlanVersion{Issue: stepStartKey, Generation: 2, Version: 1, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: mustClaimToken(t, stepStartKey, claim.RoleArchitect), GivenAt: time.Now().UTC()}
 		task := record.PlanTask{Issue: stepStartKey, Generation: 2, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 2, Role: "checker", Type: "testing"},
 			{Issue: stepStartKey, Generation: 2, Task: "a", Position: 3, Role: string(stepStartLinter), Type: "testing"},
-		}
+		}, nil)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
@@ -209,6 +209,66 @@ func TestALateStartWhoseStepTheTaskLeftSpawnsNoProcess(t *testing.T) {
 			if execErr != nil || (spawned > 0) != tc.starts || (sent > 0) != tc.starts {
 				t.Fatalf("the linter's start, the task moved back %t: execute = %v; the runtime started %d processes, the claim stands %s holding %q, and %d prompts reached its agent; want no error and a process and its task %t",
 					tc.moves, execErr, spawned, after.State, pending, sent, tc.starts)
+			}
+		})
+	}
+}
+
+// A re-admission's promotion brings back each role of a mid-phase member that has run and is not
+// the phase's own with a start that hands it nothing, the row admit's startMidPhaseMembers writes
+// (record.SuperviseRequest.BringsBack): the role comes back and is told nothing. The row names the
+// phase the member stands in and no step, and is held to that phase alone (record.Issue.HoldsStart):
+// on a member at the checker's step 2 of `implementer checker linter`, the implementer that ran
+// step 1 comes back, as it comes back at every other phase. Held to the step instead
+// (HoldsQueued), the outbox finished the row without acting, and the machine's own judge
+// (supervise.StartWork, through PhaseHolds, wired here as the daemon wires it) refused it again.
+// The control is the same row once the member has left step, which finishes without acting.
+func TestAPromotionsStartOfARoleThatRanComesBackAtAnotherRolesStep(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		phase  phase.Phase
+		starts bool
+	}{
+		{"the member at the checker's step 2", phase.Step, true},
+		{"the control: the member has left step for implementing", phase.Implementing, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			putOutboxIssue(t, pool, records, record.Issue{Key: stepStartKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: stepStartKey, Title: "Workflow", Phase: tc.phase, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
+			openTree(t, pool, "LEGION", stepStartKey)
+			holdSlot(t, pool, stepStartKey)
+			if tc.phase == phase.Step {
+				seedStepStartPlan(t, pool, records, 2)
+			}
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
+			token := mustClaimToken(t, stepStartKey, claim.RoleImplementer)
+			machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: stepStartKey, Issue: stepStartKey,
+				Role: claim.RoleImplementer, Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByDaemon,
+				Session: "ses_implementer", SessionFile: "/sessions/implementer.jsonl"}, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup,
+				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now,
+				provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+					return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+				},
+			}
+			// The row as the promotion writes it for a role that has run and is not the phase's own.
+			start := mustOutboxRow(t, stepStartKey, record.SuperviseRequest{Op: "start", Tree: stepStartKey, Role: claim.RoleImplementer,
+				Generation: 2, Phase: phase.Step}, time.Now())
+			start.ID = 97
+			execErr := runner.execute(ctx, start)
+			machine.Wait()
+			spawned := len(rt.CallsOf("Spawn")) + len(rt.CallsOf("Resume"))
+			if execErr != nil || (spawned > 0) != tc.starts || machine.Claim().Pending != nil {
+				t.Fatalf("promotion at %s: execute = %v, started %d processes, pending = %+v; want no error, start %t and no task",
+					tc.phase, execErr, spawned, machine.Claim().Pending, tc.starts)
 			}
 		})
 	}

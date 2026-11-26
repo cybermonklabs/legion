@@ -76,7 +76,7 @@ func TestAReleaseThatSuspendsNoRoleEndsNoWake(t *testing.T) {
 		}
 		if err := Transact(ctx, st.pool, func(ctx context.Context, tx pgx.Tx) error {
 			_, _, err := RecordPodWakeTx(ctx, tx, PodResume{Release: idle, Project: "legion", Issue: rootIssue,
-				Role: "architect", Kind: pods.WakeDelivery, At: at.Add(time.Minute)})
+				Role: "architect", Claim: "legion-legion-legion-208-architect", Kind: pods.WakeDelivery, At: at.Add(time.Minute)})
 			return err
 		}); err != nil {
 			t.Fatalf("record the wake of the architect: %v", err)

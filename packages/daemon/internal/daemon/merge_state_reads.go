@@ -82,16 +82,17 @@ func comparePullRequestKeys(a, b record.PullRequestKey) int {
 // GitHub's merge state for an issue's open pull request (workflow's askMergeState, the engine's
 // Config.ReadMergeState): a review round the fact leaves waiting on GitHub's answer for the head,
 // or ended by an approval the fact did not move on (a CI settlement, which moves no issue), and,
-// by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue in
-// implementing through merging, which can turn the head conflicting with its base
-// (dispatch://INFRA-4374 R0). A push to a base asks for its pull requests' reads all at once
-// instead (queueBaseMergeStates). The daemon's start asks for it too, for each issue whose start
-// read GitHub answered `unknown` (readIssuesAtStart). It queues a ladder of reads for issue that
-// starts with a climb (queueMergeStateFollow, with no pull request to follow). It only records the
-// issue and wakes the reader, so the fact's own transaction waits for no GitHub call, and a second
-// fact of the same pull request queued before the reader takes it is one ladder rather than two. A
-// runtime with no reader - the API-only daemon, and a test that drives the ladder itself - queues
-// nothing.
+// by the gate classify.MergeStateReadOwed, a fact that moves the head of an issue where a merge
+// forward stands (classify.MergeForwardStands: its task at the implementer's place, or a place
+// after it on the task's line, a step of a role the deployment defines among them), which can turn
+// the head conflicting with its base (dispatch://INFRA-4374 R0). A push to a base asks for its pull
+// requests' reads all at once instead (queueBaseMergeStates). The daemon's start asks for it too,
+// for each issue whose start read GitHub answered `unknown` (readIssuesAtStart). It queues a ladder
+// of reads for issue that starts with a climb (queueMergeStateFollow, with no pull request to
+// follow). It only records the issue and wakes the reader, so the fact's own transaction waits for
+// no GitHub call, and a second fact of the same pull request queued before the reader takes it is
+// one ladder rather than two. A runtime with no reader - the API-only daemon, and a test that
+// drives the ladder itself - queues nothing.
 func (w *workflowRuntime) queueMergeState(issue record.PullRequestKey) {
 	w.queueMergeStateFollow(issue, nil)
 }
@@ -369,12 +370,12 @@ var errUnapplied = errors.New("the record did not take GitHub's answer")
 // per-issue read applies), answering GitHub's merge state as that read found it, whether that
 // answer is one the readers read again (answerIncomplete: `unknown`, or `blocked` missing part of
 // what the round decides it on), and the pull request the record held when it read, as the reads
-// of its base follow it (followed). The key names the precise pull request queued by the
-// originating fact or start read, not whichever task the issue judges when this read runs. A key
-// whose record holds no open pull request of its number is read from nothing and answers
-// record.MergeStateUnread, complete, and no pull request: the state belongs to a pull request, and
-// there is none. An answer whose apply failed is answered with all three, and an error that is
-// errUnapplied.
+// of its base follow it (followed). issue names the pull request the fact or the start read that
+// queued this read named (record.PullRequestKey), not whichever task the issue judges when this
+// read runs. A key whose pull request the record does not hold open is read from nothing and
+// answers record.MergeStateUnread, complete, and no pull request: the state belongs to a pull
+// request, and there is none. An answer whose apply failed is answered with all three, and an
+// error that is errUnapplied.
 //
 // The fact names the head GitHub answered for, which the engine records the answer against only
 // while the record still stands at it (workflow's mergeability): this ladder reads GitHub with no

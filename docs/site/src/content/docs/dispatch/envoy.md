@@ -393,8 +393,10 @@ modification time.
 | `unresponsive` | It last registered longer ago than the live window but inside the gone horizon, `ENVOY_SESSION_GONE_HORIZON` (1 hour by default). **It is not dead.** It keeps its role claims and its issue claims, a message sent to it is stored and reaches it when it answers again, and nothing starts a replacement for it. |
 | `gone` | It last registered before the gone horizon, or Envoy holds no record of it. |
 
-Only the role claim reaper releases a role claim. A claim renewed inside the live window is kept
-whatever its holder's session record says: a holder renews its claim by registering, and the
+Besides a release that is asked for, an unsubscribe by the process the claim names or a
+deregistration (`DELETE /v1/interests/<session id>`), which releases every claim the session
+holds, only the role claim reaper releases a role claim. A claim renewed inside the live window is
+kept whatever its holder's session record says: a holder renews its claim by registering, and the
 process that holds it keeps the role. Past that window the claim is weighed on its holder's
 session, as it always has been: it is kept while that session is not yet `gone` and released
 once it is, for a claim that names a process and one that names none alike, so an `unresponsive`

@@ -52,7 +52,10 @@ type Supervisor interface {
 // (registerLaunchedController), and only under `controller: daemon`. A token no launch minted may
 // be the controller capability `legion controller start` fetched, which registers the project's
 // controller (registerController), and only under `controller: operator`: a daemon that launches
-// its own controller registers no other, so such a token is the unknown one it is.
+// its own controller registers no other, so such a token is the unknown one it is. A claim of a
+// role the deployment defines that registers from a plugin below deploymentRolesContract's entry
+// is refused once its machine has recorded the registration, since that plugin cannot read the
+// claim's role in the answer.
 func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	var req claim.RegisterRequest
 	if !s.readRegisterBody(w, r, &req) || !s.requireFields(w, r,
@@ -109,6 +112,27 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c := m.Claim()
+	// The answer's `role` is the claim's own role, and a plugin below deploymentRolesContract's
+	// entry reads it with an enumeration of Legion's six, so it refuses the whole answer for a
+	// role the deployment defines. A registration from such a plugin is stale, and gets here only
+	// where the machine let it stand because no relaunch can move the process onto the current
+	// plugin (supervise's staleRegistration); every other stale registration was refused above.
+	// The role cannot be left out of the answer, as the state's band leaves out a stranded claim
+	// of such a role, so that plugin is answered a refusal it reads, after the machine recorded
+	// the registration, which keeps the machine's record of the process true. The plugin's own
+	// declaration is read, not its header: a plugin states the same number in the header from
+	// shapedAnswersContract on, and one below that states none.
+	if !claim.IsBuiltin(c.Role) && req.PluginContract < entryNumber(deploymentRolesContract) {
+		first := entryNumber(deploymentRolesContract)
+		s.log.Warn("api: refused the registration of a role of the deployment from a plugin below "+
+			"the contract that reads such a role", "claim", c.Token, "role", c.Role,
+			"generation", launch.Generation, "pluginContract", req.PluginContract, "contract", first)
+		s.refuse(w, r, http.StatusConflict, fmt.Sprintf("the role %s is one this deployment "+
+			"defines, and pi-legion speaks daemon API contract %d, which reads a claim's role as "+
+			"one of Legion's six; a plugin of contract %d or later registers it",
+			c.Role, req.PluginContract, first))
+		return
+	}
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
 	s.writeAnswer(w, r, AnswerRegister, http.StatusOK, claim.RegisterResponse{
@@ -430,30 +454,40 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 }
 
 // ReleaseRecord is one release of an issue pod as a reader of the records sees it: the run it
-// released, the roles whose claims it suspended, when it completed, and how many bytes of
-// unpushed work it saved as a bundle (zero when the workspace held none).
+// released, the roles of the claims it suspended, each once, the tokens of those claims, when it
+// completed, and how many bytes of unpushed work it saved as a bundle (zero when the workspace
+// held none). Two claims of one issue can hold one role, so `claims` names what `roles` cannot.
+// `claims` is absent on a release that suspended no claim, on a record the release before
+// 20261124213823 wrote, and below the stranded token's entry (strandedTokenContract,
+// withoutRecordClaims).
 type ReleaseRecord struct {
 	ID          int64    `json:"id"`
 	Issue       string   `json:"issue"`
 	Generation  uint64   `json:"generation"`
 	Roles       []string `json:"roles"`
+	Claims      []string `json:"claims,omitempty"`
 	At          string   `json:"at"`
 	BundleBytes int      `json:"bundleBytes"`
 }
 
 // ResumeRecord is one wake of a released pod and what it cost: the release it ended (0 when no
-// release row is recorded for it), the role the wake was for and what woke it, when the wake
-// reached the daemon, when the replacement pod was Ready and when the woken role took its first
-// turn — each absent until it is observed — and whether the wake went ten minutes with no turn.
-// Pause is the project pause that held the wake (store.PodResume.Pause), absent for a wake no
-// pause held: a held wake pairs with no release, and its wait to the first turn measures the
-// pause, so a reader of the release measurements counts it apart (decision 15 of
-// dispatch://INFRA-3759).
+// release row is recorded for it), the role the wake was for, the claim it brought back and what
+// woke it, when the wake reached the daemon, when the replacement pod was Ready and when the woken
+// claim took its first turn — each absent until it is observed — and whether the wake went ten
+// minutes with no turn. Claim is the claim's token (store.PodResume.Claim): two claims of one
+// issue can hold one role, and each can be woken, so the role does not say which came back. It is
+// absent on a wake recorded before 20261124213821, which stands for each claim of its role, and
+// below the stranded token's entry (strandedTokenContract, withoutRecordClaims). Pause is the
+// project pause that held the wake (store.PodResume.Pause), absent for a wake no pause held: a
+// held wake pairs with no release, and its wait to the first turn measures the pause, so a reader
+// of the release measurements counts it
+// apart (decision 15 of dispatch://INFRA-3759).
 type ResumeRecord struct {
 	ID          int64  `json:"id"`
 	Release     int64  `json:"release"`
 	Issue       string `json:"issue"`
 	Role        string `json:"role"`
+	Claim       string `json:"claim,omitempty"`
 	Kind        string `json:"kind"`
 	At          string `json:"at"`
 	PodReadyAt  string `json:"podReadyAt,omitempty"`
@@ -563,12 +597,14 @@ func releaseRecordsBody(records store.PodReleaseRecords) ReleaseRecordsResponse 
 			roles = []string{}
 		}
 		body.Releases = append(body.Releases, ReleaseRecord{ID: release.ID, Issue: release.Issue,
-			Generation: release.Generation, Roles: roles, At: recordedAt(release.At), BundleBytes: release.BundleBytes})
+			Generation: release.Generation, Roles: roles, Claims: release.Claims, At: recordedAt(release.At),
+			BundleBytes: release.BundleBytes})
 	}
 	for _, resume := range records.Resumes {
 		body.Resumes = append(body.Resumes, ResumeRecord{ID: resume.ID, Release: resume.Release, Issue: resume.Issue,
-			Role: resume.Role, Kind: resume.Kind, At: recordedAt(resume.At), PodReadyAt: recordedAt(resume.PodReadyAt),
-			FirstTurnAt: recordedAt(resume.FirstTurnAt), Stuck: resume.Stuck, Pause: resume.Pause})
+			Role: resume.Role, Claim: resume.Claim, Kind: resume.Kind, At: recordedAt(resume.At),
+			PodReadyAt: recordedAt(resume.PodReadyAt), FirstTurnAt: recordedAt(resume.FirstTurnAt), Stuck: resume.Stuck,
+			Pause: resume.Pause})
 	}
 	for _, hold := range records.Holds {
 		body.Holds = append(body.Holds, HoldRecord{ID: hold.ID, Issue: hold.Issue, Reason: hold.Reason,

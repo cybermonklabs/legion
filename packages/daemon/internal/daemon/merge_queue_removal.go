@@ -139,7 +139,7 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 	if r.supervisor == nil {
 		return errors.New("merge-queue removal executor has no claim supervisor")
 	}
-	token, err := r.workerToken(ctx, row, claim.RoleMerger, "")
+	token, err := r.workerToken(ctx, row.Issue, claim.RoleMerger, "")
 	if err != nil {
 		return err
 	}

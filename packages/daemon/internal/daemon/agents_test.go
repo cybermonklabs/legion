@@ -73,7 +73,7 @@ func (r *ownerStepsRig) relaunchedAs(c *stepClaimant, before int, role claim.Rol
 	r.built.mu.Unlock()
 	sh := helloAcked(t, address, launch.BootToken)
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: sessionFile(c), AgentID: c.session, PluginContract: api.DaemonAPIVersion,
+		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: sessionFile(c), AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register %s in its session %s = %d %s, want 200", c.token, c.session, status, body)
@@ -158,8 +158,8 @@ func TestOneKeyIsOneSessionAcrossTwoRoles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newAgentsRig(t)
-			if steps := r.walkOneKey(tc.steps, tc.keyed); oneKeyHolds(r, steps, tc.keyed) != nil {
-				t.Fatal(oneKeyHolds(r, steps, tc.keyed))
+			if err := oneKeyHolds(r, r.walkOneKey(tc.steps, tc.keyed), tc.keyed); err != nil {
+				t.Fatal(err)
 			}
 		})
 	}
@@ -296,7 +296,7 @@ func TestAKeyedAgentReturnsToItsFirstStepInItsSession(t *testing.T) {
 	}
 }
 
-// phaseRow is what entryRose reads of one phases row: the claim it names and its entry.
+// phaseRowNow is what entryRose reads of one phases row: the claim it names and its entry.
 type phaseRowNow struct {
 	claim string
 	entry int64
@@ -343,9 +343,9 @@ func (r *ownerStepsRig) entryRose(c *stepClaimant, entered, before claim.Role) {
 // reviewer` reaches reviewing on this release; the daemon stops, and the store is taken back to the
 // schema the release before leaves by the way backs its migrations' headers give (the name of each
 // step's agent and the claim of each resume), so its plan rows name no agent, as that release wrote
-// them. This release then boots, migrates the column again at its default, and the issue reaches
-// done with the claims `…-implementer` and `…-reviewer` of its steps and no other: a step whose row
-// names no agent reads as its role (record.PlanStep.AgentName).
+// them. This release then boots and migrates the column again, which names each step for its role
+// (20261124213820), and the issue reaches done with the claims `…-implementer` and `…-reviewer`
+// of its steps and no other.
 func TestAnIssueThatRanUnderTheReleaseBeforeKeepsItsClaims(t *testing.T) {
 	t.Parallel()
 	r := newAgentsRig(t)

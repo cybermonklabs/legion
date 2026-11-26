@@ -315,6 +315,38 @@ func TestTheTestersFailedClaimEndsItsLook(t *testing.T) {
 	}
 }
 
+// Two claims of one done issue can hold the check's role: key a's agent, which the tester's
+// phases row names on the tester's step and so runs the look, and the tester's own claim. The
+// failure of the tester's own claim leaves the look open, since the look is not its; the failure
+// of the look's claim ends it, and so does a failure that names no claim, which keeps the role's
+// rule.
+func TestOnlyTheFailureOfTheLooksClaimEndsTheLook(t *testing.T) {
+	const keyed, own = claim.Token("legion-legion-legion-209-implementer"), claim.Token("legion-legion-legion-209-tester")
+	for _, tc := range []struct {
+		name   string
+		failed claim.Token
+		ends   bool
+	}{
+		{name: "the tester's own claim", failed: own},
+		{name: "the look's claim", failed: keyed, ends: true},
+		{name: "a failure that names no claim", failed: "", ends: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := childCheckRig(t)
+			seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+				return record.NewStore().PutPhase(t.Context(), tx, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: keyed,
+					StepTask: "a", StepPlace: 2, Entry: 1})
+			})
+			failed := failedClaim("LEGION-209", claim.RoleTester)
+			failed.Claim = tc.failed
+			rig.apply("tester-failed", failed)
+			if check := productionCheck(t, rig.pool, "LEGION-209"); check.LookOpen == tc.ends {
+				t.Fatalf("the check after the failure of %q = %+v, want the look ended %t", tc.failed, check, tc.ends)
+			}
+		})
+	}
+}
+
 // A check recorded with the implementer — the shape every check open before the upgrade has, when
 // the implementer worked each of them — stays the implementer's for as long as it is open, under
 // an engine whose own checks are the tester's: the look its bound starts is handed to the

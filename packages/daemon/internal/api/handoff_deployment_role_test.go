@@ -39,10 +39,10 @@ func seedCheckerStep(t *testing.T, h *harness, key string) {
 		v := record.PlanVersion{Issue: key, Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: "legion-legion-" + claim.Token(key) + "-architect"}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
-		steps := []record.PlanStep{
+		steps := record.NameAgents(nil, []record.PlanStep{
 			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
 			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: plan.TypeTesting},
-		}
+		}, nil)
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err
 		}
