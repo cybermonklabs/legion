@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -998,6 +999,112 @@ func TestAnEarlierPromptsNoTurnAnswerTakesTheTaskBackOnceTheResendHasAnswered(t 
 				}
 			})
 		}
+	}
+}
+
+// A turn that starts while the send of the task's prompt is in flight is taken for the task's only
+// while that send's answer is still to come (turnAnswers, sendUnanswered). Once the prompt has said
+// it ran no turn, by its result or by its refusal after the acknowledgement, read before the
+// send's outcome, the task has gone back under a new id that no prompt has carried, and a turn
+// that starts then is another input's. Taken for the task's, it confirmed that task, its entry's
+// handshake and the record of the last let-go, and nothing left to come could take them back. So
+// where the agent was in no turn, a death in that foreign turn kept the handshake's confirmation
+// and replaced launch 1's untold record with its own rather than joining it: the relaunched agent
+// was never told what launch 1 ended. Where Oh My Pi's answer was its busy one, the end of the
+// turn it named retired the task as served, though no turn of it ran. The turn now confirms
+// nothing: the death's record joins launch 1's, and the busy turn's end leaves the task to go
+// again once the send's outcome is read.
+func TestATurnThatStartsAfterTheSendsPromptRanNoTurnIsNotTheTasks(t *testing.T) {
+	const refusal = "the model provider refused the request"
+	for _, answer := range []struct {
+		name string
+		of   func(prompt, why string) Event
+	}{
+		{name: "a result that says it ran no turn", of: func(prompt, why string) Event {
+			return StreamPromptResult{Claim: testToken, DeliveryID: prompt, Error: why}
+		}},
+		{name: "a refusal after its acknowledgement", of: func(prompt, why string) Event {
+			return StreamLateRefusal{Claim: testToken, DeliveryID: prompt, Error: why}
+		}},
+	} {
+		t.Run(answer.name+", the agent in no turn, then a death in a turn of another input's", func(t *testing.T) {
+			c := queuedClaim()
+			c.Generation = 1
+			c.EndedWork = EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true,
+				Background: true, Kinds: []string{"subagent"}, Reported: true}
+			h := newHarnessOf(t, c)
+			h.reach(StateRegistered)
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", ID: "outbox:40", Row: 40,
+				Phase: phase.Implementing, Generation: 7, Entry: 1})
+			gated := newGatedConn()
+			h.conns.Register(testToken, gated)
+			// Handle, not must: must waits for the send, which the gate is holding.
+			handle := func(ev Event) {
+				t.Helper()
+				if err := h.m.Handle(h.ctx, ev); err != nil {
+					t.Fatalf("handle %T: %v", ev, err)
+				}
+			}
+			handle(RequestReady{Claim: testToken, Generation: h.generation(), Session: session})
+			sent := testwait.Receive(t, "the ready's send", gated.entered)
+			handle(answer.of(sent, refusal))
+			unconfirmed := h.claim().Handshake
+			if p := h.pending(); p.ID == sent || !p.ConfirmedAt.IsZero() || !unconfirmed.ConfirmedAt.IsZero() {
+				t.Fatalf("after the prompt's answer: pending %+v, handshake %+v, want the task taken back under a new id, unconfirmed: this test proves nothing", p, unconfirmed)
+			}
+			h.wantEndedTold(false, "", "once the prompt said it ran no turn")
+
+			handle(StreamTurnStart{Claim: testToken})
+			if p := h.pending(); !p.ConfirmedAt.IsZero() {
+				t.Errorf("the turn that started after %s's prompt said it ran no turn confirmed %+v, want it taken for another input's", sent, p)
+			}
+			cutOff := h.generation()
+			handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}})
+			gated.release <- struct{}{}
+			h.m.Wait()
+
+			for where, got := range map[string]EndedWork{"the machine": h.claim().EndedWork, "the store": h.store.load(h.token).EndedWork} {
+				if got.Generation != cutOff || got.Told || !slices.Contains(got.Kinds, "subagent") {
+					t.Errorf("%s records the death as %+v, want an untold record of launch %d that joins launch 1's subagent: no prompt told the agent what launch 1 ended", where, got, cutOff)
+				}
+			}
+			h.wantHandshake("after a death in the turn of another input's,", unconfirmed)
+		})
+
+		t.Run(answer.name+", Oh My Pi busy, then the turn it named", func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			gated := newGatedConn()
+			h.conns.Register(testToken, gated)
+			handle := func(ev Event) {
+				t.Helper()
+				if err := h.m.Handle(h.ctx, ev); err != nil {
+					t.Fatalf("handle %T: %v", ev, err)
+				}
+			}
+			handle(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			sent := testwait.Receive(t, "the send", gated.entered)
+			handle(answer.of(sent, busyAnswer))
+			taken := h.pending()
+			if state := h.state(); state != StateWorking || taken.ID == sent || !taken.ConfirmedAt.IsZero() {
+				t.Fatalf("after the busy answer the claim is %s holding %+v, want it recorded working for the turn Oh My Pi named and the task taken back under a new id, unconfirmed: this test proves nothing", state, taken)
+			}
+
+			handle(StreamTurnStart{Claim: testToken})
+			handle(StreamTurnEnd{Claim: testToken})
+			if c := h.claim(); c.Pending == nil || c.Pending.ID != taken.ID || !c.Pending.ConfirmedAt.IsZero() || c.ServingGeneration == 7 {
+				t.Fatalf("after the end of the turn the busy answer named: pending %+v serving %d, want %s kept, unconfirmed: no prompt carried it into that turn", c.Pending, c.ServingGeneration, taken.ID)
+			}
+
+			// The send's outcome sends the task again: the plain connection takes that send, so no
+			// send waits at the gate.
+			h.conns.Register(testToken, h.conn)
+			gated.release <- struct{}{}
+			h.m.Wait()
+			if again := h.wantPrompts(1)[0]; again.DeliveryID != taken.ID {
+				t.Fatalf("the send's outcome sent %s, want the task again under %s", again.DeliveryID, taken.ID)
+			}
+		})
 	}
 }
 

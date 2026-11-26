@@ -2287,7 +2287,9 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	if m.resultPending() {
 		// Oh My Pi has not said yet which turn this prompt's was, so settle retired nothing and
 		// the task is still in the worker's hands. What is held for the turn runs from the
-		// result instead (promptResulted), which is where this turn is over for it.
+		// result instead (promptResulted), which is where this turn is over for it. In the send
+		// window no result may come: a send then refused or lost brings none, and refused runs
+		// nothing held for the turn (afterTurn says where that is left).
 		return nil
 	}
 	return m.afterTurn(ctx)
@@ -2298,6 +2300,14 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 // it holds reads the worker's hands — the stale-plugin relaunch would take an unretired task back
 // from the process it replaces (refreshPlugin) — so it may not run while the task whose turn just
 // ended is still unsettled. The send runs last, as it does from every other decision.
+//
+// A turn that ended in the send window (resultPending) may get no result at all: the send is
+// then refused or lost, and refused runs nothing of this. A busy refusal records the claim
+// working (recordBusyTurn), and the end of the turn it names comes back through here; any other
+// leaves the held relaunch to the next sweep, which posts StalePlugin for the claim, idle by then
+// (refreshStalePlugin). No send reaches the stale process meanwhile, since sendPending hands no
+// task to a claim whose plugin is stale (staleRefusesClaim), so the cost is at most one sweep, as
+// for a relaunch the refresh gate refuses below.
 //
 // The held relaunch is the refresh gate's second asker (RefreshGate, dispatch://INFRA-2712 R1):
 // the claim took no credit while its turn ran (holdStaleRelaunch), so the relaunch run here
@@ -2495,8 +2505,8 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 //
 // What the answer can still take back is a confirmation a turn took for this prompt. With no other
 // prompt of the task outstanding and no send of it whose answer is still to come (sendUnanswered),
-// the turn that confirmed the task was matched to this prompt or to a send whose prompt has said
-// it ran none (turnStarted), and the prompt says it never ran, so that turn was another
+// the turn that confirmed the task was matched to this prompt or to a send whose prompt has since
+// said it ran none (turnStarted), and the prompt says it never ran, so that turn was another
 // input's: the task goes back to waiting (takeBackPending), and that turn's end sends it — or,
 // when the end has already come and left what it held to this result (turnEnded, resultPending),
 // it goes from here (afterTurn), as it does from a result of a turn that ran (promptResulted).
@@ -2591,10 +2601,11 @@ func (m *Machine) resultPending() bool {
 // sendUnanswered is whether a send is in flight whose answer is still to come: no answer has made
 // its outcome moot (sending.resulted). It is the one reading of that for the questions a send
 // in flight is asked. resultPending asks it of the pending task's own send: whether a turn that
-// ends may be any turn at all. confirmationInDoubt asks it of a send under any id, since a turn
-// that starts under one is taken for the task's all the same (turnAnswers): whether a let-go can
-// vouch for the task's confirmation. waitedOutAnswer asks it for the same reason: whether the
-// turn that confirmed the task may still be the send's, where an earlier prompt says it ran none.
+// ends may be any turn at all. turnAnswers asks it of a send under any id: whether a turn that
+// starts now may be that send's prompt's, and so is taken for the task's. confirmationInDoubt
+// asks it under any id for that reason: whether a let-go can vouch for the task's confirmation.
+// waitedOutAnswer asks it too: whether the turn that confirmed the task may still be the send's,
+// where an earlier prompt says it ran none.
 func (m *Machine) sendUnanswered() bool {
 	return m.send != nil && !m.send.resulted
 }

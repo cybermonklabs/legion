@@ -2999,11 +2999,13 @@ func timesADelivery(kind TimerKind) bool {
 // is one of those: that answer took the task back under a new id (takeBackPending), so the
 // acknowledgement adds no prompt to the ones the task waits on a result for (Machine.outstanding),
 // and the same answer recorded the claim working (recordBusyTurn), so nothing goes from here into
-// the turn it named: the task waits for that turn's end. So is the outcome of a send that a
-// result decided first has made moot (sending.resulted): its own prompt's result, or one reporting
-// a turn of an earlier prompt of the task, settled the task where its turn was over
+// the turn it named: the task waits for that turn's end. So is the outcome of a send that an
+// answer read first has made moot (sending.resulted): its own prompt's result, a result reporting
+// a turn of an earlier prompt of the task, or its own prompt's refusal after the acknowledgement
+// (lateRefused). A result that ran a turn settled the task where its turn was over
 // (promptResulted), so an acknowledgement after it would wait on a result that has come already,
-// and with the task held, nothing would retire it.
+// and with the task held, nothing would retire it; an answer that ran none took the task back
+// under a new id, which may go from here.
 func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string) (bool, error) {
 	own := m.send != nil && m.send.id == deliveryID && m.send.generation == generation
 	resulted := own && m.send.resulted
