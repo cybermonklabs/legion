@@ -3974,6 +3974,7 @@ a20_nothing_posted comment-100 ${control} ${replies} && echo quiet || echo poste
     ) => {
       writeFileSync(join(evidenceDir, "inbox.jsonl"), inbox(inboxText));
       const result = run(`${rig("said_text")}
+${rig("a21_nothing_posted")}
 ${rig("a21_read")}
 questions_file=${shq(liveQuestions)}
 evidence=${shq(evidenceDir)}
@@ -4021,6 +4022,202 @@ echo "$read_said"`);
       expect(a21([once], { claimState: "suspended" })).toMatch(/^failed/);
       expect(a21([once], { replied: true })).toMatch(/^failed/);
     });
+  });
+
+  // A21's part that the failed implementer posts nothing under the control's mention of a role no
+  // session took. It holds over a thread holding no reply of that session's under the mention, and
+  // fails on the reply A21's control places there, in that session's name and carrying the loop's
+  // mark. A mention Dispatch took none of shows nothing.
+  test("a21_nothing_posted fails on the reply A21's control places under its mention", () => {
+    const nothing = (replies: string, control = "comment-111") =>
+      run(`${rig("said_text")}\n${rig("control_question")}\n${rig("control_mark")}\n${rig("a21_nothing_posted")}
+agent[files:failed_implementer.session]=session-implementer
+dispatch_get() {
+  jq -cn --arg body "Placed by the control of A21 in the failed implementer's name, as a reply of the loop's would stand: $(control_mark A21)" \\
+    '[{id: "comment-111", author: {id: "user:smoke", kind: "user"}, reply_to: null, body: "@reviewer where does the retry backoff start?"}] + ${replies}'
+}
+a21_nothing_posted ALX-11 ${control} && echo quiet || echo "posted: $read_said"`).out.trim();
+    // The reply the control places, in SESSION's name under UNDER, its body the placement's own.
+    const reply = (session: string, under: string) =>
+      `[{id: "comment-112", author: {id: "${session}", kind: "session"}, reply_to: "${under}", body: $body}]`;
+    expect(nothing("[]")).toBe("quiet");
+    expect(nothing(reply("session-implementer", "comment-111"))).toBe(
+      "posted: the failed implementer's reply to comment-111 on ALX-11: Placed by the control of A21 in the failed implementer's name, as a reply of the loop's would stand: <!-- legion-answer:c0de424221 -->"
+    );
+    // The same reply in another session's name, or under another comment, is no post of its.
+    expect(nothing(reply("session-planner", "comment-111"))).toBe("quiet");
+    expect(nothing(reply("session-implementer", "comment-110"))).toBe("quiet");
+    expect(nothing("[]", "''")).toBe(
+      "posted: the failed implementer's reply to (no mention) on ALX-11: none"
+    );
+  });
+
+  // A21's first holder's leg: the mention of a role no session took settled queued naming no
+  // session, and its marker reached the first holder's inbox. Its control mentions another role,
+  // one the first holder did not claim, under a marker of its own, which reaches no inbox of the
+  // holder's: the leg's read fails on it. comment-111 is a mention Dispatch kept (its one delivery
+  // queued naming no session), comment-110 one it sent to a session.
+  describe("a21_holder_read", () => {
+    const evidenceDir = join(dir, "a21-holder-evidence");
+    const relay = (session: string, role: string, marker: string) =>
+      JSON.stringify({
+        at: "2026-11-24T12:00:00.000Z",
+        session,
+        text: `Message:\n@${role} A message for the role's first holder (${marker})\n\nTopic: notifications.role.legion-alx-alx-11-${role}`,
+      });
+    beforeAll(() => {
+      mkdirSync(evidenceDir, { recursive: true });
+      // The leg's own marker relayed to the first holder, and the control's relayed to the asker
+      // alone: no inbox of the holder's holds it.
+      writeFileSync(
+        join(evidenceDir, "inbox.jsonl"),
+        `${relay("holder-session", "tester", "answer-loop-a21-holder-4242-files")}\n${relay("asker-session", "merger", "answer-loop-a21-holder-control-4242-files")}\n`
+      );
+    });
+    const claim = `'{"session_id":"holder-session","role":"legion-alx-alx-11-tester"}'`;
+    const holder = (args: string) =>
+      run(`${rig("said_text")}\n${rig("a21_holder_kept")}\n${rig("a21_holder_read")}
+evidence=${shq(evidenceDir)}
+holder_session=holder-session
+a21_holder_read ${args} && echo held || echo failed
+echo "$read_said"`).out;
+
+    test("holds when the kept mention's marker reached the first holder, queued as the row or the control read it", () => {
+      expect(
+        holder(
+          `legion-alx-alx-11-tester comment-111 answer-loop-a21-holder-4242-files ${claim} yes`
+        )
+      ).toMatch(/^held/);
+      expect(
+        holder(`legion-alx-alx-11-tester comment-111 answer-loop-a21-holder-4242-files ${claim}`)
+      ).toMatch(/^held/);
+    });
+
+    test("fails over its control's mention of a role the first holder did not claim, whose marker reached no inbox of it", () => {
+      const out = holder(
+        `legion-alx-alx-11-merger comment-111 answer-loop-a21-holder-control-4242-files ${claim}`
+      );
+      expect(out).toMatch(/^failed/);
+      expect(out).toContain("settled queued naming no session: yes");
+      expect(out).toContain("its inbox holds answer-loop-a21-holder-control-4242-files: no");
+    });
+
+    test("fails when the mention did not settle queued, or names no marker", () => {
+      expect(
+        holder(`legion-alx-alx-11-tester comment-111 answer-loop-a21-holder-4242-files ${claim} no`)
+      ).toMatch(/^failed/);
+      expect(
+        holder(`legion-alx-alx-11-tester comment-110 answer-loop-a21-holder-4242-files ${claim}`)
+      ).toMatch(/^failed/);
+      expect(holder(`legion-alx-alx-11-tester comment-111 '' ${claim} yes`)).toMatch(/^failed/);
+    });
+  });
+
+  // A22's part that the loop answers nothing of the comment the planner's dispatch tool posted: no
+  // reply in the mentioned session's name under it. Its control places that comment, in the
+  // planner's name with the control's marker and the tool's mark, and under it a reply in the
+  // mentioned session's name carrying the loop's mark, and the read fails on it. An issue holding
+  // no comment with the marker shows nothing.
+  describe("a22_nothing_posted", () => {
+    const controlMarker = "answer-loop-a22-control-4242-files";
+    const nothing = (body: string) =>
+      run(`${rig("said_text")}\n${rig("control_question")}\n${rig("control_mark")}\n${rig("control_tool_mark")}\n${rig("a22_nothing_posted")}
+${body}`).out.trim();
+    // ALX-22's comments with what the control places added: the planner's comment as the tool would
+    // post it, and under it a reply in REPLIER's name carrying the loop's mark.
+    const placed = (replier: string) =>
+      `placed=$(jq -c --arg m ${shq(controlMarker)} --arg tool "$(control_tool_mark A22)" --arg s ${shq(replier)} \\
+  --arg body "Placed by the control of A22 in the mentioned session's name, as the loop's answer to the comment would stand: $(control_mark A22)" \\
+  '. + [{id: "comment-230", author: {id: "session-planner", kind: "session"}, reply_to: null, body: ($m + "\\n\\n" + $tool)},
+    {id: "comment-231", author: {id: $s, kind: "session"}, reply_to: "comment-230", body: $body}]' \\
+  <<<"$(dispatch_get issues/ALX-22/comments)")`;
+
+    test("holds over the comment the planner posted when the mentioned session wrote no reply under it", () => {
+      expect(
+        nothing(
+          "a22_nothing_posted ALX-22 answer-loop-a22-4242-files session-tester-old && echo quiet || echo posted"
+        )
+      ).toBe("quiet");
+    });
+
+    test("fails on the comment and the reply A22's control places, and holds with that reply in another session's name", () => {
+      const out = nothing(`${placed("session-tester-old")}
+one_tool_marked_comment_by "$(issue_comments_in "$placed" ${controlMarker})" session-planner && echo "the placed comment is the tool's"
+a22_nothing_posted ALX-22 ${controlMarker} session-tester-old "$placed" && echo quiet || echo "posted: $read_said"`);
+      expect(out).toContain("the placed comment is the tool's");
+      expect(out).toContain(
+        "posted: a reply of session-tester-old to comment-230 on ALX-22: Placed by the control of A22 in the mentioned session's name, as the loop's answer to the comment would stand: <!-- legion-answer:c0de424222 -->"
+      );
+      // The reply in another session's name is no answer of the mentioned session's.
+      expect(
+        nothing(`${placed("session-planner")}
+a22_nothing_posted ALX-22 ${controlMarker} session-tester-old "$placed" && echo quiet || echo posted`)
+      ).toBe("quiet");
+      // The comments are read from Dispatch where none are given.
+      expect(
+        nothing(`${placed("session-tester-old")}
+dispatch_get() { printf '%s\\n' "$placed"; }
+a22_nothing_posted ALX-22 ${controlMarker} session-tester-old && echo quiet || echo posted`)
+      ).toBe("posted");
+    });
+
+    test("shows nothing where no comment holds the marker, or the issue answers none", () => {
+      expect(
+        nothing(
+          `a22_nothing_posted ALX-22 ${controlMarker} session-tester-old && echo quiet || echo "posted: $read_said"`
+        )
+      ).toBe(
+        `posted: a reply of session-tester-old to (no comment holding ${controlMarker}) on ALX-22: none`
+      );
+      expect(
+        nothing(
+          "a22_nothing_posted ALX-404 answer-loop-a22-4242-files session-tester-old && echo quiet || echo posted"
+        )
+      ).toBe("posted");
+    });
+  });
+
+  // A18's resume leg's part that the loop posts nothing: no reply to the question reached the
+  // asker. Its control places one on the asker's topic in reply to its own question, carrying the
+  // loop's mark, and the read fails on it. No event is no send, and shows nothing.
+  test("a18_nothing_posted fails on the reply A18's control places on the asker's topic", () => {
+    const evidenceDir = join(dir, "a18-evidence");
+    mkdirSync(evidenceDir, { recursive: true });
+    const nothing = (event: string) =>
+      run(`${rig("control_question")}\n${rig("control_mark")}\n${rig("a18_nothing_posted")}
+evidence=${shq(evidenceDir)}
+jq -cn --arg t "In Reply To: event-a18"$'\\n'"Message:"$'\\n'"Placed by the control of A18, a reply to the question as the loop's would stand. $(control_mark A18)"$'\\n\\n'"Topic: notifications.agent.asker-session" \\
+  '{at: "2026-11-24T12:00:00.000Z", session: "asker-session", text: $t}' >"$evidence/inbox.jsonl"
+a18_nothing_posted ${event} && echo quiet || echo "posted: $read_said"`).out.trim();
+    expect(nothing("event-never")).toBe("quiet");
+    expect(nothing("event-a18")).toBe("posted: replies on the asker's topic to event-a18: 1");
+    expect(nothing("''")).toBe("posted: replies on the asker's topic to (no event): 0");
+  });
+
+  // A6's second leg's part that the loop passes the decision to nobody but the running tree's
+  // architect: no agent-decision notice of the reply at the controller stand-in. Its control places
+  // one there, as control_notice writes it, and the read fails on it, as on a notice the loop
+  // passed itself. No reply names no decision, and shows nothing.
+  test("a6_nothing_posted fails on the notice A6's control places at the controller stand-in", () => {
+    const evidenceDir = join(dir, "a6-evidence");
+    mkdirSync(evidenceDir, { recursive: true });
+    const nothing = (comment: string, inbox = evidenceDir) =>
+      run(`${rig("control_question")}\n${rig("control_mark")}\n${rig("control_notice")}\n${rig("a6_nothing_posted")}
+jq -cn --arg s "$controller_session" --arg t "Message:"$'\\n'"$(control_notice comment-61 A6)"$'\\n\\n'"Topic: notifications.agent.$controller_session" \\
+  '{at: "2026-11-24T12:00:00.000Z", session: $s, text: $t}' >${shq(join(evidenceDir, "inbox.jsonl"))}
+evidence=${shq(inbox)}
+a6_nothing_posted ${comment} && echo quiet || echo "posted: $read_said"`).out.trim();
+    expect(nothing("comment-60")).toBe("quiet");
+    expect(nothing("comment-61")).toBe(
+      "posted: agent-decision notices holding comment-61 at the controller stand-in: 1"
+    );
+    // The run's own fixture: the loop's notice of comment-77 at the controller stand-in.
+    expect(nothing("comment-77", evidence)).toBe(
+      "posted: agent-decision notices holding comment-77 at the controller stand-in: 1"
+    );
+    expect(nothing("''")).toBe(
+      "posted: agent-decision notices holding (no reply) at the controller stand-in: 0"
+    );
   });
 
   test("tree_is_live accepts an issue held from the phase when asked to, and A6's use of it as before", () => {
