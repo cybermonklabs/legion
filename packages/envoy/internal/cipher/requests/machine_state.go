@@ -186,8 +186,9 @@ type SecretDecision struct {
 	// "automatic", "approval" or "deny".
 	Decision string `json:"decision"`
 	Source   string `json:"-"`
-	// ProfileDigest is the fingerprint of the profile the name was served as when the request
-	// was decided (policy.Secret.ProfileDigest), "" for a stored secret served by its own name.
+	// ProfileDigest is the fingerprint of what the name was served as when the request was
+	// decided (policy.Secret.ProfileDigest): its profile's, or its own behind the proxy or under a
+	// scopes tag, and "" for a stored secret served by its own name with neither.
 	// The request records it in request_secrets.airlock_digest, and a release ends the grant once
 	// it differs from the one the policy holds then.
 	ProfileDigest string `json:"-"`
@@ -358,11 +359,13 @@ type Machine struct {
 	// release.go). A type with none, and a Machine with no map, leaves such a value to lapse.
 	GiveBacks map[string]GiveBack
 	// AirlockProxyURL is BROKER_AIRLOCK_PROXY_URL, the URL a command reaches that port at, and
-	// AirlockCACertificate the PEM certificate of its certificate authority
-	// (BROKER_AIRLOCK_CA_CERT_FILE, read at boot). Every release that holds a name back carries
-	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
-	AirlockProxyURL      string
-	AirlockCACertificate string
+	// ProxyRoots the PEM roots a command trusts it by (proxy.Authority.ReleaseRoots: the root of
+	// the proxy's own chain and BROKER_PROXY_RELEASE_ROOTS_FILE's), read at each release since a
+	// pod that asks a pool for its intermediate learns its root from the first answer. Every
+	// release that holds a name back carries both, since a command that cannot reach the proxy
+	// or cannot trust it has nothing. A nil ProxyRoots carries none.
+	AirlockProxyURL string
+	ProxyRoots      func() string
 	// Minted are the capabilities the broker mints and holds behind rules entries of kind dpop,
 	// one per kind: a proxy connection presenting a kind's placeholder is that kind's grant
 	// (mintedConnection), and the proxy's read of its values is the token MintedTokens mints for

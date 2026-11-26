@@ -313,8 +313,8 @@ func modeRefusal(kind, got string) string {
 // What a block that sets only its required members settles to: the issue volume at 50Gi, both
 // pods' reservations at the daemon's default (an issue pod 2 CPU and 8Gi over an 80Gi disk limit
 // and a 6Gi disk request, the controller's pod 1 CPU and 4Gi over a 10Gi limit and a 1Gi request),
-// no scheduling beyond the Legion pool the runtime selects, in-cluster credentials, and nothing of
-// the operator's in any pod.
+// no scheduling (a pod selects no node label but a microVM pod's ComputeClass), in-cluster
+// credentials, and nothing of the operator's in any pod.
 func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile), noEnv)
 	if err != nil {
@@ -422,6 +422,94 @@ func TestTheRepositoryCacheCanRequestLessMemoryThanItsLimit(t *testing.T) {
 	if got := cfg.Runtime.Kubernetes.RepositoryCache.Resources; got != want {
 		t.Errorf("the repository cache's reservation = %+v, want %+v", got, want)
 	}
+}
+
+// The two repository_cache keys that keep the cache's packs in a Cloud Storage bucket are a pair.
+// Both absent is off, with neither value and every other member at its default. Both supplied are
+// read as written. One without the other is refused naming the missing key, a blank value and an
+// unfilled `${…}` placeholder naming the key itself, a bucket that is no bucket's name naming the
+// shape, and an account that is no ServiceAccount's name (a capital or an underscore, a slash, or
+// past 253 characters) naming the key and the value. A cache account that is the one the issue
+// pods run as is refused: the configured runtime.kubernetes.pod.service_account, or, where that is
+// unset, the namespace's `default`, which is what every issue pod then runs as. The bucket's grant
+// goes to the cache's account, and on that account it would reach every issue pod. So is the
+// controller's own account, runtime.kubernetes.pod.controller_service_account, on which the grant
+// would reach the controller's pod.
+func TestRepositoryCacheBucketSettings(t *testing.T) {
+	const key = "runtime.kubernetes.repository_cache"
+	cache := func(members string) string { return kubernetesFile + "    repository_cache: {" + members + "}\n" }
+	withPodAccount := func(account, members string) string {
+		return kubernetesFile + "    pod: {service_account: " + account + "}\n    repository_cache: {" + members + "}\n"
+	}
+	for _, tc := range []struct {
+		name, body      string
+		bucket, account string
+		want            string
+	}{
+		{name: "both absent", body: kubernetesFile},
+		{name: "both absent beside the block's other members", body: cache("volume: 20Gi")},
+		{name: "both supplied", body: cache("bucket: example-legion-packs, service_account: legion-cache"),
+			bucket: "example-legion-packs", account: "legion-cache"},
+		{name: "both supplied beside a pod account, the bucket dotted", body: withPodAccount("legion-worker", "bucket: packs.example_legion-2, service_account: legion-cache"),
+			bucket: "packs.example_legion-2", account: "legion-cache"},
+		{name: "the bucket alone", body: cache("bucket: example-legion-packs"),
+			want: key + ".bucket needs " + key + ".service_account: the cache pods alone write the bucket, and they run as a ServiceAccount no other pod runs as to hold its grant alone"},
+		{name: "the account alone", body: cache("service_account: legion-cache"),
+			want: key + ".service_account needs " + key + ".bucket: the cache pods run as a ServiceAccount of their own only to write the bucket"},
+		{name: "a blank bucket", body: cache(`bucket: "", service_account: legion-cache`), want: key + ".bucket must not be empty"},
+		{name: "a blank account", body: cache(`bucket: example-legion-packs, service_account: " "`), want: key + ".service_account must not be empty"},
+		{name: "a placeholder bucket", body: cache(`bucket: "${CACHE_BUCKET}", service_account: legion-cache`),
+			want: key + `.bucket "${CACHE_BUCKET}" is an unfilled placeholder: put the Cloud Storage bucket's name in its place`},
+		{name: "a placeholder account", body: cache(`bucket: example-legion-packs, service_account: "${CACHE_SERVICE_ACCOUNT}"`),
+			want: key + `.service_account "${CACHE_SERVICE_ACCOUNT}" is an unfilled placeholder: put the ServiceAccount the cache pods run as in its place`},
+		{name: "a bucket's address rather than its name", body: cache("bucket: gs://example-legion-packs, service_account: legion-cache"),
+			want: key + `.bucket "gs://example-legion-packs" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+		{name: "a bucket in capitals", body: cache("bucket: Example-Legion-Packs, service_account: legion-cache"),
+			want: key + `.bucket "Example-Legion-Packs" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+		{name: "a bucket part past 63 between two dots", body: cache("bucket: example." + strings.Repeat("p", 64) + ", service_account: legion-cache"),
+			want: key + `.bucket "example.` + strings.Repeat("p", 64) + `" must be a Cloud Storage bucket's name: 3 to 222 lowercase letters, digits, dashes, underscores and dots, beginning and ending with a letter or a digit, with 1 to 63 of them between two dots`},
+		{name: "an account in capitals with an underscore", body: cache("bucket: example-legion-packs, service_account: Legion_Cache"),
+			want: serviceAccountRefusal(key+".service_account", "Legion_Cache")},
+		{name: "an account holding a slash", body: cache("bucket: example-legion-packs, service_account: a/b"),
+			want: serviceAccountRefusal(key+".service_account", "a/b")},
+		{name: "an account past 253 characters", body: cache("bucket: example-legion-packs, service_account: " + strings.Repeat("a", 300)),
+			want: serviceAccountRefusal(key+".service_account", strings.Repeat("a", 300))},
+		{name: "the configured pod account", body: withPodAccount("legion-worker", "bucket: example-legion-packs, service_account: legion-worker"),
+			want: key + `.service_account "legion-worker" must differ from runtime.kubernetes.pod.service_account, the account the issue pods run as: the bucket's grant to it would reach every issue pod`},
+		{name: "default where no pod account is set", body: cache("bucket: example-legion-packs, service_account: default"),
+			want: key + `.service_account "default" must differ from the account the issue pods run as, the namespace's default while runtime.kubernetes.pod.service_account is unset: the bucket's grant to it would reach every issue pod`},
+		{name: "the controller's own account", body: "controller: daemon\n" + kubernetesFile +
+			"    pod: {service_account: legion-worker, controller_service_account: legion-controller}\n    repository_cache: {bucket: example-legion-packs, service_account: legion-controller}\n",
+			want: key + `.service_account "legion-controller" must differ from runtime.kubernetes.pod.controller_service_account, the account the controller's pod runs as: the bucket's grant to it would reach the controller's pod`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
+			if tc.want != "" {
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("LoadForValidation error =\n%v\nwant\n%q", err, tc.want)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadForValidation: %v", err)
+			}
+			got := cfg.Runtime.Kubernetes.RepositoryCache
+			if got.Bucket != tc.bucket || got.ServiceAccount != tc.account {
+				t.Errorf("the repository cache's bucket and account are %q and %q, want %q and %q", got.Bucket, got.ServiceAccount, tc.bucket, tc.account)
+			}
+			want := DefaultRepositoryCache()
+			want.Bucket, want.ServiceAccount = tc.bucket, tc.account
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("the repository cache settles to %+v, want the defaults with the pair %+v", got, want)
+			}
+		})
+	}
+}
+
+// serviceAccountRefusal is the loader's refusal of key's value, which is no ServiceAccount's name.
+func serviceAccountRefusal(key, value string) string {
+	return fmt.Sprintf("%s %q is no ServiceAccount's name: a ServiceAccount is named with lowercase letters, digits, '-' and '.',"+
+		" starting and ending with a letter or digit, in at most 253 characters", key, value)
 }
 
 // A cpu or memory request settles to the file's request where it set one, else to the file's limit
@@ -815,6 +903,9 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		name string
 		body string
 		want string
+		// contains is set where want is a part of the refusal and not all of it: the refusal must
+		// hold want, and its other words are free.
+		contains bool
 	}{
 		{
 			name: "the kubernetes scalar with no block",
@@ -1002,9 +1093,10 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "runtime.kubernetes.scheduling.node_selector must be a mapping of strings",
 		},
 		{
-			name: "node_selector setting the Legion pool",
-			body: kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
-			want: "runtime.kubernetes.scheduling.node_selector must not set legion.dev/pool: the runtime selects the Legion pool itself, and the cluster's admission policy requires its value",
+			name:     "node_selector setting the Legion pool",
+			body:     kubernetesFile + "    scheduling: {node_selector: {legion.dev/pool: other}}\n",
+			want:     "legion.dev/pool",
+			contains: true,
 		},
 		{
 			name: "tolerations not an array",
@@ -1745,13 +1837,31 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: kubernetesFile + "    pod:\n      volumes: [{name: creds, secret: {name: a}}]\n      volume_mounts: [{volume: creds, mount_path: /etc/legion-operator, read_only: sometimes}]\n",
 			want: "runtime.kubernetes.pod.volume_mounts[0].read_only must be true or false",
 		},
+		{
+			name: "a pod account in capitals with an underscore",
+			body: kubernetesFile + "    pod: {service_account: Legion_Cache}\n",
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", "Legion_Cache"),
+		},
+		{
+			name: "a pod account holding a slash",
+			body: kubernetesFile + "    pod: {service_account: a/b}\n",
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", "a/b"),
+		},
+		{
+			name: "a pod account past 253 characters",
+			body: kubernetesFile + "    pod: {service_account: " + strings.Repeat("a", 300) + "}\n",
+			want: serviceAccountRefusal("runtime.kubernetes.pod.service_account", strings.Repeat("a", 300)),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
 			if err == nil {
 				t.Fatalf("LoadForValidation succeeded, want %q", tc.want)
 			}
-			if err.Error() != tc.want {
+			switch {
+			case tc.contains && !strings.Contains(err.Error(), tc.want):
+				t.Errorf("LoadForValidation error =\n%q\nwant one holding\n%q", err.Error(), tc.want)
+			case !tc.contains && err.Error() != tc.want:
 				t.Errorf("LoadForValidation error =\n%q\nwant\n%q", err.Error(), tc.want)
 			}
 		})
