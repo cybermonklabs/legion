@@ -623,7 +623,16 @@ func TestRepositoryCacheReadsReadiness(t *testing.T) {
 		}
 	}
 	name := CacheSandboxName(testProject, cacheRepo)
-	g.eventually("the cache pod", func() bool { return g.r.storedPod(name) != nil })
+	// RepositoryCache reads the Sandbox store, which nothing orders after the pod store: a Sandbox
+	// and its pod arrive on informers of their own, and a read made once the pod store held the pod
+	// found no Sandbox on a loaded runner. So the test waits for both caches' Sandboxes and pods.
+	for _, repo := range []ghrepo.Repository{cacheRepo, longRepo} {
+		cache := CacheSandboxName(testProject, repo)
+		g.eventually("the cache "+cache+"'s Sandbox and its pod in the runtime's stores", func() bool {
+			s, _ := g.r.storedSandbox(cache)
+			return s != nil && g.r.storedPod(cache) != nil
+		})
+	}
 	status, found := g.r.RepositoryCache(cacheRepo)
 	if !found || status.Ready || status.Address != "" || status.Sandbox != name || status.Repo != cacheRepo {
 		t.Fatalf("RepositoryCache before readiness = %+v, %t; want found, not ready, no address", status, found)
