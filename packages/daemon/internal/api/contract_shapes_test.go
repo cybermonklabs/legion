@@ -725,12 +725,6 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
-		// A set of the P0 bound by the controller (the P0 start's entry): the bound in force, legion.yaml's
-		// and the live value with who set it, when and why, every key the answer can carry. A clear
-		// answers no live value, and a set of none a null bound.
-		AnswerP0Bound: {roots: typesOf(P0BoundView{}), bodies: []any{P0BoundView{Bound: new(2), Configured: new(4),
-			Live: &P0BoundLiveView{Bound: new(2), SetBy: PauseActorView{Kind: "controller", Session: "ses_controller"},
-				SetAt: time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC), Reason: "the P0 issues outran the gateway"}}}},
 		// The plan-register golden's own value (TestOwnerPlanRouteGoldens): one task with the
 		// steps its block names.
 		AnswerPlanRegister: {roots: typesOf(PlanRegisterResponse{}), bodies: []any{PlanRegisterResponse{Plan: registeredPlan(plan.Plan{

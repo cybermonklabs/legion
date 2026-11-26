@@ -124,14 +124,17 @@ func TestTheControllersP0BoundRoutesSetAndClearTheBoundTheNextPassReads(t *testi
 }
 
 // The controller's set and clear answer the bodies the TypeScript client parses: each is written
-// from what the real route answers, a set of 2 over legion.yaml's 3 and the clear after it, so the
-// contract's schema and the plugin's tool read the daemon's own bytes.
+// from what the real route answers, a set of 2 over legion.yaml's 3, a set of none after it, and
+// the clear after that, so the contract's schema and the plugin's tool read the daemon's own bytes.
 func TestP0BoundRouteGoldens(t *testing.T) {
 	h := newP0BoundHarness(t, new(3))
 	grant := h.controllerSession()
 	set := p0BoundAnswer(t, h, controllerP0BoundRoute, ProjectP0BoundRequest{GrantID: grant, Bound: new(2), Reason: "the P0 issues outran the gateway"}, nil)
 	set.Live.SetAt = time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
 	golden(t, "p0-bound.json", set)
+	none := p0BoundAnswer(t, h, controllerP0BoundRoute, ProjectP0BoundRequest{GrantID: grant, Unbounded: true, Reason: "the P0 issues outran the gateway"}, nil)
+	none.Live.SetAt = time.Date(2026, 11, 24, 6, 5, 0, 0, time.UTC)
+	golden(t, "p0-bound-none.json", none)
 	golden(t, "p0-bound-clear.json", p0BoundAnswer(t, h, controllerP0BoundClearRoute, ProjectP0BoundClearRequest{GrantID: grant, Reason: "back to the file"}, nil))
 }
 

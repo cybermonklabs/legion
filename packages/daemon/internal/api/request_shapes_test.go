@@ -78,8 +78,6 @@ var frozenPluginRequests = map[string]reflect.Type{
 	"POST /legion/v1/project/resume":          reflect.TypeFor[ProjectResumeRequest](),
 	"POST /legion/v1/intake/replay":           reflect.TypeFor[IntakeReplayRequest](),
 	"POST /legion/v1/intake/discard":          reflect.TypeFor[IntakeDiscardRequest](),
-	"POST /legion/v1/project/p0-bound":        reflect.TypeFor[ProjectP0BoundRequest](),
-	"POST /legion/v1/project/p0-bound/clear":  reflect.TypeFor[ProjectP0BoundClearRequest](),
 }
 
 // pluginRequests is every route that decodes a body a plugin sends, with the type its handler

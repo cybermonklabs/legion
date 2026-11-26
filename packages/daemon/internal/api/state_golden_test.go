@@ -1170,15 +1170,17 @@ func populatedState(t *testing.T) State {
 		state.Issues[key] = issue
 	}
 	// The priority Dispatch resolves each issue to (the P0 start's entry): LEGION-211's is its own
-	// P1, and LEGION-207, which has no priority of its own, takes P2 from OTHER-5, an ancestor in
-	// another project, which `priorityFrom` names. Every other issue stands as a Dispatch release
-	// before dispatch://INFRA-5793 left it, with no resolved priority at all, so the fixture holds
-	// all three readings of the field.
-	resolvedP1, resolvedP2 := PriorityView(record.P1), PriorityView(record.P2)
+	// P1; LEGION-207, which has no priority of its own, takes P2 from OTHER-5, an ancestor in
+	// another project, which `priorityFrom` names; and LEGION-214 has none of its own and none
+	// above it, which Dispatch sends as a null, a known none. Every other issue stands as a
+	// Dispatch release before dispatch://INFRA-5793 left it, with no resolved priority at all, so
+	// the fixture holds every reading of the field: a number of the issue's own, an inherited
+	// number, a known none, and none sent.
+	resolvedP1, resolvedP2, resolvedNone := PriorityView(record.P1), PriorityView(record.P2), PriorityView(record.NoPriority)
 	for key, resolved := range map[string]struct {
 		priority *PriorityView
 		from     string
-	}{"LEGION-211": {&resolvedP1, ""}, "LEGION-207": {&resolvedP2, "OTHER-5"}} {
+	}{"LEGION-211": {&resolvedP1, ""}, "LEGION-207": {&resolvedP2, "OTHER-5"}, "LEGION-214": {&resolvedNone, ""}} {
 		issue := state.Issues[key]
 		issue.ResolvedPriority, issue.PriorityFrom = resolved.priority, resolved.from
 		state.Issues[key] = issue

@@ -164,17 +164,22 @@ function daemonFixture(name: string): Record<string, unknown> {
 }
 
 /** The real daemon client over a daemon that answers each route of `answers` with that golden,
- * under `status`, and records what reached it. A tool call over it goes through the contract's
- * request and answer schemas, as it does in a session, and states this build's own contract,
- * as the extension's client does (`extensions/legion.ts`). */
-function goldenDaemon(answers: Readonly<Record<string, string>>, status = 200) {
+ * or, for a list, each call of the route with the next golden of the list, under `status`, and
+ * records what reached it. A tool call over it goes through the contract's request and answer
+ * schemas, as it does in a session, and states this build's own contract, as the extension's
+ * client does (`extensions/legion.ts`). */
+function goldenDaemon(answers: Readonly<Record<string, string | readonly string[]>>, status = 200) {
   const posted: Array<readonly [string, unknown]> = [];
+  const calls = new Map<string, number>();
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
     posted.push([route, init?.body == null ? undefined : JSON.parse(init.body.toString())]);
-    const golden = answers[route];
+    const call = calls.get(route) ?? 0;
+    calls.set(route, call + 1);
+    const answer = answers[route];
+    const golden = typeof answer === "string" ? answer : answer?.[call];
     return golden === undefined
-      ? Response.json({ error: `no golden answers ${route}` }, { status: 404 })
+      ? Response.json({ error: `no golden answers call ${call + 1} of ${route}` }, { status: 404 })
       : Response.json(daemonFixture(golden), { status });
   }) as typeof fetch;
   const client = createLegionDaemonClient("http://daemon.test", {
@@ -2248,10 +2253,11 @@ test("the controller pauses the project with its reason and resumes it, and each
 // with one operation, which sends exactly the request the daemon API contract describes, a bound or
 // none with its reason, and clears it with another. Each goes through the real daemon client, so
 // the answer the controller reads is the golden the daemon's own route test wrote, parsed by the
-// contract's schema. A call the tool can tell is wrong is refused before a grant is minted.
+// contract's schema: the set of 2, then the set of none, whose bound in force and live bound are
+// null, then the clear. A call the tool can tell is wrong is refused before a grant is minted.
 test("the controller sets and clears the P0 bound, each request the contract's and each answer the daemon's golden", async () => {
   const { posted, daemon } = goldenDaemon({
-    "/legion/v1/project/p0-bound": "p0-bound.json",
+    "/legion/v1/project/p0-bound": ["p0-bound.json", "p0-bound-none.json"],
     "/legion/v1/project/p0-bound/clear": "p0-bound-clear.json",
   });
   const minted: string[] = [];
@@ -2265,6 +2271,8 @@ test("the controller sets and clears the P0 bound, each request the contract's a
   expect(set.details).toEqual(daemonFixture("p0-bound.json"));
   const none = await run({ op: "set_p0_bound", unbounded: true, reason });
   expect(none.isError).toBeUndefined();
+  expect(daemonFixture("p0-bound-none.json")).toMatchObject({ bound: null, live: { bound: null } });
+  expect(none.details).toEqual(daemonFixture("p0-bound-none.json"));
   const cleared = await run({ op: "clear_p0_bound", reason: "back to the file" });
   expect(cleared.details).toEqual(daemonFixture("p0-bound-clear.json"));
   expect(posted).toEqual([

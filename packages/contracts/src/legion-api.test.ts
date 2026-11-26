@@ -214,8 +214,10 @@ const schemas: Record<string, z.ZodType> = {
   "project-resume-refused.json": LegionPauseFailureResponse,
   // The P0 bound the controller's set and clear left in force (the P0 start's contract entry), each written from
   // what the route itself answers (internal/api's TestP0BoundRouteGoldens): a set of 2 over
-  // legion.yaml's 3, and the clear after it.
+  // legion.yaml's 3, a set of none after it, whose bound in force and live bound are null, and the
+  // clear after that.
   "p0-bound.json": LegionP0BoundResponse,
+  "p0-bound-none.json": LegionP0BoundResponse,
   "p0-bound-clear.json": LegionP0BoundResponse,
   // The replay and the discard of the intake's give-ups (contract 228), written by internal/api's
   // TestIntakeReplayAnswerGolden and TestIntakeDiscardAnswerGolden from what each route answers:
@@ -3340,6 +3342,90 @@ test("the state golden names the daemon's Dispatch credential, and the key may b
     expect(
       LegionStateResponse.safeParse({ ...state, dispatchCredential: refused }).success
     ).toBeFalse();
+  }
+});
+
+// Each issue's two Dispatch priorities (C1 and C5 of dispatch://INFRA-5636, check c-mirror):
+// `priority`, the issue's own (contract 250), and `resolvedPriority`, the one Dispatch resolves it
+// to and admission reads (the P0 start's contract entry), are each `number | null`: 0 for P0 to 3
+// for P3, null for none, and absent where the daemon serves no such key. `priorityFrom` names the
+// issue a resolved priority comes from, and is absent where it is the issue's own or none.
+// state.json holds every reading the daemon writes of the resolved priority: LEGION-211's own P1,
+// LEGION-207's P2 inherited from OTHER-5, LEGION-214's known none, which the key says with a null,
+// and no key at all on every other issue, as a Dispatch release that sends no resolved priority
+// leaves it. The issue record answers the state's issue view, so each row is read through both
+// schemas. What is refused is anything but a whole number from 0 to 3 or null, and a
+// `priorityFrom` that is no issue key.
+test("each issue's priority and resolved priority are a number from 0 to 3 or null, and may be absent", () => {
+  const state = fixtureBody("state.json");
+  const issues = state.issues;
+  if (!isJsonObject(issues)) {
+    throw new Error("state.json carries no issues");
+  }
+  const issue = (key: string): Record<string, unknown> => {
+    const found = issues[key];
+    if (!isJsonObject(found)) {
+      throw new Error(`state.json carries no issue ${key}`);
+    }
+    return found;
+  };
+  /** The issue as each reader of it parses body: the issue record's schema, and the state's with
+   * body in the place of the golden's issue of that key. */
+  const readings = (key: string, body: Record<string, unknown>) => {
+    const record = LegionIssueRecordResponse.safeParse(body);
+    const served = LegionStateResponse.safeParse({ ...state, issues: { ...issues, [key]: body } });
+    return [
+      { reader: "the issue record", success: record.success, issue: record.data },
+      { reader: "the state", success: served.success, issue: served.data?.issues[key] },
+    ];
+  };
+
+  const parsed = LegionStateResponse.parse(state).issues;
+  expect(parsed["LEGION-211"]).toMatchObject({ priority: 1, resolvedPriority: 1 });
+  expect(parsed["LEGION-207"]).toMatchObject({
+    priority: null,
+    resolvedPriority: 2,
+    priorityFrom: "OTHER-5",
+  });
+  expect(issue("LEGION-214").resolvedPriority).toBeNull();
+  expect(parsed["LEGION-214"]).toMatchObject({ priority: null, resolvedPriority: null });
+  for (const key of ["LEGION-211", "LEGION-214"]) {
+    expect(issue(key)).not.toHaveProperty("priorityFrom");
+  }
+  expect(issue("LEGION-208")).not.toHaveProperty("resolvedPriority");
+  expect(parsed["LEGION-208"]?.resolvedPriority).toBeUndefined();
+
+  const known = issue("LEGION-214");
+  for (const field of ["priority", "resolvedPriority"] as const) {
+    for (const value of [0, 1, 2, 3, null]) {
+      for (const read of readings("LEGION-214", { ...known, [field]: value })) {
+        const row = `${read.reader}, ${field} ${value}`;
+        expect(read.success, row).toBeTrue();
+        expect(read.issue?.[field], row).toBe(value);
+      }
+    }
+    const { [field]: _absent, ...without } = known;
+    for (const read of readings("LEGION-214", without)) {
+      expect(read.success, `${read.reader}, ${field} absent`).toBeTrue();
+      expect(read.issue?.[field], `${read.reader}, ${field} absent`).toBeUndefined();
+    }
+    for (const refused of ["0", true, 4, -1, 1.5]) {
+      for (const read of readings("LEGION-214", { ...known, [field]: refused })) {
+        expect(read.success, `${read.reader}, ${field} ${JSON.stringify(refused)}`).toBeFalse();
+      }
+    }
+  }
+
+  const inherited = issue("LEGION-207");
+  const { priorityFrom: _from, ...fromNone } = inherited;
+  for (const read of readings("LEGION-207", fromNone)) {
+    expect(read.success, `${read.reader}, priorityFrom absent`).toBeTrue();
+    expect(read.issue?.priorityFrom, `${read.reader}, priorityFrom absent`).toBeUndefined();
+  }
+  for (const refused of ["other-5", "OTHER", "OTHER-", "", 5, null]) {
+    for (const read of readings("LEGION-207", { ...inherited, priorityFrom: refused })) {
+      expect(read.success, `${read.reader}, priorityFrom ${JSON.stringify(refused)}`).toBeFalse();
+    }
   }
 });
 

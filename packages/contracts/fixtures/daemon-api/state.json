@@ -542,6 +542,7 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "priority": null,
+      "resolvedPriority": null,
       "workers": {}
     },
     "LEGION-218": {
