@@ -4090,8 +4090,9 @@ const (
 // two seconds, its MinGap) until it runs a pass of its own, because the other's pass may have
 // read before whatever woke it, so after the release each process runs at least one pass and no
 // count is held to one. The other ten are not observable, and this row says so rather than
-// pretending: refs-forms is a timer loop whose passes, on a database owing nothing, are one read
-// of refs_forms_owed and one count, so whether the two processes' passes meet is luck;
+// pretending: refs-forms-decisions is a timer loop whose passes, on a database owing nothing, are
+// a read of each of its two live queues and a count of each, and one pass of its bootstrap queue,
+// which it then stops reading, so whether the two processes' passes meet is luck;
 // issue-ask-repair's first leased pass is one IssueAskRepairInterval (10 min) in, the
 // boot's repair taking no lease; suggestion-outcomes is held only by the keyed writes'
 // maintenance sweep now (api.RunMaintenanceSweep, the suggestion outcome sweep taking no lease),
@@ -4196,7 +4197,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	requireLeasedOncePerPeriod(t, pair, "document-compaction")
 	requireLeasedOncePerPeriod(t, pair, "search-term-stats")
 	for _, unobserved := range []struct{ lease, why string }{
-		{"refs-forms", "a timer loop whose passes, on a database owing nothing, are one read of refs_forms_owed and one count, so whether the two processes' passes meet is luck"},
+		{"refs-forms-decisions", "a timer loop whose passes, on a database owing nothing, are one read of each of refs_forms_owed and refs_decisions_forms_owed and one count of each, with one such pass of the bootstrap queue refs_decisions_forms_seed_owed, which the duty then stops reading, so whether the two processes' passes meet is luck"},
 		{"issue-ask-repair", "its first leased pass is one IssueAskRepairInterval (10 min) after each process started"},
 		{"suggestion-outcomes", "only the keyed writes' maintenance sweep holds it, which no longer touches write_suggestions; api.TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners holds its lease"},
 		{"architecture-import", "its first pass is jittered over SyncInterval (5 min) and each process draws its own"},

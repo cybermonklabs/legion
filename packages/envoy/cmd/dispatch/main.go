@@ -806,7 +806,9 @@ func main() {
 	blockIndexLeases := reserve("block index")
 	// The reference forms drain's, a caller of its own beside the block index's: the two passes
 	// run on their own goroutines under their own leases, so each can hold a connection while the
-	// other does.
+	// other does. It drains all of its queues under the one lease, a pass of each one after the
+	// other (docs.Service.RunRefsFormsReconciliation), so it keeps the one connection it had
+	// before the added queues, and the pool's size stays what it was.
 	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
@@ -1102,10 +1104,12 @@ func main() {
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
 	// The reference forms drain: each comment, ask, issue message and document a build that
 	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
-	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
-	// interval: a period a process of the previous release served under the block index's lease
-	// would otherwise drain none of it, and a document's row is settled only by this build's own
-	// index of the document.
+	// (refs_forms_owed), and each one the release before settled that reads an issue's Decisions
+	// page as no more than its document (refs_decisions_forms_owed, and refs_decisions_forms_seed_owed
+	// for the text stored before it). A loop of its own under a
+	// lease of its own, on the block index's interval: a period a process of the previous release
+	// served under the block index's lease would otherwise drain none of it, and a document's row
+	// is settled only by this build's own index of the document.
 	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
 	// release before wrote stands unmarked, the catch-up of what a process of another build
