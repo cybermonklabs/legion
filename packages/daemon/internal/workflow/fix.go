@@ -1370,20 +1370,20 @@ func (e *Engine) taskStepRuns(ctx context.Context, tx pgx.Tx, issue record.Issue
 // of the step the task returns to for the first two. taskHead is the head of the task's branch
 // when the way is taken, "" where the record holds none.
 //
-// The commits the way counts are the task's, not the fix's own: a head that is not the one the
-// fix's check failed at carries work the steps after the fix have not seen, whether the fix pushed
-// it or anyone else did while the fix ran. Where the record holds no head, the fix's own end
-// answers for it. The first way: the fix failed, or a step beside it failed to a step other than
-// the fix's, so the task returns to the earliest such step, or, where the branch holds new
-// commits, to the step after the fix where that is earlier. The second: the branch holds new
-// commits, or the fix got a failed step's report, so the steps after it run again. The third, in
-// each other case, and where no step comes after the fix's: each step keeps its result.
+// The commits the way counts are the task's, not the fix's own alone: a branch that no longer
+// stands at the head the fix's check failed at carries work the steps after the fix have not
+// seen, whether the fix pushed it or anyone else did while the fix ran. Two readings say so, and
+// either is enough. The fix's own end (EndHead) answers before the synchronize of its end push
+// has moved the record's head, and taskHead, the head of the task's branch when the way is taken
+// ("" where the record holds none), answers for a push the fix did not make. The first way: the
+// fix failed, or a step beside it failed to a step other than the fix's, so the task returns to
+// the earliest such step, or, where the branch holds new commits, to the step after the fix where
+// that is earlier. The second: the branch holds new commits, or the fix got a failed step's
+// report, so the steps after it run again. The third, in each other case, and where no step comes
+// after the fix's: each step keeps its result.
 func fixWayOf(fix record.TaskFix, steps int, taskHead string) (way, place int) {
-	head := taskHead
-	if head == "" {
-		head = fix.EndHead
-	}
-	next, madeCommits := fix.Place+1, head != fix.Head
+	next := fix.Place + 1
+	madeCommits := (fix.EndHead != "" && fix.EndHead != fix.Head) || (taskHead != "" && taskHead != fix.Head)
 	switch {
 	case fix.Failed || fix.ReturnTo > 0:
 		place = fix.ReturnTo

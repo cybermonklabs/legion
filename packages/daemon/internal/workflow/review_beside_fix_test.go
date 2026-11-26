@@ -337,14 +337,18 @@ func TestAPersonsPushBesideAnEndedFixIsNoFixs(t *testing.T) {
 	if got := r.reviewBesideFix(); got != fixHead {
 		t.Fatalf("the review step beside fix 1 at its end stands beside a fix at %q, want %s", got, fixHead)
 	}
+	r.reviewerCompletes()
+	if told := reviewStuckNotices(t, r.pool); len(told) != 1 {
+		t.Fatalf("after the reviewer completed undecided the architect was told %+v, want one review-stuck notice", told)
+	}
 
 	r.personPushes(fixHead, headThree)
 
 	if got := r.reviewBesideFix(); got != "" {
 		t.Errorf("after a person pushed %s the review stands beside a fix at %q, want none: the head is no fix's", headThree, got)
 	}
-	if told := reviewStuckNotices(t, r.pool); len(told) != 1 {
-		t.Errorf("after a person's push the architect was told %+v, want one notice asking for a review of %s", told, headThree)
+	if told := reviewStuckNotices(t, r.pool); len(told) != 2 {
+		t.Errorf("after a person's push the architect was told %+v, want a second notice, for a review of %s", told, headThree)
 	}
 
 	r.reviewOf(1, "approved", fixHead)
@@ -369,6 +373,7 @@ func TestAPersonsPushBesideAnEndedFixIsNoFixs(t *testing.T) {
 func TestTheWayAfterAFixCountsTheTasksCommits(t *testing.T) {
 	r := besideTheFix(t)
 	r.fixEndsWithNoCommit()
+	r.reviewerCompletes()
 
 	r.personPushes(fixHead, headThree)
 	r.reviewOf(1, "approved", headThree)
