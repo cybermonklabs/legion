@@ -35,18 +35,22 @@ body: |-
   and a consumer accepts only an image that a run on `main` built (the comment above the
   workflow's `attest` job).
 
-  Where no such image exists, a member of `cloudsqlsuperuser`, connected to Dispatch's database
-  `dispatch`, does two steps in this order:
+  Where no such image exists, the login `dispatch`, connected to Dispatch's database `dispatch`,
+  runs two steps in this order:
 
   1. `create extension if not exists btree_gin;`
   2. `insert into schema_migrations (version) values (20261125125703);`
 
-  The census skips a version that `schema_migrations` records (`Census` in
-  `internal/pgmigrate/census.go`). The next boot fills the other columns of a row written by hand
-  and does not refuse it (`cmd/dispatch/README.md`, "A recorded version under another file"). Both
-  steps are necessary. The extension alone does not end the refusal. The row alone makes the boot
-  skip this migration, so the database gets no `btree_gin`, and a later migration that needs it
-  fails.
+  `dispatch` can run step 1 because Cloud SQL puts it in `cloudsqlsuperuser`, and step 2 because it
+  owns `schema_migrations`, which its runner creates (`prepareVersionTable` in
+  `internal/dispatch/store/store.go`). Another member of `cloudsqlsuperuser`, such as `postgres`,
+  can run step 1 but not step 2: it does not get the privileges of `dispatch`, so its insert fails
+  with `permission denied for table`. The census skips a version that `schema_migrations` records
+  (`Census` in `internal/pgmigrate/census.go`). The next boot fills the row's `name` and `checksum`
+  (`internal/pgmigrate/identity.go`), leaves `applied_checksum` empty, and does not refuse the row
+  (`cmd/dispatch/README.md`, "A recorded version under another file"). Both steps are necessary.
+  The extension alone does not end the refusal. The row alone makes the boot skip this migration,
+  so the database gets no `btree_gin`, and a later migration that needs it fails.
 time: 2026-11-24T00:27:02Z
 custom:
     Issue: btree-gin-extension
