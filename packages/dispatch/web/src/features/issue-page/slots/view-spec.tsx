@@ -6,6 +6,7 @@ import { primarySpec } from "../../../api/issue-cache";
 import { whoAmIQuery } from "../../../api/queries";
 import { useAddressTarget } from "../address-target";
 import { issueAddress } from "../issue-address";
+import { useOwnedIssueTree } from "../issue-tree-owner";
 import { NoTooltips } from "../NoTooltips";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
@@ -13,16 +14,16 @@ import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { NextViewPage } from "../tree-read/view-read";
-import { useIssueTree } from "../useIssueTree";
 import { usePublishViewReadings } from "./view-readings";
 
 /**
  * The Spec view's slot: what the stage draws in place of the outline
  * with Spec on (`slots/stage.tsx`). It is `SpecFilterBody` over the issue's one tree as the Spec
  * view leaves it (`presetView`), at the width the approved picture draws it (the prototype's
- * `.spec`, 1080 px), and reads everything else itself: the tree (`useIssueTree`), who is reading,
- * the Contents list's last request (`useOutlineRequest`), and the node the address names, which
- * the view keeps whatever the words filter leaves and puts the focus on.
+ * `.spec`, 1080 px), and reads everything else itself: the tree, the owner's where one stands
+ * above (`useOwnedIssueTree`), who is reading, the Contents list's last request
+ * (`useOutlineRequest`), and the node the address names, which the view keeps whatever the words
+ * filter leaves and puts the focus on.
  */
 export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   const { hash, search } = useLocation();
@@ -32,7 +33,7 @@ export function ViewSpecSlot({ issue, route }: SlotProps): ReactNode {
   // on those alone (`SpecFilterBody`). The names read is the tree's, and the view draws from it
   // too - the name of every reference the three sentences and a plain line cite - so its line's
   // state while it stands failed (`namesFailure`) is passed on for the body to draw.
-  const { namesFailure, root } = useIssueTree(issue);
+  const { namesFailure, root } = useOwnedIssueTree(issue);
   // Who is reading, so a decision of theirs reads as their own words (R5).
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // The address's own node, resolved against the whole tree and kept by the view

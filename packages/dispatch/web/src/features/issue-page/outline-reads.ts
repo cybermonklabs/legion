@@ -7,6 +7,7 @@ import { issueDecisionsQuery } from "../doc/spec-marks";
 import type { PublishedReferences } from "../refs/reference-names";
 import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
+import { useOwnedIssueTree } from "./issue-tree-owner";
 import { STATE_LINES } from "./page-words";
 import {
   type IssueTreeView,
@@ -14,7 +15,6 @@ import {
   issueCommentsQuery,
   issueMessagesQuery,
   type NamesFailure,
-  useIssueTree,
 } from "./useIssueTree";
 
 /** One line the outline draws over the tree (`FailedReadLine`), with a Retry. A read the rows
@@ -255,7 +255,8 @@ function useNamesLine(namesFailure: NamesFailure | undefined): readonly FailedRe
  * outline leaves out (`useAddressFallback`).
  */
 export function useOutlineReads(issue: IssueDetails): OutlineReads {
-  // The tree read's `pending` and `failed` are `useIssueTree`'s, under its key, so they cost no
+  // The tree is the page's one, its owner's where one stands above (`useOwnedIssueTree`). The
+  // tree read's `pending` and `failed` are `useIssueTree`'s, under its key, so they cost no
   // request of their own: until it settles a node still out can draw rows above the row the page
   // would land on.
   const {
@@ -267,7 +268,7 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
     pending,
     published,
     root,
-  } = useIssueTree(issue);
+  } = useOwnedIssueTree(issue);
   const key = issue.key;
   const six = sixReads(key);
   const own = useQueries({

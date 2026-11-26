@@ -7,6 +7,7 @@ import { useContentsChosen } from "../contents-chosen";
 import { ContentsList } from "../IssueContents";
 import { IssueThreeThings } from "../IssueThreeThings";
 import { issueAddress } from "../issue-address";
+import { useOwnedIssueTree } from "../issue-tree-owner";
 import { NoTooltips } from "../NoTooltips";
 import { useIssueNames } from "../one-line";
 import { useAskOutline, useFocusBranch } from "../outline-request";
@@ -16,7 +17,6 @@ import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { useOlderComments } from "../tree-read/tree-read";
-import { useIssueTree } from "../useIssueTree";
 
 /**
  * The contents slot, which the Spec view's work fills: what the page's Contents pane holds from
@@ -29,11 +29,12 @@ import { useIssueTree } from "../useIssueTree";
  * 1024 px the Outline sheet leaves them out (`ContentsSentences`), since above its first row each
  * view draws them.
  *
- * The list reads the tree the outline draws (`useIssueTree`), as the Conversation view leaves it
- * with the words filter's `?q=`. An entry chosen sends the outline to its node through the
- * outline's own request (`useAskOutline`), then closes the Outline sheet the list is drawn in
- * (`useContentsChosen`), which does nothing in the pane. Focus branch is the outline's own
- * (`useFocusBranch`), so the pane and the sheet share it.
+ * The list reads the tree the outline draws, the owner's where one stands above
+ * (`useOwnedIssueTree`), as the Conversation view leaves it with the words filter's `?q=`. An
+ * entry chosen sends the outline to its node through the outline's own request
+ * (`useAskOutline`), then closes the Outline sheet the list is drawn in (`useContentsChosen`),
+ * which does nothing in the pane. Focus branch is the outline's own (`useFocusBranch`), so the
+ * pane and the sheet share it.
  *
  * That tree is the outline read the page holds: Conversation's beside Conversation and each
  * filter, Graph's in Graph, so the list adds no read of its own. It holds the entries of the
@@ -45,7 +46,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const spec = primarySpec(issue);
   const specSlug = spec?.slug ?? "";
   const address = issueAddress(route, search, hash, specSlug);
-  const { blocksOf, root } = useIssueTree(issue);
+  const { blocksOf, root } = useOwnedIssueTree(issue);
   // The head says the spec holds no summary only once the spec's blocks are held, which is when
   // the tree holds its summary node where it has one. The sentences are drawn from that node's
   // reading (`TreeNode.tree`), which the tree read carries with the spec's blocks (`blocksOf`).

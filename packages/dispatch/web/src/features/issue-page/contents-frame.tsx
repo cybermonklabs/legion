@@ -17,6 +17,7 @@ import { useDialog, useMediaQuery } from "../shell/useDialog";
 import { ContentsChosen } from "./contents-chosen";
 import { IssueThreeThings } from "./IssueThreeThings";
 import { presetOf } from "./issue-address";
+import { useOwnedIssueTree } from "./issue-tree-owner";
 import { useIssueNames } from "./one-line";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS, type Preset } from "./page-words";
@@ -24,7 +25,6 @@ import type { SlotProps } from "./slot-props";
 import { ContentsSentences, ContentsSlot } from "./slots/contents";
 import { specSummary } from "./spec-summary";
 import { outlineOf, useStartOutlineRead } from "./tree-read/tree-read";
-import { useIssueTree } from "./useIssueTree";
 
 /** The width the Contents pane stands beside the outline from (R8, R14): 1024 px, in `rem` so
  *  it switches with Tailwind's `lg:` at any default font size. */
@@ -185,12 +185,13 @@ export function ThreeThingsAbove({
 }
 
 /** The three sentences as the Contents slot reads them (`slots/contents.tsx`): the spec's summary
- *  node of the tree the page holds, said only once the spec's blocks are held, each reference it
- *  cites by the page's name for it. Its reads are the page's own, so it sends none. */
+ *  node of the tree the page holds, its owner's where one stands above (`useOwnedIssueTree`),
+ *  said only once the spec's blocks are held, each reference it cites by the page's name for it.
+ *  Its reads are the page's own, so it sends none. */
 function ThreeThingsOf({ issue }: { issue: IssueDetails }): ReactNode {
   const spec = primarySpec(issue);
   const specSlug = spec?.slug ?? "";
-  const { blocksOf, root } = useIssueTree(issue);
+  const { blocksOf, root } = useOwnedIssueTree(issue);
   const specHeld = spec !== undefined && blocksOf("spec").data !== undefined;
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const { nameOf } = useIssueNames(issue, root);

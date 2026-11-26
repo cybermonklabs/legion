@@ -18,6 +18,7 @@ import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { IssueContentsPane, PAGE_INSET } from "./contents-frame";
 import { useDrawerPage } from "./drawer-page";
+import { IssueTreeOwnerProvider } from "./issue-tree-owner";
 import type { SlotProps } from "./slot-props";
 import { DetailsSlot } from "./slots/details";
 import { FootSlot } from "./slots/foot";
@@ -105,23 +106,28 @@ function IssueOutline({ route }: { route: IssueRoute }): ReactNode {
   // pane 1068 px.
   // The column carries `data-document-scroll`, so the foot's end room for the floats goes here
   // (`FOOT_LAYERS` in `hooks/useFootInset.ts` says why).
+  // The tree's owner stands around the slots, inside the page's providers, so the issue's tree is
+  // built once for the page and every slot that draws from it reads that one
+  // (`issue-tree-owner.tsx`); a press on a view mounts no reader that builds it again.
   const props: SlotProps = { issue: issue.data, route };
   return (
     <ProvidersSlot {...props}>
-      <HeaderSlot {...props} />
-      <ViewRowSlot {...props} />
-      <div className="flex min-w-0 items-start">
-        <IssueContentsPane {...props} />
-        <div
-          className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
-          data-testid="issue-column"
-          {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
-        >
-          <StageSlot {...props} />
-          <FootSlot {...props} />
+      <IssueTreeOwnerProvider issue={issue.data}>
+        <HeaderSlot {...props} />
+        <ViewRowSlot {...props} />
+        <div className="flex min-w-0 items-start">
+          <IssueContentsPane {...props} />
+          <div
+            className={`flex min-h-dvh min-w-0 flex-1 flex-col pt-2.5 ${PAGE_INSET}`}
+            data-testid="issue-column"
+            {...{ [DOCUMENT_SCROLL_ATTRIBUTE]: "" }}
+          >
+            <StageSlot {...props} />
+            <FootSlot {...props} />
+          </div>
         </div>
-      </div>
-      <DetailsSlot {...props} />
+        <DetailsSlot {...props} />
+      </IssueTreeOwnerProvider>
     </ProvidersSlot>
   );
 }
